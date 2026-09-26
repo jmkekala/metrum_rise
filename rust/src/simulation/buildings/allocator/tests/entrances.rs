@@ -133,6 +133,7 @@ fn test_rebuild_entrance_cache_uses_authored_anchor_meters_without_preview_scale
         }],
         site_surfaces: vec![],
         building: Some(BuildingData {
+            window_brightness: 3.0,
             appearance: None,
             flat_size_m2: Some(80.0),
             placement_mode: PlacementMode::ZonedPrivate,

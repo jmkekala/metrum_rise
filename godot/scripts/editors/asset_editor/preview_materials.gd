@@ -7,7 +7,7 @@ extends RefCounted
 const WindowMaterials := preload("res://scripts/renderers/window_materials.gd")
 const SchemeMaterials := preload("res://scripts/renderers/scheme_materials.gd")
 
-const REFERENCE_COLOR := Color(1.0, 0.55, 0.23)
+const REFERENCE_COLOR := WindowMaterials.REFERENCE_COLOR
 enum Mode { AUTHORED, OFF, ON }
 
 var _surfaces: Array[Dictionary] = []

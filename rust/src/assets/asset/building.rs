@@ -44,6 +44,9 @@ pub enum PlacementMode {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BuildingData {
+    /// Linear HDR window emission strength, 0..=10; zero disables window emission.
+    #[serde(default = "BuildingData::default_window_brightness")]
+    pub window_brightness: f32,
     /// Optional coordinated texture schemes shared by all parts and LODs.
     #[serde(default)]
     pub appearance: Option<super::BuildingAppearance>,
@@ -119,6 +122,11 @@ fn default_level() -> u8 {
 }
 
 impl BuildingData {
+    /// Reference brightness for assets that do not author window lighting.
+    pub const fn default_window_brightness() -> f32 {
+        3.0
+    }
+
     /// Interior area used by farms whose manifests omit farmhouse sizing.
     pub(crate) const DEFAULT_FARMHOUSE_AREA_M2: f32 = 120.0;
 

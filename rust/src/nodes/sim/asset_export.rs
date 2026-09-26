@@ -98,6 +98,9 @@ pub struct MeshPartParams {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExportParams {
+    /// Saved asset-wide HDR window emission strength, independent of preview multipliers.
+    #[serde(default = "crate::assets::asset::BuildingData::default_window_brightness")]
+    pub window_brightness: f32,
     /// Coordinated building appearance metadata; omitted for source-only materials.
     #[serde(default)]
     pub appearance: Option<crate::assets::asset::BuildingAppearance>,
@@ -283,6 +286,7 @@ fn build_asset_toml(p: &ExportParams) -> Result<String, String> {
     match p.asset_class.as_str() {
         "building" => {
             out.push_str("[building]\n");
+            out.push_str(&format!("window_brightness = {}\n", p.window_brightness));
             let placement_mode = p.placement_mode.trim();
             let zone = p.zone_type.as_deref().unwrap_or("residential");
             out.push_str(&format!("placement_mode = \"{placement_mode}\"\n"));
@@ -874,6 +878,7 @@ pub fn get_asset_manifest_json_internal(
     });
 
     if let Some(b) = &m.building {
+        obj["window_brightness"] = serde_json::json!(b.window_brightness);
         obj["appearance"] = serde_json::json!(b.appearance);
         obj["placement_mode"] = serde_json::json!(match b.placement_mode {
             PlacementMode::ZonedPrivate => "zoned_private",
@@ -1011,6 +1016,39 @@ mod tests {
         data["household_capacity"] = serde_json::Value::Null;
         let params: ExportParams = serde_json::from_value(data).unwrap();
         assert_eq!(params.household_capacity, None);
+    }
+
+    #[test]
+    fn window_brightness_defaults_validates_and_round_trips() {
+        let mut data: serde_json::Value =
+            serde_json::from_str(&minimal_building_json("building.residential.windows")).unwrap();
+        let params: ExportParams = serde_json::from_value(data.clone()).unwrap();
+        assert_eq!(params.window_brightness, 3.0);
+        for brightness in [0.0, 2.75, 10.0] {
+            data["window_brightness"] = serde_json::json!(brightness);
+            let params: ExportParams = serde_json::from_value(data.clone()).unwrap();
+            let (toml, _) = validated_tomls(&params).unwrap();
+            let manifest = AssetManifest::from_str(&toml).unwrap();
+            assert_eq!(
+                manifest.building.as_ref().unwrap().window_brightness,
+                brightness
+            );
+            let mut registry = crate::assets::registry::AssetRegistry::new();
+            registry.register("test-pack", manifest, String::new());
+            let loaded: serde_json::Value =
+                serde_json::from_str(&get_asset_manifest_json_internal(
+                    &registry,
+                    "test-pack:building.residential.windows",
+                ))
+                .unwrap();
+            assert_eq!(loaded["window_brightness"], brightness);
+        }
+        for brightness in [-0.1, 10.1] {
+            data["window_brightness"] = serde_json::json!(brightness);
+            assert!(
+                validate_asset_params_internal(&data.to_string()).contains("window_brightness")
+            );
+        }
     }
 
     #[test]

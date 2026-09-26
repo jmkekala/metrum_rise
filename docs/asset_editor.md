@@ -1576,12 +1576,14 @@ Current preview (`TOOLS-04`):
   schedule below, including pre-sunset activation and residential sleep hours. A preview-only
   selector follows the asset type by default, with residential, non-residential and
   abandoned/unfinished overrides. Day/dusk/night presets and manual hour changes update it immediately, including meshes imported later and newly selected LODs. Authored default,
-  force off and force on remain explicit overrides that survive clock changes; reference
-  intensity is adjustable in Automatic and Force on.
+  force off and force on remain explicit overrides that survive clock changes. **Model →
+  Window brightness** saves the asset's strength; the lighting popup's brightness multiplier
+  is temporary and applies in Automatic and Force on.
   Overrides affect preview-owned materials only; textures/factors in exported files stay unchanged.
   Materials remain authored in the source model; the editor does not expose a material inspector.
-  The reference tint is linear RGB `[1.0, 0.55, 0.23]`. Only materials with an emission texture
-  participate. Surface emission does not promise light spill onto nearby geometry.
+  The reference tint is linear RGB `[1.0, 0.76, 0.52]`, with restrained stable house variation
+  in Automatic/gameplay (`RENDER-11`). Only materials with an emission texture participate.
+  Visible emission contributes screen-space spill (`RENDER-10`).
 - Automatic screen-size LOD inspection for every part, temporary per-part tier inspection, global preview
   quality presets and explicit camera framing. The visible Model list offers Automatic and each
   LOD file; clicking a tier previews it immediately. `Add LOD1…` (then LOD2, LOD3, etc.) appends
@@ -3099,7 +3101,8 @@ That remains the escape hatch if draw calls are ever measured to be the bottlene
 Window emission is cosmetic, whole-building lighting. Existing emission textures identify
 luminous windows; no model re-export, per-window nodes, simulation RNG or saved light state
 is needed. A surface without an emission texture retains its imported material. Individual
-room/window controls and ground light spill are outside this contract.
+room/window controls remain outside this contract. `RENDER-10` adds screen-space light spill
+onto surrounding surfaces, described below.
 
 - Rust derives four fixed values from `Building::appearance_key()` with a domain-separated
   integer mix: sun-elevation threshold, bedtime, wake hour, profile. The same values reach
@@ -3120,11 +3123,13 @@ room/window controls and ground light spill are outside this contract.
 - Existing spatial batches carry 12 transform floats plus 4 custom-data floats (64 bytes,
   previously 48) per capacity slot. Warm camera scatter stays O(resident parts + groups),
   allocation-free after synchronization; visible chunk work remains parallel in Rust.
-  No per-building materials, additional light nodes or extra rendering passes are added.
+  No per-building materials or additional light nodes are added. The emission schedule itself
+  adds no rendering passes; `RENDER-10` adds shared screen-space indirect-light passes.
 - Shared shader materials bind imported albedo, normal, roughness, metallic and AO textures,
   scalar/channel settings, UV transforms, texture filtering/repeat and alpha/cull settings.
   ORMMaterial3D uses packed channel values directly. Colour-scheme bindings are resolved
-  before window conversion. The reference linear tint is `[1.0, 0.55, 0.23]` at strength 1,
+  before window conversion. `RENDER-11` updates the reference linear tint to
+  `[1.0, 0.76, 0.52]` and adds saved brightness (default 3, originally 1),
   allowing masks exported with a black emissive factor to work. Imported resources and
   exports remain unchanged. Custom ShaderMaterial surfaces are left authored.
 - The editor's Automatic mode uses the same factory and GPU schedule, with an explicit
@@ -3185,6 +3190,118 @@ godot --path godot --script res://tests/building_window_test.gd -- --benchmark-w
 godot --headless --path godot --script res://tests/asset_editor_preview_test.gd -- --asset-editor
 godot --headless --path godot --script res://tests/asset_colour_schemes_test.gd -- --asset-editor
 ```
+
+### Window light spill — RENDER-10
+
+The shared gameplay/world-editor/asset-editor environment enables Godot Forward+ SSIL
+(screen-space indirect lighting), with a **6 m radius** and **1.0 intensity**. Visible window
+emission now illuminates nearby terrain, site ground and building surfaces. It uses the
+rendered emission, so existing dusk, bedtime, wake and abandoned-building schedules also
+control the spill without any additional per-building CPU updates or light nodes.
+
+Terrain and site-ground shaders replace `ambient_light_disabled` with zero-valued
+`IRRADIANCE`/`RADIANCE` overrides. This preserves their authored day/night ambient floor
+and excludes duplicate environment ambient/reflections while allowing SSIL to reach them.
+Standard building materials already receive indirect light. No asset re-export is needed.
+
+This is approximate indirect illumination, **not persistent off-screen lighting**. Sources
+must be visible in the screen buffers; hidden/off-screen windows and transparent surfaces
+outside those buffers cannot contribute. Camera movement can reveal/fade spill, and the
+previous-frame history takes a few frames to settle. It does not create projected window
+shadows or replace a future authored local-light system. See
+[Godot's SSIL contract](https://docs.godotengine.org/en/4.6/tutorials/3d/environment_and_post_processing.html#screen-space-indirect-lighting-ssil).
+
+Complexity: O(render pixels × fixed quality sample count) GPU work and O(render pixels)
+history buffers, independent of total city population. No simulation iteration, instance
+buffer expansion or clock-driven uploads are introduced. Current upstream defaults use
+half-size SSIL and quality 2. The effect also operates during daylight.
+
+Fresh verification (2026-09-26): `window_spill_test.gd` passes on Forward+, checking a
+scheduled MultiMesh emitter against both production ground shaders and a neighbouring
+wall, warm spill, bedtime/daylight darkness and no duplicate ground ambient. Its terrain
+capture was visually inspected. Existing rendered `building_window_test.gd` and headless
+`asset_editor_preview_test.gd` pass. The terrain GPU probe's culling variant was adjusted
+to the new render-mode declaration and all ten variant generators pass. Rust is unchanged;
+the prior release library is reused, not rebuilt or re-tested for this rendering change.
+
+Matched, unprofiled release-engine measurements: Godot **4.7.2**, Forward+, RX **7900 XTX**,
+VSync off, one instanced emissive quad, a wall and a site-ground plane. Two alternating
+before/after trials per resolution, 60 warmup and 120 measured frames each. Before uses
+the original site-ground shader from `f22b8177ec1f6fc69bcb6b8e31f858450ead7064` and SSIL off;
+after uses the updated shader and SSIL on. Median viewport GPU times:
+
+| Resolution | Before, two trials | After, two trials |
+|---|---|---|
+| 640 × 360 | 0.030 / 0.030 ms | 0.061 / 0.061 ms |
+| 1920 × 1080 | 0.107 / 0.106 ms | 0.278 / 0.278 ms |
+
+This isolates receiver/SSIL cost; it is not a whole-city frame-time claim. No CPU simulation
+worker setting affects this fixture. Artifacts under `/tmp/metrum-spill/` include
+`matched_spill.gd`, `baseline-site.gdshader`, `matched-gpu.log`, `final-gpu.log`,
+`window-regression.log`, `editor-regression.log`, `probe-regression.log`,
+`source-identities.txt` and captured `spill-*.png` under the isolated user-data directory.
+Reproduce the regression/current-shader SSIL off/on benchmark with:
+
+```sh
+XDG_DATA_HOME=/tmp/metrum-spill godot --path godot --script res://tests/window_spill_test.gd -- --benchmark-spill --capture-spill
+```
+
+### Window brightness and variation — RENDER-11
+
+**Model → Window brightness** authors `[building].window_brightness`: finite **0–10**,
+default **3.0** when absent. Zero disables that asset's window emission. This is a linear
+HDR strength, not calibrated nits. It survives draft state, undo/redo, export and reopening.
+The lighting popup's **Brightness multiplier (preview only)** defaults to 1 and never
+changes the document. Automatic uses the saved strength multiplied by that inspection
+value; Force on uses the reference tint, while Authored restores the source material.
+Imported GLBs and their emissive factors remain unchanged.
+
+Gameplay binds the saved strength once per cached part/tier/scheme material from the Rust
+catalog. The vertex shader derives fixed brightness **0.85–1.15×** and a narrow warm-white
+tint range around linear `[1.0, 0.76, 0.52]` from the already stable schedule values.
+These cosmetic variations are independent of clock/camera/LOD and simulation RNG. All
+parts of a building agree; save/load restores the same result given the same installed
+assets. No new instance floats, material groups, saved instance fields or per-frame CPU
+work are added. Extra shader work is O(1) per vertex; the varying changes from scalar to
+RGB radiance. This still controls whole buildings, not individual rooms.
+
+The shared environment uses **AgX tonemapping** to roll off bright highlights, plus
+normalized glow at **0.15 intensity**, **1.5 HDR threshold**, and zero all-surface bloom.
+Only sufficiently bright surfaces bloom. SSIL remains responsible for illumination of
+surrounding geometry, with the visibility limitations in `RENDER-10`. These environment
+changes also affect daylight: the inspected sky is slightly less saturated. Bloom adds
+screen-resolution-bounded GPU passes, with no city-population traversal.
+
+Fresh verification (2026-09-26): release Rust asset tests **93 pass / 1 ignored**, export
+tests **21 pass**, building LOD tests **13 pass / 2 ignored**. Coverage includes absent/default,
+zero/custom/max brightness, invalid/nonfinite rejection and manifest round trips. Rendered
+window tests cover brightness above the default, zero emission, stable variation and
+preview parity. The gameplay LOD regression checks custom brightness across all tiers and
+schemes along with its existing save/load and zero-clock-upload checks. Headless editor
+preview and colour-scheme regressions pass, including actual brightness-control edits,
+undo/redo, export/reopen and immediate preview updates. Installed house day/night captures
+were visually inspected. Release library rebuilt and deployed (SHA-256
+`5368fe8e87315e028fad2437e87a26119a0b7b1b7a63ec7b7bf592b8415dbe89`).
+
+Matched unprofiled Godot 4.7.2 Forward+ runs on RX 7900 XTX, VSync off:
+
+- Existing 4,096-instance / 1024² material fixture, previous versus current shader with
+  identical AgX/no-glow post-processing: two alternating pairs, 60 warmup / 300 measured
+  frames. GPU medians **0.050 / 0.051 ms before and after**.
+- Complete look, with SSIL enabled in both cases: one window quad, wall and site-ground
+  plane; previous shader/Linear/no glow versus current shader/AgX/glow. Two alternating
+  pairs, 60 warmup / 120 measured frames: **640×360: 0.061 → 0.077 ms** in both pairs;
+  **1920×1080: 0.277/0.276 → 0.372/0.373 ms**. This is an isolated rendering fixture,
+  not a whole-city frame-time claim. No simulation worker setting affects either fixture.
+
+Artifacts in `/tmp/metrum-window-look/`: `before-{environment.tres,windows.gdshader,materials.gd}`,
+`matched_material.gd`, `material-gpu.log`, `matched_look.gd`, `matched-gpu.log`,
+`{before,after}-{day,night}.png`, `rust-{brightness,assets,export,lod}.log`, `shader.log`,
+`lod-gpu.log`, `editor-final.log`, `colours-final.log`, `build.log`, and source/library
+identity files. Source baseline is `f22b8177ec1f6fc69bcb6b8e31f858450ead7064` plus the
+preceding `RENDER-10` working changes captured before implementation. Run the committed
+`building_window_test.gd`, `window_spill_test.gd`, `building_lod_test.gd` and editor tests
+with isolated `XDG_DATA_HOME`; matched scripts preserve the precise baseline comparisons.
 
 ### Shared LOD policy and automatic inspection — TOOLS-05
 

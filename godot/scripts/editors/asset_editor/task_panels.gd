@@ -70,6 +70,9 @@ func _model() -> void:
 	v._part_rotation_y_spin = _geometry_number(part, "_part_yaw", "Rotation Y (°)", -180, 180, 1, e._on_part_transform_changed.bind("yaw"))
 	v.geometry_button(part, "Fit selected part to lot", e._on_autofit_pressed)
 	v.part_properties.visible = false
+	var brightness: SpinBox = v.number_field(box, "window_brightness", "Window brightness", 10.0, 0.1)
+	brightness.allow_greater = false
+	brightness.tooltip_text = "Saved for this asset. 3 is the default; 0 turns window emission off. Preview at night to judge the result."
 	e._session.colours.build(box)
 
 func _site() -> void:

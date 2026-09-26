@@ -159,6 +159,13 @@ func _run() -> void:
 	_expect(world.environment.ambient_light_color != day, "night control must relight environment, not just rotate sun")
 	editor.set_ui_theme_mode("light")
 	_expect(world.environment.ambient_light_color != day, "UI theme must not reset night lighting")
+	var brightness_field: SpinBox = editor._view.fields["window_brightness"]
+	brightness_field.value = 4.2
+	_expect(is_equal_approx(editor._session.params.window_brightness, 4.2), "brightness control edits the asset document")
+	_expect(is_equal_approx(panel._asset_window_brightness, 4.2), "authored brightness immediately updates preview")
+	editor._session.undo()
+	_expect(is_equal_approx(panel._asset_window_brightness, 3.0), "brightness undo restores default")
+	editor._session.redo()
 	editor._export_asset(false)
 	_expect(editor._session._issues.is_empty(), "export validation: " + JSON.stringify(editor._session._issues))
 	var asset_dir := _output.path_join("assets/building.residential.preview_test")
@@ -172,6 +179,7 @@ func _run() -> void:
 		_expect(saved["materials"][0]["emissiveFactor"] == [0.0, 0.0, 0.0], "preview emission must never be baked into export")
 	editor._session.load_manifest(JSON.parse_string(editor.sim.get_asset_manifest_json(_pack + ":building.residential.preview_test")))
 	_expect(editor._parts.size() == 1 and editor._parts[0].lods.size() == 4, "editor reload preserves the whole chain")
+	_expect(is_equal_approx(editor._session.params.window_brightness, 4.2) and is_equal_approx(panel._asset_window_brightness, 4.2), "saved brightness survives export/reopen and drives preview")
 	editor._export_asset(false)
 	var before := FileAccess.get_file_as_bytes(manifest_path)
 	_write(asset_dir.path_join("unmanaged.txt"), "keep this creator-owned file")
@@ -323,7 +331,7 @@ func _test_comparison_preview(editor: Node3D) -> void:
 		if entry.source.emission_texture == null:
 			continue
 		var active := entry.instance.get_active_material(entry.surface) as ShaderMaterial
-		_expect(active != null and is_equal_approx(active.get_shader_parameter("window_strength"), 1.8),
+		_expect(active != null and is_equal_approx(active.get_shader_parameter("window_strength"), 1.8 * panel._asset_window_brightness),
 			"new comparisons immediately inherit the current automatic emission strength")
 	for preset in ["Night", "Day", "Night"]:
 		panel.find_child(preset, true, false).pressed.emit()
@@ -478,7 +486,7 @@ func _test_automatic_emission(editor: Node3D) -> void:
 	var materials: PreviewMaterials = editor._preview.mesh_part_materials(0)
 	for entry in materials._surfaces:
 		var active: ShaderMaterial = entry["instance"].get_active_material(entry["surface"])
-		_expect(is_equal_approx(active.get_shader_parameter("window_strength"), 2.5), "automatic emission uses reference intensity")
+		_expect(is_equal_approx(active.get_shader_parameter("window_strength"), 2.5 * panel._asset_window_brightness), "automatic emission multiplies saved brightness by preview intensity")
 		_expect(entry["source"].emission == Color.BLACK, "automatic emission preserves the default-off source factor")
 	panel.set_lighting(0.0)
 	for profile in 3:

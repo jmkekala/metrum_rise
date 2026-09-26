@@ -119,6 +119,8 @@ name = "main"
 position = [0.0, 0.0, 6.0]
 forward = [0.0, 0.0, 1.0]
 """ % asset
+		if asset == 1:
+			manifest = manifest.replace("[building]\n", "[building]\nwindow_brightness = 2.25\n")
 		for part in (2 if asset == 0 else 1):
 			manifest += '\n[[mesh_parts]]\nname = "part_%d"\n' % part
 			if part == 1:
@@ -354,6 +356,7 @@ func check_schemes(frame: Dictionary) -> void:
 			if painted == null or painted.get_shader_parameter("texture_albedo") == null:
 				continue
 			expect(painted.get_shader_parameter("texture_emission") != null, "an overridden albedo retains the authored emission")
+			expect(is_equal_approx(painted.get_shader_parameter("window_strength"), 2.25), "asset brightness reaches every LOD and colour scheme")
 			var color: Color = painted.get_shader_parameter("texture_albedo").get_image().get_pixel(0, 0)
 			expect(color.is_equal_approx(expected[scheme]),
 				"tier %d scheme %d must bind its own albedo, got %s" % [lod, scheme, color])

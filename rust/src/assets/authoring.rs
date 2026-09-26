@@ -150,7 +150,12 @@ pub(crate) fn describe(data: &Value, catalog: Option<&RuntimeEconomyCatalog>) ->
     let utility = kind == "service" && utility_service(data).is_some();
     let has_profiles =
         matches!(kind, "commercial" | "industrial" | "extractor" | "farm") || utility;
-    let mut fields = vec!["lot_width_cells", "lot_depth_cells", "frontage_forward"];
+    let mut fields = vec![
+        "lot_width_cells",
+        "lot_depth_cells",
+        "frontage_forward",
+        "window_brightness",
+    ];
     if zoned {
         fields.extend([
             "density",
@@ -234,6 +239,17 @@ pub(crate) fn issues(
     }
     if text(data, "display_name").is_empty() {
         issue("overview", "display_name", "Give the asset a display name.");
+    }
+    if let Some(value) = data.get("window_brightness")
+        && !value
+            .as_f64()
+            .is_some_and(|brightness| brightness.is_finite() && (0.0..=10.0).contains(&brightness))
+    {
+        issue(
+            "model",
+            "window_brightness",
+            "Window brightness must be between 0 and 10.",
+        );
     }
     if data["mesh_parts"].as_array().is_none_or(Vec::is_empty) {
         issue("model", "mesh_parts", "Import at least one mesh part.");

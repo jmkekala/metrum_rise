@@ -196,7 +196,7 @@ func _scheme_group(part: int, lod: int, scheme: int) -> Dictionary:
 				replacement = SchemeMaterials.variant(source, bindings[source.resource_name])
 			var base: BaseMaterial3D = replacement if replacement != null else source
 			if base != null and base.emission_texture != null:
-				replacement = WindowMaterials.create(base)
+				replacement = WindowMaterials.create(base, false, float(catalog[part]["window_brightness"]))
 			if replacement != null:
 				replaced += 1
 			replacements.append(replacement)

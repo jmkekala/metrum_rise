@@ -44,6 +44,7 @@ func run() -> void:
 	root.add_child(viewport)
 	var environment := WorldEnvironment.new()
 	environment.environment = Environment.new()
+	environment.environment.tonemap_mode = Environment.TONE_MAPPER_AGX
 	environment.environment.background_mode = Environment.BG_COLOR
 	environment.environment.background_color = Color.BLACK
 	environment.environment.ambient_light_source = Environment.AMBIENT_SOURCE_DISABLED
@@ -92,7 +93,17 @@ func run() -> void:
 	expect(sleep_mid > 0.01 and sleep_mid < bright * 0.95, "bedtime fades across midnight")
 	expect(await sample(3, -15, Color(4, 24.5, 6, 2)) > bright * 0.95, "overnight profile remains lit")
 	expect(await sample(21, -5, Color(4, 24.5, 6, 0)) < 0.01, "abandoned and unfinished buildings remain dark")
-	expect(await sample(19, 5, Color(8, 24.5, 6, 1)) > bright * 0.95, "different houses turn on before sunset at different times")
+	expect(await sample(19, 5, Color(8, 24.5, 6, 1)) > 0.15, "different houses turn on before sunset at different times")
+	material.set_shader_parameter("window_strength", 0.0)
+	expect(await sample(21, -5, home) < 0.01, "saved zero brightness disables emission")
+	material.set_shader_parameter("window_strength", 6.0)
+	expect(await sample(21, -5, home) > bright + 0.03, "HDR brightness remains adjustable above the default")
+	material.set_shader_parameter("window_strength", 3.0)
+	var variant := Color(1, 22, 5, 1)
+	var varied := await sample(21, -5, variant)
+	expect(absf(varied - bright) > 0.002, "different stable identities vary window appearance")
+	expect(absf(varied - await sample(21, -5, variant, true)) < 0.01, "preview and gameplay use the same appearance variation")
+	expect(absf(bright - await sample(21, -5, home)) < 0.01, "restoring an identity restores its brightness")
 	expect(source.emission == Color.BLACK and not source.emission_enabled, "runtime lighting leaves authored material untouched")
 	await check_materials()
 	if "--benchmark-windows" in OS.get_cmdline_user_args():

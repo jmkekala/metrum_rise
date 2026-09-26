@@ -523,6 +523,7 @@ fn register_test_asset_with_profile(
         }],
         site_surfaces: vec![],
         building: Some(BuildingData {
+            window_brightness: 3.0,
             appearance: None,
             flat_size_m2: None,
             placement_mode: PlacementMode::ZonedPrivate,
@@ -577,6 +578,7 @@ fn register_test_city_service_asset(
         }],
         site_surfaces: vec![],
         building: Some(BuildingData {
+            window_brightness: 3.0,
             appearance: None,
             flat_size_m2: None,
             placement_mode: PlacementMode::Explicit,
@@ -629,6 +631,7 @@ fn register_test_field_asset(
         }],
         site_surfaces: vec![],
         building: Some(BuildingData {
+            window_brightness: 3.0,
             appearance: None,
             flat_size_m2: None,
             placement_mode: PlacementMode::Explicit,

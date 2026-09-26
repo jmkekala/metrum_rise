@@ -30,6 +30,7 @@ var _remove: Button
 var _emission: OptionButton
 var _window_profile: OptionButton
 var _asset_window_profile := 1.0
+var _asset_window_brightness := 3.0
 var _hour: SpinBox
 var _strength: SpinBox
 var _status: Label
@@ -73,10 +74,10 @@ func _ready() -> void:
 		_window_profile.add_item(label)
 	_window_profile.item_selected.connect(func(_index: int): _emit_emission())
 	_body.add_child(_window_profile)
-	_strength = _spin("Reference intensity", 0.0, 10.0, 1.0, 0.1)
+	_strength = _spin("Brightness multiplier (preview only)", 0.0, 3.0, 1.0, 0.1)
 	_strength.value_changed.connect(func(_value: float): _emit_emission())
 	_section_gap()
-	_label("Emission previews luminous surfaces, not ground light spill.")
+	_label("Save window brightness in Model. Visible windows also light nearby ground.")
 	_label("Preview quality (all parts)")
 	_quality = OptionButton.new()
 	for label in ["Performance", "Balanced", "Quality"]:
@@ -246,7 +247,13 @@ func _emit_emission() -> void:
 	_strength.editable = mode == AUTOMATIC_EMISSION or mode == PreviewMaterials.Mode.ON
 	var sun_elevation := DayCycleConfig.solar_position_deg(_hour.value / 24.0).x
 	var profile: float = [_asset_window_profile, 1.0, 2.0, 0.0][_window_profile.selected]
-	emission_changed.emit(mode, _strength.value, Vector2(fposmod(_hour.value, 24.0), sun_elevation), Vector4(4, 24.5, 6, profile))
+	emission_changed.emit(mode, _strength.value * _asset_window_brightness, Vector2(fposmod(_hour.value, 24.0), sun_elevation), Vector4(4, 24.5, 6, profile))
+
+## Apply saved asset brightness without changing the temporary inspection multiplier.
+func set_asset_window_brightness(brightness: float) -> void:
+	if _asset_window_brightness != brightness:
+		_asset_window_brightness = brightness
+		_emit_emission()
 
 ## Match the current asset's use while retaining explicit inspection overrides.
 func set_asset_window_profile(residential: bool) -> void:

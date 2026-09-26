@@ -1,5 +1,15 @@
 # Terrain / World Terrain Spec
 
+## Window light reception — RENDER-10
+
+Terrain and site ground now receive screen-space indirect lighting from visible emissive
+windows. Their existing ambient floors remain controlled by the day-cycle globals:
+zero-valued `IRRADIANCE`/`RADIANCE` overrides replace `ambient_light_disabled`, preventing
+duplicate environment ambient without suppressing SSIL. No terrain mesh, texture upload or
+spatial indexing changes are involved. The shared environment configuration, visibility
+limitations, rendered regressions and matched GPU measurements are owned by
+[the window spill contract](asset_editor.md#window-light-spill--render-10).
+
 ## Crown cohesion candidate — 2026-09-19
 
 `RENDER-06`, visually accepted by the user on 2026-09-19 after in-game testing. Near tree cards now interpolate an outward

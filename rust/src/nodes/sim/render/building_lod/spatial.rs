@@ -20,6 +20,8 @@ use std::path::Path;
 
 /// Stable resource identity within a catalog generation.
 pub(crate) struct CatalogPart {
+    /// Shared asset-wide HDR emission strength, bound once per material variant.
+    pub window_brightness: f32,
     /// Qualified pack/asset identifier.
     pub asset: String,
     /// Authored mesh-part ordinal, unaffected by another part failing to import.
@@ -108,6 +110,7 @@ impl SpatialBatches {
         };
         // Slot zero is the existing missing-asset marker, not an authored tier.
         self.catalog.push(CatalogPart {
+            window_brightness: 0.0,
             asset: "broken:error".into(),
             index: 0,
             paths: vec![String::new()],
@@ -134,6 +137,10 @@ impl SpatialBatches {
                 self.parts
                     .push(Part::new(bounds, &vec![true; part.lods.len()]).unwrap());
                 self.catalog.push(CatalogPart {
+                    window_brightness: entry.manifest.building.as_ref().map_or(
+                        crate::assets::asset::BuildingData::default_window_brightness(),
+                        |building| building.window_brightness,
+                    ),
                     asset: id.into(),
                     index,
                     paths: part

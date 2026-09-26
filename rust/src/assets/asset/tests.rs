@@ -60,6 +60,19 @@ distance_max_m = 600.0
 "#;
 
 #[test]
+fn window_brightness_rejects_nonfinite_and_defaults_for_existing_assets() {
+    let manifest = AssetManifest::from_str(BUILDING_TOML).unwrap();
+    assert_eq!(manifest.building.unwrap().window_brightness, 3.0);
+    for value in ["nan", "inf", "-inf", "-1", "11"] {
+        let source = BUILDING_TOML.replace(
+            "[building]",
+            &format!("[building]\nwindow_brightness = {value}"),
+        );
+        assert!(AssetManifest::from_str(&source).is_err(), "{value}");
+    }
+}
+
+#[test]
 fn building_manifest_round_trip() {
     let m = AssetManifest::from_str(BUILDING_TOML).expect("parse failed");
     assert_eq!(m.asset_id, "building.residential.lowrise_corner");

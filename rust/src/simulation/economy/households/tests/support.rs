@@ -170,6 +170,7 @@ fn test_building_data(zone: Option<ZoneClass>) -> BuildingData {
         _ => (None, Some(4)),
     };
     BuildingData {
+        window_brightness: 3.0,
         appearance: None,
         flat_size_m2: household_capacity.map(|_| 80.0),
         placement_mode: if zone.is_some() {

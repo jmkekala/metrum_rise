@@ -1,5 +1,5 @@
 shader_type spatial;
-render_mode cull_disabled, ambient_light_disabled;
+render_mode cull_disabled;
 
 uniform sampler2D heightmap;
 uniform sampler2D overlay_texture : repeat_disable, filter_linear;
@@ -39,9 +39,8 @@ uniform int terrain_grass_visual_debug_mode = 0;
 global uniform vec3 scene_sun_direction;
 global uniform vec4 scene_sun_color : source_color;
 global uniform float scene_ambient_strength;
-// Multiplier for the baked ambient floor below. The environment's own ambient light does not
-// reach this shader (see ambient_light_disabled), so without this the ground keeps full
-// daytime brightness at midnight.
+// Multiplier for the authored ambient floor. IRRADIANCE suppresses the environment's
+// ambient term while keeping screen-space indirect light available to the ground.
 global uniform vec4 scene_ambient_light : source_color;
 // Colour vision washes out at night. Dimming alone leaves a saturated green ground reading as
 // daylight with the brightness turned down, because the albedo's green channel still dominates
@@ -813,6 +812,9 @@ void vertex() {
 }
 
 void fragment() {
+	// Preserve the authored sky floor without disabling window light spill (SSIL).
+	IRRADIANCE = vec4(0.0, 0.0, 0.0, 1.0);
+	RADIANCE = vec4(0.0, 0.0, 0.0, 1.0);
 	// Rust publishes accepted crown coverage. One bilinear fetch; no stand-field mirror.
 	vec2 cover_uv = (var_world_pos.xz - land_cover_world_bounds.xy)
 		/ max(land_cover_world_bounds.zw, vec2(0.001));

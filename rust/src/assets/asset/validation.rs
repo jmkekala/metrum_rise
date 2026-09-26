@@ -45,6 +45,11 @@ impl AssetManifest {
         }
 
         if let Some(b) = &self.building {
+            if !b.window_brightness.is_finite() || !(0.0..=10.0).contains(&b.window_brightness) {
+                return Err(ManifestError::Validation(
+                    "window_brightness must be finite and between 0 and 10".into(),
+                ));
+            }
             if let Some(appearance) = &b.appearance {
                 appearance
                     .validate(&self.mesh_parts)

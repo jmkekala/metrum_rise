@@ -6,6 +6,19 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
+- **Window appearance (`RENDER-11`, done)**: saved **Model → Window brightness** control
+  (0–10, default 3), brighter warm-white windows, stable variation between houses, AgX
+  highlights and restrained bloom. Editor round trips and rendered gameplay/LOD checks pass;
+  matched 1080p look fixture adds ~0.10 ms over SSIL alone. Tonemapping also softens daytime
+  colours. [Contract and measurements](asset_editor.md#window-brightness-and-variation--render-11).
+
+- **Window light spill (`RENDER-10`, done)**: visible lit windows illuminate nearby terrain,
+  site ground and buildings through shared Forward+ SSIL. Existing schedules control spill;
+  no per-window lights or city scans. Off-screen/hidden windows cannot contribute. Rendered
+  receiver/schedule tests and editor regression pass; matched 1080p probe adds ~0.17 ms GPU
+  on RX 7900 XTX (not a whole-city measurement). See
+  [the spill contract and measurements](asset_editor.md#window-light-spill--render-10).
+
 - **Building window emission (`RENDER-09`, done)**: deterministic
   house-by-house pre-sunset activation, residential bedtime/wake fades, all-night
   non-residential lighting and dark abandoned/unfinished buildings. Shared GPU schedules

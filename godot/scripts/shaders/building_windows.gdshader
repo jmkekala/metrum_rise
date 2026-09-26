@@ -6,8 +6,8 @@ global uniform vec2 scene_window_clock; // hour, true solar elevation (including
 uniform bool window_preview = false;
 uniform vec2 window_preview_clock = vec2(12.0, 45.0);
 uniform vec4 window_preview_schedule = vec4(4.0, 24.5, 6.0, 1.0);
-uniform float window_strength = 1.0;
-uniform vec3 window_tint = vec3(1.0, 0.55, 0.23);
+uniform float window_strength = 3.0;
+uniform vec3 window_tint = vec3(1.0, 0.76, 0.52);
 
 uniform vec4 albedo : source_color = vec4(1.0);
 uniform sampler2D texture_albedo : source_color, hint_default_white, filter_linear_mipmap;
@@ -31,14 +31,19 @@ uniform vec3 uv2_scale = vec3(1.0);
 uniform vec3 uv2_offset = vec3(0.0);
 uniform bool emission_uv2 = false;
 uniform bool ao_uv2 = false;
-varying float window_level;
+varying vec3 window_radiance;
 
 void vertex() {
 	UV = UV * uv1_scale.xy + uv1_offset.xy;
 	UV2 = UV2 * uv2_scale.xy + uv2_offset.xy;
 	vec4 schedule = window_preview ? window_preview_schedule : INSTANCE_CUSTOM;
 	vec2 clock = window_preview ? window_preview_clock : scene_window_clock;
-	window_level = window_activity(schedule, clock.x, clock.y);
+	// Saved identity already determines these schedule values. Reuse them for cosmetic
+	// variation: no time/position dependence, extra instance data or material variants.
+	float brightness = mix(0.85, 1.15, fract(schedule.x * 13.37 + schedule.y * 7.13));
+	float warmth = fract(schedule.y * 5.17 + schedule.z * 11.73);
+	vec3 tint = window_tint * mix(vec3(1.0, 0.90, 0.82), vec3(1.0, 1.10, 1.18), warmth);
+	window_radiance = tint * window_strength * brightness * window_activity(schedule, clock.x, clock.y);
 }
 
 void fragment() {
@@ -70,5 +75,5 @@ void fragment() {
 #ifdef WINDOW_HASH
 	ALPHA_HASH_SCALE = 1.0;
 #endif
-	EMISSION = texture(texture_emission, emission_uv2 ? UV2 : UV).rgb * window_tint * window_strength * window_level;
+	EMISSION = texture(texture_emission, emission_uv2 ? UV2 : UV).rgb * window_radiance;
 }

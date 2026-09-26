@@ -357,7 +357,7 @@ func build_ablation_variants() -> void:
 		"vec3 sample_grass_albedo_stochastic(vec2 uv, float salt) {",
 		"vec3 sample_grass_albedo_stochastic(vec2 uv, float salt) {\n\tif (true) { return texture(terrain_grass_albedo, uv).rgb; }",
 	]
-	var cull := ["render_mode cull_disabled, ambient_light_disabled;", "render_mode cull_back, ambient_light_disabled;"]
+	var cull := ["render_mode cull_disabled;", "render_mode cull_back;"]
 	var specs := {
 		"A_no_cliff_masks": [cliff],
 		"B_no_local_relief": [relief],

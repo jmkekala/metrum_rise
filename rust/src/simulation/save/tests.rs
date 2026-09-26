@@ -82,6 +82,7 @@ fn register_test_asset(
             anchors: vec![],
             site_surfaces: vec![],
             building: Some(BuildingData {
+                window_brightness: 3.0,
                 appearance: None,
                 flat_size_m2: None,
                 placement_mode: PlacementMode::ZonedPrivate,

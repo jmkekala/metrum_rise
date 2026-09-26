@@ -5,7 +5,8 @@
 extends RefCounted
 
 const SOURCE := preload("res://scripts/shaders/building_windows.gdshader")
-const REFERENCE_COLOR := Color(1.0, 0.55, 0.23)
+const REFERENCE_COLOR := Color(1.0, 0.76, 0.52)
+const DEFAULT_BRIGHTNESS := 3.0
 static var _shaders: Dictionary = {}
 
 static func channel(index: int) -> Vector4:
@@ -15,7 +16,7 @@ static func channel(index: int) -> Vector4:
 	result[clampi(index, 0, 3)] = 1.0
 	return result
 
-static func create(source: BaseMaterial3D, preview: bool = false) -> ShaderMaterial:
+static func create(source: BaseMaterial3D, preview: bool = false, brightness: float = DEFAULT_BRIGHTNESS) -> ShaderMaterial:
 	var flags := ""
 	if source.normal_enabled: flags += "#define WINDOW_NORMAL\n"
 	if source.ao_enabled: flags += "#define WINDOW_AO\n"
@@ -46,6 +47,7 @@ static func create(source: BaseMaterial3D, preview: bool = false) -> ShaderMater
 	material.next_pass = source.next_pass
 	material.resource_name = source.resource_name
 	var values := {
+		"window_strength": brightness,
 		"window_preview": preview, "albedo": source.albedo_color,
 		"texture_albedo": source.albedo_texture, "texture_emission": source.emission_texture,
 		"texture_normal": source.normal_texture, "normal_scale": source.normal_scale,

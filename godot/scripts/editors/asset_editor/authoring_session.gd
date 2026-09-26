@@ -92,6 +92,7 @@ func _document_changed() -> void:
 	descriptor = JSON.parse_string(policy.inspect_json(JSON.stringify(params)))["descriptor"]
 	var view = _editor._view
 	view._preview_panel.set_asset_window_profile(str(params.get("zone_type", "")) == "residential")
+	view._preview_panel.set_asset_window_brightness(PreviewGeometry.number(params, "window_brightness", 3.0))
 	for key: String in view.fields:
 		if key.begins_with("_"):
 			continue
@@ -103,7 +104,7 @@ func _document_changed() -> void:
 			if control.text != display:
 				control.text = display
 		elif control is SpinBox:
-			control.value = PreviewGeometry.number(params, key, 0.0)
+			control.value = PreviewGeometry.number(params, key, 3.0 if key == "window_brightness" else 0.0)
 		elif control is OptionButton:
 			_update_choices(key, control, value)
 		elif control is Label and key == "service_class":

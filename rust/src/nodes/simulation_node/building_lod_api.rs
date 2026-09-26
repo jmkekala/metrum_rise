@@ -29,6 +29,7 @@ impl SimulationNode {
                 ),
             );
             item.set("schemes", scheme_bindings(part));
+            item.set("window_brightness", part.window_brightness);
             parts.push(&item.to_variant());
         }
         let mut result = VarDictionary::new();

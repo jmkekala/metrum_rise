@@ -1,11 +1,11 @@
 shader_type spatial;
-render_mode cull_disabled, ambient_light_disabled;
+render_mode cull_disabled;
 
 uniform sampler2D terrain_grass_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D terrain_grass_height : hint_default_black, filter_linear_mipmap_anisotropic, repeat_enable;
 
-// See the terrain shader: this pass also runs with ambient_light_disabled, so the baked
-// ambient floor is the only ambient it has and the day cycle has to scale it here.
+// As in terrain, the day cycle scales the authored ambient floor. IRRADIANCE suppresses
+// the environment's ambient term without preventing window light spill (SSIL).
 global uniform vec4 scene_ambient_light : source_color;
 // Colour vision washes out at night. Dimming alone leaves a saturated green ground reading as
 // daylight with the brightness turned down, because the albedo's green channel still dominates
@@ -285,6 +285,8 @@ void vertex() {
 }
 
 void fragment() {
+	IRRADIANCE = vec4(0.0, 0.0, 0.0, 1.0);
+	RADIANCE = vec4(0.0, 0.0, 0.0, 1.0);
 	float macro_mask = macro_variation(world_pos.xz);
 	vec3 color = terrain_surface_color(world_pos.y, macro_mask);
 	color = apply_natural_land_variation(color, world_pos.xz);
