@@ -10,7 +10,7 @@ const PreviewMaterials := preload("res://scripts/editors/asset_editor/preview_ma
 const DayCycleConfig := preload("res://scripts/core/day_cycle.gd")
 const AUTOMATIC_EMISSION := -1
 signal hour_changed(hour: float)
-signal emission_changed(mode: int, strength: float)
+signal emission_changed(mode: int, strength: float, clock: Vector2, schedule: Vector4)
 signal lod_selected(index: int)
 signal quality_changed(index: int)
 signal add_lod_requested
@@ -28,6 +28,8 @@ var _add: Button
 var _replace: Button
 var _remove: Button
 var _emission: OptionButton
+var _window_profile: OptionButton
+var _asset_window_profile := 1.0
 var _hour: SpinBox
 var _strength: SpinBox
 var _status: Label
@@ -65,6 +67,12 @@ func _ready() -> void:
 		_emission.add_item(label)
 	_emission.item_selected.connect(func(_index: int): _emit_emission())
 	_body.add_child(_emission)
+	_label("Window schedule (preview only)")
+	_window_profile = OptionButton.new()
+	for label in ["Follow asset type", "Residential", "Non-residential (all night)", "Abandoned / unfinished"]:
+		_window_profile.add_item(label)
+	_window_profile.item_selected.connect(func(_index: int): _emit_emission())
+	_body.add_child(_window_profile)
 	_strength = _spin("Reference intensity", 0.0, 10.0, 1.0, 0.1)
 	_strength.value_changed.connect(func(_value: float): _emit_emission())
 	_section_gap()
@@ -236,11 +244,18 @@ func _on_hour_changed(hour: float) -> void:
 func _emit_emission() -> void:
 	var mode := _emission.selected - 1
 	_strength.editable = mode == AUTOMATIC_EMISSION or mode == PreviewMaterials.Mode.ON
-	if mode == AUTOMATIC_EMISSION:
-		# Follow the same solar arc as scene lighting, including the midnight wrap.
-		var sun_elevation := DayCycleConfig.solar_position_deg(_hour.value / 24.0).x
-		mode = PreviewMaterials.Mode.ON if sun_elevation <= 0.0 else PreviewMaterials.Mode.OFF
-	emission_changed.emit(mode, _strength.value)
+	var sun_elevation := DayCycleConfig.solar_position_deg(_hour.value / 24.0).x
+	var profile: float = [_asset_window_profile, 1.0, 2.0, 0.0][_window_profile.selected]
+	emission_changed.emit(mode, _strength.value, Vector2(fposmod(_hour.value, 24.0), sun_elevation), Vector4(4, 24.5, 6, profile))
+
+## Match the current asset's use while retaining explicit inspection overrides.
+func set_asset_window_profile(residential: bool) -> void:
+	var profile := 1.0 if residential else 2.0
+	if _asset_window_profile == profile:
+		return
+	_asset_window_profile = profile
+	if _window_profile.selected == 0:
+		_emit_emission()
 
 func _label(text: String) -> Label:
 	var label := Label.new()

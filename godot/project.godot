@@ -20,6 +20,11 @@ window/stretch/mode="disabled"
 
 [shader_globals]
 
+scene_window_clock={
+"type": "vec2",
+"value": Vector2(12, 45)
+}
+
 scene_sun_direction={
 "type": "vec3",
 "value": Vector3(-0.52, 0.58, -0.63)

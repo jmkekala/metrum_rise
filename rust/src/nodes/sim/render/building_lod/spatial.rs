@@ -10,6 +10,7 @@ use crate::nodes::sim::render::buildings::{
 };
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::zoning::ZoneType;
 use glam::{Mat4, Vec3};
 use godot::prelude::Vector2;
 use rayon::prelude::*;
@@ -268,6 +269,7 @@ impl SpatialBatches {
                                         part: 0,
                                         deserted: false,
                                         scheme: 0,
+                                        lighting: [0.0; 4],
                                         transform: Mat4::from_scale_rotation_translation(
                                             Vec3::splat(scale),
                                             glam::Quat::from_rotation_y(
@@ -311,12 +313,18 @@ impl SpatialBatches {
                                     construction_visual_progress(building, hour),
                                 );
                             }
+                            let lighting = super::window_lighting::parameters(
+                                building.appearance_key(),
+                                building.zone_type == ZoneType::Residential,
+                                building.is_deserted || building.is_under_construction(),
+                            );
                             for part in range.clone() {
                                 chunk.instances.push(Instance {
                                     building: id,
                                     part,
                                     deserted,
                                     scheme,
+                                    lighting,
                                     transform: building_part_pose(
                                         Vector2::new(building.center_x, building.center_y),
                                         y,

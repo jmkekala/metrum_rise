@@ -4,13 +4,16 @@
 ## source materials, shared meshes and exported files retain their authored values.
 extends RefCounted
 
+const WindowMaterials := preload("res://scripts/renderers/window_materials.gd")
 const SchemeMaterials := preload("res://scripts/renderers/scheme_materials.gd")
 
 const REFERENCE_COLOR := Color(1.0, 0.55, 0.23)
 enum Mode { AUTHORED, OFF, ON }
 
 var _surfaces: Array[Dictionary] = []
-var _mode := -1
+var _mode := -2
+var _clock := Vector2(12, 45)
+var _schedule := Vector4(4, 24.5, 6, 1)
 var _strength := -1.0
 var _scheme := ""
 var _overrides: Dictionary = {}
@@ -25,15 +28,18 @@ func capture(root: Node) -> void:
 					continue
 				_surfaces.append({"instance": instance, "surface": surface,
 					"original": instance.get_surface_override_material(surface), "source": material,
-					"variants": {}, "preview": material.duplicate() if material.emission_texture != null else null})
+					"variants": {}, "automatic": WindowMaterials.create(material, true) if material.emission_texture != null else null,
+					"preview": material.duplicate() if material.emission_texture != null else null})
 	for child in root.get_children():
 		capture(child)
 
-func apply(mode: int, strength: float) -> void:
-	if _mode == mode and _strength == strength:
+func apply(mode: int, strength: float, clock: Vector2 = Vector2(12, 45), schedule: Vector4 = Vector4(4, 24.5, 6, 1)) -> void:
+	if _mode == mode and _strength == strength and _clock == clock and _schedule == schedule:
 		return
 	_mode = mode
 	_strength = strength
+	_clock = clock
+	_schedule = schedule
 	for entry in _surfaces:
 		var instance: MeshInstance3D = entry["instance"]
 		if not is_instance_valid(instance):
@@ -48,6 +54,13 @@ func apply(mode: int, strength: float) -> void:
 				instance.set_surface_override_material(surface, base)
 				continue
 			instance.set_surface_override_material(surface, entry["original"])
+			continue
+		if mode == -1:
+			var automatic: ShaderMaterial = entry["variants"][_scheme]["automatic"] if entry["variants"].has(_scheme) else entry["automatic"]
+			automatic.set_shader_parameter("window_preview_clock", clock)
+			automatic.set_shader_parameter("window_preview_schedule", schedule)
+			automatic.set_shader_parameter("window_strength", strength)
+			instance.set_surface_override_material(surface, automatic)
 			continue
 		var material: BaseMaterial3D = entry["preview"]
 		if entry["variants"].has(_scheme):
@@ -77,10 +90,10 @@ func set_scheme(key: String, overrides: Dictionary) -> void:
 		if not overrides.has(source.resource_name) or entry["variants"].has(key):
 			continue
 		var material := SchemeMaterials.variant(source, overrides[source.resource_name])
-		entry["variants"][key] = {"base": material, "preview": material.duplicate() if material.emission_texture != null else null}
+		entry["variants"][key] = {"base": material, "automatic": WindowMaterials.create(material, true) if material.emission_texture != null else null, "preview": material.duplicate() if material.emission_texture != null else null}
 	var previous_mode := _mode
-	_mode = -1
-	apply(maxi(previous_mode, Mode.AUTHORED), maxf(_strength, 0.0))
+	_mode = -2
+	apply(previous_mode if previous_mode >= -1 else Mode.AUTHORED, maxf(_strength, 0.0), _clock, _schedule)
 
 ## Document edits discard obsolete variants; ordinary scheme selection retains them.
 func clear_schemes() -> void:
@@ -89,5 +102,5 @@ func clear_schemes() -> void:
 	_scheme = ""
 	_overrides = {}
 	var previous_mode := _mode
-	_mode = -1
-	apply(maxi(previous_mode, Mode.AUTHORED), maxf(_strength, 0.0))
+	_mode = -2
+	apply(previous_mode if previous_mode >= -1 else Mode.AUTHORED, maxf(_strength, 0.0), _clock, _schedule)

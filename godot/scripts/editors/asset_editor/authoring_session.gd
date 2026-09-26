@@ -91,6 +91,7 @@ func _document_changed() -> void:
 		return
 	descriptor = JSON.parse_string(policy.inspect_json(JSON.stringify(params)))["descriptor"]
 	var view = _editor._view
+	view._preview_panel.set_asset_window_profile(str(params.get("zone_type", "")) == "residential")
 	for key: String in view.fields:
 		if key.begins_with("_"):
 			continue

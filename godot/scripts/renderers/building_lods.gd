@@ -5,6 +5,7 @@
 extends Node3D
 
 const BuildingMeshes := preload("res://scripts/renderers/building_meshes.gd")
+const WindowMaterials := preload("res://scripts/renderers/window_materials.gd")
 const SchemeMaterials := preload("res://scripts/renderers/scheme_materials.gd")
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 const GameSettings := preload("res://scripts/core/game_settings.gd")
@@ -120,7 +121,7 @@ func _apply_batch(change: Dictionary) -> void:
 	var key := Vector4i(chunk.x, chunk.y, int(change.part),
 		(int(change.lod) * 2 + int(change.deserted)) * _scheme_stride + scheme)
 	var buffer: PackedFloat32Array = change.transforms
-	var count := buffer.size() / 12
+	var count := buffer.size() / 16
 	var instance: MultiMeshInstance3D = batches.get(key)
 	if change.get("retired", false):
 		if instance != null:
@@ -133,6 +134,7 @@ func _apply_batch(change: Dictionary) -> void:
 		instance = MultiMeshInstance3D.new()
 		instance.multimesh = MultiMesh.new()
 		instance.multimesh.transform_format = MultiMesh.TRANSFORM_3D
+		instance.multimesh.use_custom_data = true
 		instance.gi_mode = GeometryInstance3D.GI_MODE_DYNAMIC
 		if change.deserted:
 			# One flat material replaces every surface, so a deserted group never needs a
@@ -157,7 +159,7 @@ func _apply_batch(change: Dictionary) -> void:
 		multimesh.instance_count = capacity
 	if count > 0:
 		multimesh.custom_aabb = change.bounds
-		buffer.resize(multimesh.instance_count * 12)
+		buffer.resize(multimesh.instance_count * 16)
 		multimesh.buffer = buffer
 		uploaded_bytes += buffer.size() * 4
 	multimesh.visible_instance_count = count
@@ -176,7 +178,7 @@ func batch_identity(key: Vector4i) -> Dictionary:
 ## Godot exposes per-surface overrides on `MeshInstance3D` only, never on a MultiMesh, so a
 ## tier with one surface takes an instance override and keeps sharing the source mesh, while
 ## a multi-material tier needs its own mesh resource to leave untargeted surfaces authored.
-## Only parts that actually author schemes pay for that duplicated geometry.
+## Only parts with scheme or window overrides pay for that duplicated geometry.
 func _scheme_group(part: int, lod: int, scheme: int) -> Dictionary:
 	var cache_key := Vector3i(part, lod, scheme)
 	if _scheme_variants.has(cache_key):
@@ -184,7 +186,7 @@ func _scheme_group(part: int, lod: int, scheme: int) -> Dictionary:
 	var mesh: Mesh = meshes[part][lod]
 	var group := {"mesh": mesh, "override": null}
 	var bindings := _scheme_bindings(part, lod, scheme)
-	if not bindings.is_empty() and mesh != null:
+	if mesh != null:
 		var replacements: Array[Material] = []
 		var replaced := 0
 		for surface in mesh.get_surface_count():
@@ -192,6 +194,10 @@ func _scheme_group(part: int, lod: int, scheme: int) -> Dictionary:
 			var replacement: Material = null
 			if source != null and bindings.has(source.resource_name):
 				replacement = SchemeMaterials.variant(source, bindings[source.resource_name])
+			var base: BaseMaterial3D = replacement if replacement != null else source
+			if base != null and base.emission_texture != null:
+				replacement = WindowMaterials.create(base)
+			if replacement != null:
 				replaced += 1
 			replacements.append(replacement)
 		if replaced == 1 and replacements.size() == 1:

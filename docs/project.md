@@ -6,6 +6,13 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
+- **Building window emission (`RENDER-09`, done)**: deterministic
+  house-by-house pre-sunset activation, residential bedtime/wake fades, all-night
+  non-residential lighting and dark abandoned/unfinished buildings. Shared GPU schedules
+  preserve batching and also drive Automatic in the asset editor. Release, rendered
+  schedule/save-load checks and editor regressions pass; measured GPU cost is comparable. See
+  [the runtime contract](asset_editor.md#gameplay-window-emission--render-09).
+
 - **Building colour schemes (authoring and gameplay done)**: optional manifest schema, confirmed
   read-only discovery, explicit per-LOD material mapping, live preview across LODs and day/night,
   and draft/export/reopen round trips. Discovery can scan the original modelling folder, because

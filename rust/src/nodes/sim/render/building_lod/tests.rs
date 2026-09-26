@@ -22,6 +22,7 @@ fn instance(building: usize, part: usize, x: f32) -> Instance {
         part,
         deserted: false,
         scheme: 0,
+        lighting: window_lighting::parameters(building as u64, true, false),
         transform: Mat4::from_translation(Vec3::new(x, 0.0, -10.0)),
     }
 }
@@ -96,6 +97,9 @@ fn warm_scatter_reuses_buffers_and_does_not_duplicate_instances() {
         chunk.update(&parts, view(pixels), false);
         assert_eq!(chunk.batches.iter().map(|b| b.count).sum::<usize>(), 256);
         let batch = chunk.batches.iter().find(|b| b.count != 0).unwrap();
+        for (packed, instance) in chunk.transforms(batch).iter().zip(&instances) {
+            assert_eq!(&packed[12..], &instance.lighting);
+        }
         assert_eq!(
             chunk
                 .transforms(batch)

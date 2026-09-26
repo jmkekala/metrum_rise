@@ -228,19 +228,28 @@ func correctness(pack_dir: String) -> void:
 	expect(far.instances == 2731, "all 2048 buildings including multipart instances must draw exactly once")
 	expect(far.tiers.has(0) and far.tiers.has(3) and far.tiers.has(4), "short chains retain their final tier at distant zoom")
 	check_schemes(far)
+	var schedules := window_schedules()
+	if DisplayServer.get_name() != "headless":
+		expect(schedules.size() == 2731, "every placed part carries a window schedule")
 	refresh()
 	expect(lods.evaluated_parts == 0 and lods.uploaded_bytes == 0, "stationary view performs no evaluations/uploads")
+	for hour in [19.0, 21.0, 0.0, 3.0]:
+		RenderingServer.global_shader_parameter_set("scene_window_clock", Vector2(hour, -5))
+		refresh()
+		expect(lods.evaluated_parts == 0 and lods.uploaded_bytes == 0, "clock changes do not rebuild building batches")
 	var imports: int = lods.resources.imports
 	var selected: Dictionary = simulation.get_building_info_at(-1008.0, -992.0)
 	expect(not selected.is_empty(), "gameplay selection fixture must exist")
 	pose(Vector3(-960, 20, -920), Vector3(-960, 6, -984))
 	refresh()
 	var close := counts()
+	check_window_schedules(schedules)
 	expect(close.tiers.size() > 1 and close.tiers.has(0), "near and distant instances coexist at different tiers")
 	for quality in [0, 2, 1]:
 		lods.set_quality(quality)
 		refresh()
 		expect(lods.evaluated_parts > 0, "quality changes reevaluate resident parts")
+		check_window_schedules(schedules)
 	root.scaling_3d_scale = 0.5
 	refresh()
 	expect(lods.evaluated_parts > 0, "render scale change reevaluates LODs")
@@ -250,6 +259,11 @@ func correctness(pack_dir: String) -> void:
 	expect(counts().instances == 2731, "camera rotation retains every visible building")
 	expect(lods.resources.imports == imports, "zoom/quality/rotation never reimport resources")
 	expect(simulation.get_building_info_at(-1008.0, -992.0).get("building_id") == selected.get("building_id"), "rendered tier cannot change gameplay selection identity")
+	expect(simulation.save_game(fixture_dir.path_join("window-roundtrip.sqlite")), "save window schedule identities")
+	expect(simulation.load_game(fixture_dir.path_join("window-roundtrip.sqlite")), "load window schedule identities")
+	simulation.set_simulation_speed(0.0)
+	refresh()
+	check_window_schedules(schedules)
 	for variant in ["lifecycle", "removed", "complete"]:
 		expect(simulation.load_game(fixture_dir.path_join(variant + ".sqlite")), "lifecycle save loads: " + variant)
 		simulation.set_simulation_speed(0.0)
@@ -258,6 +272,7 @@ func correctness(pack_dir: String) -> void:
 		expect(counts().instances == expected, "world replacement clears old batches: " + variant)
 		expect(counts().deserted == (0 if variant == "complete" else 1), "deserted state survives load: " + variant)
 		expect(lods.resources.imports == imports, "world replacement retains cached resources")
+		check_window_schedules(schedules, variant != "complete")
 	# A failed lower tier remains in the authored chain but cannot remove a building.
 	write(pack_dir.path_join("house2/lod4.glb"), "deliberately invalid test mesh")
 	renderer.reload_asset_packs()
@@ -272,6 +287,37 @@ func correctness(pack_dir: String) -> void:
 	refresh()
 	expect(counts().tiers.has(4), "explicit pack reload recovers a repaired tier")
 	await process_frame
+
+func window_schedules() -> Dictionary:
+	var result := {}
+	# The dummy renderer does not retain MultiMesh buffers for readback. Rust tests cover
+	# the payload headlessly; this end-to-end GPU check covers the upload and save roundtrip.
+	if DisplayServer.get_name() == "headless":
+		return result
+	var lods: Node3D = renderer.lod_renderer
+	for key: Vector4i in lods.batches:
+		var identity: Dictionary = lods.batch_identity(key)
+		var mm: MultiMesh = lods.batches[key].multimesh
+		expect(mm.use_custom_data, "window schedules share the transform upload")
+		for index in mm.visible_instance_count:
+			var position := mm.get_instance_transform(index).origin
+			var schedule := mm.get_instance_custom_data(index)
+			result[Vector4(identity.part, position.x, 0, position.z)] = schedule
+			if identity.deserted:
+				expect(schedule.a == 0.0, "abandoned instance carries the dark profile")
+	return result
+
+func check_window_schedules(expected: Dictionary, lifecycle: bool = false) -> void:
+	var actual := window_schedules()
+	for key: Vector4 in actual:
+		expect(expected.has(key), "window schedule belongs to the same placed part")
+		if not expected.has(key):
+			continue
+		var value: Color = actual[key]
+		var original: Color = expected[key]
+		expect(Vector3(value.r, value.g, value.b) == Vector3(original.r, original.g, original.b),
+			"camera, LOD, save/load and removal preserve each building's schedule")
+		expect(value.a == original.a or (lifecycle and value.a == 0.0), "only lifecycle state can disable a schedule")
 
 ## Colour schemes must split groups without losing, duplicating or recolouring instances,
 ## and every authored tier/scheme pair must draw its own albedo. Which tier is on screen
@@ -290,7 +336,7 @@ func check_schemes(frame: Dictionary) -> void:
 		var source: Mesh = lods.meshes[SCHEMED_PART][lod]
 		for scheme in SCHEME_COLORS.size():
 			var group: Dictionary = lods._scheme_group(SCHEMED_PART, lod, scheme)
-			var painted: BaseMaterial3D
+			var painted: ShaderMaterial
 			if lod == MULTI_SURFACE_TIER:
 				# Partial coverage needs its own mesh; the untargeted surface stays authored.
 				expect(group["override"] == null, "a multi-material tier takes no whole-instance override")
@@ -299,16 +345,16 @@ func check_schemes(frame: Dictionary) -> void:
 				var trim := group["mesh"].surface_get_material(1) as BaseMaterial3D
 				expect(trim != null and trim.resource_name == "authored_trim" and trim.albedo_texture == null,
 					"a surface the scheme does not name keeps its authored material")
-				painted = group["mesh"].surface_get_material(0) as BaseMaterial3D
+				painted = group["mesh"].surface_get_material(0) as ShaderMaterial
 			else:
 				# One surface: an instance override is exact and keeps sharing the source mesh.
 				expect(group["mesh"] == source, "a single-surface tier must not duplicate geometry")
-				painted = group["override"] as BaseMaterial3D
-			expect(painted != null and painted.albedo_texture != null, "tier %d scheme %d must bind a replacement albedo" % [lod, scheme])
-			if painted == null or painted.albedo_texture == null:
+				painted = group["override"] as ShaderMaterial
+			expect(painted != null and painted.get_shader_parameter("texture_albedo") != null, "tier %d scheme %d must bind a replacement albedo" % [lod, scheme])
+			if painted == null or painted.get_shader_parameter("texture_albedo") == null:
 				continue
-			expect(painted.emission_texture != null, "an overridden albedo retains the authored emission")
-			var color := painted.albedo_texture.get_image().get_pixel(0, 0)
+			expect(painted.get_shader_parameter("texture_emission") != null, "an overridden albedo retains the authored emission")
+			var color: Color = painted.get_shader_parameter("texture_albedo").get_image().get_pixel(0, 0)
 			expect(color.is_equal_approx(expected[scheme]),
 				"tier %d scheme %d must bind its own albedo, got %s" % [lod, scheme, color])
 	# The drawn groups must come from that same cache rather than a second construction.

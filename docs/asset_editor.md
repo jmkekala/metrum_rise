@@ -1572,9 +1572,10 @@ Current preview (`TOOLS-04`):
   changes and asset undo preserve placement; preview rebuilds do not regenerate its geometry/pick cache.
 - Day/dusk/night presets and an editable hour use the shared gameplay day-cycle lighting.
   Changing the UI theme does not change the selected lighting.
-- Window emission defaults to **Automatic (time of day)**: on when the shared day-cycle sun
-  is at/below the horizon, off above it. Day/dusk/night presets and manual hour changes update
-  it immediately, including meshes imported later and newly selected LODs. Authored default,
+- Window emission defaults to **Automatic (time of day)**, using the gameplay window
+  schedule below, including pre-sunset activation and residential sleep hours. A preview-only
+  selector follows the asset type by default, with residential, non-residential and
+  abandoned/unfinished overrides. Day/dusk/night presets and manual hour changes update it immediately, including meshes imported later and newly selected LODs. Authored default,
   force off and force on remain explicit overrides that survive clock changes; reference
   intensity is adjustable in Automatic and Force on.
   Overrides affect preview-owned materials only; textures/factors in exported files stay unchanged.
@@ -2971,8 +2972,8 @@ Implemented and verified 2026-09-20. The runtime contract is:
   meshless; missing/broken assets retain the existing visible error marker.
 - Graphics exposes Performance/Balanced/Quality, persisted separately from assets/saves.
   LOD selection neither culls buildings nor changes simulation, picking identity or saves.
-  Shadows retain their separate policy. Source emission survives all tiers; automatic
-  gameplay window-light activation is separate work. Existing serialized metre bands
+  Shadows retain their separate policy. Source emission maps survive all tiers;
+  `RENDER-09` applies window schedules without changing LOD groups. Existing serialized metre bands
   remain loadable and do not override screen-size selection; schema removal is a separate
   explicit migration rather than silently reinterpreting metres as pixels.
 
@@ -2992,7 +2993,7 @@ Manual Kuopio review through the gameplay importer: all four installed houses' L
 load with consistent tier bounds, recognizable silhouettes, source textures and emission
 maps. Roof shading changes between authored tiers remain visible in the comparison;
 thresholds are provisional, not universal art-quality acceptance. These exports have black
-authored emission factors; enabling their windows at night is a separate runtime feature.
+authored emission factors; `RENDER-09` now activates those masks at night.
 Review image/log: `/tmp/metrum-building-lod.A51PQh/kuopio-review.{png,log}`.
 
 Matched unprofiled release acceptance: i9-12900K, RX 7900 XTX/RADV, stock Godot 4.7.2,
@@ -3077,7 +3078,8 @@ contract is:
   with a single surface therefore takes a whole-instance `material_override` and keeps sharing
   the source mesh, while a multi-material tier gets its own mesh resource with only the named
   surfaces replaced. Either way a surface the scheme does not name keeps its authored values
-  including emission, and only parts that actually author schemes pay for duplicated geometry.
+  including its emission mask. `RENDER-09` additionally converts emission-textured surfaces
+  to scheduled window materials; multi-material parts with either kind of override need a mesh variant.
   Meshes and overrides are built once per catalog part/tier/scheme and shared by every chunk
   that draws them; scheme textures decode once per pack generation.
   `renderers/scheme_materials.gd` is shared with the editor preview, so one scheme cannot look
@@ -3091,6 +3093,98 @@ A texture array indexed from per-instance custom data would keep draw calls flat
 replacing `StandardMaterial3D` with a custom shader — reconstructing every authored material
 parameter — and a same-size/same-format contract the authoring pipeline does not validate.
 That remains the escape hatch if draw calls are ever measured to be the bottleneck.
+
+### Gameplay window emission — RENDER-09
+
+Window emission is cosmetic, whole-building lighting. Existing emission textures identify
+luminous windows; no model re-export, per-window nodes, simulation RNG or saved light state
+is needed. A surface without an emission texture retains its imported material. Individual
+room/window controls and ground light spill are outside this contract.
+
+- Rust derives four fixed values from `Building::appearance_key()` with a domain-separated
+  integer mix: sun-elevation threshold, bedtime, wake hour, profile. The same values reach
+  every part and tier, independent of allocator ordinals, camera movement and save/load.
+- Residential thresholds span **1–8 degrees above the horizon**, so houses begin lighting
+  before sunset. A smooth transition spans 0.7 degrees. Bedtimes span **22:00–02:30**;
+  wake times span **05:00–07:30**, with six-minute fades. Eight percent of residential
+  identities retain an overnight profile. These are deterministic cosmetic schedules,
+  not assertions about the household simulation.
+- Non-residential buildings retain lights throughout darkness in this first implementation.
+  Abandoned and unfinished buildings use a dark profile. Daylight switches both residential
+  and non-residential windows off. Sleep hours depend on the clock, not time since sunset.
+- `scene_lighting.gd` publishes the displayed hour and true solar elevation together in one
+  global uniform, including pinned time-of-day views. `window_schedule.gdshaderinc` evaluates
+  the schedule once per vertex. Lighting adds O(1) CPU work per clock update and O(1) work
+  per rendered vertex, with no per-frame building iteration, allocation, batch regrouping
+  or instance upload caused by time alone.
+- Existing spatial batches carry 12 transform floats plus 4 custom-data floats (64 bytes,
+  previously 48) per capacity slot. Warm camera scatter stays O(resident parts + groups),
+  allocation-free after synchronization; visible chunk work remains parallel in Rust.
+  No per-building materials, additional light nodes or extra rendering passes are added.
+- Shared shader materials bind imported albedo, normal, roughness, metallic and AO textures,
+  scalar/channel settings, UV transforms, texture filtering/repeat and alpha/cull settings.
+  ORMMaterial3D uses packed channel values directly. Colour-scheme bindings are resolved
+  before window conversion. The reference linear tint is `[1.0, 0.55, 0.23]` at strength 1,
+  allowing masks exported with a black emissive factor to work. Imported resources and
+  exports remain unchanged. Custom ShaderMaterial surfaces are left authored.
+- The editor's Automatic mode uses the same factory and GPU schedule, with an explicit
+  representative residential sample (4-degree threshold, 00:30 bedtime, 06:00 wake time).
+  The default profile follows the current asset type; explicit overrides also demonstrate
+  all-night and dark buildings. Forced on/off and Authored remain available. Preview clocks are material-local, so independent preview
+  views cannot change gameplay's schedule uniform.
+
+Fresh verification (2026-09-26): `cargo test --release --lib building_lod` passes 13 tests
+(two opt-in tests ignored), covering payload integrity through scatter/LOD switches, fixed
+capacity, lifecycle darkness, deterministic variation and idle-clock locality. Release build
+passes and is deployed at `godot/bin/libmetrum_rise.so` (SHA-256
+`c4c817a738448d8f64c01a94adba93635791d71ae1de6e6251ba515b9dd5739c`).
+The generated `building_lod_test.gd` passes on Forward+, including 2,048 buildings / 2,731
+parts, GPU custom-data readback through camera/LOD/quality changes, save-load roundtrip,
+removal and abandonment, and zero uploads/evaluations on clock changes. Its deliberate
+bad-GLB errors remain expected. Headless preview, colour-scheme and day-cycle regressions
+pass. The preview checks include actual profile controls and metadata selection.
+
+`building_window_test.gd` passes with a real GPU: rendered pre-sunset staggering, intermediate
+fade brightness, midnight continuity, bedtime/wake activity, all-night/dark profiles and
+pixel agreement between preview and MultiMesh. It also compares daytime ORM shading with
+Godot's built-in material across all five alpha modes. Headless dummy rendering cannot
+validate those assertions, so this test explicitly requires a real display. All four LODs
+of the installed `kuopio:building.residential.house_1` import with normal/ORM/emission maps
+and render illuminated windows; the LOD0 image was visually inspected.
+
+Matched unprofiled measurements use Godot 4.7.2 Forward+, RX 7900 XTX and i9-12900K:
+
+- Material microbenchmark: 4,096 instanced quads, 1024² viewport, two alternating built-in /
+  scheduled trials, each with 60 warmup and 300 measured frames, VSync off. GPU medians are
+  **0.047 / 0.047 ms before**, **0.048 / 0.048 ms after**. This isolates material cost,
+  not whole-city frame time. Clock submission medians are 2 µs in both configurations;
+  no per-instance updates occur inside that measurement loop.
+- Existing release `benchmark_building_lod_locality`, four Rayon workers, 32 local parts,
+  background counts 0 / 1,024 / 65,536, alternating camera scale over 2,000 updates per
+  sample (3 warmup, 11 measured samples). Two sequential baseline/candidate pairs give
+  **3.088–3.791 µs before**, **3.437–3.943 µs after**. The wider scatter payload has a small
+  cost; timings remain independent of background population. Baseline is
+  `c0fca5ccbff55bc733b60cfb5f61cab51f029254`, built from an isolated source snapshot.
+
+Artifacts are under `/tmp/metrum-window/`: `final-rust.log`, `build-final.log`,
+`lod-gpu-final.log`, `window-bench-final.log`, `preview-final.log`, `colours-final.log`,
+`day-cycle.log`, `matched-{before,after}-{1,2}.log`, `house-lod{0,1,2,3}.png`,
+`build-identities.txt` and `source-identities.txt`. Test executable hashes are retained
+so the baseline and candidate remain identifiable independently of later builds.
+
+Reproduce with an isolated `XDG_DATA_HOME` and four Rayon workers:
+
+```sh
+cd rust
+cargo test --release --lib building_lod
+cargo test --release --lib benchmark_building_lod_locality -- --ignored --nocapture
+# Generate saves with METRUM_BUILDING_LOD_FIXTURE_DIR set, as in RENDER-07 above.
+cd ..
+godot --path godot --script res://tests/building_lod_test.gd -- --asset-editor
+godot --path godot --script res://tests/building_window_test.gd -- --benchmark-windows
+godot --headless --path godot --script res://tests/asset_editor_preview_test.gd -- --asset-editor
+godot --headless --path godot --script res://tests/asset_colour_schemes_test.gd -- --asset-editor
+```
 
 ### Shared LOD policy and automatic inspection — TOOLS-05
 

@@ -301,6 +301,7 @@ func _apply_environment_palette(sample: DayCycleConfig.Sample) -> void:
 	_distance_fade_environment.fog_sun_scatter = sample.fog_sun_scatter
 
 func _apply_shader_globals(sample: DayCycleConfig.Sample) -> void:
+	RenderingServer.global_shader_parameter_set("scene_window_clock", Vector2(sample.day_fraction * 24.0, sample.sun_elevation_deg))
 	RenderingServer.global_shader_parameter_set("scene_sun_direction", sample.key_direction)
 	RenderingServer.global_shader_parameter_set("scene_sun_color", sample.key_color)
 	RenderingServer.global_shader_parameter_set("scene_sky_color", sample.sky_horizon)

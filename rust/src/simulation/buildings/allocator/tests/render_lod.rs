@@ -53,7 +53,7 @@ fn camera(extent: f32) -> View {
     }
 }
 
-fn output(renderer: &SpatialBatches) -> Vec<(BatchKey, Vec<[f32; 12]>)> {
+fn output(renderer: &SpatialBatches) -> Vec<(BatchKey, Vec<[f32; 16]>)> {
     // Copy only for assertions, never in the production update path.
     renderer
         .ordered_chunks
@@ -97,6 +97,11 @@ fn building_lod_lifecycle_updates_construction_desertion_removal_and_world_repla
     allocator.buildings[0].construction_remaining_hours = 4;
     renderer.update(&allocator, [0, 0, 0, 0], camera(64.0), 0.0);
     let initial_y = output(&renderer)[0].1[0][7];
+    assert_eq!(
+        output(&renderer)[0].1[0][15],
+        0.0,
+        "construction has no lights"
+    );
     renderer.acknowledge();
     assert!(renderer.update(&allocator, [0, 0, 0, 0], camera(64.0), 0.5));
     assert!(output(&renderer)[0].1[0][7] > initial_y);
@@ -106,9 +111,16 @@ fn building_lod_lifecycle_updates_construction_desertion_removal_and_world_repla
     }
     renderer.update(&allocator, [0, 0, 0, 0], camera(64.0), 0.0);
     assert_eq!(output(&renderer)[0].1[0][7], 0.0);
+    assert!(
+        output(&renderer)[0].1[0][15] > 0.0,
+        "completion enables the schedule"
+    );
     renderer.acknowledge();
     allocator.mark_building_deserted(1);
     renderer.update(&allocator, [0, 0, 0, 0], camera(64.0), 0.0);
+    for (_, instances) in output(&renderer).iter().filter(|(key, _)| key.deserted) {
+        assert!(instances.iter().all(|instance| instance[15] == 0.0));
+    }
     assert_eq!(
         output(&renderer)
             .iter()

@@ -117,9 +117,10 @@ func _run() -> void:
 			var materials = editor._preview.mesh_part_materials(0)
 			var surface: Dictionary = materials._surfaces[0]
 			var source: BaseMaterial3D = surface["source"]
-			var active: BaseMaterial3D = surface["instance"].get_active_material(surface["surface"])
-			_expect(active.albedo_texture != source.albedo_texture, "scheme uses preview-owned texture")
-			var pixel: Color = active.albedo_texture.get_image().get_pixel(0, 0)
+			var active: Material = surface["instance"].get_active_material(surface["surface"])
+			var albedo: Texture2D = active.get_shader_parameter("texture_albedo") if active is ShaderMaterial else active.albedo_texture
+			_expect(albedo != source.albedo_texture, "scheme uses preview-owned texture")
+			var pixel: Color = albedo.get_image().get_pixel(0, 0)
 			_expect(pixel.is_equal_approx(Color.RED if id == "red" else Color.BLUE), "scheme follows all LODs")
 			editor._preview.set_preview_emission(PreviewMaterials.Mode.ON, 2.0)
 			active = surface["instance"].get_active_material(surface["surface"])

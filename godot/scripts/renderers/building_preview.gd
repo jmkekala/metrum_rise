@@ -82,6 +82,8 @@ var pick_build_count := 0
 var lod_import_count := 0
 var _emission_mode := PreviewMaterials.Mode.AUTHORED
 var _emission_strength := 1.0
+var _emission_clock := Vector2(12, 45)
+var _emission_schedule := Vector4(4, 24.5, 6, 1)
 var _mesh_part_aabbs: Array[AABB] = []
 var _selected_mesh_part_indices: Array[int] = []
 var _active_mesh_part_index: int = -1
@@ -214,7 +216,7 @@ func _append_part(scene: Node3D, native_path: String) -> AABB:
 	_mesh_parts.append(part_root)
 	var materials := PreviewMaterials.new()
 	materials.capture(scene)
-	materials.apply(_emission_mode, _emission_strength)
+	materials.apply(_emission_mode, _emission_strength, _emission_clock, _emission_schedule)
 	_part_lod_cache.append({native_path: {"scene": scene, "materials": materials, "triangles": _triangle_count(scene), "picking": _build_pick_geometry(scene)}})
 	_active_lod_paths.append(native_path)
 	lod_revision += 1
@@ -240,7 +242,7 @@ func set_mesh_part_lod(part_index: int, native_path: String) -> bool:
 	var tier: Dictionary = cache[native_path]
 	tier["scene"].visible = true
 	var materials: PreviewMaterials = tier["materials"]
-	materials.apply(_emission_mode, _emission_strength)
+	materials.apply(_emission_mode, _emission_strength, _emission_clock, _emission_schedule)
 	_active_lod_paths[part_index] = native_path
 	pick_revision += 1
 	visibility_revision += 1
@@ -349,7 +351,7 @@ func set_colour_scheme(key: String, bindings: Array, textures: Dictionary, inval
 			if invalidate:
 				materials.clear_schemes()
 			materials.set_scheme(key, grouped.get(index, {}).get(path, {}))
-			materials.apply(_emission_mode, _emission_strength)
+			materials.apply(_emission_mode, _emission_strength, _emission_clock, _emission_schedule)
 
 func mesh_part_triangles(index: int) -> int:
 	var cache := _part_lod_cache[index]
@@ -377,15 +379,17 @@ func _triangle_count(node: Node) -> int:
 	return count
 
 ## Override emission on preview-owned materials only, including subsequently loaded tiers.
-func set_preview_emission(mode: int, strength: float) -> void:
+func set_preview_emission(mode: int, strength: float, clock: Vector2 = Vector2(12, 45), schedule: Vector4 = Vector4(4, 24.5, 6, 1)) -> void:
 	_emission_mode = mode
 	_emission_strength = strength
+	_emission_clock = clock
+	_emission_schedule = schedule
 	for index in _mesh_parts.size():
 		var materials := mesh_part_materials(index)
 		if materials != null:
-			materials.apply(mode, strength)
+			materials.apply(mode, strength, clock, schedule)
 	if _ghost_materials != null:
-		_ghost_materials.apply(mode, strength)
+		_ghost_materials.apply(mode, strength, clock, schedule)
 
 func mesh_part_count() -> int:
 	return _mesh_parts.size()
@@ -653,7 +657,7 @@ func load_ghost(native_path: String, scale_value: float, width_cells: int, depth
 	_apply_ghost_material(scene)
 	_ghost_materials = PreviewMaterials.new()
 	_ghost_materials.capture(scene)
-	_ghost_materials.apply(_emission_mode, _emission_strength)
+	_ghost_materials.apply(_emission_mode, _emission_strength, _emission_clock, _emission_schedule)
 	_position_ghost()
 	return true
 

@@ -261,11 +261,17 @@ func _expect_emission(editor: Node3D, enabled: bool, message: String) -> void:
 	var materials: PreviewMaterials = editor._preview.mesh_part_materials(0)
 	_expect(materials.surface_count() == 1, "fixture has one emission-textured surface")
 	for entry in materials._surfaces:
-		var active: BaseMaterial3D = entry["instance"].get_active_material(entry["surface"])
-		_expect(active.emission_enabled == enabled, message)
-		if enabled:
-			_expect(active.emission.get_luminance() > 0.0 and active.emission_energy_multiplier > 0.0,
-				"night emission must have nonzero tint and intensity")
+		var active: Material = entry["instance"].get_active_material(entry["surface"])
+		if active is ShaderMaterial:
+			var clock: Vector2 = active.get_shader_parameter("window_preview_clock")
+			var sample = editor._lighting.current_sample()
+			_expect(is_equal_approx(clock.x, fposmod(sample.day_fraction * 24.0, 24.0)) and is_equal_approx(clock.y, sample.sun_elevation_deg), message + " (shared shader clock)")
+			_expect(active.get_shader_parameter("texture_emission") == entry.source.emission_texture, "automatic keeps the emission mask")
+		else:
+			_expect(active.emission_enabled == enabled, message)
+			if enabled:
+				_expect(active.emission.get_luminance() > 0.0 and active.emission_energy_multiplier > 0.0,
+					"forced emission must have nonzero tint and intensity")
 
 func _test_comparison_preview(editor: Node3D) -> void:
 	# A textured wall and contrasting roof expose the old flat, translucent override.
@@ -316,26 +322,24 @@ func _test_comparison_preview(editor: Node3D) -> void:
 	for entry in preview._ghost_materials._surfaces:
 		if entry.source.emission_texture == null:
 			continue
-		var active: BaseMaterial3D = entry.instance.get_active_material(entry.surface)
-		_expect(active.emission_enabled and is_equal_approx(active.emission_energy_multiplier, 1.8)
-			and active.emission.is_equal_approx(PreviewMaterials.REFERENCE_COLOR.linear_to_srgb()),
-			"new comparisons immediately inherit the current night emission tint and strength")
+		var active := entry.instance.get_active_material(entry.surface) as ShaderMaterial
+		_expect(active != null and is_equal_approx(active.get_shader_parameter("window_strength"), 1.8),
+			"new comparisons immediately inherit the current automatic emission strength")
 	for preset in ["Night", "Day", "Night"]:
 		panel.find_child(preset, true, false).pressed.emit()
 		for instance: MeshInstance3D in preview._ghost_root.find_children("*", "MeshInstance3D", true, false):
 			var source: BaseMaterial3D = instance.mesh.surface_get_material(0)
-			var active: BaseMaterial3D = instance.get_active_material(0)
+			var active: Material = instance.get_active_material(0)
 			_expect(active != source, "comparison tint and lighting use preview-owned material copies")
-			_expect(active.transparency == BaseMaterial3D.TRANSPARENCY_DISABLED and active.albedo_color.a == 1.0,
-				"opaque comparison walls and roof stay solid")
-			_expect(active.shading_mode == BaseMaterial3D.SHADING_MODE_PER_PIXEL and not active.no_depth_test,
-				"comparison retains lighting and depth testing")
-			_expect(active.albedo_texture == source.albedo_texture and active.emission_texture == source.emission_texture
-				and active.roughness == source.roughness, "comparison retains source textures and roughness")
-			_expect(active.albedo_color.is_equal_approx(source.albedo_color * preview.GHOST_TINT), "comparison has a subtle non-cumulative tint")
-			if instance.name == "Walls":
-				_expect(source.albedo_color == Color.WHITE and source.emission == Color.WHITE, "comparison leaves imported source colors intact")
-				_expect(active.emission_enabled == (preset == "Night"), "comparison windows follow day/night")
+			if active is ShaderMaterial:
+				_expect(active.get_shader_parameter("texture_albedo") == source.albedo_texture
+					and active.get_shader_parameter("texture_emission") == source.emission_texture
+					and active.get_shader_parameter("roughness") == source.roughness,
+					"automatic comparison retains source textures and roughness")
+				_expect(active.get_shader_parameter("albedo").is_equal_approx(source.albedo_color * preview.GHOST_TINT), "comparison has a subtle non-cumulative tint")
+				_expect(active.get_shader_parameter("window_preview_clock").x == (0.0 if preset == "Night" else 10.5), "comparison follows the preview clock")
+			else:
+				_expect(active.transparency == source.transparency and active.shading_mode == source.shading_mode, "non-window comparison preserves source shading")
 	# Intentional source glass/cutouts must not be flattened into opaque walls either.
 	var glass := MeshInstance3D.new()
 	glass.mesh = BoxMesh.new()
@@ -444,6 +448,8 @@ func _test_thumbnail_capture(editor: Node3D, directory: String) -> void:
 
 func _test_automatic_emission(editor: Node3D) -> void:
 	var panel = editor._view._preview_panel
+	_expect(panel._asset_window_profile == (1.0 if editor._session.params.get("zone_type") == "residential" else 2.0),
+		"loaded asset metadata selects its automatic window profile")
 	var document: String = JSON.stringify(editor._session.document.snapshot())
 	var imports: int = editor._preview.lod_import_count
 	for preset in [["Day", false], ["Dusk", true], ["Night", true], ["Day", false]]:
@@ -471,10 +477,25 @@ func _test_automatic_emission(editor: Node3D) -> void:
 	panel._strength.value = 2.5
 	var materials: PreviewMaterials = editor._preview.mesh_part_materials(0)
 	for entry in materials._surfaces:
-		var active: BaseMaterial3D = entry["instance"].get_active_material(entry["surface"])
-		_expect(is_equal_approx(active.emission_energy_multiplier, 2.5), "automatic emission uses reference intensity")
+		var active: ShaderMaterial = entry["instance"].get_active_material(entry["surface"])
+		_expect(is_equal_approx(active.get_shader_parameter("window_strength"), 2.5), "automatic emission uses reference intensity")
 		_expect(entry["source"].emission == Color.BLACK, "automatic emission preserves the default-off source factor")
 	panel.set_lighting(0.0)
+	for profile in 3:
+		panel._window_profile.select(profile + 1)
+		panel._window_profile.item_selected.emit(profile + 1)
+		for entry in materials._surfaces:
+			var automatic: ShaderMaterial = entry.instance.get_active_material(entry.surface)
+			_expect(automatic.get_shader_parameter("window_preview_schedule").w == [1.0, 2.0, 0.0][profile],
+				"preview profile controls select residential, overnight and dark schedules")
+	panel._window_profile.select(0)
+	panel._window_profile.item_selected.emit(0)
+	for residential in [false, true]:
+		panel.set_asset_window_profile(residential)
+		for entry in materials._surfaces:
+			var automatic: ShaderMaterial = entry.instance.get_active_material(entry.surface)
+			_expect(automatic.get_shader_parameter("window_preview_schedule").w == (1.0 if residential else 2.0),
+				"automatic profile follows the current asset type")
 	_expect(JSON.stringify(editor._session.document.snapshot()) == document, "lighting controls never edit the authored document")
 	_expect(editor._preview.lod_import_count == imports, "lighting controls never reimport meshes")
 

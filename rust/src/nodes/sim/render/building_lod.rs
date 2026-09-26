@@ -9,6 +9,7 @@ use glam::{Mat4, Vec2, Vec3};
 use std::collections::BTreeMap;
 
 pub(crate) mod spatial;
+mod window_lighting;
 
 /// Immutable policy bounds and the resource-generation fallback table for one part.
 #[derive(Clone)]
@@ -66,6 +67,8 @@ pub(crate) struct Instance {
     pub deserted: bool,
     /// Authored colour-scheme ordinal; `0` when the asset authors no schemes.
     pub scheme: u16,
+    /// Fixed window schedule: solar threshold, bedtime, wake hour, profile.
+    pub lighting: [f32; 4],
     /// Complete local-mesh to world transform, including construction rise.
     pub transform: Mat4,
 }
@@ -90,7 +93,7 @@ struct Entry {
     selected: usize,
 }
 
-/// Slice into a chunk's packed transform buffer.
+/// Slice into a chunk's packed transform/custom-data buffer.
 pub(crate) struct Batch {
     /// Group identity for GPU buffer reuse.
     pub key: BatchKey,
@@ -110,8 +113,8 @@ pub(crate) struct Chunk {
     entries: Vec<Entry>,
     /// Deterministically ordered GPU group headers, including retired empty groups.
     pub batches: Vec<Batch>,
-    packed: Vec<[f32; 12]>,
-    scratch: Vec<[f32; 12]>,
+    packed: Vec<[f32; 16]>,
+    scratch: Vec<[f32; 16]>,
     /// Parts evaluated since the last acknowledgement.
     pub evaluations: usize,
 }
@@ -180,8 +183,8 @@ impl Chunk {
             previous: None,
             selected: 0,
         }));
-        self.packed.resize(instances.len(), [0.0; 12]);
-        self.scratch.resize(instances.len(), [0.0; 12]);
+        self.packed.resize(instances.len(), [0.0; 16]);
+        self.scratch.resize(instances.len(), [0.0; 16]);
         // Old ranges no longer refer to the same layout after a topology change.
         for batch in &mut self.batches {
             batch.count = 0;
@@ -224,8 +227,9 @@ impl Chunk {
         }
         for entry in &self.entries {
             let batch = &mut self.batches[entry.selected];
-            self.scratch[batch.next_offset + batch.next_count] =
-                pack_transform(entry.instance.transform);
+            let packed = &mut self.scratch[batch.next_offset + batch.next_count];
+            packed[..12].copy_from_slice(&pack_transform(entry.instance.transform));
+            packed[12..].copy_from_slice(&entry.instance.lighting);
             batch.next_count += 1;
         }
         for batch in &mut self.batches {
@@ -238,8 +242,8 @@ impl Chunk {
         std::mem::swap(&mut self.packed, &mut self.scratch);
     }
 
-    /// Borrow the active packed transforms without allocating an intermediate collection.
-    pub fn transforms(&self, batch: &Batch) -> &[[f32; 12]] {
+    /// Borrow 12 transform floats plus four window parameters per instance without allocating.
+    pub fn transforms(&self, batch: &Batch) -> &[[f32; 16]] {
         &self.packed[batch.offset..batch.offset + batch.count]
     }
 

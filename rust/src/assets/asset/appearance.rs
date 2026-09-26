@@ -62,7 +62,7 @@ pub struct MaterialOverride {
     /// Optional tangent-space normal texture replacement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub normal: Option<String>,
-    /// Optional emission texture replacement; lighting remains a preview control.
+    /// Optional window emission mask replacement, used by gameplay and preview schedules.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub emission: Option<String>,
 }
