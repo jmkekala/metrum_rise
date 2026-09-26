@@ -17,6 +17,12 @@ internals, or the shared engineered-ground model. Those are owned by
 
 ## Current Status
 
+Road tops now share world-space paving sampling and matte Lambert lighting with authored
+plots and graded frontage (`RENDER-13`), including a consistent normal-map basis and sky reflectance.
+Road/yard shader bodies and material setup are shared; the old inline stripe code is removed
+because markings are emitted as their own mesh layer. See
+[plot material consistency and GPU evidence](terrain.md#plot-grass-and-frontage-materials--render-13).
+
 The roadbed rewrite is shipped for the current surface-road scope:
 
 - the logical road graph owns connectivity, IDs, lanes, authored plan curves, and road class

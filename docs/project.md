@@ -6,6 +6,14 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
+- **Plot material consistency (`RENDER-13`, done)**: plot grass shares terrain's palette and
+  settings; frontage, yards and sidewalks share paving sampling and lighting, with one
+  road/yard shader body and material setup. Removed obsolete road-stripe logic alongside
+  the old plot-grass implementation and duplicate tuning. Corrected native terrain export
+  winding so frontage no longer shades as an underside; shared sky reflectance removes the
+  remaining morning-shadow seam. Native export and real day-cycle rendering checks pass.
+  Isolated frontage GPU time improves ~0.07 ms, with no measured cost from reflectance parity. [Validation and limits](terrain.md#plot-grass-and-frontage-materials--render-13).
+
 - **Road markings at night (`RENDER-12`, done)**: crossings and lane lines now receive
   scene lighting instead of using an unshaded material. Rendered white/yellow paint checks
   pass; isolated matched 1080p GPU delta is under 0.01 ms. See [road lighting](roads.md#road-marking-lighting--render-12).

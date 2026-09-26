@@ -1,5 +1,170 @@
 # Terrain / World Terrain Spec
 
+## Plot grass and frontage materials — RENDER-13
+
+Plot grass previously retained the older blue-green palette and fixed 3.0 texture chroma gain.
+Terrain had already moved to an olive/yellow-green palette and 1.15 gain. Graded frontage
+sampled the paving albedo but then applied grass ambient emission and custom lighting; it
+also omitted the paving normal and roughness textures. Authored plot meshes supplied no
+UV/tangent basis despite using normal maps.
+
+`ground_grass.gdshaderinc` now owns the palette, shared uniform defaults, grass sampling,
+variation and hillshade functions. The duplicate plot implementation and repeated material
+factory/terrain-renderer tuning constants are removed. Flat plot grass matches open flat
+terrain at the same world position; terrain still owns rock, shore, forest and overlay masks.
+`ground_paving.gdshaderinc` owns world-space albedo/normal/roughness sampling and tangent
+orientation and the Lambert light function for road tops, yards and tagged frontage.
+`paving_surface.gdshaderinc` owns the complete shared road/yard surface program. The road
+and site shader files are four-line wrappers that retain their distinct culling modes.
+`WorldMaterials` binds the same cached
+paving textures and tone to terrain. Paving uses matte Lambert lighting, environment ambient,
+real shadow attenuation and SSIL, without the grass emission floor or grass desaturation.
+Road tops and site paving disable direct specular highlights, while sharing the same
+rough sky reflection response (`PAVING_SPECULAR = 0.5`). Face tags only select
+material; terrain ownership, simulation state and installed assets are unchanged.
+The render export winding correction below preserves positions and canonical geometry.
+
+Runtime bounds: O(visible fragments), fixed texture sample count, no new draw calls, mesh
+splits, city scans or per-frame CPU allocations. Paved terrain skips the grass/relief colouring
+branch. Four additional cached texture bindings are applied per terrain material setup;
+shared grass defaults eliminate repeated tuning writes.
+
+Initial shader-only validation (2026-09-26; before the export correction below): `plot_material_lighting_test.gd` passes day/moon/darkness,
+asphalt/concrete frontage-to-yard matching, sidewalk matching, rotated mesh orientation,
+shadows and local lamps. Mean sampled RGB-vector difference is zero for flat grass and
+at most 0.000006 for frontage/yard paving (tolerance 0.012). Window-spill regression passes.
+The existing chunk-renderer test passes when run from `/tmp/metrum-plot-light/renderer_only.gd`
+with only the native road-cursor acknowledgment test omitted; the full command timed out
+on that native contract using the deployed library. The terrain overlay test passes overlay
+intensity, borders and near-floor checks but fails its far-canopy luminance assertion; the
+unchanged baseline shader also fails that same assertion. Neither broader suite is claimed
+as a full pass.
+
+Matched unprofiled GPU measurements: upstream Godot 4.7.2 release, Forward+, RX 7900 XTX
+(RADV), 1920×1080 SubViewport, AgX/SSIL/glow from the shared environment, one 40 m plane,
+directional light plus ambient, vsync off, `RAYON_NUM_THREADS=4`. Two alternating before/after
+pairs per material, 60 warm-up and 120 measured frames each; median viewport GPU time:
+
+| Surface | Before (ms) | After (ms) |
+|---|---|---|
+| Plot grass | 0.558 / 0.557 | 0.559 / 0.560 |
+| Tagged terrain paving | 0.627 / 0.633 | 0.559 / 0.563 |
+| Open terrain grass | 0.621 / 0.620 | 0.625 / 0.629 |
+| Yard paving | 0.558 / 0.561 | 0.558 / 0.559 |
+| Road sidewalk | 0.560 / 0.562 | 0.560 / 0.562 |
+
+These are isolated material measurements, not whole-city frame timings. Baseline shader
+snapshots are from `345d59284f13ae81d1b984c727778c66ec17c8bc`; release library SHA-256
+`5368fe8e87315e028fad2437e87a26119a0b7b1b7a63ec7b7bf592b8415dbe89` was used for these shader-only measurements.
+Artifacts: `/tmp/metrum-plot-light/{benchmark-final.log,spill.log,overlays.log,overlay-baseline.log,renderer-only.log,chunks.log,identities.txt}`.
+The baseline directory holds `terrain.before`, `site_ground.before`, `site_surface.before`
+and `road.before`, each containing the corresponding shader from the baseline commit.
+
+```bash
+XDG_DATA_HOME=/tmp/metrum-plot-light RAYON_NUM_THREADS=4 godot --path godot --script res://tests/plot_material_lighting_test.gd -- --asset-editor --benchmark-plots --baseline-dir=/tmp/metrum-plot-light
+XDG_DATA_HOME=/tmp/metrum-plot-light RAYON_NUM_THREADS=4 godot --path godot --script res://tests/window_spill_test.gd -- --asset-editor
+XDG_DATA_HOME=/tmp/metrum-plot-light RAYON_NUM_THREADS=4 godot --path godot --script res://tests/terrain_overlay_shader_test.gd -- --asset-editor
+XDG_DATA_HOME=/tmp/metrum-plot-light RAYON_NUM_THREADS=4 godot --headless --path godot --script res://tests/network_tool_chunk_renderer_test.gd -- --asset-editor
+```
+
+### Native terrain winding correction
+
+The initial plane-based checks missed the actual exported mesh orientation. Internal CDT
+and regular terrain buffers use upward cross products; Godot front faces use clockwise
+winding viewed from above. The exporter copied internal indices unchanged. With two-sided
+rendering Godot therefore flipped the shading normals on the visible upper faces, leaving
+frontage and the graded paving around the Food Processing Plant dark. Foundation/yard
+meshes already used the correct winding, explaining the exact boundary. The materials
+were selected correctly.
+
+`godot_terrain_indices` reverses the second and third index of each face during the existing
+`PackedInt32Array` export. Cached geometry, winding used by terrain queries, normal sums,
+face order, material tags, positions and retaining-wall output remain unchanged. Cost remains
+O(exported indices), only on payload publication, with no extra pass or intermediate buffer.
+The iterator supplies an exact lower size hint, preserving PackedArray's single preallocation.
+
+Fresh native verification on the rebuilt release: the extended material regression requests
+an actual 80 m blank-world road preview, checks all exported faces, and renders one exported
+flat face as paving against the yard reference. The old library fails with **904/904**
+backward faces and daytime/nighttime RGB-vector differences **0.635 / 0.045**. The rebuilt
+library passes with **0/904** backward faces and differences **0.000 / 0.0039** (tolerance
+0.012). Existing material/light checks also pass. Rust winding test: 1 passed; CDT bridge
+suite: 57 passed, 1 ignored; building-site terrain suite: 12 passed, 4 ignored. Release build
+succeeds and is deployed; restart the game to load it. New library SHA-256:
+`54ecc2f8dad9d5f3cd48134242883023dfa2d4cfdc1dc61ce1481c2a2650f108`.
+
+Matched unprofiled iterator-copy microbenchmark: Rust 1.98.1, `rustc -O`, one thread,
+preallocated destination, exact current helper extracted from source, old forward copy versus
+new clockwise copy, two alternating pairs, 10 warm-up and 60 measured batches of 100 copies.
+For 12,288 indices: old **0.928 / 1.032 µs**, corrected **4.001 / 1.281 µs**;
+98,304: **5.448 / 5.431 → 10.005 / 9.983 µs**;
+999,999: **132.457 / 140.237 → 147.808 / 150.013 µs**.
+This isolates index iteration/copying; it does not measure full Godot upload or city frames.
+
+Commands: `cargo test --manifest-path rust/Cargo.toml --lib exported_terrain_faces_are_front_facing_from_above`,
+`cargo test --manifest-path rust/Cargo.toml --lib nodes::simulation_node::tests::cdt`,
+`cargo test --manifest-path rust/Cargo.toml --lib building_site_terrain`,
+`cargo build --manifest-path rust/Cargo.toml --release`; use the material-test command above
+without benchmark flags for the native rendered check. Benchmark reproduction:
+`rustc -O /tmp/metrum-plot-light/index_bench.rs -o /tmp/metrum-plot-light/index_bench`, then
+`/tmp/metrum-plot-light/index_bench`. Evidence under `/tmp/metrum-plot-light/`:
+`native-render-before.log`, `native-render-after.log`, `winding-rust.log`,
+`winding-cdt-tests.log`, `winding-site-tests.log`, `winding-build.log`,
+`index-benchmark.log`, `index-benchmark-build.txt`, `winding-identities.txt`.
+
+### Morning sky reflection parity
+
+After correcting triangle winding, the low-sun sky still exposed a smaller seam. Tagged
+terrain paving explicitly set `SPECULAR = 0.0`, while yards/sidewalks retained Godot's
+0.5 dielectric response. Disabling direct specular highlights does not remove environment
+reflections, so coloured sky light differed across the boundary, especially in shadow.
+`ground_paving.gdshaderinc` now owns `PAVING_SPECULAR = 0.5`, explicitly used by all three
+shader paths. No material duplication, new sampling, mesh work or CPU updates are added;
+fragment cost and allocation bounds are unchanged.
+
+Fresh verification: `plot_dawn_lighting_test.gd` uses the actual `SceneLighting` node,
+incrementally updated sky, an angled camera, an occluder and the shared AgX/SSIL environment.
+It checks asphalt/concrete and sidewalk parity at 05:00, 06:00, 07:00, 08:00 and noon,
+plus indirect-only lighting at each hour. It passes with mean sampled RGB-vector difference
+at most **0.000071** (threshold 0.002); the previous shader reached **0.02391** at 06:00.
+The native export/material day/night/local-light regression also passes on this shader.
+The prior checks used a constant background, so they could not catch sky reflectance drift.
+
+Matched unprofiled release Godot 4.7.2 / Forward+ / RX 7900 XTX (RADV), 1920×1080,
+06:00 live sky, directional shadow, `RAYON_NUM_THREADS=4`, vsync off: two alternating
+before/after pairs, 60 warm-up and 120 measured frames each. Median viewport GPU time:
+**0.730 / 0.734 ms before → 0.731 / 0.733 ms after**. This is an isolated material fixture.
+The Rust library remains `54ecc2f8dad9d5f3cd48134242883023dfa2d4cfdc1dc61ce1481c2a2650f108`.
+Baseline `terrain.before` is the immediately preceding working-tree shader with the
+`SPECULAR = 0.0` paving assignment. Evidence in `/tmp/metrum-dawn/`:
+`specular-probe.log`, `regression-benchmark.log`, `material-regression.log`, `identities.txt`.
+
+```bash
+XDG_DATA_HOME=/tmp/metrum-dawn RAYON_NUM_THREADS=4 godot --path godot --script res://tests/plot_dawn_lighting_test.gd -- --asset-editor --benchmark-dawn --baseline-shader=/tmp/metrum-dawn/terrain.before
+XDG_DATA_HOME=/tmp/metrum-dawn RAYON_NUM_THREADS=4 godot --path godot --script res://tests/plot_material_lighting_test.gd -- --asset-editor
+```
+
+Final consolidation removes the dormant lane-stripe calculation from the road shader:
+committed road colours have green zero and actual paint comes from the marking mesh.
+The road and yard shader bodies now share `paving_surface.gdshaderinc`; their direct lighting
+and the terrain paving branch both call `paving_diffuse`. Shared material factory helpers own
+texture/scale/tone setup, with one asphalt-04 configuration for yards and sidewalks. There
+is no legacy implementation or fallback behind the wrappers; only face culling differs.
+
+Fresh final checks: real morning-sky/indirect-light parity, native paving/material tests and
+road-marking tests pass; the isolated renderer suite (excluding the previously documented
+native acknowledgment test) also passes. Matched final morning GPU medians using the same
+settings above: terrain **0.733 / 0.730 → 0.729 / 0.732 ms** against the original zero-specular
+shader; road **0.781 / 0.785 → 0.782 / 0.786 ms**, yard **0.779 / 0.779 → 0.779 / 0.780 ms**
+against the respective immediately pre-consolidation shaders (already at 0.5 reflectance).
+No additional draw calls, texture fetches or steady-frame CPU work. Artifact directory:
+`/tmp/metrum-dawn/`, files `unified-dawn.log`, `road-unified-benchmark.log`,
+`site-unified-benchmark.log`, `unified-materials.log`, `unified-markings.log`,
+`unified-renderer.log`, `unified-identities.txt`. The saved `unified_bench.gd` reuses the dawn
+fixture and selects the road or yard for measurement through `METRUM_PAVING_BENCH=road`
+or `site`, with `--baseline-shader` pointing to `road-refactor.before` or
+`site-refactor.before`; all other command flags above remain the same.
+
 ## Window light reception — RENDER-10
 
 Terrain and site ground now receive screen-space indirect lighting from visible emissive
@@ -2466,8 +2631,8 @@ Current deterministic rules:
 - the key light is one `DirectionalLight3D` that carries the sun by day and an antisolar full moon
   at night. It may only swap bodies inside the window where both contribute nothing, and it must
   never have energy above the horizon crossing, so no light ever shines up through the ground
-- terrain and site ground run with `ambient_light_disabled` and bake their own ambient floor into
-  `EMISSION`. The cycle therefore scales and desaturates that floor through shader globals;
+- terrain grass and site grass suppress environment ambient through `IRRADIANCE`/`RADIANCE`
+  overrides while retaining SSIL, and bake their authored ambient floor into `EMISSION`. The cycle therefore scales and desaturates that floor through shader globals;
   dimming alone leaves a saturated ground reading as daylight with the brightness turned down.
   Night bottoms out near a fifth of daylight because the city has no street lighting yet
 - the low-sun key energy is deliberately not physical. With no auto-exposure an honestly

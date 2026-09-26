@@ -489,7 +489,7 @@ impl SimulationNode {
         );
         dict.set(
             "terrain_mesh_indices",
-            PackedInt32Array::from_iter(buffers.terrain_indices.iter().copied()),
+            PackedInt32Array::from_iter(godot_terrain_indices(&buffers.terrain_indices)),
         );
         dict.set(
             "terrain_retaining_wall_mesh_vertices",
@@ -978,5 +978,45 @@ impl SimulationNode {
                 sum.normalized()
             };
         }
+    }
+}
+
+// Internal terrain faces have upward cross products for geometry/normal calculations.
+// Godot front faces are clockwise: reverse only the exported indices, not cached geometry.
+fn godot_terrain_indices(indices: &[i32]) -> impl Iterator<Item = i32> + '_ {
+    indices
+        .chunks_exact(3)
+        .flat_map(|face| [face[0], face[2], face[1]])
+}
+
+#[cfg(test)]
+mod winding_tests {
+    use super::*;
+
+    #[test]
+    fn exported_terrain_faces_are_front_facing_from_above() {
+        for elevation in [0.0, 2.0] {
+            let vertices = [
+                Vector3::ZERO,
+                Vector3::new(0.0, 0.0, 4.0),
+                Vector3::new(4.0, elevation, 0.0),
+            ];
+            let canonical = [0, 1, 2];
+            let upward = (vertices[1] - vertices[0]).cross(vertices[2] - vertices[0]);
+            let rendered: Vec<_> = godot_terrain_indices(&canonical).collect();
+            let facing = (vertices[rendered[1] as usize] - vertices[rendered[0] as usize])
+                .cross(vertices[rendered[2] as usize] - vertices[rendered[0] as usize]);
+            assert!(upward.y > 0.0);
+            assert!(
+                facing.dot(upward) < 0.0,
+                "Godot clockwise face must agree with the upward shading normal"
+            );
+            assert_eq!(
+                canonical,
+                [0, 1, 2],
+                "render export must not mutate canonical geometry"
+            );
+        }
+        assert_eq!(godot_terrain_indices(&[]).count(), 0);
     }
 }

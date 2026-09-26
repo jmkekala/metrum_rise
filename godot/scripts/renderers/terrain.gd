@@ -25,39 +25,10 @@ const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 const PerfDebug := preload("res://scripts/core/perf_debug.gd")
 const RenderDebug := preload("res://scripts/renderers/render_debug.gd")
 const WorldMaterials := preload("res://scripts/renderers/world_materials.gd")
-const TERRAIN_GRASS_ALBEDO_PATH := "res://assets/textures/general/grass/Grass002_2K_Runtime/grass002_2k_albedo.jpg"
-const TERRAIN_GRASS_HEIGHT_PATH := "res://assets/textures/general/grass/Grass002_2K_Runtime/grass002_2k_height.jpg"
 const TERRAIN_COAL_ALBEDO_PATH := "res://assets/textures/general/coal/dark_rock_diff_2k.jpg"
 const TERRAIN_GRAIN_ALBEDO_PATH := "res://assets/textures/general/grain/withered_grass_diff_2k.jpg"
 const HEIGHT_SCALE := 20.0
-const HILLSHADE_AZIMUTH_DEG := 315.0
-const HILLSHADE_ALTITUDE_DEG := 38.0
-const HILLSHADE_STRENGTH := 0.22
-const HILLSHADE_AMBIENT := 0.62
-const HILLSHADE_CONTRAST := 1.10
-const HILLSHADE_SHADOW_TINT := Color(0.82, 0.88, 0.90)
-const HILLSHADE_LIGHT_TINT := Color(1.00, 0.99, 0.94)
-const TERRAIN_MACRO_VARIATION_STRENGTH := 0.10
-const TERRAIN_GRASS_TINT := Color(0.22, 0.42, 0.16)
-const TERRAIN_GRASS_TINT_STRENGTH := 0.0
-const TERRAIN_GRASS_ALBEDO_STRENGTH := 0.90
-const TERRAIN_GRASS_MACRO_SCALE := 0.018
-const TERRAIN_GRASS_MID_SCALE := 0.065
-const TERRAIN_GRASS_MACRO_STRENGTH := 0.58
-const TERRAIN_GRASS_MID_STRENGTH := 0.80
-const TERRAIN_GRASS_MICRO_STRENGTH := 0.50
-# Chroma gain on the grass photo. The shader used a fixed 3.00, which drove the texture's
-# measured saturation of 0.53 to 1.00 and gave open ground its fluorescent cast. Near 1
-# keeps the photo's fibre and breakup without letting it set the hue.
-const TERRAIN_GRASS_CHROMA_GAIN := 1.15
-const TERRAIN_NATURAL_VARIATION_STRENGTH := 0.18
-const TERRAIN_MEADOW_MOTTLE_STRENGTH := 0.08
 const TERRAIN_BAKED_READABILITY_STRENGTH := 0.12
-const TERRAIN_GRASS_DETAIL_SCALE := 0.34
-const TERRAIN_GRASS_DETAIL_STRENGTH := 0.58
-const TERRAIN_GRASS_HEIGHT_DETAIL_STRENGTH := 0.24
-const TERRAIN_GRASS_DETAIL_FADE_START := 0.08
-const TERRAIN_GRASS_DETAIL_FADE_END := 0.90
 const TERRAIN_ROCK_SLOPE_START := 0.15
 const TERRAIN_ROCK_SLOPE_END := 0.34
 const TERRAIN_RELIEF_SAMPLE_RADIUS_TEXELS := 3.0
@@ -977,11 +948,7 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 	material.set_shader_parameter("terrain_grass_height", grass_height_texture)
 	material.set_shader_parameter("terrain_coal_albedo", coal_albedo_texture)
 	material.set_shader_parameter("terrain_grain_albedo", grain_albedo_texture)
-	# Reuse the site materials' texture/tone contract on the graded terrain faces.
-	for kind: String in ["asphalt", "concrete"]:
-		var paving: ShaderMaterial = WorldMaterials.site_asphalt_material() if kind == "asphalt" else WorldMaterials.site_concrete_material()
-		for parameter: String in ["albedo_tex", "uv_scale", "macro_uv_scale", "macro_influence", "brightness", "albedo_floor", "floor_influence"]:
-			material.set_shader_parameter("site_" + kind + "_" + parameter, paving.get_shader_parameter(parameter))
+	WorldMaterials.apply_terrain_paving_parameters(material)
 	material.set_shader_parameter("overlay_mode", overlay_mode)
 	material.set_shader_parameter("height_scale", HEIGHT_SCALE)
 	material.set_shader_parameter("height_is_baked", height_is_baked)
@@ -1007,37 +974,10 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 	material.set_shader_parameter("watermap_inner_sample_size_texels", Vector2(2, 2))
 	material.set_shader_parameter("patch_world_size_m", Vector2(world_size_x, world_size_z))
 	material.set_shader_parameter("terrain_cell_m", terrain_cell_m)
-	material.set_shader_parameter("hillshade_azimuth_deg", HILLSHADE_AZIMUTH_DEG)
-	material.set_shader_parameter("hillshade_altitude_deg", HILLSHADE_ALTITUDE_DEG)
-	material.set_shader_parameter("hillshade_strength", HILLSHADE_STRENGTH)
-	material.set_shader_parameter("hillshade_ambient", HILLSHADE_AMBIENT)
-	material.set_shader_parameter("hillshade_contrast", HILLSHADE_CONTRAST)
-	material.set_shader_parameter("hillshade_shadow_tint", HILLSHADE_SHADOW_TINT)
-	material.set_shader_parameter("hillshade_light_tint", HILLSHADE_LIGHT_TINT)
-	material.set_shader_parameter("terrain_macro_variation_strength", TERRAIN_MACRO_VARIATION_STRENGTH)
-	material.set_shader_parameter("terrain_grass_tint", TERRAIN_GRASS_TINT)
-	material.set_shader_parameter("terrain_grass_tint_strength", TERRAIN_GRASS_TINT_STRENGTH)
-	material.set_shader_parameter("terrain_grass_albedo_strength", TERRAIN_GRASS_ALBEDO_STRENGTH)
-	material.set_shader_parameter("terrain_grass_macro_scale", TERRAIN_GRASS_MACRO_SCALE)
-	material.set_shader_parameter("terrain_grass_mid_scale", TERRAIN_GRASS_MID_SCALE)
-	material.set_shader_parameter("terrain_grass_macro_strength", TERRAIN_GRASS_MACRO_STRENGTH)
-	material.set_shader_parameter("terrain_grass_mid_strength", TERRAIN_GRASS_MID_STRENGTH)
-	material.set_shader_parameter("terrain_grass_micro_strength", TERRAIN_GRASS_MICRO_STRENGTH)
-	material.set_shader_parameter("terrain_grass_chroma_gain", TERRAIN_GRASS_CHROMA_GAIN)
-	material.set_shader_parameter("terrain_natural_variation_strength", TERRAIN_NATURAL_VARIATION_STRENGTH)
-	material.set_shader_parameter("terrain_meadow_mottle_strength", TERRAIN_MEADOW_MOTTLE_STRENGTH)
 	material.set_shader_parameter(
 		"terrain_baked_readability_strength",
 		TERRAIN_BAKED_READABILITY_STRENGTH
 	)
-	material.set_shader_parameter("terrain_grass_detail_scale", TERRAIN_GRASS_DETAIL_SCALE)
-	material.set_shader_parameter("terrain_grass_detail_strength", TERRAIN_GRASS_DETAIL_STRENGTH)
-	material.set_shader_parameter(
-		"terrain_grass_height_detail_strength",
-		TERRAIN_GRASS_HEIGHT_DETAIL_STRENGTH
-	)
-	material.set_shader_parameter("terrain_grass_detail_fade_start", TERRAIN_GRASS_DETAIL_FADE_START)
-	material.set_shader_parameter("terrain_grass_detail_fade_end", TERRAIN_GRASS_DETAIL_FADE_END)
 	material.set_shader_parameter("terrain_grain_detail_scale", 1.0 / FIELD_OVERLAY_TEXTURE_TILE_M)
 	material.set_shader_parameter("terrain_field_strength", FIELD_OVERLAY_STRENGTH)
 	material.set_shader_parameter("terrain_grain_tint", FIELD_OVERLAY_GRAIN_TINT)
@@ -3356,9 +3296,9 @@ func _ensure_empty_water_texture() -> void:
 
 func _ensure_grass_textures() -> void:
 	if grass_albedo_texture == null:
-		grass_albedo_texture = WorldMaterials.load_texture_or_solid(TERRAIN_GRASS_ALBEDO_PATH, Color(0.5, 0.5, 0.5, 1.0))
+		grass_albedo_texture = WorldMaterials.load_texture_or_solid(WorldMaterials.GRASS_ALBEDO, Color(0.5, 0.5, 0.5, 1.0))
 	if grass_height_texture == null:
-		grass_height_texture = WorldMaterials.load_texture_or_solid(TERRAIN_GRASS_HEIGHT_PATH, Color(0.5, 0.5, 0.5, 1.0))
+		grass_height_texture = WorldMaterials.load_texture_or_solid(WorldMaterials.GRASS_HEIGHT, Color(0.5, 0.5, 0.5, 1.0))
 	if coal_albedo_texture == null:
 		coal_albedo_texture = WorldMaterials.load_texture_or_solid(TERRAIN_COAL_ALBEDO_PATH, Color(0.04, 0.04, 0.04, 1.0))
 	if grain_albedo_texture == null:

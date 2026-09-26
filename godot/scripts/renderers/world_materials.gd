@@ -67,34 +67,16 @@ static func road_preview_material() -> ShaderMaterial:
 
 static func road_asphalt_material() -> ShaderMaterial:
 	if _road_asphalt_material == null:
-		_road_asphalt_material = ShaderMaterial.new()
-		_road_asphalt_material.shader = _load_shader(ROAD_SHADER)
-		_apply_pbr_textures(
-			_road_asphalt_material,
-			ROAD_ASPHALT_DIFF,
-			ROAD_ASPHALT_NORMAL,
-			ROAD_ASPHALT_ROUGH
+		_road_asphalt_material = _new_paving_material(
+			ROAD_SHADER, ROAD_ASPHALT_DIFF, ROAD_ASPHALT_NORMAL, ROAD_ASPHALT_ROUGH,
+			0.05, 0.007, 0.4
 		)
-		_road_asphalt_material.set_shader_parameter("uv_scale", 0.05)
-		_road_asphalt_material.set_shader_parameter("macro_uv_scale", 0.007)
-		_road_asphalt_material.set_shader_parameter("macro_influence", 0.4)
 	return _road_asphalt_material
 
 static func road_sidewalk_material() -> ShaderMaterial:
 	if _road_sidewalk_material == null:
-		_road_sidewalk_material = ShaderMaterial.new()
+		_road_sidewalk_material = _new_sidewalk_asphalt(ROAD_SHADER)
 		_road_sidewalk_material.resource_name = "road_sidewalk_asphalt_04"
-		_road_sidewalk_material.shader = _load_shader(ROAD_SHADER)
-		_apply_pbr_textures(
-			_road_sidewalk_material,
-			SIDEWALK_ASPHALT_DIFF,
-			SIDEWALK_ASPHALT_NORMAL,
-			SIDEWALK_ASPHALT_ROUGH
-		)
-		_road_sidewalk_material.set_shader_parameter("uv_scale", 0.12)
-		_road_sidewalk_material.set_shader_parameter("macro_uv_scale", 0.018)
-		_road_sidewalk_material.set_shader_parameter("macro_influence", 0.25)
-		_apply_sidewalk_asphalt_tone(_road_sidewalk_material)
 	return _road_sidewalk_material
 
 static func road_sidewalk_face_material() -> ShaderMaterial:
@@ -177,40 +159,48 @@ static func site_ground_material() -> ShaderMaterial:
 
 static func site_asphalt_material() -> ShaderMaterial:
 	if _site_asphalt_material == null:
-		_site_asphalt_material = ShaderMaterial.new()
+		_site_asphalt_material = _new_sidewalk_asphalt(SITE_SURFACE_SHADER)
 		_site_asphalt_material.resource_name = "site_asphalt_asphalt_04"
-		_site_asphalt_material.shader = _load_shader(SITE_SURFACE_SHADER)
-		_apply_pbr_textures(
-			_site_asphalt_material,
-			SIDEWALK_ASPHALT_DIFF,
-			SIDEWALK_ASPHALT_NORMAL,
-			SIDEWALK_ASPHALT_ROUGH
-		)
-		_site_asphalt_material.set_shader_parameter("tint", Color(1.0, 1.0, 1.0, 1.0))
-		_site_asphalt_material.set_shader_parameter("uv_scale", 0.12)
-		_site_asphalt_material.set_shader_parameter("macro_uv_scale", 0.018)
-		_site_asphalt_material.set_shader_parameter("macro_influence", 0.25)
-		_apply_sidewalk_asphalt_tone(_site_asphalt_material)
 	return _site_asphalt_material
 
 static func site_concrete_material() -> ShaderMaterial:
 	if _site_concrete_material == null:
-		_site_concrete_material = ShaderMaterial.new()
-		_site_concrete_material.shader = _load_shader(SITE_SURFACE_SHADER)
-		_apply_pbr_textures(
-			_site_concrete_material,
-			CONCRETE_DIFF,
-			CONCRETE_NORMAL,
-			CONCRETE_ROUGH
+		_site_concrete_material = _new_paving_material(
+			SITE_SURFACE_SHADER, CONCRETE_DIFF, CONCRETE_NORMAL, CONCRETE_ROUGH,
+			0.18, 0.030, 0.12
 		)
-		_site_concrete_material.set_shader_parameter("tint", Color(1.0, 1.0, 1.0, 1.0))
-		_site_concrete_material.set_shader_parameter("uv_scale", 0.18)
-		_site_concrete_material.set_shader_parameter("macro_uv_scale", 0.030)
-		_site_concrete_material.set_shader_parameter("macro_influence", 0.12)
-		_site_concrete_material.set_shader_parameter("brightness", 1.0)
-		_site_concrete_material.set_shader_parameter("albedo_floor", Vector3(0.0, 0.0, 0.0))
-		_site_concrete_material.set_shader_parameter("floor_influence", 0.0)
 	return _site_concrete_material
+
+static func _new_paving_material(
+	shader_path: String, albedo_path: String, normal_path: String, roughness_path: String,
+	detail_scale: float, macro_scale: float, macro_influence: float
+) -> ShaderMaterial:
+	var material := ShaderMaterial.new()
+	material.shader = _load_shader(shader_path)
+	_apply_pbr_textures(material, albedo_path, normal_path, roughness_path)
+	material.set_shader_parameter("uv_scale", detail_scale)
+	material.set_shader_parameter("macro_uv_scale", macro_scale)
+	material.set_shader_parameter("macro_influence", macro_influence)
+	# Explicit values are also copied into the terrain's per-material paving uniforms.
+	material.set_shader_parameter("brightness", 1.0)
+	material.set_shader_parameter("albedo_floor", Vector3.ZERO)
+	material.set_shader_parameter("floor_influence", 0.0)
+	return material
+
+static func _new_sidewalk_asphalt(shader_path: String) -> ShaderMaterial:
+	var material := _new_paving_material(
+		shader_path, SIDEWALK_ASPHALT_DIFF, SIDEWALK_ASPHALT_NORMAL, SIDEWALK_ASPHALT_ROUGH,
+		0.12, 0.018, 0.25
+	)
+	_apply_sidewalk_asphalt_tone(material)
+	return material
+
+## Bind the same paving textures and tone to the terrain's tagged frontage faces.
+static func apply_terrain_paving_parameters(material: ShaderMaterial) -> void:
+	for kind: String in [MATERIAL_ASPHALT, MATERIAL_CONCRETE]:
+		var paving := site_surface_material(kind)
+		for parameter: String in ["albedo_tex", "normal_tex", "roughness_tex", "uv_scale", "macro_uv_scale", "macro_influence", "brightness", "albedo_floor", "floor_influence"]:
+			material.set_shader_parameter("site_" + kind + "_" + parameter, paving.get_shader_parameter(parameter))
 
 static func _apply_pbr_textures(
 	material: ShaderMaterial,
@@ -231,31 +221,6 @@ static func _apply_sidewalk_asphalt_tone(material: ShaderMaterial) -> void:
 static func _apply_site_ground_grass_parameters(material: ShaderMaterial) -> void:
 	material.set_shader_parameter("terrain_grass_albedo", load_texture(GRASS_ALBEDO))
 	material.set_shader_parameter("terrain_grass_height", load_texture(GRASS_HEIGHT))
-	# No sun direction here. `scene_sun_direction` is a global uniform that the day/night cycle
-	# republishes every frame, so a per-material write would be both ignored and a frozen value.
-	material.set_shader_parameter("hillshade_azimuth_deg", 315.0)
-	material.set_shader_parameter("hillshade_altitude_deg", 38.0)
-	material.set_shader_parameter("hillshade_strength", 0.18)
-	material.set_shader_parameter("hillshade_ambient", 0.70)
-	material.set_shader_parameter("hillshade_contrast", 1.05)
-	material.set_shader_parameter("hillshade_shadow_tint", Color(0.84, 0.90, 0.88))
-	material.set_shader_parameter("hillshade_light_tint", Color(1.00, 0.99, 0.94))
-	material.set_shader_parameter("terrain_macro_variation_strength", 0.10)
-	material.set_shader_parameter("terrain_grass_tint", Color(0.22, 0.42, 0.16))
-	material.set_shader_parameter("terrain_grass_tint_strength", 0.0)
-	material.set_shader_parameter("terrain_grass_albedo_strength", 0.90)
-	material.set_shader_parameter("terrain_grass_macro_scale", 0.018)
-	material.set_shader_parameter("terrain_grass_mid_scale", 0.065)
-	material.set_shader_parameter("terrain_grass_macro_strength", 0.58)
-	material.set_shader_parameter("terrain_grass_mid_strength", 0.80)
-	material.set_shader_parameter("terrain_grass_micro_strength", 0.50)
-	material.set_shader_parameter("terrain_natural_variation_strength", 0.18)
-	material.set_shader_parameter("terrain_meadow_mottle_strength", 0.08)
-	material.set_shader_parameter("terrain_grass_detail_scale", 0.34)
-	material.set_shader_parameter("terrain_grass_detail_strength", 0.58)
-	material.set_shader_parameter("terrain_grass_height_detail_strength", 0.24)
-	material.set_shader_parameter("terrain_grass_detail_fade_start", 0.08)
-	material.set_shader_parameter("terrain_grass_detail_fade_end", 0.90)
 	SceneLightingConfig.apply_ground_shadow_parameters(material)
 
 static func _load_shader(path: String) -> Shader:

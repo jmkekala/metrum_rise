@@ -8,12 +8,14 @@ uniform sampler2D field_overlay_texture : repeat_disable, filter_linear;
 uniform sampler2D watermap : repeat_disable, filter_linear;
 uniform sampler2D land_cover_texture : hint_default_black, repeat_disable, filter_linear;
 uniform vec4 land_cover_world_bounds = vec4(0.0);
-uniform sampler2D terrain_grass_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
-uniform sampler2D terrain_grass_height : hint_default_black, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D terrain_coal_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D terrain_grain_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D site_asphalt_albedo_tex : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D site_asphalt_normal_tex : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D site_asphalt_roughness_tex : hint_roughness_r, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D site_concrete_albedo_tex : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D site_concrete_normal_tex : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D site_concrete_roughness_tex : hint_roughness_r, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform float site_asphalt_uv_scale = 0.12;
 uniform float site_asphalt_macro_uv_scale = 0.018;
 uniform float site_asphalt_macro_influence = 0.25;
@@ -65,37 +67,7 @@ uniform vec2 watermap_inner_sample_offset_texels = vec2(0.0, 0.0);
 uniform vec2 watermap_inner_sample_size_texels = vec2(2.0, 2.0);
 uniform vec2 patch_world_size_m = vec2(256.0, 256.0);
 uniform float terrain_cell_m = 10.0;
-uniform float hillshade_azimuth_deg = 315.0;
-uniform float hillshade_altitude_deg = 42.0;
-uniform float hillshade_strength = 0.22;
-uniform float hillshade_ambient = 0.62;
-uniform float hillshade_contrast = 1.10;
-uniform vec3 hillshade_shadow_tint : source_color = vec3(0.82, 0.88, 0.90);
-uniform vec3 hillshade_light_tint : source_color = vec3(1.00, 0.99, 0.94);
-uniform float terrain_macro_variation_strength = 0.10;
-uniform vec3 terrain_grass_tint : source_color = vec3(0.22, 0.42, 0.16);
-uniform float terrain_grass_tint_strength = 0.0;
-uniform float terrain_grass_albedo_strength = 0.90;
-uniform float terrain_grass_macro_scale = 0.018;
-uniform float terrain_grass_mid_scale = 0.065;
-uniform float terrain_grass_macro_strength = 0.58;
-uniform float terrain_grass_mid_strength = 0.80;
-uniform float terrain_grass_micro_strength = 0.50;
-// Chroma gain on the grass photo before it is blended over the authored palette. The
-// photo is a muted yellow-green (mean RGB 0.220/0.294/0.137, saturation 0.53). A gain of
-// 3.0 drove that to saturation 1.00 with the blue channel clamped to zero, which is where
-// the open ground got its fluorescent cast: the authored greens in grass_meadow_variation
-// and terrain_surface_color are all far less saturated than what the texture layer put on
-// top of them. Keep this near 1 so the photo contributes fibre and breakup, not hue.
-uniform float terrain_grass_chroma_gain = 1.15;
-uniform float terrain_natural_variation_strength = 0.18;
-uniform float terrain_meadow_mottle_strength = 0.08;
 uniform float terrain_baked_readability_strength = 0.12;
-uniform float terrain_grass_detail_scale = 0.34;
-uniform float terrain_grass_detail_strength = 0.58;
-uniform float terrain_grass_height_detail_strength = 0.24;
-uniform float terrain_grass_detail_fade_start = 0.08;
-uniform float terrain_grass_detail_fade_end = 0.90;
 uniform float terrain_coal_detail_scale = 0.22;
 uniform float terrain_coal_pit_strength = 0.72;
 uniform vec3 terrain_coal_lift_color : source_color = vec3(0.18, 0.16, 0.13);
@@ -146,48 +118,12 @@ varying vec2 var_water_uv;
 varying vec3 var_world_pos;
 varying float var_view_distance_m;
 
+#include "res://scripts/shaders/ground_grass.gdshaderinc"
+
 vec2 watermap_centered_uv(vec2 patch_uv) {
 	vec2 safe_inner_size = max(watermap_inner_sample_size_texels, vec2(1.0));
 	return (watermap_inner_sample_offset_texels + patch_uv * (safe_inner_size - 1.0) + 0.5)
 		/ max(watermap_texture_size, vec2(1.0));
-}
-
-float hash12(vec2 p) {
-	vec3 p3 = fract(vec3(p.xyx) * 0.1031);
-	p3 += dot(p3, p3.yzx + 33.33);
-	return fract((p3.x + p3.y) * p3.z);
-}
-
-float noise2d(vec2 p) {
-	vec2 i = floor(p);
-	vec2 f = fract(p);
-	float a = hash12(i);
-	float b = hash12(i + vec2(1.0, 0.0));
-	float c = hash12(i + vec2(0.0, 1.0));
-	float d = hash12(i + vec2(1.0, 1.0));
-	vec2 u = f * f * (3.0 - 2.0 * f);
-	return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
-}
-
-vec2 hash22(vec2 p) {
-	return vec2(
-		hash12(p),
-		hash12(p + vec2(19.19, 73.31))
-	);
-}
-
-float macro_variation(vec2 world_xz) {
-	float a = noise2d(world_xz * 0.0014 + vec2(17.0, 3.0));
-	float b = noise2d(world_xz * 0.0045 + vec2(41.0, 29.0));
-	return clamp(a * 0.7 + b * 0.3, 0.0, 1.0);
-}
-
-float warped_noise(vec2 world_xz, float scale, vec2 offset) {
-	vec2 warp = vec2(
-		noise2d(world_xz * 0.0007 + offset),
-		noise2d(world_xz * 0.0007 + offset + vec2(37.0, 19.0))
-	) - vec2(0.5);
-	return noise2d((world_xz + warp * 180.0) * scale + offset * 0.37);
 }
 
 vec2 rotate2d(vec2 uv, float angle) {
@@ -218,66 +154,6 @@ vec3 terrain_grain_field_color(vec2 world_xz) {
 	return grain * terrain_grain_tint * terrain_grain_brightness;
 }
 
-vec3 apply_natural_land_variation(
-	vec3 color,
-	vec2 world_xz,
-	float slope,
-	float ruggedness,
-	float rock_mask,
-	float cliff_face,
-	float shore_mask
-) {
-	float broad = warped_noise(world_xz, 0.0010, vec2(5.0, 71.0));
-	float mid = warped_noise(world_xz, 0.0036, vec2(23.0, 11.0));
-	float mottle = noise2d(world_xz * 0.018 + vec2(59.0, 7.0));
-	float land_mask = clamp((1.0 - rock_mask) * (1.0 - cliff_face) * (1.0 - shore_mask * 0.65), 0.0, 1.0);
-	float open_mask = smoothstep(0.54, 0.86, broad) * (1.0 - ruggedness * 0.45);
-	float cool_mask = smoothstep(0.18, 0.72, 1.0 - broad) * smoothstep(0.32, 0.78, mid);
-	float scrub_mask = smoothstep(0.45, 0.90, mid) * smoothstep(0.02, 0.22, slope + ruggedness * 0.25);
-	vec3 dry_open_tint = vec3(1.08, 1.05, 0.90);
-	vec3 cool_meadow_tint = vec3(0.84, 1.04, 0.86);
-	vec3 scrub_tint = vec3(0.88, 0.96, 0.78);
-	float strength = clamp(terrain_natural_variation_strength, 0.0, 1.0) * land_mask;
-	color = mix(color, color * dry_open_tint, open_mask * strength);
-	color = mix(color, color * cool_meadow_tint, cool_mask * strength * 0.85);
-	color = mix(color, color * scrub_tint, scrub_mask * strength * 0.70);
-	color *= mix(1.0, mix(0.94, 1.06, mottle), clamp(terrain_meadow_mottle_strength, 0.0, 1.0) * land_mask);
-	return color;
-}
-
-vec3 terrain_surface_color(float world_elevation, float macro_mask, float ruggedness) {
-	// Rotated into the hue band measured from the reference photographs, luminance and
-	// saturation preserved; see grass_meadow_variation for the measurement. dry_open was
-	// already at hue 60 and is unchanged.
-	vec3 dry_lowland = mix(vec3(0.442, 0.467, 0.276), vec3(0.365, 0.386, 0.226), macro_mask);
-	vec3 inland_base = mix(vec3(0.318, 0.355, 0.168), vec3(0.265, 0.296, 0.139), macro_mask);
-	vec3 dry_open = mix(vec3(0.38, 0.38, 0.25), vec3(0.32, 0.34, 0.22), macro_mask);
-	vec3 conifer_dark = mix(vec3(0.164, 0.195, 0.093), vec3(0.213, 0.252, 0.121), macro_mask);
-	vec3 upland = mix(vec3(0.30, 0.31, 0.23), vec3(0.36, 0.34, 0.25), macro_mask);
-	vec3 snow = vec3(0.93, 0.94, 0.96);
-
-	float lowland_bias = 1.0 - smoothstep(-60.0, 120.0, world_elevation);
-	float upland_bias = smoothstep(260.0, 900.0, world_elevation);
-	float alpine_bias = smoothstep(1500.0, 2200.0, world_elevation);
-
-	// Dry terrain at elevation 0 is still land. Water color only comes from the
-	// water renderer, so blank/test maps must not look like a flooded slab.
-	vec3 color = mix(inland_base, dry_lowland, lowland_bias * 0.82);
-	color = mix(color, dry_open, lowland_bias * 0.10);
-	color = mix(color, conifer_dark, ruggedness * 0.34);
-	color = mix(color, upland, upland_bias * 0.46);
-	color = mix(color, snow, alpine_bias);
-	vec3 macro_tint = mix(vec3(1.03, 1.01, 0.97), vec3(0.92, 1.01, 0.95), macro_mask);
-	color *= mix(vec3(1.0), macro_tint, terrain_macro_variation_strength);
-	float grass_tint_mask = 1.0 - alpine_bias;
-	color = mix(
-		color,
-		terrain_grass_tint,
-		clamp(terrain_grass_tint_strength, 0.0, 1.0) * grass_tint_mask
-	);
-	return color;
-}
-
 float sample_world_height(vec2 uv) {
 	vec2 clamped_uv = clamp(uv, vec2(0.0), vec2(1.0));
 	return texture(heightmap, clamped_uv).r * height_scale;
@@ -299,123 +175,6 @@ vec2 sample_height_gradient(vec2 uv) {
 vec3 sample_world_normal(vec2 uv) {
 	vec2 gradient = sample_height_gradient(uv);
 	return normalize(vec3(-gradient.x, 1.0, -gradient.y));
-}
-
-vec2 stochastic_grass_offset(vec2 cell, float salt) {
-	return hash22(cell + vec2(salt, salt * 1.61803398875)) * 43.0;
-}
-
-vec3 sample_grass_albedo_stochastic(vec2 uv, float salt) {
-	vec2 cell = floor(uv);
-	vec2 local = fract(uv);
-	vec2 blend = local * local * (3.0 - 2.0 * local);
-	vec2 offset_00 = stochastic_grass_offset(cell, salt);
-	vec2 offset_10 = stochastic_grass_offset(cell + vec2(1.0, 0.0), salt);
-	vec2 offset_01 = stochastic_grass_offset(cell + vec2(0.0, 1.0), salt);
-	vec2 offset_11 = stochastic_grass_offset(cell + vec2(1.0, 1.0), salt);
-	vec3 sample_00 = texture(terrain_grass_albedo, uv + offset_00).rgb;
-	vec3 sample_10 = texture(terrain_grass_albedo, uv + offset_10).rgb;
-	vec3 sample_01 = texture(terrain_grass_albedo, uv + offset_01).rgb;
-	vec3 sample_11 = texture(terrain_grass_albedo, uv + offset_11).rgb;
-	return mix(
-		mix(sample_00, sample_10, blend.x),
-		mix(sample_01, sample_11, blend.x),
-		blend.y
-	);
-}
-
-vec3 sample_grass_albedo_cross(vec2 world_xz, float scale) {
-	vec2 detail_uv = world_xz * scale;
-	vec2 cross_uv = mat2(vec2(0.80, 0.60), vec2(-0.60, 0.80))
-		* world_xz
-		* (scale * 0.71)
-		+ vec2(31.7, 11.3);
-	vec3 detail = texture(terrain_grass_albedo, detail_uv).rgb;
-	vec3 cross = texture(terrain_grass_albedo, cross_uv).rgb;
-	return mix(detail, cross, 0.35);
-}
-
-float sample_grass_height_cross(vec2 world_xz, float scale) {
-	vec2 detail_uv = world_xz * scale;
-	vec2 cross_uv = mat2(vec2(0.80, 0.60), vec2(-0.60, 0.80))
-		* world_xz
-		* (scale * 0.71)
-		+ vec2(31.7, 11.3);
-	float detail = texture(terrain_grass_height, detail_uv).r;
-	float cross = texture(terrain_grass_height, cross_uv).r;
-	return mix(detail, cross, 0.35);
-}
-
-vec3 grass_meadow_variation(vec2 world_xz) {
-	float broad = warped_noise(world_xz, 0.006, vec2(83.0, 17.0));
-	float mid = warped_noise(world_xz, 0.026, vec2(11.0, 131.0));
-	float fine = noise2d(world_xz * 0.085 + vec2(47.0, 5.0));
-	// Hue matters more than value here. Sunlit vegetation in the Kuopio reference photographs
-	// measures hue 59-79 degrees - yellow-green and olive - at luminance 0.36-0.43, and the
-	// game's open ground already sat inside that luminance range. The authored greens sat at
-	// hue 98-115, which is blue-green, and at that luminance blue-green reads as fluorescent
-	// rather than bright. The 30-degree hue error, not the value, is what made open ground
-	// look like a sports pitch. Each colour below keeps its original luminance and saturation
-	// and is rotated into the measured band; dry_grass was already at 71 and is unchanged.
-	vec3 damp_green = vec3(0.219, 0.250, 0.093);
-	vec3 lush_green = vec3(0.399, 0.442, 0.188);
-	vec3 dry_grass = vec3(0.39, 0.43, 0.22);
-	vec3 meadow = mix(damp_green, lush_green, smoothstep(0.20, 0.86, broad));
-	meadow = mix(meadow, dry_grass, smoothstep(0.64, 0.94, mid) * 0.35);
-	meadow *= mix(0.88, 1.16, mid) * mix(0.94, 1.06, fine);
-	return clamp(meadow, vec3(0.035), vec3(0.52, 0.70, 0.42));
-}
-
-float color_luminance(vec3 color) {
-	return dot(color, vec3(0.299, 0.587, 0.114));
-}
-
-vec3 match_luminance(vec3 color, float target_luma) {
-	float current_luma = max(color_luminance(color), 0.001);
-	float scale = clamp(max(target_luma, 0.001) / current_luma, 0.45, 2.20);
-	return clamp(color * scale, vec3(0.020), vec3(0.82));
-}
-
-float grass_texture_footprint(vec2 micro_uv, vec2 micro_cross_uv) {
-	return max(length(fwidth(micro_uv)), length(fwidth(micro_cross_uv)));
-}
-
-float grass_micro_visibility_from_footprint(float footprint) {
-	float fade_start = max(terrain_grass_detail_fade_start, 0.0);
-	float fade_end = max(terrain_grass_detail_fade_end, fade_start + 0.001);
-	return 1.0 - smoothstep(fade_start, fade_end, footprint);
-}
-
-vec3 grass_material_layer(vec3 base_color, vec3 grass_color, vec2 world_xz, float contrast, float green_anchor) {
-	float target_luma = color_luminance(base_color);
-	float grass_luma = max(color_luminance(grass_color), 0.001);
-	float detail = clamp((grass_luma - 0.28) * contrast, -0.32, 0.30);
-	vec3 grass_contrast = clamp(
-		(grass_color - vec3(grass_luma)) * max(terrain_grass_chroma_gain, 0.0) + vec3(grass_luma),
-		vec3(0.0),
-		vec3(1.0)
-	);
-	vec3 meadow_color = grass_meadow_variation(world_xz);
-	vec3 anchored_color = mix(base_color, meadow_color, clamp(green_anchor, 0.0, 1.0));
-	float texture_weight = clamp(0.50 + contrast * 0.20, 0.58, 0.82);
-	vec3 textured_color = mix(anchored_color, grass_contrast, texture_weight);
-	return match_luminance(textured_color * (1.0 + detail), target_luma);
-}
-
-float grass_detail_brightness(vec3 micro_grass, vec3 mid_grass, float height_detail, vec2 world_xz) {
-	float albedo_detail = clamp(
-		(color_luminance(micro_grass) - color_luminance(mid_grass)) * 3.25,
-		-0.34,
-		0.34
-	);
-	float height_relief = clamp((height_detail - 0.50) * 1.10, -0.32, 0.32);
-	float fiber = noise2d(world_xz * 0.92 + vec2(5.0, 97.0)) - 0.5;
-	float tuft = warped_noise(world_xz, 0.22, vec2(191.0, 41.0)) - 0.5;
-	float brightness = 1.0;
-	brightness += albedo_detail * terrain_grass_detail_strength;
-	brightness += height_relief * terrain_grass_height_detail_strength;
-	brightness += fiber * 0.08 + tuft * 0.10;
-	return clamp(brightness, 0.78, 1.24);
 }
 
 vec3 terrain_grass_debug_color(vec3 base_color, vec3 world_pos, float grass_mask) {
@@ -532,44 +291,6 @@ vec3 terrain_grass_debug_color(vec3 base_color, vec3 world_pos, float grass_mask
 		return clamp(vec3(luma * 1.45) * tint, vec3(0.0), vec3(1.0));
 	}
 	return base_color;
-}
-
-vec3 apply_grass_detail(vec3 color, vec3 world_pos, float grass_mask) {
-	vec2 micro_uv = world_pos.xz * terrain_grass_detail_scale;
-	vec2 micro_cross_uv = mat2(vec2(0.80, 0.60), vec2(-0.60, 0.80))
-		* world_pos.xz
-		* (terrain_grass_detail_scale * 0.71)
-		+ vec2(31.7, 11.3);
-	vec3 macro_grass = sample_grass_albedo_stochastic(world_pos.xz * terrain_grass_macro_scale, 11.0);
-	vec3 mid_grass = sample_grass_albedo_stochastic(world_pos.xz * terrain_grass_mid_scale, 29.0);
-	vec3 micro_grass = sample_grass_albedo_cross(world_pos.xz, terrain_grass_detail_scale);
-	float height_detail = sample_grass_height_cross(world_pos.xz, terrain_grass_detail_scale);
-	float footprint = grass_texture_footprint(micro_uv, micro_cross_uv);
-	float micro_visibility = grass_micro_visibility_from_footprint(footprint);
-	float master_strength = grass_mask * clamp(terrain_grass_albedo_strength, 0.0, 1.0);
-	color = mix(
-		color,
-		grass_material_layer(color, macro_grass, world_pos.xz, 0.90, 0.50),
-		master_strength * clamp(terrain_grass_macro_strength, 0.0, 1.0)
-	);
-	color = mix(
-		color,
-		grass_material_layer(color, mid_grass, world_pos.xz, 1.10, 0.58),
-		master_strength * clamp(terrain_grass_mid_strength, 0.0, 1.0)
-	);
-	color = mix(
-		color,
-		grass_material_layer(color, micro_grass, world_pos.xz, 1.35, 0.42),
-		master_strength
-			* clamp(terrain_grass_micro_strength, 0.0, 1.0)
-			* micro_visibility
-	);
-	float detail_mask = grass_mask * micro_visibility;
-	return color * mix(
-		1.0,
-		grass_detail_brightness(micro_grass, mid_grass, height_detail, world_pos.xz),
-		detail_mask
-	);
 }
 
 float sample_local_relief(vec2 uv) {
@@ -698,24 +419,6 @@ vec3 terrain_visual_debug_color(
 	return mix(debug_color, vec3(1.0), border);
 }
 
-float hillshade_mask(vec3 normal) {
-	// Held at the authored cartographic angle rather than following the live sun. This mask is
-	// a readability device baked into albedo, so swinging it with the day cycle would double
-	// the directional light's own shading, and it would snap 180 degrees at the moment the key
-	// light swaps from the sun to the moon. The moving light does the time-of-day work.
-	float azimuth = radians(hillshade_azimuth_deg);
-	float altitude = radians(hillshade_altitude_deg);
-	vec3 light_dir = normalize(vec3(
-		sin(azimuth) * cos(altitude),
-		sin(altitude),
-		-cos(azimuth) * cos(altitude)
-	));
-
-	float diffuse = clamp(dot(normal, light_dir), 0.0, 1.0);
-	float shaped = pow(diffuse, hillshade_contrast);
-	return clamp(mix(hillshade_ambient, 1.0, shaped), 0.0, 1.0);
-}
-
 vec3 apply_baked_terrain_readability(
 	vec3 color,
 	float hillshade,
@@ -785,6 +488,8 @@ vec3 cliff_masks(vec2 uv) {
 	return vec3(face, top_edge, toe_edge);
 }
 
+#include "res://scripts/shaders/ground_paving.gdshaderinc"
+
 void vertex() {
 	vec2 safe_inner_size = max(inner_sample_size_texels, vec2(1.0));
 	vec2 patch_uv = clamp(
@@ -811,234 +516,254 @@ void vertex() {
 	var_view_distance_m = length((MODELVIEW_MATRIX * vec4(VERTEX, 1.0)).xyz);
 }
 
+varying float paved_surface;
+
 void fragment() {
-	// Preserve the authored sky floor without disabling window light spill (SSIL).
-	IRRADIANCE = vec4(0.0, 0.0, 0.0, 1.0);
-	RADIANCE = vec4(0.0, 0.0, 0.0, 1.0);
-	// Rust publishes accepted crown coverage. One bilinear fetch; no stand-field mirror.
-	vec2 cover_uv = (var_world_pos.xz - land_cover_world_bounds.xy)
-		/ max(land_cover_world_bounds.zw, vec2(0.001));
-	float land_cover = texture(land_cover_texture, cover_uv).r;
-	float world_elevation = h * height_scale;
-	float macro_mask = macro_variation(var_world_pos.xz);
-	float local_relief = sample_local_relief(var_centered_uv);
-	vec3 normal = sample_world_normal(var_centered_uv);
-	float slope = 1.0 - clamp(normal.y, 0.0, 1.0);
-	float ruggedness = smoothstep(terrain_relief_start_m, terrain_relief_end_m, local_relief);
-	ruggedness = clamp(max(ruggedness, slope * 0.72), 0.0, 1.0);
-	vec3 color = terrain_surface_color(world_elevation, macro_mask, ruggedness);
-	vec3 cliff = cliff_masks(var_centered_uv);
-	float cliff_face = cliff.x;
-	float cliff_top = cliff.y;
-	float cliff_toe = cliff.z;
-	float rock_mask = smoothstep(terrain_rock_slope_start, terrain_rock_slope_end, slope);
-	rock_mask *= mix(0.75, 1.0, ruggedness);
-	rock_mask = max(rock_mask, cliff_face * 0.92);
-	vec3 rock_color = mix(vec3(0.31, 0.29, 0.25), vec3(0.46, 0.45, 0.43), macro_mask);
-	color = mix(color, rock_color, rock_mask);
-	float shore_mask = shoreline_mask(var_water_uv);
-	float shore_flatness = 1.0 - smoothstep(terrain_rock_slope_start, terrain_rock_slope_end + 0.10, slope);
-	vec3 shore_color = mix(vec3(0.28, 0.39, 0.23), vec3(0.18, 0.32, 0.18), ruggedness);
-	color = mix(color, shore_color, shore_mask * shore_flatness * terrain_shore_blend_strength);
-	color = apply_natural_land_variation(
-		color,
-		var_world_pos.xz,
-		slope,
-		ruggedness,
-		rock_mask,
-		cliff_face,
-		shore_mask * shore_flatness
-	);
-	float grass_detail_mask = (1.0 - rock_mask) * (1.0 - cliff_face * 0.80);
-	grass_detail_mask *= 1.0 - shore_mask * shore_flatness * terrain_shore_blend_strength;
-	if (terrain_visual_debug_mode > 0) {
-		vec3 debug_color = terrain_visual_debug_color(
-			UV,
-			h,
-			world_elevation,
-			local_relief,
-			slope,
-			shore_mask,
-			clamp(grass_detail_mask, 0.0, 1.0),
-			normal
-		);
-		if (terrain_visual_debug_mode == 10) {
-			ALBEDO = debug_color;
+	paved_surface = float(height_is_baked && COLOR.b < 0.5 && terrain_visual_debug_mode == 0 && terrain_grass_visual_debug_mode == 0);
+	if (paved_surface > 0.5) {
+		// Graded frontage is paving: use the same texture, normal basis and lighting as yards.
+		IRRADIANCE = vec4(0.0);
+		RADIANCE = vec4(0.0);
+		TANGENT = paving_tangent(NORMAL, VIEW_MATRIX);
+		BINORMAL = normalize(cross(TANGENT, NORMAL));
+
+		PavingSample paving;
+		if (COLOR.r > 0.5) {
+			paving = sample_paving(
+				site_asphalt_albedo_tex, site_asphalt_normal_tex, site_asphalt_roughness_tex,
+				var_world_pos.xz, site_asphalt_uv_scale, site_asphalt_macro_uv_scale,
+				site_asphalt_macro_influence, site_asphalt_brightness,
+				site_asphalt_albedo_floor, site_asphalt_floor_influence
+			);
 		} else {
-			ALBEDO = vec3(0.0);
-			EMISSION = debug_color;
+			paving = sample_paving(
+				site_concrete_albedo_tex, site_concrete_normal_tex, site_concrete_roughness_tex,
+				var_world_pos.xz, site_concrete_uv_scale, site_concrete_macro_uv_scale,
+				site_concrete_macro_influence, site_concrete_brightness,
+				site_concrete_albedo_floor, site_concrete_floor_influence
+			);
 		}
-		ROUGHNESS = 1.0;
-		SPECULAR = 0.0;
-	} else if (terrain_grass_visual_debug_mode > 0) {
-		ALBEDO = vec3(0.0);
-		EMISSION = terrain_grass_debug_color(
-			color,
-			var_world_pos,
-			clamp(grass_detail_mask, 0.0, 1.0)
-		);
-		ROUGHNESS = 1.0;
-		SPECULAR = 0.0;
+		ALBEDO = paving.albedo;
+		NORMAL_MAP = paving.normal_map;
+		ROUGHNESS = paving.roughness;
+		METALLIC = 0.0;
+		SPECULAR = PAVING_SPECULAR;
 	} else {
-		color = apply_grass_detail(color, var_world_pos, clamp(grass_detail_mask, 0.0, 1.0));
-		// Litter, moss and duff replace grass hue at the same albedo luminance. Inside shadow
-		// range the trees themselves supply every bit of the darkness, so coverage changes
-		// hue only and never adds any of its own.
-		vec3 forest_floor = mix(vec3(0.46, 0.40, 0.28), vec3(0.38, 0.45, 0.30), macro_mask);
-		vec3 luminance_weights = vec3(0.2126, 0.7152, 0.0722);
-		forest_floor *= dot(color, luminance_weights) / dot(forest_floor, luminance_weights);
-		color = mix(color, forest_floor, land_cover);
-		// Past the cascades there are no tree shadows left to supply it, and the floor of a
-		// closed stand returned to open-meadow brightness while the crowns standing on it kept
-		// their own replacement term. That is the pale far field: lit field with dark specks,
-		// where the near side of the same stand is closed and dark. The ramp fades in exactly
-		// where the cascades fade out, so nothing inside shadow range changes, and it scales
-		// with accepted crown coverage, so a lone tree on a meadow darkens nearly nothing and
-		// only ground a crown actually stands over goes dark. Coverage comes from the accepted
-		// population and never from the stand field.
-		float floor_shade_ramp = smoothstep(
-			canopy_floor_shade_begin_m,
-			canopy_floor_shade_end_m,
-			var_view_distance_m
-		) * canopy_floor_shade;
-		float floor_shade = mix(1.0, canopy_floor_shade_floor, land_cover);
-		color *= clamp(mix(1.0, floor_shade, floor_shade_ramp), 0.0, 1.0);
-		vec2 world_uv = clamp(
-			vec2(
-				var_world_pos.x / max(world_size.x, 0.001),
-				var_world_pos.z / max(world_size.y, 0.001)
-			) + vec2(0.5),
-			vec2(0.0),
-			vec2(1.0)
-		);
-		float coal_pit_mask = 0.0;
-		if (coal_pit_overlay_world_bounds.z > 0.001 && coal_pit_overlay_world_bounds.w > 0.001) {
-			vec2 coal_pit_uv = (var_world_pos.xz - coal_pit_overlay_world_bounds.xy) / coal_pit_overlay_world_bounds.zw;
-			if (
-				coal_pit_uv.x >= 0.0
-				&& coal_pit_uv.x <= 1.0
-				&& coal_pit_uv.y >= 0.0
-				&& coal_pit_uv.y <= 1.0
-			) {
-				coal_pit_mask = texture(coal_pit_texture, coal_pit_uv).r;
-			}
-		}
-		if (coal_pit_mask > 0.001) {
-			vec3 coal_albedo = texture(terrain_coal_albedo, var_world_pos.xz * terrain_coal_detail_scale).rgb;
-			coal_albedo = mix(coal_albedo, max(coal_albedo, terrain_coal_lift_color), terrain_coal_lift_strength);
-			coal_albedo = mix(coal_albedo, coal_albedo * vec3(0.82, 0.80, 0.76), macro_mask * 0.18);
-			color = mix(color, coal_albedo, coal_pit_mask * terrain_coal_pit_strength);
-		}
-		float field_mask = 0.0;
-		if (field_overlay_world_bounds.z > 0.001 && field_overlay_world_bounds.w > 0.001) {
-			vec2 field_uv = (var_world_pos.xz - field_overlay_world_bounds.xy) / field_overlay_world_bounds.zw;
-			if (
-				field_uv.x >= 0.0
-				&& field_uv.x <= 1.0
-				&& field_uv.y >= 0.0
-				&& field_uv.y <= 1.0
-			) {
-				field_mask = texture(field_overlay_texture, field_uv).r;
-			}
-		}
-		if (field_mask > 0.001) {
-			vec3 grain_albedo = terrain_grain_field_color(var_world_pos.xz);
-			color = mix(color, grain_albedo, field_mask * terrain_field_strength);
-		}
-		float hillshade = hillshade_mask(normal);
-		color = apply_baked_terrain_readability(
+		// Preserve the authored sky floor without disabling window light spill (SSIL).
+		IRRADIANCE = vec4(0.0, 0.0, 0.0, 1.0);
+		RADIANCE = vec4(0.0, 0.0, 0.0, 1.0);
+		// Rust publishes accepted crown coverage. One bilinear fetch; no stand-field mirror.
+		vec2 cover_uv = (var_world_pos.xz - land_cover_world_bounds.xy)
+			/ max(land_cover_world_bounds.zw, vec2(0.001));
+		float land_cover = texture(land_cover_texture, cover_uv).r;
+		float world_elevation = h * height_scale;
+		float macro_mask = macro_variation(var_world_pos.xz);
+		float local_relief = sample_local_relief(var_centered_uv);
+		vec3 normal = sample_world_normal(var_centered_uv);
+		float slope = 1.0 - clamp(normal.y, 0.0, 1.0);
+		float ruggedness = smoothstep(terrain_relief_start_m, terrain_relief_end_m, local_relief);
+		ruggedness = clamp(max(ruggedness, slope * 0.72), 0.0, 1.0);
+		vec3 color = terrain_surface_color(world_elevation, macro_mask, ruggedness);
+		vec3 cliff = cliff_masks(var_centered_uv);
+		float cliff_face = cliff.x;
+		float cliff_top = cliff.y;
+		float cliff_toe = cliff.z;
+		float rock_mask = smoothstep(terrain_rock_slope_start, terrain_rock_slope_end, slope);
+		rock_mask *= mix(0.75, 1.0, ruggedness);
+		rock_mask = max(rock_mask, cliff_face * 0.92);
+		vec3 rock_color = mix(vec3(0.31, 0.29, 0.25), vec3(0.46, 0.45, 0.43), macro_mask);
+		color = mix(color, rock_color, rock_mask);
+		float shore_mask = shoreline_mask(var_water_uv);
+		float shore_flatness = 1.0 - smoothstep(terrain_rock_slope_start, terrain_rock_slope_end + 0.10, slope);
+		vec3 shore_color = mix(vec3(0.28, 0.39, 0.23), vec3(0.18, 0.32, 0.18), ruggedness);
+		color = mix(color, shore_color, shore_mask * shore_flatness * terrain_shore_blend_strength);
+		color = apply_natural_land_variation(
 			color,
-			hillshade,
+			var_world_pos.xz,
 			slope,
-			local_relief,
+			ruggedness,
+			rock_mask,
 			cliff_face,
 			shore_mask * shore_flatness
 		);
-		color = mix(color, cliff_face_color, cliff_face * cliff_face_strength);
-		vec3 hillshade_tint = mix(hillshade_shadow_tint, hillshade_light_tint, hillshade);
-		color *= mix(vec3(1.0), hillshade_tint, hillshade_strength);
-
-		// Overlay Heatmaps (Pollution, Noise, Desirability) and authored resource deposits.
-		if (overlay_mode > 0) {
-			vec4 heatmap_col = texture(overlay_texture, world_uv);
-			if (heatmap_col.a > 0.0) {
-				if (overlay_mode == 4) {
-					float richness = clamp(heatmap_col.a, 0.0, 1.0);
-					vec3 coal_color = mix(vec3(0.16, 0.135, 0.105), vec3(0.025, 0.023, 0.021), richness);
-					color = mix(color, coal_color, richness * 0.78);
-				} else {
-					color = mix(color, heatmap_col.rgb, heatmap_col.a * 0.6);
+		float grass_detail_mask = (1.0 - rock_mask) * (1.0 - cliff_face * 0.80);
+		grass_detail_mask *= 1.0 - shore_mask * shore_flatness * terrain_shore_blend_strength;
+		if (terrain_visual_debug_mode > 0) {
+			vec3 debug_color = terrain_visual_debug_color(
+				UV,
+				h,
+				world_elevation,
+				local_relief,
+				slope,
+				shore_mask,
+				clamp(grass_detail_mask, 0.0, 1.0),
+				normal
+			);
+			if (terrain_visual_debug_mode == 10) {
+				ALBEDO = debug_color;
+			} else {
+				ALBEDO = vec3(0.0);
+				EMISSION = debug_color;
+			}
+			ROUGHNESS = 1.0;
+			SPECULAR = PAVING_SPECULAR;
+		} else if (terrain_grass_visual_debug_mode > 0) {
+			ALBEDO = vec3(0.0);
+			EMISSION = terrain_grass_debug_color(
+				color,
+				var_world_pos,
+				clamp(grass_detail_mask, 0.0, 1.0)
+			);
+			ROUGHNESS = 1.0;
+			SPECULAR = PAVING_SPECULAR;
+		} else {
+			color = apply_grass_detail(color, var_world_pos, clamp(grass_detail_mask, 0.0, 1.0));
+			// Litter, moss and duff replace grass hue at the same albedo luminance. Inside shadow
+			// range the trees themselves supply every bit of the darkness, so coverage changes
+			// hue only and never adds any of its own.
+			vec3 forest_floor = mix(vec3(0.46, 0.40, 0.28), vec3(0.38, 0.45, 0.30), macro_mask);
+			vec3 luminance_weights = vec3(0.2126, 0.7152, 0.0722);
+			forest_floor *= dot(color, luminance_weights) / dot(forest_floor, luminance_weights);
+			color = mix(color, forest_floor, land_cover);
+			// Past the cascades there are no tree shadows left to supply it, and the floor of a
+			// closed stand returned to open-meadow brightness while the crowns standing on it kept
+			// their own replacement term. That is the pale far field: lit field with dark specks,
+			// where the near side of the same stand is closed and dark. The ramp fades in exactly
+			// where the cascades fade out, so nothing inside shadow range changes, and it scales
+			// with accepted crown coverage, so a lone tree on a meadow darkens nearly nothing and
+			// only ground a crown actually stands over goes dark. Coverage comes from the accepted
+			// population and never from the stand field.
+			float floor_shade_ramp = smoothstep(
+				canopy_floor_shade_begin_m,
+				canopy_floor_shade_end_m,
+				var_view_distance_m
+			) * canopy_floor_shade;
+			float floor_shade = mix(1.0, canopy_floor_shade_floor, land_cover);
+			color *= clamp(mix(1.0, floor_shade, floor_shade_ramp), 0.0, 1.0);
+			vec2 world_uv = clamp(
+				vec2(
+					var_world_pos.x / max(world_size.x, 0.001),
+					var_world_pos.z / max(world_size.y, 0.001)
+				) + vec2(0.5),
+				vec2(0.0),
+				vec2(1.0)
+			);
+			float coal_pit_mask = 0.0;
+			if (coal_pit_overlay_world_bounds.z > 0.001 && coal_pit_overlay_world_bounds.w > 0.001) {
+				vec2 coal_pit_uv = (var_world_pos.xz - coal_pit_overlay_world_bounds.xy) / coal_pit_overlay_world_bounds.zw;
+				if (
+					coal_pit_uv.x >= 0.0
+					&& coal_pit_uv.x <= 1.0
+					&& coal_pit_uv.y >= 0.0
+					&& coal_pit_uv.y <= 1.0
+				) {
+					coal_pit_mask = texture(coal_pit_texture, coal_pit_uv).r;
 				}
 			}
-		}
-
-		float major_contour = contour_mask(
-			world_elevation,
-			contour_major_interval_m,
-			contour_major_thickness
-		);
-		float minor_contour = contour_mask(
-			world_elevation,
-			contour_minor_interval_m,
-			contour_minor_thickness
-		) * (1.0 - major_contour);
-		float zero_elevation_mask = 1.0 - smoothstep(
-			0.0,
-			max(contour_zero_elevation_fade_m, 0.001),
-			abs(world_elevation)
-		);
-		float flat_relief_mask = smoothstep(
-			contour_flat_relief_start_m,
-			max(contour_flat_relief_end_m, contour_flat_relief_start_m + 0.001),
-			local_relief
-		);
-		float flat_zero_contour_visibility = mix(1.0, flat_relief_mask, zero_elevation_mask);
-		float contour_visibility = (1.0 - (cliff_face * cliff_contour_fade)) * flat_zero_contour_visibility;
-		// Contours are a map affordance for reading slope while planning, not a property of
-		// ground. Drawn in the plain world view they put survey lines across every hillside,
-		// which is the single strongest "this is a topographic map" cue in an aerial shot.
-		// The analysis overlays are read as a map and keep them. Anything else that wants
-		// them - terrain sculpting, say - clears contour_map_view_only rather than editing
-		// this; every interval and colour uniform is unchanged.
-		if (contour_map_view_only && overlay_mode <= 0) {
-			contour_visibility = 0.0;
-		}
-		float contour_relief_boost = max(
-			smoothstep(0.30, 2.80, local_relief),
-			smoothstep(0.010, 0.075, slope) * 0.70
-		);
-		float minor_strength = contour_minor_strength + contour_relief_minor_boost_strength * contour_relief_boost;
-		color = mix(color, contour_minor_color, minor_contour * minor_strength * contour_visibility);
-		color = mix(color, contour_major_color, major_contour * contour_major_strength * contour_visibility);
-		color = mix(color, cliff_top_edge_color, cliff_top * cliff_edge_strength);
-		color = mix(color, cliff_toe_edge_color, cliff_toe * cliff_edge_strength);
-		// Per-face tags change material, never displace or discard ground.
-		// Untagged meshes use Godot's default white vertex color.
-		if (height_is_baked && COLOR.b < 0.5) {
-			if (COLOR.r > 0.5) {
-				vec3 detail = texture(site_asphalt_albedo_tex, var_world_pos.xz * site_asphalt_uv_scale).rgb;
-				vec3 macro = texture(site_asphalt_albedo_tex, var_world_pos.xz * site_asphalt_macro_uv_scale).rgb;
-				color = detail * mix(vec3(1.0), macro * 1.2, site_asphalt_macro_influence) * site_asphalt_brightness;
-				color = mix(color, max(color, site_asphalt_albedo_floor), site_asphalt_floor_influence);
-			} else {
-				vec3 detail = texture(site_concrete_albedo_tex, var_world_pos.xz * site_concrete_uv_scale).rgb;
-				vec3 macro = texture(site_concrete_albedo_tex, var_world_pos.xz * site_concrete_macro_uv_scale).rgb;
-				color = detail * mix(vec3(1.0), macro * 1.2, site_concrete_macro_influence) * site_concrete_brightness;
-				color = mix(color, max(color, site_concrete_albedo_floor), site_concrete_floor_influence);
+			if (coal_pit_mask > 0.001) {
+				vec3 coal_albedo = texture(terrain_coal_albedo, var_world_pos.xz * terrain_coal_detail_scale).rgb;
+				coal_albedo = mix(coal_albedo, max(coal_albedo, terrain_coal_lift_color), terrain_coal_lift_strength);
+				coal_albedo = mix(coal_albedo, coal_albedo * vec3(0.82, 0.80, 0.76), macro_mask * 0.18);
+				color = mix(color, coal_albedo, coal_pit_mask * terrain_coal_pit_strength);
 			}
+			float field_mask = 0.0;
+			if (field_overlay_world_bounds.z > 0.001 && field_overlay_world_bounds.w > 0.001) {
+				vec2 field_uv = (var_world_pos.xz - field_overlay_world_bounds.xy) / field_overlay_world_bounds.zw;
+				if (
+					field_uv.x >= 0.0
+					&& field_uv.x <= 1.0
+					&& field_uv.y >= 0.0
+					&& field_uv.y <= 1.0
+				) {
+					field_mask = texture(field_overlay_texture, field_uv).r;
+				}
+			}
+			if (field_mask > 0.001) {
+				vec3 grain_albedo = terrain_grain_field_color(var_world_pos.xz);
+				color = mix(color, grain_albedo, field_mask * terrain_field_strength);
+			}
+			float hillshade = hillshade_mask(normal);
+			color = apply_baked_terrain_readability(
+				color,
+				hillshade,
+				slope,
+				local_relief,
+				cliff_face,
+				shore_mask * shore_flatness
+			);
+			color = mix(color, cliff_face_color, cliff_face * cliff_face_strength);
+			vec3 hillshade_tint = mix(hillshade_shadow_tint, hillshade_light_tint, hillshade);
+			color *= mix(vec3(1.0), hillshade_tint, hillshade_strength);
+
+			// Overlay Heatmaps (Pollution, Noise, Desirability) and authored resource deposits.
+			if (overlay_mode > 0) {
+				vec4 heatmap_col = texture(overlay_texture, world_uv);
+				if (heatmap_col.a > 0.0) {
+					if (overlay_mode == 4) {
+						float richness = clamp(heatmap_col.a, 0.0, 1.0);
+						vec3 coal_color = mix(vec3(0.16, 0.135, 0.105), vec3(0.025, 0.023, 0.021), richness);
+						color = mix(color, coal_color, richness * 0.78);
+					} else {
+						color = mix(color, heatmap_col.rgb, heatmap_col.a * 0.6);
+					}
+				}
+			}
+
+			float major_contour = contour_mask(
+				world_elevation,
+				contour_major_interval_m,
+				contour_major_thickness
+			);
+			float minor_contour = contour_mask(
+				world_elevation,
+				contour_minor_interval_m,
+				contour_minor_thickness
+			) * (1.0 - major_contour);
+			float zero_elevation_mask = 1.0 - smoothstep(
+				0.0,
+				max(contour_zero_elevation_fade_m, 0.001),
+				abs(world_elevation)
+			);
+			float flat_relief_mask = smoothstep(
+				contour_flat_relief_start_m,
+				max(contour_flat_relief_end_m, contour_flat_relief_start_m + 0.001),
+				local_relief
+			);
+			float flat_zero_contour_visibility = mix(1.0, flat_relief_mask, zero_elevation_mask);
+			float contour_visibility = (1.0 - (cliff_face * cliff_contour_fade)) * flat_zero_contour_visibility;
+			// Contours are a map affordance for reading slope while planning, not a property of
+			// ground. Drawn in the plain world view they put survey lines across every hillside,
+			// which is the single strongest "this is a topographic map" cue in an aerial shot.
+			// The analysis overlays are read as a map and keep them. Anything else that wants
+			// them - terrain sculpting, say - clears contour_map_view_only rather than editing
+			// this; every interval and colour uniform is unchanged.
+			if (contour_map_view_only && overlay_mode <= 0) {
+				contour_visibility = 0.0;
+			}
+			float contour_relief_boost = max(
+				smoothstep(0.30, 2.80, local_relief),
+				smoothstep(0.010, 0.075, slope) * 0.70
+			);
+			float minor_strength = contour_minor_strength + contour_relief_minor_boost_strength * contour_relief_boost;
+			color = mix(color, contour_minor_color, minor_contour * minor_strength * contour_visibility);
+			color = mix(color, contour_major_color, major_contour * contour_major_strength * contour_visibility);
+			color = mix(color, cliff_top_edge_color, cliff_top * cliff_edge_strength);
+			color = mix(color, cliff_toe_edge_color, cliff_toe * cliff_edge_strength);
+			// Desaturated before it is either shown or lit, so the moonlit diffuse washes out
+			// with the ambient floor rather than staying vivid against a grey ground.
+			color = mix(color, vec3(dot(color, vec3(0.2126, 0.7152, 0.0722))), scene_ambient_desaturation);
+			ALBEDO = color;
+			EMISSION = color * clamp(ground_shadow_ambient, 0.0, 1.0) * scene_ambient_light.rgb;
+			ROUGHNESS = mix(mix(0.96, 0.76, rock_mask), 0.90, cliff_face * 0.70);
+			SPECULAR = 0.08;
 		}
-		// Desaturated before it is either shown or lit, so the moonlit diffuse washes out
-		// with the ambient floor rather than staying vivid against a grey ground.
-		color = mix(color, vec3(dot(color, vec3(0.2126, 0.7152, 0.0722))), scene_ambient_desaturation);
-		ALBEDO = color;
-		EMISSION = color * clamp(ground_shadow_ambient, 0.0, 1.0) * scene_ambient_light.rgb;
-		ROUGHNESS = mix(mix(0.96, 0.76, rock_mask), 0.90, cliff_face * 0.70);
-		SPECULAR = 0.08;
 	}
 }
 
 void light() {
-	if (terrain_visual_debug_mode == 0 || terrain_visual_debug_mode == 10) {
+	if (paved_surface > 0.5) {
+		DIFFUSE_LIGHT += paving_diffuse(NORMAL, LIGHT, LIGHT_COLOR, ATTENUATION);
+	} else if (terrain_visual_debug_mode == 0 || terrain_visual_debug_mode == 10) {
 		float sun_strength = ground_shadow_sun_strength;
 		if (terrain_visual_debug_mode == 10) {
 			sun_strength = 1.0;
