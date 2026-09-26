@@ -47,6 +47,32 @@ The roadbed rewrite is shipped for the current surface-road scope:
 The old centerline-lift, generic node-patch, seam-strip, and renderer-owned road-hole paths are
 retired.
 
+## Road marking lighting — RENDER-12
+
+Committed crossings and lane lines use shared, non-emissive per-pixel lighting with
+roughness 1.0. Their existing vertex colours, alpha and geometry remain unchanged.
+The former unshaded material bypassed night illumination, leaving white and yellow paint
+bright against dark asphalt. Paint now responds to ambient, directional and local lights;
+editor placement overlays retain their separate preview materials.
+
+This changes only the cached marking material: no simulation work, allocations, city scans,
+extra draws or geometry uploads. GPU shading remains O(visible marking fragments), using
+the engine's existing light evaluation.
+
+Fresh validation: `road_marking_lighting_test.gd` passes darkness, daylight, low directional
+light and local-light checks for white and yellow paint with the shared AgX/bloom/SSIL
+environment. Display-space luminance was respectively 0/0, 0.608/0.519, 0.047/0.032 and
+0.698/0.619. Matched unprofiled Godot 4.7.2 Forward+ runs on RX 7900 XTX, two alternating
+old/new pairs with 60 warm-up and 120 measured frames, gave 0.064/0.064 → 0.067/0.067 ms
+at 640×360 and 0.310/0.307 → 0.315/0.316 ms at 1920×1080. This isolates two paint
+patches under one directional and one local light, not a whole-city frame.
+
+Command: `XDG_DATA_HOME=/tmp/metrum-road-light RAYON_NUM_THREADS=4 timeout 90 godot --path godot --script res://tests/road_marking_lighting_test.gd -- --asset-editor --benchmark-markings`.
+Vsync is disabled during measurement. Artifacts: `/tmp/metrum-road-light/render.log` and
+`identities.txt`. Build base: `124be55d13d7eccf02681fc7e906ee43cf1f4a94` plus this material
+change; unchanged release extension SHA-256:
+`5368fe8e87315e028fad2437e87a26119a0b7b1b7a63ec7b7bf592b8415dbe89`.
+
 ## Ownership Boundaries
 
 ### Logical Graph

@@ -687,7 +687,9 @@ func _ensure_road_mesh_materials() -> void:
 	if _marking_mat == null:
 		_marking_mat = StandardMaterial3D.new()
 		_marking_mat.vertex_color_use_as_albedo = true
-		_marking_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		# Road paint receives the same day/night and local lighting as the roadbed.
+		_marking_mat.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
+		_marking_mat.roughness = 1.0
 		_marking_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 		_marking_mat.albedo_color = Color(1.0, 1.0, 1.0, 0.35)
 		_marking_mat.cull_mode = BaseMaterial3D.CULL_DISABLED

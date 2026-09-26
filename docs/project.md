@@ -6,6 +6,10 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
+- **Road markings at night (`RENDER-12`, done)**: crossings and lane lines now receive
+  scene lighting instead of using an unshaded material. Rendered white/yellow paint checks
+  pass; isolated matched 1080p GPU delta is under 0.01 ms. See [road lighting](roads.md#road-marking-lighting--render-12).
+
 - **Window appearance (`RENDER-11`, done)**: saved **Model → Window brightness** control
   (0–10, default 3), brighter warm-white windows, stable variation between houses, AgX
   highlights and restrained bloom. Editor round trips and rendered gameplay/LOD checks pass;
