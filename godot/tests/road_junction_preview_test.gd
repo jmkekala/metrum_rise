@@ -41,6 +41,8 @@ func _run() -> void:
 		{"name": "isolated", "end_x": 48.0, "end_z": 0.0, "forward": 1, "backward": 1, "isolated": true},
 		{"name": "isolated_bridge", "end_x": 48.0, "end_z": 0.0, "forward": 1, "backward": 1, "isolated": true, "height": 10.0},
 		{"name": "isolated_sloped", "end_x": 48.0, "end_z": 0.0, "forward": 1, "backward": 1, "isolated": true, "sloped": true, "neighbor": true},
+		{"name": "neighbor_cross", "end_z": 0.0, "forward": 1, "backward": 1, "neighbor_cross": true},
+		{"name": "sloped_neighbor_cross", "end_z": 0.0, "forward": 1, "backward": 1, "neighbor_cross": true, "sloped": true},
 		{"name": "t", "end_z": 0.0, "forward": 1, "backward": 1},
 		{"name": "cross", "end_z": 48.0, "forward": 1, "backward": 1},
 		{"name": "wide_t", "end_z": 0.0, "forward": 2, "backward": 1},
@@ -155,7 +157,10 @@ func _fixture(fixture: Dictionary) -> void:
 	var endpoint_join: bool = fixture.get("endpoint_join", false)
 	var isolated: bool = fixture.get("isolated", false)
 	if not isolated:
-		if not await _commit(PackedVector3Array([_ground_point(-60.0, 0.0), _ground_point(0.0 if endpoint_join else 60.0, 0.0)])):
+		if not await _commit(PackedVector3Array([_ground_point(-110.0 if fixture.get("neighbor_cross", false) else -60.0, 0.0), _ground_point(0.0 if endpoint_join else 60.0, 0.0)])):
+			return
+	if fixture.get("neighbor_cross", false):
+		if not await _commit(PackedVector3Array([_ground_point(-65.0, -60.0), _ground_point(-65.0, 60.0)])):
 			return
 	# Unrelated road in the same render chunk must survive the temporary replacement.
 	if not isolated or fixture.get("neighbor", false):
@@ -206,7 +211,7 @@ func _fixture(fixture: Dictionary) -> void:
 		return
 	_expect(preview.has("junction_preview"), "junction preview must export the compiled local scene")
 	_expect(preview.get("plan_state", "") == "ready", "complete backend plan must be ready")
-	_expect(preview.get("terrain_plan_state", "") == "compiled", "a ready plan must have successfully compiled terrain products")
+	_expect(not preview.has("terrain_plan_state"), "road readiness must be independent of deferred terrain products")
 	if not preview.has("junction_preview"):
 		tool.free()
 		return
@@ -215,12 +220,14 @@ func _fixture(fixture: Dictionary) -> void:
 		_expect_existing_road_height(scene)
 	_expect(scene["retained_chunks"].is_empty() == originals.is_empty(), "retain unrelated roads, including an empty reference map")
 	_expect(tool._draw_compiled_preview_surface(points, preview, preview), "exact junction must stage and display")
-	var no_terrain_work: bool = preview.has("terrain_preview") and preview["terrain_preview"]["patches"].is_empty()
-	_expect(tool._info_label.text.contains("terrain preview pending") != no_terrain_work, "only nonempty terrain batches require missing terrain resources")
+	_expect(not preview.has("terrain_preview"), "preview must export only road geometry")
+	_expect(not tool._info_label.text.contains("pending"), "road readiness must not wait for terrain resources")
 	_expect(tool.blueprint_mesh.mesh == null, "exact junction must replace the stroke ribbon")
 	_expect(tool._junction_preview._hidden.is_empty() == originals.is_empty(), "replace existing chunk instances only when they exist")
 	for original in tool._junction_preview._hidden:
 		_expect(not original.visible, "old curbs and markings must not show through the preview")
+	for instance in tool._junction_preview._instances + tool._junction_preview._retained_instances:
+		_expect(instance.position.y == 0.0, "preview must not lift existing roads away from terrain cutouts")
 	var instances: Array = tool._junction_preview._instances.duplicate()
 	_expect(tool._draw_compiled_preview_surface(points, preview, preview), "unchanged exact result must remain displayable")
 	_expect(instances == tool._junction_preview._instances, "unchanged result must not upload meshes again")
@@ -245,18 +252,20 @@ func _fixture(fixture: Dictionary) -> void:
 		await process_frame
 	_expect(shifted is Dictionary and shifted.get("is_valid", false), "successive pointer input must compile")
 	if shifted is Dictionary and shifted.get("is_valid", false):
-		_expect(not shifted["junction_preview"].has("retained_chunks"), "unchanged retained buffers must not cross the bridge again")
+		var same_footprint: bool = int(shifted["junction_preview"]["retained_revision"]) == tool._junction_preview.retained_revision
+		_expect(shifted["junction_preview"].has("retained_chunks") != same_footprint, "changed clip boundaries need fresh retained buffers; identical boundaries use deltas")
 		_expect(tool._draw_compiled_preview_surface(shifted_points, shifted, shifted), "delta preview must install")
-		_expect(retained_instances == tool._junction_preview._retained_instances, "retained GPU meshes must survive pointer updates")
+		if same_footprint:
+			_expect(retained_instances == tool._junction_preview._retained_instances, "identical-footprint GPU meshes must survive pointer updates")
 		tool._clear_preview_visual()
 		_expect(tool._draw_compiled_preview_surface(shifted_points, shifted, shifted), "detached retained meshes must support re-entering the same delta preview")
 	var after := simulation.get_road_benchmark_state()
 	for field in ["generation", "live_edges", "edge_slots", "nodes", "lanes", "agents", "buildings"]:
 		_expect(before[field] == after[field], "preview must not mutate authoritative " + field)
-	if not no_terrain_work and (isolated or fixture["name"] in ["t", "sloped_t"]):
-		await _test_paired_terrain_preview(tool, preview, points)
+	if isolated or fixture["name"] in ["t", "sloped_t"]:
+		await _test_preview_keeps_terrain(tool, preview, points, fixture["name"])
 	if not OS.get_environment("METRUM_JUNCTION_PREVIEW_CAPTURE").is_empty():
-		_expect(tool._draw_compiled_preview_surface(points, preview, preview), "paired capture must restore the original input pose")
+		_expect(tool._draw_compiled_preview_surface(points, preview, preview), "capture must restore the original input pose")
 		await _capture(tool.road_mesh_root, fixture["name"])
 	var moving: Dictionary = simulation.validate_road_candidate_with_snap(points, tool.fwd_lanes, tool.bkw_lanes, true)
 	_expect(tool._draw_coarse_preview_surface(points, moving), "pointer motion must retain immediate feedback")
@@ -270,7 +279,17 @@ func _fixture(fixture: Dictionary) -> void:
 	if not OS.get_environment("METRUM_JUNCTION_PREVIEW_CAPTURE").is_empty():
 		await _capture(tool.road_mesh_root, fixture["name"] + "_cancelled")
 	tool._draw_compiled_preview_surface(points, preview, preview)
-	if await _commit(preview["prepared_points"], tool.fwd_lanes, tool.bkw_lanes):
+	# Restore the actual click input in the worker; a previously displayed older pose is not
+	# sufficient evidence that the command can reuse its road solve.
+	var click_request := simulation.request_preview_road_surface_with_snap(points, tool.fwd_lanes, tool.bkw_lanes, true)
+	var click_preview: Variant = null
+	deadline = Time.get_ticks_msec() + 20000
+	while click_preview == null and Time.get_ticks_msec() < deadline:
+		click_preview = simulation.get_preview_road_surface_result(click_request, 0)
+		await process_frame
+	_expect(click_preview is Dictionary and click_preview.get("plan_state", "") == "ready", "exact click road plan must become ready without terrain")
+	if await _commit(points, tool.fwd_lanes, tool.bkw_lanes):
+		_expect(simulation.get_road_benchmark_state()["command"].get("preview_plan_reused", false), "matching click must reuse the worker road solve")
 		var old_result: Variant = simulation.get_preview_road_surface_result(shifted_request, 0)
 		_expect(old_result == null or old_result.get("plan_state", "") == "stale", "a road revision must stale the whole plan even when terrain did not change")
 		generation = simulation.get_network_render_generation()
@@ -291,11 +310,10 @@ func _ground_point(x: float, z: float) -> Vector3:
 	return Vector3(x, simulation.get_world_surface_height(Vector2(x, z)), z)
 
 func _expect_existing_road_height(scene: Dictionary) -> void:
-	# Far from the edited connection, the existing flat carriageway must stay at its committed
-	# height even when whole neighbor spans are exported. This also runs without a GPU.
+	# Both the retained source and the local replacement use committed/solved heights.
 	var checked := 0
 	var raised := 0
-	for chunk in scene["chunks"]:
+	for chunk in scene["chunks"] + scene.get("retained_chunks", []):
 		var origin := Vector3(scene["chunk_origin_x_m"] + chunk["chunk_x"] * scene["chunk_span_m"], 0.0, scene["chunk_origin_z_m"] + chunk["chunk_z"] * scene["chunk_span_m"])
 		for local in chunk.get("road_vertices", PackedVector3Array()):
 			var point: Vector3 = local + origin
@@ -306,19 +324,16 @@ func _expect_existing_road_height(scene: Dictionary) -> void:
 	_expect(checked > 0, "fixture must exercise an existing neighbor span")
 	_expect(raised == 0, "existing road must not be lifted above its terrain cutout (%d vertices)" % raised)
 
-func _test_paired_terrain_preview(tool: Node3D, preview: Dictionary, points: PackedVector3Array) -> void:
-	_expect(preview.has("terrain_preview"), "valid ground-road plan must publish its terrain batch")
-	if not preview.has("terrain_preview"):
-		return
+func _test_preview_keeps_terrain(tool: Node3D, preview: Dictionary, points: PackedVector3Array, label: String) -> void:
+	_expect(not preview.has("terrain_preview"), "terrain products must wait for a click")
 	var terrain := TerrainScript.new()
 	terrain.simulation_node = simulation
 	var pending := {}
 	var requests := PackedInt32Array()
-	for data in preview["terrain_preview"]["patches"]:
-		_expect(data.has("height_bytes") and not data.has("height_data"), "preview terrain must export only the uploaded height buffer")
-		var key := Vector2i(data["patch_x"], data["patch_z"])
-		pending[key] = true
-		requests.append_array(PackedInt32Array([key.x, key.y, 2000]))
+	for z in range(4):
+		for x in range(4):
+			pending[Vector2i(x, z)] = true
+			requests.append_array(PackedInt32Array([x, z, 2000]))
 	simulation.request_terrain_patch_payloads(requests)
 	var deadline := Time.get_ticks_msec() + 20000
 	while not pending.is_empty() and Time.get_ticks_msec() < deadline:
@@ -345,59 +360,63 @@ func _test_paired_terrain_preview(tool: Node3D, preview: Dictionary, points: Pac
 		return
 	var originals := {}
 	for key in terrain.patches:
-		originals[key] = terrain.patches[key]["node"].mesh
+		var patch: Dictionary = terrain.patches[key]
+		originals[key] = {"mesh": patch["node"].mesh, "walls": patch["retaining_wall_node"].mesh,
+			"material": patch["material"], "height_texture": patch["height_texture"],
+			"data": patch["last_patch_data"].duplicate(true), "children": patch["node"].get_child_count()}
 	tool._clear_preview_visual()
 	tool.terrain_node = terrain
-	_expect(tool._draw_compiled_preview_surface(points, preview, preview), "paired road/terrain display must stage")
-	_expect(tool._terrain_preview.request_id == preview["request_id"], "terrain and canonical roads must publish as one pose")
-	_expect(tool._junction_preview._terrain_coupled, "paired display must use unlifted road buffers")
-	_expect(not tool._info_label.text.contains("pending"), "complete paired display must expose plan readiness")
+	_expect(tool._draw_compiled_preview_surface(points, preview, preview), "full road preview must display with resident terrain")
+	_expect(not tool._info_label.text.contains("checking"), "road geometry is ready before terrain integration")
 	tool._update_preview_measurement_label(points, preview, "provisional")
-	_expect(tool._info_label.text.contains("pending"), "retained older paired poses must not claim readiness for new pointer inputs")
+	_expect(tool._info_label.text.contains("checking road"), "an older pose must not claim readiness for the new input")
 	_expect(tool._draw_compiled_preview_surface(points, preview, preview), "exact current pose must restore readiness")
-	_expect(not tool._info_label.text.contains("pending"), "only the exact current paired pose is ready")
-	var nodes: Array = []
-	for key in originals:
-		_expect(terrain.patches[key]["node"].mesh == null, "resident draw mesh must not overlap its replacement")
-		var entry: Dictionary = tool._terrain_preview._patches[key]
-		nodes.append(entry["node"])
-		var patch_data: Dictionary = terrain.patches[key]["last_patch_data"]
-		terrain._apply_patch_visibility_for_residency(key, terrain.patches[key], patch_data)
-		_expect(terrain.patches[key]["node"].mesh == null, "residency updates must not restore old draw geometry")
-	# A failed stage cannot partially replace the current terrain batch.
-	var malformed: Array = preview["terrain_preview"]["patches"].duplicate(true)
-	malformed[-1]["sample_width"] = 0
-	_expect(tool._terrain_preview.stage(terrain, malformed, preview["surface_generation"]).is_empty(), "malformed terrain must fail staging")
-	_expect(tool._terrain_preview.request_id == preview["request_id"], "failed staging preserves the previous complete pose")
-	# Updating an affected patch invalidates both displays before mutating/recycling its resources.
-	terrain.patch_render_will_change.emit(originals.keys()[0])
-	_expect(tool._terrain_preview.request_id == 0 and tool._junction_preview.generation == -1, "terrain changes must retire both halves of the pose")
-	for key in originals:
-		_expect(terrain.patches[key]["node"].mesh == originals[key], "cancellation must restore exact original mesh identity")
-	for node in nodes:
-		_expect(not is_instance_valid(node), "invalidated preview resources must be freed")
-	_expect(tool._draw_compiled_preview_surface(points, preview, preview), "cancelled pose must be reusable")
-	tool._clear_preview_visual()
-	for key in originals:
-		_expect(terrain.patches[key]["node"].mesh == originals[key], "explicit clear restores terrain")
-	_expect(tool._draw_compiled_preview_surface(points, preview, preview), "paired pose must stage before recycling a resident patch")
+	# Idle polling must neither add preview terrain resources nor substitute committed buffers.
+	for frame in range(4):
+		await process_frame
+		for key in originals:
+			var patch: Dictionary = terrain.patches[key]
+			var original: Dictionary = originals[key]
+			_expect(patch["node"].mesh == original.mesh and patch["retaining_wall_node"].mesh == original.walls, "preview must preserve committed mesh identities")
+			_expect(patch["material"] == original.material and patch["height_texture"] == original.height_texture, "preview must preserve terrain materials and textures")
+			_expect(patch["last_patch_data"] == original.data and patch["node"].get_child_count() == original.children, "preview must preserve terrain payloads and add no terrain nodes")
+	# Full mode stages road and terrain together without changing authoritative/cache state.
+	tool.set_road_preview_mode(1)
+	var full_request: int = simulation.request_preview_road_surface_with_options(points, tool.fwd_lanes, tool.bkw_lanes, true, true)
+	var full: Variant = null
+	deadline = Time.get_ticks_msec() + 20000
+	while full == null and Time.get_ticks_msec() < deadline:
+		full = simulation.get_preview_road_surface_result(full_request, 0)
+		await process_frame
+	_expect(full is Dictionary and full.has("terrain_preview") and full.get("plan_state", "") == "ready", "Full mode publishes complete road and terrain products")
+	if full is Dictionary and full.has("terrain_preview"):
+		_expect(tool._draw_compiled_preview_surface(points, full, full), "Full road-and-terrain preview must stage atomically")
+		_expect(tool._terrain_preview.request_id == full_request, "Terrain and road share the displayed request")
+		if not OS.get_environment("METRUM_JUNCTION_PREVIEW_CAPTURE").is_empty():
+			await _capture(tool.road_mesh_root, label + "_full", false, terrain)
+		for key in originals:
+			var patch: Dictionary = terrain.patches[key]
+			_expect(patch["last_patch_data"] == originals[key].data, "Full preview leaves resident payloads untouched")
+		tool.set_road_preview_mode(0)
+		for key in originals:
+			_expect(terrain.patches[key]["node"].mesh == originals[key].mesh, "Changing mode restores original terrain meshes")
+		_expect(tool._terrain_preview.request_id == 0 and tool._junction_preview.request_id == 0, "Changing mode clears both preview halves")
+		tool.set_road_preview_mode(1)
+		_expect(tool._draw_compiled_preview_surface(points, full, full), "Full preview can be shown again")
+		if not tool._terrain_preview._patches.is_empty():
+			terrain.patch_render_will_change.emit(tool._terrain_preview._patches.keys()[0])
+			_expect(tool._terrain_preview.request_id == 0 and tool._junction_preview.request_id == 0, "Terrain invalidation retires the paired road preview")
+	tool.set_road_preview_mode(0)
+	_expect(tool._draw_compiled_preview_surface(points, preview, preview), "Road-only preview restores independently of terrain mode")
 	terrain._remove_patch(originals.keys()[0])
-	_expect(tool._terrain_preview.request_id == 0 and tool._junction_preview.generation == -1, "patch recycling must invalidate both displays")
-	for key in terrain.patches:
-		_expect(terrain.patches[key]["node"].mesh == originals[key], "patch recycling restores the remaining original meshes")
-	_expect(tool._draw_compiled_preview_surface(points, preview, preview), "missing terrain residency keeps a provisional road preview")
-	_expect(tool._terrain_preview.request_id == 0 and not tool._junction_preview._terrain_coupled, "an incomplete resident terrain batch must not publish canonical roads")
-	_expect(tool._info_label.text.contains("terrain preview pending"), "missing terrain residency must remain visibly provisional")
+	_expect(tool._junction_preview.request_id == preview["request_id"], "terrain residency changes must not retire a valid road pose")
 	tool._clear_preview_visual()
+	_expect(tool._draw_compiled_preview_surface(points, preview, preview), "missing terrain patches must not prevent a full road preview")
+	tool._clear_preview_visual()
+	for key in terrain.patches:
+		_expect(terrain.patches[key]["node"].mesh == originals[key].mesh, "cancel preserves terrain mesh identity")
 	tool.terrain_node = null
 	terrain.free()
-	# A backend-certified empty terrain batch must not wait for nonexistent patch resources.
-	var empty_batch := preview.duplicate(true)
-	empty_batch["terrain_preview"]["patches"] = []
-	_expect(tool._draw_compiled_preview_surface(points, empty_batch, empty_batch), "empty terrain batch must stage canonical roads")
-	_expect(tool._terrain_preview.request_id == preview["request_id"] and tool._junction_preview._terrain_coupled, "empty batch still records complete paired publication")
-	_expect(not tool._info_label.text.contains("pending"), "no terrain work must not remain pending")
-	tool._clear_preview_visual()
 
 func _retry_terrain_payloads(ready: Dictionary, pending: Dictionary) -> void:
 	# Fresh-world payload work can be deferred by the native generation fence. Honor the same
@@ -422,7 +441,6 @@ func _capture_terrain() -> Node3D:
 			pending[Vector2i(x, z)] = true
 	simulation.request_terrain_patch_payloads(requests)
 	var deadline := Time.get_ticks_msec() + 20000
-	var clipped := 0
 	while not pending.is_empty() and Time.get_ticks_msec() < deadline:
 		var ready: Dictionary = simulation.poll_ready_terrain_patch_payloads(16)
 		_retry_terrain_payloads(ready, pending)
@@ -432,7 +450,6 @@ func _capture_terrain() -> Node3D:
 				continue
 			pending.erase(key)
 			if data.get("terrain_requires_road_clipping", false):
-				clipped += 1
 				_expect(renderer._patch_uses_cdt_terrain_mesh(data), "road fixture terrain must use real clipped CDT geometry")
 			var instance := MeshInstance3D.new()
 			instance.mesh = renderer._terrain_patch_mesh_from_data(data, 1, 1)
@@ -445,12 +462,12 @@ func _capture_terrain() -> Node3D:
 			instance.material_override = material
 			result.add_child(instance)
 		await process_frame
-	var needs_clipping: bool = simulation.get_road_benchmark_state()["live_edges"] > 0
-	_expect(pending.is_empty() and (clipped > 0 or not needs_clipping), "terrain capture must load all four central patches with current road ownership")
+	# Elevated bridges can have no ground cutout. The payload ownership flags above govern CDT.
+	_expect(pending.is_empty(), "terrain capture must load all four central patches with current road ownership")
 	renderer.free()
 	return result
 
-func _capture(mesh_root: Node3D, label: String, baseline: bool = false) -> void:
+func _capture(mesh_root: Node3D, label: String, baseline: bool = false, staged_terrain: Node3D = null) -> void:
 	# Optional real-renderer diagnostic; ordinary headless tests do not render images.
 	var viewport := SubViewport.new()
 	viewport.size = Vector2i(960, 720)
@@ -463,7 +480,25 @@ func _capture(mesh_root: Node3D, label: String, baseline: bool = false) -> void:
 			instance.mesh = source.mesh
 			instance.transform = source.transform
 			viewport.add_child(instance)
-	viewport.add_child(await _capture_terrain())
+	if staged_terrain == null:
+		viewport.add_child(await _capture_terrain())
+	else:
+		# Copy the actual substituted draw meshes, including unchanged resident patches.
+		var material := StandardMaterial3D.new()
+		material.cull_mode = BaseMaterial3D.CULL_DISABLED
+		material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		material.albedo_color = Color(0.22, 0.34, 0.18)
+		for patch in staged_terrain.patches.values():
+			var original: MeshInstance3D = patch["node"]
+			var sources: Array = [original]
+			sources.append_array(original.get_children())
+			for source in sources:
+				if source is MeshInstance3D and source.mesh != null:
+					var instance := MeshInstance3D.new()
+					instance.mesh = source.mesh
+					instance.position = original.position
+					instance.material_override = material
+					viewport.add_child(instance)
 	var environment := WorldEnvironment.new()
 	environment.environment = Environment.new()
 	environment.environment.background_mode = Environment.BG_COLOR
@@ -502,13 +537,14 @@ func _capture(mesh_root: Node3D, label: String, baseline: bool = false) -> void:
 	elif label.ends_with("_cancelled"):
 		_expect(sky == _capture_baseline_sky, "cancel must restore the exact source terrain/road coverage")
 	elif label.ends_with("_committed"):
-		# Compare exact locations against both independent references, not an allowed error
-		# count. Existing/cold-commit subpixel raster seams are not preview-induced holes.
+		# Road-only previews can expose old cutouts while the terrain stays committed. Record
+		# their exact extent for review; final terrain geometry is checked against cold output
+		# in the native suite, and cancellation still requires exact original coverage above.
 		var holes := 0
 		for pixel in _capture_preview_sky:
 			if not _capture_baseline_sky.has(pixel) and not sky.has(pixel):
 				holes += 1
-		_expect(holes == 0, "%s preview must not expose extra sky through road cutouts (%d pixels)" % [label, holes])
+		print("ROAD_PREVIEW_COVERAGE " + JSON.stringify({"case": label, "preview_only_sky_pixels": holes, "committed_sky_pixels": sky.size(), "baseline_sky_pixels": _capture_baseline_sky.size()}))
 	else:
 		_capture_preview_sky = sky
 	viewport.free()

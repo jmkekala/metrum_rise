@@ -1,11 +1,107 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Actual preview/commit terrain tile/patch parity and stale-dependency regression tests.
+//! Road-only preview, deferred click terrain parity and stale-dependency regressions.
 
 use super::*;
 use crate::nodes::sim::core::{RefinedTerrainPatchBuildInput, RoadEditPlan};
 use godot::prelude::Vector2;
 use std::sync::Arc;
+
+#[test]
+fn road_only_preview_completes_on_click_without_copying_or_resolving_roads() {
+    let mut core = test_core();
+    core.precompute_road_mesh_data();
+    core.allocator
+        .prepare_building_site_query_index(core.config.zone_cell_m);
+    let (context, _) = road_tool_snapshots_from_core(&core).unwrap();
+    let points = vec![Vector3::new(-48.0, 0.0, 0.0), Vector3::new(48.0, 0.0, 0.0)];
+    let generation = core.road_tool_surface_generation;
+    let source_generation = core.heightmap.source_generation();
+    let visual_generation = core.heightmap.visual_generation();
+    let preview = super::super::road_preview::compile_road_preview_from_context(
+        &context,
+        RoadPreviewRequest {
+            include_terrain: false,
+            request_id: 7,
+            surface_generation: generation,
+            points: points.clone(),
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            snap_to_existing_roads: true,
+        },
+    );
+    assert!(preview.junction_preview.is_some());
+    let road = preview.edit_plan().unwrap();
+    assert!(road.terrain().is_none());
+    assert_eq!(road.road_status(&core), "ready");
+    assert_eq!(road.status(&core), "provisional");
+    assert!(
+        !core
+            .add_road_internal_with_snap_and_validation(points.clone(), 1, 1, true, Some(&road),)
+            .committed,
+        "road-only readiness must never authorize mutation"
+    );
+    assert!(core.undo_stack.is_empty());
+    assert_eq!(core.region_graph.edge_count(), 0);
+
+    let click = road.complete_for_commit(&core);
+    assert_eq!(click.status(&core), "ready");
+    assert!(
+        road.terrain().is_none(),
+        "completion must not mutate a published preview"
+    );
+    assert!(
+        std::ptr::eq(
+            road.prepared_input_for(generation, source_generation, &points, 1, 1, true)
+                .unwrap(),
+            click
+                .prepared_input_for(generation, source_generation, &points, 1, 1, true)
+                .unwrap(),
+        ),
+        "the exact preparation is shared, not recomputed or copied"
+    );
+    assert!(
+        std::ptr::eq(
+            road.topology_for(&core.region_graph).unwrap(),
+            click.topology_for(&core.region_graph).unwrap(),
+        ),
+        "the solved graph/profile delta is shared"
+    );
+    assert_eq!(core.heightmap.source_generation(), source_generation);
+    assert_eq!(core.heightmap.visual_generation(), visual_generation);
+    assert_eq!(core.region_graph.edge_count(), 0);
+    adopt(&mut core, points, 1, 1, &click);
+    assert!(
+        road.take_topology_reuse().is_none(),
+        "adoption remains single-use across shared plans"
+    );
+}
+
+#[test]
+fn road_only_preview_rejects_visual_terrain_changes_before_click_reuse() {
+    let mut core = test_core();
+    core.precompute_road_mesh_data();
+    let points = vec![Vector3::new(-48.0, 0.0, 0.0), Vector3::new(48.0, 0.0, 0.0)];
+    let road = RoadEditPlan::compile_road(
+        &core,
+        RoadPreviewRequest {
+            include_terrain: false,
+            request_id: 1,
+            surface_generation: core.road_tool_surface_generation,
+            points,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            snap_to_existing_roads: true,
+        },
+    );
+    assert_eq!(road.road_status(&core), "ready");
+    let source_generation = core.heightmap.source_generation();
+    core.heightmap
+        .set_visual_heights_at_grid_unmarked(&[(0, 0, 0.25)], |p| *p);
+    assert_eq!(core.heightmap.source_generation(), source_generation);
+    assert_eq!(road.road_status(&core), "stale");
+    assert!(road.terrain().is_none());
+}
 
 fn stage(core: &mut SimCore, points: Vec<Vector3>) -> Arc<RoadEditPlan> {
     stage_with_lanes(core, points, 1, 1)
@@ -32,9 +128,10 @@ fn prepare_with_lanes(
     core.allocator
         .prepare_building_site_query_index(core.config.zone_cell_m);
     let (context, query) = road_tool_snapshots_from_core(core).unwrap();
-    let preview = crate::nodes::sim::core::road_preview::compile_road_preview_with_sites(
+    let preview = crate::nodes::sim::core::road_preview::compile_road_preview_from_context(
         &context,
         RoadPreviewRequest {
+            include_terrain: false,
             request_id: 1,
             surface_generation: query.surface_generation,
             points: points.clone(),
@@ -42,11 +139,12 @@ fn prepare_with_lanes(
             bkw_lanes,
             snap_to_existing_roads: true,
         },
-        core,
     );
-    preview
+    let road = preview
         .edit_plan()
-        .unwrap_or_else(|| panic!("preview invalid: {:?}", preview.validation))
+        .unwrap_or_else(|| panic!("preview invalid: {:?}", preview.validation));
+    assert!(road.terrain().is_none(), "hover must not compile terrain");
+    Arc::new(road.complete_for_commit(core))
 }
 
 fn adopt(
@@ -309,6 +407,7 @@ fn complete_readiness_rechecks_water_inputs_and_pending_dependencies() {
     let rebuilt = RoadEditPlan::compile(
         &core,
         RoadPreviewRequest {
+            include_terrain: false,
             request_id: 2,
             surface_generation: core.road_tool_surface_generation,
             points,

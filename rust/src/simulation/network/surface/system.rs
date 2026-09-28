@@ -58,6 +58,9 @@ pub struct RoadSurfaceSystem {
     pub(crate) compiled_visual_node_earthwork_boundaries:
         HashMap<u32, Arc<Vec<Vec<RoadSurfaceEarthworkBoundarySegment>>>>,
     pub(crate) compiled_visual_node_topologies: HashMap<u32, Arc<NodeCanonicalTopologyCache>>,
+    // One bounded previous-cursor certificate. Immutable city snapshots share this scratch
+    // cache; exact input checks and pinned terrain/source revisions gate all consumers.
+    preview_cursor_cache: Arc<Mutex<Option<PreviewCursorCache>>>,
     pub(in crate::simulation::network::surface) pending_preview_topology_reuse:
         Option<RoadPreviewTopologyReuse>,
     pub(in crate::simulation::network::surface) pending_planned_earthworks:
@@ -86,6 +89,12 @@ pub struct RoadSurfaceSystem {
     pub(crate) last_reused_node_topology_count: usize,
     pub(crate) last_reused_node_height_topology_count: usize,
     pub(crate) last_reused_node_ownership_topology_count: usize,
+}
+
+#[derive(Clone)]
+struct PreviewCursorCache {
+    revisions: (u64, u64, u64),
+    reuse: RoadPreviewTopologyReuse,
 }
 
 /// Exact preview-produced node topology candidates for one matching authoritative commit.
@@ -369,6 +378,7 @@ impl RoadSurfaceSystem {
             compiled_visual_node_inputs: imbl::HashMap::new(),
             compiled_visual_node_earthwork_boundaries: HashMap::new(),
             compiled_visual_node_topologies: HashMap::new(),
+            preview_cursor_cache: Arc::new(Mutex::new(None)),
             pending_preview_topology_reuse: None,
             pending_planned_earthworks: None,
             last_reused_earthwork_chunk_count: 0,
@@ -414,10 +424,26 @@ impl RoadSurfaceSystem {
         terrain: &TerrainSystem,
         node_ids: &[u32],
     ) -> Option<RoadPreviewTopologyReuse> {
-        let spans = self
-            .compiled_visual_span_pieces
-            .iter()
-            .filter_map(|(&edge_idx, piece)| {
+        self.local_topology_reuse(
+            graph,
+            terrain,
+            self.compiled_visual_span_pieces.keys().copied(),
+            node_ids,
+        )
+    }
+
+    /// Captures only indexed neighborhood candidates, never scans the resident network.
+    /// Fresh solved sections, mouths and terrain visibility still gate every replay.
+    pub(in crate::simulation::network::surface) fn local_topology_reuse(
+        &self,
+        graph: &RegionGraph,
+        terrain: &TerrainSystem,
+        edge_ids: impl Iterator<Item = usize>,
+        node_ids: &[u32],
+    ) -> Option<RoadPreviewTopologyReuse> {
+        let spans = edge_ids
+            .filter_map(|edge_idx| {
+                let piece = self.compiled_visual_span_pieces.get(&edge_idx)?;
                 let edge = (edge_idx < graph.edge_count()).then(|| graph.edge(edge_idx))?;
                 let sections = self.compiled_sections.get(&edge_idx)?;
                 Some((
@@ -439,6 +465,52 @@ impl RoadSurfaceSystem {
         let nodes = self.capture_node_topology_reuse(graph, node_ids);
         (!spans.is_empty() || !nodes.is_empty())
             .then_some(RoadPreviewTopologyReuse { spans, nodes })
+    }
+
+    /// Offers one previous cursor's exact products to a local compile, without accumulating history.
+    pub(in crate::simulation::network::surface) fn offer_previous_cursor(
+        &self,
+        terrain: &TerrainSystem,
+        target: &mut Self,
+    ) {
+        let revisions = (
+            self.compile_invalidation_generation,
+            terrain.source_generation(),
+            terrain.visual_generation(),
+        );
+        let previous = self.preview_cursor_cache.lock().ok().and_then(|cache| {
+            cache
+                .as_ref()
+                .filter(|entry| entry.revisions == revisions)
+                .map(|entry| entry.reuse.clone())
+        });
+        if let Some(mut previous) = previous {
+            if let Some(live) = target.pending_preview_topology_reuse.take() {
+                for (id, span) in live.spans {
+                    previous.spans.entry(id).or_insert(span);
+                }
+                previous.nodes.extend(live.nodes);
+            }
+            target.enqueue_preview_topology_reuse(previous);
+        }
+    }
+
+    /// Replaces cursor scratch only after a successful solve against these immutable inputs.
+    pub(in crate::simulation::network::surface) fn remember_cursor(
+        &self,
+        terrain: &TerrainSystem,
+        reuse: &Option<RoadPreviewTopologyReuse>,
+    ) {
+        if let Ok(mut cache) = self.preview_cursor_cache.lock() {
+            *cache = reuse.as_ref().map(|reuse| PreviewCursorCache {
+                revisions: (
+                    self.compile_invalidation_generation,
+                    terrain.source_generation(),
+                    terrain.visual_generation(),
+                ),
+                reuse: reuse.clone(),
+            });
+        }
     }
 
     fn capture_node_topology_reuse(

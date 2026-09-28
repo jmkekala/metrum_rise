@@ -9,6 +9,10 @@ extends RefCounted
 const CFG_PATH := "user://settings.cfg"
 
 const SECTION_OPTIONS_WINDOW := "options_window"
+const SECTION_GAMEPLAY := "gameplay"
+const KEY_ROAD_PREVIEW_MODE := "road_preview_mode"
+const DEFAULT_ROAD_PREVIEW_MODE := 0
+
 const SECTION_GRAPHICS := "graphics"
 const SECTION_ACCESSIBILITY := "accessibility"
 const SECTION_LAYOUT_PREFIX := "layout/"
@@ -65,6 +69,10 @@ static func set_value(section: String, key: String, value: Variant) -> Error:
 	var cfg := load_config()
 	cfg.set_value(section, key, value)
 	return save_config(cfg)
+
+static func get_road_preview_mode() -> int:
+	var value := int(get_value(SECTION_GAMEPLAY, KEY_ROAD_PREVIEW_MODE, DEFAULT_ROAD_PREVIEW_MODE))
+	return value if value in [0, 1] else DEFAULT_ROAD_PREVIEW_MODE
 
 static func get_fullscreen_enabled() -> bool:
 	return bool(get_value(
@@ -206,6 +214,7 @@ static func _write_defaults(cfg: ConfigFile) -> void:
 	cfg.set_value(SECTION_OPTIONS_WINDOW, KEY_ACTIVE_CATEGORY, DEFAULT_OPTIONS_CATEGORY)
 	cfg.set_value(SECTION_OPTIONS_WINDOW, KEY_WINDOW_WIDTH, DEFAULT_OPTIONS_WINDOW_WIDTH)
 	cfg.set_value(SECTION_OPTIONS_WINDOW, KEY_WINDOW_HEIGHT, DEFAULT_OPTIONS_WINDOW_HEIGHT)
+	cfg.set_value(SECTION_GAMEPLAY, KEY_ROAD_PREVIEW_MODE, DEFAULT_ROAD_PREVIEW_MODE)
 	cfg.set_value(SECTION_GRAPHICS, KEY_FULLSCREEN, DEFAULT_FULLSCREEN)
 	cfg.set_value(SECTION_GRAPHICS, KEY_BUILDING_LOD_QUALITY, DEFAULT_BUILDING_LOD_QUALITY)
 	cfg.set_value(SECTION_ACCESSIBILITY, KEY_UI_SCALE, DEFAULT_UI_SCALE)

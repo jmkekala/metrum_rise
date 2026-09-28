@@ -3,11 +3,10 @@
 //! Bounded post-edit topology and profile products shared by preview and authoritative insertion.
 
 use super::graph::{Edge, RegionGraph};
-use super::surface::{RoadEarthworkPlan, RoadSurfaceSystem};
+use super::surface::{PlannedRoadSurfaceQuery, RoadSurfaceSystem};
 use super::types::NodeType;
 use super::{TransitNetwork, topology};
 use crate::simulation::buildings::allocator::BuildingAllocator;
-use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::zoning::ZoningSystem;
 use godot::prelude::Vector3;
 use std::collections::{HashMap, HashSet};
@@ -68,7 +67,7 @@ pub(crate) struct RoadTopologyPlan {
     splits: Vec<PlannedRoadSplit>,
     dirty_edges: HashSet<usize>,
     affected_nodes: HashSet<u32>,
-    earthworks: Option<Arc<RoadEarthworkPlan>>,
+    roads: Option<Arc<PlannedRoadSurfaceQuery>>,
 }
 
 impl std::fmt::Debug for RoadTopologyPlan {
@@ -82,9 +81,9 @@ impl std::fmt::Debug for RoadTopologyPlan {
 }
 
 impl RoadTopologyPlan {
-    /// Read-only local terrain inputs produced from the same final road geometry as the preview.
-    pub(crate) fn earthworks(&self) -> Option<&Arc<RoadEarthworkPlan>> {
-        self.earthworks.as_ref()
+    /// Final local road query inputs; terrain stamps and cutout tiles are deferred until click.
+    pub(crate) fn roads(&self) -> Option<&Arc<PlannedRoadSurfaceQuery>> {
+        self.roads.as_ref()
     }
 
     /// Captures the already solved validation excerpt in O(local records + profile points).
@@ -183,18 +182,16 @@ impl RoadTopologyPlan {
             splits,
             dirty_edges,
             affected_nodes: finalized.affected_nodes,
-            earthworks: None,
+            roads: None,
         })
     }
 
-    /// Retains the existing stamper's local results without changing source or visual terrain.
-    pub(super) fn compile_earthworks(
+    /// Retains final local road geometry and prospective owner IDs without compiling terrain.
+    pub(super) fn capture_road_queries(
         &mut self,
         local: &RegionGraph,
         surface: &RoadSurfaceSystem,
         source: &RegionGraph,
-        source_surface: &RoadSurfaceSystem,
-        terrain: &TerrainSystem,
     ) {
         // Predict exactly the append order used by adopt_road_topology_plan, not local IDs.
         let mut next_edge = source.edge_count();
@@ -246,18 +243,14 @@ impl RoadTopologyPlan {
                 .flatten()
             })
             .collect();
-        self.earthworks = surface
-            .plan_earthwork_overlay(
-                local,
-                source_surface,
-                source,
-                terrain,
-                &edge_ids,
-                &node_ids,
-                &replaced_edges,
-                &replaced_nodes,
-            )
-            .map(Arc::new);
+        self.roads = Some(Arc::new(PlannedRoadSurfaceQuery::capture(
+            local,
+            surface,
+            &edge_ids,
+            &node_ids,
+            &replaced_edges,
+            &replaced_nodes,
+        )));
     }
 
     /// Returns the bounded source records required by the existing undo journal.
@@ -439,8 +432,6 @@ impl TransitNetwork {
         self.mark_surface_dirty_from_sets(graph, &dirty_edges, &affected_nodes);
         self.bulk_dirty_edges.clear();
         self.profile_authored_edges.clear();
-        self.road_surface
-            .enqueue_planned_earthworks(plan.earthworks.clone());
         Some(FinalizedRoadGeometry {
             dirty_edges,
             affected_nodes,

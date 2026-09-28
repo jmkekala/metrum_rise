@@ -120,12 +120,20 @@ impl Fixture {
     }
 
     fn adopt(&mut self, plan: &RoadTopologyPlan, reuse: Option<RoadPreviewTopologyReuse>) {
+        let earthworks = plan
+            .roads()
+            .unwrap()
+            .compile_earthworks(&self.network.road_surface, &self.graph, &self.terrain)
+            .map(Arc::new);
         let old_node_count = self.graph.node_count();
         let old_edge_count = self.graph.edge_count();
         let result = self
             .network
             .adopt_road_topology_plan(&mut self.graph, plan, &self.zoning, &mut self.allocator)
             .unwrap();
+        self.network
+            .road_surface
+            .enqueue_planned_earthworks(earthworks);
         assert_eq!((result.profile_us, result.clips_us), (0, 0));
         let mut next_node = old_node_count as u32;
         let node_ids: Vec<_> = plan

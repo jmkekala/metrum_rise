@@ -7,7 +7,6 @@
 //! traversal helpers.
 
 mod policy;
-mod preview;
 mod terrain_cdt;
 mod traversal;
 mod view;

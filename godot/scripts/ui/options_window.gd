@@ -8,6 +8,7 @@ extends Window
 
 const AccessibilityOptions = preload("res://scripts/ui/accessibility_options.gd")
 const GameSettings = preload("res://scripts/core/game_settings.gd")
+const GameplayOptions = preload("res://scripts/ui/gameplay_options.gd")
 const GraphicsOptions = preload("res://scripts/ui/graphics_options.gd")
 const PackManager = preload("res://scripts/ui/pack_manager.gd")
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
@@ -139,7 +140,7 @@ func _build_ui() -> void:
 	_content_root.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	content_margin.add_child(_content_root)
 
-	_add_content(CATEGORY_GAMEPLAY, _make_empty_category("Gameplay"))
+	_add_content(CATEGORY_GAMEPLAY, _make_gameplay_category())
 	_add_content(CATEGORY_GRAPHICS, _make_graphics_category())
 	_add_content(CATEGORY_AUDIO, _make_empty_category("Audio"))
 	_add_content(CATEGORY_CONTROLS, _make_empty_category("Controls"))
@@ -213,6 +214,11 @@ func _make_empty_category(label: String) -> Control:
 
 func _make_accessibility_category() -> Control:
 	var panel := AccessibilityOptions.new()
+	panel.dirty_changed.connect(func(_dirty: bool): _sync_footer_state())
+	return panel
+
+func _make_gameplay_category() -> Control:
+	var panel := GameplayOptions.new()
 	panel.dirty_changed.connect(func(_dirty: bool): _sync_footer_state())
 	return panel
 

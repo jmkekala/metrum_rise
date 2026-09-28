@@ -312,7 +312,10 @@ fn exact_preview_replays_close_double_t_bulk_profile_scope() {
             cold_commit.compiled_visual_span_pieces,
         );
 
-        assert_eq!(
+        // Preview now shares unchanged live artifacts. An owner can therefore count both
+        // as replayed and as pointer-identical to the previous committed cache. The two
+        // counts overlap; exact geometry/provenance parity is independently asserted above.
+        assert!(
             network.road_surface.last_reused_span_topology_count
                 + network
                     .road_surface
@@ -323,11 +326,11 @@ fn exact_preview_replays_close_double_t_bulk_profile_scope() {
                             .get(id)
                             .is_some_and(|previous| std::sync::Arc::ptr_eq(previous, piece))
                     })
-                    .count(),
-            network.road_surface.compiled_visual_span_pieces.len(),
+                    .count()
+                >= network.road_surface.compiled_visual_span_pieces.len(),
             "stroke {stroke_idx} must retain every final span from the {offered_spans} offered preview spans or unchanged committed cache"
         );
-        assert_eq!(
+        assert!(
             network.road_surface.last_reused_node_topology_count
                 + network
                     .road_surface
@@ -338,8 +341,8 @@ fn exact_preview_replays_close_double_t_bulk_profile_scope() {
                             .get(id)
                             .is_some_and(|previous| std::sync::Arc::ptr_eq(previous, piece))
                     })
-                    .count(),
-            network.road_surface.compiled_visual_node_pieces.len(),
+                    .count()
+                >= network.road_surface.compiled_visual_node_pieces.len(),
             "stroke {stroke_idx} must retain every final node from the {offered_nodes} offered preview nodes or unchanged committed cache"
         );
     }

@@ -25,6 +25,7 @@ use crate::simulation::water::WaterSystem;
 
 #[derive(Clone, Debug)]
 pub(crate) struct RoadPreviewSnapshot {
+    pub(crate) include_terrain: bool,
     pub(crate) request_id: u64,
     pub(crate) surface_generation: u64,
     /// Forward vehicle lanes used for live parcel-clearance validation when publishing the result.
@@ -63,6 +64,7 @@ pub(crate) struct RoadPreviewWorkerContext {
 
 #[derive(Debug)]
 pub(crate) struct RoadPreviewRequest {
+    pub(crate) include_terrain: bool,
     pub(crate) request_id: u64,
     pub(crate) surface_generation: u64,
     pub(crate) points: Vec<godot::prelude::Vector3>,
@@ -164,6 +166,7 @@ pub(crate) fn run_road_preview_worker(
         let road_debug = crate::debug::category_enabled("road");
         let total_start = road_debug.then(Instant::now);
         let point_count = request.points.len();
+        let include_terrain = request.include_terrain;
         // O(1) immutable Arc snapshot; compiling/exporting must not delay a newer context.
         let context = context
             .read()
@@ -174,7 +177,18 @@ pub(crate) fn run_road_preview_worker(
             .junction_preview
             .as_mut()
             .is_some_and(|scene| retained_cache.reuse(scene));
-        if preview.edit_plan.is_some() || (preview.junction_preview.is_some() && !retained_reused) {
+        let earthworks = include_terrain
+            .then(|| {
+                preview.edit_plan.as_ref().and_then(|plan| {
+                    plan.preview_earthworks(
+                        &context.terrain,
+                        &context.region_graph,
+                        &context.road_surface,
+                    )
+                })
+            })
+            .flatten();
+        if earthworks.is_some() || (preview.junction_preview.is_some() && !retained_reused) {
             // Snapshot only the affected chunk Arcs. Never hold SimCore while filtering meshes
             // or doing Rayon work, and never wait for it while retaining the context read lock.
             let inputs = loop {
@@ -188,12 +202,6 @@ pub(crate) fn run_road_preview_worker(
                         {
                             break None;
                         }
-                        let sites = preview
-                            .edit_plan
-                            .as_ref()
-                            .and_then(|plan| plan.topology_for(&context.region_graph))
-                            .and_then(|plan| plan.earthworks())
-                            .and_then(|plan| RoadTerrainSiteInputs::capture(&core, plan));
                         let meshes = preview
                             .junction_preview
                             .as_ref()
@@ -209,6 +217,9 @@ pub(crate) fn run_road_preview_worker(
                                     })
                                     .collect()
                             });
+                        let sites = earthworks
+                            .as_ref()
+                            .and_then(|plan| RoadTerrainSiteInputs::capture(&core, plan));
                         break Some((sites, meshes));
                     }
                     Err(TryLockError::Poisoned(_)) => panic!("simulation core lock poisoned"),
@@ -225,7 +236,17 @@ pub(crate) fn run_road_preview_worker(
                 }
             };
             if let Some((sites, meshes)) = inputs {
-                compile_preview_terrain(&mut preview, &context, sites);
+                if let Some(earthworks) = &earthworks {
+                    if let Some(plan) = &preview.edit_plan {
+                        preview.edit_plan = Some(Arc::new(plan.with_preview_terrain(
+                            &context.terrain,
+                            &context.region_graph,
+                            &context.road_surface,
+                            earthworks,
+                            sites,
+                        )));
+                    }
+                }
                 if let Some(scene) = &mut preview.junction_preview
                     && let Some(meshes) = meshes
                 {
@@ -279,48 +300,41 @@ pub(crate) fn run_road_preview_worker(
 }
 
 #[cfg(test)]
-/// Compiles the immutable test context without authoritative local site inputs.
+/// Compiles exactly the road-only worker products against an immutable test context.
 pub(crate) fn compile_road_preview_from_context(
     context: &RoadPreviewWorkerContext,
     request: RoadPreviewRequest,
 ) -> RoadPreviewSnapshot {
-    let mut preview = prepare_road_preview_from_context(context, request);
-    compile_preview_terrain(&mut preview, context, None);
-    preview
+    prepare_road_preview_from_context(context, request)
 }
 
 #[cfg(test)]
-/// Exercises production site capture and off-lock compilation against a test core.
+/// Runs optional terrain completion using the same bounded site capture as the worker.
 pub(crate) fn compile_road_preview_with_sites(
     context: &RoadPreviewWorkerContext,
     request: RoadPreviewRequest,
-    core: &mut SimCore,
+    core: &SimCore,
 ) -> RoadPreviewSnapshot {
     let mut preview = prepare_road_preview_from_context(context, request);
-    let sites = preview
-        .edit_plan
-        .as_ref()
-        .and_then(|plan| plan.topology_for(&context.region_graph))
-        .and_then(|plan| plan.earthworks())
-        .and_then(|plan| RoadTerrainSiteInputs::capture(core, plan));
-    compile_preview_terrain(&mut preview, context, sites);
-    preview
-}
-
-fn compile_preview_terrain(
-    preview: &mut RoadPreviewSnapshot,
-    context: &RoadPreviewWorkerContext,
-    sites: Option<RoadTerrainSiteInputs>,
-) {
-    // The unpublished result is exclusively worker-owned; no shared plan is mutated after export.
-    if let Some(plan) = preview.edit_plan.as_mut().and_then(Arc::get_mut) {
-        plan.compile_terrain(
-            &context.terrain,
-            &context.region_graph,
-            &context.road_surface,
-            sites,
-        );
+    if preview.include_terrain {
+        if let Some(plan) = &preview.edit_plan {
+            if let Some(earthworks) = plan.preview_earthworks(
+                &context.terrain,
+                &context.region_graph,
+                &context.road_surface,
+            ) {
+                let sites = RoadTerrainSiteInputs::capture(core, &earthworks);
+                preview.edit_plan = Some(Arc::new(plan.with_preview_terrain(
+                    &context.terrain,
+                    &context.region_graph,
+                    &context.road_surface,
+                    &earthworks,
+                    sites,
+                )));
+            }
+        }
     }
+    preview
 }
 
 fn prepare_road_preview_from_context(
@@ -328,6 +342,7 @@ fn prepare_road_preview_from_context(
     request: RoadPreviewRequest,
 ) -> RoadPreviewSnapshot {
     let request_surface_generation = request.surface_generation;
+    let include_terrain = request.include_terrain;
     let preview_surface = RoadSurfaceSystem::new_with_chunk_grid(
         context.surface_chunk_span_m,
         context.surface_chunk_origin_x_m,
@@ -373,11 +388,7 @@ fn prepare_road_preview_from_context(
         .then_some(render_input)
         .flatten()
         .and_then(|input| {
-            let mut scene = input.render(
-                &context.terrain,
-                &context.region_graph,
-                &context.road_surface,
-            )?;
+            let mut scene = input.render(&context.terrain, &context.road_surface)?;
             // Water-only query changes retain the previous, still-correct road meshes.
             scene.source_mesh_generation = context.source_mesh_generation;
             Some(scene)
@@ -400,6 +411,7 @@ fn prepare_road_preview_from_context(
         Arc::new(RoadEditPlan::new(
             request,
             context.terrain.source_generation(),
+            context.terrain.visual_generation(),
             prepared,
             preview.validation.clone(),
             topology_reuse,
@@ -407,6 +419,7 @@ fn prepare_road_preview_from_context(
         ))
     });
     RoadPreviewSnapshot {
+        include_terrain,
         request_id,
         surface_generation: generation_matches
             .then_some(context.surface_generation)

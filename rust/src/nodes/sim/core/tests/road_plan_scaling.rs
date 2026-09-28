@@ -130,6 +130,12 @@ fn measure_populated_road_plan_scaling(
     let edge_template = core.region_graph.edge(0).clone();
     let mut background_roads = 0;
     let mut previous_patches: Option<Vec<_>> = None;
+    let mut previous_road_meshes: Option<
+        std::collections::BTreeMap<
+            (i32, i32),
+            std::sync::Arc<crate::simulation::network::render::NetworkMeshData>,
+        >,
+    > = None;
     let mut initial_site_solves = None;
     let mut background_cells = 0;
     let mut previous_move_surfaces: [Option<RoadSurfaceSystem>; 2] = [None, None];
@@ -376,8 +382,11 @@ fn measure_populated_road_plan_scaling(
         let mut samples = Vec::new();
         let mut status_samples = Vec::new();
         let mut worker_samples = Vec::new();
+        let mut full_worker_samples = Vec::new();
+        let mut terrain_samples = Vec::new();
         let generation = core.road_tool_surface_generation;
         let request = || RoadPreviewRequest {
+            include_terrain: false,
             request_id: 1,
             surface_generation: generation,
             points: vec![Vector3::new(0.0, 0.0, -80.0), Vector3::new(0.0, 0.0, 0.0)],
@@ -403,17 +412,84 @@ fn measure_populated_road_plan_scaling(
                 previous_patches = Some(patches);
             }
             let worker_start = Instant::now();
-            let preview = crate::nodes::sim::core::road_preview::compile_road_preview_with_sites(
+            let preview = crate::nodes::sim::core::road_preview::compile_road_preview_from_context(
                 &context,
                 request(),
-                &mut core,
             );
             let worker_ms = worker_start.elapsed().as_secs_f64() * 1000.0;
             assert!(preview.is_valid && preview.junction_preview.is_some());
-            let worker_plan = preview.edit_plan().unwrap();
+            let meshes = &preview.junction_preview.as_ref().unwrap().planned;
+            if let Some(previous) = &previous_road_meshes {
+                assert!(meshes.keys().eq(previous.keys()));
+                for (key, current) in meshes {
+                    let original = &previous[key];
+                    macro_rules! same_layer {
+                        ($($field:ident),+) => {
+                            $(assert_eq!(current.$field, original.$field, "remote state changed road {}", stringify!($field));)+
+                        };
+                    }
+                    same_layer!(road_vertices, road_normals, road_uvs, road_colors);
+                    same_layer!(
+                        sidewalk_vertices,
+                        sidewalk_normals,
+                        sidewalk_uvs,
+                        sidewalk_colors
+                    );
+                    same_layer!(curb_vertices, curb_normals, curb_uvs, curb_colors);
+                    same_layer!(
+                        raised_step_vertices,
+                        raised_step_normals,
+                        raised_step_uvs,
+                        raised_step_colors
+                    );
+                    same_layer!(
+                        marking_vertices,
+                        marking_normals,
+                        marking_uvs,
+                        marking_colors
+                    );
+                    same_layer!(
+                        earthwork_vertices,
+                        earthwork_normals,
+                        earthwork_uvs,
+                        earthwork_colors
+                    );
+                    same_layer!(
+                        concrete_vertices,
+                        concrete_normals,
+                        concrete_uvs,
+                        concrete_colors
+                    );
+                }
+            } else {
+                previous_road_meshes = Some(meshes.clone());
+            }
+            let road_plan = preview.edit_plan().unwrap();
+            assert!(road_plan.terrain().is_none());
+            assert_eq!(road_plan.road_status(&core), "ready");
+            let terrain_start = Instant::now();
+            let worker_plan = road_plan.complete_for_commit(&core);
+            let terrain_ms = terrain_start.elapsed().as_secs_f64() * 1000.0;
             assert_eq!(worker_plan.status(&core), "ready");
             assert!(
                 worker_plan
+                    .terrain()
+                    .unwrap()
+                    .entries_match(previous_patches.as_ref().unwrap())
+            );
+            let mut full_request = request();
+            full_request.include_terrain = true;
+            let full_start = Instant::now();
+            let full = super::super::road_preview::compile_road_preview_with_sites(
+                &context,
+                full_request,
+                &core,
+            );
+            let full_ms = full_start.elapsed().as_secs_f64() * 1000.0;
+            let full_plan = full.edit_plan().unwrap();
+            assert_eq!(full_plan.status(&core), "ready");
+            assert!(
+                full_plan
                     .terrain()
                     .unwrap()
                     .entries_match(previous_patches.as_ref().unwrap())
@@ -422,11 +498,15 @@ fn measure_populated_road_plan_scaling(
                 samples.push(compile_ms);
                 status_samples.push(status_ms);
                 worker_samples.push(worker_ms);
+                full_worker_samples.push(full_ms);
+                terrain_samples.push(terrain_ms);
             }
         }
         samples.sort_by(f64::total_cmp);
         status_samples.sort_by(f64::total_cmp);
         worker_samples.sort_by(f64::total_cmp);
+        full_worker_samples.sort_by(f64::total_cmp);
+        terrain_samples.sort_by(f64::total_cmp);
         println!(
             "ROAD_PLAN_SCALING {}",
             serde_json::json!({
@@ -438,6 +518,8 @@ fn measure_populated_road_plan_scaling(
                 "compile_p50_ms": (samples[49] + samples[50]) * 0.5, "compile_p95_ms": samples[94],
                 "readiness_p50_ms": (status_samples[49] + status_samples[50]) * 0.5, "readiness_p95_ms": status_samples[94],
                 "worker_p50_ms": (worker_samples[49] + worker_samples[50]) * 0.5, "worker_p95_ms": worker_samples[94],
+                "full_worker_p50_ms": (full_worker_samples[49] + full_worker_samples[50]) * 0.5, "full_worker_p95_ms": full_worker_samples[94],
+                "click_terrain_p50_ms": (terrain_samples[49] + terrain_samples[50]) * 0.5, "click_terrain_p95_ms": terrain_samples[94],
                 "snapshot_once_per_edit_ms": snapshot_ms,
                 "identical_local_products": true,
             })

@@ -11,31 +11,43 @@ use crate::simulation::network::surface::{
     PreparedRoadInput, RoadPreviewTopologyReuse, RoadPreviewValidation,
 };
 use godot::prelude::Vector3;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// Immutable preparation and solved local graph delta against pinned road/source revisions.
 ///
 /// Retains resolved splits/connections, terminal extensions, junction-adjusted profiles and clips
-/// when the preview's mutation frontier is complete. Also owns local road/site CDT tiles, joined
-/// patch buffers and structural stamps. Readiness pins every geometric dependency. Commit verifies
+/// when the preview's mutation frontier is complete. A click shares these products and adds its
+/// own local terrain tiles, patch buffers and stamps. Readiness pins every dependency. Commit verifies
 /// the adopted products under the simulation lock, then publishes them together or restores the
 /// bounded graph/visual checkpoint. Reference-only dependent updates remain subsystem work.
 /// Exact request/revision matching is O(raw input points), identity checks O(local records).
 #[derive(Debug)]
 pub(crate) struct RoadEditPlan {
+    road: Arc<RoadGeometryPlan>,
+    terrain: Option<Arc<RoadTerrainPlan>>,
+}
+
+// Shared immutable road solve. Only adoption of surface products is single-use. Completing
+// terrain on click never mutates the published preview or clones its geometry buffers.
+#[derive(Debug)]
+struct RoadGeometryPlan {
     request: RoadPreviewRequest,
     terrain_source_generation: u64,
+    terrain_visual_generation: u64,
     prepared: PreparedRoadInput,
     validation: RoadPreviewValidation,
     topology: Option<RoadTopologyPlan>,
-    terrain: Option<RoadTerrainPlan>,
     topology_reuse: Mutex<Option<RoadPreviewTopologyReuse>>,
 }
 
 impl RoadEditPlan {
-    /// Builds the same local solution as the worker against borrowed live inputs for a stale or
-    /// missing click plan. No resident graph, terrain or building collection is cloned.
+    /// Builds complete click products from borrowed live inputs when no preview is available.
     pub(crate) fn compile(core: &SimCore, request: RoadPreviewRequest) -> Self {
+        Self::compile_road(core, request).complete_for_commit(core)
+    }
+
+    /// Builds the same local road solution as the worker without cloning the resident city.
+    pub(crate) fn compile_road(core: &SimCore, request: RoadPreviewRequest) -> Self {
         use crate::simulation::network::surface::RoadSurfaceSystem;
         let prepared = RoadSurfaceSystem::prepare_road_input_for_tool(
             &request.points,
@@ -55,38 +67,109 @@ impl RoadEditPlan {
                 &core.region_graph,
                 &core.transit_network.road_surface,
             );
-        let mut plan = Self::new(
+        Self::new(
             request,
             core.heightmap.source_generation(),
+            core.heightmap.visual_generation(),
             prepared,
             preview.validation,
             reuse,
             topology,
-        );
-        let sites = plan
-            .topology
-            .as_ref()
-            .and_then(|topology| topology.earthworks())
-            .and_then(|earthworks| RoadTerrainSiteInputs::capture(core, earthworks));
-        plan.compile_terrain(
+        )
+    }
+
+    /// Completes terrain against live local dependencies while sharing the exact road solve.
+    /// The caller checks road/input reuse before this O(affected terrain patches/sites) work.
+    pub(crate) fn complete_for_commit(&self, core: &SimCore) -> Self {
+        if self.terrain.is_some() && self.status(core) == "ready" {
+            return Self {
+                road: Arc::clone(&self.road),
+                terrain: self.terrain.clone(),
+            };
+        }
+        if let Some(earthworks) = self.preview_earthworks(
             &core.heightmap,
             &core.region_graph,
             &core.transit_network.road_surface,
-            sites,
-        );
-        plan
+        ) {
+            let sites = RoadTerrainSiteInputs::capture(core, &earthworks);
+            return self.with_preview_terrain(
+                &core.heightmap,
+                &core.region_graph,
+                &core.transit_network.road_surface,
+                &earthworks,
+                sites,
+            );
+        }
+        Self {
+            road: Arc::clone(&self.road),
+            terrain: None,
+        }
+    }
+
+    /// Builds bounded terrain dependencies off-lock for the optional full preview.
+    pub(super) fn preview_earthworks(
+        &self,
+        terrain: &crate::simulation::terrain::TerrainSystem,
+        graph: &RegionGraph,
+        surface: &crate::simulation::network::surface::RoadSurfaceSystem,
+    ) -> Option<Arc<crate::simulation::network::surface::RoadEarthworkPlan>> {
+        self.road
+            .topology
+            .as_ref()?
+            .roads()?
+            .compile_earthworks(surface, graph, terrain)
+            .map(Arc::new)
+    }
+
+    /// Shares the road solve and compiles only captured local terrain/site inputs off-lock.
+    pub(super) fn with_preview_terrain(
+        &self,
+        terrain: &crate::simulation::terrain::TerrainSystem,
+        graph: &RegionGraph,
+        surface: &crate::simulation::network::surface::RoadSurfaceSystem,
+        earthworks: &Arc<crate::simulation::network::surface::RoadEarthworkPlan>,
+        sites: Option<RoadTerrainSiteInputs>,
+    ) -> Self {
+        Self {
+            road: Arc::clone(&self.road),
+            terrain: Some(Arc::new(RoadTerrainPlan::compile(
+                terrain, earthworks, graph, surface, sites,
+            ))),
+        }
     }
 
     /// Complete backend readiness. Local water, parcel and field queries repeat under the commit
     /// lock, so changes in these independent systems cannot authorize an obsolete result.
     pub(crate) fn status(&self, core: &SimCore) -> &'static str {
-        if !self.validation.is_valid {
-            return "invalid";
+        let state = self.road_status(core);
+        if state != "ready" {
+            return state;
         }
-        if self.topology.is_none() {
+        let Some(terrain) = self.terrain.as_ref() else {
+            return "provisional";
+        };
+        let state = terrain.status(core);
+        if state != "compiled" {
+            return state;
+        }
+        if !terrain.has_complete_products() {
             return "provisional";
         }
-        if self.request.surface_generation != core.road_tool_surface_generation
+        "ready"
+    }
+
+    /// Road geometry readiness only; this never authorizes terrain adoption or a live commit.
+    pub(crate) fn road_status(&self, core: &SimCore) -> &'static str {
+        if !self.road.validation.is_valid {
+            return "invalid";
+        }
+        if self.road.topology.is_none() {
+            return "provisional";
+        }
+        if self.road.request.surface_generation != core.road_tool_surface_generation
+            || self.road.terrain_source_generation != core.heightmap.source_generation()
+            || self.road.terrain_visual_generation != core.heightmap.visual_generation()
             || self.topology_for(&core.region_graph).is_none()
         {
             return "stale";
@@ -98,14 +181,8 @@ impl RoadEditPlan {
         {
             return "pending";
         }
-        let Some(terrain) = self.terrain.as_ref() else {
-            return "provisional";
-        };
-        let state = terrain.status(core);
-        if state != "compiled" {
-            return state;
-        }
         if self
+            .road
             .topology_reuse
             .lock()
             .expect("road edit plan topology lock poisoned")
@@ -113,98 +190,82 @@ impl RoadEditPlan {
         {
             return "consumed";
         }
-        let fwd = self.request.fwd_lanes.clamp(0, 255) as u8;
-        let bkw = self.request.bkw_lanes.clamp(0, 255) as u8;
+        let fwd = self.road.request.fwd_lanes.clamp(0, 255) as u8;
+        let bkw = self.road.request.bkw_lanes.clamp(0, 255) as u8;
         let validation = crate::nodes::sim::road_tool::validate_road_candidate_against_water(
-            self.prepared.class,
-            &self.prepared.points,
+            self.road.prepared.class,
+            &self.road.prepared.points,
             fwd,
             bkw,
             &core.watermap,
-            self.validation.clone(),
+            self.road.validation.clone(),
         );
         let width = (f32::from(fwd) + f32::from(bkw)) * crate::config::LANE_WIDTH;
         if !validation.is_valid
             || self.overlaps_fields(core)
             || self.overlaps_cell_zoning(core)
             || core.zoning.cells_overlap_road_corridor(
-                &self.prepared.points,
+                &self.road.prepared.points,
                 width.max(2.0) * 0.5 + crate::config::SIDEWALK_WIDTH,
             )
             || !core
                 .zoning
                 .parcel_ids_overlapping_road_corridor(
-                    &self.prepared.points,
+                    &self.road.prepared.points,
                     width.max(2.0) * 0.5 + crate::config::SIDEWALK_WIDTH,
                 )
                 .is_empty()
         {
             return "invalid";
         }
-        if !terrain.has_complete_products() {
-            return "provisional";
-        }
         "ready"
     }
 
     /// Rechecks current field reservations against final local road and junction footprints.
     pub(crate) fn overlaps_fields(&self, core: &SimCore) -> bool {
-        self.topology
+        self.road
+            .topology
             .as_ref()
-            .and_then(|topology| topology.earthworks())
-            .is_some_and(|earthworks| {
-                earthworks
-                    .roads
-                    .overlaps_fields(&core.allocator.field_clearance)
-            })
+            .and_then(|topology| topology.roads())
+            .is_some_and(|roads| roads.overlaps_fields(&core.allocator.field_clearance))
     }
 
     /// Revalidates cell reservations even when paint changed after this road preview was built.
     pub(crate) fn overlaps_cell_zoning(&self, core: &SimCore) -> bool {
-        self.topology
+        self.road
+            .topology
             .as_ref()
-            .and_then(|topology| topology.earthworks())
-            .is_some_and(|earthworks| earthworks.roads.overlaps_cell_zoning(&core.zoning))
+            .and_then(|topology| topology.roads())
+            .is_some_and(|roads| roads.overlaps_cell_zoning(&core.zoning))
     }
 
     /// Retains the worker's preparation, solved graph delta and optional canonical surface products.
     pub(super) fn new(
         request: RoadPreviewRequest,
         terrain_source_generation: u64,
+        terrain_visual_generation: u64,
         prepared: PreparedRoadInput,
         validation: RoadPreviewValidation,
         topology_reuse: Option<RoadPreviewTopologyReuse>,
         topology: Option<RoadTopologyPlan>,
     ) -> Self {
         Self {
-            request,
-            terrain_source_generation,
-            prepared,
-            validation,
-            topology,
+            road: Arc::new(RoadGeometryPlan {
+                request,
+                terrain_source_generation,
+                terrain_visual_generation,
+                prepared,
+                validation,
+                topology,
+                topology_reuse: Mutex::new(topology_reuse),
+            }),
             terrain: None,
-            topology_reuse: Mutex::new(topology_reuse),
         }
-    }
-
-    /// Compiles captured local site and road products outside the simulation lock.
-    pub(super) fn compile_terrain(
-        &mut self,
-        terrain: &crate::simulation::terrain::TerrainSystem,
-        graph: &RegionGraph,
-        surface: &crate::simulation::network::surface::RoadSurfaceSystem,
-        sites: Option<RoadTerrainSiteInputs>,
-    ) {
-        self.terrain = self
-            .topology
-            .as_ref()
-            .and_then(|plan| plan.earthworks())
-            .map(|earthworks| RoadTerrainPlan::compile(terrain, earthworks, graph, surface, sites));
     }
 
     /// Borrows immutable terrain candidates after the caller has adopted this plan's topology.
     pub(crate) fn terrain(&self) -> Option<&RoadTerrainPlan> {
-        self.terrain.as_ref()
+        self.terrain.as_deref()
     }
 
     /// Borrows the solved input only for an exact click on unchanged road/terrain dependencies.
@@ -217,31 +278,33 @@ impl RoadEditPlan {
         bkw_lanes: i32,
         snap_to_existing_roads: bool,
     ) -> Option<&PreparedRoadInput> {
-        (self.validation.is_valid
-            && self.request.surface_generation == surface_generation
-            && self.terrain_source_generation == terrain_source_generation
-            && self.request.fwd_lanes == fwd_lanes
-            && self.request.bkw_lanes == bkw_lanes
-            && self.request.snap_to_existing_roads == snap_to_existing_roads
-            && self.request.points == raw_points)
-            .then_some(&self.prepared)
+        (self.road.validation.is_valid
+            && self.road.request.surface_generation == surface_generation
+            && self.road.terrain_source_generation == terrain_source_generation
+            && self.road.request.fwd_lanes == fwd_lanes
+            && self.road.request.bkw_lanes == bkw_lanes
+            && self.road.request.snap_to_existing_roads == snap_to_existing_roads
+            && self.road.request.points == raw_points)
+            .then_some(&self.road.prepared)
     }
 
     /// Returns the compiled road validation after exact input/dependency matching.
     pub(crate) fn validation(&self) -> &RoadPreviewValidation {
-        &self.validation
+        &self.road.validation
     }
 
     /// Borrows the solved local delta after exact request/revision matching by the caller.
     pub(crate) fn topology_for(&self, graph: &RegionGraph) -> Option<&RoadTopologyPlan> {
-        self.topology
+        self.road
+            .topology
             .as_ref()
             .filter(|topology| topology.source_identities_match(graph))
     }
 
     /// Transfers optional surface products once, after the authoritative input check.
     pub(crate) fn take_topology_reuse(&self) -> Option<RoadPreviewTopologyReuse> {
-        self.topology_reuse
+        self.road
+            .topology_reuse
             .lock()
             .expect("road edit plan topology lock poisoned")
             .take()
@@ -267,6 +330,7 @@ mod tests {
         );
         let plan = RoadEditPlan::new(
             RoadPreviewRequest {
+                include_terrain: false,
                 request_id: 7,
                 surface_generation: 11,
                 points: raw.clone(),
@@ -275,6 +339,7 @@ mod tests {
                 snap_to_existing_roads: true,
             },
             3,
+            5,
             prepared,
             RoadPreviewValidation::valid(0.0),
             None,
@@ -293,7 +358,7 @@ mod tests {
                 .is_none()
         );
         assert!(
-            plan.prepared_input_for(11, 3, &plan.prepared.points, 1, 1, true)
+            plan.prepared_input_for(11, 3, &plan.road.prepared.points, 1, 1, true)
                 .is_none()
         );
     }
@@ -316,6 +381,7 @@ mod tests {
         });
         let plan = RoadEditPlan::new(
             RoadPreviewRequest {
+                include_terrain: false,
                 request_id: 7,
                 surface_generation: 11,
                 points: points.clone(),
@@ -324,13 +390,14 @@ mod tests {
                 snap_to_existing_roads: true,
             },
             3,
+            5,
             prepared,
             RoadPreviewValidation::valid(0.0),
             None,
             None,
         );
         let input = plan.prepared_input_for(11, 3, &points, 1, 1, true).unwrap();
-        assert!(std::ptr::eq(input, &plan.prepared));
+        assert!(std::ptr::eq(input, &plan.road.prepared));
         assert_eq!(input.extension.as_ref().unwrap().existing_edge_idx, 4);
     }
 }

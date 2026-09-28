@@ -2,28 +2,26 @@
 
 //! Local junction preview export and reversible replacement of cached source owners.
 
-use super::{
-    MeshLayer, NetworkMeshData, NetworkMeshOwner, RoadRenderer, earthwork_color, push_triangle,
-};
-use crate::config::{HEIGHT_SCALE, ROAD_DECAL_RENDER_Z_BIAS_M};
-use crate::simulation::network::graph::RegionGraph;
+use super::{NetworkMeshData, NetworkMeshOwner, RoadRenderer};
+use crate::simulation::network::graph::{RegionGraph, rebuild::JUNCTION_PROFILE_BLEND_ZONE_M};
 use crate::simulation::network::lanes::LaneSystem;
-use crate::simulation::network::surface::{
-    CURB_STEP_HEIGHT_M, RoadSurfaceSystem, RoadVec3, SurfaceChunkKey,
-};
+use crate::simulation::network::surface::{RoadSurfaceSystem, SurfaceChunkKey};
 use crate::simulation::terrain::TerrainSystem;
-use godot::prelude::{Vector2, Vector3};
+use godot::prelude::Vector2;
 use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
-
-mod contacts;
 
 /// The already-compiled validation neighborhood, moved rather than compiled a second time.
 pub(crate) struct RoadPreviewRenderInput {
     graph: RegionGraph,
     surface: RoadSurfaceSystem,
     removed: HashSet<NetworkMeshOwner>,
+    bounded: HashSet<NetworkMeshOwner>,
+    bounds: Vec<[f32; 4]>,
+    replaced_nodes: HashSet<NetworkMeshOwner>,
+    planned_whole: HashSet<NetworkMeshOwner>,
+    planned_bounded: HashSet<NetworkMeshOwner>,
 }
 
 /// Immutable render-only meshes; retained chunks exclude precisely the replaced source owners.
@@ -31,8 +29,6 @@ pub(crate) struct RoadPreviewRenderInput {
 pub(crate) struct RoadJunctionPreview {
     pub(crate) source_mesh_generation: u64,
     pub(crate) planned: BTreeMap<SurfaceChunkKey, Arc<NetworkMeshData>>,
-    /// Unlifted production meshes, used only together with the planned terrain replacement.
-    pub(crate) canonical_planned: BTreeMap<SurfaceChunkKey, Arc<NetworkMeshData>>,
     pub(crate) retained: Arc<BTreeMap<SurfaceChunkKey, Arc<NetworkMeshData>>>,
     pub(crate) retained_revision: u64,
     pub(crate) replacement_chunks: BTreeSet<SurfaceChunkKey>,
@@ -40,6 +36,8 @@ pub(crate) struct RoadJunctionPreview {
     pub(crate) chunk_origin_x_m: f32,
     pub(crate) chunk_origin_z_m: f32,
     removed: HashSet<NetworkMeshOwner>,
+    bounded: HashSet<NetworkMeshOwner>,
+    bounds: Vec<[f32; 4]>,
 }
 
 impl RoadPreviewRenderInput {
@@ -49,6 +47,9 @@ impl RoadPreviewRenderInput {
         surface: RoadSurfaceSystem,
         source_edges: HashMap<usize, usize>,
         removed_nodes: HashSet<u32>,
+        replaced_nodes: HashSet<u32>,
+        preview_edges: HashSet<usize>,
+        preview_nodes: HashSet<u32>,
     ) -> Self {
         let mut removed = HashSet::new();
         for (source, local) in source_edges {
@@ -58,10 +59,66 @@ impl RoadPreviewRenderInput {
             }
         }
         removed.extend(removed_nodes.into_iter().map(NetworkMeshOwner::Node));
+        let bounded = removed
+            .iter()
+            .filter(|owner| matches!(owner, NetworkMeshOwner::Edge(_)))
+            .copied()
+            .collect();
+        let planned_whole = preview_edges
+            .iter()
+            .copied()
+            .map(NetworkMeshOwner::Edge)
+            .chain(preview_nodes.iter().copied().map(NetworkMeshOwner::Node))
+            .collect();
+        let planned_bounded = surface
+            .compiled_visual_span_pieces
+            .keys()
+            .filter(|id| !preview_edges.contains(id))
+            .copied()
+            .map(NetworkMeshOwner::Edge)
+            .collect();
+        let mut nodes: Vec<_> = preview_nodes.iter().copied().collect();
+        nodes.sort_unstable();
+        let bounds = nodes
+            .into_iter()
+            .filter_map(|node| {
+                let incidents = graph.node_adjacency(node);
+                // Isolated new terminals have no source road to partition.
+                if incidents.len() < 2 {
+                    return None;
+                }
+                let pos = graph.node(node).pos;
+                let radius = incidents
+                    .iter()
+                    .map(|&id| {
+                        let edge = graph.edge(id);
+                        graph.junction_profile_crossing_core_m(
+                            id,
+                            graph.get_valid_node(edge.start_node) == node,
+                        ) + JUNCTION_PROFILE_BLEND_ZONE_M
+                            + RoadSurfaceSystem::visual_roadbed_half_width_m(edge)
+                    })
+                    .fold(0.0_f32, f32::max);
+                Some([
+                    pos.x - radius,
+                    pos.z - radius,
+                    pos.x + radius,
+                    pos.z + radius,
+                ])
+            })
+            .collect();
         Self {
             graph,
             surface,
             removed,
+            bounded,
+            bounds,
+            planned_whole,
+            planned_bounded,
+            replaced_nodes: replaced_nodes
+                .into_iter()
+                .map(NetworkMeshOwner::Node)
+                .collect(),
         }
     }
 
@@ -70,23 +127,8 @@ impl RoadPreviewRenderInput {
     pub(crate) fn render(
         mut self,
         terrain: &TerrainSystem,
-        existing_graph: &RegionGraph,
         existing: &RoadSurfaceSystem,
     ) -> Option<RoadJunctionPreview> {
-        let infill = existing.preview_vacated_ground(
-            existing_graph,
-            terrain,
-            self.removed.iter().filter_map(|owner| match owner {
-                NetworkMeshOwner::Edge(edge) => Some(*edge),
-                _ => None,
-            }),
-            self.removed.iter().filter_map(|owner| match owner {
-                NetworkMeshOwner::Node(node) => Some(*node),
-                _ => None,
-            }),
-            &self.graph,
-            &self.surface,
-        )?;
         let mut chunks = BTreeSet::new();
         chunks.extend(self.surface.surface_chunk_cache().keys().copied());
         chunks.extend(self.surface.earthwork_chunk_cache().keys().copied());
@@ -116,7 +158,7 @@ impl RoadPreviewRenderInput {
         }
         let mut lanes = LaneSystem::new();
         lanes.rebuild(&mut self.graph);
-        let mut planned = RoadRenderer.generate_mesh_chunks_with_surface(
+        let planned = RoadRenderer.generate_mesh_chunks_with_surface(
             &self.graph,
             &mut lanes,
             terrain,
@@ -124,58 +166,26 @@ impl RoadPreviewRenderInput {
             &chunks,
         );
         let (origin_x, origin_z) = self.surface.chunk_origin_m();
-        // Keep the production output before road-only presentation adds clearance and infill.
-        // Both variants are bounded by this validation excerpt; no resident meshes are copied.
-        let canonical_planned = planned
-            .iter()
-            .map(|(key, mesh)| (*key, Arc::new(mesh.without_owners(&HashSet::new()))))
-            .collect();
-        // Committed terrain is cut out beneath existing roads and stitched to their edges.
-        // Those contacts must not hover. Only new coverage needs terrain clearance; adjacent
-        // layers share one decision at equal world-XZ positions.
-        planned.par_iter_mut().for_each(|(chunk, mesh)| {
-            lift_display_mesh(
-                mesh,
-                terrain,
-                existing_graph,
-                existing,
-                &infill.boundaries,
-                origin_x + chunk.0 as f32 * self.surface.chunk_span_m(),
-                origin_z + chunk.1 as f32 * self.surface.chunk_span_m(),
-            );
-        });
-        // A bend can shrink the former terminal's footprint. The old terrain cutout remains
-        // resident, so close its vacated area with temporary ground, not the old road markings.
-        // Append after lifting: this infill stays at the committed road/terrain contact height.
-        for triangle in infill.triangles {
-            let center = (triangle[0] + triangle[1] + triangle[2]) / 3.0;
-            let span = self.surface.chunk_span_m();
-            let key = (
-                ((center.x - f64::from(origin_x)) / f64::from(span)).floor() as i32,
-                ((center.z - f64::from(origin_z)) / f64::from(span)).floor() as i32,
-            );
-            chunks.insert(key);
-            let vertices = triangle.map(|point| {
-                Vector3::new(
-                    point.x as f32 - origin_x - key.0 as f32 * span,
-                    point.y as f32,
-                    point.z as f32 - origin_z - key.1 as f32 * span,
-                )
-            });
-            push_triangle(
-                planned.entry(key).or_insert_with(NetworkMeshData::new),
-                MeshLayer::Earthwork,
-                vertices,
-                triangle.map(|point| Vector2::new(point.x as f32, point.z as f32)),
-                earthwork_color(),
-            );
-        }
+        // Display the canonical road geometry at its solved terrain-aware heights. Terrain
+        // replacement and cutout repair belong to placement, so hover does no clearance solve.
         Some(RoadJunctionPreview {
             source_mesh_generation: 0,
-            canonical_planned,
             planned: planned
                 .into_iter()
-                .map(|(key, mesh)| (key, Arc::new(mesh)))
+                .filter_map(|(key, mesh)| {
+                    let origin = Vector2::new(
+                        origin_x + key.0 as f32 * self.surface.chunk_span_m(),
+                        origin_z + key.1 as f32 * self.surface.chunk_span_m(),
+                    );
+                    let mesh = mesh.preview_partition(
+                        &self.planned_whole,
+                        &self.planned_bounded,
+                        &self.bounds,
+                        origin,
+                        true,
+                    );
+                    (!mesh.is_empty()).then(|| (key, Arc::new(mesh)))
+                })
                 .collect(),
             retained: Arc::new(BTreeMap::new()),
             retained_revision: 0,
@@ -183,7 +193,9 @@ impl RoadPreviewRenderInput {
             chunk_span_m: self.surface.chunk_span_m(),
             chunk_origin_x_m: origin_x,
             chunk_origin_z_m: origin_z,
-            removed: self.removed,
+            removed: self.replaced_nodes,
+            bounded: self.bounded,
+            bounds: self.bounds,
         })
     }
 }
@@ -199,7 +211,17 @@ impl RoadJunctionPreview {
             meshes
                 .par_iter()
                 .filter_map(|(key, mesh)| {
-                    let retained = mesh.without_owners(&self.removed);
+                    let origin = Vector2::new(
+                        self.chunk_origin_x_m + key.0 as f32 * self.chunk_span_m,
+                        self.chunk_origin_z_m + key.1 as f32 * self.chunk_span_m,
+                    );
+                    let retained = mesh.preview_partition(
+                        &self.removed,
+                        &self.bounded,
+                        &self.bounds,
+                        origin,
+                        false,
+                    );
                     (!retained.is_empty()).then(|| (*key, Arc::new(retained)))
                 })
                 .collect(),
@@ -219,6 +241,8 @@ struct RetainedEntry {
     grid: (f32, f32, f32),
     chunks: BTreeSet<SurfaceChunkKey>,
     removed: HashSet<NetworkMeshOwner>,
+    bounded: HashSet<NetworkMeshOwner>,
+    bounds: Vec<[f32; 4]>,
     meshes: Arc<BTreeMap<SurfaceChunkKey, Arc<NetworkMeshData>>>,
 }
 
@@ -238,6 +262,8 @@ impl RoadPreviewRetainedCache {
                 )
             || entry.chunks != scene.replacement_chunks
             || entry.removed != scene.removed
+            || entry.bounded != scene.bounded
+            || entry.bounds != scene.bounds
         {
             return false;
         }
@@ -259,116 +285,11 @@ impl RoadPreviewRetainedCache {
             ),
             chunks: scene.replacement_chunks.clone(),
             removed: scene.removed.clone(),
+            bounded: scene.bounded.clone(),
+            bounds: scene.bounds.clone(),
             meshes: Arc::clone(&scene.retained),
         });
     }
-}
-
-fn lift_display_mesh(
-    mesh: &mut NetworkMeshData,
-    terrain: &TerrainSystem,
-    existing_graph: &RegionGraph,
-    existing: &RoadSurfaceSystem,
-    boundaries: &[[RoadVec3; 2]],
-    origin_x: f32,
-    origin_z: f32,
-) {
-    let key = |point: &Vector3| (point.x.to_bits(), point.z.to_bits());
-    let mut base_heights: HashMap<(u32, u32), f32> = HashMap::new();
-    for (vertices, band_height) in [
-        (&mesh.road_vertices, 0.0),
-        (&mesh.sidewalk_vertices, CURB_STEP_HEIGHT_M),
-        (&mesh.curb_vertices, 0.0),
-        (&mesh.raised_step_vertices, 0.0),
-        (&mesh.marking_vertices, ROAD_DECAL_RENDER_Z_BIAS_M),
-    ] {
-        for point in vertices {
-            base_heights
-                .entry(key(point))
-                .and_modify(|height| *height = height.min(point.y - band_height))
-                .or_insert(point.y - band_height);
-        }
-    }
-    // Subgrade support faces must not lift the pavement at the same XZ coordinate.
-    for point in mesh
-        .earthwork_vertices
-        .iter()
-        .chain(&mesh.concrete_vertices)
-    {
-        base_heights.entry(key(point)).or_insert(point.y);
-    }
-    for ((x, z), lift) in &mut base_heights {
-        let world_x = f32::from_bits(*x) + origin_x;
-        let world_z = f32::from_bits(*z) + origin_z;
-        // Reuse the committed surface's query chunks and owner-local triangle grids. Work is
-        // bounded by local query contributors/cells, not the number of roads in the city.
-        if existing
-            .sample_visible_surface_height(existing_graph, terrain, world_x, world_z)
-            .is_some()
-        {
-            *lift = 0.0;
-            continue;
-        }
-        let terrain_height = terrain.sample_visual_height_world(world_x, world_z) * HEIGHT_SCALE;
-        *lift = (terrain_height - *lift).max(0.0) + 0.15;
-    }
-    // Add explicit contact vertices before applying the offset. Merely pinning old vertices
-    // lets a triangle straddling the cutout interpolate a positive lift across the terrain seam.
-    contacts::split_mesh(mesh, &mut base_heights, boundaries, origin_x, origin_z);
-    // Retessellation also creates interior vertices, not just boundary contacts. An
-    // interpolated offset is not a coverage decision: pin new vertices over the old road too.
-    for (&(x, z), offset) in &mut base_heights {
-        if *offset != 0.0
-            && existing
-                .sample_visible_surface_height(
-                    existing_graph,
-                    terrain,
-                    f32::from_bits(x) + origin_x,
-                    f32::from_bits(z) + origin_z,
-                )
-                .is_some()
-        {
-            *offset = 0.0;
-        }
-    }
-    macro_rules! lift {
-        ($vertices:ident, $normals:ident) => {{
-            for point in &mut mesh.$vertices {
-                let offset = base_heights[&key(point)];
-                if offset != 0.0 {
-                    point.y += offset;
-                }
-            }
-            for (triangle, normals) in mesh
-                .$vertices
-                .chunks_exact(3)
-                .zip(mesh.$normals.chunks_exact_mut(3))
-            {
-                if triangle
-                    .iter()
-                    .all(|point| base_heights[&key(point)] == 0.0)
-                {
-                    continue;
-                }
-                if let Some(mut normal) = (triangle[1] - triangle[0])
-                    .cross(triangle[2] - triangle[0])
-                    .try_normalized()
-                {
-                    if normal.dot(normals[0]) < 0.0 {
-                        normal = -normal;
-                    }
-                    normals.fill(normal);
-                }
-            }
-        }};
-    }
-    lift!(earthwork_vertices, earthwork_normals);
-    lift!(curb_vertices, curb_normals);
-    lift!(raised_step_vertices, raised_step_normals);
-    lift!(sidewalk_vertices, sidewalk_normals);
-    lift!(road_vertices, road_normals);
-    lift!(marking_vertices, marking_normals);
-    lift!(concrete_vertices, concrete_normals);
 }
 
 #[cfg(test)]

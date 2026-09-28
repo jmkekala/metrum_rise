@@ -84,6 +84,7 @@ mod tests {
 
     fn request(id: u64) -> RoadPreviewRequest {
         RoadPreviewRequest {
+            include_terrain: false,
             request_id: id,
             surface_generation: 1,
             points: Vec::new(),

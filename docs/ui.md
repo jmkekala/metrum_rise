@@ -150,6 +150,10 @@ layout values. `Graphics` owns Apply-based `Fullscreen` and `Building detail`
 Applying building detail updates live building renderers without reimporting assets; Cancel
 discards pending edits and Reset proposes defaults. Detail uses the shared screen-size LOD
 policy, not asset-authored distance bands; it changes neither simulation nor visibility.
+`Gameplay` owns `Road construction preview`: `Road only (faster)` (default) or `Road and
+terrain`. It persists `gameplay/road_preview_mode`; Apply updates active road tools immediately,
+Cancel discards pending edits and Reset proposes Road only. Full mode previews ground changes
+at additional runtime cost; both modes place the same final roads/terrain (`ROAD-29`).
 Display settings apply through the Options footer and on boot. `Mods` embeds the content-pack manager from
 `scripts/ui/pack_manager.gd`; pack selection changes are persisted through
 `user://active_packs.cfg` and take effect after restart. The previous gameplay toolbar `Mods`
@@ -404,6 +408,7 @@ its close button is used.
 | Window | Launcher | Script / status | Content |
 |--------|----------|-----------------|---------|
 | Options | MainMenu `Options` or gameplay `File -> Options...` | `scripts/ui/options_window.gd` *(implemented)* | Shared options shell with category rail, content pane, footer-level apply/reset/cancel actions, and persisted window state through `user://settings.cfg`. |
+| Gameplay | Options → Gameplay | `scripts/ui/gameplay_options.gd` *(implemented)* | Persistent road-only or road-and-terrain construction previews, applied live through the shared footer. |
 | Graphics | Options → Graphics | `scripts/ui/graphics_options.gd` *(implemented)* | Fullscreen/windowed and building-detail presets, persisted through `user://settings.cfg` and applied through the Options footer. |
 | Accessibility | Options → Accessibility | `scripts/ui/accessibility_options.gd` *(implemented)* | Embedded UI Scale control, persisted through `user://settings.cfg` and applied immediately to scale-aware procedural UI fonts and eligible floating-window sizes. |
 | Building Inspector | Click building with no active tool or while `SelectTool` is active | `scripts/ui/building_inspector.gd` *(implemented)* | Per-building stats: type, level, occupancy, budget, revenue, inventory, extraction-pit reserve/depletion, alerts. Multiple building windows may be open simultaneously; clicking the same building again closes that building's inspector, and visible inspector windows refresh on each in-game hour boundary. Uses Godot's built-in draggable `Window` chrome. |

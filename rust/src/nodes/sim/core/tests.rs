@@ -717,6 +717,7 @@ fn road_preview_rejects_a_mismatched_surface_generation() {
     let preview = super::road_preview::compile_road_preview_from_context(
         &context,
         RoadPreviewRequest {
+            include_terrain: false,
             request_id: 11,
             surface_generation: query.surface_generation.wrapping_add(1),
             points: vec![Vector3::new(-5.0, 0.0, 0.0), Vector3::new(5.0, 0.0, 0.0)],
@@ -954,9 +955,10 @@ fn planned_topology_terrain_rejection_restores_split_dependents() {
     core.allocator
         .prepare_building_site_query_index(core.config.zone_cell_m);
     let (context, query) = road_tool_snapshots_from_core(&core).unwrap();
-    let preview = super::road_preview::compile_road_preview_with_sites(
+    let preview = super::road_preview::compile_road_preview_from_context(
         &context,
         RoadPreviewRequest {
+            include_terrain: false,
             request_id: 1,
             surface_generation: query.surface_generation,
             points: points.clone(),
@@ -964,9 +966,8 @@ fn planned_topology_terrain_rejection_restores_split_dependents() {
             bkw_lanes: 1,
             snap_to_existing_roads: true,
         },
-        &mut core,
     );
-    let plan = preview.edit_plan().unwrap();
+    let plan = preview.edit_plan().unwrap().complete_for_commit(&core);
     assert!(plan.topology_for(&core.region_graph).is_some());
     assert_eq!(
         plan.status(&core),
@@ -1014,6 +1015,7 @@ fn stale_topology_plan_is_rejected_before_authoritative_mutation() {
     let preview = super::road_preview::compile_road_preview_from_context(
         &context,
         RoadPreviewRequest {
+            include_terrain: false,
             request_id: 1,
             surface_generation: query.surface_generation,
             points: points.clone(),
@@ -1590,5 +1592,112 @@ fn lane_change_snapshot_benchmark() {
                 samples[50], samples[90]
             );
         }
+    }
+}
+
+#[test]
+fn road_preview_modes_preserve_live_state_and_share_completed_terrain_on_click() {
+    let mut core = test_core();
+    road_terrain_plan::commit_ready(
+        &mut core,
+        vec![Vector3::new(-96.0, 0.0, 0.0), Vector3::new(96.0, 0.0, 0.0)],
+    );
+    core.allocator
+        .prepare_building_site_query_index(core.config.zone_cell_m);
+    let (context, query) = road_tool_snapshots_from_core(&core).unwrap();
+    let revisions = (
+        core.heightmap.source_generation(),
+        core.heightmap.visual_generation(),
+        core.cached_road_mesh_generation,
+    );
+    for include_terrain in [false, true] {
+        let preview = super::road_preview::compile_road_preview_with_sites(
+            &context,
+            RoadPreviewRequest {
+                include_terrain,
+                request_id: 1,
+                surface_generation: query.surface_generation,
+                points: vec![Vector3::new(0.0, 0.0, -80.0), Vector3::ZERO],
+                fwd_lanes: 1,
+                bkw_lanes: 1,
+                snap_to_existing_roads: true,
+            },
+            &core,
+        );
+        assert!(preview.is_valid);
+        let plan = preview.edit_plan().unwrap();
+        assert_eq!(plan.terrain().is_some(), include_terrain);
+        assert_eq!(plan.road_status(&core), "ready");
+        if include_terrain {
+            assert_eq!(plan.status(&core), "ready");
+            let completed = plan.complete_for_commit(&core);
+            assert!(std::ptr::eq(
+                plan.terrain().unwrap(),
+                completed.terrain().unwrap()
+            ));
+        }
+        assert_eq!(
+            revisions,
+            (
+                core.heightmap.source_generation(),
+                core.heightmap.visual_generation(),
+                core.cached_road_mesh_generation
+            )
+        );
+    }
+}
+
+#[test]
+#[ignore = "matched native preview-mode release timings; run alone"]
+fn benchmark_road_preview_modes() {
+    let mut core = test_core();
+    road_terrain_plan::commit_ready(
+        &mut core,
+        vec![Vector3::new(-96.0, 0.0, 0.0), Vector3::new(96.0, 0.0, 0.0)],
+    );
+    core.allocator
+        .prepare_building_site_query_index(core.config.zone_cell_m);
+    let (context, query) = road_tool_snapshots_from_core(&core).unwrap();
+    for include_terrain in [false, true] {
+        let mut times = Vec::new();
+        for i in 0..32 {
+            let start = std::time::Instant::now();
+            let preview = super::road_preview::compile_road_preview_with_sites(
+                &context,
+                RoadPreviewRequest {
+                    include_terrain,
+                    request_id: i,
+                    surface_generation: query.surface_generation,
+                    points: vec![
+                        Vector3::new(0.0, 0.0, -80.0),
+                        Vector3::new((i % 8) as f32, 0.0, 0.0),
+                    ],
+                    fwd_lanes: 1,
+                    bkw_lanes: 1,
+                    snap_to_existing_roads: true,
+                },
+                &core,
+            );
+            assert!(preview.is_valid);
+            let plan = preview.edit_plan().unwrap();
+            assert_eq!(
+                if include_terrain {
+                    plan.status(&core)
+                } else {
+                    plan.road_status(&core)
+                },
+                "ready"
+            );
+            if i >= 8 {
+                times.push(start.elapsed().as_secs_f64() * 1000.0);
+            }
+        }
+        times.sort_by(f64::total_cmp);
+        eprintln!(
+            "PREVIEW_MODE include_terrain={include_terrain} samples={} p50_ms={:.3} p95_ms={:.3}",
+            times.len(),
+            times[12],
+            times[22]
+        );
     }
 }

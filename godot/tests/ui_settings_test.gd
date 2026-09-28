@@ -41,6 +41,7 @@ func _run() -> void:
 		_expect(Settings.save_ui_scale(NAN) == OK and Settings.get_ui_scale() == Settings.DEFAULT_UI_SCALE, "Saving an invalid scale must never persist NaN")
 		_test_refresh(style)
 		_test_building_quality()
+		_test_road_preview_mode()
 	if had_config:
 		var file := FileAccess.open(Settings.CFG_PATH, FileAccess.WRITE)
 		file.store_buffer(original)
@@ -112,3 +113,20 @@ func _benchmark(style: Script) -> void:
 		samples.sort()
 		print("UI_SCALE_BENCH " + JSON.stringify({"labels": count, "median_us": samples[4], "samples_us": samples}))
 		container.free()
+
+func _test_road_preview_mode() -> void:
+	for value in [-1, 0, 1, 9]:
+		Settings.set_value(Settings.SECTION_GAMEPLAY, Settings.KEY_ROAD_PREVIEW_MODE, value)
+		_expect(Settings.get_road_preview_mode() == (value if value in [0, 1] else 0), "Invalid road preview modes fall back to road only")
+	var panel = preload("res://scripts/ui/gameplay_options.gd").new()
+	root.add_child(panel)
+	panel._pending_mode = 1
+	_expect(panel.has_pending_changes(), "Preview preference edits stay pending")
+	panel.refresh()
+	_expect(not panel.has_pending_changes() and panel._pending_mode == 0, "Cancel discards preview preference edits")
+	panel._pending_mode = 1
+	_expect(panel.apply_changes() == OK and Settings.get_road_preview_mode() == 1, "Full terrain preference persists on Apply")
+	panel.reset_defaults()
+	_expect(panel.has_pending_changes() and Settings.get_road_preview_mode() == 1, "Reset remains pending until Apply")
+	_expect(panel.apply_changes() == OK and Settings.get_road_preview_mode() == 0, "Road-only default persists")
+	panel.free()

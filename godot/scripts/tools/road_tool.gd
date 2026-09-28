@@ -8,6 +8,8 @@
 ## State machine: IDLE → SETTING_CONTROL (spline handle) → SETTING_END → accepted commit → IDLE.
 extends "res://scripts/tools/network_tool.gd"
 
+const GameSettings = preload("res://scripts/core/game_settings.gd")
+
 enum State { IDLE, SETTING_CONTROL, SETTING_END }
 var current_state = State.IDLE
 
@@ -57,12 +59,9 @@ var _candidate_cache_snap_to_roads: bool = true
 var _candidate_cache_surface_generation: int = -1
 var _last_zoning_snap_enabled: bool = false
 var _road_preview_material: ShaderMaterial
-var _junction_preview = preload("res://scripts/renderers/road_junction_preview.gd").new()
+var _road_preview_mode := GameSettings.DEFAULT_ROAD_PREVIEW_MODE
 var _terrain_preview = preload("res://scripts/renderers/road_terrain_preview.gd").new()
-
-func _notification(what: int) -> void:
-	if what == NOTIFICATION_PREDELETE:
-		_terrain_preview.clear()
+var _junction_preview = preload("res://scripts/renderers/road_junction_preview.gd").new()
 
 const ROAD_SURFACE_CURVE_STEP_M := 4.0
 const ROAD_SURFACE_POINT_EPS_M := 0.05
@@ -79,8 +78,27 @@ var _has_road_tangent: bool = false
 # The Rust cursor result retains a node/edge target only within its snapshot generation.
 var _sticky_network_snap: Dictionary = {}
 
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_PREDELETE:
+		_terrain_preview.clear()
+
+func set_road_preview_mode(mode: int) -> void:
+	mode = mode if mode in [0, 1] else GameSettings.DEFAULT_ROAD_PREVIEW_MODE
+	if mode == _road_preview_mode:
+		return
+	_clear_preview_visual()
+	_clear_preview_cache()
+	_road_preview_mode = mode
+	_preview_update_pending = true
+
+func _invalidate_terrain_preview() -> void:
+	_clear_preview_visual()
+	_preview_update_pending = true
+
 func _ready():
 	super._ready()
+	add_to_group("road_preview_tools")
+	_road_preview_mode = GameSettings.get_road_preview_mode()
 	if blueprint_mesh:
 		_road_preview_material = WorldMaterials.road_preview_material()
 		blueprint_mesh.material_override = _road_preview_material
@@ -281,7 +299,7 @@ func _update_preview():
 		_update_preview_measurement_label(validation.get("prepared_points", points), validation)
 		return
 	if is_valid and exact.is_empty() and not _preview_result_pending and points.size() > 1:
-		_preview_request_id = simulation_node.request_preview_road_surface_with_snap(points, fwd_lanes, bkw_lanes, _snap_to_roads_enabled())
+		_preview_request_id = simulation_node.request_preview_road_surface_with_options(points, fwd_lanes, bkw_lanes, _snap_to_roads_enabled(), _road_preview_mode == 1)
 		_preview_request = PreviewRequest.new(self, points, _preview_request_id)
 		_preview_result_pending = true
 	if is_valid and not exact.is_empty():
@@ -457,16 +475,13 @@ func _clear_preview_visual() -> void:
 	if _info_label:
 		_info_label.visible = false
 
-func _invalidate_terrain_preview() -> void:
-	_clear_preview_visual()
-	_clear_preview_cache()
-	_queue_preview_update()
-
 func _draw_compiled_preview_surface(
 	points: PackedVector3Array,
 	preview: Dictionary,
 	validation: Dictionary
 ) -> bool:
+	if bool(preview.get("include_terrain", false)) != (_road_preview_mode == 1):
+		return false
 	var preview_verts: PackedVector3Array = preview.get("prepared_points", PackedVector3Array())
 	var surface_vertices: PackedVector3Array = preview.get("surface_vertices", PackedVector3Array())
 	if (not preview.has("junction_preview") and surface_vertices.size() < 3) or not bool(preview.get("is_valid", true)) or not bool(validation.get("is_valid", false)):
@@ -481,28 +496,25 @@ func _draw_compiled_preview_surface(
 	if preview.has("junction_preview"):
 		var scene: Dictionary = preview["junction_preview"]
 		var staged: Array = []
-		var terrain_complete := false
-		if preview.has("terrain_preview"):
+		var full_terrain: bool = preview.get("include_terrain", false)
+		if full_terrain:
+			if not preview.has("terrain_preview"):
+				return false
 			var payloads: Variant = preview["terrain_preview"].get("patches")
-			# An explicit empty batch is complete (e.g. an elevated bridge with no cutout).
-			# A missing or failed nonempty batch must still use the provisional road display.
-			terrain_complete = payloads is Array and payloads.is_empty()
-			if not terrain_complete and is_instance_valid(terrain_node):
+			if not payloads is Array:
+				return false
+			if not payloads.is_empty():
 				staged = _terrain_preview.stage(terrain_node, payloads, int(preview["surface_generation"]))
-				terrain_complete = not staged.is_empty()
-			if terrain_complete:
-				scene = scene.duplicate()
-				scene["chunks"] = preview["terrain_preview"]["road_chunks"]
-				scene["terrain_coupled"] = true
+				if staged.is_empty():
+					_preview_update_pending = true
+					return false
 		if not _junction_preview.show_preview(self, scene, preview_request_id):
 			_terrain_preview.discard(staged)
 			return false
-		if not terrain_complete:
-			_terrain_preview.clear()
-		else:
+		if full_terrain:
 			_terrain_preview.commit(terrain_node, staged, preview_request_id, _invalidate_terrain_preview)
-			if _road_debug_enabled:
-				print("[DEBUG:road] road_terrain_preview request_id=%d patches=%d" % [preview_request_id, staged.size()])
+		else:
+			_terrain_preview.clear()
 		blueprint_mesh.mesh = null
 	else:
 		_terrain_preview.clear()
@@ -617,10 +629,9 @@ func _update_preview_measurement_label(points: PackedVector3Array, preview: Dict
 			snap_str,
 		]
 		var state: String = plan_state if not plan_state.is_empty() else preview.get("plan_state", "")
-		if not state.is_empty() and (state != "ready" or _terrain_preview.request_id <= 0):
-			# Backend readiness alone is insufficient if the paired renderer could not stage.
+		if not state.is_empty() and state != "ready":
 			_info_label.add_theme_color_override("font_color", Color(1.0, 0.76, 0.18, 0.98))
-			_info_label.text += " [commit validation pending]" if _terrain_preview.request_id > 0 else " [terrain preview pending]"
+			_info_label.text += " [checking road]"
 
 	# Store the preview endpoint — projected to screen each frame in _process.
 	var label_pos: Vector3 = points[points.size() - 1]

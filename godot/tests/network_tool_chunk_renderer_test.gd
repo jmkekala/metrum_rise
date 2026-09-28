@@ -229,7 +229,7 @@ class MockRoadCandidateSimulation:
 		validation_calls += 1
 		return validation.duplicate(true)
 
-	func request_preview_road_surface_with_snap(_points, _fwd, _bkw, _snap) -> int:
+	func request_preview_road_surface_with_options(_points, _fwd, _bkw, _snap, _terrain) -> int:
 		preview_requests += 1
 		return preview_requests
 

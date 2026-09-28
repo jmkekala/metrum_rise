@@ -3,10 +3,12 @@
 //! Independent cold-commit parity for exact junction meshes and retained source owners.
 
 use super::*;
+use crate::config::HEIGHT_SCALE;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::zoning::ZoningSystem;
+use godot::prelude::Vector3;
 
 struct Fixture {
     terrain: TerrainSystem,
@@ -188,7 +190,7 @@ fn verify_junction(through: bool, forward: u8, sloped: bool, connected_tail: boo
     verify_connection(fixture, points, forward);
 }
 
-fn verify_connection(mut fixture: Fixture, points: [Vector3; 2], forward: u8) {
+fn verify_connection<const N: usize>(mut fixture: Fixture, points: [Vector3; N], forward: u8) {
     let before = fixture.mesh();
     let (_, _, input) = fixture
         .network
@@ -240,108 +242,18 @@ fn verify_connection(mut fixture: Fixture, points: [Vector3; 2], forward: u8) {
         &keys,
     );
     let scene = input
-        .render(
-            &fixture.terrain,
-            &fixture.graph,
-            &fixture.network.road_surface,
-        )
-        .expect("valid local cutout infill must render");
+        .render(&fixture.terrain, &fixture.network.road_surface)
+        .expect("valid canonical road scene must render");
     assert!(
         scene.planned.len() >= 2,
         "negative/positive chunk boundaries must be covered"
     );
-    let mut anchored_vertices = 0;
-    assert_eq!(scene.canonical_planned.len(), unlifted.len());
-    for (key, mesh) in &scene.canonical_planned {
-        assert_eq!(
-            signature(mesh),
-            signature(&unlifted[key]),
-            "canonical output must have no display lift or vacated-cap infill"
-        );
-    }
-    let mut cleared_vertices = 0;
-    let flat = exact.road_vertices.iter().all(|point| point.y == 0.0);
-    let empty = NetworkMeshData::new();
     for (key, mesh) in &scene.planned {
-        let original = unlifted.get(key).unwrap_or(&empty);
-        if flat {
-            // Include vertices introduced by contact splitting, not only compiler vertices.
-            for point in &mesh.road_vertices {
-                let x = point.x + scene.chunk_origin_x_m + key.0 as f32 * scene.chunk_span_m;
-                let z = point.z + scene.chunk_origin_z_m + key.1 as f32 * scene.chunk_span_m;
-                if fixture
-                    .network
-                    .road_surface
-                    .sample_visible_surface_height(&fixture.graph, &fixture.terrain, x, z)
-                    .is_some()
-                {
-                    assert_eq!(
-                        point.y, 0.0,
-                        "inserted interior contact must not lift at {x}, {z}"
-                    );
-                }
-            }
-        }
-        for (displayed, raw) in [
-            (&mesh.road_vertices, &original.road_vertices),
-            (&mesh.sidewalk_vertices, &original.sidewalk_vertices),
-            (&mesh.curb_vertices, &original.curb_vertices),
-            (&mesh.raised_step_vertices, &original.raised_step_vertices),
-            (&mesh.marking_vertices, &original.marking_vertices),
-            (&mesh.earthwork_vertices, &original.earthwork_vertices),
-            (&mesh.concrete_vertices, &original.concrete_vertices),
-        ] {
-            // Contact splits retain source vertices and add interpolated seam vertices.
-            assert!(displayed.len() >= raw.len());
-            let displayed_positions: HashSet<_> = displayed
-                .iter()
-                .map(|p| [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()])
-                .collect();
-            for source in raw {
-                let x = source.x + scene.chunk_origin_x_m + key.0 as f32 * scene.chunk_span_m;
-                let z = source.z + scene.chunk_origin_z_m + key.1 as f32 * scene.chunk_span_m;
-                if fixture
-                    .network
-                    .road_surface
-                    .sample_visible_surface_height(&fixture.graph, &fixture.terrain, x, z)
-                    .is_some()
-                {
-                    assert!(
-                        displayed_positions.contains(&[
-                            source.x.to_bits(),
-                            source.y.to_bits(),
-                            source.z.to_bits()
-                        ]),
-                        "preview must not detach replacement roads from committed terrain cutouts at {x}, {z}"
-                    );
-                    anchored_vertices += 1;
-                }
-            }
-        }
-        for point in &original.road_vertices {
-            let x = point.x + scene.chunk_origin_x_m + key.0 as f32 * scene.chunk_span_m;
-            let z = point.z + scene.chunk_origin_z_m + key.1 as f32 * scene.chunk_span_m;
-            if fixture
-                .network
-                .road_surface
-                .sample_visible_surface_height(&fixture.graph, &fixture.terrain, x, z)
-                .is_some()
-            {
-                continue;
-            }
-            let height = fixture.terrain.sample_visual_height_world(x, z) * HEIGHT_SCALE;
-            assert!(
-                mesh.road_vertices
-                    .iter()
-                    .any(|displayed| displayed.x == point.x
-                        && displayed.z == point.z
-                        && displayed.y >= height + 0.149),
-                "display mesh must stay above sampled terrain"
-            );
-            cleared_vertices += 1;
-        }
+        // Display partitions are intentionally local; the complete canonical solve above
+        // still has independent cold-commit parity coverage.
+        assert!(unlifted.contains_key(key));
+        assert!(mesh.vertex_count() > 0);
     }
-    assert!(anchored_vertices > 0 && cleared_vertices > 0);
     fixture.add(&points, forward, 1);
     for (index, (mut displayed, mut committed)) in combined
         .into_iter()
@@ -385,6 +297,24 @@ fn unequal_width_preview_matches_cold_commit() {
 #[test]
 fn sloped_junction_preview_matches_cold_commit() {
     verify_junction(false, 1, true, false);
+}
+
+#[test]
+fn curved_approach_preview_matches_cold_commit() {
+    let mut fixture = Fixture::new(true);
+    fixture.add(&[fixture.point(-60.0, 0.0), fixture.point(60.0, 0.0)], 1, 1);
+    fixture.add(
+        &[fixture.point(24.0, 72.0), fixture.point(60.0, 72.0)],
+        1,
+        1,
+    );
+    let points = [
+        fixture.point(-20.0, -60.0),
+        fixture.point(-6.0, -40.0),
+        fixture.point(0.0, -20.0),
+        fixture.point(0.0, 0.0),
+    ];
+    verify_connection(fixture, points, 1);
 }
 
 #[test]
@@ -453,12 +383,8 @@ fn isolated_strokes_export_canonical_cold_commit_meshes_and_retain_neighbors() {
         let input = input.expect("isolated standard roads need the same canonical render scene");
         assert!(input.removed.is_empty(), "isolated roads replace no owners");
         let mut scene = input
-            .render(
-                &fixture.terrain,
-                &fixture.graph,
-                &fixture.network.road_surface,
-            )
-            .expect("isolated scenes require no vacated cutout infill");
+            .render(&fixture.terrain, &fixture.network.road_surface)
+            .expect("isolated canonical scene must render");
         assert!(
             scene.replacement_chunks.len() >= 2,
             "cross a chunk boundary"
@@ -487,13 +413,8 @@ fn isolated_strokes_export_canonical_cold_commit_meshes_and_retain_neighbors() {
         );
         let empty = NetworkMeshData::new();
         for key in &scene.replacement_chunks {
-            let mut displayed = signature(
-                scene
-                    .canonical_planned
-                    .get(key)
-                    .map(Arc::as_ref)
-                    .unwrap_or(&empty),
-            );
+            let mut displayed =
+                signature(scene.planned.get(key).map(Arc::as_ref).unwrap_or(&empty));
             let retained = signature(scene.retained.get(key).map(Arc::as_ref).unwrap_or(&empty));
             for (layer, retained) in displayed.iter_mut().zip(retained) {
                 layer.extend(retained);
@@ -516,7 +437,6 @@ fn retained_cache_requires_exact_source_ownership_but_not_planned_positions() {
     let mut scene = RoadJunctionPreview {
         source_mesh_generation: 7,
         planned: BTreeMap::new(),
-        canonical_planned: BTreeMap::new(),
         retained: Arc::new(BTreeMap::from([((0, 0), Arc::new(NetworkMeshData::new()))])),
         retained_revision: 0,
         replacement_chunks: BTreeSet::from([(0, 0)]),
@@ -524,6 +444,8 @@ fn retained_cache_requires_exact_source_ownership_but_not_planned_positions() {
         chunk_origin_x_m: -512.0,
         chunk_origin_z_m: -512.0,
         removed: HashSet::from([NetworkMeshOwner::Edge(4), NetworkMeshOwner::Node(2)]),
+        bounded: HashSet::new(),
+        bounds: vec![],
     };
     let mut cache = RoadPreviewRetainedCache::default();
     assert!(!cache.reuse(&mut scene));
@@ -537,7 +459,7 @@ fn retained_cache_requires_exact_source_ownership_but_not_planned_positions() {
     assert!(cache.reuse(&mut moved));
     assert!(Arc::ptr_eq(&retained, &moved.retained));
     assert_eq!(revision, moved.retained_revision);
-    for changed_key in 0..5 {
+    for changed_key in 0..7 {
         let mut changed = scene.clone();
         match changed_key {
             0 => changed.source_mesh_generation += 1,
@@ -546,8 +468,14 @@ fn retained_cache_requires_exact_source_ownership_but_not_planned_positions() {
             3 => {
                 changed.replacement_chunks.insert((1, 0));
             }
-            _ => {
+            4 => {
                 changed.removed.insert(NetworkMeshOwner::Edge(9));
+            }
+            5 => {
+                changed.bounded.insert(NetworkMeshOwner::Edge(9));
+            }
+            _ => {
+                changed.bounds.push([0.0, 0.0, 16.0, 16.0]);
             }
         }
         assert!(
@@ -557,4 +485,167 @@ fn retained_cache_requires_exact_source_ownership_but_not_planned_positions() {
     }
     cache.store(&mut moved);
     assert!(moved.retained_revision > revision);
+}
+
+// A new T on an arm of an existing cross must not rebuild the remote cross.
+#[test]
+#[ignore = "matched release preview benchmark"]
+fn benchmark_neighboring_cross_preview() {
+    for sloped in [false, true] {
+        let mut fixture = Fixture::new(sloped);
+        fixture.add(
+            &[fixture.point(-110.0, 0.0), fixture.point(110.0, 0.0)],
+            1,
+            1,
+        );
+        fixture.add(
+            &[fixture.point(0.0, -110.0), fixture.point(0.0, 110.0)],
+            1,
+            1,
+        );
+        let mut times = Vec::new();
+        for i in 0..32 {
+            let points = [
+                fixture.point(60.0 + (i % 8) as f32, -80.0),
+                fixture.point(60.0, 0.0),
+            ];
+            let start = std::time::Instant::now();
+            let (preview, _, input) = fixture
+                .network
+                .road_surface
+                .compile_preview_surface_mesh_only_with_existing_surface_snap_and_topology_reuse(
+                    &points,
+                    1,
+                    1,
+                    &fixture.terrain,
+                    &fixture.graph,
+                    &fixture.network.road_surface,
+                    true,
+                );
+            assert!(preview.is_valid, "{:?}", preview.validation);
+            let scene = input
+                .unwrap()
+                .render(&fixture.terrain, &fixture.network.road_surface)
+                .unwrap();
+            std::hint::black_box(scene);
+            if i >= 8 {
+                times.push(start.elapsed().as_secs_f64() * 1000.0);
+            }
+        }
+        times.sort_by(f64::total_cmp);
+        eprintln!(
+            "neighbor_cross sloped={sloped} median_ms={:.3} p95_ms={:.3}",
+            times[12], times[22]
+        );
+    }
+}
+
+#[test]
+fn neighboring_cross_is_reused_and_existing_geometry_outside_edit_is_unchanged() {
+    for sloped in [false, true] {
+        let mut fixture = Fixture::new(sloped);
+        fixture.add(
+            &[fixture.point(-110.0, 0.0), fixture.point(110.0, 0.0)],
+            1,
+            1,
+        );
+        fixture.add(
+            &[fixture.point(0.0, -110.0), fixture.point(0.0, 110.0)],
+            1,
+            1,
+        );
+        let compile =
+            |x| {
+                let (preview, _, input) = fixture.network.road_surface
+                .compile_preview_surface_mesh_only_with_existing_surface_snap_and_topology_reuse(
+                    &[fixture.point(x, -80.0), fixture.point(60.0, 0.0)],
+                    1, 1, &fixture.terrain, &fixture.graph, &fixture.network.road_surface, true);
+                assert!(preview.is_valid);
+                input.unwrap()
+            };
+        let first = compile(60.0);
+        let second = compile(61.0);
+        let cross = |input: &RoadPreviewRenderInput| {
+            input
+                .surface
+                .compiled_visual_node_pieces
+                .iter()
+                .find(|(id, _)| {
+                    let p = input.graph.node(**id).pos;
+                    p.x == 0.0 && p.z == 0.0
+                })
+                .unwrap()
+                .1
+                .clone()
+        };
+        assert!(
+            Arc::ptr_eq(&cross(&first), &cross(&second)),
+            "remote cross must reuse exact artifact, sloped={sloped}"
+        );
+        let mut scene = second
+            .render(&fixture.terrain, &fixture.network.road_surface)
+            .unwrap();
+        let originals: BTreeMap<_, _> = RoadRenderer
+            .generate_mesh_chunks_with_surface(
+                &fixture.graph,
+                &mut fixture.network.lane_system,
+                &fixture.terrain,
+                &fixture.network.road_surface,
+                &scene.replacement_chunks,
+            )
+            .into_iter()
+            .map(|(key, mesh)| (key, Arc::new(mesh)))
+            .collect();
+        scene.retain_existing(&originals);
+        let cross_source = fixture
+            .graph
+            .find_node_within(fixture.point(0.0, 0.0), 0.01)
+            .unwrap();
+        assert!(
+            !scene
+                .removed
+                .contains(&NetworkMeshOwner::Node(cross_source))
+        );
+        let cross_owner = HashSet::from([NetworkMeshOwner::Node(cross_source)]);
+        for (key, before) in &originals {
+            let origin = Vector2::new(
+                scene.chunk_origin_x_m + key.0 as f32 * scene.chunk_span_m,
+                scene.chunk_origin_z_m + key.1 as f32 * scene.chunk_span_m,
+            );
+            let empty = NetworkMeshData::new();
+            let after = scene.retained.get(key).map(Arc::as_ref).unwrap_or(&empty);
+            assert_eq!(
+                signature(&before.preview_partition(
+                    &cross_owner,
+                    &HashSet::new(),
+                    &[],
+                    origin,
+                    true
+                )),
+                signature(&after.preview_partition(
+                    &cross_owner,
+                    &HashSet::new(),
+                    &[],
+                    origin,
+                    true
+                ))
+            );
+            // Compare all seven layers outside the exact declared replacement envelope.
+            let mut old_outside = signature(&before.preview_partition(
+                &scene.removed,
+                &scene.bounded,
+                &scene.bounds,
+                origin,
+                false,
+            ));
+            let mut retained = signature(after);
+            for layer in &mut old_outside {
+                layer.sort_unstable();
+            }
+            for layer in &mut retained {
+                layer.sort_unstable();
+            }
+            assert_eq!(old_outside, retained);
+        }
+    }
 }

@@ -3110,6 +3110,16 @@ Deterministic terrain-render rules:
   stores successful buffers in the existing cache. A failure rolls back graph and split dependents
   before lane, entrance, parcel-maintenance, routing, or treasury changes. GPU staging remains a
   separate generation check; it is no longer the first place a terrain-CDT failure can reject a road.
+- Default `ROAD-28` road-only previews display canonical road/junction geometry over unchanged terrain.
+  They sample terrain for road heights but do not construct stamps, cutouts, grading meshes or
+  paired terrain uploads, even while idle. A matching click shares the road solve and completes
+  terrain under the simulation command before atomic validation/publication. Preview readiness
+  is independent of terrain renderer residency; final placement keeps the clipping contract above.
+  `ROAD-29` adds opt-in full road/terrain preview: compile the same local terrain products on
+  the worker, stage both draw batches atomically, and restore original meshes on cancel,
+  mode change or patch invalidation. This changes only temporary rendering; source samples,
+  resident payload caches and acknowledgments remain unchanged. Matching clicks share the
+  completed terrain plan after dependency revalidation.
 - a statusless non-engineered payload may use the regular heightmap `PlaneMesh`. An engineered
   payload is renderable only when its current-contract final status is `ok` and its clipped baked
   buffers are structurally valid. Any omitted-pathological-face count rejects the complete patch

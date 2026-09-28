@@ -59,7 +59,7 @@ fn planned_stamps_match_cold_crossing_close_t_and_terminal_extension() {
             let before = planned.terrain.clone();
             let (prepared, plan, reuse) =
                 planned.plan(&[planned.point(sx, sz), planned.point(ex, ez)]);
-            assert!(plan.earthworks.is_some());
+            assert!(plan.roads.is_some());
             assert_visual_terrain_equal(&before, &planned.terrain); // Planning is read-only.
             cold.cold_add(&prepared);
             planned.adopt(&plan, reuse);
@@ -172,11 +172,7 @@ fn planned_road_queries_match_committed_owners_and_keep_unmapped_neighbors() {
     // Test-only independent source copy: production borrows the already-pinned world context.
     let source_graph = fixture.graph.clone();
     let source_surface = fixture.network.road_surface.clone();
-    let planned = plan
-        .earthworks()
-        .unwrap()
-        .roads
-        .view(&source_graph, &source_surface);
+    let planned = plan.roads().unwrap().view(&source_graph, &source_surface);
     fixture.adopt(&plan, reuse);
     let actual = RoadSurfaceView::new(&fixture.graph, &fixture.network.road_surface);
     let mut covered = 0;

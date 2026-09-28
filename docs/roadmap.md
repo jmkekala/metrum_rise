@@ -23,6 +23,37 @@ Kind values:
 
 ## Active Priorities
 
+Road preview display performance: **Road and terrain is the primary performance target**.
+Tackle `ROAD-30`–`ROAD-36` one at a time, starting with measurement; prioritize measured
+full-mode bottlenecks and shared improvements. Keep Road only for comparison, then review
+whether both modes remain worthwhile after optimization. Mode removal/default changes are
+a later product decision. These are planned candidates, not established speedup claims. The owning
+[plan and acceptance criteria](roads.md#preview-display-performance-plan-road-30road-36)
+preserve both preview modes and local geometry/commit correctness.
+
+| ID | Kind | Status | Priority | Next deliverable |
+| --- | --- | --- | --- | --- |
+| `ROAD-30` | `hardening` | `open` | `P1` | Measure input-to-display stages, result age, payload bytes and resource churn in both modes. |
+| `ROAD-31` | `refactor` | `open` | `P1` | Validate final road buffers once in Rust; retain cheap Godot boundary checks. |
+| `ROAD-32` | `refactor` | `open` | `P1` | Reuse preview nodes, materials and compatible terrain textures with atomic staging. |
+| `ROAD-33` | `refactor` | `open` | `P1` | Preserve unaffected road mesh portions when junction/approach clip boundaries move. |
+| `ROAD-34` | `refactor` | `open` | `P1` | Reuse packed payloads and export changed chunks/layers/products only. |
+| `ROAD-35` | `refactor` | `open` | `P1` | Feed the existing worker one latest pending input while consuming completed previews. |
+| `ROAD-36` | `refactor` | `open` | `P2` | Evaluate compatible mesh buffer updates, retaining rebuilds for topology changes. |
+
+`ROAD-29` — `feature`, `done`, `P1` (2026-09-28). Gameplay option for default
+road-only previews or full road-and-terrain replacement. Both retain bounded road replacement
+and exact neighboring reuse; full mode stages reversible terrain meshes and shares completed
+terrain with matching clicks. Native and Godot checks pass; release deployed. [Contract](roads.md#player-selectable-road-preview-modes-road-29).
+
+`ROAD-28` — `refactor`, `done`, `P1` (2026-09-28). Road/junction previews leave terrain
+reconstruction until click. Follow-up preserves existing roads outside junction/profile
+transitions, removes blanket lift and reuses exact neighboring/previous-cursor artifacts.
+Matched native moving-preview medians: flat 20.2 → 17.1 ms; sloped 34.4 → 24.6 ms. Repeated
+identical-input worker cost stays near 1 ms with matching products through 100,000 background
+buildings / 600,024 agents. All 2,012 active Rust tests, four headless suites, rendered junction
+checks and Rustdoc pass. Release deployed. [Scope and acceptance evidence](roads.md#junction-preview-without-terrain-reconstruction-road-28).
+
 `ZONE-04` — `feature`, `done`, `P1`. Road-generated 10 m cells, six rows on each side;
 shared compatible orthogonal grids, non-overlapping curved/angled arrangements and preservation
 of existing paint/buildings. Cell, Marquee, Fill and Brush share paint/Erase selection. Manual

@@ -328,9 +328,14 @@ Required rule:
 The shared subsystem must not fall back to whole-map terrain flattening for one local support
 surface edit.
 
-Road edit plans retain local structural stamp writes, road/site CDT tiles and joined patch buffers.
-Preview compilation reads source terrain and existing indexed contributors without modifying the
-resident visual grid. A local copy-on-write overlay applies source resets and stamp writes in the
+Road click-completion plans retain local structural stamp writes, road/site CDT tiles and joined
+patch buffers. Road-only preview compilation reads terrain and indexed road contributors while
+retaining the solved local geometry. It builds no structural terrain stamps, cutout patches or
+terrain mesh products in the default road-only mode (`ROAD-28`). Optional full preview
+(`ROAD-29`) compiles these same local products off-lock during hover, captures indexed site
+inputs and temporarily substitutes draw meshes. A matching click revalidates and shares that
+immutable terrain plan. Otherwise, after click, a local copy-on-write overlay applies source resets
+and stamp writes in the
 same interleaved sorted-chunk order as commit. Planned bordered textures, CDT boundary/background
 samples, road grading and building-site grading all read that final visual result. Explicit chunk
 coverage preserves reset-to-default samples; untouched chunks still read the pinned resident grid.
@@ -341,14 +346,14 @@ dependencies and ordered support triangles. Complete patch/tile/seam buffers ret
 only payload generation metadata changes. A different query margin must select the identical
 road/site contributors. Mismatches roll back, rather than replacing ready geometry through fresh
 tile or patch assembly. Plan-less subsystem callers retain the cold compiler.
-Ordinary grounded roads are CDT-only, not height-stamped. The worker captures local building-site
-footprints/support heights and paving regions using the prepared allocator index, then compiles grading off-lock
-against planned roads plus unchanged resident owners. Neither capture nor status checking may
+Ordinary grounded roads are CDT-only, not height-stamped. After click, the simulation command
+captures local building-site footprints/support heights and paving regions using the prepared
+allocator index, then compiles grading against planned roads plus unchanged resident owners. Neither capture nor status checking may
 rebuild the city index; unprepared inputs remain provisional/pending. Exact local site comparisons
 detect added/removed footprints and height/ID/material changes. Planned building grading, coverage and final
-quality validation govern readiness, with exact post-topology checks at adoption. Eligible road
-previews now stage the complete local patch batch with canonical unlifted road meshes using the
-production exporters/builders. Planned ownership can restore regular terrain where a cutout
+quality validation govern full placement readiness, with exact post-topology checks at adoption.
+Hover displays the canonical road/junction scene over unchanged terrain; terrain integration is
+completed before atomic placement using the production exporters/builders. Planned ownership can restore regular terrain where a cutout
 disappears. Ownership is resolved before CDT assembly using the same cached per-loop grading
 calculation as live patches, combining retained owners with planned replacements. Superseded
 owners contribute only to the dirty envelope, not final ownership. Padded query hits cannot claim
@@ -361,16 +366,15 @@ Structural ownership/clip discovery now consumes the final ordered resets/writes
 assembly. Resident per-loop caches depend on source and visual-only revisions; changed overlays
 use a local cache without replacing live entries. Unchanged overlays retain resident cache reuse.
 Site dependencies are captured using each patch's final clip-query margin, not a fixed margin.
-Visual-only changes stale the candidate. Incomplete or missing resident patches still defer
-the paired display; isolated and connected roads use the same path. Temporary meshes inherit resident
-patch visibility and restore the exact original resources on cancellation or invalidation before
-patch updates/recycling/LOD/reset. No terrain samples, payload caches or acknowledgments change.
-Road splits/attachment repair preserve authored site pose and support height; the captured site
-set is checked again after topology adoption. Complete ready plans publish their existing terrain
-buffers directly after road, visual-sample, coverage and ownership checks, without a second CDT
-assembly. Failure restores exact local visual samples as well as graph/split references. A staged
-road/terrain pair may now show readiness; road-only or missing-resource displays remain explicitly
-provisional (`terrain preview pending`). See the readiness/adoption contract in `roads.md`.
+Visual-only changes stale the road candidate. Preview display has no terrain-residency requirement
+and leaves all terrain resources, samples, payload caches and acknowledgments unchanged during
+motion, idle and cancellation. Occasional clipping/z-fighting and exposed old cutouts are accepted
+until placement. Road splits/attachment repair preserve authored site pose and support height;
+the click-captured site set is checked again after topology adoption. Complete commit plans publish
+their existing terrain buffers directly after road, visual-sample, coverage and ownership checks,
+without a second CDT assembly. Failure restores exact local visual samples as well as graph/split
+references. Road-preview readiness and complete placement readiness are separate; see `ROAD-28`
+and the adoption contract in `roads.md`.
 
 The local compiler frontier includes every edge dirtied by final profile solving and every affected
 node, not only the inserted stroke. This same frontier drives preview products and commit's old/new

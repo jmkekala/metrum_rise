@@ -2,7 +2,10 @@
 
 //! Exact source ranges in cached road meshes for reversible local editor replacements.
 
+mod preview;
+
 use super::NetworkMeshData;
+#[cfg(test)]
 use std::collections::HashSet;
 
 /// Authoritative graph owner of a contiguous rendered triangle range.
@@ -41,6 +44,7 @@ impl NetworkMeshData {
 
     /// Copies only unaffected owners, preserving every vertex attribute exactly.
     /// Work is O(cached chunk ranges + retained vertices), never a city-wide scan.
+    #[cfg(test)]
     pub(crate) fn without_owners(&self, removed: &HashSet<NetworkMeshOwner>) -> Self {
         let mut result = Self::new();
         macro_rules! layer {

@@ -14,6 +14,12 @@ pub(crate) struct RoadEditMetrics {
     pub(crate) lock_wait_ms: f64,
     pub(crate) core_work_ms: f64,
     pub(crate) add_ms: f64,
+    /// Whether the exact road geometry came from the worker's latest completed preview.
+    pub(crate) preview_plan_reused: bool,
+    /// Reuse checks or a fresh local road solve; included in add_ms.
+    pub(crate) road_plan_ms: f64,
+    /// Deferred structural stamps, site capture and terrain compilation; included in add_ms.
+    pub(crate) terrain_plan_ms: f64,
     // Finalization includes the agent/lane, building, and routing child stages, but not surface_ms.
     pub(crate) finalize_ms: f64,
     pub(crate) surface_ms: f64,
@@ -42,6 +48,9 @@ impl RoadEditMetrics {
             lock_wait_ms,
             core_work_ms,
             add_ms,
+            preview_plan_reused,
+            road_plan_ms,
+            terrain_plan_ms,
             finalize_ms,
             surface_ms,
             agent_invalidate_ms,

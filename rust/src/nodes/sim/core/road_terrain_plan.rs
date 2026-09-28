@@ -66,6 +66,14 @@ pub(crate) struct RoadTerrainPlan {
 }
 
 impl RoadTerrainPlan {
+    /// Offers the completed structural stamps after topology adoption, before terrain validation.
+    pub(crate) fn enqueue_earthworks(
+        &self,
+        surface: &mut crate::simulation::network::surface::RoadSurfaceSystem,
+    ) {
+        surface.enqueue_planned_earthworks(Some(Arc::clone(&self.earthworks)));
+    }
+
     /// Uses production CDT and patch/seam composition over the old/new road footprint.
     pub(super) fn compile(
         terrain: &TerrainSystem,
@@ -339,6 +347,7 @@ impl RoadTerrainPlan {
     }
 
     /// First deterministic setup/geometry failure in this candidate, if any.
+    #[cfg(test)]
     pub(crate) fn failure_reason(&self) -> Option<&'static str> {
         self.failure_reason
     }

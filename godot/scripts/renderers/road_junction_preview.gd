@@ -6,7 +6,6 @@ extends RefCounted
 
 var generation: int = -1
 var request_id: int = 0
-var _terrain_coupled: bool = false
 var retained_revision: int = 0
 var _instances: Array[MeshInstance3D] = []
 var _retained_instances: Array[MeshInstance3D] = []
@@ -28,8 +27,7 @@ func show_preview(tool: Node3D, data: Dictionary, requested_id: int) -> bool:
 	var mesh_generation := int(data.get("source_mesh_generation", -1))
 	if source_generation < 0 or mesh_generation != tool._road_mesh_generation or source_generation != tool.simulation_node.get_road_tool_surface_generation():
 		return false
-	var terrain_coupled := bool(data.get("terrain_coupled", false))
-	if requested_id == request_id and generation == source_generation and terrain_coupled == _terrain_coupled:
+	if requested_id == request_id and generation == source_generation:
 		return true
 	var keys: PackedInt32Array = data.get("replacement_keys", PackedInt32Array())
 	if keys.is_empty() or keys.size() % 2 != 0:
@@ -86,7 +84,6 @@ func show_preview(tool: Node3D, data: Dictionary, requested_id: int) -> bool:
 	_instances = staged
 	generation = source_generation
 	request_id = requested_id
-	_terrain_coupled = terrain_coupled
 	return true
 
 func clear() -> void:

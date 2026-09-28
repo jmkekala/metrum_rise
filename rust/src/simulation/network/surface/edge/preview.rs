@@ -988,6 +988,21 @@ impl RoadSurfaceSystem {
                     .insert(local_node_id, Arc::clone(topology));
             }
         }
+        let mut source_nodes: Vec<_> = source_node_ids.keys().copied().collect();
+        source_nodes.sort_unstable();
+        if self.published_generation_matches_source() {
+            if let Some(reuse) = self.local_topology_reuse(
+                existing_graph,
+                terrain,
+                source_edge_ids.keys().copied(),
+                &source_nodes,
+            ) {
+                validation_surface.enqueue_preview_topology_reuse(reuse);
+            }
+        }
+        if compile_reason == RoadSurfaceCompileReason::PreviewWorker {
+            self.offer_previous_cursor(terrain, &mut validation_surface);
+        }
         validation_surface.compile_validation_neighborhood_with_reason(
             &validation_graph,
             terrain,
@@ -1106,6 +1121,33 @@ impl RoadSurfaceSystem {
             );
         }
 
+        // Split descendants of the authored stroke remain new preview geometry. Existing
+        // approaches belong to the bounded visible junction edit, not the compiler's halo.
+        let mut preview_edges = HashSet::from([new_edge_idx]);
+        for split in &splits {
+            if preview_edges.contains(&split.edge_id) {
+                preview_edges.insert(split.new_edge_id);
+            }
+        }
+        let preview_nodes: HashSet<_> = preview_edges
+            .iter()
+            .flat_map(|&id| {
+                let edge = validation_graph.edge(id);
+                [
+                    validation_graph.get_valid_node(edge.start_node),
+                    validation_graph.get_valid_node(edge.end_node),
+                ]
+            })
+            .collect();
+        let replaced_nodes = source_node_ids
+            .iter()
+            .filter_map(|(&source, &local)| {
+                preview_nodes
+                    .contains(&validation_graph.get_valid_node(local))
+                    .then_some(source)
+            })
+            .collect();
+
         let mut topology_plan = (compile_reason == RoadSurfaceCompileReason::PreviewWorker)
             .then(|| {
                 RoadTopologyPlan::capture(
@@ -1120,13 +1162,7 @@ impl RoadSurfaceSystem {
             .flatten();
 
         if let Some(plan) = &mut topology_plan {
-            plan.compile_earthworks(
-                &validation_graph,
-                &validation_surface,
-                existing_graph,
-                self,
-                terrain,
-            );
+            plan.capture_road_queries(&validation_graph, &validation_surface, existing_graph);
         }
 
         // The authoritative dirty set also includes far endpoints of adjacent spans. Capture every
@@ -1142,6 +1178,9 @@ impl RoadSurfaceSystem {
             terrain,
             &reusable_node_ids,
         );
+        if compile_reason == RoadSurfaceCompileReason::PreviewWorker {
+            self.remember_cursor(terrain, &topology_reuse);
+        }
         // Every road plan needs its compiled terminals, lanes and support geometry,
         // including the first isolated stroke. Move the already compiled local neighborhood;
         // no second compiler or wider graph lookup is needed for paired terrain presentation.
@@ -1170,6 +1209,9 @@ impl RoadSurfaceSystem {
                 validation_surface,
                 source_edge_ids,
                 removed_nodes,
+                replaced_nodes,
+                preview_edges,
+                preview_nodes,
             )
         });
         (validation, topology_reuse, render_input, topology_plan)

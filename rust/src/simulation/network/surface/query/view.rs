@@ -10,12 +10,12 @@ use std::collections::HashSet;
 
 /// Bounded finalized neighborhood and its source-owner replacement contract.
 pub(crate) struct PlannedRoadSurfaceQuery {
-    graph: RegionGraph,
-    surface: RoadSurfaceSystem,
-    edge_ids: Vec<usize>,
-    node_ids: Vec<u32>,
-    replaced_edges: HashSet<usize>,
-    replaced_nodes: HashSet<u32>,
+    pub(in crate::simulation::network::surface) graph: RegionGraph,
+    pub(in crate::simulation::network::surface) surface: RoadSurfaceSystem,
+    pub(in crate::simulation::network::surface) edge_ids: Vec<usize>,
+    pub(in crate::simulation::network::surface) node_ids: Vec<u32>,
+    pub(in crate::simulation::network::surface) replaced_edges: HashSet<usize>,
+    pub(in crate::simulation::network::surface) replaced_nodes: HashSet<u32>,
 }
 
 impl std::fmt::Debug for PlannedRoadSurfaceQuery {
@@ -58,7 +58,7 @@ impl PlannedRoadSurfaceQuery {
     }
 
     /// Retains only the validation excerpt; compiled owner products remain shared by Arc.
-    pub(in crate::simulation::network::surface) fn capture(
+    pub(crate) fn capture(
         graph: &RegionGraph,
         surface: &RoadSurfaceSystem,
         edge_ids: &[usize],

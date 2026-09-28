@@ -295,32 +295,39 @@ pub(crate) fn run_sim_thread(
                         let add_internal_start = Instant::now();
                         // Complete all geometry before opening the transaction. The worker and
                         // click rebuild use the same local compiler; neither clones the city here.
-                        let edit_plan = edit_plan
-                            .filter(|plan| {
-                                plan.prepared_input_for(
-                                    c.road_tool_surface_generation,
-                                    c.heightmap.source_generation(),
-                                    &points,
+                        let edit_plan = edit_plan.filter(|plan| {
+                            plan.prepared_input_for(
+                                c.road_tool_surface_generation,
+                                c.heightmap.source_generation(),
+                                &points,
+                                fwd_lanes,
+                                bkw_lanes,
+                                snap_to_existing_roads,
+                            )
+                            .is_some()
+                                && plan.road_status(&c) == "ready"
+                        });
+                        edit_metrics.preview_plan_reused = edit_plan.is_some();
+                        let road_plan = edit_plan.unwrap_or_else(|| {
+                            Arc::new(super::RoadEditPlan::compile_road(
+                                &c,
+                                super::road_preview::RoadPreviewRequest {
+                                    include_terrain: false,
+                                    request_id: 0,
+                                    surface_generation: c.road_tool_surface_generation,
+                                    points: points.clone(),
                                     fwd_lanes,
                                     bkw_lanes,
                                     snap_to_existing_roads,
-                                )
-                                .is_some()
-                                    && plan.status(&c) == "ready"
-                            })
-                            .unwrap_or_else(|| {
-                                Arc::new(super::RoadEditPlan::compile(
-                                    &c,
-                                    super::road_preview::RoadPreviewRequest {
-                                        request_id: 0,
-                                        surface_generation: c.road_tool_surface_generation,
-                                        points: points.clone(),
-                                        fwd_lanes,
-                                        bkw_lanes,
-                                        snap_to_existing_roads,
-                                    },
-                                ))
-                            });
+                                },
+                            ))
+                        });
+                        edit_metrics.road_plan_ms =
+                            add_internal_start.elapsed().as_secs_f64() * 1000.0;
+                        let terrain_start = Instant::now();
+                        let edit_plan = road_plan.complete_for_commit(&c);
+                        edit_metrics.terrain_plan_ms =
+                            terrain_start.elapsed().as_secs_f64() * 1000.0;
                         c.transit_network.bulk_load = true;
                         c.transit_network.begin_road_edit();
                         record_crash_phase_for_core(&c, "add road internal");
@@ -329,7 +336,7 @@ pub(crate) fn run_sim_thread(
                             fwd_lanes,
                             bkw_lanes,
                             snap_to_existing_roads,
-                            Some(edit_plan.as_ref()),
+                            Some(&edit_plan),
                         );
                         let add_internal_ms = add_internal_start.elapsed().as_secs_f64() * 1000.0;
                         let finalize_start = Instant::now();
@@ -342,7 +349,7 @@ pub(crate) fn run_sim_thread(
                             let terrain_plan = road_add
                                 .finalized_geometry
                                 .as_ref()
-                                .map(|_| edit_plan.as_ref())
+                                .map(|_| &edit_plan)
                                 .and_then(|plan| plan.terrain());
 
                             let FinalizedRoadGeometry {

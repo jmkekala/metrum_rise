@@ -6,6 +6,20 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
+- **Road preview modes (`ROAD-29`, done)**: Options → Gameplay selects Road only
+  (faster, default) or Road and terrain. Changes apply immediately; full preview uses reversible
+  terrain rendering and the same placement rules. Tests and rendered checks pass; release deployed. [Contract](roads.md#player-selectable-road-preview-modes-road-29).
+
+- **Junction preview refactor (`ROAD-28`, done)**: hover builds road/junction geometry;
+  terrain reconstruction waits for click. The locality correction preserves connected roads
+  outside junction/profile transitions, removes the blanket preview lift and reuses exact
+  committed/previous-cursor geometry. A matched native moving-preview fixture improves flat
+  median 20.2 → 17.1 ms and sloped 34.4 → 24.6 ms; genuinely changed junctions still need solving.
+  Repeated identical-input worker cost stays near 1 ms through 100,000 background buildings;
+  snapshot cost is measured separately. All 2,012 active Rust tests, four headless suites,
+  rendered junction checks and Rustdoc pass. Release extension deployed. New geometry may
+  intersect unchanged terrain during hover. See [scope, measurements and limits](roads.md#junction-preview-without-terrain-reconstruction-road-28).
+
 - **Road-generated cell zoning (`ZONE-04`, done)**: 10 m square cells extend six rows on
   both sides of eligible roads. Compatible orthogonal junctions share a grid; curves and
   competing roads retain non-overlapping cells. Existing paint/buildings remain fixed when
@@ -216,6 +230,14 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
   and interaction are restored after capture. See [`asset_editor.md`](asset_editor.md).
 
 ## Current Priorities
+
+- **Road preview display performance (`ROAD-30`–`ROAD-36`, planned)**: prioritize **Road and
+  terrain**, first measuring input-to-display stages in both modes, then tackle native buffer validation, rendering
+  resource reuse, retained geometry locality, packed payload deltas, worker scheduling and
+  compatible mesh updates one at a time. Each step needs matched performance and correctness
+  evidence. Keep Road only as a comparison; decide whether to retain both modes after measuring
+  the improvements. Next: `ROAD-30`; no frontend speedup is established yet.
+  [Ordered plan and acceptance criteria](roads.md#preview-display-performance-plan-road-30road-36).
 
 - **Codebase audit (`AUDIT-01`, paused by user)**: review the economy, buildings/save lifecycle, Rust/Godot boundary, and network/terrain for obsolete code, duplicated authority, correctness and scaling problems. Coverage and fresh validation are tracked in [`code_audit.md`](code_audit.md).
   The current passes correct household/freight accounting and persistence, indexed agent removal,

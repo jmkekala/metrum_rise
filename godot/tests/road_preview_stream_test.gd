@@ -7,8 +7,12 @@ extends "res://tests/road_junction_preview_test.gd"
 const Metrics := preload("res://scripts/benchmarks/road_benchmark_metrics.gd")
 const MOTION_FRAMES := 96
 const INPUT_INTERVAL_SEC := 1.0 / 60.0
+var motion_frames: int = MOTION_FRAMES
 
 func _run() -> void:
+	var requested_frames := int(OS.get_environment("METRUM_PREVIEW_STREAM_FRAMES"))
+	if requested_frames > 0:
+		motion_frames = requested_frames
 	simulation = SimulationNode.new()
 	root.add_child(simulation)
 	var fixtures := []
@@ -18,11 +22,14 @@ func _run() -> void:
 		{"name": "wide_t", "end_z": 0.0, "forward": 2},
 		{"name": "bend", "end_z": -48.0, "forward": 1, "endpoint_join": true},
 		{"name": "wide_bend", "end_z": -48.0, "forward": 2, "endpoint_join": true},
+		{"name": "sloped_t", "end_z": 0.0, "forward": 1, "sloped": true},
+		{"name": "chunk_boundary_t", "end_z": 0.0, "forward": 1, "offset_x": 128.0},
+		{"name": "dense_t", "end_z": 0.0, "forward": 1, "dense": true},
 	]:
 		fixtures.append(await _stream_fixture(fixture))
 	var capture := {
 		"schema_version": 1, "success": _failures == 0, "fixtures": fixtures,
-		"input_frames": MOTION_FRAMES, "input_interval_sec": INPUT_INTERVAL_SEC,
+		"input_frames": motion_frames, "input_interval_sec": INPUT_INTERVAL_SEC,
 		"binary_sha256": FileAccess.get_sha256("res://bin/libmetrum_rise.so"),
 		"tool_sha256": FileAccess.get_sha256("res://scripts/tools/road_tool.gd"),
 		"harness_sha256": FileAccess.get_sha256(get_script().resource_path),
@@ -43,11 +50,17 @@ func _run() -> void:
 func _stream_fixture(fixture: Dictionary) -> Dictionary:
 	_expect(simulation.create_blank_world(512.0, 512.0, 8.0, 128.0, 0.0), "stream world must load")
 	simulation.set_simulation_speed(0.0)
+	if fixture.get("sloped", false):
+		simulation.slope_terrain(Vector2.ZERO, 256.0, Vector2(-128.0, 0.0), 0.0, Vector2(128.0, 0.0), 6.4, 1.0)
 	var endpoint_join: bool = fixture.get("endpoint_join", false)
-	if not await _commit(PackedVector3Array([Vector3(-60.0, 0.0, 0.0), Vector3(0.0 if endpoint_join else 60.0, 0.0, 0.0)])):
+	if not await _commit(PackedVector3Array([_stream_point(fixture, -60.0, 0.0), _stream_point(fixture, 0.0 if endpoint_join else 60.0, 0.0)])):
 		return {"case": fixture.name, "success": false}
-	if not await _commit(PackedVector3Array([Vector3(24.0, 0.0, 72.0), Vector3(60.0, 0.0, 72.0)])):
+	if not await _commit(PackedVector3Array([_stream_point(fixture, 24.0, 72.0), _stream_point(fixture, 60.0, 72.0)])):
 		return {"case": fixture.name, "success": false}
+	if fixture.get("dense", false):
+		for x in [-36.0, 36.0]:
+			if not await _commit(PackedVector3Array([_stream_point(fixture, x, 48.0), _stream_point(fixture, x, 0.0)])):
+				return {"case": fixture.name, "success": false}
 	var tool := RoadToolScript.new()
 	tool.name = "RoadTool"
 	tool.simulation_node = simulation
@@ -60,7 +73,7 @@ func _stream_fixture(fixture: Dictionary) -> Dictionary:
 	# Manually drive the real process path at a fixed input cadence, without debug/node overlays.
 	tool.active = true
 	tool.fwd_lanes = fixture.forward
-	tool.start_pos = Vector3.ZERO if endpoint_join else Vector3(0.0, 0.0, -48.0)
+	tool.start_pos = _stream_point(fixture, 0.0, 0.0 if endpoint_join else -48.0)
 	tool.current_state = RoadToolScript.State.SETTING_END
 	tool.current_path = Path3D.new()
 	tool.current_path.curve = Curve3D.new()
@@ -82,14 +95,14 @@ func _stream_fixture(fixture: Dictionary) -> Dictionary:
 	var displayed_id := 0
 	var first_display_ms := -1.0
 	var final_points := PackedVector3Array()
-	for index in range(MOTION_FRAMES):
+	for index in range(motion_frames):
 		# Slide the endpoint along/across the trunk and reverse without any stationary samples.
 		var phase := index % 48
 		var x := -16.0 + float(phase if phase < 24 else 47 - phase) * (32.0 / 23.0)
 		# Offset the return leg by half a step so turning points also move.
 		if phase >= 24:
 			x -= 16.0 / 23.0
-		var point := Vector3(x, 0.0, fixture.end_z)
+		var point := _stream_point(fixture, x, fixture.end_z)
 		final_points = PackedVector3Array([tool.start_pos, point])
 		tool.set_scripted_pointer(true, point)
 		tool._queue_preview_update()
@@ -149,3 +162,7 @@ func _stream_fixture(fixture: Dictionary) -> Dictionary:
 		"tool_process_ms": Metrics.distribution(process_times), "samples": samples,
 		"state_before": before, "state_after": after,
 	}
+
+func _stream_point(fixture: Dictionary, x: float, z: float) -> Vector3:
+	x += float(fixture.get("offset_x", 0.0))
+	return _ground_point(x, z) if fixture.get("sloped", false) else Vector3(x, 0.0, z)

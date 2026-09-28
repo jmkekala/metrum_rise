@@ -12,6 +12,13 @@ var _invalidated: Callable
 func stage(terrain: Node3D, payloads: Variant, generation: int) -> Array:
 	if not is_instance_valid(terrain) or not terrain.has_signal("patch_render_will_change") or not payloads is Array or payloads.is_empty():
 		return []
+	# Check residency before constructing any GPU resources. Streaming may need another frame.
+	for data in payloads:
+		if not data is Dictionary or not data.has("patch_x") or not data.has("patch_z"):
+			return []
+		var key := Vector2i(data["patch_x"], data["patch_z"])
+		if not terrain._terrain_patch_payload_is_stageable(key, data, generation, int(data.get("render_step_mm", 0)), true):
+			return []
 	var staged: Array = []
 	var seen := {}
 	for data in payloads:

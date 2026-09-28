@@ -1034,6 +1034,7 @@ impl SimCore {
             Some(RoadEditPlan::compile(
                 self,
                 crate::nodes::sim::core::RoadPreviewRequest {
+                    include_terrain: false,
                     request_id: 0,
                     surface_generation: self.road_tool_surface_generation,
                     points: points.clone(),
@@ -1325,6 +1326,11 @@ impl SimCore {
             );
             None
         };
+        if finalized_geometry.is_some()
+            && let Some(terrain) = edit_plan.and_then(|plan| plan.terrain())
+        {
+            terrain.enqueue_earthworks(&mut self.transit_network.road_surface);
+        }
         debug_log!(
             "road",
             "road_edit_topology adopted={}",

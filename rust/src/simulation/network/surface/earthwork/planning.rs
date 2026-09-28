@@ -2,14 +2,16 @@
 
 //! Bounded planned road terrain cutout inputs and exact reusable structural stamp products.
 
-use super::super::{RoadSurfaceTerrainClipExportError, RoadSurfaceTerrainClipLoop};
+use super::super::{
+    PlannedRoadSurfaceQuery, RoadSurfaceTerrainClipExportError, RoadSurfaceTerrainClipLoop,
+};
 use super::stamping::{
     EarthworkChunkStampBuilder, EarthworkChunkStampResult, EarthworkStampTriangle,
 };
 use super::*;
 use crate::simulation::terrain::cdt::TerrainCdtRoadLoop;
 use crate::simulation::terrain::{TerrainPatchSnapshot, TerrainVisualOverlay};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// Local road-only clipping input; building contributors must still be checked at commit.
 #[derive(Debug)]
@@ -68,8 +70,8 @@ pub(crate) struct RoadEarthworkPlan {
     pub(crate) visual: TerrainVisualOverlay,
     /// Read-only inputs for the existing terrain CDT compiler.
     pub(crate) clip_patches: Vec<PlannedRoadTerrainClipPatch>,
-    /// Final local road queries used by building-site grading in the preview worker.
-    pub(crate) roads: super::super::PlannedRoadSurfaceQuery,
+    /// Shared final local road queries used by building-site grading after a click.
+    pub(crate) roads: Arc<PlannedRoadSurfaceQuery>,
 }
 
 impl RoadEarthworkPlan {
@@ -121,22 +123,25 @@ impl RoadEarthworkPlan {
     }
 }
 
-impl RoadSurfaceSystem {
+impl PlannedRoadSurfaceQuery {
     /// Compiles only the replacement owners' old/new chunks, retaining all other contributors
     /// through the existing earthwork chunk index. IDs must match topology adoption order.
     /// Work is O(local coverage + sum(chunk owners * log(chunk owners)) + stamp raster work).
-    pub(crate) fn plan_earthwork_overlay(
-        &self,
-        graph: &RegionGraph,
-        existing: &Self,
+    pub(crate) fn compile_earthworks(
+        self: &Arc<Self>,
+        existing: &RoadSurfaceSystem,
         existing_graph: &RegionGraph,
         terrain: &TerrainSystem,
-        edge_ids: &[usize],
-        node_ids: &[u32],
-        replaced_edges: &HashSet<usize>,
-        replaced_nodes: &HashSet<u32>,
     ) -> Option<RoadEarthworkPlan> {
-        let grid = EarthworkGridDependency::capture(self, terrain);
+        let Self {
+            graph,
+            surface,
+            edge_ids,
+            node_ids,
+            replaced_edges,
+            replaced_nodes,
+        } = self.as_ref();
+        let grid = EarthworkGridDependency::capture(surface, terrain);
         if grid != EarthworkGridDependency::capture(existing, terrain) {
             return None;
         }
@@ -152,13 +157,13 @@ impl RoadSurfaceSystem {
             }
         }
         // `self` is the bounded validation excerpt, never the resident city's surface cache.
-        chunks.extend(self.earthwork_chunk_cache.keys().copied());
+        chunks.extend(surface.earthwork_chunk_cache.keys().copied());
         let chunks = chunks.into_iter().collect::<Vec<_>>();
         // Same bounded dirty-patch envelope as commit. The conservative query discovers road
         // contributors; exact tile influence and input checks decide what can be reused.
         let render_step_m = crate::simulation::terrain::ROAD_LOCKED_TERRAIN_RENDER_STEP_M;
         let patch_keys =
-            self.render_patch_keys_for_chunk_grading_envelopes(terrain, &chunks, render_step_m);
+            surface.render_patch_keys_for_chunk_grading_envelopes(terrain, &chunks, render_step_m);
         let planned_chunks: HashMap<_, _> = chunks
             .par_iter()
             .map(|&chunk| {
@@ -173,21 +178,21 @@ impl RoadSurfaceSystem {
                             .then_some((id, (existing, existing_graph, id)))
                     }));
                 }
-                if let Some(entry) = self.earthwork_chunk_cache.get(&chunk) {
+                if let Some(entry) = surface.earthwork_chunk_cache.get(&chunk) {
                     edges.extend(
                         entry
                             .edge_indices
                             .iter()
-                            .map(|&id| (edge_ids[id], (self, id))),
+                            .map(|&id| (edge_ids[id], (surface, id))),
                     );
                     nodes.extend(
                         entry
                             .node_ids
                             .iter()
-                            .map(|&id| (node_ids[id as usize], (self, graph, id))),
+                            .map(|&id| (node_ids[id as usize], (surface, graph, id))),
                     );
                 }
-                let mut builder = EarthworkChunkStampBuilder::new(self, terrain, chunk);
+                let mut builder = EarthworkChunkStampBuilder::new(surface, terrain, chunk);
                 if !edges.is_empty() || !nodes.is_empty() {
                     builder.mark_cache_present();
                 }
@@ -208,7 +213,7 @@ impl RoadSurfaceSystem {
         // Resets and writes must stay interleaved: neighboring chunks share inclusive border
         // samples, and a later reset can replace an earlier stamp at that border.
         for chunk in chunks {
-            let (min, max) = self.chunk_bounds(chunk);
+            let (min, max) = surface.chunk_bounds(chunk);
             visual.reset_region_from_source_world(
                 terrain,
                 min.x as f32,
@@ -234,7 +239,7 @@ impl RoadSurfaceSystem {
             |id| !replaced_edges.contains(&id),
             |id| !replaced_nodes.contains(&id),
         );
-        for (key, planned_margin) in self.terrain_render_patch_grading_margins_for_patches(
+        for (key, planned_margin) in surface.terrain_render_patch_grading_margins_for_patches(
             graph,
             &final_visual,
             render_step_m,
@@ -268,7 +273,7 @@ impl RoadSurfaceSystem {
                     RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary { node_id, .. }
                     | RoadSurfaceEarthworkFaceSource::NodeSameMaterialBoundaryHandoff { node_id, .. } => !replaced_nodes.contains(&node_id),
                 }));
-                let mapped = self.terrain_clip_boundary_loops_for_world_bounds(
+                let mapped = surface.terrain_clip_boundary_loops_for_world_bounds(
                     graph, bounds.0, bounds.1, bounds.2, bounds.3,
                 ).into_iter().map(|boundary| {
                     let mut boundary = boundary.clone();
@@ -284,7 +289,7 @@ impl RoadSurfaceSystem {
                 old.extend(mapped.iter());
                 // Union only after removing superseded owners, and in live owner order.
                 old.sort_by_key(|boundary| clip_owner_key(boundary));
-                let loops = Self::terrain_cdt_road_loops_from_boundaries(&old);
+                let loops = RoadSurfaceSystem::terrain_cdt_road_loops_from_boundaries(&old);
                 Some(PlannedRoadTerrainClipPatch {
                     patch: Arc::new(patch), road_owned: road_margin.is_some(), query_margin_m, loops,
                 })
@@ -295,14 +300,7 @@ impl RoadSurfaceSystem {
             chunks: planned_chunks,
             visual,
             clip_patches,
-            roads: super::super::PlannedRoadSurfaceQuery::capture(
-                graph,
-                self,
-                edge_ids,
-                node_ids,
-                replaced_edges,
-                replaced_nodes,
-            ),
+            roads: Arc::clone(self),
         })
     }
 }
@@ -326,6 +324,7 @@ mod tests {
         types::{EdgeClass, NodeType},
     };
     use godot::prelude::Vector3;
+    use std::collections::HashSet;
 
     #[test]
     fn replaced_road_ownership_does_not_lock_vacated_patches() {
@@ -348,18 +347,16 @@ mod tests {
         };
         let (old_graph, old) = make_road(-20.0);
         let (graph, surface) = make_road(20.0);
-        let plan = surface
-            .plan_earthwork_overlay(
-                &graph,
-                &old,
-                &old_graph,
-                &terrain,
-                &[1],
-                &[2, 3],
-                &HashSet::from([0]),
-                &HashSet::from([0, 1]),
-            )
-            .unwrap();
+        let plan = Arc::new(PlannedRoadSurfaceQuery::capture(
+            &graph,
+            &surface,
+            &[1],
+            &[2, 3],
+            &HashSet::from([0]),
+            &HashSet::from([0, 1]),
+        ))
+        .compile_earthworks(&old, &old_graph, &terrain)
+        .unwrap();
         let keys = plan
             .clip_patches
             .iter()
@@ -393,18 +390,16 @@ mod tests {
         let mut surface = RoadSurfaceSystem::new(16.0);
         assert!(surface.compile_dirty(&graph, &terrain));
         let empty_surface = RoadSurfaceSystem::new(16.0);
-        let plan = surface
-            .plan_earthwork_overlay(
-                &graph,
-                &empty_surface,
-                &RegionGraph::new(),
-                &terrain,
-                &[0],
-                &[0, 1],
-                &HashSet::new(),
-                &HashSet::new(),
-            )
-            .unwrap();
+        let plan = Arc::new(PlannedRoadSurfaceQuery::capture(
+            &graph,
+            &surface,
+            &[0],
+            &[0, 1],
+            &HashSet::new(),
+            &HashSet::new(),
+        ))
+        .compile_earthworks(&empty_surface, &RegionGraph::new(), &terrain)
+        .unwrap();
         assert!(
             plan.chunks
                 .values()
