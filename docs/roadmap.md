@@ -33,8 +33,10 @@ and Rustdoc. Release extension deployed. Detailed implementation and historical 
 [`zoning.md`](zoning.md#feature-handoff--zone-04).
 Post-handoff whole-grid dominance removed: depth priority preserves both roads' frontage and
 paint/erase preserves the displayed layout. Empty rear cells without rectangular frontage
-support are removed after overlap resolution. Fresh verification: 2,007 release Rust tests,
-both zoning bridge suites and local generation benchmarks pass; updated extension deployed.
+support are removed after overlap resolution. Junction additions preserve the continuing
+straight road's uninterrupted backside grid, with corrected endpoint coverage and rollback
+phase handling. Fresh verification: 2,008 release Rust tests and both zoning bridge suites
+pass; updated extension deployed. Measurements live in the owning zoning document.
 
 `AUDIT-01` — `hardening`, `parked`, `P1`. Paused by user at a validated checkpoint; resume only when requested. Persistent state is in `audit-state/` at the project root. Audit the existing codebase in subsystem passes, fix confirmed obsolete/duplicate code and correctness/scaling findings, and distinguish source inspection from fresh correctness and performance validation. Coverage and acceptance evidence: [`code_audit.md`](code_audit.md). Exit: every source area has a documented pass, confirmed findings are resolved or explicitly tracked, and affected behavior is validated.
 

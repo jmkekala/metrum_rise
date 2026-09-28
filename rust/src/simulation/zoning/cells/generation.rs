@@ -132,7 +132,9 @@ impl CellStore {
                 y: candidate.y,
             };
             raw.insert(key);
-            let entry = priorities.entry(key).or_insert((candidate.priority(), false, [0_u8; 4]));
+            let entry = priorities
+                .entry(key)
+                .or_insert((candidate.priority(), false, [0_u8; 4]));
             entry.2[candidate.frontage.boundary as usize] |= 1 << candidate.row;
             if candidate.row == 0 {
                 frontages.entry(key).or_default().push(candidate.frontage);
@@ -372,7 +374,7 @@ fn edge_candidates(
                 // Recomputing it from each sampled chord accumulates independent rounding.
                 origin = points[0] + normal * half_width;
                 if alignment.is_none() {
-                    if let Some(anchor) =
+                    if let Some((anchor, _)) =
                         junction_anchor(graph, edge_id, tangent, normal, half_width)
                     {
                         origin += tangent * tangent.dot(anchor - origin);
@@ -420,8 +422,14 @@ fn edge_candidates(
                     continue;
                 }
                 let partial_start = station == 0.0 && along < -station_precision;
-                let partial_end = end_station == length
-                    && along + cell_m > tangent.dot(end - start) + station_precision;
+                // A rounded road length can leave a tiny final group. The preceding
+                // group must still prove coverage before offering its last full column.
+                let partial_end = if straight {
+                    station + along + cell_m > length + station_precision
+                } else {
+                    end_station == length
+                        && along + cell_m > tangent.dot(end - start) + station_precision
+                };
                 let mut coverage = [0.0, 1.0];
                 if partial_start || partial_end {
                     let a = start + tangent * along;
@@ -431,13 +439,27 @@ fn edge_candidates(
                         boundary += 1;
                         continue;
                     }
-                    coverage = [
-                        (-along / cell_m).clamp(0.0, 1.0),
-                        ((length - station - along) / cell_m).clamp(0.0, 1.0),
-                    ];
-                    if along_sign < 0 {
-                        coverage = [1.0 - coverage[1], 1.0 - coverage[0]];
-                    }
+                    // Project the actual shared endpoints into the canonical frame. Arc
+                    // length subtraction rounds independently on each split child and can
+                    // leave a fractional hole in otherwise continuous frontage.
+                    let first = frame.local(points[0])[along_axis];
+                    let last = frame.local(points[points.len() - 1])[along_axis];
+                    let cell_start = local[along_axis] - f64::from(along_sign < 0);
+                    let endpoint_precision =
+                        super::geometry::road_source_precision(source_bounds) / cell_m;
+                    coverage = [first.min(last) - cell_start, first.max(last) - cell_start].map(
+                        |fraction| {
+                            // The coverage proof already allows source-coordinate uncertainty.
+                            // Apply that same bound at the cell endpoints when storing its span.
+                            if fraction <= endpoint_precision {
+                                0.0
+                            } else if fraction >= 1.0 - endpoint_precision {
+                                1.0
+                            } else {
+                                fraction
+                            }
+                        },
+                    );
                 }
                 for row in 0..CELL_DEPTH {
                     let mut cell = local;
@@ -531,7 +553,7 @@ fn junction_anchor(
     tangent: DVec2,
     normal: DVec2,
     half_width: f64,
-) -> Option<DVec2> {
+) -> Option<(DVec2, bool)> {
     let edge = graph.edge(edge_id);
     for (node_id, inward) in [(edge.start_node, tangent), (edge.end_node, -tangent)] {
         let mut neighbors: Vec<_> = graph
@@ -568,19 +590,23 @@ fn junction_anchor(
             }
             let neighbor_width =
                 f64::from(neighbor.width) * 0.5 + f64::from(crate::config::SIDEWALK_WIDTH);
-            return Some(node + normal * half_width + inward * neighbor_width);
+            return Some((
+                node + normal * half_width + inward * neighbor_width,
+                direction.dot(normal) > 0.0,
+            ));
         }
     }
     None
 }
 
 /// Computes a straight curb's junction phase in an already selected common basis.
+/// The boolean identifies a corner on this curb's side, rather than across the road.
 pub(super) fn straight_frame(
     graph: &RegionGraph,
     edge_id: usize,
     basis: GridFrame,
     side: f64,
-) -> GridFrame {
+) -> (GridFrame, bool) {
     let edge = graph.edge(edge_id);
     let a = edge.physical_geometry[0];
     let b = edge.physical_geometry[edge.physical_geometry.len() - 1];
@@ -595,10 +621,14 @@ pub(super) fn straight_frame(
     let normal = DVec2::new(tangent.y, -tangent.x) * side;
     let half_width = f64::from(edge.width) * 0.5 + f64::from(crate::config::SIDEWALK_WIDTH);
     let mut origin = start + normal * half_width;
-    if let Some(anchor) = junction_anchor(graph, edge_id, tangent, normal, half_width) {
+    let anchor = junction_anchor(graph, edge_id, tangent, normal, half_width);
+    if let Some((anchor, _)) = anchor {
         origin += tangent * tangent.dot(anchor - origin);
     }
-    basis.at_origin(origin)
+    (
+        basis.at_origin(origin),
+        anchor.is_some_and(|(_, same_side)| same_side),
+    )
 }
 
 /// Tests canonical rectangles against every local standard road, including the supplying edge.

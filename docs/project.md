@@ -18,8 +18,10 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
   Post-handoff testing removed whole-grid dominance: shallower rows retain priority so both
   roads keep their frontage, while paint/erase preserves the displayed layout. Empty cells
   cut off from rectangular road-frontage support are removed after overlap resolution.
-  Fresh release verification passes 2,007 Rust tests and both zoning bridge suites. Local
-  benchmarks retain bounded cost; the new check adds 25–27 µs to the small straight fixture.
+  Adding a junction now preserves the uninterrupted backside grid of the original straight
+  road; endpoint coverage and split/restore phase handling are corrected. Fresh release
+  verification passes 2,008 Rust tests and both zoning bridge suites. The earlier rear-cell
+  support check added 25–27 µs to the small straight fixture.
   The updated extension is deployed.
   See [feature handoff](zoning.md#feature-handoff--zone-04).
 

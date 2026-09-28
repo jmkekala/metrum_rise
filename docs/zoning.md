@@ -823,6 +823,9 @@ or visible. Road edits prepare those choices for the changed roads and one endpo
 ring. Existing compatible choices seed new roads; entirely new local components start at their
 lowest edge id. A road must fit the selected basis along its full sampled centreline. Phases share
 an exact frame only when their periodic difference fits the source-coordinate uncertainty.
+An unchanged straight curb, including a same-width split or reversed child, retains its prior
+directed phase when no perpendicular corner constrains that side. A junction anchor across the
+road cannot rephase the uninterrupted backside; same-side corners retain their alignment rules.
 Incompatible existing choices remain separate, and painted/claimed cell frames remain pinned.
 Ordered constraint propagation does not traverse beyond the affected ring; independent source
 sampling uses Rayon. Work is O((K + A) log K + X) for affected roads K, adjacency incidences A and
@@ -3161,3 +3164,57 @@ directly with `RAYON_NUM_THREADS=1` and `METRUM_DEBUG=0`. The rebuilt extension 
 `cell-tests.log`, `full-tests.log`, `build.log` and the named bridge logs record validation;
 `deployed.sha256` verifies atomic deployment to `godot/bin/libmetrum_rise.so`. Restart the
 game for visual retesting of the reported corner.
+
+### Straight-road junction continuity — 2026-09-28
+
+Adding a branch must retain the continuing road's uninterrupted backside grid. Previously,
+phase selection compared both split children against new endpoint/junction anchors, which
+could replace the parent's phase and leave a seam. Same-width subdivisions now inherit the
+appropriate directed parent phase unless a perpendicular corner constrains that same curb.
+Opposite-side anchors cannot move the backside grid. Same-side corner alignment remains
+available; longer restored/merged roads use the normal phase selection so rejected edits do
+not retain a staged junction's phase.
+
+Partial frontage spans use shared endpoint coordinates in the canonical frame, with the same
+source-precision bound as the coverage proof at cell endpoints. The straight terminal check
+uses the remaining road length even when rounding leaves a tiny final group; an earlier group
+cannot offer a whole extra column beyond the road. Curve group handling is unchanged.
+
+The added regression checks unchanged backside cell identities across perpendicular/angled
+branches, three road rotations, both edge directions and origin/translated coordinates. It
+also bounds the original road's column count. Existing block-layout, no-build, occupied-lot,
+save and rollback tests remain acceptance requirements. Work retains the existing local
+O((K + A) log K + X) alignment bound and bounded endpoint coverage queries; no new index,
+citywide traversal or per-agent/tick allocation is introduced.
+
+Fresh verification passes all 2,008 release library tests (81 manual fixtures ignored),
+including native orthogonal block layouts and rejected-edit rollback, plus both
+`zoning_cells_tool_test` and `zoning_road_tool_test` headlessly. The release extension was
+rebuilt and atomically deployed. Logs and executable/source/library hashes are under
+`rust/target/zone04-junction/`; `regression.log` records the original failing junction test,
+`full-tests.log` the final full run, and `deployed.sha256` the installed library identity.
+
+Three interleaved matched, unprofiled release trials compare baseline
+`e1e83dd3d2fb282c5692b9caf99165aee6c5a3b3` (`before-tests`, `before.sha256`) with the final test
+executable (`after.sha256`). Commands use `RAYON_NUM_THREADS=1 METRUM_DEBUG=0 taskset -c 0
+<executable> <benchmark> --ignored --nocapture --test-threads=1`; benchmarks are
+`benchmark_cell_zoning_locality` and `benchmark_cell_split_frontage_locality`. Rust 1.98.1,
+i9-12900K; fixture setup excluded, no competing builds or test suites. Median trial times:
+
+| Workload / distant background | Before | After |
+| --- | ---: | ---: |
+| Straight / 0 roads, 0 cells | 107.790 µs | 109.422 µs |
+| Straight / 1,000 roads, 16,384 cells | 110.617 µs | 111.736 µs |
+| Straight / 10,000 roads, 131,072 cells | 111.782 µs | 112.593 µs |
+| Split / 0 roads/lots | 1,085.162 µs | 1,099.203 µs |
+| Split / 1,024 roads/lots, 6,144 cells | 1,093.613 µs | 1,106.446 µs |
+| Split / 10,000 roads/lots, 60,000 cells | 1,093.401 µs | 1,110.908 µs |
+| Occupied split/restore / 0 roads/lots | 1,085.161 µs | 1,100.435 µs |
+| Occupied split/restore / 1,024 roads/lots, 6,144 cells | 1,089.798 µs | 1,106.750 µs |
+| Occupied split/restore / 10,000 roads/lots, 60,000 cells | 1,093.231 µs | 1,107.968 µs |
+
+Products match before/after and remain constant as background grows. Straight generation
+adds 0.8–1.6 µs and split refresh adds 13–18 µs (roughly 1–2%); cost remains local. These
+fixtures measure generation and lot attachment refresh, not whole-frame rendering. Restart
+the game and add a junction to a straight road for visual acceptance; stored alignments in
+already-authored saves are retained rather than globally reset.

@@ -208,6 +208,74 @@ fn t_junction_keeps_backside_cells_across_unpainted_straight_edge_splits() {
 }
 
 #[test]
+fn adding_a_branch_preserves_the_existing_backside_grid() {
+    use crate::simulation::buildings::allocator::BuildingAllocator;
+    use crate::simulation::network::{TransitNetwork, topology};
+
+    for (angle, reversed) in [0.0_f64, 0.35, -0.55]
+        .into_iter()
+        .flat_map(|angle| [false, true].map(move |reversed| (angle, reversed)))
+    {
+        for branch_angle in [std::f64::consts::FRAC_PI_2, 1.1] {
+            for centre in [DVec2::ZERO, DVec2::new(-5000.0, 2500.0)] {
+                let u = DVec2::new(angle.cos(), angle.sin());
+                let v = u.perp();
+                let mut graph = RegionGraph::new();
+                let a = node(&mut graph, centre.x as f32, centre.y as f32);
+                let end = centre + u * 240.0;
+                let b = node(&mut graph, end.x as f32, end.y as f32);
+                road(
+                    &mut graph,
+                    if reversed { b } else { a },
+                    if reversed { a } else { b },
+                );
+                let bounds = CellBounds::from_points([centre, end]).expanded(150.0);
+                let config = WorldConfig::default();
+                let mut zoning = ZoningSystem::new(&config);
+                zoning.cells.refresh_road_alignments(&graph, &config, [0]);
+                zoning.generate_cells(&graph, bounds, |_| false);
+                let before: Vec<_> = keys(&zoning.cells, bounds)
+                    .into_iter()
+                    .filter(|key| {
+                        let frame = zoning.cells.frame(key.grid).unwrap();
+                        let p = frame.world(key.x as f64 + 0.5, key.y as f64 + 0.5);
+                        (p - centre).dot(v) < 0.0
+                    })
+                    .collect();
+                // Rounded endpoints may exclude one terminal column before the edit.
+                assert!((23 * CELL_DEPTH..=24 * CELL_DEPTH).contains(&before.len()));
+                let split = graph.node(a).pos.lerp(graph.node(b).pos, 0.47);
+                let junction = node(&mut graph, split.x, split.z);
+                topology::split_edge(
+                    &mut TransitNetwork::new(),
+                    &mut graph,
+                    0,
+                    0,
+                    if reversed { 0.53 } else { 0.47 },
+                    junction,
+                    &mut zoning,
+                    &mut BuildingAllocator::new(),
+                );
+                let branch = DVec2::new(f64::from(split.x), f64::from(split.z))
+                    + (u * branch_angle.cos() + v * branch_angle.sin()) * 120.0;
+                let c = node(&mut graph, branch.x as f32, branch.y as f32);
+                road(&mut graph, junction, c);
+                zoning
+                    .cells
+                    .refresh_road_alignments(&graph, &config, 0..graph.edge_count());
+                zoning.generate_cells(&graph, bounds, |_| false);
+                for key in before {
+                    assert!(
+                        zoning.cells.profile(key).is_some(),
+                        "lost {key:?}, angle={angle}, reversed={reversed}, branch={branch_angle}, centre={centre:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn curves_acute_junctions_and_competing_roads_have_no_cell_overlap() {
     for scenario in 0..3 {
         let mut graph = RegionGraph::new();

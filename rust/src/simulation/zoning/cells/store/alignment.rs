@@ -103,6 +103,25 @@ impl StraightRoad {
                 .all(|p| (*p - a).perp_dot(tangent).abs() <= 2.0 * self.precision)
             && self.fits_basis(previous.frames[0])
     }
+
+    // Preserve same-width subdivisions, not a longer restored/merged source whose
+    // original junction constraints must be recomputed by the normal phase selection.
+    fn subdivides(&self, previous: RoadCellAlignment) -> bool {
+        if self.source[4] != previous.source[4] || !self.continues(previous) {
+            return false;
+        }
+        let values = previous.source.map(|v| f64::from(f32::from_bits(v)));
+        let a = DVec2::new(values[0], values[1]);
+        let b = DVec2::new(values[2], values[3]);
+        let length = a.distance(b);
+        let tangent = (b - a) / length;
+        [self.points[0], self.points[self.points.len() - 1]]
+            .into_iter()
+            .all(|point| {
+                let station = (point - a).dot(tangent);
+                station >= -self.precision && station <= length + self.precision
+            })
+    }
 }
 
 impl CellStore {
@@ -314,7 +333,34 @@ fn select_phases(
         .collect();
     let mut phases = BTreeMap::new();
     for (&id, road) in roads {
+        // A corner across the road cannot rephase this curb. Same-side perpendicular
+        // corners still establish compatible grids through the existing constraints.
+        let continuing = road
+            .nodes
+            .iter()
+            .flat_map(|&node| {
+                old_at_node
+                    .get(&graph.get_valid_node(node))
+                    .into_iter()
+                    .flatten()
+            })
+            .filter(|(_, old)| road.subdivides(*old))
+            .min_by_key(|(source, _)| (*source != id, *source));
+        if let Some((_, old)) = continuing {
+            let values = old.source.map(|v| f64::from(f32::from_bits(v)));
+            let previous_direction = DVec2::new(values[2] - values[0], values[3] - values[1]);
+            let direction = road.points[road.points.len() - 1] - road.points[0];
+            let reversed = usize::from(direction.dot(previous_direction) < 0.0);
+            for side in 0..2 {
+                if !raw[&id][side].1 {
+                    phases.insert((id, side), old.frames[side ^ reversed]);
+                }
+            }
+        }
         for side in 0..2 {
+            if phases.contains_key(&(id, side)) {
+                continue;
+            }
             let matching = road
                 .nodes
                 .iter()
@@ -325,7 +371,7 @@ fn select_phases(
                         .flatten()
                 })
                 .flat_map(|&(source, old)| old.frames.into_iter().map(move |frame| (source, frame)))
-                .filter(|(_, frame)| raw[&id][side].phase_matches(*frame, road.precision))
+                .filter(|(_, frame)| raw[&id][side].0.phase_matches(*frame, road.precision))
                 .min();
             if let Some((_, frame)) = matching {
                 phases.insert((id, side), frame);
@@ -339,7 +385,7 @@ fn select_phases(
             let Some((seed, side)) = seeds.find(|key| !phases.contains_key(key)) else {
                 break;
             };
-            phases.insert((seed, side), raw[&seed][side]);
+            phases.insert((seed, side), raw[&seed][side].0);
             queue.push_back((seed, side));
         }
         while let Some((id, side)) = queue.pop_front() {
@@ -351,7 +397,9 @@ fn select_phases(
                     };
                     for neighbor_side in 0..2 {
                         if !phases.contains_key(&(neighbor, neighbor_side))
-                            && raw[&neighbor][neighbor_side].phase_matches(frame, road.precision)
+                            && raw[&neighbor][neighbor_side]
+                                .0
+                                .phase_matches(frame, road.precision)
                         {
                             phases.insert((neighbor, neighbor_side), frame);
                             queue.push_back((neighbor, neighbor_side));
