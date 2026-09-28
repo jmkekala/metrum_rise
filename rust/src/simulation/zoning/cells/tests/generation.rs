@@ -209,6 +209,49 @@ fn t_junction_keeps_backside_cells_across_unpainted_straight_edge_splits() {
 }
 
 #[test]
+fn extending_a_straight_road_preserves_continuous_grid_on_both_sides() {
+    for angle in [0.0_f64, 0.35, -0.55] {
+        for reversed in [false, true] {
+            let u = DVec2::new(angle.cos(), angle.sin());
+            let mut graph = RegionGraph::new();
+            let a = node(&mut graph, 0.0, 0.0);
+            let join = u * 113.0;
+            let b = node(&mut graph, join.x as f32, join.y as f32);
+            let original = road(&mut graph, a, b);
+            let config = WorldConfig::default();
+            let mut store = CellStore::default();
+            store.refresh_road_alignments(&graph, &config, [original]);
+            store.generate_in_bounds(&graph, &config, extent(), |_| false);
+            let before = keys(&store, extent());
+            let frames = store.road_alignment(&graph, original).unwrap();
+            let end = u * 243.0;
+            let c = node(&mut graph, end.x as f32, end.y as f32);
+            let extension = road(
+                &mut graph,
+                if reversed { c } else { b },
+                if reversed { b } else { c },
+            );
+            store.refresh_road_alignments(&graph, &config, [extension]);
+            store.generate_in_bounds(&graph, &config, extent(), |_| false);
+            for key in before {
+                assert!(store.profile(key).is_some(), "lost existing cell: {key:?}");
+            }
+            for column in 0..24 {
+                for row in 0..CELL_DEPTH {
+                    for sign in [-1.0, 1.0] {
+                        let point = u * (column as f64 * 10.0 + 5.0)
+                            + u.perp() * (sign * (10.5 + row as f64 * 10.0));
+                        let key = store.pick(point).unwrap_or_else(|| panic!("gap: angle={angle}, reversed={reversed}, column={column}, row={row}, side={sign}"));
+                        assert!(frames.contains(&store.frame(key.grid).unwrap()));
+                    }
+                }
+            }
+            assert_disjoint(&store, extent());
+        }
+    }
+}
+
+#[test]
 fn adding_a_branch_preserves_the_existing_backside_grid() {
     use crate::simulation::buildings::allocator::BuildingAllocator;
     use crate::simulation::network::{TransitNetwork, topology};

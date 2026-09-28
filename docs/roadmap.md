@@ -42,6 +42,9 @@ connections remain enabled. Grid directions capture only nearby cursor positions
 angles stay free.
 Fresh validation: 2,013 release Rust tests and the road-tool bridge suite pass; extension
 deployed. Locality measurements live in the owning zoning document.
+Straight endpoint continuation now preserves both curb phases across non-cell-multiple road
+lengths. Fresh verification passes 2,016 release Rust tests and both zoning bridge suites;
+updated extension deployed. The owning zoning document records reproduction and measurements.
 
 `AUDIT-01` — `hardening`, `parked`, `P1`. Paused by user at a validated checkpoint; resume only when requested. Persistent state is in `audit-state/` at the project root. Audit the existing codebase in subsystem passes, fix confirmed obsolete/duplicate code and correctness/scaling findings, and distinguish source inspection from fresh correctness and performance validation. Coverage and acceptance evidence: [`code_audit.md`](code_audit.md). Exit: every source area has a documented pass, confirmed findings are resolved or explicitly tracked, and affected behavior is validated.
 

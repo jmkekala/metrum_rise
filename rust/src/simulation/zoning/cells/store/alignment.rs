@@ -115,9 +115,9 @@ impl StraightRoad {
             && self.fits_basis(previous.frames[0])
     }
 
-    // Preserve same-width subdivisions, not a longer restored/merged source whose
-    // original junction constraints must be recomputed by the normal phase selection.
-    fn subdivides(&self, previous: RoadCellAlignment) -> bool {
+    // Preserve same-width subdivisions and end-to-end extensions. A longer overlapping
+    // restored/merged source must still recompute its original junction constraints.
+    fn inherits_phase(&self, previous: RoadCellAlignment) -> bool {
         if self.source[4] != previous.source[4] || !self.continues(previous) {
             return false;
         }
@@ -126,12 +126,13 @@ impl StraightRoad {
         let b = DVec2::new(values[2], values[3]);
         let length = a.distance(b);
         let tangent = (b - a) / length;
-        [self.points[0], self.points[self.points.len() - 1]]
-            .into_iter()
-            .all(|point| {
-                let station = (point - a).dot(tangent);
-                station >= -self.precision && station <= length + self.precision
-            })
+        let stations = [self.points[0], self.points[self.points.len() - 1]]
+            .map(|point| (point - a).dot(tangent));
+        let min = stations[0].min(stations[1]);
+        let max = stations[0].max(stations[1]);
+        (min >= -self.precision && max <= length + self.precision)
+            || max.abs() <= self.precision
+            || (min - length).abs() <= self.precision
     }
 }
 
@@ -361,7 +362,7 @@ fn select_phases(
                     .into_iter()
                     .flatten()
             })
-            .filter(|(_, old)| road.subdivides(*old))
+            .filter(|(_, old)| road.inherits_phase(*old))
             .min_by_key(|(source, _)| (*source != id, *source));
         if let Some((_, old)) = continuing {
             let values = old.source.map(|v| f64::from(f32::from_bits(v)));

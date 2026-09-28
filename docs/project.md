@@ -28,6 +28,9 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
   shortcut is removed. Road connections remain enabled.
   Fresh validation: 2,013 release Rust tests and the road-tool bridge suite pass; the updated
   extension is deployed. Locality measurements are recorded in the zoning document.
+  Straight endpoint extensions now inherit both curb phases, closing gaps when the original
+  length is not a cell multiple. All 2,016 Rust tests and both zoning bridge suites pass;
+  the updated extension is deployed.
   See [feature handoff](zoning.md#feature-handoff--zone-04).
 
 - **Plot material consistency (`RENDER-13`, done)**: plot grass shares terrain's palette and

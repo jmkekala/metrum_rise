@@ -3356,3 +3356,45 @@ only the grid query, not the whole Godot frame. Artifacts are in
 `rust/target/zoning-snap-angle/`: `tests.log`, `build.log`, `bridge.log`,
 `ui-preview.{log,png}`, `cursor-{before,after}-{1,2,3}.log`, and baseline/final/deployed SHA-256
 manifests. Earlier measurements above belong to their recorded builds.
+
+### Straight-road endpoint continuation — 2026-09-28
+
+Continuing a same-width straight road now inherits both existing curb phases when the new
+segment meets the old segment end-to-end. Previously only subdivisions inherited the phase;
+an extension starting between cell boundaries created a separate lattice and left rejected
+partial columns at the join. Existing continuous-frontage coverage can now join the shared
+cell across both suppliers. True bends and width changes still require their own geometry.
+Longer overlapping restored/merged sources retain the existing phase recomputation contract,
+so rollback cannot preserve a temporary junction's offset.
+
+The change uses the existing local adjacency and collinearity proof with O(1) endpoint
+interval comparisons; alignment remains O((K + A) log K + K log R + X), with no added
+allocation or citywide query. A regression reproduces the original gap after extending a
+113 m road, then checks both sides and every row across rotations and edge directions.
+Native commit coverage also exercises compiled-road exclusions at the join.
+
+Fresh verification passes all 2,016 release library tests (82 ignored), including both new
+regressions and existing save/rollback/layout checks, plus `zoning_cells_tool_test` and
+`zoning_road_tool_test` headlessly. The release extension is rebuilt and atomically deployed.
+Logs and executable/source/deployed-library SHA-256 identities are under
+`rust/target/zoning-continuation/`; `reproduction.log` records the original missing column.
+
+Matched unprofiled release runs use the pre-fix executable in `before.sha256` and final
+executable in `after.sha256`, Rust 1.98.1 on i9-12900K, with no competing builds/tests:
+`RAYON_NUM_THREADS=1 METRUM_DEBUG=0 taskset -c 0 <executable> <fixture> --ignored --nocapture --test-threads=1`.
+The existing `benchmark_cell_split_frontage_locality` measures split refresh at
+1,176 → 1,210 / 1,200 → 1,205 / 1,210 → 1,208 µs with 0 / 1,024 / 10,000 distant roads
+and lots (up to 60,000 reserved cells); occupied split/restore measures
+1,174 → 1,198 / 1,219 → 1,203 / 1,232 → 1,200 µs. Products match across builds and sizes.
+
+The `populated_cell_road_plan_scaling` fixture holds affected geometry fixed while growing
+background buildings/painted cells to 100,000, roads to 391, parcels to 100,004 and agents to
+600,024. Across 100 samples per size, worker p50 before → after is
+39.416 → 38.099 / 38.466 → 38.093 / 39.066 → 37.997 / 38.641 → 39.411 ms at
+0 / 1,000 / 10,000 / 100,000 background buildings. All local products match. Largest-case
+compile p50 is 37.625 → 38.383 ms; separately measured one-time snapshot setup is
+0.403 → 0.391 ms. Cost remains local; these single matched trials establish no speedup.
+Raw results are `<fixture>-{before,after}.log` in the artifact directory above.
+
+Restart the game and redraw the continuation for visual acceptance. Existing saved grid
+choices remain retained; this change does not globally rephase already-authored roads.

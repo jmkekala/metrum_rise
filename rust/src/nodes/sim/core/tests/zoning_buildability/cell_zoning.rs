@@ -90,6 +90,45 @@ fn native_rotated_straight_road_keeps_unobstructed_frontage_cells() {
     );
 }
 
+#[test]
+fn native_straight_extension_keeps_cells_across_the_join() {
+    for (angle, reversed) in [(0.0_f64, false), (0.35, false), (-0.55, true)] {
+        let mut core = test_core();
+        let u = DVec2::new(angle.cos(), angle.sin());
+        let point =
+            |station: f64| Vector3::new((u.x * station) as f32, 0.0, (u.y * station) as f32);
+        road_terrain_plan::commit_ready(&mut core, vec![point(0.0), point(113.0)]);
+        core.preview_cell_selection_internal(
+            CellSelectionShape::Brush { radius_m: 350.0 },
+            &[DVec2::ZERO],
+        );
+        let original = core.zoning.cells.pick(u * 55.0 + u.perp() * 15.0).unwrap();
+        let points = if reversed {
+            vec![point(243.0), point(113.0)]
+        } else {
+            vec![point(113.0), point(243.0)]
+        };
+        road_terrain_plan::commit_ready(&mut core, points);
+        core.preview_cell_selection_internal(
+            CellSelectionShape::Brush { radius_m: 350.0 },
+            &[DVec2::ZERO],
+        );
+        assert!(core.zoning.cells.profile(original).is_some());
+        for column in 0..24 {
+            for row in 0..6 {
+                for sign in [-1.0, 1.0] {
+                    let position = u * (column as f64 * 10.0 + 5.0)
+                        + u.perp() * (sign * (10.5 + row as f64 * 10.0));
+                    assert!(
+                        core.zoning.cells.pick(position).is_some(),
+                        "gap: angle={angle}, reversed={reversed}, column={column}, row={row}, side={sign}"
+                    );
+                }
+            }
+        }
+    }
+}
+
 fn painted_fixture(angle: f64) -> SimCore {
     let mut core = test_core();
     let direction = DVec2::new(angle.cos(), angle.sin());
