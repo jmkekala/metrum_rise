@@ -15,6 +15,10 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
   growth, redevelopment and demolition/undo. Save v67 preserves both workflows and loads older
   parcel saves. The release extension is deployed locally. Final verification: 2,004 Rust tests,
   four headless bridge suites, eight rendered layouts and warning-free Rustdoc.
+  Post-handoff testing removed whole-grid dominance: shallower rows retain priority so both
+  roads keep their frontage, while paint/erase preserves the displayed layout. Fresh release
+  verification passes 2,005 Rust tests and both zoning bridge suites; local benchmarks retain
+  bounded cost. The updated extension is deployed.
   See [feature handoff](zoning.md#feature-handoff--zone-04).
 
 - **Plot material consistency (`RENDER-13`, done)**: plot grass shares terrain's palette and

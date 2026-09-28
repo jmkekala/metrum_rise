@@ -51,6 +51,8 @@ struct Candidate {
 
 impl Candidate {
     fn priority(&self) -> (bool, u8, GridFrame, i32, i32) {
+        // Prefer frontage depth before the frame tie-breaker so one lattice cannot
+        // suppress the other road's front rows throughout an overlap.
         (!self.pinned, self.row, self.frame, self.x, self.y)
     }
 
@@ -117,7 +119,10 @@ impl CellStore {
         let mut frontages: HashMap<CellKey, Vec<CellRoadFrontage>> = HashMap::new();
         let mut sources = HashMap::new();
         let mut candidates = candidates;
-        candidates.sort_unstable_by_key(|candidate| candidate.priority());
+        // Current road candidates establish ownership first. A retained copy of the same
+        // square must not promote its whole strip just because a cell was painted. Only
+        // historical geometry absent from the current roads needs retained priority.
+        candidates.sort_unstable_by_key(|candidate| (candidate.pinned, candidate.priority()));
         for candidate in candidates {
             let grid = raw.register_frame(candidate.frame);
             let key = CellKey {

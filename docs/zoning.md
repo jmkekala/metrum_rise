@@ -834,8 +834,12 @@ endpoint references come from the remapped graph. Signed zero is canonicalized b
 REAL does not preserve its sign. Older saves initialize choices once from their network, while
 retaining authoritative paint/claims. Empty generated cells still remain rebuildable caches.
 
-The ownership rule first retains a compatible straight strip or curved group constrained by paint or a lot claim,
-then orders candidates by depth row, canonical frame key and integer cell coordinates.
+The ownership rule retains historical straight strips or curved groups constrained by paint or
+a lot claim, then orders candidates by depth row, canonical frame key and integer cell coordinates.
+Current road candidates establish a square's priority before retained copies are merged, so
+painting an unchanged grid cannot promote its strip and rearrange nearby empty cells. Shallower
+rows take priority over competing deeper rows, preserving each road's frontage rather than
+letting one entire lattice dominate the overlap. Incompatible grids may leave boundary gaps.
 A cell loses to every directly intersecting higher-priority raw candidate, even if
 that candidate itself loses elsewhere. This intentionally permits gaps rather than cascading
 greedy repacking. One cell-diagonal conflict ring is sufficient, and raw candidates are queried
@@ -3006,3 +3010,91 @@ The feature handoff does not certify the outstanding performance budgets:
 
 Historical `ZONE-04` progress notes above describe their checkpoints; this handoff is the
 current status.
+
+### Post-handoff paint/layout correction — 2026-09-28
+
+Historical first correction: the whole-grid priority described below was subsequently rejected
+in gameplay testing and removed in the frontage-priority follow-up. Its tests and timings apply
+only to that earlier build.
+
+Testing exposed a WYSIWYG failure at almost perpendicular roads: painting promoted a whole
+retained strip ahead of the empty candidates, filling gaps and moving the visible grid boundary.
+Generation now resolves canonical frames before depth rows and merges retained copies after
+current-road candidates establish ownership. Empty overlaps therefore show the winning lattice
+before painting; paint/erase does not promote an unchanged strip. Historical geometry and
+occupied cells still retain their road-edit protection. No geometry tolerance or road alignment
+rule changes. Candidate sorting remains O(C log C), with the same bounded spatial conflict
+queries and no additional index or allocation pass.
+
+The new regression first reproduced the paint-induced layout change on the preceding code.
+It now checks complete empty corner coverage, identical cell addresses after painting each
+frame and erasing, and disjoint cells at three small angular offsets. All 69 cell-store tests
+pass, including partial invalidation and straight/curved road-edit preservation.
+The complete release library suite passes 2,005 tests, with 81 manual fixtures ignored.
+The rebuilt extension passes `zoning_cells_tool_test` and `zoning_road_tool_test` headlessly
+with isolated user data and is deployed at `godot/bin/libmetrum_rise.so`. Running games must
+restart to load it; the reported gameplay corner still needs the user's visual retest.
+
+Matched unprofiled release measurements use the i9-12900K, Rust 1.98.1, one Rayon worker and
+`METRUM_DEBUG=0`; setup is excluded. Three interleaved CPU-0-pinned trials of
+`benchmark_cell_zoning_locality --ignored --nocapture --test-threads=1` give median generation
+times in microseconds:
+
+| Distant roads / cells | Before | After |
+| --- | ---: | ---: |
+| 0 / 0 | 86.903 | 85.339 |
+| 1,000 / 16,384 | 89.499 | 89.822 |
+| 10,000 / 131,072 | 90.382 | 90.374 |
+
+Local products remain 144 cells at every background. Three interleaved trials of
+`benchmark_cell_curve_frontage_locality` with the same flags, without CPU pinning, measure
+3.372 → 3.345, 3.406 → 3.378 and 3.368 → 3.444 ms at 0/128/1,024 distant curves.
+The fixed local curve retains 18 occupied lots; its resolved coverage increases from 232 to
+252 cells. Each build preserves identical local products as background occupancy increases
+to 5,138 lots. These measurements establish local generation cost, not whole-city rendering.
+
+Evidence is in `rust/target/zone04-wysiwyg/`: `before.sha256` identifies the retained baseline
+executable built from `a9958afd76c5b5dcfa272ac688eb47c590d96c19` plus the failing regression;
+`after.sha256` records the corrected executable and changed Rust sources. `pinned-{before,after}-*.log`
+and `curve-{before,after}-*.log` hold acceptance timings; earlier unpinned straight-grid trials
+are retained separately. `cell-tests.log`, `full-tests.log` and `build.log` record validation.
+The two named bridge logs and `deployed.sha256` record the extension checks and deployment.
+
+### Frontage-priority follow-up — 2026-09-28
+
+Gameplay testing rejected whole-grid dominance because one lattice suppressed the neighboring
+road's frontage. Candidate ownership again compares depth row before canonical frame identity.
+Compatible grids still share cells, while incompatible grids retain their road alignment and
+may leave gaps. Current-road candidates still establish ownership before retained duplicates,
+preserving the paint/erase stability correction. Existing paint and building claims remain fixed.
+No manual controls, save-format changes or alignment changes are introduced. Sorting remains
+O(C log C) with unchanged local conflict queries and allocation structure.
+
+The corner regression now requires front-row cells with the correct supplying road on both
+sides of the overlap, as well as unchanged cell addresses after paint/erase at three angular
+offsets. Follow-up verification artifacts are in `rust/target/zone04-frontage/`.
+All 69 cell-store tests pass. Three matched, interleaved, unprofiled release trials use the
+existing `benchmark_cell_zoning_locality` and `benchmark_cell_curve_frontage_locality` fixtures
+with `--ignored --nocapture --test-threads=1`, CPU 0, `RAYON_NUM_THREADS=1`, `METRUM_DEBUG=0`,
+Rust 1.98.1 and the same i9-12900K. Setup remains outside the timers. Median trial times:
+
+| Workload / distant background | Whole-grid priority | Restored depth priority |
+| --- | ---: | ---: |
+| Straight / 0 roads, 0 cells | 85.753 µs | 85.842 µs |
+| Straight / 1,000 roads, 16,384 cells | 88.966 µs | 89.301 µs |
+| Straight / 10,000 roads, 131,072 cells | 90.539 µs | 90.271 µs |
+| Curve / 0 curves | 3.274 ms | 3.225 ms |
+| Curve / 128 curves | 3.280 ms | 3.241 ms |
+| Curve / 1,024 curves | 3.275 ms | 3.242 ms |
+
+Both workloads retain identical local products as background size increases. Straight coverage
+remains 144 cells. The curve fixture retains 18 occupied local lots; split/restored coverage
+changes from 252/252 to 236/232 cells under the restored rule. The largest background retains
+5,138 occupied lots. These are local generation measurements, not gameplay frame-time acceptance.
+`before.sha256` identifies the preceding whole-grid-priority executable; `after.sha256` records
+the corrected executable and changed sources. The named benchmark logs contain the results.
+Fresh full verification passes 2,005 release library tests (81 manual fixtures ignored) and
+both `zoning_cells_tool_test` and `zoning_road_tool_test` against the rebuilt extension, using
+isolated Godot user data. The full suite ran the hashed release test executable directly;
+`full-tests.log`, `build.log` and the named bridge logs record the checks. `deployed.sha256`
+verifies the atomic deployment to `godot/bin/libmetrum_rise.so`; restart the game to load it.

@@ -5,6 +5,70 @@
 use super::*;
 
 #[test]
+fn painting_near_orthogonal_corner_keeps_the_displayed_layout() {
+    for skew in [0.1, 1.0, -1.0] {
+        let mut graph = RegionGraph::new();
+        let centre = node(&mut graph, 0.0, 0.0);
+        let east = node(&mut graph, 120.0, 0.0);
+        let north = node(&mut graph, skew, 120.0);
+        let edges = [
+            road(&mut graph, centre, east),
+            road(&mut graph, centre, north),
+        ];
+        let config = WorldConfig::default();
+        let mut original = CellStore::default();
+        original.refresh_road_alignments(&graph, &config, edges);
+        original.generate_in_bounds(&graph, &config, extent(), |_| false);
+        for (point, edge) in [
+            (DVec2::new(40.0, 10.0), edges[0]),
+            (DVec2::new(10.0, 40.0), edges[1]),
+        ] {
+            let key = original
+                .pick(point)
+                .expect("both roads retain front-row cells");
+            assert!(
+                original
+                    .frontages(key)
+                    .iter()
+                    .any(|frontage| frontage.edge == edge),
+                "each road retains its own frontage in the overlapping area"
+            );
+        }
+        let before = keys(&original, extent());
+        for grid in before
+            .iter()
+            .map(|key| key.grid)
+            .collect::<std::collections::BTreeSet<_>>()
+        {
+            let mut store = original.clone();
+            let selection = CellSelection {
+                revision: store.revision(),
+                cells: before
+                    .iter()
+                    .copied()
+                    .filter(|key| key.grid == grid)
+                    .collect(),
+            };
+            store.paint(&selection, 1).unwrap();
+            store.generate_in_bounds(&graph, &config, extent(), |_| false);
+            assert_eq!(keys(&store, extent()), before, "skew={skew}, grid={grid}");
+            assert_disjoint(&store, extent());
+            let erase = CellSelection {
+                revision: store.revision(),
+                cells: selection.cells,
+            };
+            store.paint(&erase, 0).unwrap();
+            store.generate_in_bounds(&graph, &config, extent(), |_| false);
+            assert_eq!(
+                keys(&store, extent()),
+                before,
+                "erase skew={skew}, grid={grid}"
+            );
+        }
+    }
+}
+
+#[test]
 fn partial_generation_keeps_untouched_empty_and_reserved_conflicts() {
     let mut graph = RegionGraph::new();
     let a = node(&mut graph, 0.0, 0.0);
