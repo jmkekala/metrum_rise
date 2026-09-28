@@ -842,8 +842,14 @@ rows take priority over competing deeper rows, preserving each road's frontage r
 letting one entire lattice dominate the overlap. Incompatible grids may leave boundary gaps.
 A cell loses to every directly intersecting higher-priority raw candidate, even if
 that candidate itself loses elsewhere. This intentionally permits gaps rather than cascading
-greedy repacking. One cell-diagonal conflict ring is sufficient, and raw candidates are queried
-through a temporary local instance of the existing cell-block store. Painted/claimed cells and
+greedy repacking. Each conflict result needs one cell-diagonal ring, and raw candidates are queried
+through a temporary local instance of the existing cell-block store. After conflict resolution,
+empty cells require an uninterrupted same-frame rectangular column to complete, eligible road
+frontage in one of four lattice directions, within six rows. A missing cell cuts off the cells
+behind it unless another valid column supplies them. Support filtering never promotes a losing
+candidate into the resulting gap. It evaluates five extra rows outside publication bounds, plus
+their conflict ring, independently of chunk residency. External exclusion edits invalidate the
+same bounded dependency halo. Painted/claimed cells and
 cells outside the edit's publication region remain pinned; duplicate cells in one frame merge.
 No whole-city candidate index or full frame-registry clone is required for a local generation.
 
@@ -3098,3 +3104,60 @@ both `zoning_cells_tool_test` and `zoning_road_tool_test` against the rebuilt ex
 isolated Godot user data. The full suite ran the hashed release test executable directly;
 `full-tests.log`, `build.log` and the named bridge logs record the checks. `deployed.sha256`
 verifies the atomic deployment to `godot/bin/libmetrum_rise.so`; restart the game to load it.
+
+### Unsupported rear-cell removal — 2026-09-28
+
+Competing grids could leave empty cells behind a missing cell, with no rectangular connection
+to road frontage. Generation now filters conflict survivors against up to four uninterrupted
+same-frame columns of at most six cells. A column needs complete eligible frontage coverage;
+split-road intervals combine in the same order as lot validation. Another road on a compatible
+grid may supply a valid alternative column. Failed candidates are not reconsidered, and no
+whole-grid dominance or flood fill is introduced.
+
+The existing local priority table also holds survivor membership and four six-bit masks of
+recorded supplier depths. Column checks skip unrelated directions, allocate nothing and run
+with Rayon. For C local candidates and F frontage records, support adds
+O(D(C + F)) expected work, with fixed D = 6, after existing conflict resolution. Generation
+evaluates five extra rows plus their conflict ring. External site and parcel-removal
+invalidation includes the same seven-cell halo, so rear cells update across chunk boundaries.
+Saved paint is retained when support disappears. Claimed cells retain supplier metadata for
+building grace and road-split repair; the lot lifecycle still owns claim release.
+
+Regressions cover removal behind an excluded middle row, retained paint and restoration after
+the exclusion is removed, rectangular frontage coverage at competing roads, and cold narrow
+requests matching full-area generation. Existing paint/erase, partial-invalidation, split-road
+and occupied-lot regressions remain part of acceptance. Evidence is recorded in
+`rust/target/zone04-orphans/`.
+
+All 71 cell-store tests pass. Three matched, interleaved, unprofiled release trials use the
+existing `benchmark_cell_zoning_locality` and `benchmark_cell_curve_frontage_locality` fixtures
+with `--ignored --nocapture --test-threads=1`, CPU 0, `RAYON_NUM_THREADS=1`, `METRUM_DEBUG=0`,
+Rust 1.98.1 and the i9-12900K. Fixture setup is excluded. Median trial times:
+
+| Workload / distant background | Before | After |
+| --- | ---: | ---: |
+| Straight / 0 roads, 0 cells | 88.052 µs | 113.169 µs |
+| Straight / 1,000 roads, 16,384 cells | 90.942 µs | 117.963 µs |
+| Straight / 10,000 roads, 131,072 cells | 93.173 µs | 120.527 µs |
+| Curve / 0 curves | 3.409 ms | 3.406 ms |
+| Curve / 128 curves | 3.422 ms | 3.404 ms |
+| Curve / 1,024 curves | 3.403 ms | 3.418 ms |
+
+The new support predicate adds 25–27 µs (29–30%) to the small 144-cell straight fixture;
+the occupied curve refresh is effectively unchanged. This is additional local generation
+work, not a speedup. Both fixtures retain identical local products as background grows.
+The curve keeps 18 occupied local lots; its split/restored coverage changes from 236/232
+to 222/222 cells. Maximum background occupancy is 5,138 lots. These fixtures establish local
+cost and locality, not whole-city rendering acceptance.
+
+`before.sha256` identifies the baseline executable at `fcda7f72f6e4e9663fcbe6a9afae352fdcd28abd`;
+`after.sha256` records the final test executable and changed Rust sources. The named benchmark
+logs hold acceptance measurements. `initial-*` records the discarded all-direction search,
+whose straight-grid overhead motivated the supplier-depth masks.
+Fresh full verification passes 2,007 release library tests (81 manual fixtures ignored),
+including occupied no-build road-split attachment repair. The hashed test executable ran
+directly with `RAYON_NUM_THREADS=1` and `METRUM_DEBUG=0`. The rebuilt extension passes
+`zoning_cells_tool_test` and `zoning_road_tool_test` headlessly with isolated user data.
+`cell-tests.log`, `full-tests.log`, `build.log` and the named bridge logs record validation;
+`deployed.sha256` verifies atomic deployment to `godot/bin/libmetrum_rise.so`. Restart the
+game for visual retesting of the reported corner.

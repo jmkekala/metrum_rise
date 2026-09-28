@@ -295,6 +295,14 @@ impl CellStore {
         (block.valid & (1_u64 << key.offset()) != 0).then_some(block.lots[key.offset()])
     }
 
+    /// Looks up an existing claim by canonical geometry when a temporary store has other ids.
+    pub(super) fn has_claim_at(&self, frame: GridFrame, x: i32, y: i32) -> bool {
+        self.claimed_count != 0
+            && self.frame_ids.get(&frame).is_some_and(|&grid| {
+                self.lot(CellKey { grid, x, y }).is_some_and(|lot| lot != 0)
+            })
+    }
+
     /// Updates an already validated cell and only its owning overlay chunk.
     pub(super) fn set_profile(&mut self, key: CellKey, profile: u16) {
         if let Some(block) = self.blocks.get_mut(&key.block()) {

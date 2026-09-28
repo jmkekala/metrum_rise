@@ -16,9 +16,11 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
   parcel saves. The release extension is deployed locally. Final verification: 2,004 Rust tests,
   four headless bridge suites, eight rendered layouts and warning-free Rustdoc.
   Post-handoff testing removed whole-grid dominance: shallower rows retain priority so both
-  roads keep their frontage, while paint/erase preserves the displayed layout. Fresh release
-  verification passes 2,005 Rust tests and both zoning bridge suites; local benchmarks retain
-  bounded cost. The updated extension is deployed.
+  roads keep their frontage, while paint/erase preserves the displayed layout. Empty cells
+  cut off from rectangular road-frontage support are removed after overlap resolution.
+  Fresh release verification passes 2,007 Rust tests and both zoning bridge suites. Local
+  benchmarks retain bounded cost; the new check adds 25–27 µs to the small straight fixture.
+  The updated extension is deployed.
   See [feature handoff](zoning.md#feature-handoff--zone-04).
 
 - **Plot material consistency (`RENDER-13`, done)**: plot grass shares terrain's palette and

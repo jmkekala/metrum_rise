@@ -4,6 +4,7 @@
 
 mod continuity;
 mod curves;
+mod support;
 
 use super::geometry::interiors_overlap;
 use super::sources::{CellCurveSource, CurveSourceKey};
@@ -76,10 +77,10 @@ impl CellStore {
             return CellGeneration::default();
         }
         let cell_m = f64::from(config.zone_cell_m);
-        // Any competing square intersects the requested square's envelope within one
-        // diagonal. Direct candidate ownership never depends on its winner being accepted,
-        // so there is exactly one conflict ring, not a city-wide greedy repacking chain.
-        let candidates_bounds = bounds.expanded(2.0 * cell_m);
+        // A rear cell needs up to five preceding rows, each with its own direct conflict
+        // ring. This fixed halo is independent of viewport residency and city size.
+        let support_bounds = bounds.expanded((CELL_DEPTH - 1) as f64 * cell_m);
+        let candidates_bounds = support_bounds.expanded(2.0 * cell_m);
         let query = candidates_bounds
             .expanded((CELL_DEPTH as f64 + GROUP_COLUMNS + 1.0) * cell_m + ROAD_QUERY_PAD_M);
         let mut roads = graph.get_edges_near_aabb(
@@ -130,9 +131,9 @@ impl CellStore {
                 x: candidate.x,
                 y: candidate.y,
             };
-            if raw.insert(key) {
-                priorities.insert(key, candidate.priority());
-            }
+            raw.insert(key);
+            let entry = priorities.entry(key).or_insert((candidate.priority(), false, [0_u8; 4]));
+            entry.2[candidate.frontage.boundary as usize] |= 1 << candidate.row;
             if candidate.row == 0 {
                 frontages.entry(key).or_default().push(candidate.frontage);
             }
@@ -141,12 +142,12 @@ impl CellStore {
             }
         }
         let mut requested = Vec::new();
-        raw.visit_in_bounds(bounds, |key| requested.push(key));
+        raw.visit_in_bounds(support_bounds, |key| requested.push(key));
         requested.sort_unstable();
         // Distinct addresses on one canonical lattice cannot overlap. The temporary
         // registry contains only this request's candidates, not historical city frames.
         let competing_frames = raw.saved_frames().nth(1).is_some();
-        let accepted: Vec<_> = requested
+        let mut accepted: Vec<_> = requested
             .par_iter()
             .map(|&key| {
                 let frame = raw.frame(key.grid).expect("indexed candidate frame");
@@ -187,7 +188,7 @@ impl CellStore {
                     raw.visit_in_bounds(candidate_bounds, |other| {
                         if valid
                             && other != key
-                            && priorities[&other] < priorities[&key]
+                            && priorities[&other].0 < priorities[&key].0
                             && let Some(other_frame) = raw.frame(other.grid)
                             && other_frame != frame
                         {
@@ -202,6 +203,30 @@ impl CellStore {
                 (key, valid, comparisons)
             })
             .collect();
+
+        // Reuse the priority table for immutable survivor membership. Support only removes
+        // cells; it never lets previously defeated candidates reclaim the resulting gaps.
+        for &(key, valid, _) in &accepted {
+            priorities.get_mut(&key).unwrap().1 = valid;
+        }
+        for links in frontages.values_mut() {
+            links.sort_unstable_by_key(|link| (link.boundary, link.start, link.end));
+        }
+        accepted.par_iter_mut().for_each(|(key, valid, _)| {
+            let frame = raw.frame(key.grid).unwrap();
+            *valid = *valid
+                && CellBounds::from_points(frame.corners(key.x, key.y)).intersects(bounds)
+                // Claimed footprints need current supplier metadata even during no-build
+                // grace. Their lifecycle, not empty-grid support, owns their removal.
+                && (self.has_claim_at(frame, key.x, key.y)
+                    || support::has_road_column(
+                        *key,
+                        priorities[key].2,
+                        |cell| priorities.get(&cell).is_some_and(|entry| entry.1),
+                        &frontages,
+                        graph,
+                    ));
+        });
 
         let mut old = Vec::new();
         self.visit_in_bounds(bounds, |key| old.push(key));

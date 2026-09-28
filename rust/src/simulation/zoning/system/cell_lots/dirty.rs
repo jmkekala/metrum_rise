@@ -27,8 +27,10 @@ impl ZoningSystem {
     /// Marks an externally edited area without scanning background roads, cells or parcels.
     pub(crate) fn mark_cell_lots_dirty(&mut self, bounds: CellBounds) {
         self.cell_external_revision = self.cell_external_revision.wrapping_add(1);
-        self.cells
-            .invalidate_generated_cells(bounds.expanded(2.0 * f64::from(self.config.zone_cell_m)));
+        // A lost column cell affects up to five rear rows beyond its direct conflict halo.
+        self.cells.invalidate_generated_cells(
+            bounds.expanded((CELL_DEPTH + 1) as f64 * f64::from(self.config.zone_cell_m)),
+        );
         mark(&mut self.cell_lot_dirty, bounds);
     }
 

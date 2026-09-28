@@ -5,6 +5,79 @@
 use super::*;
 
 #[test]
+fn blocked_middle_row_removes_rear_cells_but_preserves_paint() {
+    let mut graph = RegionGraph::new();
+    let a = node(&mut graph, 0.0, 0.0);
+    let b = node(&mut graph, 120.0, 0.0);
+    road(&mut graph, a, b);
+    let config = WorldConfig::default();
+    let mut store = CellStore::default();
+    store.generate_in_bounds(&graph, &config, extent(), |_| false);
+    let painted = store.select(CellSelectionShape::Cell, &[DVec2::new(25.0, 50.0)]);
+    store.paint(&painted, 1).unwrap();
+    let blocked = |corners: &[DVec2; 4]| {
+        let centre = corners.iter().copied().sum::<DVec2>() * 0.25;
+        centre.y > 25.0 && centre.y < 35.0
+    };
+    store.generate_in_bounds(&graph, &config, extent(), blocked);
+    assert!(store.pick(DVec2::new(45.0, 20.0)).is_some());
+    for y in [30.0, 40.0, 50.0, 60.0] {
+        assert!(store.pick(DVec2::new(45.0, y)).is_none(), "row at {y}");
+    }
+    assert_eq!(store.profile(painted.cells[0]), Some(1));
+    assert!(store.frontages(painted.cells[0]).is_empty());
+    store.generate_in_bounds(&graph, &config, extent(), |_| false);
+    assert!(store.pick(DVec2::new(45.0, 60.0)).is_some());
+}
+
+#[test]
+fn competing_roads_offer_only_cells_in_frontage_connected_rectangles() {
+    use std::collections::HashSet;
+    for skew in [0.1, 40.0, -40.0] {
+        let mut graph = RegionGraph::new();
+        let a = node(&mut graph, -120.0, 0.0);
+        let b = node(&mut graph, 120.0, 0.0);
+        let c = node(&mut graph, skew, 120.0);
+        road(&mut graph, a, b);
+        road(&mut graph, a, c);
+        let config = WorldConfig::default();
+        let mut store = CellStore::default();
+        store.generate_in_bounds(&graph, &config, extent(), |_| false);
+        let cells = keys(&store, extent());
+        let mut usable = HashSet::new();
+        for &seed in &cells {
+            for link in store.frontages(seed) {
+                for depth in 1..=CELL_DEPTH as u8 {
+                    let lot = CellLot::from_frontage(seed, 1, depth, link.boundary).unwrap();
+                    if lot.cells().all(|key| store.profile(key).is_some()) {
+                        usable.extend(lot.cells());
+                    }
+                }
+            }
+        }
+        assert!(!usable.is_empty());
+        assert!(cells.iter().all(|key| usable.contains(key)), "skew={skew}");
+        assert_disjoint(&store, extent());
+        // A cold, narrow request must inspect supporting rows outside its publication area.
+        let bounds = CellBounds {
+            min: DVec2::new(-45.0, 35.0),
+            max: DVec2::new(-25.0, 55.0),
+        };
+        let mut local = CellStore::default();
+        local.generate_in_bounds(&graph, &config, bounds, |_| false);
+        let geometry = |store: &CellStore| {
+            let mut result: Vec<_> = keys(store, bounds)
+                .into_iter()
+                .map(|key| (store.frame(key.grid).unwrap(), key.x, key.y))
+                .collect();
+            result.sort_unstable();
+            result
+        };
+        assert_eq!(geometry(&local), geometry(&store));
+    }
+}
+
+#[test]
 fn painting_near_orthogonal_corner_keeps_the_displayed_layout() {
     for skew in [0.1, 1.0, -1.0] {
         let mut graph = RegionGraph::new();
