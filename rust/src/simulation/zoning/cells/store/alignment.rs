@@ -23,6 +23,17 @@ pub(crate) struct RoadCellAlignment {
     frames: [GridFrame; 2],
 }
 
+impl RoadCellAlignment {
+    /// Rejects a stale source address when queried against a graph snapshot.
+    pub(in crate::simulation::zoning::cells) fn frames_for(
+        self,
+        graph: &RegionGraph,
+        id: usize,
+    ) -> Option<[GridFrame; 2]> {
+        (source(graph.get_edge(id)?)? == self.source).then_some(self.frames)
+    }
+}
+
 struct StraightRoad {
     source: [u32; 5],
     nodes: [u32; 2],
@@ -125,6 +136,11 @@ impl StraightRoad {
 }
 
 impl CellStore {
+    /// Shares immutable road grid authority in O(1); edits copy only affected map paths.
+    pub(crate) fn road_grid_snap(&self, cell_m: f64) -> super::super::snapping::RoadGridSnap {
+        super::super::snapping::RoadGridSnap::new(self.road_alignments.clone(), cell_m)
+    }
+
     /// Serializes road choices in stable source order; the save adapter remaps live edge ids.
     pub(crate) fn saved_road_alignments(&self) -> Vec<(usize, RoadCellAlignment)> {
         let mut result: Vec<_> = self
@@ -188,11 +204,12 @@ impl CellStore {
         id: usize,
     ) -> Option<[GridFrame; 2]> {
         let alignment = self.road_alignments.get(&id)?;
-        (source(graph.get_edge(id)?)? == alignment.source).then_some(alignment.frames)
+        alignment.frames_for(graph, id)
     }
 
     /// Updates changed roads and one adjacency ring, returning the scope to invalidate.
-    /// Work is O((K + A) log K + X) for affected roads, incidences and tested point/source pairs;
+    /// Work is O((K + A) log K + K log R + X) for affected roads, incidences, retained
+    /// alignment entries R and tested point/source pairs;
     /// retained choices stop traversal at that ring rather than walking the city network.
     pub(crate) fn refresh_road_alignments(
         &mut self,
@@ -255,7 +272,7 @@ impl CellStore {
 
 // Constraint propagation is ordered; independent road sampling above uses Rayon.
 fn select_bases(
-    previous: &HashMap<usize, RoadCellAlignment>,
+    previous: &imbl::HashMap<usize, RoadCellAlignment>,
     graph: &RegionGraph,
     roads: &BTreeMap<usize, StraightRoad>,
     old_at_node: &HashMap<u32, Vec<(usize, RoadCellAlignment)>>,

@@ -69,7 +69,7 @@ pub(crate) struct CellStore {
     chunks: HashMap<(i32, i32), CellChunk>,
     frontages: HashMap<CellKey, Vec<CellRoadFrontage>>,
     curve_sources: HashMap<CurveSourceKey, Arc<CellCurveSource>>,
-    road_alignments: HashMap<usize, RoadCellAlignment>,
+    road_alignments: imbl::HashMap<usize, RoadCellAlignment>,
     painted_count: usize,
     claimed_count: usize,
     revision: u64,
@@ -298,9 +298,10 @@ impl CellStore {
     /// Looks up an existing claim by canonical geometry when a temporary store has other ids.
     pub(super) fn has_claim_at(&self, frame: GridFrame, x: i32, y: i32) -> bool {
         self.claimed_count != 0
-            && self.frame_ids.get(&frame).is_some_and(|&grid| {
-                self.lot(CellKey { grid, x, y }).is_some_and(|lot| lot != 0)
-            })
+            && self
+                .frame_ids
+                .get(&frame)
+                .is_some_and(|&grid| self.lot(CellKey { grid, x, y }).is_some_and(|lot| lot != 0))
     }
 
     /// Updates an already validated cell and only its owning overlay chunk.

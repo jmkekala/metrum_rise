@@ -42,6 +42,7 @@ var walkway_btn: Button
 # Road options
 var straight_btn: Button
 var spline_btn: Button
+var zoning_grid_snap_check: CheckBox
 var zoning_combined_hbox: VBoxContainer
 var zoning_mode_menu: HBoxContainer
 var zoning_type_menu: HBoxContainer
@@ -180,7 +181,7 @@ func _build_ui():
 	road_combined_hbox.visible = false
 	vbox.add_child(road_combined_hbox)
 	
-	# 3. Road Options Menu (Left side)
+	# Road options: implemented tool modes and snapping controls.
 	road_options_menu = VBoxContainer.new()
 	var options_panel = PanelContainer.new()
 	var op_style = StyleBoxFlat.new()
@@ -196,32 +197,46 @@ func _build_ui():
 	options_panel.add_child(options_padding)
 	options_padding.add_child(road_options_menu)
 	
+	var mode_row := HBoxContainer.new()
+	var mode_label := Label.new()
+	mode_label.text = "Tool mode"
+	mode_label.custom_minimum_size.x = 92.0
+	mode_row.add_child(mode_label)
+	road_options_menu.add_child(mode_row)
 	straight_btn = Button.new()
 	straight_btn.text = "Straight"
 	straight_btn.toggle_mode = true
 	straight_btn.focus_mode = Control.FOCUS_NONE
 	straight_btn.button_pressed = true 
-	road_options_menu.add_child(straight_btn)
+	mode_row.add_child(straight_btn)
 
 	spline_btn = Button.new()
 	spline_btn.text = "Spline"
 	spline_btn.toggle_mode = true
 	spline_btn.focus_mode = Control.FOCUS_NONE
-	road_options_menu.add_child(spline_btn)
+	mode_row.add_child(spline_btn)
 	
-	road_combined_hbox.add_child(options_panel)
-	# Initially hide the options panel until a tool is actually selected? 
-	# No, let's keep it visible if the submenu is open or just hide it like before.
+	var snap_row := HBoxContainer.new()
+	var snap_label := Label.new()
+	snap_label.text = "Snapping"
+	snap_label.custom_minimum_size.x = 92.0
+	snap_row.add_child(snap_label)
+	zoning_grid_snap_check = CheckBox.new()
+	zoning_grid_snap_check.text = "Snap to zoning grid"
+	zoning_grid_snap_check.focus_mode = Control.FOCUS_NONE
+	zoning_grid_snap_check.tooltip_text = "Snap near parallel or perpendicular cell lines; draw other angles freely. Accounts for road widths. Existing road connections take priority."
+	zoning_grid_snap_check.toggled.connect(func(enabled: bool): road_tool.zoning_grid_snap_enabled = enabled)
+	snap_row.add_child(zoning_grid_snap_check)
+	road_options_menu.add_child(snap_row)
 	options_panel.visible = false 
 	# Store reference to toggle it
 	self.set_meta("options_panel", options_panel)
 
 	var sep = VSeparator.new()
-	road_combined_hbox.add_child(sep)
 	sep.visible = false
 	self.set_meta("road_sep", sep)
 	
-	# 2. Road Sub Menu (Right side)
+	# Road type selection
 	road_sub_menu = HBoxContainer.new()
 	road_sub_menu.add_theme_constant_override("separation", 10)
 	var sub_panel = PanelContainer.new()
@@ -271,6 +286,8 @@ func _build_ui():
 	road_sub_menu.add_child(cul_de_sac_btn)
 	cul_de_sac_btn.pressed.connect(func(): input_manager._toggle_tool(InputManager.Tool.CUL_DE_SAC))
 	
+	road_combined_hbox.add_child(options_panel)
+	road_combined_hbox.add_child(sep)
 	road_combined_hbox.add_child(sub_panel)
 	
 	# --- Terrain Sub Menu ---
@@ -863,16 +880,9 @@ func _select_road_type(fwd: int, bkw: int):
 func _set_draw_mode(mode: int):
 	straight_btn.button_pressed = (mode == 0)
 	spline_btn.button_pressed = (mode == 1)
-	
+	zoning_grid_snap_check.disabled = mode != 0
 	if road_tool:
-		if mode == 0:
-			# If road tool has a straight mode flag/variable we set it.
-			# Let's assume road_tool.draw_mode exists or we can add it later.
-			if "draw_mode" in road_tool:
-				road_tool.draw_mode = 0
-		else:
-			if "draw_mode" in road_tool:
-				road_tool.draw_mode = 1
+		road_tool.draw_mode = mode
 
 func _on_select_main_pressed():
 	road_combined_hbox.visible = false

@@ -790,6 +790,30 @@ Preserve painted cells and buildings, align new empty grids where possible, and 
 seam where existing frames are incompatible. This exception is intentional; do not move existing
 roads, paint or buildings to hide it. Compatible orthogonal joins must still share one lattice.
 
+**Road placement assistance:** the road options panel offers `Snap to zoning grid` for straight
+roads. The checkbox is the only snapping control; the Shift shortcut is removed. Connections
+to existing roads remain enabled. Spline mode disables the checkbox without forgetting its setting.
+
+The cursor uses the nearest eligible straight road's persistent curb frame, with edge-id ties,
+within two six-row zoning strips plus 30 m. It selects the curb facing the stroke and captures
+a frame axis only within 5 degrees and half a cell of lateral distance. Outside either bound,
+the cursor stays at the freely drawn angle. Captured strokes snap their terminating centreline
+to a cell boundary offset by the selected road's half-width plus sidewalk. Thus parallel roads leave whole cells between facing
+curbs: centreline separation = integer cell lengths + both curb half-widths. A branch starting
+on an existing road keeps that road's centreline. Starting a first road without a nearby frame
+uses the same capture bounds around cardinal directions, the configured cell length and space
+for two same-width end corners. Existing junctions and road connections remain exact and take priority; this option cannot repair incompatible existing road positions.
+Fixed 80 m ghost guides do not override zoning snap. The preview and click use the same resolved
+cursor, and heights are sampled again after its XZ position changes.
+
+Road alignment authority now uses the existing `imbl` persistent map. The road-tool snapshot
+shares its root in O(1), paired with the same graph generation and configured cell size. Queries
+use the existing edge R-tree, allocate no buffers, and require O(log E + K log A) work for E
+indexed edges, K local candidates and A alignment records. Each map lookup follows a bounded
+hash-trie path. Local alignment updates copy touched map paths, adding O(K log A) work; there is
+no full-grid snapshot copy and no simulation mutex on the cursor path. This does not change the
+existing wider road-preview snapshot costs.
+
 The initial generator uses four-cell (40 m) horizontal arc-length groups, with the last group
 using the remaining length. Each group uses its endpoint chord orientation; intermediate XZ
 road points constrain the frontage support line. Height-only polyline subdivision does not move
@@ -3218,3 +3242,117 @@ adds 0.8–1.6 µs and split refresh adds 13–18 µs (roughly 1–2%); cost rem
 fixtures measure generation and lot attachment refresh, not whole-frame rendering. Restart
 the game and add a junction to a straight road for visual acceptance; stored alignments in
 already-authored saves are retained rather than globally reset.
+
+
+### Unified zoning-grid road snap — 2026-09-28
+
+Added the Tool mode / Snapping panel and replaced the old Shift implementation with
+one checkbox-controlled curb-aware snap path. The Shift shortcut is removed; road connections
+remain active. The cursor reads an immutable persistent alignment map in the existing road-tool
+snapshot. No simulation lock, new spatial index, or city-wide grid copy is added to pointer work.
+
+Fresh verification on this build: **2,012 release Rust tests passed, 82 ignored**, plus
+`network_tool_chunk_renderer_test`, `zoning_cells_tool_test`, and `zoning_road_tool_test`.
+The rectangle regression checks all 144 interior cells at three rotations, three road widths,
+and two cell sizes, including first-road snapping for the cardinal fixtures. Other new checks
+cover differing reference/selected widths, branch attachment, immutable snapshots, and the
+actual checkbox/Spline bridge behavior and independence from Shift. The options panel was rendered under Xvfb;
+`rust/target/zoning-snap/ui-preview.png` records the layout. Release build and atomic deployment
+completed; restart the game to load the updated extension.
+
+Checkbox-only follow-up: removed the road tool's Shift key query and shortcut tooltip. A fresh
+`network_tool_chunk_renderer_test` run passes, including Shift press/release leaving the checkbox
+setting in control (`rust/target/zoning-snap/checkbox-only-test.log`). This GDScript-only change
+leaves the Rust build and measured algorithms above unchanged; Rust tests and benchmarks were
+not rerun for shortcut removal.
+
+Matched unprofiled release measurements use Rust 1.98.1, i9-12900K, CPU 0 affinity,
+`RAYON_NUM_THREADS=1`, and `METRUM_DEBUG=0`, without competing builds/tests. The baseline is
+commit `5f6f7d47d51d18b8314b688a7659db668464d55b`; its test executable matches the previous
+junction-fix artifact hash. Setup and background population are outside repeated query timings.
+Commands (substitute the baseline or final executable for `$exe`):
+
+```sh
+RAYON_NUM_THREADS=1 METRUM_DEBUG=0 taskset -c 0 "$exe" benchmark_cell_split_frontage_locality --ignored --nocapture --test-threads=1
+RAYON_NUM_THREADS=1 METRUM_DEBUG=0 taskset -c 0 "$exe" benchmark_zoning_snap_locality --ignored --nocapture --test-threads=1
+RAYON_NUM_THREADS=1 METRUM_DEBUG=0 taskset -c 0 "$exe" populated_cell_road_plan_scaling --ignored --nocapture --test-threads=1
+```
+
+Three interleaved baseline/final split trials and three new cursor-query trials give these
+median-of-trial medians (microseconds):
+
+| Workload | Background roads | Before | After |
+|---|---:|---:|---:|
+| New zoning cursor query | 0 | — | 0.059 |
+| New zoning cursor query | 1,000 | — | 0.068 |
+| New zoning cursor query | 10,000 | — | 0.074 |
+| Split frontage refresh | 0 | 1089.886 | 1088.562 |
+| Split frontage refresh | 1,024 | 1096.835 | 1098.014 |
+| Split frontage refresh | 10,000 | 1100.533 | 1103.794 |
+| Occupied split/restore | 0 | 1092.459 | 1084.610 |
+| Occupied split/restore | 1,024 | 1098.712 | 1087.085 |
+| Occupied split/restore | 10,000 | 1095.924 | 1091.123 |
+
+The cursor checksum stays `(266240, 532480)` at every background size. Existing split/restore
+products remain identical, with matching paint and lot assertions. The cursor figures measure
+the added grid query only, not raycasting, rendering, or the complete Godot frame.
+
+One matched populated-city run per build (100 measured samples per background size) also
+kept identical local plan/terrain products. This fixture increases distant buildings, parcels,
+painted cells, agents and roads while keeping the edited neighborhood fixed:
+
+| Remote buildings / painted cells | Agents | Remote roads | Plan p50 before → after (ms) | Worker p50 before → after (ms) | One-time snapshot before → after (ms) |
+|---:|---:|---:|---:|---:|---:|
+| 0 | 24 | 0 | 33.940 → 34.525 | 34.600 → 35.183 | 0.004 → 0.004 |
+| 1,000 | 6,024 | 4 | 33.654 → 34.168 | 34.511 → 35.080 | 0.015 → 0.012 |
+| 10,000 | 60,024 | 40 | 34.075 → 34.309 | 35.026 → 35.276 | 0.057 → 0.050 |
+| 100,000 | 600,024 | 391 | 34.488 → 34.851 | 35.434 → 35.674 | 0.357 → 0.399 |
+
+The largest fixture has 100,004 parcels and 600,024 agents. Repeated planning remains local;
+its small timing differences do not indicate a material regression. The separately reported
+one-time snapshot retains existing background-dependent costs outside this change.
+
+Artifacts: `rust/target/zoning-snap/` contains `final-tests.log`, `build.log`, the three
+`*test.log` bridge reports, `split-{before,after}-{1,2,3}.log`, `cursor-{1,2,3}.log`,
+`populated-{before,after}.log`, and `ui-preview.{log,png}`. `before.sha256`, `after.sha256`, and
+`deployed.sha256` identify the baseline/final executables, changed Rust sources and matching
+built/deployed libraries. The earlier `full-tests.log` predates the first-road length refinement;
+`final-tests.log` is the acceptance run for the deployed build.
+
+
+### Free-angle snapping and left-side options — 2026-09-28
+
+Moved the road options panel to the left of road types. Zoning snap now captures an axis only
+within 5 degrees and half a cell of lateral distance. Other angles follow the cursor exactly;
+the distance cap prevents large sideways jumps on long strokes. The same rule applies to a
+first road on open terrain. Checkbox-only control and width-aware spacing remain in place.
+The change adds O(1) arithmetic to the existing local query and allocates no buffers.
+
+Fresh release verification: **2,013 Rust tests passed, 82 ignored**, plus
+`network_tool_chunk_renderer_test`. New coverage checks capture and release around all four
+directions on cardinal and rotated grids, free angles from 6 to 84 degrees between axes,
+long-stroke lateral limits, free drawing through the native cursor bridge, and the panel's
+left-side ordering. Existing full-rectangle regressions still pass. The actual panel was
+rendered and inspected under Xvfb. Release build and atomic library deployment completed.
+
+Three interleaved, unprofiled before/after cursor benchmark trials used the previous deployed
+checkbox-only build as baseline, Rust 1.98.1, CPU 0 on i9-12900K, `RAYON_NUM_THREADS=1`, and
+`METRUM_DEBUG=0`; no other builds or test suites were running. Command:
+
+```sh
+RAYON_NUM_THREADS=1 METRUM_DEBUG=0 taskset -c 0 "$exe" benchmark_zoning_snap_locality --ignored --nocapture --test-threads=1
+```
+
+Median of trial medians, microseconds; fixture setup is excluded:
+
+| Background roads | Before | After |
+|---:|---:|---:|
+| 0 | 0.063 | 0.063 |
+| 1,000 | 0.069 | 0.073 |
+| 10,000 | 0.074 | 0.077 |
+
+All cursor checksums remain `(266240, 532480)` across background sizes. These figures cover
+only the grid query, not the whole Godot frame. Artifacts are in
+`rust/target/zoning-snap-angle/`: `tests.log`, `build.log`, `bridge.log`,
+`ui-preview.{log,png}`, `cursor-{before,after}-{1,2,3}.log`, and baseline/final/deployed SHA-256
+manifests. Earlier measurements above belong to their recorded builds.

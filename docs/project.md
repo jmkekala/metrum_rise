@@ -22,7 +22,12 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
   road; endpoint coverage and split/restore phase handling are corrected. Fresh release
   verification passes 2,008 Rust tests and both zoning bridge suites. The earlier rear-cell
   support check added 25–27 µs to the small straight fixture.
-  The updated extension is deployed.
+  Road options now include a left-side Tool mode / Snapping panel. `Snap to zoning grid`
+  aligns straight-road placement with nearby curb frames and road widths through the checkbox
+  only. Grid directions attract the cursor nearby while other angles remain free. The Shift
+  shortcut is removed. Road connections remain enabled.
+  Fresh validation: 2,013 release Rust tests and the road-tool bridge suite pass; the updated
+  extension is deployed. Locality measurements are recorded in the zoning document.
   See [feature handoff](zoning.md#feature-handoff--zone-04).
 
 - **Plot material consistency (`RENDER-13`, done)**: plot grass shares terrain's palette and
@@ -154,6 +159,11 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 - **Current focus**: keep the playable small-to-medium city slice correct, deterministic, and scalable while the docs/planning cleanup continues and baseline water/render plus local road-build performance are hardened.
 
 ## Shipped Foundations
+
+- **Road preview crash (`ROAD-26`)**: generated-carrier height lookup no longer indexes an
+  empty candidate list during preview or commit validation. Missing support follows existing
+  validation. All 2,014 Rust tests and both road-tool/continuous-preview Godot suites pass;
+  updated extension deployed. See [`roads.md`](roads.md#empty-generated-carrier-height-lookup-road-26).
 
 - **Third-road placement (`ROAD-25`)**: node boundary export preserves distinct submillimetre
   segments, closing the reproduced Kuopio terrain ownership gaps. Rejected exact previews retain

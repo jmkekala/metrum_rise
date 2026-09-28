@@ -10,6 +10,7 @@ mod geometry;
 mod lots;
 mod queries;
 mod selection;
+mod snapping;
 mod sources;
 mod store;
 
@@ -17,6 +18,7 @@ pub(crate) use generation::{CellGeneration, overlaps_road_corridors};
 pub(crate) use geometry::{CellBounds, GridFrame, interiors_overlap, road_contact_interior};
 pub(crate) use lots::{CellFrontage, CellLot};
 pub(crate) use selection::{CellEdit, CellSelection, CellSelectionShape};
+pub(crate) use snapping::RoadGridSnap;
 pub(crate) use sources::CellCurveSource;
 pub(crate) use store::{CellStore, RoadCellAlignment};
 

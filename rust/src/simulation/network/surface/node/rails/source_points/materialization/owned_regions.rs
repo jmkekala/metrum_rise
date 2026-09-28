@@ -121,7 +121,10 @@ fn height_for_generated_carrier_surface(
     heights.dedup_by_key(|height| {
         crate::simulation::network::surface::keys::SurfaceHeightMmKey::from_m_f64(*height)
     });
-    (heights.len() == 1).then_some(heights[0])
+    match heights.as_slice() {
+        [height] => Some(*height),
+        _ => None,
+    }
 }
 
 fn height_for_explicit_source_segment(
@@ -350,6 +353,76 @@ mod tests {
     use crate::simulation::network::surface::{
         RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind,
     };
+
+    #[test]
+    fn generated_carrier_surface_missing_height_does_not_break_later_queries() {
+        use crate::simulation::network::surface::backend::road_points_to_polyline;
+        use crate::simulation::network::surface::node::rails::{
+            NodeGeneratedContour, NodeGeneratedContourClaimPriority, NodeGeneratedContourPurpose,
+        };
+
+        let kind = RoadSurfaceBandKind::Carriageway;
+        let points_xz = vec![
+            RoadVec2::new(0.0, 0.0),
+            RoadVec2::new(2.0, 0.0),
+            RoadVec2::new(2.0, 2.0),
+            RoadVec2::new(0.0, 2.0),
+        ];
+        let purpose = NodeGeneratedContourPurpose::JunctionSideJoin;
+        let claim_priority = NodeGeneratedContourClaimPriority::SideJoin;
+        let rails = NodeRailContourSet {
+            node_id: 1,
+            piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+            contours: vec![NodeGeneratedContour {
+                kind: NodeGeneratedContourKind::Band { kind },
+                purpose,
+                source_mouth_order_index: 0,
+                source_band_index: Some(0),
+                owner: Some(NodeBandOwner::new(kind, 0)),
+                claim_priority,
+                height_points_world: Some(
+                    points_xz
+                        .iter()
+                        .map(|p| RoadVec3::new(p.x, 10.0, p.y))
+                        .collect(),
+                ),
+                backend_polyline: road_points_to_polyline(points_xz.clone(), true),
+                points_xz,
+            }],
+            corner_trims: Vec::new(),
+            side_join_gaps: Vec::new(),
+            constraints: Vec::new(),
+            height_carrier_paths_by_source: BTreeMap::new(),
+            height_carrier_points_by_source: BTreeMap::new(),
+            source_carriers: NodeSourceCarrierRegistry::default(),
+        };
+        let source_points = BTreeMap::new();
+        let origin = NodeCarrierProvenanceOrigin::GeneratedCarrierSurface {
+            contour_index: 0,
+            purpose,
+            claim_priority,
+        };
+        // Move outside, onto the shared triangle edge, outside again, then onto a vertex.
+        // Duplicate triangle samples at the shared edge must still resolve one height.
+        for (point, expected) in [
+            (RoadVec2::new(3.0, 1.0), None),
+            (RoadVec2::new(1.0, 1.0), Some(10.0)),
+            (RoadVec2::new(-1.0, 1.0), None),
+            (RoadVec2::new(0.0, 0.0), Some(10.0)),
+        ] {
+            assert_eq!(
+                height_for_carrier_provenance(
+                    (kind, 0, 0),
+                    road_point_key(point),
+                    origin,
+                    &source_points,
+                    &rails,
+                )
+                .unwrap(),
+                expected
+            );
+        }
+    }
 
     #[test]
     fn source_constraint_height_materializes_only_from_recorded_source_segment() {

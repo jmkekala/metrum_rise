@@ -1076,7 +1076,7 @@ func _test_native_road_cursor_contract() -> void:
 		var x := 30.0 + index * 0.1
 		var result: Variant = simulation.get_road_tool_cursor_pos(
 			Vector3(x, 100.0, 20.0), Vector3.DOWN, 0.0, false, 0,
-			Vector3.ZERO, Vector3.ZERO, false, 0.0, false, 25.0, previous, 8.0
+			Vector3.ZERO, Vector3.ZERO, false, 1, 1, false, 25.0, previous, 8.0
 		)
 		_expect(result is Dictionary, "native cursor result must include position and target identity")
 		if result is Dictionary:
@@ -1090,6 +1090,64 @@ func _test_native_road_cursor_contract() -> void:
 	var request := simulation.add_road_with_snap(points, 1, 1, true)
 	var accepted: Dictionary = await _await_road_commit(simulation, request)
 	_expect(accepted.get("committed", false) and simulation.get_road_benchmark_state()["live_edges"] == 1, "native acknowledgment must reflect an accepted road")
+	var grid_cursor: Dictionary = simulation.get_road_tool_cursor_pos(
+		Vector3(6.0, 100.0, 104.0), Vector3.DOWN, 0.0, true, 2,
+		Vector3(5.0, 0.0, 32.0), Vector3.ZERO, true, 1, 1, true, 0.0, {}, 8.0
+	)
+	_expect(grid_cursor["position"].distance_to(Vector3(5.0, 0.0, 102.0)) < 0.01, "zoning snap must use the curb grid and override fixed ghost guides")
+	var angled_cursor: Dictionary = simulation.get_road_tool_cursor_pos(
+		Vector3(45.0, 100.0, 102.0), Vector3.DOWN, 0.0, true, 2,
+		Vector3(5.0, 0.0, 32.0), Vector3.ZERO, true, 1, 1, true, 0.0, {}, 8.0
+	)
+	_expect(angled_cursor["position"].distance_to(Vector3(45.0, 0.0, 102.0)) < 0.01, "zoning snap must allow free angles away from grid axes")
+	var branch_cursor: Dictionary = simulation.get_road_tool_cursor_pos(
+		Vector3(3.0, 100.0, 33.0), Vector3.DOWN, 0.0, false, 0,
+		Vector3.ZERO, Vector3.ZERO, true, 1, 1, false, 0.0, {}, 8.0
+	)
+	_expect(absf(branch_cursor["position"].x - 5.0) < 0.01 and absf(branch_cursor["position"].z - 32.0) < 0.01, "grid-aligned branch start must remain on the supplying road")
+	_expect(branch_cursor["snap_edge"] >= 0, "zoning snap must retain real road connections")
+	var modes := RoadToolScript.new()
+	var ui = preload("res://scripts/ui/main_ui.gd").new()
+	var manager = preload("res://scripts/core/input_manager.gd").new()
+	var vegetation = preload("res://scripts/tools/vegetation_tool.gd").new()
+	manager.vegetation_tool = vegetation
+	ui.input_manager = manager
+	ui.simulation_node = simulation
+	ui.road_tool = modes
+	ui._build_ui()
+	_expect(ui.get_meta("options_panel").get_index() < ui.road_sub_menu.get_parent().get_parent().get_index(), "road options must sit to the left of road types")
+	ui.zoning_grid_snap_check.button_pressed = true
+	_expect(modes._zoning_snap_enabled(), "the actual checkbox must enable zoning snap")
+	ui._set_draw_mode(1)
+	_expect(ui.zoning_grid_snap_check.disabled and not modes._zoning_snap_enabled(), "spline mode disables zoning snap")
+	ui._set_draw_mode(0)
+	_expect(not ui.zoning_grid_snap_check.disabled and modes._zoning_snap_enabled(), "returning to straight mode restores the checkbox setting")
+	ui.zoning_grid_snap_check.button_pressed = false
+	ui.free()
+	manager.free()
+	vegetation.free()
+	_expect(not modes._zoning_snap_enabled(), "zoning snapping starts disabled")
+	modes.zoning_grid_snap_enabled = true
+	_expect(modes._zoning_snap_enabled(), "checkbox enables the zoning snap path")
+	modes.zoning_grid_snap_enabled = false
+	var shift := InputEventKey.new()
+	shift.keycode = KEY_SHIFT
+	shift.pressed = true
+	shift.shift_pressed = true
+	Input.parse_input_event(shift)
+	Input.flush_buffered_events()
+	_expect(not modes._zoning_snap_enabled() and modes._snap_to_roads_enabled(), "Shift must not enable zoning snap or disable road connections")
+	modes.zoning_grid_snap_enabled = true
+	_expect(modes._zoning_snap_enabled(), "checkbox controls zoning snap while Shift is held")
+	shift = InputEventKey.new()
+	shift.keycode = KEY_SHIFT
+	Input.parse_input_event(shift)
+	Input.flush_buffered_events()
+	_expect(modes._zoning_snap_enabled(), "releasing Shift must not change the checkbox setting")
+	modes.zoning_grid_snap_enabled = true
+	modes.draw_mode = 1
+	_expect(not modes._zoning_snap_enabled(), "spline drawing does not promise a square zoning lattice")
+	modes.free()
 	var invalid := PackedVector3Array([Vector3.ZERO])
 	var abandoned := simulation.add_road_with_snap(invalid, 1, 1, true)
 	request = simulation.add_road_with_snap(invalid, 1, 1, true)

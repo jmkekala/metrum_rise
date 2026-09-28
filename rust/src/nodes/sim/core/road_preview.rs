@@ -73,6 +73,8 @@ pub(crate) struct RoadPreviewRequest {
 
 #[derive(Clone)]
 pub(crate) struct RoadToolQuerySnapshot {
+    /// Persistent curb frames from the same publication as the graph.
+    pub(crate) zoning_grid: crate::simulation::zoning::cells::RoadGridSnap,
     pub(crate) terrain: Arc<TerrainSystem>,
     pub(crate) region_graph: Arc<RegionGraph>,
     pub(crate) road_surface: Arc<RoadSurfaceSystem>,
@@ -133,6 +135,10 @@ pub(crate) fn road_tool_snapshots_from_core(
             source_mesh_generation: core.cached_road_mesh_generation,
         },
         RoadToolQuerySnapshot {
+            zoning_grid: core
+                .zoning
+                .cells
+                .road_grid_snap(f64::from(core.config.zone_cell_m)),
             terrain,
             region_graph,
             road_surface,

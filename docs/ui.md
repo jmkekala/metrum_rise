@@ -196,7 +196,7 @@ The toolbar is the primary tool-selection surface. It is always visible during g
 
 | Button  | Activates |
 |---------|-----------|
-| Roads   | Road sub-menu (Walkway, 2-Lane, 4-Lane, One-Way, Cul-De-Sac) + draw-mode options (Straight / Spline) |
+| Roads   | Road sub-menu (Walkway, 2-Lane, 4-Lane, One-Way, Cul-De-Sac), with a left-side options panel: Tool mode (Straight / Spline) and Snapping (Snap to zoning grid) |
 | Zoning  | Zoning sub-menu with one always-visible lower row for Rect / Brush plus Residential / Commercial / Industrial family buttons; the profile row above is collapsed by default and opens only after clicking a family button, which also selects that family's first profile |
 | Services | Service-building asset palette for explicit civic / utility placement |
 | Industry | Explicit resource-extractor asset palette; selecting an extractor temporarily shows the Deposits overlay through building placement and extraction-polygon drawing; placing a mine switches to extraction-polygon drawing with a pale-blue cursor sphere under the mouse and a live filled preview of the current polygon; the first vertex must start within 10 m of the building footprint and becomes a stronger light-blue close marker, edges may not cross, closing only happens by clicking that first vertex again, the committed polygon is still validated against the building link distance, and committed coal pits render as a terrain-shader coal-texture mask |

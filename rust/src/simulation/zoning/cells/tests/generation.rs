@@ -5,6 +5,7 @@
 mod conflicts;
 mod lots;
 mod queries;
+mod snapping;
 
 use super::*;
 use crate::simulation::core::config::WorldConfig;

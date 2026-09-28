@@ -666,8 +666,13 @@ and continues during motion: one running job completes while the current curve r
 intent, then the newest input is dispatched. The native mailbox also holds at most one pending job;
 there is no idle timer or unbounded request backlog. Cache/request matching uses exact points, so fine movements cannot
 redisplay an old result within the former 5 cm tolerance. Clicks resolve their current pointer before
-building the committed curve, including clicks arriving before the next frame. Shift angle/length rules and capture/release
-distances are unchanged by this scheduling/snap-target change.
+building the committed curve, including clicks arriving before the next frame. The road-options
+checkbox controls zoning-grid snapping. The Shift shortcut and old 15-degree / fixed-10-metre
+snap are removed. Road connections stay enabled. Zoning snap uses persistent curb alignment,
+selected road width and configured cell size. It captures directions only within 5 degrees and
+half a cell of lateral displacement; other angles stay free. Fixed ghost guides do not override
+it. The placement
+and complexity contract is owned by [ZONE-04](zoning.md#11-road-generated-cell-zoning--zone-04).
 
 The moving and fallback stroke previews render asphalt, lane dividers, curbs, and sidewalks rather than a
 uniform blue ribbon. They share committed-road texture resources and Rust's lateral band widths;
@@ -976,6 +981,39 @@ enqueue or poll Rust-owned preview results and keep input/render code thin.
 Straight road edits should commit endpoint-only plan input. Curved edits may use deterministic
 world-space sampling, but must preserve authored endpoints exactly. Oversampled straight Godot
 `Curve3D` streams are not allowed to become semantic road input.
+
+### Empty generated-carrier height lookup (`ROAD-26`)
+
+The 2026-09-28 crash dump `logs/metrum-crash-20260928-191757.369-pid1460594.log`
+identifies an empty height candidate list in generated-carrier materialization. The expression
+`(heights.len() == 1).then_some(heights[0])` evaluates its indexed argument even when the
+condition is false. A point outside the generated height triangles therefore panics instead
+of returning the intended `None`, affecting both preview compilation and commit validation.
+
+The lookup now returns a height only when exactly one distinct millimetre height remains.
+Empty or ambiguous support stays unresolved for the existing height validation pipeline;
+materialization must not invent a height or widen geometric support. The final selection is
+O(1), with no additional allocations, spatial queries, or change to triangulation/deduplication.
+The targeted regression reproduces the original panic before the fix, then verifies missing
+support, shared-triangle-edge deduplication and subsequent valid lookups. Fresh release
+verification passes all 2,014 Rust tests (82 ignored), `network_tool_chunk_renderer_test`
+and `road_preview_stream_test`, including continuous movement through five junction/bend
+fixtures. The extension is deployed. This reproduces the failing lookup, not the exact road
+layout from the crash dump.
+
+Fresh matched, unprofiled release locality runs on the i9-12900K (Rust 1.98.1,
+CPU 0, `RAYON_NUM_THREADS=1`, `METRUM_DEBUG=0`) use
+`taskset -c 0 <release-test-executable> populated_cell_road_plan_scaling --ignored --nocapture --test-threads=1`.
+Each run measures 100 samples per size with fixed affected geometry, increasing background
+buildings/painted cells from 0 to 100,000, roads from 0 to 391, parcels from 4 to 100,004 and
+agents from 24 to 600,024. Local products match at every size. Worker p50 before → after is
+37.510 → 35.081, 35.919 → 35.678, 35.491 → 35.880 and 35.957 → 36.173 ms at
+0 / 1,000 / 10,000 / 100,000 background buildings. Largest-case compile p50 is
+35.061 → 35.198 ms; readiness is 0.150 → 0.145 ms. One-time snapshot setup is measured
+separately (0.369 → 0.366 ms at the largest size). These runs retain local planning cost;
+they do not establish a speedup. Logs, reproduction, build/deployment SHA-256 identities and
+continuous-preview metrics are in `rust/target/road-preview-empty-height/` (`before.sha256`,
+`after.sha256`, `deployed.sha256`, `populated-before.log`, `populated-after.log`).
 
 ### Third-road boundary and placement feedback (`ROAD-25`)
 

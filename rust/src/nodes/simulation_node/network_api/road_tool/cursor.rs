@@ -25,7 +25,7 @@ impl SimulationNode {
 
     /// Resolves the road-tool cursor position in one non-blocking Rust query.
     ///
-    /// This combines visible-surface picking, angle snapping, network snapping, optional
+    /// This combines visible-surface picking, zoning-grid snapping, network snapping, optional
     /// ghost-guide snapping, map-border snapping, and self-snapping so the Godot editor loop
     /// does not perform several bridge calls for every mouse frame.
     /// Returns position, snap node/edge ids (-1 when absent), and the snapshot generation.
@@ -40,8 +40,9 @@ impl SimulationNode {
         current_state: i32,
         start_pos: Vector3,
         control_pos: Vector3,
-        shift_pressed: bool,
-        start_tangent_angle: f32,
+        zoning_snap_enabled: bool,
+        fwd_lanes: i32,
+        bkw_lanes: i32,
         ghost_enabled: bool,
         border_snap_dist_m: f32,
         previous_snap: VarDictionary,
@@ -81,36 +82,14 @@ impl SimulationNode {
             }
         };
 
-        if active && shift_pressed {
-            let ref_pos = if current_state == 1 {
-                start_pos
-            } else {
-                control_pos
-            };
-            let dir = pos - ref_pos;
-            let length = dir.length();
-            if length > 0.1 {
-                let snap_rad = std::f32::consts::PI / 12.0;
-                let relative =
-                    ((dir.z.atan2(dir.x) - start_tangent_angle) / snap_rad).round() * snap_rad;
-                let angle = start_tangent_angle + relative;
-                let snapped_length = ((length / 10.0).round() * 10.0).max(10.0);
-                let snapped_height = pos.y;
-                pos = ref_pos + Vector3::new(angle.cos(), 0.0, angle.sin()) * snapped_length;
-                pos.y = snapped_height;
-            }
-        }
-
-        let snap_to_existing_roads = !shift_pressed;
-
-        if snap_to_existing_roads {
-            let previous_id = |key| {
-                previous_snap
-                    .get(key)
-                    .and_then(|value| value.try_to::<i64>().ok())
-                    .unwrap_or(-1)
-            };
-            if let Some(snap) = Self::road_tool_cursor_network_snap(
+        let previous_id = |key| {
+            previous_snap
+                .get(key)
+                .and_then(|value| value.try_to::<i64>().ok())
+                .unwrap_or(-1)
+        };
+        if zoning_snap_enabled {
+            let raw_snap = Self::road_tool_cursor_network_snap(
                 &query.region_graph,
                 pos,
                 previous_id("snap_edge"),
@@ -118,23 +97,53 @@ impl SimulationNode {
                 previous_id("surface_generation"),
                 query.surface_generation,
                 sticky_network_snap_release_dist_m,
-            ) {
-                let mut snapped_pos = snap.position;
-                snapped_pos.y = Self::road_tool_cursor_height_at_xz(
-                    &query,
-                    snapped_pos.x,
-                    snapped_pos.z,
-                    altitude_offset_m,
+            );
+            // Existing junctions remain exact connection targets.
+            if let Some(snap) =
+                raw_snap.filter(|snap| matches!(snap.target, NetworkSnapTarget::Node(_)))
+            {
+                pos = snap.position;
+            } else {
+                let xz = |point: Vector3| glam::DVec2::new(f64::from(point.x), f64::from(point.z));
+                let width = ((fwd_lanes.clamp(0, 4) + bkw_lanes.clamp(0, 4)) as f32
+                    * crate::config::LANE_WIDTH)
+                    .max(2.0);
+                let snapped = query.zoning_grid.snap_road_cursor(
+                    &query.region_graph,
+                    xz(pos),
+                    (active && current_state != 0).then_some(xz(start_pos)),
+                    f64::from(width),
                 );
-                return Self::road_tool_cursor_result(
-                    snapped_pos,
-                    Some(snap.target),
-                    query.surface_generation,
-                );
+                pos.x = snapped.x as f32;
+                pos.z = snapped.y as f32;
             }
+            pos.y = Self::road_tool_cursor_height_at_xz(&query, pos.x, pos.z, altitude_offset_m);
         }
 
-        if ghost_enabled && snap_to_existing_roads {
+        if let Some(snap) = Self::road_tool_cursor_network_snap(
+            &query.region_graph,
+            pos,
+            previous_id("snap_edge"),
+            previous_id("snap_node"),
+            previous_id("surface_generation"),
+            query.surface_generation,
+            sticky_network_snap_release_dist_m,
+        ) {
+            let mut snapped_pos = snap.position;
+            snapped_pos.y = Self::road_tool_cursor_height_at_xz(
+                &query,
+                snapped_pos.x,
+                snapped_pos.z,
+                altitude_offset_m,
+            );
+            return Self::road_tool_cursor_result(
+                snapped_pos,
+                Some(snap.target),
+                query.surface_generation,
+            );
+        }
+
+        if ghost_enabled && !zoning_snap_enabled {
             use crate::nodes::sim::bridge::network::get_road_ghost_snap_from_parts;
             if let Some(ghost_snap) = get_road_ghost_snap_from_parts(
                 &query.region_graph,

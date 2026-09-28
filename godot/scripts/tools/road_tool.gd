@@ -2,8 +2,8 @@
 
 ## Road drawing tool — straight and spline modes with live compiled preview and lane configuration.
 ##
-## Extends NetworkTool. Adds: Rust-compiled roadbed preview, angle snapping (Shift, 15° steps,
-## no road snap), distance + angle HUD label, and SimCity-style ghost guide
+## Extends NetworkTool. Adds: Rust-compiled roadbed preview, checkbox-controlled zoning-grid
+## snapping, distance + angle HUD label, and SimCity-style ghost guide
 ## lines projected from existing road endpoints (toggle with G key).
 ## Placement stays pending until Rust acknowledges acceptance; rejection retains the editable stroke.
 ## State machine: IDLE → SETTING_CONTROL (spline handle) → SETTING_END → accepted commit → IDLE.
@@ -22,6 +22,7 @@ var bkw_lanes: int = 1
 var altitude_offset: float = 0.0
 
 var draw_mode: int = 0 # 0: straight, 1: spline
+var zoning_grid_snap_enabled: bool = false
 
 # Border-check positions queued while roads are in-flight on the sim thread.
 # Drained by NetworkRenderer._process once the road is confirmed in the graph.
@@ -62,7 +63,7 @@ var _candidate_cache_fwd_lanes: int = -1
 var _candidate_cache_bkw_lanes: int = -1
 var _candidate_cache_snap_to_roads: bool = true
 var _candidate_cache_surface_generation: int = -1
-var _last_snap_to_roads_enabled: bool = true
+var _last_zoning_snap_enabled: bool = false
 var _road_preview_material: ShaderMaterial
 var _junction_preview = preload("res://scripts/renderers/road_junction_preview.gd").new()
 var _terrain_preview = preload("res://scripts/renderers/road_terrain_preview.gd").new()
@@ -77,9 +78,9 @@ const MAP_BORDER_SNAP_DIST_M := 25.0
 const ROAD_NETWORK_SNAP_RELEASE_DIST_M := 8.0
 const ROAD_SELF_SNAP_DIST_M := 2.5
 
-# ── Angle-snap reference ─────────────────────────────────────────────────────
-# Base angle (radians) for Shift snapping — set to the road tangent at start_pos
-# so that 90° snap gives a true perpendicular to the road, not to the world grid.
+# ── Angle display reference ─────────────────────────────────────────────────
+# Base angle (radians) for the HUD — set to the road tangent at start_pos
+# so the HUD reports angles relative to the road.
 var _start_tangent_angle: float = 0.0
 # True when a real road tangent was found at start_pos (false = open terrain, show world angle).
 var _has_road_tangent: bool = false
@@ -123,12 +124,11 @@ func _process(delta):
 		_queue_preview_update()
 	if not active:
 		_clear_sticky_network_snap()
-	var snap_to_roads := _snap_to_roads_enabled()
-	if snap_to_roads != _last_snap_to_roads_enabled:
-		_last_snap_to_roads_enabled = snap_to_roads
+	var zoning_snap := _zoning_snap_enabled()
+	if zoning_snap != _last_zoning_snap_enabled:
+		_last_zoning_snap_enabled = zoning_snap
 		_clear_preview_visual()
-		if not snap_to_roads:
-			_clear_sticky_network_snap()
+		_clear_sticky_network_snap()
 		_clear_preview_cache()
 		if current_path != null:
 			_queue_preview_update()
@@ -162,9 +162,10 @@ func _road_debug_is_enabled() -> bool:
 	return false
 
 func _snap_to_roads_enabled() -> bool:
-	if _scripted_pointer_enabled:
-		return true
-	return not Input.is_key_pressed(KEY_SHIFT)
+	return true
+
+func _zoning_snap_enabled() -> bool:
+	return draw_mode == 0 and zoning_grid_snap_enabled
 
 func _update_lanes_label():
 	if active and current_path != null:
@@ -234,7 +235,7 @@ func _handle_click():
 			else:
 				current_state = State.SETTING_CONTROL
 
-			# Store the road tangent at start_pos so Shift snap is relative to the road,
+			# Store the road tangent at start_pos so the angle HUD is relative to the road,
 			# not the world grid. Falls back to Vector2(0,1) on open terrain.
 			var tangent_start_us := Time.get_ticks_usec()
 			var _st: Vector2 = simulation_node.get_road_tangent_at(start_pos, 6.0)
@@ -614,7 +615,7 @@ func _update_preview_measurement_label(points: PackedVector3Array, preview: Dict
 		if angle_deg < 0.0: angle_deg += 360.0
 		if angle_deg >= 180.0: angle_deg -= 180.0
 
-	var snap_str := " [angle]" if (active and not _snap_to_roads_enabled()) else ""
+	var snap_str := " [zoning grid]" if (active and _zoning_snap_enabled()) else ""
 	var build_cost := float(preview.get("build_cost", 0.0))
 	if bool(preview.get("is_pending", false)):
 		_info_label.add_theme_color_override("font_color", Color(1.0, 0.76, 0.18, 0.98))
@@ -926,8 +927,9 @@ func get_world_mouse_pos() -> Vector3:
 		current_state,
 		start_pos,
 		control_pos,
-		not _snap_to_roads_enabled(),
-		_start_tangent_angle,
+		_zoning_snap_enabled(),
+		fwd_lanes,
+		bkw_lanes,
 		_ghost_enabled,
 		MAP_BORDER_SNAP_DIST_M,
 		_sticky_network_snap,
