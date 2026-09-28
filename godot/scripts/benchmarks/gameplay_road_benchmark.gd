@@ -123,7 +123,7 @@ func run() -> void:
 		return
 	var fixture_definitions := _fixture_definitions()
 	_metrics = {
-		"schema_version": 3,
+		"schema_version": 4,
 		"benchmark": BENCHMARK_NAME,
 		"mode": mode,
 		"run_id": run_id,
@@ -1015,9 +1015,6 @@ func _run_segment(
 		"generation_before": generation_before,
 		"generation_expected": expected_generation,
 		"generation_after": simulation_node.get_network_render_generation(),
-		"ghost_generation": road_tool._ghost_render_generation,
-		"ghost_vertex_count": road_tool._ghost_vertex_count,
-		"ghost_visible": road_tool.ghost_mesh.visible,
 		"start": [start_pos.x, start_pos.y, start_pos.z],
 		"end": [end_pos.x, end_pos.y, end_pos.z],
 		"frame_time_ms": Metrics.distribution(_frame_samples),
@@ -1026,7 +1023,7 @@ func _run_segment(
 	if preview_wait.has("ready_ms"):
 		result["preview_ready_ms"] = preview_wait.ready_ms
 		result["pointer_idle_to_ready_ms"] = float(preview_wait.ready_ms) - float(last_pointer_us - preview_start_us) / 1000.0
-	for milestone in ["generation_ready_ms", "render_ack_ms", "ghost_ready_ms", "first_idle_ms", "settle_tail_ms"]:
+	for milestone in ["generation_ready_ms", "render_ack_ms", "first_idle_ms", "settle_tail_ms"]:
 		if settle.has(milestone):
 			result[milestone] = settle[milestone]
 	if not result.ok:
@@ -1171,8 +1168,6 @@ func _wait_for_generation(previous_generation: int, timeout_sec: float, start_us
 			and not simulation_node.is_network_dirty()
 		):
 			milestones["render_ack_ms"] = _elapsed_ms(start_us)
-		if generation_advanced and not milestones.has("ghost_ready_ms") and _ghosts_are_current():
-			milestones["ghost_ready_ms"] = _elapsed_ms(start_us)
 		if milestones.has("render_ack_ms") and _is_idle():
 			if stable_frames == 0:
 				stable_start_ms = _elapsed_ms(start_us)
@@ -1221,13 +1216,6 @@ func _wait_for_idle(timeout_sec: float) -> Dictionary:
 		"pending": _pending_work_snapshot(),
 	}
 
-func _ghosts_are_current() -> bool:
-	return not (road_tool.active and road_tool._ghost_enabled) or (
-		not road_tool._ghost_guides_dirty
-		and not road_tool._ghost_rebuild_queued
-		and road_tool._ghost_render_generation == simulation_node.get_network_render_generation()
-	)
-
 func _is_idle() -> bool:
 	return (
 		not simulation_node.is_network_dirty()
@@ -1235,8 +1223,6 @@ func _is_idle() -> bool:
 		and not road_tool.needs_main_mesh_hydration()
 		and road_tool._commit_request_id == 0
 		and road_tool._pending_border_checks.is_empty()
-		and not road_tool._ghost_rebuild_queued
-		and _ghosts_are_current()
 		and not terrain.has_pending_render_work(false)
 		and not water.has_pending_render_work(false)
 	)
@@ -1248,9 +1234,6 @@ func _pending_work_snapshot() -> Dictionary:
 		"water_dirty": simulation_node.is_water_dirty(),
 		"road_hydration": road_tool.needs_main_mesh_hydration(),
 		"border_checks": road_tool._pending_border_checks.size(),
-		"ghost_rebuild": road_tool._ghost_rebuild_queued,
-		"ghost_dirty": road_tool._ghost_guides_dirty,
-		"ghost_generation": road_tool._ghost_render_generation,
 		"terrain": terrain.get_pending_render_work_counts(),
 		"terrain_failures": terrain.get_blocked_dirty_patch_failures(),
 		"water": water.get_pending_render_work_counts(),

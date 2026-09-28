@@ -25,8 +25,8 @@ impl SimulationNode {
 
     /// Resolves the road-tool cursor position in one non-blocking Rust query.
     ///
-    /// This combines visible-surface picking, zoning-grid snapping, network snapping, optional
-    /// ghost-guide snapping, map-border snapping, and self-snapping so the Godot editor loop
+    /// This combines visible-surface picking, zoning-grid snapping, network snapping,
+    /// map-border snapping, and self-snapping so the Godot editor loop
     /// does not perform several bridge calls for every mouse frame.
     /// Returns position, snap node/edge ids (-1 when absent), and the snapshot generation.
     /// Pass the previous result back as `previous_snap` to retain a generation-checked target.
@@ -43,7 +43,6 @@ impl SimulationNode {
         zoning_snap_enabled: bool,
         fwd_lanes: i32,
         bkw_lanes: i32,
-        ghost_enabled: bool,
         border_snap_dist_m: f32,
         previous_snap: VarDictionary,
         sticky_network_snap_release_dist_m: f32,
@@ -141,20 +140,6 @@ impl SimulationNode {
                 Some(snap.target),
                 query.surface_generation,
             );
-        }
-
-        if ghost_enabled && !zoning_snap_enabled {
-            use crate::nodes::sim::bridge::network::get_road_ghost_snap_from_parts;
-            if let Some(ghost_snap) = get_road_ghost_snap_from_parts(
-                &query.region_graph,
-                &query.road_surface,
-                &query.terrain,
-                pos,
-                10.0,
-                altitude_offset_m,
-            ) {
-                return Self::road_tool_cursor_result(ghost_snap, None, query.surface_generation);
-            }
         }
 
         if Self::road_tool_is_near_border(pos, half_w, half_h, border_snap_dist) {

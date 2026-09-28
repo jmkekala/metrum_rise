@@ -4,7 +4,7 @@
 ##
 ## Rust methods called: add_road(), get_closest_network_point(), get_closest_node(),
 ##   get_road_mesh_data(full_snapshot), get_network_nodes(), get_node_pos(), get_world_surface_height(),
-##   get_road_ghost_line_data(), get_road_ghost_snap(), intersect_world_surface(),
+##   intersect_world_surface(),
 ##   get_road_tool_cursor_pos(), get_road_surface_debug_data()
 ## Owns the shared preview mesh, blueprint spline, and node snapping MultiMesh.
 ## Subclasses override _handle_input() and _commit() for their specific editing behaviour.
@@ -33,7 +33,6 @@ var blueprint_mesh: MeshInstance3D # The preview line/spline
 var blueprint_mat: StandardMaterial3D
 var node_multimesh: MultiMeshInstance3D # Holographic snapping points
 var cursor_mesh: MeshInstance3D # Active hovered snap cursor
-var ghost_mesh: MeshInstance3D # Ghost guide lines (SimCity-style grid overlay, road tool only)
 var surface_debug_mesh: MeshInstance3D # Compiled roadbed debug overlay
 var _surface_debug_enabled: bool = false
 var _surface_probe_enabled: bool = false
@@ -130,25 +129,6 @@ func _setup_visuals():
 	cm_mat.cull_mode = StandardMaterial3D.CULL_DISABLED
 	cursor_mesh.material_override = cm_mat
 	add_child(cursor_mesh)
-
-	# Ghost guide lines (RoadTool only — other tools leave this null)
-	if name == "RoadTool":
-		ghost_mesh = MeshInstance3D.new()
-		SceneLightingConfig.apply_shadow_policy(
-			ghost_mesh,
-			SceneLightingConfig.SHADOW_DEBUG_OVERLAY,
-			"roads"
-		)
-		ghost_mesh.visible = false
-		var gm := StandardMaterial3D.new()
-		gm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-		gm.albedo_color = Color(1.0, 1.0, 1.0, 1.0)  # alpha driven per-vertex
-		gm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-		gm.vertex_color_use_as_albedo = true
-		gm.no_depth_test = true
-		gm.render_priority = 1
-		ghost_mesh.material_override = gm
-		add_child(ghost_mesh)
 
 	if _surface_debug_enabled:
 		surface_debug_mesh = MeshInstance3D.new()

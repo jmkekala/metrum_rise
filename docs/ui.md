@@ -194,6 +194,11 @@ the clock / city-status / RCI strip height.
 
 The toolbar is the primary tool-selection surface. It is always visible during gameplay.
 
+Road guiding lines and the G shortcut are removed. The road-options checkbox controls
+zoning-grid snapping; road-connection snapping remains available. Distance and angle
+measurements appear only during a placement. See [road interaction](roads.md).
+
+
 | Button  | Activates |
 |---------|-----------|
 | Roads   | Road sub-menu (Walkway, 2-Lane, 4-Lane, One-Way, Cul-De-Sac), with a left-side options panel: Tool mode (Straight / Spline) and Snapping (Snap to zoning grid) |

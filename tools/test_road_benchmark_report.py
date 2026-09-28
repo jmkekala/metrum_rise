@@ -22,12 +22,10 @@ def capture(scale=1.0):
         "preview_ready_ms": 2 * scale, "preview_ms": 3 * scale,
         "commit_dispatch_ms": scale, "generation_ready_ms": 2 * scale,
         "render_ack_ms": 3 * scale, "first_idle_ms": 4 * scale,
-        "ghost_generation": 2, "ghost_vertex_count": 100, "ghost_visible": True,
-        "ghost_ready_ms": 3 * scale,
         "commit_ms": 5 * scale, "settle_tail_ms": scale,
     }
     return {
-        "schema_version": 3, "success": True, "mode": "headless", "runtime": runtime,
+        "schema_version": 4, "success": True, "mode": "headless", "runtime": runtime,
         "repetitions": 1, "warmup_repetitions": 0,
         "matrix_cases": [{"case_id": "t", "segments": [{}]}],
         "fixtures": [{
@@ -86,12 +84,11 @@ class RoadBenchmarkReportTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_capture(data)
 
-    def test_missing_or_stale_ghosts_are_rejected(self):
-        for field, value in [("ghost_generation", 1), ("ghost_vertex_count", 0), ("ghost_visible", False), ("ghost_ready_ms", 100)]:
-            data = capture()
-            data["fixtures"][0]["segments"][0][field] = value
-            with self.subTest(field=field), self.assertRaises(ValueError):
-                validate_capture(data)
+    def test_old_global_guide_schema_is_rejected(self):
+        data = capture()
+        data["schema_version"] = 3
+        with self.assertRaises(ValueError):
+            validate_capture(data)
 
     def test_profiled_and_mismatched_inputs_are_rejected(self):
         for change in ("profiled", "anchor", "population", "cadence", "output"):
@@ -117,7 +114,7 @@ class RoadBenchmarkReportTest(unittest.TestCase):
         repeat["repetition"] = 1
         data["fixtures"].append(repeat)
         self.assertIsNotNone(validate_capture(data))
-        repeat["segments"][0]["ghost_vertex_count"] += 2
+        repeat["segments"][0]["state_after"]["lanes"] += 2
         with self.assertRaises(ValueError):
             validate_capture(data)
 

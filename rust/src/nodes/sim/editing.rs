@@ -2373,7 +2373,6 @@ mod tests {
             pending_road_mesh_chunks: Arc::new(std::collections::BTreeSet::new()),
             road_mesh_full_replace: true,
             cached_road_mesh_generation: 0,
-            road_ghost_lines: Default::default(),
             cached_network_node_positions: std::sync::Arc::new(Vec::new()),
             cached_network_node_positions_dirty: true,
             road_tool_surface_generation: 1,

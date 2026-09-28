@@ -3,8 +3,7 @@
 ## Road drawing tool — straight and spline modes with live compiled preview and lane configuration.
 ##
 ## Extends NetworkTool. Adds: Rust-compiled roadbed preview, checkbox-controlled zoning-grid
-## snapping, distance + angle HUD label, and SimCity-style ghost guide
-## lines projected from existing road endpoints (toggle with G key).
+## snapping and the distance + angle HUD label.
 ## Placement stays pending until Rust acknowledges acceptance; rejection retains the editable stroke.
 ## State machine: IDLE → SETTING_CONTROL (spline handle) → SETTING_END → accepted commit → IDLE.
 extends "res://scripts/tools/network_tool.gd"
@@ -34,13 +33,6 @@ var _info_label: Label = null
 # World-space preview-label anchor — used each frame to project to screen.
 var _label_world_pos: Vector3 = Vector3.ZERO
 
-# ── Ghost guide lines (SimCity-style grid overlay) ───────────────────────────
-var _ghost_enabled: bool = true  # toggled with G key
-# Cached guide data so we only call Rust when the network changes.
-var _ghost_guides_dirty: bool = true
-var _ghost_rebuild_queued: bool = false
-var _ghost_render_generation: int = -1
-var _ghost_vertex_count: int = 0
 var _road_debug_enabled: bool = false
 var _preview_cache_points: PackedVector3Array = PackedVector3Array()
 var _preview_cache_surface: Dictionary = {}
@@ -124,6 +116,8 @@ func _process(delta):
 		_queue_preview_update()
 	if not active:
 		_clear_sticky_network_snap()
+		if _info_label:
+			_info_label.visible = false
 	var zoning_snap := _zoning_snap_enabled()
 	if zoning_snap != _last_zoning_snap_enabled:
 		_last_zoning_snap_enabled = zoning_snap
@@ -186,11 +180,6 @@ func _unhandled_input(event):
 		return
 	# Pointer motion is sampled by _process, after the base tool resolves the current frame.
 
-	# G toggle works whenever the road tool is the active tool (not just mid-draw).
-	if event is InputEventKey and event.pressed and not event.echo:
-		if event.keycode == KEY_G:
-			_set_ghost_guides_enabled(not _ghost_enabled)
-
 	if active and event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if event.pressed:
 			_handle_click()
@@ -208,7 +197,6 @@ func _handle_click():
 	_has_last_world_mouse_pos = is_valid
 	var mouse_ms := float(Time.get_ticks_usec() - mouse_start_us) / 1000.0
 	var tangent_ms := 0.0
-	var ghost_queue_ms := 0.0
 	var path_ms := 0.0
 	var commit_ms := 0.0
 	if not is_valid:
@@ -217,7 +205,6 @@ func _handle_click():
 			false,
 			mouse_ms,
 			tangent_ms,
-			ghost_queue_ms,
 			path_ms,
 			commit_ms,
 			total_start_us
@@ -244,12 +231,6 @@ func _handle_click():
 			# Detect fallback: (0,1) means no road found within range.
 			_has_road_tangent = not (_st.x == 0.0 and _st.y == 1.0)
 
-			# Build ghost guides on first placement click (network is settled at this point).
-			if _ghost_guides_dirty:
-				var ghost_queue_start_us := Time.get_ticks_usec()
-				_request_deferred_ghost_rebuild()
-				ghost_queue_ms = float(Time.get_ticks_usec() - ghost_queue_start_us) / 1000.0
-
 			var path_start_us := Time.get_ticks_usec()
 			current_path = Path3D.new()
 			current_path.curve = Curve3D.new()
@@ -275,7 +256,6 @@ func _handle_click():
 		is_valid,
 		mouse_ms,
 		tangent_ms,
-		ghost_queue_ms,
 		path_ms,
 		commit_ms,
 		total_start_us
@@ -734,8 +714,6 @@ func _commit_segment(end_pos: Vector3) -> bool:
 		# NetworkRenderer drains _pending_border_checks when network_dirty fires.
 		_commit_border_check = [start_pos, end_pos]
 		_pending_border_checks.push_back(_commit_border_check)
-		# Ghost guides must be rebuilt once the road lands in the graph.
-		_ghost_guides_dirty = true
 		bookkeeping_ms = float(Time.get_ticks_usec() - bookkeeping_start_us) / 1000.0
 		queued = true
 		_update_preview_measurement_label(validation.get("prepared_points", points), {"is_pending": true})
@@ -829,34 +807,16 @@ func mark_network_topology_dirty() -> void:
 	mark_network_nodes_dirty()
 	_clear_sticky_network_snap()
 	_queue_preview_update()
-	_ghost_guides_dirty = true
-	_request_deferred_ghost_rebuild()
-
-func _set_ghost_guides_enabled(enabled: bool) -> void:
-	_ghost_enabled = enabled
-	if _ghost_enabled:
-		_ghost_guides_dirty = true
-		_request_deferred_ghost_rebuild()
-	elif ghost_mesh:
-		ghost_mesh.visible = false
 
 ## Called by NetworkRenderer after the road is confirmed in the graph.
 ## Drains _pending_border_checks and shows the border-connection dialog if relevant.
-## Also queues ghost guide rebuild now that the new road is in the graph.
 func drain_pending_border_checks() -> void:
 	var total_start_us := Time.get_ticks_usec()
 	var pending_count := _pending_border_checks.size()
-	var ghost_was_dirty := _ghost_guides_dirty
-	var ghost_was_queued := _ghost_rebuild_queued
-	var ghost_ms := 0.0
 	var candidate_ms := 0.0
 	var prompt_ms := 0.0
 	var candidate_calls := 0
 	var prompt_count := 0
-	if _ghost_guides_dirty:
-		var ghost_start_us := Time.get_ticks_usec()
-		_request_deferred_ghost_rebuild()
-		ghost_ms = float(Time.get_ticks_usec() - ghost_start_us) / 1000.0
 	while not _pending_border_checks.is_empty():
 		var pair = _pending_border_checks.pop_front()
 		var candidate_start_us := Time.get_ticks_usec()
@@ -873,13 +833,9 @@ func drain_pending_border_checks() -> void:
 			prompt_count += 1
 	if _road_debug_enabled:
 		print(
-			"[DEBUG:road] border_checks_detail pending=%d ghost_dirty=%s ghost_queued_before=%s ghost_queued_after=%s ghost_ms=%.3f candidate_calls=%d candidate_ms=%.3f prompts=%d prompt_ms=%.3f total_ms=%.3f"
+			"[DEBUG:road] border_checks_detail pending=%d candidate_calls=%d candidate_ms=%.3f prompts=%d prompt_ms=%.3f total_ms=%.3f"
 			% [
 				pending_count,
-				str(ghost_was_dirty),
-				str(ghost_was_queued),
-				str(_ghost_rebuild_queued),
-				ghost_ms,
 				candidate_calls,
 				candidate_ms,
 				prompt_count,
@@ -930,7 +886,6 @@ func get_world_mouse_pos() -> Vector3:
 		_zoning_snap_enabled(),
 		fwd_lanes,
 		bkw_lanes,
-		_ghost_enabled,
 		MAP_BORDER_SNAP_DIST_M,
 		_sticky_network_snap,
 		ROAD_NETWORK_SNAP_RELEASE_DIST_M
@@ -1042,7 +997,6 @@ func _log_click_detail(
 	valid_after: bool,
 	mouse_ms: float,
 	tangent_ms: float,
-	ghost_queue_ms: float,
 	path_ms: float,
 	commit_ms: float,
 	total_start_us: int
@@ -1050,107 +1004,14 @@ func _log_click_detail(
 	if not _road_debug_enabled:
 		return
 	print(
-		"[DEBUG:road] road_click_detail state=%d valid=%s mouse_ms=%.3f tangent_ms=%.3f ghost_queue_ms=%.3f path_ms=%.3f commit_ms=%.3f total_ms=%.3f"
+		"[DEBUG:road] road_click_detail state=%d valid=%s mouse_ms=%.3f tangent_ms=%.3f path_ms=%.3f commit_ms=%.3f total_ms=%.3f"
 		% [
 			state_before,
 			str(valid_after),
 			mouse_ms,
 			tangent_ms,
-			ghost_queue_ms,
 			path_ms,
 			commit_ms,
 			float(Time.get_ticks_usec() - total_start_us) / 1000.0,
 		]
 	)
-
-
-# ── Ghost guide lines ────────────────────────────────────────────────────────
-
-func _request_deferred_ghost_rebuild() -> void:
-	if not _ghost_enabled:
-		if ghost_mesh:
-			ghost_mesh.visible = false
-		return
-	if _ghost_rebuild_queued:
-		return
-	_ghost_rebuild_queued = true
-	call_deferred("_rebuild_ghost_lines_if_dirty")
-
-func _rebuild_ghost_lines_if_dirty() -> void:
-	_ghost_rebuild_queued = false
-	if _ghost_guides_dirty:
-		_rebuild_ghost_lines()
-
-## Rebuilds the ImmediateMesh for ghost guide lines.
-## Called when the tool activates, when G is toggled, and after a road is committed.
-func _rebuild_ghost_lines() -> void:
-	if not ghost_mesh:
-		return
-	if not _ghost_enabled:
-		ghost_mesh.visible = false
-		return
-
-	var total_start_us := Time.get_ticks_usec()
-	var fetch_start_us := Time.get_ticks_usec()
-	var guide_data: Dictionary = simulation_node.get_road_ghost_line_data()
-	var fetch_ms := float(Time.get_ticks_usec() - fetch_start_us) / 1000.0
-	if guide_data.is_empty():
-		# An unavailable core lock is not a successfully generated empty world. Retain the
-		# current mesh and retry once next frame; never drain an endless deferred-call loop.
-		_ghost_rebuild_queued = true
-		await get_tree().process_frame
-		_ghost_rebuild_queued = false
-		_request_deferred_ghost_rebuild()
-		return
-	var vertices: PackedVector3Array = (
-		guide_data.get("vertices", PackedVector3Array())
-		as PackedVector3Array
-	)
-	var colors: PackedColorArray = (
-		guide_data.get("colors", PackedColorArray())
-		as PackedColorArray
-	)
-	if vertices.size() < 2:
-		ghost_mesh.visible = false
-		_ghost_render_generation = int(guide_data["generation"])
-		_ghost_vertex_count = vertices.size()
-		_ghost_guides_dirty = false
-		if _road_debug_enabled:
-			print(
-				"[DEBUG:road] ghost_lines_godot vertices=%d colors=%d fetch_ms=%.3f upload_ms=0.000 total_ms=%.3f"
-				% [
-					vertices.size(),
-					colors.size(),
-					fetch_ms,
-					float(Time.get_ticks_usec() - total_start_us) / 1000.0,
-				]
-			)
-		return
-
-	var upload_start_us := Time.get_ticks_usec()
-	var im := ImmediateMesh.new()
-	im.surface_begin(Mesh.PRIMITIVE_LINES)
-	var has_colors := colors.size() == vertices.size()
-	var fallback_color := Color(1.0, 1.0, 1.0, 0.30)
-	for index in range(vertices.size()):
-		im.surface_set_color(colors[index] if has_colors else fallback_color)
-		im.surface_add_vertex(vertices[index])
-
-	im.surface_end()
-	ghost_mesh.mesh = im
-	ghost_mesh.visible = true
-	_ghost_render_generation = int(guide_data["generation"])
-	_ghost_vertex_count = vertices.size()
-	_ghost_guides_dirty = false
-	var upload_ms := float(Time.get_ticks_usec() - upload_start_us) / 1000.0
-	if _road_debug_enabled:
-		print(
-			"[DEBUG:road] ghost_lines_godot vertices=%d colors=%d fetch_ms=%.3f upload_ms=%.3f total_ms=%.3f"
-			% [
-				vertices.size(),
-				colors.size(),
-				fetch_ms,
-				upload_ms,
-				float(Time.get_ticks_usec() - total_start_us) / 1000.0,
-			]
-		)

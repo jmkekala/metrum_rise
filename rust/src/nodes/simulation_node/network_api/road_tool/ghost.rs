@@ -1,54 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Ghost road-tool Godot API methods.
+//! Road geometry and tangent Godot API methods.
 
 use super::super::super::*;
 
 #[godot_api(secondary)]
 impl SimulationNode {
-    /// Returns ghost guide data for the road-tool overlay.
-    #[func]
-    pub fn get_road_ghost_guides(&self) -> PackedFloat32Array {
-        use crate::nodes::sim::bridge::network::get_road_ghost_guides;
-        match self.try_lock_core() {
-            Some(core) => get_road_ghost_guides(&core),
-            None => PackedFloat32Array::new(),
-        }
-    }
-
-    /// Returns fully-resolved ghost guide line vertices and colors.
-    #[func]
-    pub fn get_road_ghost_line_data(&self) -> VarDictionary {
-        use crate::nodes::sim::bridge::network::get_road_ghost_line_data;
-        match self.try_lock_core() {
-            Some(mut core) => get_road_ghost_line_data(&mut core),
-            None => VarDictionary::new(),
-        }
-    }
-
-    /// Returns the closest ghost-guide snap point within range, or null.
-    #[func]
-    pub fn get_road_ghost_snap(
-        &self,
-        world_pos: Vector3,
-        max_dist_m: f32,
-        altitude_offset_m: f32,
-    ) -> Variant {
-        use crate::nodes::sim::bridge::network::get_road_ghost_snap_from_parts;
-        let query = self.road_tool_query_snapshot.read().unwrap();
-        match get_road_ghost_snap_from_parts(
-            &query.region_graph,
-            &query.road_surface,
-            &query.terrain,
-            world_pos,
-            max_dist_m,
-            altitude_offset_m,
-        ) {
-            Some(point) => point.to_variant(),
-            None => Variant::nil(),
-        }
-    }
-
     /// Returns the full physical geometry of every non-deleted road edge.
     #[func]
     pub fn get_road_edge_polylines(&self) -> PackedFloat32Array {

@@ -191,21 +191,6 @@ class TestRoadTool:
 	func drain_pending_border_checks() -> void:
 		border_check_count += 1
 
-class MockGhostSimulation:
-	extends Node
-	var response: Dictionary = {}
-	var fetches: int = 0
-
-	func get_road_ghost_line_data() -> Dictionary:
-		fetches += 1
-		return response
-
-class GhostRoadTool:
-	extends RoadToolScript
-
-	func _ready() -> void:
-		set_process(false)
-
 class MockRoadCandidateSimulation:
 	extends MockSimulation
 	var zoning_revision: int = 1
@@ -297,50 +282,10 @@ class PointerRoadTool:
 
 var _failures: int = 0
 
-func _test_ghost_contention_retry() -> void:
-	var host := Node3D.new()
-	root.add_child(host)
-	var simulation := MockGhostSimulation.new()
-	simulation.name = "SimulationNode"
-	host.add_child(simulation)
-	var terrain := Node3D.new()
-	terrain.name = "Terrain"
-	host.add_child(terrain)
-	var tool := GhostRoadTool.new()
-	host.add_child(tool)
-	tool.ghost_mesh = MeshInstance3D.new()
-	tool.add_child(tool.ghost_mesh)
-	var previous_mesh := ImmediateMesh.new()
-	tool.ghost_mesh.mesh = previous_mesh
-	tool.ghost_mesh.visible = true
-	tool._ghost_render_generation = 4
-	tool._rebuild_ghost_lines_if_dirty()
-	_expect(tool._ghost_guides_dirty and tool._ghost_rebuild_queued, "unavailable ghost data must stay pending")
-	_expect(tool.ghost_mesh.visible and tool.ghost_mesh.mesh == previous_mesh, "contention must retain existing ghosts")
-	_expect(tool._ghost_render_generation == 4 and simulation.fetches == 1, "unavailable fetch must not publish or spin")
-	simulation.response = {
-		"generation": 5, "vertices": PackedVector3Array([Vector3.ZERO, Vector3.RIGHT]),
-		"colors": PackedColorArray([Color.WHITE, Color.WHITE]),
-	}
-	for _frame in range(5):
-		await process_frame
-		if not tool._ghost_guides_dirty:
-			break
-	_expect(not tool._ghost_guides_dirty and not tool._ghost_rebuild_queued, "available ghost data must complete retry")
-	_expect(tool._ghost_render_generation == 5 and tool._ghost_vertex_count == 2, "retry must publish exact generation and vertices")
-	_expect(simulation.fetches == 2, "retry must fetch once on the following frame")
-	simulation.response = {"generation": 6, "vertices": PackedVector3Array(), "colors": PackedColorArray()}
-	tool._ghost_guides_dirty = true
-	tool._rebuild_ghost_lines_if_dirty()
-	_expect(not tool.ghost_mesh.visible and not tool._ghost_guides_dirty, "a real empty world must clear guides")
-	_expect(tool._ghost_render_generation == 6 and tool._ghost_vertex_count == 0, "empty success must publish its generation")
-	host.free()
-
 func _initialize() -> void:
 	call_deferred("_run")
 
 func _run() -> void:
-	await _test_ghost_contention_retry()
 	_test_road_pointer_frame_updates()
 	await _test_native_road_cursor_contract()
 	_test_road_parcel_validation_cache()
@@ -1076,7 +1021,7 @@ func _test_native_road_cursor_contract() -> void:
 		var x := 30.0 + index * 0.1
 		var result: Variant = simulation.get_road_tool_cursor_pos(
 			Vector3(x, 100.0, 20.0), Vector3.DOWN, 0.0, false, 0,
-			Vector3.ZERO, Vector3.ZERO, false, 1, 1, false, 25.0, previous, 8.0
+			Vector3.ZERO, Vector3.ZERO, false, 1, 1, 25.0, previous, 8.0
 		)
 		_expect(result is Dictionary, "native cursor result must include position and target identity")
 		if result is Dictionary:
@@ -1092,17 +1037,22 @@ func _test_native_road_cursor_contract() -> void:
 	_expect(accepted.get("committed", false) and simulation.get_road_benchmark_state()["live_edges"] == 1, "native acknowledgment must reflect an accepted road")
 	var grid_cursor: Dictionary = simulation.get_road_tool_cursor_pos(
 		Vector3(6.0, 100.0, 104.0), Vector3.DOWN, 0.0, true, 2,
-		Vector3(5.0, 0.0, 32.0), Vector3.ZERO, true, 1, 1, true, 0.0, {}, 8.0
+		Vector3(5.0, 0.0, 32.0), Vector3.ZERO, true, 1, 1, 0.0, {}, 8.0
 	)
-	_expect(grid_cursor["position"].distance_to(Vector3(5.0, 0.0, 102.0)) < 0.01, "zoning snap must use the curb grid and override fixed ghost guides")
+	_expect(grid_cursor["position"].distance_to(Vector3(5.0, 0.0, 102.0)) < 0.01, "zoning snap must use the curb grid without guide snapping")
 	var angled_cursor: Dictionary = simulation.get_road_tool_cursor_pos(
 		Vector3(45.0, 100.0, 102.0), Vector3.DOWN, 0.0, true, 2,
-		Vector3(5.0, 0.0, 32.0), Vector3.ZERO, true, 1, 1, true, 0.0, {}, 8.0
+		Vector3(5.0, 0.0, 32.0), Vector3.ZERO, true, 1, 1, 0.0, {}, 8.0
 	)
 	_expect(angled_cursor["position"].distance_to(Vector3(45.0, 0.0, 102.0)) < 0.01, "zoning snap must allow free angles away from grid axes")
+	var free_cursor: Dictionary = simulation.get_road_tool_cursor_pos(
+		Vector3(80.0, 100.0, 33.0), Vector3.DOWN, 0.0, true, 2,
+		Vector3(60.0, 0.0, 32.0), Vector3.ZERO, false, 1, 1, 0.0, {}, 8.0)
+	_expect(free_cursor["position"].distance_to(Vector3(80.0, 0.0, 33.0)) < 0.01, "removed continuation guides must not snap the cursor")
+	_expect(not free_cursor.has("guide_vertices"), "cursor bridge must not generate guide geometry")
 	var branch_cursor: Dictionary = simulation.get_road_tool_cursor_pos(
 		Vector3(3.0, 100.0, 33.0), Vector3.DOWN, 0.0, false, 0,
-		Vector3.ZERO, Vector3.ZERO, true, 1, 1, false, 0.0, {}, 8.0
+		Vector3.ZERO, Vector3.ZERO, true, 1, 1, 0.0, {}, 8.0
 	)
 	_expect(absf(branch_cursor["position"].x - 5.0) < 0.01 and absf(branch_cursor["position"].z - 32.0) < 0.01, "grid-aligned branch start must remain on the supplying road")
 	_expect(branch_cursor["snap_edge"] >= 0, "zoning snap must retain real road connections")

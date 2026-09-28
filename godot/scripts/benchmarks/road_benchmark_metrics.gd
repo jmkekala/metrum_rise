@@ -5,7 +5,7 @@ extends RefCounted
 
 const LATENCIES := [
 	"preview_ready_ms", "preview_ms", "commit_dispatch_ms", "generation_ready_ms",
-	"render_ack_ms", "ghost_ready_ms", "first_idle_ms", "settle_tail_ms", "commit_ms",
+	"render_ack_ms", "first_idle_ms", "settle_tail_ms", "commit_ms",
 	"pointer_idle_to_ready_ms",
 ]
 

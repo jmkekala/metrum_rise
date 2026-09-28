@@ -58,7 +58,6 @@ func _stream_fixture(fixture: Dictionary) -> Dictionary:
 	tool._road_preview_material = WorldMaterialsScript.road_preview_material()
 	tool.blueprint_mesh.material_override = tool._road_preview_material
 	# Manually drive the real process path at a fixed input cadence, without debug/node overlays.
-	tool._ghost_enabled = false
 	tool.active = true
 	tool.fwd_lanes = fixture.forward
 	tool.start_pos = Vector3.ZERO if endpoint_join else Vector3(0.0, 0.0, -48.0)

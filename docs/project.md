@@ -163,6 +163,11 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Shipped Foundations
 
+- **Road guide removal (`ROAD-27`)**: removed guiding lines, guide snapping, their global
+  cache and the G shortcut. Zoning-grid snapping, road connections and active placement
+  measurements remain. All 2,010 active Rust tests, both Godot cursor/preview suites and eight
+  report tests pass; the release extension is deployed. See [road guide removal](roads.md#road-guide-removal-road-27).
+
 - **Road preview crash (`ROAD-26`)**: generated-carrier height lookup no longer indexes an
   empty candidate list during preview or commit validation. Missing support follows existing
   validation. All 2,014 Rust tests and both road-tool/continuous-preview Godot suites pass;

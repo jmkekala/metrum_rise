@@ -640,14 +640,8 @@ to the previous projected point. Interior polyline knots have no endpoint margin
 half-metre jumps. Retained projection is allocation-free `O(edge polyline segments)`; acquisition
 uses the existing node grid and edge R-tree. No additional spatial index or whole-network scan is used.
 
-Ghost-guide snapping also queries the existing edge R-tree (`ROAD-20`). Its search bounds include
-the maximum guide reach (240 m lateral offsets or 200 m outward extensions) plus capture radius,
-rounded outwards. The index's internal visitor avoids heap-backed traversal storage; candidate
-polylines stream the same offset segments and crossing-pair rejection without candidate or offset
-buffers. Equal-distance ties resolve by world-XZ order, not index traversal order. Work depends on
-the indexed local edges and their source segments; long polylines
-or dense overlapping bounds still cost more. Road-tool snapshot publication no longer builds or
-retires a second whole-network snapping R-tree. Visible guide generation is unchanged.
+Road guiding lines and guide snapping are removed; see
+[road guide removal](#road-guide-removal-road-27).
 
 Road surface, earthwork and fine-query chunk owner indices now share immutable map branches
 across preview snapshots using `imbl`, with sorted owner sets shared by `Arc`. A local membership
@@ -670,8 +664,7 @@ building the committed curve, including clicks arriving before the next frame. T
 checkbox controls zoning-grid snapping. The Shift shortcut and old 15-degree / fixed-10-metre
 snap are removed. Road connections stay enabled. Zoning snap uses persistent curb alignment,
 selected road width and configured cell size. It captures directions only within 5 degrees and
-half a cell of lateral displacement; other angles stay free. Fixed ghost guides do not override
-it. The placement
+half a cell of lateral displacement. Other angles stay free. The placement
 and complexity contract is owned by [ZONE-04](zoning.md#11-road-generated-cell-zoning--zone-04).
 
 The moving and fallback stroke previews render asphalt, lane dividers, curbs, and sidewalks rather than a
@@ -961,7 +954,7 @@ query-chunk lookup. It tests only triangles in each owner's matching cell, retai
 renderability predicate and highest-top-surface rule, and leaves structural-earthwork fallback
 unchanged. Top-surface work is proportional to local owners, their node-visibility adjacency, and
 cell triangle candidates rather than every triangle in those owners; sampling allocates nothing
-and builds no extra index. The same sampler serves ghost guides, snapping, and other visible-height
+and builds no extra index. The same sampler serves snapping and other visible-height
 consumers. Exact scan-parity tests cover seams, overlapping heights, width edits, deletion, bridges,
 and tunnels.
 
@@ -981,6 +974,35 @@ enqueue or poll Rust-owned preview results and keep input/render code thin.
 Straight road edits should commit endpoint-only plan input. Curved edits may use deterministic
 world-space sampling, but must preserve authored endpoints exactly. Oversampled straight Godot
 `Curve3D` streams are not allowed to become semantic road input.
+
+### Road guide removal (`ROAD-27`)
+
+All road guiding lines, their guide-specific snapping, the G shortcut, global guide cache,
+render meshes and bridge APIs are removed. This includes endpoint continuations and offset
+guide grids. There is no replacement guide system.
+
+The zoning-grid checkbox still controls cell-aligned snapping, including free angles outside
+its capture range. Existing road/node connection snapping and placement distance/angle
+measurements remain. Cursor queries use the existing spatial indices; removal adds no new
+hot-path work or spatial structures. Benchmark output schema 4 omits guide readiness/count
+fields while retaining road output and generation checks.
+
+Fresh validation: all 2,010 active release Rust tests pass (81 ignored), along with Godot's
+`network_tool_chunk_renderer_test` and `road_preview_stream_test`, and eight benchmark-report
+tests. The cursor regression checks that former continuation guides no longer attract the
+cursor while zoning-grid, free-angle and real-road connection behavior remain intact.
+Changed Rust files pass formatting checks; the repository-wide formatting check still reports
+unrelated formatting in existing vegetation/zoning files. The release extension is atomically
+deployed; logs and executable/library hashes are in `rust/target/no-road-guides/`.
+
+Matched unprofiled release runs compare the preceding contextual-guide executable with guide
+removal on Rust 1.98.1, i9-12900K CPU 0, `RAYON_NUM_THREADS=1 METRUM_DEBUG=0`.
+Run `bash rust/target/no-road-guides/benchmarks.sh` for the existing
+`benchmark_zoning_snap_locality --ignored --nocapture --test-threads=1` fixture.
+At 0 / 1,000 / 10,000 background roads, median query times are
+0.069 → 0.061 / 0.077 → 0.071 / 0.080 → 0.083 µs; all checksums match
+`(266240, 532480)`. Setup is excluded. These single trials support retained query locality,
+not a speedup claim; guide generation and upload no longer execute.
 
 ### Empty generated-carrier height lookup (`ROAD-26`)
 
@@ -1434,7 +1456,7 @@ Required bounds:
   confound terrain with topology: do not call these isolated complexity comparisons.
 - Milestones separate `preview_ready_ms` (exact readiness before the extra fence frame),
   `generation_ready_ms`, `render_ack_ms` (matching atomic road/terrain acknowledgement),
-  `ghost_ready_ms` (guides uploaded for the committed generation), and `first_idle_ms`
+  and `first_idle_ms`
   (also foreground water/border/residency work). `commit_ms` retains the five
   consecutive idle frames; `settle_tail_ms` isolates the final stable tail. These are CPU frame
   observations, **not GPU presentation timestamps**. Headless is uncapped unless
@@ -1457,11 +1479,10 @@ Required bounds:
 - Summaries separate `initial_road`, `edit_1`, and later edits. p95 is null below 100 observations;
   p99 is null below 1,000. These are descriptive quantiles, not confidence intervals or independent
   process replicates. The wrapper rejects existing outputs and validates full fixture coverage,
-  monotonic milestones, command generations, and visible generation-matched ghost output through
-  `tools/road_benchmark_report.py`. Paired captures must also agree on guide vertex counts and
-  pre/post-edit graph, lane, agent, and building cardinalities.
-  Unavailable native guide data preserves the existing mesh and retries once next frame; it is
-  not an empty world. A successful empty result explicitly carries its generation (`ROAD-15`).
+  monotonic milestones and command generations through `tools/road_benchmark_report.py`.
+  Schema 4 removes the retired global-guide readiness/count fields. Paired captures still require matched
+  pre/post-edit graph, lane, agent and building cardinalities; reset fixtures must repeat road
+  output cardinalities. Schema-3 historical artifacts require their original verifier.
   Compare separate unprofiled pairs with
   `python3 tools/road_benchmark_report.py --baseline a1.json a2.json --candidate b1.json b2.json`
   (default `first_idle_ms`; also `--metric render_ack_ms` or `--metric command.routing_ms`).
@@ -2386,7 +2407,7 @@ again. The rendered run saved 117 before/preview/commit-or-failure images. Repla
 37.34 m source offset, and 117.78 degrees adjacent pitch change. These are reproduced defects,
 not accepted baseline quality. Dumps/screenshots run outside operation timers but perturb caches
 and preview dwell; these diagnostic timings are **not accepted performance measurements**.
-Keep using matched unprofiled schema-3 workloads for performance claims. Run launchers serially:
+Use matched unprofiled schema-4 workloads for new performance claims. Run launchers serially:
 `run.sh` redeploys the shared GDExtension library.
 
 To import a fresh capture without overwriting an existing manifest:

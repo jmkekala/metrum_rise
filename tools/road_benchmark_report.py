@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate schema-3 road captures or compare matched, unprofiled process runs.
+"""Validate schema-4 road captures or compare matched, unprofiled process runs.
 
 Uses raw per-operation samples, not pooled fixture summaries. Each paired process
 contributes one median per operation; repetitions inside a process are not treated
@@ -14,8 +14,8 @@ from statistics import median
 
 
 def validate_capture(data):
-    if data.get("schema_version") != 3 or data.get("success") is not True:
-        raise ValueError("capture must be successful schema 3")
+    if data.get("schema_version") != 4 or data.get("success") is not True:
+        raise ValueError("capture must be successful schema 4")
     definitions = {case["case_id"]: case for case in data["matrix_cases"]}
     expected = {
         (case, warmup, repetition)
@@ -24,7 +24,7 @@ def validate_capture(data):
         for repetition in range(count)
     }
     seen = set()
-    guide_counts = {}
+    products = {}
     for fixture in data["fixtures"]:
         key = fixture["case_id"], fixture["warmup"], fixture["repetition"]
         if key not in expected or key in seen or fixture.get("ok") is not True:
@@ -49,13 +49,11 @@ def validate_capture(data):
                 == command["generation"] and command["committed"]
             ):
                 raise ValueError(f"stale or incomplete command metrics: {key}")
-            if segment["ghost_generation"] != generation or segment["ghost_vertex_count"] < 2 or segment["ghost_visible"] is not True:
-                raise ValueError(f"missing or stale ghost-guide output: {key}")
             if data["runtime"]["fixture_isolation"] == "reset_each_fixture":
                 operation = key[0], index, fixture["anchor_x"], fixture["anchor_z"]
-                count = segment["ghost_vertex_count"]
-                if guide_counts.setdefault(operation, count) != count:
-                    raise ValueError(f"non-repeatable ghost-guide output: {key}")
+                product = tuple(segment["state_after"][name] for name in ("live_edges", "edge_slots", "nodes", "lanes"))
+                if products.setdefault(operation, product) != product:
+                    raise ValueError(f"non-repeatable road output: {key}")
             times = [segment[name] for name in (
                 "commit_dispatch_ms", "generation_ready_ms", "render_ack_ms",
                 "first_idle_ms", "commit_ms",
@@ -64,8 +62,6 @@ def validate_capture(data):
                 raise ValueError(f"invalid commit milestone order: {key}: {times}")
             if segment.get("preview_mode") != "immediate" and not 0 <= segment["preview_ready_ms"] <= segment["preview_ms"]:
                 raise ValueError(f"invalid preview milestone order: {key}")
-            if not segment["generation_ready_ms"] <= segment["ghost_ready_ms"] <= segment["first_idle_ms"]:
-                raise ValueError(f"invalid ghost readiness milestone: {key}")
             if not 0 <= segment["settle_tail_ms"] <= segment["commit_ms"]:
                 raise ValueError(f"invalid settlement fence: {key}")
     if seen != expected or not expected:
@@ -116,7 +112,7 @@ def workload_signature(data):
             fixture["anchor_x"], fixture["anchor_z"],
             tuple(state[name] for name in cardinalities),
             [(
-                segment["start"], segment["end"], segment.get("ghost_vertex_count"),
+                segment["start"], segment["end"],
                 tuple(segment["state_after"][name] for name in cardinalities) if "state_after" in segment else None,
             ) for segment in fixture["segments"]],
         ))
