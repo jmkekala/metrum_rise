@@ -346,6 +346,10 @@ fn queued_asymmetric_houses_publish_graded_terrain() {
                         .parcel_by_raw_id(pending.action.parcel_id)
                         .unwrap();
                     let center = parcel.front_center() + parcel.normal() * 10.0;
+                    // These empty parcels only supply matched fixture positions. Explicit
+                    // sites must release the marker's land reservation before claiming it.
+                    core.zoning
+                        .remove_parcels_by_raw_ids(&HashSet::from([pending.action.parcel_id]));
                     core.place_service_building_internal(&asset, center.x, center.y)
                         .unwrap();
                 } else {

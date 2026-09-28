@@ -22,7 +22,9 @@ impl ZoningSystem {
         if !parcels::geometry_inside_world(geometry, self.config.width_m, self.config.height_m) {
             return Err(ParcelPlacementError::OutsideWorld);
         }
-        if self.parcels.overlaps_existing(geometry) {
+        if self.parcels.overlaps_existing(geometry)
+            || self.parcel_overlaps_cell_reservation(geometry)
+        {
             return Err(ParcelPlacementError::OverlapsExistingParcel);
         }
         if parcels::geometry_overlaps_road(graph, geometry) {
@@ -79,6 +81,7 @@ impl ZoningSystem {
             if self
                 .parcels
                 .overlaps_existing_with_scratch(&geometry, &mut existing_seen)
+                || self.parcel_overlaps_cell_reservation(&geometry)
             {
                 blocked_by_existing = true;
                 continue;

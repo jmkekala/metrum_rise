@@ -708,6 +708,7 @@ impl SimCore {
         minute_of_day: u16,
         service_funding_by_building: &[f32],
     ) {
+        self.prepare_cell_lots_internal();
         self.allocator
             .prepare_building_site_query_index(self.config.zone_cell_m);
         self.transit_network.road_surface.compile_dirty_with_reason(
@@ -843,6 +844,17 @@ impl SimCore {
     /// Keeps saved production polygons aligned with allocator swap removals before further use.
     pub(crate) fn publish_pending_production_site_removals(&mut self) {
         for (removed, last) in self.allocator.pending_production_site_removals.drain(..) {
+            // The allocator has already dropped clearance. Release cached cells over the
+            // entire removed field before its saved polygon is removed or swap-remapped.
+            if let Some(site) = self.agriculture.site_for_building(removed) {
+                self.zoning.mark_cell_lots_dirty(
+                    crate::simulation::zoning::cells::CellBounds::from_points(
+                        site.polygon_world
+                            .iter()
+                            .map(|p| glam::DVec2::new(f64::from(p.x), f64::from(p.y))),
+                    ),
+                );
+            }
             self.agriculture
                 .remove_building_after_swap_remove(removed, last);
             self.resource_extraction
@@ -851,6 +863,11 @@ impl SimCore {
     }
 
     pub(crate) fn mark_building_site_terrain_dirty_bounds(&mut self, bounds: (f32, f32, f32, f32)) {
+        self.zoning
+            .mark_cell_lots_dirty(crate::simulation::zoning::cells::CellBounds {
+                min: glam::DVec2::new(f64::from(bounds.0), f64::from(bounds.1)),
+                max: glam::DVec2::new(f64::from(bounds.2), f64::from(bounds.3)),
+            });
         let margin_m =
             terrain_cdt_local_sample_margin_m(&self.heightmap, ROAD_LOCKED_TERRAIN_RENDER_STEP_M);
         self.allocator.mark_building_site_terrain_bounds_dirty(

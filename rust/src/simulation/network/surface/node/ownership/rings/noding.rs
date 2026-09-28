@@ -20,7 +20,7 @@ mod edges;
 mod rail_paths;
 
 pub(in crate::simulation::network::surface::node::ownership) use canonicalization::{
-    canonicalize_final_join_or_cap_owned_region_boundary_edges,
+    NodeRingCanonicalization, canonicalize_final_join_or_cap_owned_region_boundary_edges,
     canonicalize_final_owned_region_boundary_edges_for_piece_kind, canonicalize_owned_region_rings,
     canonicalize_owned_region_rings_with_rail_point_set_for_piece_kind,
 };

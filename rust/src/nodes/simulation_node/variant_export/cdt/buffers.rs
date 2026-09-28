@@ -739,6 +739,10 @@ impl SimulationNode {
             if omit_pathological_terrain_faces
                 && Self::terrain_cdt_output_is_pathological(face_slope_ratio, face_longest_edge_m)
             {
+                debug_log!(
+                    "road",
+                    "terrain_cdt_rejected_face points={points:?} slope={face_slope_ratio} longest_edge={face_longest_edge_m}"
+                );
                 omitted_pathological_faces += 1;
                 continue;
             }

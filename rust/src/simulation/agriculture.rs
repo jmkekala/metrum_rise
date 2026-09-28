@@ -235,8 +235,8 @@ impl AgricultureSystem {
         {
             return Err("field overlaps another field".to_owned());
         }
-        if zoning.parcels.overlaps_polygon(&footprint) {
-            return Err("field overlaps a zoning parcel".to_owned());
+        if zoning.overlaps_reservation(&footprint) {
+            return Err("field overlaps reserved zoning".to_owned());
         }
         for idx in allocator.site_candidate_indices_for_bounds(
             footprint.min.x,

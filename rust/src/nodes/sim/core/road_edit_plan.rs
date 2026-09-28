@@ -126,6 +126,11 @@ impl RoadEditPlan {
         let width = (f32::from(fwd) + f32::from(bkw)) * crate::config::LANE_WIDTH;
         if !validation.is_valid
             || self.overlaps_fields(core)
+            || self.overlaps_cell_zoning(core)
+            || core.zoning.cells_overlap_road_corridor(
+                &self.prepared.points,
+                width.max(2.0) * 0.5 + crate::config::SIDEWALK_WIDTH,
+            )
             || !core
                 .zoning
                 .parcel_ids_overlapping_road_corridor(
@@ -152,6 +157,14 @@ impl RoadEditPlan {
                     .roads
                     .overlaps_fields(&core.allocator.field_clearance)
             })
+    }
+
+    /// Revalidates cell reservations even when paint changed after this road preview was built.
+    pub(crate) fn overlaps_cell_zoning(&self, core: &SimCore) -> bool {
+        self.topology
+            .as_ref()
+            .and_then(|topology| topology.earthworks())
+            .is_some_and(|earthworks| earthworks.roads.overlaps_cell_zoning(&core.zoning))
     }
 
     /// Retains the worker's preparation, solved graph delta and optional canonical surface products.

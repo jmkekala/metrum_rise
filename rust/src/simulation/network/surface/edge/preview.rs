@@ -27,6 +27,8 @@ use godot::prelude::Vector3;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+mod node_move;
+
 const PREVIEW_VALID_REASON: &str = "";
 const PREVIEW_BRIDGE_CLEARANCE_REASON: &str = "bridge_clearance";
 const PREVIEW_TUNNEL_CLEARANCE_REASON: &str = "tunnel_clearance";

@@ -204,6 +204,11 @@ impl SimCore {
 
     fn mark_terrain_authoring_payload_bounds(&mut self, pos: Vector2, radius: f32) {
         let radius = radius.max(0.0) + self.heightmap.render_patch_border_margin_m();
+        self.zoning
+            .mark_cell_lots_dirty(crate::simulation::zoning::cells::CellBounds {
+                min: glam::DVec2::new(f64::from(pos.x - radius), f64::from(pos.y - radius)),
+                max: glam::DVec2::new(f64::from(pos.x + radius), f64::from(pos.y + radius)),
+            });
         let patch_keys = self.heightmap.render_patch_keys_for_world_bounds(
             pos.x - radius,
             pos.y - radius,
@@ -281,6 +286,9 @@ impl SimCore {
     }
 
     pub(crate) fn rebuild_building_entrances_internal(&mut self) {
+        // Refresh queued frontage links before copying parcel attachments into live buildings.
+        // The cell refresh defers all publication while a road transaction is still staged.
+        self.prepare_cell_lots_internal();
         self.allocator
             .repair_road_attachments_after_topology_edit(&self.region_graph, &mut self.zoning);
         self.allocator
@@ -634,6 +642,8 @@ impl SimCore {
         }
 
         self.push_road_removal_undo(affected_edges.clone(), affected_nodes.clone(), edge_idx);
+        self.zoning
+            .mark_cell_lots_for_roads(&self.region_graph, affected_edges.iter().copied());
         self.transit_network.mark_surface_dirty_from_sets(
             &self.region_graph,
             &affected_edges,
@@ -900,6 +910,8 @@ impl SimCore {
         }
         let edge_idx = edge_idx as usize;
         self.region_graph.edge_mut(edge_idx).no_building_spawn = enabled;
+        self.zoning
+            .mark_cell_lots_for_roads(&self.region_graph, [edge_idx]);
         if enabled {
             self.run_building_allocator_maintenance_internal();
             self.zoning.remove_parcels_attached_to_edge(edge_idx);
@@ -967,6 +979,8 @@ impl SimCore {
             affected_nodes.insert(edge.end_node);
             edge.class = class;
         }
+        self.zoning
+            .mark_cell_lots_for_roads(&self.region_graph, [edge_idx]);
         self.transit_network
             .mark_surface_dirty_for_nodes(&self.region_graph, &affected_nodes);
 
@@ -1012,7 +1026,9 @@ impl SimCore {
         edit_plan: Option<&RoadEditPlan>,
     ) -> RoadAddOutcome {
         // Non-preview callers must also validate final junction geometry, not only the stroke.
-        let fallback_plan = if edit_plan.is_none() && !self.allocator.field_clearance.is_empty() {
+        let fallback_plan = if edit_plan.is_none()
+            && (!self.allocator.field_clearance.is_empty() || self.zoning.cells.has_reservations())
+        {
             self.allocator
                 .prepare_building_site_query_index(self.config.zone_cell_m);
             Some(RoadEditPlan::compile(
@@ -1212,6 +1228,14 @@ impl SimCore {
 
         let road_width_m = (f32::from(fwd_lanes_u8) + f32::from(bkw_lanes_u8)) * config::LANE_WIDTH;
         let corridor_half_width_m = road_width_m.max(2.0) * 0.5 + config::SIDEWALK_WIDTH;
+        if self
+            .zoning
+            .cells_overlap_road_corridor(&fixed_points, corridor_half_width_m)
+            || edit_plan.is_some_and(|plan| plan.overlaps_cell_zoning(self))
+        {
+            self.last_road_timing = "rejected=zoning_cell_overlap".to_owned();
+            return RoadAddOutcome::rejected();
+        }
         let overlapping_parcels = self
             .zoning
             .parcel_ids_overlapping_road_corridor(&fixed_points, corridor_half_width_m);
@@ -1307,6 +1331,13 @@ impl SimCore {
             finalized_geometry.is_some()
         );
         let dt_topo_us = t_topo.elapsed().as_micros();
+
+        let dirty = finalized_geometry
+            .as_ref()
+            .map(|geometry| &geometry.dirty_edges)
+            .unwrap_or(&self.transit_network.bulk_dirty_edges);
+        self.zoning
+            .mark_cell_lots_for_roads(&self.region_graph, dirty.iter().copied());
 
         self.mark_local_network_render_dirty();
 
@@ -1425,7 +1456,7 @@ impl SimCore {
         self.allocator.preview_explicit_service_placement(
             asset_id,
             Vector2::new(world_x, world_z),
-            self.zoning.config.zone_cell_m,
+            &self.zoning,
             &self.region_graph,
             &self.transit_network.road_surface,
             &self.heightmap,
@@ -1447,7 +1478,7 @@ impl SimCore {
         let building_idx = self.allocator.execute_explicit_service_placement(
             asset_id,
             Vector2::new(world_x, world_z),
-            self.zoning.config.zone_cell_m,
+            &self.zoning,
             &self.region_graph,
             &self.transit_network.road_surface,
             &self.heightmap,
@@ -1479,7 +1510,7 @@ impl SimCore {
         self.allocator.preview_explicit_industry_placement(
             asset_id,
             Vector2::new(world_x, world_z),
-            self.zoning.config.zone_cell_m,
+            &self.zoning,
             &self.region_graph,
             &self.transit_network.road_surface,
             &self.heightmap,
@@ -1501,7 +1532,7 @@ impl SimCore {
         let building_idx = self.allocator.execute_explicit_industry_placement(
             asset_id,
             Vector2::new(world_x, world_z),
-            self.zoning.config.zone_cell_m,
+            &self.zoning,
             &self.region_graph,
             &self.transit_network.road_surface,
             &self.heightmap,
@@ -1611,6 +1642,11 @@ impl SimCore {
             &self.transit_network.road_surface,
         )?;
         for bounds in [previous, committed].into_iter().flatten() {
+            self.zoning.mark_cell_lots_dirty(
+                crate::simulation::zoning::cells::CellBounds::from_points(
+                    [bounds.0, bounds.1].map(|p| glam::DVec2::new(f64::from(p.x), f64::from(p.y))),
+                ),
+            );
             self.invalidate_vegetation_over(bounds);
         }
         Ok(summary)
@@ -1669,23 +1705,67 @@ impl SimCore {
         true
     }
 
-    /// Repositions a network node in world space.
-    pub fn move_network_node_internal(&mut self, node_id: i32, pos: Vector3) {
-        if node_id >= 0 && (node_id as usize) < self.region_graph.node_count() {
-            let old_pos = self.region_graph.node(node_id as u32).pos;
-            let affected_edges: HashSet<usize> = self
+    /// Repositions a network node only if its compiled roads preserve cell reservations.
+    /// Rejected and unchanged moves leave authoritative state and undo history untouched.
+    pub fn move_network_node_internal(&mut self, node_id: i32, pos: Vector3) -> bool {
+        if node_id >= 0 && (node_id as usize) < self.region_graph.node_count() && pos.is_finite() {
+            let node_id = self.region_graph.get_valid_node(node_id as u32);
+            let old_pos = self.region_graph.node(node_id).pos;
+            if old_pos == pos {
+                return false;
+            }
+            if self.zoning.cells.has_reservations()
+                && self
+                    .transit_network
+                    .road_surface
+                    .compile_node_move_surface(
+                        &self.region_graph,
+                        &self.heightmap,
+                        &self.zoning,
+                        node_id,
+                        pos,
+                    )
+                    .is_none_or(|surface| surface.overlaps_cell_zoning(&self.zoning))
+            {
+                return false;
+            }
+            let mut affected_edges: HashSet<usize> = self
                 .region_graph
-                .node_adjacency(node_id as u32)
+                .node_adjacency(node_id)
                 .iter()
                 .copied()
+                .filter(|&id| !self.region_graph.edge(id).deleted)
                 .collect();
+            let mut affected_nodes = HashSet::from([node_id]);
+            for &edge_idx in &affected_edges {
+                let edge = self.region_graph.edge(edge_idx);
+                affected_nodes.insert(edge.start_node);
+                affected_nodes.insert(edge.end_node);
+            }
+            // Endpoint deformation can change the clips of other approaches at either end.
+            // Keep their cell frontage, lane and surface dependents in the same transaction.
+            for &node in &affected_nodes {
+                affected_edges.extend(
+                    self.region_graph
+                        .node_adjacency(node)
+                        .iter()
+                        .copied()
+                        .filter(|&id| !self.region_graph.edge(id).deleted),
+                );
+            }
 
             self.push_network_undo_for_local_topology(
                 affected_edges.clone(),
-                HashSet::from([node_id as u32]),
+                affected_nodes.clone(),
             );
-            self.region_graph.move_node(node_id as u32, pos);
-            self.region_graph.rebuild_intersection_clips();
+            // Invalidate both corridors; moving a node can leave its old cached cells behind.
+            self.zoning
+                .mark_cell_lots_for_roads(&self.region_graph, affected_edges.iter().copied());
+            self.region_graph.move_node(node_id, pos);
+            self.region_graph
+                .rebuild_intersection_clips_for_nodes(&affected_nodes);
+            self.zoning
+                .mark_cell_lots_for_roads(&self.region_graph, affected_edges.iter().copied());
             self.agents.invalidate_lane_ids_for_edges(
                 &affected_edges,
                 &self.transit_network.lane_system,
@@ -1703,12 +1783,6 @@ impl SimCore {
             self.transit_network
                 .rebuild_cch_and_check(&self.region_graph);
             self.transit_network.flow_fields.mark_all_dirty();
-            let mut affected_nodes = HashSet::from([node_id as u32]);
-            for &edge_idx in &affected_edges {
-                let edge = self.region_graph.edge(edge_idx);
-                affected_nodes.insert(edge.start_node);
-                affected_nodes.insert(edge.end_node);
-            }
             self.transit_network.mark_surface_dirty_from_sets(
                 &self.region_graph,
                 &affected_edges,
@@ -1716,7 +1790,9 @@ impl SimCore {
             );
             self.transit_network.mark_surface_point_dirty(old_pos);
             self.mark_local_network_render_dirty();
+            return true;
         }
+        false
     }
 
     /// Sets a lane connection rule at a junction node.
@@ -2637,6 +2713,182 @@ mod tests {
     }
 
     #[test]
+    fn building_bulldoze_undo_restores_erased_cell_lot_and_generation() {
+        use crate::simulation::zoning::cells::{
+            CellBounds, CellFrontage, CellLot, CellSelectionShape,
+        };
+        use glam::DVec2;
+        let mut core = test_core();
+        let start = core
+            .region_graph
+            .add_node(Vector3::new(-60.0, 0.0, 0.0), NodeType::Junction);
+        let end = core
+            .region_graph
+            .add_node(Vector3::new(60.0, 0.0, 0.0), NodeType::Junction);
+        let edge = add_test_road_edge(&mut core.region_graph, start, end);
+        core.zoning.generate_cells(
+            &core.region_graph,
+            CellBounds {
+                min: DVec2::splat(-100.0),
+                max: DVec2::splat(100.0),
+            },
+            |_| false,
+        );
+        let point = DVec2::new(-25.0, 10.0);
+        let selection = core.zoning.cells.select(CellSelectionShape::Fill, &[point]);
+        core.zoning.paint_cells(&selection, 1, |_| false).unwrap();
+        let lot = CellLot::new(
+            core.zoning.cells.pick(point).unwrap(),
+            2,
+            2,
+            CellFrontage::MinY,
+        )
+        .unwrap();
+        let id = core
+            .zoning
+            .install_prevalidated_cell_lot(lot, edge, -1, 1.0 / 3.0, 1)
+            .unwrap();
+        core.zoning.restore_parcel_build_generation(id.raw(), 9);
+        let parcel = core.zoning.parcels.get(id).unwrap();
+        let mut building = test_building("building.cell_removed", parcel.center().x, 0.0);
+        building.center_y = parcel.center().y;
+        building.facing_dir = -parcel.normal();
+        building.parcel_id = id.raw();
+        building.edge_idx = edge;
+        building.side = -1;
+        building.frontage_t = parcel.frontage_center_t();
+        building.build_generation = 9;
+        building.pending_redevelopment = true;
+        building.rezone_grace_days_remaining = 11;
+        core.allocator.buildings.push(building);
+        assert!(core.zoning.occupy_parcel(id.raw(), 0));
+        let selection = core.zoning.cells.select(CellSelectionShape::Cell, &[point]);
+        core.zoning.paint_cells(&selection, 0, |_| false).unwrap();
+        core.allocator
+            .rebuild_building_site_clients(core.zoning.config.zone_cell_m);
+        core.allocator.rebuild_zone_index();
+        let paint = core.zoning.cells.saved_cells();
+        assert!(core.bulldoze_building(0));
+        assert!(core.zoning.parcels.get(id).is_none());
+        assert!(lot.cells().all(|key| core.zoning.cells.lot(key) == Some(0)));
+        assert!(core.undo_action_internal());
+        let parcel = core.zoning.parcels.get(id).unwrap();
+        assert_eq!(parcel.occupied_building(), Some(0));
+        assert_eq!(parcel.zone_profile_runtime_id(), 0);
+        assert_eq!(parcel.build_generation(), 9);
+        assert_eq!(core.zoning.cells.saved_cells(), paint);
+        assert!(
+            lot.cells()
+                .all(|key| core.zoning.cells.lot(key) == Some(id.raw()))
+        );
+        assert!(core.allocator.buildings[0].pending_redevelopment);
+        assert_eq!(core.allocator.buildings[0].rezone_grace_days_remaining, 11);
+    }
+
+    #[test]
+    fn curved_road_bulldoze_and_undo_keep_occupied_cell_claims_until_building_removal() {
+        use crate::simulation::zoning::cells::{CellBounds, CellLotSize, CellSelectionShape};
+        use glam::DVec2;
+
+        for (angle, erased) in [0.0_f64, 0.35]
+            .into_iter()
+            .flat_map(|angle| [false, true].map(|erased| (angle, erased)))
+        {
+            let mut core = test_core();
+            core.benchmark_mode = false;
+            let u = DVec2::new(angle.cos(), angle.sin());
+            let points = [(-60.0, 0.0), (-20.0, 2.0), (20.0, 8.0), (60.0, 18.0)]
+                .map(|(x, y)| {
+                    let p = u * x + u.perp() * y;
+                    Vector3::new(p.x as f32, 0.0, p.y as f32)
+                })
+                .to_vec();
+            assert!(core.add_road_internal(points, 1, 1).committed);
+            finalize_network_render_for_test(&mut core);
+            let bounds = CellBounds {
+                min: DVec2::splat(-200.0),
+                max: DVec2::splat(200.0),
+            };
+            core.zoning
+                .generate_cells(&core.region_graph, bounds, |_| false);
+            let selection = core.zoning.cells.select(
+                CellSelectionShape::Brush { radius_m: 200.0 },
+                &[DVec2::ZERO],
+            );
+            core.zoning.paint_cells(&selection, 1, |_| false).unwrap();
+            let lots = core.zoning.derive_cell_lots(
+                &core.region_graph,
+                bounds,
+                &[CellLotSize {
+                    profile: 1,
+                    width: 2,
+                    depth: 2,
+                }],
+                |_, _| false,
+            );
+            let id = lots.created[0];
+            let parcel = core.zoning.parcels.get(id).unwrap().clone();
+            let lot = parcel.cell_lot().unwrap();
+            let mut building =
+                test_building("building.curved_road_removed", parcel.center().x, 0.0);
+            building.center_y = parcel.center().y;
+            building.facing_dir = -parcel.normal();
+            building.parcel_id = id.raw();
+            building.edge_idx = parcel.edge_idx();
+            building.side = parcel.side();
+            building.frontage_t = parcel.frontage_center_t();
+            let pose = (building.center_x, building.center_y, building.facing_dir);
+            core.allocator.buildings.push(building);
+            assert!(core.zoning.occupy_parcel(id.raw(), 0));
+            core.allocator
+                .rebuild_building_site_clients(core.config.zone_cell_m);
+            core.allocator.rebuild_zone_index();
+            if erased {
+                let selection = core.zoning.cells.select(
+                    CellSelectionShape::Brush { radius_m: 200.0 },
+                    &[DVec2::ZERO],
+                );
+                core.zoning.paint_cells(&selection, 0, |_| false).unwrap();
+            }
+            let paint = core.zoning.cells.saved_cells();
+            assert!(core.bulldoze_road_edge(0));
+            assert!(core.region_graph.edge(0).deleted);
+            for undo in [false, true] {
+                if undo {
+                    assert!(core.undo_action_internal(), "angle={angle} erased={erased}");
+                    core.rebuild_network_surface_terrain_internal();
+                }
+                let parcel = core
+                    .zoning
+                    .parcels
+                    .get(id)
+                    .expect("occupied lot stays reserved");
+                assert_eq!(parcel.occupied_building(), Some(0));
+                assert_eq!(parcel.cell_lot(), Some(lot));
+                assert!(
+                    lot.cells()
+                        .all(|key| core.zoning.cells.lot(key) == Some(id.raw()))
+                );
+                assert_eq!(core.zoning.cells.saved_cells(), paint);
+                let building = &core.allocator.buildings[0];
+                assert_eq!(
+                    (building.center_x, building.center_y, building.facing_dir),
+                    pose
+                );
+            }
+            assert!(core.bulldoze_road_edge(0));
+            core.run_building_allocator_maintenance_internal();
+            assert!(core.allocator.buildings.is_empty());
+            core.prepare_cell_lots_internal();
+            assert!(core.zoning.parcels.get(id).is_none());
+            assert!(
+                lot.cells()
+                    .all(|key| core.zoning.cells.lot(key).is_none_or(|id| id == 0))
+            );
+        }
+    }
+
+    #[test]
     fn building_bulldoze_undo_restores_swap_removed_building_and_site() {
         let mut core = test_core();
         core.allocator.buildings = vec![
@@ -2948,8 +3200,15 @@ mod tests {
         });
         core.region_graph.rebuild_adjacency_list();
 
+        core.zoning
+            .mark_cell_lots_for_roads(&core.region_graph, [0]);
+        let frames = core.zoning.cells.saved_road_alignments();
+        assert_eq!(frames.len(), 1);
+        let revision = core.zoning.cell_external_revision();
         core.move_network_node_internal(n0 as i32, Vector3::new(-20.0, 0.0, 0.0));
         assert_eq!(core.region_graph.node(n0).pos.x, -20.0);
+        assert_ne!(core.zoning.cells.saved_road_alignments(), frames);
+        assert!(core.zoning.cell_external_revision() > revision);
 
         assert!(core.undo_action_internal());
         assert_eq!(
@@ -2960,6 +3219,7 @@ mod tests {
             core.region_graph.edge(0).physical_geometry[0],
             Vector3::new(-10.0, 0.0, 0.0)
         );
+        assert_eq!(core.zoning.cells.saved_road_alignments(), frames);
     }
 
     #[test]
@@ -3080,6 +3340,8 @@ mod tests {
         );
         finalize_network_render_for_test(&mut core);
         let original_edge = core.region_graph.edge(0).clone();
+        let original_cell_frames = core.zoning.cells.saved_road_alignments();
+        assert_eq!(original_cell_frames.len(), 1);
         let mut building = test_building("test", 70.0, 0.0);
         building.edge_idx = 0;
         building.cell_x = 20;
@@ -3118,6 +3380,10 @@ mod tests {
         assert!(core.last_road_timing.contains("terrain_input_unavailable"));
         assert_eq!(core.undo_stack.len(), 30);
         assert_eq!(core.region_graph.edge_count(), 1);
+        assert_eq!(
+            core.zoning.cells.saved_road_alignments(),
+            original_cell_frames
+        );
         assert_eq!(
             core.region_graph.edge(0).physical_geometry,
             original_edge.physical_geometry

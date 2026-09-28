@@ -23,61 +23,61 @@ impl RoadSurfaceSystem {
     pub(in crate::simulation::network::surface) fn remove_span_piece_coverage(
         &mut self,
         edge_idx: usize,
-    ) -> (Vec<SurfaceChunkKey>, Vec<SurfaceChunkKey>) {
-        let surface_chunks = self
-            .surface_span_chunks
-            .remove(&edge_idx)
-            .unwrap_or_default();
-        let terrain_chunks = self
-            .earthwork_span_chunks
-            .remove(&edge_idx)
-            .unwrap_or_default();
-        Self::remove_owner_chunk_coverage(&mut self.surface_chunk_spans, edge_idx, &surface_chunks);
+    ) {
+        let surface_chunks = self.surface_span_chunks.remove(&edge_idx);
+        let terrain_chunks = self.earthwork_span_chunks.remove(&edge_idx);
+        let surface_chunks = surface_chunks
+            .as_ref()
+            .map_or(&[][..], |chunks| chunks.as_slice());
+        let terrain_chunks = terrain_chunks
+            .as_ref()
+            .map_or(&[][..], |chunks| chunks.as_slice());
+        Self::remove_owner_chunk_coverage(&mut self.surface_chunk_spans, edge_idx, surface_chunks);
         Self::remove_owner_chunk_coverage(
             &mut self.earthwork_chunk_spans,
             edge_idx,
-            &terrain_chunks,
+            terrain_chunks,
         );
-        let query_chunks = self.query_span_chunks.remove(&edge_idx).unwrap_or_default();
-        Self::remove_owner_chunk_coverage(&mut self.query_chunk_spans, edge_idx, &query_chunks);
-        self.extend_dirty_piece_chunks(&surface_chunks, &terrain_chunks, &query_chunks);
-        (surface_chunks, terrain_chunks)
+        let query_chunks = self.query_span_chunks.remove(&edge_idx);
+        let query_chunks = query_chunks
+            .as_ref()
+            .map_or(&[][..], |chunks| chunks.as_slice());
+        Self::remove_owner_chunk_coverage(&mut self.query_chunk_spans, edge_idx, query_chunks);
+        self.extend_dirty_piece_chunks(surface_chunks, terrain_chunks, query_chunks);
     }
 
     pub(in crate::simulation::network::surface) fn remove_node_piece_coverage(
         &mut self,
         node_id: u32,
-    ) -> (Vec<SurfaceChunkKey>, Vec<SurfaceChunkKey>) {
-        let surface_chunks = self
-            .surface_node_chunks
-            .remove(&node_id)
-            .unwrap_or_default();
-        let terrain_chunks = self
-            .earthwork_node_chunks
-            .remove(&node_id)
-            .unwrap_or_default();
-        Self::remove_owner_chunk_coverage(&mut self.surface_chunk_nodes, node_id, &surface_chunks);
-        Self::remove_owner_chunk_coverage(
-            &mut self.earthwork_chunk_nodes,
-            node_id,
-            &terrain_chunks,
-        );
-        let query_chunks = self.query_node_chunks.remove(&node_id).unwrap_or_default();
-        Self::remove_owner_chunk_coverage(&mut self.query_chunk_nodes, node_id, &query_chunks);
-        self.extend_dirty_piece_chunks(&surface_chunks, &terrain_chunks, &query_chunks);
-        (surface_chunks, terrain_chunks)
+    ) {
+        let surface_chunks = self.surface_node_chunks.remove(&node_id);
+        let terrain_chunks = self.earthwork_node_chunks.remove(&node_id);
+        let surface_chunks = surface_chunks
+            .as_ref()
+            .map_or(&[][..], |chunks| chunks.as_slice());
+        let terrain_chunks = terrain_chunks
+            .as_ref()
+            .map_or(&[][..], |chunks| chunks.as_slice());
+        Self::remove_owner_chunk_coverage(&mut self.surface_chunk_nodes, node_id, surface_chunks);
+        Self::remove_owner_chunk_coverage(&mut self.earthwork_chunk_nodes, node_id, terrain_chunks);
+        let query_chunks = self.query_node_chunks.remove(&node_id);
+        let query_chunks = query_chunks
+            .as_ref()
+            .map_or(&[][..], |chunks| chunks.as_slice());
+        Self::remove_owner_chunk_coverage(&mut self.query_chunk_nodes, node_id, query_chunks);
+        self.extend_dirty_piece_chunks(surface_chunks, terrain_chunks, query_chunks);
     }
 
     pub(in crate::simulation::network::surface) fn insert_span_piece_coverage(
         &mut self,
         piece: &RoadSurfaceVisualSpanPiece,
-    ) -> (Vec<SurfaceChunkKey>, Vec<SurfaceChunkKey>) {
-        let surface_chunks = Self::canonical_chunk_vec(
+    ) {
+        let surface_chunks = Arc::new(Self::canonical_chunk_vec(
             self.visual_span_piece_chunks(piece, ChunkCacheKind::Surface),
-        );
-        let terrain_chunks = Self::canonical_chunk_vec(
+        ));
+        let terrain_chunks = Arc::new(Self::canonical_chunk_vec(
             self.visual_span_piece_chunks(piece, ChunkCacheKind::Earthwork),
-        );
+        ));
         self.surface_span_chunks
             .insert(piece.edge_idx, surface_chunks.clone());
         self.earthwork_span_chunks
@@ -92,7 +92,9 @@ impl RoadSurfaceSystem {
             piece.edge_idx,
             &terrain_chunks,
         );
-        let query_chunks = Self::canonical_chunk_vec(self.visual_span_piece_query_chunks(piece));
+        let query_chunks = Arc::new(Self::canonical_chunk_vec(
+            self.visual_span_piece_query_chunks(piece),
+        ));
         self.query_span_chunks
             .insert(piece.edge_idx, query_chunks.clone());
         Self::insert_owner_chunk_coverage(
@@ -101,19 +103,18 @@ impl RoadSurfaceSystem {
             &query_chunks,
         );
         self.extend_dirty_piece_chunks(&surface_chunks, &terrain_chunks, &query_chunks);
-        (surface_chunks, terrain_chunks)
     }
 
     pub(in crate::simulation::network::surface) fn insert_node_piece_coverage(
         &mut self,
         piece: &RoadSurfaceVisualNodePiece,
-    ) -> (Vec<SurfaceChunkKey>, Vec<SurfaceChunkKey>) {
-        let surface_chunks = Self::canonical_chunk_vec(
+    ) {
+        let surface_chunks = Arc::new(Self::canonical_chunk_vec(
             self.visual_node_piece_chunks(piece, ChunkCacheKind::Surface),
-        );
-        let terrain_chunks = Self::canonical_chunk_vec(
+        ));
+        let terrain_chunks = Arc::new(Self::canonical_chunk_vec(
             self.visual_node_piece_chunks(piece, ChunkCacheKind::Earthwork),
-        );
+        ));
         self.surface_node_chunks
             .insert(piece.node_id, surface_chunks.clone());
         self.earthwork_node_chunks
@@ -128,7 +129,9 @@ impl RoadSurfaceSystem {
             piece.node_id,
             &terrain_chunks,
         );
-        let query_chunks = Self::canonical_chunk_vec(self.visual_node_piece_query_chunks(piece));
+        let query_chunks = Arc::new(Self::canonical_chunk_vec(
+            self.visual_node_piece_query_chunks(piece),
+        ));
         self.query_node_chunks
             .insert(piece.node_id, query_chunks.clone());
         Self::insert_owner_chunk_coverage(
@@ -137,7 +140,6 @@ impl RoadSurfaceSystem {
             &query_chunks,
         );
         self.extend_dirty_piece_chunks(&surface_chunks, &terrain_chunks, &query_chunks);
-        (surface_chunks, terrain_chunks)
     }
 
     fn extend_dirty_piece_chunks(
@@ -154,17 +156,17 @@ impl RoadSurfaceSystem {
     }
 
     fn insert_owner_chunk_coverage<T: Copy + Ord>(
-        chunk_owners: &mut HashMap<SurfaceChunkKey, BTreeSet<T>>,
+        chunk_owners: &mut ChunkOwnerIndex<T>,
         owner: T,
         chunks: &[SurfaceChunkKey],
     ) {
         for &chunk in chunks {
-            chunk_owners.entry(chunk).or_default().insert(owner);
+            Arc::make_mut(chunk_owners.entry(chunk).or_default()).insert(owner);
         }
     }
 
     fn remove_owner_chunk_coverage<T: Copy + Ord>(
-        chunk_owners: &mut HashMap<SurfaceChunkKey, BTreeSet<T>>,
+        chunk_owners: &mut ChunkOwnerIndex<T>,
         owner: T,
         chunks: &[SurfaceChunkKey],
     ) {
@@ -172,7 +174,7 @@ impl RoadSurfaceSystem {
             let Some(owners) = chunk_owners.get_mut(&chunk) else {
                 continue;
             };
-            owners.remove(&owner);
+            Arc::make_mut(owners).remove(&owner);
             let remove_chunk = owners.is_empty();
             if remove_chunk {
                 chunk_owners.remove(&chunk);
@@ -230,5 +232,34 @@ impl RoadSurfaceSystem {
         chunks.sort_unstable();
         chunks.dedup();
         chunks
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn published_owner_indices_isolate_edits_and_share_untouched_chunks() {
+        let mut index = ChunkOwnerIndex::<usize>::new();
+        RoadSurfaceSystem::insert_owner_chunk_coverage(&mut index, 9, &[(-1, 0), (0, 0)]);
+        RoadSurfaceSystem::insert_owner_chunk_coverage(&mut index, 3, &[(0, 0)]);
+        RoadSurfaceSystem::insert_owner_chunk_coverage(&mut index, 7, &[(100, -100)]);
+        let published = index.clone();
+        assert!(published.ptr_eq(&index));
+        RoadSurfaceSystem::remove_owner_chunk_coverage(&mut index, 9, &[(-1, 0), (0, 0)]);
+        RoadSurfaceSystem::insert_owner_chunk_coverage(&mut index, 1, &[(0, 0), (1, 0)]);
+        assert!(!index.contains_key(&(-1, 0)));
+        assert!(published[&(-1, 0)].contains(&9));
+        assert!(!published.contains_key(&(1, 0)));
+        assert_eq!(
+            published[&(0, 0)].iter().copied().collect::<Vec<_>>(),
+            [3, 9]
+        );
+        assert_eq!(index[&(0, 0)].iter().copied().collect::<Vec<_>>(), [1, 3]);
+        assert!(!Arc::ptr_eq(&published[&(0, 0)], &index[&(0, 0)]));
+        assert!(Arc::ptr_eq(&published[&(100, -100)], &index[&(100, -100)]));
+        index.clear();
+        assert_eq!(published.len(), 3);
     }
 }

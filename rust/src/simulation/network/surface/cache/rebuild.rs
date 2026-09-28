@@ -49,7 +49,7 @@ impl RoadSurfaceSystem {
         }
     }
 
-    fn sorted_owner_set<T: Copy + Ord>(owners: Option<&BTreeSet<T>>) -> Vec<T> {
+    fn sorted_owner_set<T: Copy + Ord>(owners: Option<&Arc<BTreeSet<T>>>) -> Vec<T> {
         match owners {
             Some(owners) => owners.iter().copied().collect(),
             None => Vec::new(),

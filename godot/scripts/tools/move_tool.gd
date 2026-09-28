@@ -4,6 +4,7 @@
 ##
 ## Extends NetworkTool.
 ## Rust methods called: get_closest_node(), get_node_pos(), move_network_node()
+## A refused move retains the accepted node position and does not rebuild meshes.
 ## PgUp/PgDown adjusts height; Esc or right-click cancels and reverts to last committed position.
 extends "res://scripts/tools/network_tool.gd"
 
@@ -97,7 +98,9 @@ func _handle_left_click():
 
 func _apply_move(pos: Vector3):
 	if selected_node_id != -1:
-		simulation_node.move_network_node(selected_node_id, pos)
+		if not simulation_node.move_network_node(selected_node_id, pos):
+			selected_node_pos = simulation_node.get_node_pos(selected_node_id)
+			return
 		
 		# Force mesh rebuilding globally
 		var road_tool = get_node("../RoadTool")

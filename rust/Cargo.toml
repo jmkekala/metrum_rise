@@ -19,6 +19,7 @@ chrono = "0.4"
 cavalier_contours = "0.7"
 glam = "0.30"
 i_overlay = "5.0"
+imbl = "7.0.0"
 parry2d = { version = "0.26", features = ["enhanced-determinism"] }
 rstar = "0.12"
 soa_derive = "0.14"

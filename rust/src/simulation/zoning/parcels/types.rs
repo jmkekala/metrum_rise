@@ -2,6 +2,7 @@
 
 //! Core parcel identity, placement geometry, and placement error types.
 
+use crate::simulation::zoning::cells::CellLot;
 use godot::prelude::Vector2;
 
 /// Stable parcel identifier persisted in saves and referenced by buildings.
@@ -28,7 +29,7 @@ impl ParcelId {
     }
 }
 
-/// User-authored road-aligned lot used as zoning and building-spawn authority.
+/// Authored parcel or cell-derived lot used as building-spawn authority.
 #[derive(Clone, Debug)]
 pub struct ZoningParcel {
     id: ParcelId,
@@ -39,6 +40,7 @@ pub struct ZoningParcel {
     depth_m: f32,
     zone_profile_runtime_id: u16,
     occupied_building: Option<usize>,
+    cell_lot: Option<CellLot>,
     // Times a building has been cleared from this parcel. Mixed into spawn asset and colour
     // scheme selection so redeveloping a plot can draw a different valid asset and colour
     // instead of repeating the one the player just demolished.
@@ -96,6 +98,15 @@ impl ZoningParcel {
     /// Returns true when no building currently claims this parcel.
     pub fn is_available(&self) -> bool {
         self.occupied_building.is_none()
+    }
+
+    /// Returns the canonical coverage for a cell-derived lot; authored parcels have none.
+    pub(crate) fn cell_lot(&self) -> Option<CellLot> {
+        self.cell_lot
+    }
+
+    pub(crate) fn set_cell_lot(&mut self, lot: CellLot) {
+        self.cell_lot = Some(lot);
     }
 
     /// Returns how many times this parcel has been redeveloped.
@@ -187,6 +198,7 @@ impl ZoningParcel {
             depth_m: geometry.depth_m,
             zone_profile_runtime_id,
             occupied_building: None,
+            cell_lot: None,
             build_generation: 0,
             front_center: geometry.front_center,
             center: geometry.center,

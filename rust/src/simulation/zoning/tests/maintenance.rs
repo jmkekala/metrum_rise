@@ -20,6 +20,90 @@ fn translated_geometry(mut geometry: ParcelGeometry, offset: Vector2) -> ParcelG
 }
 
 #[test]
+fn authored_parcel_repair_preserves_paint_and_refreshes_old_and_new_cells() {
+    use crate::simulation::zoning::cells::CellSelectionShape;
+    use crate::simulation::zoning::parcels::ParcelPlacementError;
+    use glam::DVec2;
+
+    let (graph, edge) = make_straight_road();
+    let mut zoning = make_zoning();
+    let id = zoning
+        .place_or_rezone_parcel_at(-30.0, -15.0, 0, 20.0, 20.0, &graph)
+        .unwrap();
+    let original = zoning.parcel_by_raw_id(id.raw()).unwrap().clone();
+    let old_point = DVec2::new(-30.0, -15.0);
+    let new_point = DVec2::new(30.0, -15.0);
+    assert!(
+        zoning
+            .select_road_cells(&graph, CellSelectionShape::Cell, &[old_point], |_| false)
+            .cells
+            .is_empty()
+    );
+    let selection =
+        zoning.select_road_cells(&graph, CellSelectionShape::Cell, &[new_point], |_| false);
+    assert!(!selection.cells.is_empty());
+    zoning.paint_cells(&selection, 1, |_| false).unwrap();
+    let paint = zoning.cells.saved_cells();
+    let revision = zoning.overlay_revision();
+    assert_eq!(
+        zoning.repair_parcel_attachment(id.raw(), edge, original.side(), 0.75, &graph),
+        Err(ParcelPlacementError::OverlapsExistingParcel)
+    );
+    assert_eq!(
+        zoning.parcel_by_raw_id(id.raw()).unwrap().corners(),
+        original.corners()
+    );
+    assert_eq!(zoning.overlay_revision(), revision);
+    assert_eq!(zoning.cells.saved_cells(), paint);
+
+    let selection =
+        zoning.select_road_cells(&graph, CellSelectionShape::Cell, &[new_point], |_| false);
+    zoning.paint_cells(&selection, 0, |_| false).unwrap();
+    zoning.select_road_cells(&graph, CellSelectionShape::Cell, &[old_point], |_| false);
+    zoning.select_road_cells(&graph, CellSelectionShape::Cell, &[new_point], |_| false);
+    zoning
+        .repair_parcel_attachment(id.raw(), edge, original.side(), 0.75, &graph)
+        .unwrap();
+    assert!(
+        !zoning
+            .select_road_cells(&graph, CellSelectionShape::Cell, &[old_point], |_| false)
+            .cells
+            .is_empty()
+    );
+    assert!(
+        zoning
+            .select_road_cells(&graph, CellSelectionShape::Cell, &[new_point], |_| false)
+            .cells
+            .is_empty()
+    );
+    zoning
+        .repair_parcel_attachment(
+            id.raw(),
+            edge,
+            original.side(),
+            original.frontage_center_t(),
+            &graph,
+        )
+        .unwrap();
+    assert!(
+        zoning
+            .select_road_cells(&graph, CellSelectionShape::Cell, &[old_point], |_| false)
+            .cells
+            .is_empty()
+    );
+    assert!(
+        !zoning
+            .select_road_cells(&graph, CellSelectionShape::Cell, &[new_point], |_| false)
+            .cells
+            .is_empty()
+    );
+    assert_eq!(
+        zoning.parcel_by_raw_id(id.raw()).unwrap().corners(),
+        original.corners()
+    );
+}
+
+#[test]
 fn parcel_geometry_replacement_preserves_storage_order_and_occupancy() {
     let (graph, edge) = make_straight_road();
     let base = geometry_from_attachment(&graph, edge, 1, 0.5, 5.0, 5.0);

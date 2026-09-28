@@ -391,6 +391,43 @@ fn new_field_rejects_ready_road_plan_and_releasing_land_restores_readiness() {
 }
 
 #[test]
+fn painted_cells_reject_a_ready_road_plan_and_erase_restores_readiness() {
+    use crate::simulation::zoning::cells::{CellBounds, CellSelectionShape};
+    use glam::DVec2;
+    let mut core = test_core();
+    commit_ready(
+        &mut core,
+        vec![Vector3::new(-60.0, 0.0, 0.0), Vector3::new(60.0, 0.0, 0.0)],
+    );
+    let points = vec![Vector3::new(0.0, 0.0, -48.0), Vector3::ZERO];
+    let plan = prepare_with_lanes(&mut core, points.clone(), 1, 1);
+    assert_eq!(plan.status(&core), "ready");
+    core.zoning.generate_cells(
+        &core.region_graph,
+        CellBounds {
+            min: DVec2::splat(-100.0),
+            max: DVec2::splat(100.0),
+        },
+        |_| false,
+    );
+    let point = DVec2::new(0.0, -25.0);
+    let selection = core.zoning.cells.select(CellSelectionShape::Cell, &[point]);
+    assert!(!selection.cells.is_empty());
+    core.zoning.paint_cells(&selection, 1, |_| false).unwrap();
+    assert_eq!(plan.status(&core), "invalid");
+    let before = core.region_graph.edge_count();
+    assert!(
+        !core
+            .add_road_internal_with_snap_and_validation(points, 1, 1, true, Some(&plan))
+            .committed
+    );
+    assert_eq!(core.region_graph.edge_count(), before);
+    let selection = core.zoning.cells.select(CellSelectionShape::Cell, &[point]);
+    core.zoning.paint_cells(&selection, 0, |_| false).unwrap();
+    assert_eq!(plan.status(&core), "ready");
+}
+
+#[test]
 fn structural_road_plans_adopt_with_and_without_terrain_cutouts() {
     for height in [-3.0, 10.0] {
         let mut core = test_core();
@@ -1107,4 +1144,127 @@ fn visual_only_edits_stale_the_prepared_terrain_candidate() {
         .set_visual_heights_at_grid_unmarked(&[(128, 128, 0.1)], |sample| *sample);
     assert_eq!(core.heightmap.source_generation(), source_generation);
     assert_eq!(terrain.status(&core), "stale");
+}
+
+#[test]
+fn orthogonal_zoning_block_terrain_previews_and_commits() {
+    orthogonal_zoning_block_at_angle(0.0);
+}
+
+#[test]
+fn rotated_orthogonal_zoning_block_terrain_previews_and_commits() {
+    for angle in [0.35, -0.55, 0.8, 2.2] {
+        orthogonal_zoning_block_at_angle(angle);
+    }
+}
+
+fn orthogonal_zoning_block_at_angle(angle: f64) {
+    let u = glam::DVec2::new(angle.cos(), angle.sin());
+    let v = u.perp();
+    let rotate = |x, z| u * x + v * z;
+    let mut core = test_core();
+    core.benchmark_mode = false;
+    core.config = WorldConfig::new(2048.0, 2048.0, 50.0, 10.0)
+        .with_terrain_resolution(8.0)
+        .with_chunking(512.0, 0.0);
+    core.heightmap = TerrainSystem::from_world_config(&core.config);
+    core.watermap = WaterSystem::from_world_config(&core.config);
+    core.transit_network = TransitNetwork::new_for_world(&core.config);
+    core.zoning = ZoningSystem::new(&core.config);
+    core.pollution = PollutionSystem::new(&core.config);
+    core.noise = NoiseSystem::new(&core.config);
+    for segment in [
+        [(-100.0, -200.0), (-100.0, 200.0)],
+        [(-100.0, -150.0), (200.0, -150.0)],
+        [(30.0, -150.0), (30.0, 150.0)],
+        [(-100.0, 150.0), (30.0, 150.0)],
+    ] {
+        commit_ready(
+            &mut core,
+            segment
+                .map(|(x, z)| {
+                    let p = rotate(x, z);
+                    Vector3::new(p.x as f32, 0.0, p.y as f32)
+                })
+                .to_vec(),
+        );
+    }
+    let corner = rotate(30.0, -150.0);
+    let junction = core
+        .region_graph
+        .find_node_within(Vector3::new(corner.x as f32, 0.0, corner.y as f32), 0.001)
+        .unwrap();
+    if angle == 0.0 {
+        assert_eq!(core.region_graph.node(junction).pos.x, 30.0);
+    }
+    let path = temp_save_path("orthogonal_road_frames");
+    core.save_game_internal(path.to_str().unwrap(), None)
+        .unwrap();
+    let before: Vec<_> = core
+        .zoning
+        .cells
+        .saved_road_alignments()
+        .into_iter()
+        .filter(|(id, _)| !core.region_graph.edge(*id).deleted)
+        .map(|(_, alignment)| serde_json::to_value(alignment).unwrap())
+        .collect();
+    let original = assert_orthogonal_block_cells(&mut core, angle);
+    core.load_game_internal(path.to_str().unwrap()).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let after: Vec<_> = core
+        .zoning
+        .cells
+        .saved_road_alignments()
+        .into_iter()
+        .map(|(_, alignment)| serde_json::to_value(alignment).unwrap())
+        .collect();
+    assert_eq!(after, before, "road choices survive compacted edge ids");
+    assert!(core.prepare_cell_chunk_internal((0, -1)));
+    assert!(core.prepare_cell_chunk_internal((-1, 0)));
+    assert_eq!(
+        assert_orthogonal_block_cells(&mut core, angle),
+        original,
+        "cold reload and different viewport order retain exact geometry"
+    );
+}
+
+fn assert_orthogonal_block_cells(
+    core: &mut SimCore,
+    angle: f64,
+) -> Vec<(crate::simulation::zoning::cells::GridFrame, i32, i32)> {
+    let u = glam::DVec2::new(angle.cos(), angle.sin());
+    let v = u.perp();
+    let preview = core.preview_cell_selection_internal(
+        crate::simulation::zoning::cells::CellSelectionShape::Brush { radius_m: 600.0 },
+        &[glam::DVec2::ZERO],
+    );
+    assert!(!preview.selection.cells.is_empty());
+    let mut frame = None;
+    let mut missing = Vec::new();
+    let mut mismatched = Vec::new();
+    for x in 0..12 {
+        for y in 0..25 {
+            let point = u * (-90.0 + x as f64 * 10.0) + v * (-120.0 + y as f64 * 10.0);
+            let Some(cell) = core.zoning.cells.pick(point) else {
+                missing.push((x, y));
+                continue;
+            };
+            if *frame.get_or_insert(cell.grid) != cell.grid {
+                mismatched.push((x, y, cell.grid));
+            }
+        }
+    }
+    assert!(
+        missing.is_empty() && mismatched.is_empty(),
+        "block angle {angle}: missing={missing:?}, different grids={mismatched:?}, frames={:?}",
+        core.zoning.cells.saved_frames().collect::<Vec<_>>()
+    );
+    let mut cells: Vec<_> = preview
+        .selection
+        .cells
+        .into_iter()
+        .map(|key| (core.zoning.cells.frame(key.grid).unwrap(), key.x, key.y))
+        .collect();
+    cells.sort_unstable();
+    cells
 }

@@ -357,11 +357,14 @@ impl SimulationNode {
         self.lock_core().get_node_connection_count_internal(node_id)
     }
 
-    /// Repositions a network node.
+    /// Repositions a network node, returning false when reservations reject the move.
     #[func]
-    pub fn move_network_node(&mut self, node_id: i32, pos: Vector3) {
-        self.lock_core().move_network_node_internal(node_id, pos);
-        self.refresh_snapshot_from_core();
+    pub fn move_network_node(&mut self, node_id: i32, pos: Vector3) -> bool {
+        let moved = self.lock_core().move_network_node_internal(node_id, pos);
+        if moved {
+            self.refresh_snapshot_from_core();
+        }
+        moved
     }
 
     /// Returns all junction node positions, read from the pre-computed snapshot.

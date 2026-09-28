@@ -6,6 +6,17 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
+- **Road-generated cell zoning (`ZONE-04`, done)**: 10 m square cells extend six rows on
+  both sides of eligible roads. Compatible orthogonal junctions share a grid; curves and
+  competing roads retain non-overlapping cells. Existing paint/buildings remain fixed when
+  incompatible grids meet. Cells/Parcels controls expose Cell, Marquee, Fill and Brush with
+  separate Erase; fill follows connected same-profile cells on one local grid.
+  Manual parcels coexist through shared reservations. Asset-sized lots use ordinary demand,
+  growth, redevelopment and demolition/undo. Save v67 preserves both workflows and loads older
+  parcel saves. The release extension is deployed locally. Final verification: 2,004 Rust tests,
+  four headless bridge suites, eight rendered layouts and warning-free Rustdoc.
+  See [feature handoff](zoning.md#feature-handoff--zone-04).
+
 - **Plot material consistency (`RENDER-13`, done)**: plot grass shares terrain's palette and
   settings; frontage, yards and sidewalks share paving sampling and lighting, with one
   road/yard shader body and material setup. Removed obsolete road-stripe logic alongside

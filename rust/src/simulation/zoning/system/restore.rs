@@ -31,6 +31,7 @@ impl ZoningSystem {
             graph,
         )?;
         self.validate_single_parcel_geometry(&geometry, graph)?;
+        self.invalidate_cell_geometry_for_parcel(&geometry);
         self.parcels.insert_loaded(id, geometry, runtime_id);
         self.bump_overlay_revision();
         Ok(id)
@@ -63,9 +64,13 @@ impl ZoningSystem {
         if parcels::geometry_overlaps_road(graph, &geometry) {
             return Ok((true, false));
         }
+        if self.parcel_overlaps_cell_reservation(&geometry) {
+            return Err(ParcelPlacementError::OverlapsExistingParcel);
+        }
         if self.parcels.overlaps_existing(&geometry) {
             return Ok((false, true));
         }
+        self.invalidate_cell_geometry_for_parcel(&geometry);
         self.parcels.insert_loaded(id, geometry, runtime_id);
         self.bump_overlay_revision();
         Ok((false, false))
@@ -88,11 +93,9 @@ impl ZoningSystem {
             return Err(ParcelPlacementError::NoRoadAttachment);
         }
         let edge = graph.edge(edge_idx);
-        if edge.deleted
-            || edge.no_building_spawn
-            || edge.physical_geometry.len() < 2
-            || edge.physical_length <= frontage_m
-        {
+        // A saved reservation survives a later no-build toggle. New placement and growth
+        // enforce eligibility separately; restoration must not silently lose either workflow.
+        if edge.deleted || edge.physical_geometry.len() < 2 || edge.physical_length <= frontage_m {
             return Err(ParcelPlacementError::NoRoadAttachment);
         }
         let s_m = frontage_center_t.clamp(0.0, 1.0) * edge.physical_length;
@@ -131,8 +134,16 @@ impl ZoningSystem {
         };
         let frontage_m = parcel.frontage_m();
         let depth_m = parcel.depth_m();
+        let cell_lot = parcel.cell_lot();
+        let old_bounds = super::super::cells::CellBounds::from_points(
+            parcel
+                .corners()
+                .map(|p| glam::DVec2::new(f64::from(p.x), f64::from(p.y))),
+        );
 
-        Self::validate_parcel_dimensions(frontage_m, depth_m)?;
+        if cell_lot.is_none() {
+            Self::validate_parcel_dimensions(frontage_m, depth_m)?;
+        }
         if edge_idx >= graph.edge_count() {
             return Err(ParcelPlacementError::NoRoadAttachment);
         }
@@ -149,14 +160,27 @@ impl ZoningSystem {
             return Err(ParcelPlacementError::FrontageOutOfBounds);
         }
 
-        let geometry = parcels::geometry_from_attachment(
-            graph,
-            edge_idx,
-            if side >= 0 { 1 } else { -1 },
-            frontage_center_t,
-            frontage_m,
-            depth_m,
-        );
+        let geometry = if let Some(lot) = cell_lot {
+            let frame = self
+                .cells
+                .frame(lot.origin().grid)
+                .ok_or(ParcelPlacementError::NoRoadAttachment)?;
+            lot.geometry(
+                frame,
+                edge_idx,
+                if side >= 0 { 1 } else { -1 },
+                frontage_center_t,
+            )
+        } else {
+            parcels::geometry_from_attachment(
+                graph,
+                edge_idx,
+                if side >= 0 { 1 } else { -1 },
+                frontage_center_t,
+                frontage_m,
+                depth_m,
+            )
+        };
         if !parcels::geometry_inside_world(&geometry, self.config.width_m, self.config.height_m) {
             return Err(ParcelPlacementError::OutsideWorld);
         }
@@ -165,6 +189,13 @@ impl ZoningSystem {
         }
         if parcels::geometry_overlaps_road(graph, &geometry) {
             return Err(ParcelPlacementError::OverlapsRoad);
+        }
+        if cell_lot.is_none() {
+            if self.parcel_overlaps_cell_reservation(&geometry) {
+                return Err(ParcelPlacementError::OverlapsExistingParcel);
+            }
+            self.mark_cell_lots_dirty(old_bounds);
+            self.invalidate_cell_geometry_for_parcel(&geometry);
         }
         if self.parcels.replace_geometry(id, geometry) {
             self.bump_overlay_revision();

@@ -325,6 +325,13 @@ func _build_ui():
 	z_profile_padding.add_child(zoning_profile_menu)
 	
 	zoning_combined_hbox.add_child(zoning_profile_panel)
+	var cell_controls := preload("res://scripts/ui/zoning_cell_controls.gd").new()
+	cell_controls.zoning_tool = input_manager.zoning_tool
+	cell_controls.workflow_changed.connect(func(cells: bool):
+		zoning_options_btn.visible = not cells
+		zoning_options_popup.hide()
+		_refresh_zoning_profile_button_states())
+	zoning_combined_hbox.add_child(cell_controls)
 
 	var zoning_controls_row = HBoxContainer.new()
 	zoning_controls_row.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -366,6 +373,7 @@ func _build_ui():
 	zoning_options_btn = Button.new()
 	zoning_options_btn.text = "⚙"
 	zoning_options_btn.tooltip_text = "Parcel options"
+	zoning_options_btn.visible = false
 	zoning_options_btn.custom_minimum_size = Vector2(70, 50)
 	zoning_options_btn.focus_mode = Control.FOCUS_NONE
 	UIStyle.set_font_size(zoning_options_btn, 24)
@@ -1107,6 +1115,7 @@ func _rebuild_zoning_profile_menu(zone_type: String) -> void:
 	clear_btn.pressed.connect(func(): _select_zoning_profile(zone_type, 0))
 	zoning_profile_menu.add_child(clear_btn)
 	_zoning_profile_buttons[0] = clear_btn
+	clear_btn.visible = not input_manager.zoning_tool.workflow_cells
 
 func _select_zoning_profile(zone_type: String, runtime_id: int) -> void:
 	_active_zoning_zone_type = zone_type
@@ -1127,6 +1136,8 @@ func _refresh_zoning_profile_button_states() -> void:
 	var current_runtime_id := _current_zoning_profile_runtime_id()
 	for runtime_id in _zoning_profile_buttons.keys():
 		var button: Button = _zoning_profile_buttons[runtime_id]
+		if int(runtime_id) == 0:
+			button.visible = not input_manager.zoning_tool.workflow_cells
 		button.set_pressed_no_signal(int(runtime_id) == current_runtime_id)
 
 func _current_zoning_profile_runtime_id() -> int:

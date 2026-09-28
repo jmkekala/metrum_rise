@@ -76,6 +76,7 @@ func _test_tool() -> void:
 	camera.current = true
 	var tool := ZoningToolScript.new()
 	scene.add_child(tool)
+	tool.set_cell_workflow(false)
 	tool.active = true
 	tool._process(0.0)
 	_expect(tool.preview_mesh.visible and sim.previews == 1, "Road hover renders Rust geometry")

@@ -92,6 +92,19 @@ The graph is authoritative for:
 - authored plan polyline control points in world XZ
 - finalized physical profiles retained on edges after the shared `RoadEditPlan` finalizer
 
+Endpoint-to-road projection evaluates the XZ parameter and world interpolation in `f64`, then
+narrows the final point once. Refinement projects the authored endpoint onto the selected full
+geometry segment; it does not reconstruct position from the rounded `segment + t` address.
+An endpoint already on a straight centreline therefore retains its representable coordinates.
+The native orthogonal zoning-block fixture caught the earlier sideways drift at `(30, -150)`;
+that drift changed the road's tangent and produced incompatible zoning frames. Verification is
+recorded with the [zoning references](zoning.md#native-road-transactions-and-rendered-references).
+
+Road insertion, node movement, rollback and undo also refresh the zoning system's recorded
+straight-road grid choices from the affected edge set. Node movement invalidates both old and
+new corridors. These choices belong to zoning, use one local adjacency ring, and survive save
+remapping; see [persistent alignment](zoning.md#persistent-straight-road-alignment-checkpoint).
+
 The graph is not the final visible road surface, final terrain clip carrier, final earthwork
 boundary, or final node polygon carrier.
 
@@ -108,6 +121,16 @@ boundary, or final node polygon carrier.
 - terrain-CDT grading-envelope guide samples / constraints derived from final roadbed loops
 - road surface and terrain chunk coverage
 - road debug geometry and provenance output
+
+Span terrain-clip source endpoints retain the first matching canonical XZ/height coordinate through
+a temporary sorted key table, O(P log P + E log P) for P loop points and E source edges. Earthwork
+vertex normals reuse one winding computation per loop. The node-move reservation guard stages
+exact span checks before expensive node solving and uses the existing exact artifact-reuse checks
+for current live-node candidates. Geometry contracts and evidence are recorded in
+[zoning validation costs](zoning.md#staged-node-validation-and-boundary-lookup-cost).
+Node ownership cleanup also shares immutable source-point and rail-path preparation between its
+passes, scoped to one borrowed rail set and keyed by exact source and policy. Contour work and
+error predicates remain unchanged; see [source preparation reuse](zoning.md#reuse-of-immutable-ring-source-preparation).
 
 ### TerrainSystem
 
@@ -625,6 +648,15 @@ buffers. Equal-distance ties resolve by world-XZ order, not index traversal orde
 the indexed local edges and their source segments; long polylines
 or dense overlapping bounds still cost more. Road-tool snapshot publication no longer builds or
 retires a second whole-network snapping R-tree. Visible guide generation is unchanged.
+
+Road surface, earthwork and fine-query chunk owner indices now share immutable map branches
+across preview snapshots using `imbl`, with sorted owner sets shared by `Arc`. A local membership
+change copies its trie path and touched owner set, preserving older snapshots. Spatial coverage,
+query predicates and owner ordering are unchanged. Cached node inputs and reverse owner-to-chunk
+lists also share map roots and immutable records, including inputs held by preview certificates
+and bounded undo entries. Other graph/surface snapshot fields still copy, so this does not
+establish whole-edit locality. The dependency rationale and matched evidence are owned by
+[ZONE-04](zoning.md#shared-compiler-inputs-and-reverse-coverage).
 
 Mouse motion performs no curve baking, validation, or mesh upload in the input-event handler.
 The tool resolves the current pointer once per frame, then coalesces changed position/settings into

@@ -2,6 +2,8 @@
 
 //! Portable hillside roadside-site and feasibility invalidation regressions.
 
+mod cell_zoning;
+
 use super::*;
 use crate::simulation::buildings::allocator::BuildingSiteEnvironment;
 

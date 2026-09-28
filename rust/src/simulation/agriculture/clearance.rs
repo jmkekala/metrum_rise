@@ -29,15 +29,13 @@ impl PolygonFootprint {
     }
 
     fn from_points(points: impl Iterator<Item = Vector2>) -> Self {
-        let mut min = Vector2::new(f32::INFINITY, f32::INFINITY);
-        let mut max = Vector2::new(f32::NEG_INFINITY, f32::NEG_INFINITY);
-        let points = points
-            .map(|p| {
-                min = Vector2::new(min.x.min(p.x), min.y.min(p.y));
-                max = Vector2::new(max.x.max(p.x), max.y.max(p.y));
-                [f64::from(p.x), f64::from(p.y)]
-            })
-            .collect();
+        Self::from_precise_points(points.map(|p| [f64::from(p.x), f64::from(p.y)]))
+    }
+
+    /// Retains canonical or compiled double-precision boundaries through the overlay operation.
+    pub(crate) fn from_precise_points(points: impl Iterator<Item = [f64; 2]>) -> Self {
+        let points: Vec<_> = points.collect();
+        let (min, max) = precise_bounds(points.iter().copied());
         Self { points, min, max }
     }
 
@@ -46,11 +44,18 @@ impl PolygonFootprint {
         self.overlaps_points(&other.points, other.min, other.max)
     }
 
+    /// Tests a borrowed precise contour without allocating another prepared footprint.
+    pub(crate) fn overlaps_precise_points(&self, points: &[[f64; 2]]) -> bool {
+        let (min, max) = precise_bounds(points.iter().copied());
+        self.overlaps_points(points, min, max)
+    }
+
+    fn bounds_overlap(&self, min: Vector2, max: Vector2) -> bool {
+        self.min.x < max.x && self.max.x > min.x && self.min.y < max.y && self.max.y > min.y
+    }
+
     fn overlaps_points(&self, points: &[[f64; 2]], min: Vector2, max: Vector2) -> bool {
-        self.min.x < max.x
-            && self.max.x > min.x
-            && self.min.y < max.y
-            && self.max.y > min.y
+        self.bounds_overlap(min, max)
             && !self
                 .points
                 .as_slice()
@@ -77,9 +82,7 @@ impl PolygonFootprint {
         for current in 0..self.points.len() {
             let a = self.points[current];
             let b = self.points[previous];
-            if (a[1] > z) != (b[1] > z)
-                && x < (b[0] - a[0]) * (z - a[1]) / (b[1] - a[1]) + a[0]
-            {
+            if (a[1] > z) != (b[1] > z) && x < (b[0] - a[0]) * (z - a[1]) / (b[1] - a[1]) + a[0] {
                 inside = !inside;
             }
             previous = current;
@@ -88,12 +91,19 @@ impl PolygonFootprint {
     }
 
     fn from_road(polygon: &RoadSurfaceVisualPolygon) -> Self {
-        Self::from_points(
-            polygon
-                .points_world
-                .iter()
-                .map(|p| Vector2::new(p.x as f32, p.z as f32)),
-        )
+        Self::from_precise_points(polygon.points_world.iter().map(|p| [p.x, p.z]))
+    }
+
+    fn overlaps_road_polygon(&self, polygon: &RoadSurfaceVisualPolygon) -> bool {
+        let points = polygon.points_world.iter().map(|p| [p.x, p.z]);
+        let (min, max) = precise_bounds(points.clone());
+        if !self.bounds_overlap(min, max) {
+            return false;
+        }
+        // Most nearby road pieces miss a cell. Copy a contour only when the existing
+        // outward-rounded bounds admit it; reuse those bounds for the exact overlay.
+        let points: Vec<_> = points.collect();
+        self.overlaps_points(&points, min, max)
     }
 
     /// Tests compiled carriageway, sidewalk and junction surfaces through their existing query grid.
@@ -107,7 +117,7 @@ impl PolygonFootprint {
         for x in min.x as i32..=max.x as i32 {
             for z in min.y as i32..=max.y as i32 {
                 if let Some(ids) = roads.query_chunk_spans.get(&(x, z)) {
-                    for id in ids {
+                    for id in ids.iter() {
                         if !tested_spans.insert(*id) {
                             continue;
                         }
@@ -117,14 +127,14 @@ impl PolygonFootprint {
                                 .iter()
                                 .chain(&piece.curb_surface_polygons)
                                 .chain(&piece.sidewalk_surface_polygons)
-                                .any(|polygon| self.overlaps(&Self::from_road(polygon)))
+                                .any(|polygon| self.overlaps_road_polygon(polygon))
                         {
                             return true;
                         }
                     }
                 }
                 if let Some(ids) = roads.query_chunk_nodes.get(&(x, z)) {
-                    for id in ids {
+                    for id in ids.iter() {
                         if !tested_nodes.insert(*id) {
                             continue;
                         }
@@ -134,7 +144,7 @@ impl PolygonFootprint {
                                 .iter()
                                 .chain(&piece.curb_surface_polygons)
                                 .chain(&piece.sidewalk_surface_polygons)
-                                .any(|polygon| self.overlaps(&Self::from_road(polygon)))
+                                .any(|polygon| self.overlaps_road_polygon(polygon))
                         {
                             return true;
                         }
@@ -144,6 +154,29 @@ impl PolygonFootprint {
         }
         false
     }
+}
+
+fn precise_bounds(points: impl Iterator<Item = [f64; 2]>) -> (Vector2, Vector2) {
+    let mut min = [f64::INFINITY; 2];
+    let mut max = [f64::NEG_INFINITY; 2];
+    for point in points {
+        min = [min[0].min(point[0]), min[1].min(point[1])];
+        max = [max[0].max(point[0]), max[1].max(point[1])];
+    }
+    // Directed conversion is monotone: converting the exact extrema once gives the
+    // same conservative bounds as converting every vertex before reducing them.
+    let lower = min.map(|v| {
+        let f = v as f32;
+        if f64::from(f) > v { f.next_down() } else { f }
+    });
+    let upper = max.map(|v| {
+        let f = v as f32;
+        if f64::from(f) < v { f.next_up() } else { f }
+    });
+    (
+        Vector2::new(lower[0], lower[1]),
+        Vector2::new(upper[0], upper[1]),
+    )
 }
 
 /// Derived field footprints covering their full area, without inflating the building-center index.
@@ -320,6 +353,104 @@ mod tests {
             Vector2::new(x + width, z + depth),
             Vector2::new(x, z + depth),
         ]
+    }
+
+    #[test]
+    fn reduced_precise_bounds_match_pointwise_outward_rounding() {
+        fn pointwise(points: &[[f64; 2]]) -> (Vector2, Vector2) {
+            let mut min = Vector2::new(f32::INFINITY, f32::INFINITY);
+            let mut max = Vector2::new(f32::NEG_INFINITY, f32::NEG_INFINITY);
+            for &point in points {
+                let lower = point.map(|v| {
+                    let f = v as f32;
+                    if f64::from(f) > v { f.next_down() } else { f }
+                });
+                let upper = point.map(|v| {
+                    let f = v as f32;
+                    if f64::from(f) < v { f.next_up() } else { f }
+                });
+                min = Vector2::new(min.x.min(lower[0]), min.y.min(lower[1]));
+                max = Vector2::new(max.x.max(upper[0]), max.y.max(upper[1]));
+            }
+            (min, max)
+        }
+
+        assert_eq!(precise_bounds([].into_iter()), pointwise(&[]));
+        for origin in [
+            -1_000_000.0_f64,
+            -8192.0,
+            -512.0,
+            0.0,
+            512.0,
+            8192.0,
+            1_000_000.0,
+        ] {
+            let values = [
+                origin.next_down(),
+                origin,
+                origin.next_up(),
+                origin - 0.000001,
+                origin + 0.000001,
+            ];
+            let points: Vec<_> = values
+                .iter()
+                .flat_map(|&x| values.iter().map(move |&y| [x, y]))
+                .collect();
+            // Prefixes exercise every one-point rounding case as well as mixed extrema.
+            for n in 0..=points.len() {
+                let expected = pointwise(&points[..n]);
+                let footprint = PolygonFootprint::from_precise_points(points[..n].iter().copied());
+                assert_eq!(
+                    (footprint.min, footprint.max),
+                    expected,
+                    "origin={origin} n={n}"
+                );
+                assert_eq!(precise_bounds(points[..n].iter().rev().copied()), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn lazy_road_footprints_preserve_concavity_and_precise_contacts() {
+        for offset in [0.0, -512.0, 8192.0] {
+            let points = [
+                [0.0, 0.0],
+                [30.0, 0.0],
+                [30.0, 10.0],
+                [10.0, 10.0],
+                [10.0, 30.0],
+                [0.0, 30.0],
+            ];
+            let polygon = RoadSurfaceVisualPolygon::from_parts(
+                points
+                    .into_iter()
+                    .map(|[x, z]| glam::DVec3::new(x + offset, 0.0, z + offset))
+                    .collect(),
+                Vec::new(),
+            );
+            let prepared = PolygonFootprint::from_road(&polygon);
+            for (x, z, size, expected) in [
+                (1.0, 1.0, 2.0, true),
+                (-1.0, -1.0, 40.0, true),
+                (15.0, 15.0, 5.0, false),
+                (30.0, 0.0, 5.0, false),
+                (30.000001, 0.0, 5.0, false),
+                (29.999999, 0.0, 5.0, true),
+                (1000.0, 1000.0, 10.0, false),
+            ] {
+                let footprint = PolygonFootprint::from_precise_points(
+                    [[x, z], [x + size, z], [x + size, z + size], [x, z + size]]
+                        .into_iter()
+                        .map(|[x, z]| [x + offset, z + offset]),
+                );
+                assert_eq!(footprint.overlaps(&prepared), expected);
+                assert_eq!(
+                    footprint.overlaps_road_polygon(&polygon),
+                    expected,
+                    "offset={offset} x={x} z={z} size={size}"
+                );
+            }
+        }
     }
 
     #[test]

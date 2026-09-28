@@ -204,28 +204,111 @@ impl RoadSurfaceSystem {
         source_edges: &mut [RoadSurfaceTerrainClipSourceEdge],
         loop_points: &[RoadVec3],
     ) {
+        // Quantize each loop point once. The original loop index breaks equal-key ties so
+        // the first matching coordinate remains authoritative, including its exact height.
+        // O(P log P + E log P), replacing an O(E * P) scan for P points and E source edges.
+        let mut keyed_points: Vec<_> = loop_points
+            .iter()
+            .enumerate()
+            .map(|(index, point)| {
+                (
+                    (
+                        SurfaceXzKey::from_world_xz(*point),
+                        SurfaceHeightMmKey::from_m_f64(point.y),
+                    ),
+                    index,
+                )
+            })
+            .collect();
+        keyed_points.sort_unstable();
+        let matching_point = |point: RoadVec3| {
+            let key = (
+                SurfaceXzKey::from_world_xz(point),
+                SurfaceHeightMmKey::from_m_f64(point.y),
+            );
+            let index = keyed_points.partition_point(|entry| entry.0 < key);
+            keyed_points
+                .get(index)
+                .filter(|entry| entry.0 == key)
+                .map(|entry| loop_points[entry.1])
+        };
         for edge in source_edges {
-            if let Some(point) = Self::matching_canonical_span_loop_point(edge.start, loop_points) {
+            if let Some(point) = matching_point(edge.start) {
                 edge.start = point;
             }
-            if let Some(point) = Self::matching_canonical_span_loop_point(edge.end, loop_points) {
+            if let Some(point) = matching_point(edge.end) {
                 edge.end = point;
             }
         }
     }
 
-    fn matching_canonical_span_loop_point(
-        point: RoadVec3,
-        loop_points: &[RoadVec3],
-    ) -> Option<RoadVec3> {
-        loop_points
-            .iter()
-            .copied()
-            .find(|candidate| Self::span_points_share_canonical_position(*candidate, point))
-    }
-
     fn span_points_share_canonical_position(a: RoadVec3, b: RoadVec3) -> bool {
         SurfaceXzKey::from_world_xz(a) == SurfaceXzKey::from_world_xz(b)
             && SurfaceHeightMmKey::from_m_f64(a.y) == SurfaceHeightMmKey::from_m_f64(b.y)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::network::surface::{
+        RoadSurfaceBandKind, RoadSurfaceEarthworkSupportPolicy, RoadSurfaceSpanBandOwner,
+        RoadSurfaceSpanRegionRole,
+    };
+
+    #[test]
+    fn clip_source_endpoints_keep_first_canonical_match_and_unmatched_coordinates() {
+        let first = RoadVec3::new(20_000.000_000_1, 10.0001, -20_000.0);
+        let duplicate = RoadVec3::new(20_000.000_000_2, 10.0002, -20_000.0);
+        let higher = RoadVec3::new(20_000.000_000_1, 10.001, -20_000.0);
+        let missing = RoadVec3::new(20_001.0, 10.0, -20_000.0);
+        assert!(RoadSurfaceSystem::span_points_share_canonical_position(
+            first, duplicate
+        ));
+        assert!(!RoadSurfaceSystem::span_points_share_canonical_position(
+            first, higher
+        ));
+        let source = RoadSurfaceEarthworkFaceSource::SpanSupportBoundary {
+            edge_idx: 7,
+            edge_class: EdgeClass::Standard,
+            support_policy: RoadSurfaceEarthworkSupportPolicy::StandardFullGroundedSpan,
+            owner: RoadSurfaceSpanBandOwner {
+                source_band_index: 2,
+                kind: RoadSurfaceBandKind::Sidewalk,
+            },
+            role: RoadSurfaceSpanRegionRole::NonRoad,
+            start_section_index: 3,
+            end_section_index: 4,
+            start_s_m: 12.0,
+            end_s_m: 16.0,
+        };
+        for (points, expected_first) in [
+            ([higher, first, duplicate], first),
+            ([duplicate, first, higher], duplicate),
+        ] {
+            let edge = RoadSurfaceTerrainClipSourceEdge {
+                start: duplicate,
+                end: higher,
+                kind: RoadSurfaceTerrainClipEdgeKind::SidewalkOuter,
+                source,
+            };
+            let unmatched = RoadSurfaceTerrainClipSourceEdge {
+                start: missing,
+                end: missing,
+                ..edge
+            };
+            let mut edges = [edge, unmatched];
+            RoadSurfaceSystem::canonicalize_span_terrain_clip_source_edges(&mut edges, &points);
+            assert_eq!(
+                edges,
+                [
+                    RoadSurfaceTerrainClipSourceEdge {
+                        start: expected_first,
+                        ..edge
+                    },
+                    unmatched
+                ]
+            );
+        }
     }
 }

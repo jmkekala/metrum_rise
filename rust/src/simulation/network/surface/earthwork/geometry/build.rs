@@ -72,9 +72,12 @@ impl RoadSurfaceSystem {
             .map(|segment| segment.inner_start)
             .collect::<Vec<_>>();
 
+        let winding_ccw = Self::earthwork_signed_polygon_area_xz(&boundary_points) > 0.0;
         let mut vertex_outer_points = Vec::with_capacity(boundary_points.len());
         for (index, point) in boundary_points.iter().enumerate() {
-            let Some(outward) = Self::closed_loop_vertex_outward_xz(&boundary_points, index) else {
+            let Some(outward) =
+                Self::closed_loop_vertex_outward_xz(&boundary_points, index, winding_ccw)
+            else {
                 vertex_outer_points.clear();
                 break;
             };
@@ -95,7 +98,6 @@ impl RoadSurfaceSystem {
         };
         let mut side_polygons = Vec::new();
         let mut render_faces = Vec::new();
-        let winding_ccw = Self::earthwork_signed_polygon_area_xz(&boundary_points) > 0.0;
         for segment in boundary_segments {
             let current = segment.inner_start;
             let next = segment.inner_end;

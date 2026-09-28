@@ -47,6 +47,7 @@ pub fn load_asset_packs(
     }
     core.allocator
         .refresh_building_sites_after_asset_reload(core.zoning.config.zone_cell_m);
+    core.zoning.invalidate_cell_lot_assets();
     core.rebuild_building_entrances_internal();
     core.publish_pending_building_site_changes();
     let reg = &core.allocator.registry;

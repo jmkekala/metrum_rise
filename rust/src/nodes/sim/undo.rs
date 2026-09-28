@@ -6,13 +6,33 @@ use crate::nodes::sim::core::{
     BuildingRemovalUndo, SimCore, SimulationRuntimeSnapshot, SimulationSnapshot,
     VegetationEditUndo, WaterRuntimeSnapshot,
 };
+use crate::simulation::agriculture::PolygonFootprint;
 use crate::simulation::network::graph::RegionGraphUndoDelta;
 use crate::simulation::zoning::ZoningParcelRemovalUndo;
-use godot::prelude::{Vector2, Vector3};
+use godot::prelude::Vector3;
 use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 impl SimCore {
+    /// Adds one local paint inverse after a completed cell gesture; cancellation adds no entry.
+    pub(crate) fn push_cell_zoning_undo(
+        &mut self,
+        edit: crate::simulation::zoning::CellZoningEdit,
+    ) {
+        if edit.paint.previous.is_empty() {
+            return;
+        }
+        self.push_undo_snapshot(SimulationSnapshot {
+            road_visual_terrain: None,
+            terrain: None,
+            water: None,
+            trans_graph: None,
+            road_surface_topology: None,
+            zoning: None,
+            runtime: Some(SimulationRuntimeSnapshot::CellZoningEdit(edit)),
+        });
+    }
+
     /// Pushes a new state snapshot onto the undo stack.
     ///
     /// Parameters select which dense authoring systems are included in the snapshot.
@@ -179,6 +199,8 @@ impl SimCore {
         self.transit_network
             .rollback_road_edit_dependents(&mut self.allocator);
         self.region_graph.restore_undo_delta(graph);
+        self.zoning
+            .mark_cell_lots_for_roads(&self.region_graph, edge_ids.iter().copied());
         self.transit_network.bulk_dirty_edges.clear();
         self.reset_local_network_render_state(&edge_ids, &node_ids, state.road_surface_topology);
         self.rebuild_network_surface_terrain_internal_with_entrance_rebuild(false);
@@ -296,6 +318,9 @@ impl SimCore {
             .collect();
 
         Some(BuildingRemovalUndo {
+            cell_lot: self
+                .zoning
+                .capture_cell_lot_removal_undo(self.allocator.buildings[building_idx].parcel_id),
             treasury_refund: 0.0,
             building_idx,
             original_building_count,
@@ -330,6 +355,9 @@ impl SimCore {
             return;
         };
         undo.expected_post_building_ref_revision = self.allocator.building_ref_revision;
+        if let Some(lot) = &mut undo.cell_lot {
+            self.zoning.seal_cell_lot_removal_undo(lot);
+        }
         undo.treasury_refund = treasury_refund;
     }
 
@@ -352,6 +380,13 @@ impl SimCore {
     /// Returns true if an action was undone.
     pub fn undo_action_internal(&mut self) -> bool {
         if let Some(state) = self.undo_stack.pop_back() {
+            if let Some(SimulationRuntimeSnapshot::CellZoningEdit(edit)) = &state.runtime {
+                if !self.restore_cell_gesture_internal(edit) {
+                    self.undo_stack.push_back(state);
+                    return false;
+                }
+                return true;
+            }
             if let Some(SimulationRuntimeSnapshot::BuildingRemoval(removal)) = &state.runtime
                 && !self.can_restore_building_removal_undo(removal)
             {
@@ -398,7 +433,15 @@ impl SimCore {
                     self.region_graph.node_count(),
                     self.region_graph.edge_count(),
                 ));
+                if let Some((edge_ids, _)) = &restored_topology_scope {
+                    self.zoning
+                        .mark_cell_lots_for_roads(&self.region_graph, edge_ids.iter().copied());
+                }
                 self.region_graph.restore_undo_delta(tr_graph);
+                if let Some((edge_ids, _)) = &restored_topology_scope {
+                    self.zoning
+                        .mark_cell_lots_for_roads(&self.region_graph, edge_ids.iter().copied());
+                }
                 sync_trans_graph = true;
             }
             if let Some(zoning) = zoning {
@@ -406,6 +449,9 @@ impl SimCore {
             }
             if let Some(runtime) = runtime {
                 match runtime {
+                    SimulationRuntimeSnapshot::CellZoningEdit(_) => {
+                        unreachable!("handled before restoring snapshot fields")
+                    }
                     SimulationRuntimeSnapshot::PendingDemandSpawns(pending) => {
                         self.pending_demand_spawns = pending;
                     }
@@ -438,6 +484,7 @@ impl SimCore {
                 self.transit_network.cch_dirty_chunks.clear();
                 self.transit_network.flow_fields.mark_all_dirty();
                 if restored_dense_terrain {
+                    self.zoning.invalidate_cell_lot_assets();
                     self.reset_network_render_state(old_engineered_patch_keys);
                 } else if let Some((edge_ids, node_ids)) = restored_topology_scope {
                     self.reset_local_network_render_state(
@@ -501,6 +548,13 @@ impl SimCore {
     }
 
     fn can_restore_building_removal_undo(&self, undo: &BuildingRemovalUndo) -> bool {
+        if undo
+            .cell_lot
+            .as_ref()
+            .is_some_and(|lot| !self.zoning.can_restore_cell_lot_removal_undo(lot))
+        {
+            return false;
+        }
         if undo.original_building_count == 0
             || undo.building_idx >= undo.original_building_count
             || self.allocator.buildings.len().saturating_add(1) != undo.original_building_count
@@ -535,6 +589,22 @@ impl SimCore {
         }
 
         let last_building_idx = undo.original_building_count - 1;
+        // Field resizing does not change building identities. Reject an older demolition
+        // inverse if its swap-moved field was edited, rather than overwrite that newer shape.
+        let expected_moved_field = undo
+            .field_sites
+            .iter()
+            .find(|site| {
+                undo.building_idx != last_building_idx && site.building_idx == last_building_idx
+            })
+            .map(|site| (&site.resource_id, &site.polygon_world));
+        let current_moved_field = self
+            .agriculture
+            .site_for_building(undo.building_idx)
+            .map(|site| (&site.resource_id, &site.polygon_world));
+        if current_moved_field != expected_moved_field {
+            return false;
+        }
         if !undo
             .buildings
             .iter()
@@ -561,6 +631,33 @@ impl SimCore {
                     .sites
                     .iter()
                     .any(|(idx, _)| *idx >= undo.original_site_count)
+            {
+                return false;
+            }
+        }
+
+        // Parcel and field authoring need not add history entries or change building IDs.
+        // Recheck current land owners before restoring either the lot or its larger field.
+        if let Some((_, site)) = undo.sites.iter().find(|(idx, _)| *idx == undo.building_idx) {
+            let footprint = PolygonFootprint::new(&site.lot_footprint_world);
+            let explicit_site = undo
+                .buildings
+                .iter()
+                .any(|(idx, building)| *idx == undo.building_idx && building.parcel_id == 0);
+            if self.allocator.field_clearance.overlaps(&footprint, None)
+                || (explicit_site && self.zoning.overlaps_reservation(&footprint))
+            {
+                return false;
+            }
+        }
+        if let Some(field) = undo
+            .field_sites
+            .iter()
+            .find(|field| field.building_idx == undo.building_idx)
+        {
+            let footprint = PolygonFootprint::new(&field.polygon_world);
+            if self.allocator.field_clearance.overlaps(&footprint, None)
+                || self.zoning.overlaps_reservation(&footprint)
             {
                 return false;
             }
@@ -658,20 +755,25 @@ impl SimCore {
                 last_idx,
                 undo.extractor_sites,
             );
-        // Read before the move: undoing the removal puts the fields back, so the plants they
-        // hide have to go again, exactly as committing those fields did.
-        let restored_field_bounds: Vec<(Vector2, Vector2)> = undo
+        // Only the removed field changes land coverage. The swap-moved field keeps its
+        // polygon, so restoring its owner index must not invalidate distant cells or plants.
+        let restored_field_bounds = undo
             .field_sites
             .iter()
-            .filter_map(|site| super::editing::polygon_world_bounds(&site.polygon_world))
-            .collect();
+            .find(|site| site.building_idx == building_idx)
+            .and_then(|site| super::editing::polygon_world_bounds(&site.polygon_world));
         self.agriculture.restore_sites_after_building_removal_undo(
             building_idx,
             last_idx,
             undo.field_sites,
             &mut self.allocator,
         );
-        for bounds in restored_field_bounds {
+        if let Some(bounds) = restored_field_bounds {
+            self.zoning.mark_cell_lots_dirty(
+                crate::simulation::zoning::cells::CellBounds::from_points(
+                    [bounds.0, bounds.1].map(|p| glam::DVec2::new(f64::from(p.x), f64::from(p.y))),
+                ),
+            );
             self.invalidate_vegetation_over(bounds);
         }
 
@@ -699,8 +801,12 @@ impl SimCore {
 
         self.households.restore_building_undo(undo.households);
         self.logistics.restore_building_undo(undo.logistics);
+        if let Some(lot) = undo.cell_lot {
+            self.zoning.restore_cell_lot_removal_undo(lot);
+        }
         if removed_parcel_id != 0 {
-            self.zoning.occupy_parcel(removed_parcel_id, building_idx);
+            self.zoning
+                .restore_parcel_occupancy(removed_parcel_id, building_idx);
         }
 
         self.allocator.rebuild_zone_index();

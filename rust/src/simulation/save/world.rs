@@ -279,6 +279,8 @@ pub(super) fn save_world(
         }
     }
 
+    super::cell_zoning::save(tx, zoning, maps)?;
+
     // Buildings
     let mut bld_stmt = tx.prepare("INSERT INTO buildings(building_id, parcel_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, service_funding_override, revenue, operating_budget, profit_tax_budget_baseline, last_day_profit, shipment_cooldown_hours, width, depth, asset_id, level, construction_total_hours, construction_remaining_hours, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress, daily_household_sales_value, daily_power_service_units, daily_power_served_units, recent_power_service_units, recent_power_served_units, recent_household_sales_value, support_height_m, build_generation) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35)")?;
     let mut inventory_stmt = tx.prepare(
@@ -726,7 +728,17 @@ pub(super) fn load_zoning(
     version: i64,
 ) -> SaveLoadResult<(ZoningSystem, Vec<u64>)> {
     let mut zoning = ZoningSystem::new(config);
+    let mut cell_lots = if version >= CELL_ZONING_SAVE_VERSION {
+        super::cell_zoning::load(conn, &mut zoning, graph, version)?
+    } else {
+        Default::default()
+    };
     let mut quarantined_parcels = Vec::new();
+    if version < CELL_ROAD_ALIGNMENT_SAVE_VERSION {
+        zoning
+            .cells
+            .refresh_road_alignments(graph, config, 0..graph.edge_count());
+    }
     let mut road_overlap_count = 0usize;
     let mut existing_overlap_count = 0usize;
     let mut frontage_out_of_bounds_count = 0usize;
@@ -746,16 +758,32 @@ pub(super) fn load_zoning(
         let depth_m: f32 = row.get(5)?;
         let profile_runtime_id = i64_to_u16(row.get(6)?)?;
         let build_generation = i64_to_u32(row.get(7)?)?;
-        let restored = zoning.restore_saved_parcel_from_attachment(
-            parcel_id,
-            edge_idx,
-            side,
-            frontage_t,
-            frontage_m,
-            depth_m,
-            profile_runtime_id,
-            graph,
-        );
+        let restored = if let Some(lot) = cell_lots.remove(&parcel_id) {
+            zoning
+                .restore_saved_cell_lot(
+                    crate::simulation::zoning::ParcelId::from_raw(parcel_id),
+                    lot,
+                    edge_idx,
+                    side,
+                    frontage_t,
+                    frontage_m,
+                    depth_m,
+                    profile_runtime_id,
+                    graph,
+                )
+                .map(|()| (false, false))
+        } else {
+            zoning.restore_saved_parcel_from_attachment(
+                parcel_id,
+                edge_idx,
+                side,
+                frontage_t,
+                frontage_m,
+                depth_m,
+                profile_runtime_id,
+                graph,
+            )
+        };
         let (overlaps_road, overlaps_existing) = match restored {
             Ok(overlaps) => overlaps,
             Err(crate::simulation::zoning::ParcelPlacementError::FrontageOutOfBounds) => {
@@ -779,6 +807,9 @@ pub(super) fn load_zoning(
             road_overlap_count += 1;
         }
         existing_overlap_count += usize::from(overlaps_existing);
+    }
+    if !cell_lots.is_empty() {
+        return Err(SaveLoadError::custom("cell lot references missing parcel"));
     }
     if !quarantined_parcels.is_empty() {
         crate::debug_log!(
@@ -1152,9 +1183,18 @@ pub(super) fn repaint_building_occupancy(
         if b.parcel_id == 0 {
             continue;
         }
-        if !zoning.occupy_parcel(b.parcel_id, building_idx) {
+        if !zoning.restore_parcel_occupancy(b.parcel_id, building_idx) {
             return Err(SaveLoadError::custom("building parcel occupancy mismatch"));
         }
+    }
+    if zoning.parcels().iter().any(|parcel| {
+        parcel.cell_lot().is_some()
+            && parcel.is_available()
+            && parcel.zone_profile_runtime_id() == 0
+    }) {
+        return Err(SaveLoadError::custom(
+            "incompatible cell lot has no occupying building",
+        ));
     }
     Ok(())
 }

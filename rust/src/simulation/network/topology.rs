@@ -133,7 +133,20 @@ fn segment_factor_xz(pos: Vector3, start: Vector3, end: Vector3) -> f32 {
 }
 
 fn closest_point_on_segment_xz(pos: Vector3, start: Vector3, end: Vector3) -> Vector3 {
-    start.lerp(end, segment_factor_xz(pos, start, end))
+    // Keep the projection in f64 until the final world point. Rounding t first can move
+    // an exactly-on-road endpoint sideways and turn an orthogonal connection into a bend.
+    let convert = |p: Vector3| glam::DVec3::new(f64::from(p.x), f64::from(p.y), f64::from(p.z));
+    let start = convert(start);
+    let delta = convert(end) - start;
+    let offset = convert(pos) - start;
+    let length_sq = delta.x * delta.x + delta.z * delta.z;
+    let t = if length_sq > 1e-10 {
+        ((offset.x * delta.x + offset.z * delta.z) / length_sq).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let point = start + delta * t;
+    Vector3::new(point.x as f32, point.y as f32, point.z as f32)
 }
 
 impl RegionGraph {
@@ -287,7 +300,7 @@ impl RegionGraph {
     /// Uses adjacency and O(K log K) local ordering to update each edge once. Profile work is
     /// O(control + physical points), retaining distinct heights at shared horizontal stations.
     /// Does NOT rebuild intersection clips — callers that need visual clip updates
-    /// (e.g. `move_network_node_internal`) must call `rebuild_intersection_clips` explicitly.
+    /// (e.g. `move_network_node_internal`) must explicitly rebuild clips at affected endpoints.
     /// The topology path (`process_intersections` → `add_road`) calls it after all splits.
     pub fn move_node(&mut self, node_id: u32, new_pos: Vector3) {
         let node_id = self.get_valid_node(node_id);
@@ -510,8 +523,9 @@ fn collect_endpoint_snap_splits(
             if best_dist < snap_guard && (p.y - best_closest.y).abs() < 4.5 {
                 let mut factor_u = find_geo_factor(&edge2_geo_full, best_closest);
                 let seg = (factor_u.floor() as usize).min(edge2_geo_full.len() - 2);
-                let t = factor_u.fract();
-                let mut refined = edge2_geo_full[seg].lerp(edge2_geo_full[seg + 1], t);
+                // The float segment index is an address, not an exact geometric parameter.
+                let mut refined =
+                    closest_point_on_segment_xz(p, edge2_geo_full[seg], edge2_geo_full[seg + 1]);
                 for vertex_idx in [seg, seg + 1] {
                     let vertex = edge2_geo_full[vertex_idx];
                     if Vector2::new(refined.x - vertex.x, refined.z - vertex.z).length()
@@ -1270,6 +1284,19 @@ mod tests {
             "expected XZ projection x=15.0, got {}",
             closest.x
         );
+    }
+
+    #[test]
+    fn endpoint_projection_retains_exact_orthogonal_coordinates() {
+        for offset in [0.0, -5000.0, 5000.0] {
+            let a = Vector3::new(offset - 100.0, 0.0, -150.0);
+            let b = Vector3::new(offset + 200.0, 0.0, -150.0);
+            let p = Vector3::new(offset + 30.0, 1.0, -150.0);
+            for (start, end) in [(a, b), (b, a)] {
+                let closest = closest_point_on_segment_xz(p, start, end);
+                assert_eq!(closest, Vector3::new(p.x, 0.0, p.z));
+            }
+        }
     }
 
     #[test]

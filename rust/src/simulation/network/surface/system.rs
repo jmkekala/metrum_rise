@@ -3,6 +3,7 @@
 //! Road-surface system state, dirty rebuild orchestration, and shared ordering helpers.
 
 use super::backend::godot_vec3_to_road;
+use super::cache::{ChunkOwnerIndex, OwnerChunkIndex};
 use super::keys::SurfaceXzKey;
 use super::{
     CompiledNodeKind, NodeCanonicalTopologyCache, NodeOwnedRegion, NodeVisualCompileResult,
@@ -17,7 +18,7 @@ use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::types::{EdgeClass, TransitType};
 use crate::simulation::terrain::TerrainSystem;
 use rayon::prelude::*;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -51,7 +52,9 @@ pub struct RoadSurfaceSystem {
     pub(crate) compiled_sections: HashMap<usize, Arc<Vec<RoadSurfaceSection>>>,
     pub(crate) compiled_visual_span_pieces: HashMap<usize, Arc<RoadSurfaceVisualSpanPiece>>,
     pub(crate) compiled_visual_node_pieces: HashMap<u32, Arc<RoadSurfaceVisualNodePiece>>,
-    pub(crate) compiled_visual_node_inputs: HashMap<u32, RoadSurfaceVisualNodeCompileInput>,
+    // Inputs are immutable compiler records; edit snapshots share both the map and records.
+    pub(crate) compiled_visual_node_inputs:
+        imbl::HashMap<u32, Arc<RoadSurfaceVisualNodeCompileInput>>,
     pub(crate) compiled_visual_node_earthwork_boundaries:
         HashMap<u32, Arc<Vec<Vec<RoadSurfaceEarthworkBoundarySegment>>>>,
     pub(crate) compiled_visual_node_topologies: HashMap<u32, Arc<NodeCanonicalTopologyCache>>,
@@ -60,18 +63,18 @@ pub struct RoadSurfaceSystem {
     pub(in crate::simulation::network::surface) pending_planned_earthworks:
         Option<Arc<super::RoadEarthworkPlan>>,
     pub(crate) last_reused_earthwork_chunk_count: usize,
-    pub(crate) surface_span_chunks: HashMap<usize, Vec<SurfaceChunkKey>>,
-    pub(crate) surface_node_chunks: HashMap<u32, Vec<SurfaceChunkKey>>,
-    pub(crate) earthwork_span_chunks: HashMap<usize, Vec<SurfaceChunkKey>>,
-    pub(crate) earthwork_node_chunks: HashMap<u32, Vec<SurfaceChunkKey>>,
-    pub(crate) surface_chunk_spans: HashMap<SurfaceChunkKey, BTreeSet<usize>>,
-    pub(crate) surface_chunk_nodes: HashMap<SurfaceChunkKey, BTreeSet<u32>>,
-    pub(crate) earthwork_chunk_spans: HashMap<SurfaceChunkKey, BTreeSet<usize>>,
-    pub(crate) earthwork_chunk_nodes: HashMap<SurfaceChunkKey, BTreeSet<u32>>,
-    pub(crate) query_span_chunks: HashMap<usize, Vec<SurfaceChunkKey>>,
-    pub(crate) query_node_chunks: HashMap<u32, Vec<SurfaceChunkKey>>,
-    pub(crate) query_chunk_spans: HashMap<SurfaceChunkKey, BTreeSet<usize>>,
-    pub(crate) query_chunk_nodes: HashMap<SurfaceChunkKey, BTreeSet<u32>>,
+    pub(crate) surface_span_chunks: OwnerChunkIndex<usize>,
+    pub(crate) surface_node_chunks: OwnerChunkIndex<u32>,
+    pub(crate) earthwork_span_chunks: OwnerChunkIndex<usize>,
+    pub(crate) earthwork_node_chunks: OwnerChunkIndex<u32>,
+    pub(crate) surface_chunk_spans: ChunkOwnerIndex<usize>,
+    pub(crate) surface_chunk_nodes: ChunkOwnerIndex<u32>,
+    pub(crate) earthwork_chunk_spans: ChunkOwnerIndex<usize>,
+    pub(crate) earthwork_chunk_nodes: ChunkOwnerIndex<u32>,
+    pub(crate) query_span_chunks: OwnerChunkIndex<usize>,
+    pub(crate) query_node_chunks: OwnerChunkIndex<u32>,
+    pub(crate) query_chunk_spans: ChunkOwnerIndex<usize>,
+    pub(crate) query_chunk_nodes: ChunkOwnerIndex<u32>,
     pub(crate) surface_chunk_cache: HashMap<SurfaceChunkKey, RoadSurfaceChunkCacheEntry>,
     pub(crate) earthwork_chunk_cache: HashMap<SurfaceChunkKey, RoadEarthworkChunkCacheEntry>,
     pub(in crate::simulation::network::surface) terrain_grading_cache:
@@ -124,7 +127,7 @@ struct RoadPreviewSpanTopologyReuse {
 struct RoadPreviewNodeTopologyReuse {
     node_id: u32,
     position_xz: SurfaceXzKey,
-    input: RoadSurfaceVisualNodeCompileInput,
+    input: Arc<RoadSurfaceVisualNodeCompileInput>,
     piece: Arc<RoadSurfaceVisualNodePiece>,
     earthwork_boundaries: Arc<Vec<Vec<RoadSurfaceEarthworkBoundarySegment>>>,
     topology: Arc<NodeCanonicalTopologyCache>,
@@ -141,6 +144,20 @@ impl std::fmt::Debug for RoadPreviewTopologyReuse {
 }
 
 impl RoadPreviewTopologyReuse {
+    /// Adds only the requested live node artifacts; fresh compile inputs still decide reuse.
+    /// Dirty or failed live generations cannot supply geometry for a new validation.
+    pub(in crate::simulation::network::surface) fn include_live_nodes(
+        &mut self,
+        surface: &RoadSurfaceSystem,
+        graph: &RegionGraph,
+        node_ids: &[u32],
+    ) {
+        if surface.published_generation_matches_source() {
+            self.nodes
+                .extend(surface.capture_node_topology_reuse(graph, node_ids));
+        }
+    }
+
     /// Counts locally compiled span artifacts retained by this certificate.
     #[cfg(test)]
     pub(crate) fn span_count(&self) -> usize {
@@ -163,7 +180,7 @@ impl RoadPreviewTopologyReuse {
         let candidate_index = self
             .nodes
             .iter()
-            .position(|candidate| candidate.node_id == node_id && candidate.input == *input)
+            .position(|candidate| candidate.node_id == node_id && candidate.input.as_ref() == input)
             .or_else(|| {
                 self.nodes.iter().position(|candidate| {
                     candidate.position_xz == position_xz
@@ -349,24 +366,24 @@ impl RoadSurfaceSystem {
             compiled_sections: HashMap::new(),
             compiled_visual_span_pieces: HashMap::new(),
             compiled_visual_node_pieces: HashMap::new(),
-            compiled_visual_node_inputs: HashMap::new(),
+            compiled_visual_node_inputs: imbl::HashMap::new(),
             compiled_visual_node_earthwork_boundaries: HashMap::new(),
             compiled_visual_node_topologies: HashMap::new(),
             pending_preview_topology_reuse: None,
             pending_planned_earthworks: None,
             last_reused_earthwork_chunk_count: 0,
-            surface_span_chunks: HashMap::new(),
-            surface_node_chunks: HashMap::new(),
-            earthwork_span_chunks: HashMap::new(),
-            earthwork_node_chunks: HashMap::new(),
-            surface_chunk_spans: HashMap::new(),
-            surface_chunk_nodes: HashMap::new(),
-            earthwork_chunk_spans: HashMap::new(),
-            earthwork_chunk_nodes: HashMap::new(),
-            query_span_chunks: HashMap::new(),
-            query_node_chunks: HashMap::new(),
-            query_chunk_spans: HashMap::new(),
-            query_chunk_nodes: HashMap::new(),
+            surface_span_chunks: OwnerChunkIndex::new(),
+            surface_node_chunks: OwnerChunkIndex::new(),
+            earthwork_span_chunks: OwnerChunkIndex::new(),
+            earthwork_node_chunks: OwnerChunkIndex::new(),
+            surface_chunk_spans: ChunkOwnerIndex::new(),
+            surface_chunk_nodes: ChunkOwnerIndex::new(),
+            earthwork_chunk_spans: ChunkOwnerIndex::new(),
+            earthwork_chunk_nodes: ChunkOwnerIndex::new(),
+            query_span_chunks: OwnerChunkIndex::new(),
+            query_node_chunks: OwnerChunkIndex::new(),
+            query_chunk_spans: ChunkOwnerIndex::new(),
+            query_chunk_nodes: ChunkOwnerIndex::new(),
             surface_chunk_cache: HashMap::new(),
             earthwork_chunk_cache: HashMap::new(),
             terrain_grading_cache: Arc::new(Mutex::new(RoadSurfaceTerrainGradingCache::default())),
@@ -419,7 +436,17 @@ impl RoadSurfaceSystem {
                 ))
             })
             .collect::<HashMap<_, _>>();
-        let nodes = node_ids
+        let nodes = self.capture_node_topology_reuse(graph, node_ids);
+        (!spans.is_empty() || !nodes.is_empty())
+            .then_some(RoadPreviewTopologyReuse { spans, nodes })
+    }
+
+    fn capture_node_topology_reuse(
+        &self,
+        graph: &RegionGraph,
+        node_ids: &[u32],
+    ) -> Vec<RoadPreviewNodeTopologyReuse> {
+        node_ids
             .iter()
             .filter_map(|&node_id| {
                 let node_id = graph.get_valid_node(node_id);
@@ -441,9 +468,7 @@ impl RoadSurfaceSystem {
                     topology: Arc::clone(topology),
                 })
             })
-            .collect::<Vec<_>>();
-        (!spans.is_empty() || !nodes.is_empty())
-            .then_some(RoadPreviewTopologyReuse { spans, nodes })
+            .collect()
     }
 
     /// Offers exact preview topology to the next dirty compile; canonical base keys still verify it.
@@ -788,7 +813,7 @@ impl RoadSurfaceSystem {
             let input_matches = self
                 .compiled_visual_node_inputs
                 .get(&node_id)
-                .is_some_and(|previous| previous == &input);
+                .is_some_and(|previous| previous.as_ref() == &input);
             if input_matches && self.compiled_visual_node_pieces.contains_key(&node_id) {
                 if allow_node_reuse {
                     reused_node_count += 1;
@@ -864,7 +889,7 @@ impl RoadSurfaceSystem {
                     (Some(result), true)
                 } else if let Some(candidate) = preview_candidate {
                     let exact_identity =
-                        candidate.node_id == node_id.0 && candidate.input == node_id.1;
+                        candidate.node_id == node_id.0 && candidate.input.as_ref() == &node_id.1;
                     (
                         Some(staging.replay_exact_preview_node_piece(
                             graph,
@@ -1444,7 +1469,8 @@ impl RoadSurfaceSystem {
             self.insert_node_piece_coverage(&visual_piece.piece);
             self.compiled_visual_node_pieces
                 .insert(node_id, visual_piece.piece);
-            self.compiled_visual_node_inputs.insert(node_id, input);
+            self.compiled_visual_node_inputs
+                .insert(node_id, Arc::new(input));
             if visual_piece.earthwork_boundaries.is_empty() {
                 self.compiled_visual_node_earthwork_boundaries
                     .remove(&node_id);

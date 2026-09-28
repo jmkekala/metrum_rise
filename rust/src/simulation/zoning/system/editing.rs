@@ -48,6 +48,13 @@ impl ZoningSystem {
         if let Some(existing_id) = self.parcels.find_at_point(point) {
             if self
                 .parcels
+                .get(existing_id)
+                .is_some_and(|parcel| parcel.cell_lot().is_some())
+            {
+                return Err(ParcelPlacementError::OverlapsExistingParcel);
+            }
+            if self
+                .parcels
                 .set_zone_profile_runtime_id(existing_id, runtime_id)
             {
                 self.bump_overlay_revision();
@@ -56,6 +63,7 @@ impl ZoningSystem {
         }
 
         let geometry = self.preview_parcel_at(world_x, world_z, frontage_m, depth_m, graph)?;
+        self.invalidate_cell_geometry_for_parcel(&geometry);
         let id = self.parcels.insert_new(geometry, runtime_id);
         self.bump_overlay_revision();
         Ok(id)
@@ -85,6 +93,7 @@ impl ZoningSystem {
         )?;
         let mut ids = Vec::with_capacity(geometries.len());
         for geometry in geometries {
+            self.invalidate_cell_geometry_for_parcel(&geometry);
             ids.push(self.parcels.insert_new(geometry, runtime_id));
         }
         if !ids.is_empty() {
@@ -106,6 +115,7 @@ impl ZoningSystem {
         }
         let mut ids = Vec::with_capacity(geometries.len());
         for geometry in geometries {
+            self.invalidate_cell_geometry_for_parcel(&geometry);
             ids.push(self.parcels.insert_new(geometry, runtime_id));
         }
         self.bump_overlay_revision();
@@ -122,9 +132,14 @@ impl ZoningSystem {
         runtime_id: u16,
     ) -> Result<Vec<ParcelId>, ParcelPlacementError> {
         self.validate_profile_id(runtime_id)?;
-        let ids = self
+        let mut ids = self
             .parcels
             .find_touching_segment(Vector2::new(start_x, start_z), Vector2::new(end_x, end_z));
+        ids.retain(|&id| {
+            self.parcels
+                .get(id)
+                .is_some_and(|parcel| parcel.cell_lot().is_none())
+        });
         if ids.is_empty() {
             return Err(ParcelPlacementError::NoRoadAttachment);
         }
@@ -149,6 +164,13 @@ impl ZoningSystem {
             let Some(id) = self.parcels.find_at_point(geometry.center) else {
                 continue;
             };
+            if self
+                .parcels
+                .get(id)
+                .is_some_and(|parcel| parcel.cell_lot().is_some())
+            {
+                continue;
+            }
             if !seen.insert(id) {
                 continue;
             }

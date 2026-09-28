@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## Road-aligned parcel zoning tool -- sends placement points to Rust and previews returned geometry.
+## Zoning workflow controller and parcel input; delegates cell gestures to zoning_cells_tool.
 ##
 ## Rust methods called: get_zone_profiles(), get_zoning_parcel_preview(),
 ##   get_zoning_parcel_drag_preview_packed(), apply_zoning_parcel_at(),
@@ -15,6 +15,11 @@ extends Node3D
 
 var active: bool = false
 var current_profile_runtime_id: int = 0
+var workflow_cells := true
+var cell_shape := 0
+var cell_brush_radius_m := 20.0
+var cell_erase := false
+var _cell_tool: Node3D
 var parcel_width_cells: int = 2
 var parcel_depth_cells: int = 2
 var parcel_gap_m: float = 0.0
@@ -54,6 +59,10 @@ const DRAG_MODE_REZONE: int = 2
 
 func _ready():
 	_reload_profiles()
+	_cell_tool = preload("res://scripts/tools/zoning_cells_tool.gd").new()
+	_cell_tool.controller = self
+	_cell_tool.simulation_node = simulation_node
+	add_child(_cell_tool)
 
 	preview_mesh = MeshInstance3D.new()
 	preview_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
@@ -69,6 +78,10 @@ func _ready():
 	add_child(preview_mesh)
 
 func _process(_delta):
+	_cell_tool.update_tool(active and workflow_cells)
+	if active and workflow_cells:
+		preview_mesh.visible = false
+		return
 	if not active:
 		dragging = false
 		drag_start_world = null
@@ -80,6 +93,9 @@ func _process(_delta):
 
 func _unhandled_input(event):
 	if not active:
+		return
+	if workflow_cells:
+		_cell_tool.handle_input(event)
 		return
 
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
@@ -102,6 +118,11 @@ func _reload_profiles() -> void:
 		current_profile_runtime_id = int(profiles[0].get("runtime_id", 0))
 
 func select_profile(runtime_id: int) -> void:
+	if workflow_cells:
+		if runtime_id == 0:
+			cell_erase = true
+			return
+		cell_erase = false
 	if runtime_id == 0 or profiles_by_runtime_id.has(runtime_id):
 		if current_profile_runtime_id != runtime_id:
 			_clear_preview_cache()
@@ -124,7 +145,18 @@ func set_parcel_options(width_cells: int, depth_cells: int, gap_m: float) -> voi
 	parcel_gap_m = next_gap
 
 func undo() -> void:
-	pass
+	_cell_tool.cancel()
+	simulation_node.undo_action()
+
+func set_cell_workflow(enabled: bool) -> void:
+	workflow_cells = enabled
+	dragging = false
+	drag_start_world = null
+	drag_mode = DRAG_MODE_NONE
+	_clear_preview_cache()
+	_cell_tool.cancel()
+	if enabled and current_profile_runtime_id == 0 and not profiles.is_empty():
+		current_profile_runtime_id = int(profiles[0].get("runtime_id", 0))
 
 func _begin_drag() -> void:
 	drag_start_world = _mouse_world_pos()

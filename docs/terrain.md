@@ -3067,6 +3067,13 @@ Deterministic terrain-render rules:
   both adjacent tiles must retain the same side point and height, even when its original position
   falls just inside only one tile. More distant halo samples remain excluded.
   Guide points on road constraints are noded with the retained seam's interpolated height.
+  Clipping also preserves exact rectangle intersections when a nearby interior road vertex
+  occupies the same canonical identity cell. Deduplication prefers the vertex on the exact
+  tile side, including the closing pair and reversed contours; it does not move arbitrary
+  road vertices onto a boundary. Discarding that intersection previously produced a nearly
+  vertical terrain face beside a flat orthogonal road block. The focused clipping regression
+  and native four-road preview/commit fixture cover this case; see the
+  [zoning reference verification](zoning.md#native-road-transactions-and-rendered-references).
   Segment incidence tolerances are distances, never fractions of arbitrarily long segments.
   Noded-edge cleanup deduplicates canonical vertex IDs, not nearby segment parameters:
   even sub-millimetre intersections in distinct identity cells must remain on both incident

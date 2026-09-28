@@ -373,6 +373,7 @@ impl TransitNetwork {
             );
             affected_edges.extend(profile_changed_edges);
             graph.rebuild_intersection_clips_for_nodes(&affected_nodes);
+            zoning.mark_cell_lots_for_roads(graph, affected_edges.iter().copied());
             self.lane_system
                 .rebuild_edges_incremental(graph, &affected_edges);
         }

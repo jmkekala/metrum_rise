@@ -94,7 +94,7 @@ impl RoadSurfaceSystem {
 
         // Reuse the immutable owner-local triangle grids already built for lane queries.
         // O(owners in query chunk + triangles in their matching cells), with no allocations.
-        for &node_id in node_ids.into_iter().flatten() {
+        for &node_id in node_ids.into_iter().flat_map(|owners| owners.iter()) {
             if !include_node(node_id) || !self.node_uses_visible_surface(graph, terrain, node_id) {
                 continue;
             }
@@ -104,7 +104,7 @@ impl RoadSurfaceSystem {
                 keep_max_height(&mut top_surface, sample);
             }
         }
-        for &edge_idx in edge_indices.into_iter().flatten() {
+        for &edge_idx in edge_indices.into_iter().flat_map(|owners| owners.iter()) {
             if !include_edge(edge_idx) {
                 continue;
             }
@@ -156,7 +156,7 @@ impl RoadSurfaceSystem {
         let point = RoadVec2::new(world_x, world_z);
         let mut road_surface_height_m: Option<f32> = None;
 
-        for &node_id in node_ids.into_iter().flatten() {
+        for &node_id in node_ids.into_iter().flat_map(|owners| owners.iter()) {
             let Some(piece) = self.compiled_visual_node_pieces.get(&node_id) else {
                 continue;
             };
@@ -172,7 +172,7 @@ impl RoadSurfaceSystem {
             }
         }
 
-        for &edge_idx in edge_indices.into_iter().flatten() {
+        for &edge_idx in edge_indices.into_iter().flat_map(|owners| owners.iter()) {
             let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
                 continue;
             };
@@ -685,13 +685,13 @@ mod tests {
             .query_chunk_spans
             .get(&chunk)
             .into_iter()
-            .flatten()
+            .flat_map(|owners| owners.iter())
             .copied();
         let nodes = surface
             .query_chunk_nodes
             .get(&chunk)
             .into_iter()
-            .flatten()
+            .flat_map(|owners| owners.iter())
             .copied();
         let mut result = None;
         surface.visit_visible_top_surface_query_triangles(

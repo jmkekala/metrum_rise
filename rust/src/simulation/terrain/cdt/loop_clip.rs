@@ -24,13 +24,31 @@ pub(super) struct TerrainCdtLoopBounds {
 pub(super) fn simplified_road_loop(
     points: Vec<TerrainCdtVertex>,
 ) -> Result<Vec<TerrainCdtVertex>, TerrainCdtError> {
+    simplified_road_loop_in_patch(points, None)
+}
+
+fn simplified_road_loop_in_patch(
+    points: Vec<TerrainCdtVertex>,
+    patch: Option<TerrainCdtPatch>,
+) -> Result<Vec<TerrainCdtVertex>, TerrainCdtError> {
+    // Duplicate identity may pair an interior road vertex with an exact clip intersection.
+    // Retain the intersection: choosing the interior vertex would bend the shared tile rail.
+    let boundary_coordinates = |vertex: TerrainCdtVertex| {
+        patch.map_or(0, |patch| {
+            usize::from(vertex.x == patch.min_x || vertex.x == patch.max_x)
+                + usize::from(vertex.z == patch.min_z || vertex.z == patch.max_z)
+        })
+    };
     let mut deduplicated = Vec::with_capacity(points.len());
     for point in points {
-        if let Some(last) = deduplicated.last() {
-            let last: &TerrainCdtVertex = last;
+        if let Some(last) = deduplicated.last_mut() {
+            let last: &mut TerrainCdtVertex = last;
             if same_xz(*last, point) {
                 if !same_height(last.height_m, point.height_m) {
                     return Err(TerrainCdtError::ConflictingRoadBoundaryHeight);
+                }
+                if boundary_coordinates(point) > boundary_coordinates(*last) {
+                    *last = point;
                 }
                 continue;
             }
@@ -43,6 +61,9 @@ pub(super) fn simplified_road_loop(
         if same_xz(first, last) {
             if !same_height(first.height_m, last.height_m) {
                 return Err(TerrainCdtError::ConflictingRoadBoundaryHeight);
+            }
+            if boundary_coordinates(last) > boundary_coordinates(first) {
+                deduplicated[0] = last;
             }
             deduplicated.pop();
         }
@@ -79,7 +100,8 @@ pub(super) fn clip_loop_to_patch_components(
         && bounds.min_z >= patch.min_z
         && bounds.max_z <= patch.max_z
     {
-        let vertices = simplified_road_loop(points.to_vec()).unwrap_or_default();
+        let vertices =
+            simplified_road_loop_in_patch(points.to_vec(), Some(patch)).unwrap_or_default();
         if vertices.len() < 3 || signed_area(&vertices).abs() <= CDT_EPSILON_M * CDT_EPSILON_M {
             return Vec::new();
         }
@@ -125,7 +147,7 @@ pub(super) fn clip_loop_to_patch_components(
         .filter(|vertex| segment_height_at_sample(points, *vertex).is_some())
         .collect::<Vec<_>>();
     let overlay_shapes = overlay.overlay(OverlayRule::Intersect, FillRule::EvenOdd);
-    let axis_clipped = simplified_road_loop(axis_clipped).unwrap_or_default();
+    let axis_clipped = simplified_road_loop_in_patch(axis_clipped, Some(patch)).unwrap_or_default();
     if overlay_shapes.len() == 1
         && axis_clipped.len() >= 3
         && signed_area(&axis_clipped).abs() > CDT_EPSILON_M * CDT_EPSILON_M
@@ -167,7 +189,7 @@ pub(super) fn clip_loop_to_patch_components(
                     )
                 })
                 .collect::<Vec<_>>();
-            let vertices = simplified_road_loop(vertices).ok()?;
+            let vertices = simplified_road_loop_in_patch(vertices, Some(patch)).ok()?;
             (vertices.len() >= 3 && signed_area(&vertices).abs() > CDT_EPSILON_M * CDT_EPSILON_M)
                 .then_some(ensure_ccw(vertices))
         })

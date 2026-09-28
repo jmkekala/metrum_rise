@@ -8,6 +8,15 @@ use crate::simulation::zoning::ParcelId;
 impl ZoningSystem {
     /// Claims one parcel for a building index.
     pub fn occupy_parcel(&mut self, parcel_id: u64, building_idx: usize) -> bool {
+        if let Some(parcel) = self.parcels.get(ParcelId::from_raw(parcel_id))
+            && let Some(lot) = parcel.cell_lot()
+            && (self.cells.lot_profile(lot) != Some(parcel.zone_profile_runtime_id())
+                || !lot
+                    .cells()
+                    .all(|key| self.cells.lot(key) == Some(parcel_id)))
+        {
+            return false;
+        }
         let changed = self
             .parcels
             .set_occupied_building(ParcelId::from_raw(parcel_id), building_idx);
@@ -22,6 +31,27 @@ impl ZoningSystem {
         let changed = self
             .parcels
             .clear_occupied_building(ParcelId::from_raw(parcel_id));
+        if changed {
+            self.release_invalid_empty_cell_lot(ParcelId::from_raw(parcel_id));
+            self.bump_overlay_occupancy_revision();
+        }
+        changed
+    }
+
+    /// Restores an existing occupant without requiring paint compatibility during rezone grace.
+    /// The load/undo caller validates building identity; cell ownership must still be complete.
+    pub(crate) fn restore_parcel_occupancy(&mut self, parcel_id: u64, building_idx: usize) -> bool {
+        if let Some(parcel) = self.parcels.get(ParcelId::from_raw(parcel_id))
+            && let Some(lot) = parcel.cell_lot()
+            && !lot
+                .cells()
+                .all(|key| self.cells.lot(key) == Some(parcel_id))
+        {
+            return false;
+        }
+        let changed = self
+            .parcels
+            .set_occupied_building(ParcelId::from_raw(parcel_id), building_idx);
         if changed {
             self.bump_overlay_occupancy_revision();
         }

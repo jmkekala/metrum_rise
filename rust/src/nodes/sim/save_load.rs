@@ -82,6 +82,7 @@ impl SimCore {
         let mut new_allocator = loaded.allocator;
         std::mem::swap(&mut new_allocator.registry, &mut self.allocator.registry);
         self.allocator = new_allocator;
+        self.zoning.invalidate_cell_lot_assets();
         // Transforms and entrances were restored before agent lane references.
         self.allocator
             .rebuild_building_site_clients(self.zoning.config.zone_cell_m);

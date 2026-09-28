@@ -87,14 +87,14 @@ impl Dependencies {
         for cx in min.0..=max.0 {
             for cz in min.1..=max.1 {
                 if let Some(ids) = surface.query_chunk_spans.get(&(cx, cz)) {
-                    for id in ids {
+                    for id in ids.iter() {
                         if let Some(piece) = surface.compiled_visual_span_pieces.get(id) {
                             spans.insert(*id, Arc::clone(piece));
                         }
                     }
                 }
                 if let Some(ids) = surface.query_chunk_nodes.get(&(cx, cz)) {
-                    for id in ids {
+                    for id in ids.iter() {
                         if let Some(piece) = surface.compiled_visual_node_pieces.get(id) {
                             nodes.insert(*id, Arc::clone(piece));
                         }

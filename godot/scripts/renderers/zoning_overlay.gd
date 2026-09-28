@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## Zone overlay -- builds a mesh from Rust-authored road-aligned parcel geometry.
+## Zoning overlay visibility and road eligibility; cell and parcel meshes use visible chunks.
 ##
 ## Rust methods called: get_zoning_overlay_revision(), get_zoning_overlay_occupancy_revision(),
 ##   try_get_zoning_parcels_overlay_packed(), try_get_no_building_spawn_lines()
@@ -21,8 +21,13 @@ var _zone_revision_seen: int = -1
 var _zone_occupancy_revision_seen: int = -1
 
 var _no_build_mesh_instance: MeshInstance3D = null
+var _cell_chunks: Node3D
 
 func _ready():
+	var cells := preload("res://scripts/renderers/zoning_cells_overlay.gd").new()
+	cells.simulation_node = simulation_node
+	add_child(cells)
+	_cell_chunks = cells
 	cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	var mat := StandardMaterial3D.new()
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
@@ -114,6 +119,8 @@ func is_overlay_requested() -> bool:
 func full_refresh():
 	_zone_dirty = true
 	_no_build_dirty = true
+	if _cell_chunks:
+		_cell_chunks.full_refresh()
 
 func _overlay_requested() -> bool:
 	return _tool_active > 0.001 or _tool_active_target > 0.0
@@ -134,35 +141,8 @@ func road_geometry_debug_patch_lines(_flat_pairs: PackedInt32Array) -> Array[Str
 	]
 
 func _rebuild_parcel_overlay() -> bool:
-	var payload: Dictionary = simulation_node.try_get_zoning_parcels_overlay_packed()
-	if bool(payload.get("busy", true)):
-		return false
-	_zone_revision_seen = int(payload.get("revision", _zone_revision_seen))
-	_parcel_debug_count = int(payload.get("parcel_count", 0))
-	var triangle_vertices := payload.get("triangle_vertices", PackedVector3Array()) as PackedVector3Array
-	var triangle_colors := payload.get("triangle_colors", PackedColorArray()) as PackedColorArray
-	var line_vertices := payload.get("line_vertices", PackedVector3Array()) as PackedVector3Array
-	var line_colors := payload.get("line_colors", PackedColorArray()) as PackedColorArray
-	_zone_occupancy_revision_seen = int(payload.get("occupancy_revision", _zone_occupancy_revision_seen))
-	if triangle_vertices.is_empty() and line_vertices.is_empty():
-		mesh = null
-		return true
-
-	var overlay_mesh := ArrayMesh.new()
-	if triangle_vertices.size() >= 3 and triangle_vertices.size() == triangle_colors.size():
-		var triangle_arrays := []
-		triangle_arrays.resize(Mesh.ARRAY_MAX)
-		triangle_arrays[Mesh.ARRAY_VERTEX] = triangle_vertices
-		triangle_arrays[Mesh.ARRAY_COLOR] = triangle_colors
-		overlay_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, triangle_arrays)
-	if line_vertices.size() >= 2 and line_vertices.size() == line_colors.size():
-		var line_arrays := []
-		line_arrays.resize(Mesh.ARRAY_MAX)
-		line_arrays[Mesh.ARRAY_VERTEX] = line_vertices
-		line_arrays[Mesh.ARRAY_COLOR] = line_colors
-		overlay_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_LINES, line_arrays)
-
-	mesh = overlay_mesh if overlay_mesh.get_surface_count() > 0 else null
+	# Both workflows now upload through the local chunk renderer.
+	mesh = null
 	return true
 
 func _rebuild_no_build_overlay() -> bool:

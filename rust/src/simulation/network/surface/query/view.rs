@@ -36,29 +36,25 @@ impl PlannedRoadSurfaceQuery {
         if fields.is_empty() {
             return false;
         }
-        self.surface
-            .compiled_visual_span_pieces
-            .values()
-            .any(|piece| {
-                piece
-                    .road_surface_polygons
-                    .iter()
-                    .chain(&piece.curb_surface_polygons)
-                    .chain(&piece.sidewalk_surface_polygons)
-                    .any(|polygon| fields.overlaps_road_polygon(polygon))
-            })
-            || self
-                .surface
-                .compiled_visual_node_pieces
-                .values()
-                .any(|piece| {
-                    piece
-                        .road_surface_polygons
-                        .iter()
-                        .chain(&piece.curb_surface_polygons)
-                        .chain(&piece.sidewalk_surface_polygons)
-                        .any(|polygon| fields.overlaps_road_polygon(polygon))
-                })
+        self.any_road_polygon(|polygon| fields.overlaps_road_polygon(polygon))
+    }
+
+    /// Checks finalized junction and span shapes against painted and occupied cell reservations.
+    pub(crate) fn overlaps_cell_zoning(
+        &self,
+        zoning: &crate::simulation::zoning::ZoningSystem,
+    ) -> bool {
+        if !zoning.cells.has_reservations() {
+            return false;
+        }
+        self.surface.overlaps_cell_zoning(zoning)
+    }
+
+    fn any_road_polygon(
+        &self,
+        overlaps: impl Fn(&super::super::RoadSurfaceVisualPolygon) -> bool,
+    ) -> bool {
+        self.surface.any_road_polygon(overlaps)
     }
 
     /// Retains only the validation excerpt; compiled owner products remain shared by Arc.
@@ -229,5 +225,38 @@ fn max_height(left: Option<f32>, right: Option<f32>) -> Option<f32> {
     match (left, right) {
         (Some(left), Some(right)) => Some(left.max(right)),
         _ => left.or(right),
+    }
+}
+
+impl RoadSurfaceSystem {
+    /// Tests this compiled neighborhood against cell paint and occupied claims. Callers must
+    /// supply a bounded validation surface; this visits every owner in this particular cache.
+    pub(crate) fn overlaps_cell_zoning(
+        &self,
+        zoning: &crate::simulation::zoning::ZoningSystem,
+    ) -> bool {
+        zoning.cells.has_reservations()
+            && self.any_road_polygon(|polygon| zoning.cells_overlap_road_polygon(polygon))
+    }
+
+    fn any_road_polygon(
+        &self,
+        overlaps: impl Fn(&super::super::RoadSurfaceVisualPolygon) -> bool,
+    ) -> bool {
+        self.compiled_visual_span_pieces.values().any(|piece| {
+            piece
+                .road_surface_polygons
+                .iter()
+                .chain(&piece.curb_surface_polygons)
+                .chain(&piece.sidewalk_surface_polygons)
+                .any(&overlaps)
+        }) || self.compiled_visual_node_pieces.values().any(|piece| {
+            piece
+                .road_surface_polygons
+                .iter()
+                .chain(&piece.curb_surface_polygons)
+                .chain(&piece.sidewalk_surface_polygons)
+                .any(&overlaps)
+        })
     }
 }

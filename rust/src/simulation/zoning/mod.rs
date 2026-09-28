@@ -6,6 +6,8 @@
 //! values remain derived helpers for systems that consume residential/commercial/industrial
 //! families. The simulation, demand, allocator, and saves consume stable parcel ids.
 
+/// Road-generated cell authority and selection, independent of building-lot allocation.
+pub(crate) mod cells;
 mod constants;
 pub mod parcels;
 pub mod profiles;
@@ -20,8 +22,10 @@ pub use parcels::{ParcelGeometry, ParcelId, ParcelPlacementError, ParcelStore, Z
 pub use profiles::{
     ZoneDensity, ZoneProfileRuntime, ZoningProfileRegistry, load_builtin_profile_registry,
 };
-pub(crate) use system::ZoningParcelRemovalUndo;
 pub use system::ZoningSystem;
+pub(crate) use system::{
+    CellLotGeneration, CellLotRemovalUndo, CellZoningEdit, ZoningParcelRemovalUndo,
+};
 pub use zone_type::ZoneType;
 
 /// Unit tests for the parcel zoning system.

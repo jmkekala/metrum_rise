@@ -233,6 +233,113 @@ fn rezoning_fixture() -> (BuildingAllocator, ZoningSystem, RegionGraph) {
 }
 
 #[test]
+fn cell_partial_erase_uses_redevelopment_grace_and_compatible_repaint_cancels_it() {
+    use crate::simulation::zoning::cells::{CellBounds, CellFrontage, CellLot, CellSelectionShape};
+    use glam::DVec2;
+    let (mut allocator, mut zoning, mut graph) = rezoning_fixture();
+    let old_ids = zoning.parcels().iter().map(|p| p.id().raw()).collect();
+    zoning.remove_parcels_by_raw_ids(&old_ids);
+    zoning.generate_cells(
+        &graph,
+        CellBounds {
+            min: DVec2::splat(-100.0),
+            max: DVec2::splat(200.0),
+        },
+        |_| false,
+    );
+    let profile = zoning
+        .profiles
+        .default_runtime_id_for_zone_type(ZoneType::Residential)
+        .unwrap();
+    let point = DVec2::new(25.0, -10.0);
+    let selection = zoning.cells.select(CellSelectionShape::Fill, &[point]);
+    zoning.paint_cells(&selection, profile, |_| false).unwrap();
+    let mut lots = Vec::new();
+    for (index, x) in [25.0, 75.0].into_iter().enumerate() {
+        let mut origin = zoning.cells.pick(DVec2::new(x, -10.0)).unwrap();
+        origin.y -= 1;
+        let lot = CellLot::new(origin, 2, 2, CellFrontage::MaxY).unwrap();
+        let id = zoning
+            .install_prevalidated_cell_lot(lot, 0, 1, (x as f32 + 5.0) / 100.0, profile)
+            .unwrap();
+        let parcel = zoning.parcels.get(id).unwrap();
+        let center = parcel.front_center() + parcel.normal() * 5.0;
+        let building = &mut allocator.buildings[index];
+        building.parcel_id = id.raw();
+        building.center_x = center.x;
+        building.center_y = center.y;
+        building.frontage_t = parcel.frontage_center_t();
+        assert!(zoning.occupy_parcel(id.raw(), index));
+        lots.push((lot, id));
+    }
+    allocator.rebuild_building_site_clients(zoning.config.zone_cell_m);
+    let mut agents = AgentSystem::new();
+    let mut households = HouseholdSystem::new();
+    let mut logistics = ShipmentSystem::new();
+    let mut network = TransitNetwork::new();
+    let mut treasury = 0.0;
+    for (paint, expected_grace) in [
+        (Some(0), 3),
+        (Some(profile), 0),
+        (Some(0), 3),
+        (None, 2),
+        (None, 1),
+    ] {
+        if let Some(paint) = paint {
+            let selection = zoning.cells.select(CellSelectionShape::Cell, &[point]);
+            zoning.paint_cells(&selection, paint, |_| false).unwrap();
+        }
+        allocator.maintain(
+            1,
+            &mut zoning,
+            &mut agents,
+            &mut households,
+            &mut logistics,
+            &mut treasury,
+            &mut network,
+            &mut graph,
+        );
+        assert_eq!(allocator.buildings.len(), 2);
+        assert_eq!(
+            allocator.buildings[0].rezone_grace_days_remaining,
+            expected_grace
+        );
+        assert_eq!(
+            allocator.buildings[0].pending_redevelopment,
+            expected_grace != 0
+        );
+        assert!(
+            lots[0]
+                .0
+                .cells()
+                .all(|key| zoning.cells.lot(key) == Some(lots[0].1.raw()))
+        );
+    }
+    allocator.maintain(
+        1,
+        &mut zoning,
+        &mut agents,
+        &mut households,
+        &mut logistics,
+        &mut treasury,
+        &mut network,
+        &mut graph,
+    );
+    assert_eq!(allocator.buildings.len(), 1);
+    assert!(zoning.parcels.get(lots[0].1).is_none());
+    assert!(
+        lots[0]
+            .0
+            .cells()
+            .all(|key| zoning.cells.lot(key) == Some(0))
+    );
+    assert_eq!(
+        zoning.parcels.get(lots[1].1).unwrap().occupied_building(),
+        Some(0)
+    );
+}
+
+#[test]
 fn test_building_removal_clears_zoning_occupancy() {
     let (mut allocator, mut zoning, mut graph) = rezoning_fixture();
     let mut agents = AgentSystem::new();

@@ -326,6 +326,114 @@ fn dirty_compile_reports_sorted_old_and_new_query_coverage() {
 }
 
 #[test]
+fn published_surface_inputs_and_coverage_survive_local_recompile_and_clear() {
+    let terrain = flat_terrain(512, 512);
+    let mut graph = RegionGraph::new();
+    let mut roads = Vec::new();
+    for z in [-100.0, 100.0] {
+        let points = vec![Vector3::new(-40.0, 0.0, z), Vector3::new(40.0, 0.0, z)];
+        let start = graph.add_node(points[0], NodeType::Junction);
+        let end = graph.add_node(points[1], NodeType::Junction);
+        let edge = graph.add_edge(test_edge(
+            start,
+            end,
+            points,
+            10.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+        roads.push((edge, start, end));
+    }
+    graph.rebuild_adjacency_list();
+    graph.rebuild_intersection_clips();
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    assert!(surface.compile_dirty(&graph, &terrain));
+    let published = surface.clone();
+    macro_rules! shared_roots {
+        ($($field:ident),+ $(,)?) => {
+            $(assert!(surface.$field.ptr_eq(&published.$field));)+
+        };
+    }
+    shared_roots!(
+        compiled_visual_node_inputs,
+        surface_span_chunks,
+        surface_node_chunks,
+        earthwork_span_chunks,
+        earthwork_node_chunks,
+        query_span_chunks,
+        query_node_chunks,
+    );
+    let (edited, start, end) = roads[0];
+    let (far, far_start, _) = roads[1];
+    let old_input = published.compiled_visual_node_inputs[&start]
+        .as_ref()
+        .clone();
+    let old_coverage = published.query_span_chunks[&edited].as_ref().clone();
+    let undo = surface
+        .capture_topology_undo(&HashSet::from([edited]), &HashSet::from([start, end]))
+        .unwrap();
+    let moved = vec![
+        Vector3::new(-40.0, 0.0, -30.0),
+        Vector3::new(40.0, 0.0, -30.0),
+    ];
+    graph.set_node_pos(start, moved[0]);
+    graph.set_node_pos(end, moved[1]);
+    graph.edge_mut(edited).geometry = moved.clone();
+    graph.edge_mut(edited).physical_geometry = moved;
+    graph.rebuild_intersection_clips();
+    surface.mark_edge_dirty(&graph, edited);
+    assert!(surface.compile_dirty(&graph, &terrain));
+
+    assert_eq!(
+        published.compiled_visual_node_inputs[&start].as_ref(),
+        &old_input
+    );
+    assert_eq!(published.query_span_chunks[&edited].as_ref(), &old_coverage);
+    assert_ne!(
+        surface.compiled_visual_node_inputs[&start].as_ref(),
+        &old_input
+    );
+    assert_ne!(surface.query_span_chunks[&edited].as_ref(), &old_coverage);
+    macro_rules! shared_record {
+        ($id:expr, $($field:ident),+ $(,)?) => {
+            $(assert!(Arc::ptr_eq(&surface.$field[&$id], &published.$field[&$id]));)+
+        };
+    }
+    shared_record!(
+        far,
+        surface_span_chunks,
+        earthwork_span_chunks,
+        query_span_chunks
+    );
+    shared_record!(
+        far_start,
+        compiled_visual_node_inputs,
+        surface_node_chunks,
+        earthwork_node_chunks,
+        query_node_chunks
+    );
+    assert!(surface.restore_topology_undo(
+        undo,
+        &HashSet::from([edited]),
+        &HashSet::from([start, end]),
+    ));
+    assert!(Arc::ptr_eq(
+        &surface.compiled_visual_node_inputs[&start],
+        &published.compiled_visual_node_inputs[&start]
+    ));
+    assert_eq!(surface.query_span_chunks[&edited].as_ref(), &old_coverage);
+    surface.clear();
+    assert!(surface.compiled_visual_node_inputs.is_empty());
+    assert!(surface.query_span_chunks.is_empty());
+    assert_eq!(
+        published.compiled_visual_node_inputs[&start].as_ref(),
+        &old_input
+    );
+    assert_eq!(published.query_span_chunks[&edited].as_ref(), &old_coverage);
+}
+
+#[test]
 fn terrain_edit_marks_nearby_edges_nodes_and_chunks() {
     let mut graph = RegionGraph::new();
     let near_a = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
@@ -789,20 +897,24 @@ fn failed_span_recompile_removes_stale_visual_piece_and_chunk_coverage() {
     );
     surface
         .surface_span_chunks
-        .insert(edge_idx, vec![surface_chunk]);
+        .insert(edge_idx, std::sync::Arc::new(vec![surface_chunk]));
     surface
         .earthwork_span_chunks
-        .insert(edge_idx, vec![terrain_chunk]);
-    surface
-        .surface_chunk_spans
-        .entry(surface_chunk)
-        .or_default()
-        .insert(edge_idx);
-    surface
-        .earthwork_chunk_spans
-        .entry(terrain_chunk)
-        .or_default()
-        .insert(edge_idx);
+        .insert(edge_idx, std::sync::Arc::new(vec![terrain_chunk]));
+    std::sync::Arc::make_mut(
+        surface
+            .surface_chunk_spans
+            .entry(surface_chunk)
+            .or_default(),
+    )
+    .insert(edge_idx);
+    std::sync::Arc::make_mut(
+        surface
+            .earthwork_chunk_spans
+            .entry(terrain_chunk)
+            .or_default(),
+    )
+    .insert(edge_idx);
 
     surface.apply_span_compile_result(edge_idx, None);
 
@@ -833,26 +945,30 @@ fn failed_node_recompile_removes_stale_visual_piece_input_and_chunk_coverage() {
     );
     surface
         .compiled_visual_node_inputs
-        .insert(node_id, input.clone());
+        .insert(node_id, std::sync::Arc::new(input.clone()));
     surface
         .compiled_visual_node_earthwork_boundaries
         .insert(node_id, std::sync::Arc::new(Vec::new()));
     surface
         .surface_node_chunks
-        .insert(node_id, vec![surface_chunk]);
+        .insert(node_id, std::sync::Arc::new(vec![surface_chunk]));
     surface
         .earthwork_node_chunks
-        .insert(node_id, vec![terrain_chunk]);
-    surface
-        .surface_chunk_nodes
-        .entry(surface_chunk)
-        .or_default()
-        .insert(node_id);
-    surface
-        .earthwork_chunk_nodes
-        .entry(terrain_chunk)
-        .or_default()
-        .insert(node_id);
+        .insert(node_id, std::sync::Arc::new(vec![terrain_chunk]));
+    std::sync::Arc::make_mut(
+        surface
+            .surface_chunk_nodes
+            .entry(surface_chunk)
+            .or_default(),
+    )
+    .insert(node_id);
+    std::sync::Arc::make_mut(
+        surface
+            .earthwork_chunk_nodes
+            .entry(terrain_chunk)
+            .or_default(),
+    )
+    .insert(node_id);
 
     surface.apply_node_compile_result(node_id, input, None);
 

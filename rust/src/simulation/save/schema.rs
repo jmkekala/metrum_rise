@@ -6,7 +6,16 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 64;
+pub const SAVE_VERSION: i64 = 67;
+
+/// First version retaining straight road grid choices independently of visible cell caches.
+pub const CELL_ROAD_ALIGNMENT_SAVE_VERSION: i64 = 67;
+
+/// First version retaining the original centreline guides of painted curved cell groups.
+pub const CELL_CURVE_SOURCE_SAVE_VERSION: i64 = 66;
+
+/// First version containing persistent cell frames, paint and derived parcel coverage.
+pub const CELL_ZONING_SAVE_VERSION: i64 = 65;
 
 /// First version whose parcels and buildings carry the redevelopment generation.
 ///
@@ -206,6 +215,29 @@ CREATE TABLE zoning_parcels(
     depth_m REAL NOT NULL,
     profile_runtime_id INTEGER NOT NULL,
     build_generation INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE zoning_cell_frames(
+    grid_id INTEGER PRIMARY KEY,
+    frame_json TEXT NOT NULL
+);
+CREATE TABLE zoning_cells(
+    grid_id INTEGER NOT NULL,
+    x INTEGER NOT NULL,
+    y INTEGER NOT NULL,
+    profile_runtime_id INTEGER NOT NULL,
+    PRIMARY KEY(grid_id, x, y)
+);
+CREATE TABLE zoning_cell_lots(
+    parcel_id INTEGER PRIMARY KEY,
+    coverage_json TEXT NOT NULL
+);
+CREATE TABLE zoning_cell_curve_sources(
+    source_id INTEGER PRIMARY KEY,
+    source_json TEXT NOT NULL
+);
+CREATE TABLE zoning_cell_road_alignments(
+    edge_id INTEGER PRIMARY KEY,
+    alignment_json TEXT NOT NULL
 );
 CREATE TABLE buildings(
     building_id INTEGER PRIMARY KEY,

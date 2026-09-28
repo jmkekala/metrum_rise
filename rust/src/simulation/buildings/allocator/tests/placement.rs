@@ -70,7 +70,7 @@ fn explicit_roadside_site_rejects_missing_surface_without_raw_terrain_fallback()
     let result = allocator.execute_explicit_service_placement(
         &asset,
         Vector2::new(50.0, 20.0),
-        config.zone_cell_m,
+        &zoning,
         &graph,
         &network.road_surface,
         &terrain,
@@ -112,7 +112,7 @@ fn explicit_placement_survives_transform_rebuild_on_both_road_sides() {
             .execute_explicit_service_placement(
                 &asset_id,
                 Vector2::new(170.0, z),
-                config.zone_cell_m,
+                &zoning,
                 &graph,
                 &network.road_surface,
                 &terrain,
@@ -194,7 +194,7 @@ fn explicit_service_preview_rejects_site_overlapping_nearby_road() {
         .preview_explicit_service_placement(
             &asset_id,
             Vector2::new(50.0, 8.0),
-            map_cfg.zone_cell_m,
+            &zoning,
             &graph,
             &network.road_surface,
             &terrain,
@@ -275,6 +275,68 @@ fn zoning_reserves_full_explicit_lot_across_chunk_boundaries() {
                     "centre={center_x}, offset={offset}, indexed={indexed}"
                 );
             }
+            // Cell queries retain canonical precision on both sides of an exact shared edge.
+            // All three left boundaries narrow to the same f32 position.
+            for offset in [-0.000001, 0.0, 0.000001] {
+                let x = f64::from(center_x + 100.0) + offset;
+                let footprint =
+                    crate::simulation::agriculture::PolygonFootprint::from_precise_points(
+                        [[x, 40.0], [x + 10.0, 40.0], [x + 10.0, 50.0], [x, 50.0]].into_iter(),
+                    );
+                assert_eq!(
+                    allocator.cell_footprint_overlaps_explicit_site(&footprint, config.zone_cell_m),
+                    offset < 0.0,
+                    "centre={center_x}, offset={offset}, indexed={indexed}"
+                );
+            }
         }
+    }
+}
+
+#[test]
+#[ignore = "matched release timing of precise cell/site queries, excluding site and index setup"]
+fn benchmark_precise_cell_site_locality() {
+    use crate::simulation::agriculture::PolygonFootprint;
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    for remote in [0, 1_000, 10_000] {
+        let mut allocator = BuildingAllocator::new();
+        let asset_id = register_test_power_service_asset(&mut allocator, "test", "power");
+        let mut building = indexed_test_building(asset_id, ZoneType::None, 0);
+        building.parcel_id = 0;
+        building.center_x = 0.0;
+        building.center_y = 0.0;
+        building.width_cells = 2;
+        building.depth_cells = 2;
+        allocator.buildings.push(building.clone());
+        for index in 0..remote {
+            let mut other = building.clone();
+            other.center_x = 2_000.0 + (index % 100) as f32 * 40.0;
+            other.center_y = 2_000.0 + (index / 100) as f32 * 40.0;
+            allocator.buildings.push(other);
+        }
+        allocator.rebuild_building_site_clients(10.0);
+        allocator.prepare_building_site_query_index(10.0);
+        let footprint = PolygonFootprint::new(&allocator.building_sites[0].lot_footprint_world);
+        let run = || {
+            assert!(allocator.cell_footprint_overlaps_explicit_site(black_box(&footprint), 10.0))
+        };
+        for _ in 0..16 {
+            run();
+        }
+        let mut samples = [0.0_f64; 21];
+        for sample in &mut samples {
+            let start = Instant::now();
+            for _ in 0..256 {
+                run();
+            }
+            *sample = start.elapsed().as_secs_f64() * 1e6 / 256.0;
+        }
+        samples.sort_unstable_by(f64::total_cmp);
+        println!(
+            "remote_sites={remote} overlap=true query_us={:.3} p95_us={:.3}",
+            samples[10], samples[19]
+        );
     }
 }

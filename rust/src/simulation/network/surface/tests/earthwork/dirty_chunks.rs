@@ -80,17 +80,17 @@ fn compile_dirty_derives_edge_chunks_from_compiled_piece_coverage() {
     surface.mark_edge_dirty(&graph, edge_idx);
     surface.compile_dirty(&graph, &terrain);
 
-    for chunk in surface_chunks {
+    for chunk in surface_chunks.iter() {
         let entry = surface
             .surface_chunk_cache
-            .get(&chunk)
+            .get(chunk)
             .unwrap_or_else(|| panic!("surface chunk {chunk:?} must be rebuilt"));
         assert!(entry.edge_indices.contains(&edge_idx));
     }
-    for chunk in terrain_chunks {
+    for chunk in terrain_chunks.iter() {
         let entry = surface
             .earthwork_chunk_cache
-            .get(&chunk)
+            .get(chunk)
             .unwrap_or_else(|| panic!("terrain chunk {chunk:?} must be rebuilt"));
         assert!(entry.edge_indices.contains(&edge_idx));
     }

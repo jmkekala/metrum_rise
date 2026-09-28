@@ -101,7 +101,12 @@ impl ZoningSystem {
         self.parcels
             .find_touching_segment(Vector2::new(start_x, start_z), Vector2::new(end_x, end_z))
             .into_iter()
-            .filter_map(|id| self.parcels.get(id).map(parcels::geometry_for_parcel))
+            .filter_map(|id| {
+                self.parcels
+                    .get(id)
+                    .filter(|parcel| parcel.cell_lot().is_none())
+                    .map(parcels::geometry_for_parcel)
+            })
             .collect()
     }
 }

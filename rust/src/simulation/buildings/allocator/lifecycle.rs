@@ -657,6 +657,41 @@ impl BuildingAllocator {
         repaired
     }
 
+    /// Updates only occupants of locally reattached cell lots; their transforms stay unchanged.
+    pub(crate) fn sync_cell_lot_attachments(
+        &mut self,
+        parcels: &[crate::simulation::zoning::ParcelId],
+        graph: &RegionGraph,
+        zoning: &mut ZoningSystem,
+    ) -> usize {
+        let mut repaired = 0;
+        // Publish the parallel zoning proposals in order through indexed owner lookups.
+        // The mutable building/parcel stores are shared; only the changed local ids are visited.
+        for &id in parcels {
+            let Some(index) = zoning
+                .parcels
+                .get(id)
+                .and_then(|parcel| parcel.cell_lot().and(parcel.occupied_building()))
+            else {
+                continue;
+            };
+            if self
+                .buildings
+                .get(index)
+                .is_some_and(|building| building.parcel_id == id.raw())
+                && self.align_building_attachment_to_parcel(index, graph, zoning)
+            {
+                repaired += 1;
+            }
+        }
+        if repaired > 0 {
+            self.dirty = true;
+            self.entrances_dirty = true;
+            self.bump_building_ref_revision();
+        }
+        repaired
+    }
+
     fn align_building_attachment_to_parcel(
         &mut self,
         building_idx: usize,
@@ -672,6 +707,7 @@ impl BuildingAllocator {
         let parcel_frontage_t = parcel.frontage_center_t();
         let parcel_frontage_m = parcel.frontage_m();
         let parcel_depth_m = parcel.depth_m();
+        let cell_lot = parcel.cell_lot().is_some();
         let frontage_center =
             building_frontage_center(&self.buildings[building_idx], zoning.config.zone_cell_m);
 
@@ -680,14 +716,18 @@ impl BuildingAllocator {
         let mut target_frontage_t = parcel_frontage_t;
         let mut repaired_parcel = false;
 
-        if !self.parcel_attachment_is_plausible(
-            graph,
-            parcel_edge_idx,
-            parcel_side,
-            parcel_frontage_t,
-            frontage_center,
-            zoning.config.zone_cell_m,
-        ) {
+        // Cell lots receive exact current suppliers from local zoning refresh. A nearby road
+        // is not a substitute for missing frontage, and one lot may span several split edges.
+        if !cell_lot
+            && !self.parcel_attachment_is_plausible(
+                graph,
+                parcel_edge_idx,
+                parcel_side,
+                parcel_frontage_t,
+                frontage_center,
+                zoning.config.zone_cell_m,
+            )
+        {
             let Some(projection) = self.closest_repair_frontage(
                 frontage_center,
                 parcel_frontage_m,
@@ -721,7 +761,12 @@ impl BuildingAllocator {
         let building = &mut self.buildings[building_idx];
         let changed = building.edge_idx != target_edge_idx
             || building.side != target_side
-            || (building.frontage_t - target_frontage_t).abs() > 0.001;
+            || if cell_lot {
+                building.frontage_t != target_frontage_t
+                    || building.side_offset != edge.width * 0.5 + SIDEWALK_WIDTH
+            } else {
+                (building.frontage_t - target_frontage_t).abs() > 0.001
+            };
         if !changed {
             return repaired_parcel;
         }

@@ -15,3 +15,6 @@ pub mod road_tool;
 pub mod save_load;
 pub mod undo;
 pub mod world_definition;
+mod zoning;
+
+pub(crate) use zoning::CellToolPreview;

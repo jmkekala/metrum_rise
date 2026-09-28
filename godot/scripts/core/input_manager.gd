@@ -351,7 +351,7 @@ func _toggle_zoning_overlay():
 	_toggle_tool(Tool.ZONING)
 
 func _handle_undo():
-	# Zoning tool maintains its own undo stack for zone paint operations.
+	# The zoning controller cancels its pending gesture before queuing the shared Rust undo.
 	if current_tool == Tool.ZONING and zoning_tool:
 		zoning_tool.undo()
 		return

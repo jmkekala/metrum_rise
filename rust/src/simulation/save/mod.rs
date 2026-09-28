@@ -36,6 +36,7 @@ use std::path::Path;
 
 pub mod agents;
 mod camera;
+mod cell_zoning;
 pub mod network;
 pub mod schema;
 pub(crate) mod sqlite;
@@ -678,6 +679,12 @@ pub(crate) fn load_from_sqlite(
         &allocator,
     )?;
     world::repaint_building_occupancy(&mut zoning, &allocator)?;
+    cell_zoning::validate_reservations(
+        &zoning,
+        &allocator,
+        &agriculture,
+        &transit_network.road_surface,
+    )?;
     allocator.rebuild_zone_index();
     allocator.dirty = true;
     transit_network.cch_graph = CchGraph::build(&graph);

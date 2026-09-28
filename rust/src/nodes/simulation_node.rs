@@ -171,6 +171,7 @@ use std::time::Instant;
 mod asset_api;
 mod async_terrain;
 mod building_lod_api;
+mod cell_zoning_api;
 mod economy_api;
 mod network_api;
 mod system_api;
@@ -262,6 +263,8 @@ pub struct SimulationNode {
     pub(crate) cmd_tx: std::sync::mpsc::Sender<SimCommand>,
     /// Receiver held here until `ready()` transfers it to the background thread.
     pub(crate) cmd_rx: Option<std::sync::mpsc::Receiver<SimCommand>>,
+    /// At most one queued cell-cache preparation; retained meshes wait without blocking Godot.
+    cell_chunk_job: cell_zoning_api::CellChunkJob,
     /// Identity of the latest placement whose single completion may be polled by the editor.
     pub(crate) road_commit_request_id: i64,
     /// One bounded completion receiver; replacing it abandons feedback, never the queued edit.
@@ -554,6 +557,7 @@ impl INode3D for SimulationNode {
             sim_thread: None,
             cmd_tx,
             cmd_rx: Some(cmd_rx),
+            cell_chunk_job: Default::default(),
             road_commit_request_id: 0,
             road_commit_result: None,
             road_preview_tx,

@@ -8,6 +8,7 @@ pub(crate) use feasibility::{BuildingSiteEnvironment, SiteFeasibilityCache};
 use crate::assets::AnchorType;
 use crate::config::SIDEWALK_WIDTH;
 use crate::debug_log;
+use crate::simulation::agriculture::PolygonFootprint;
 use crate::simulation::buildings::allocator::{
     Building, BuildingAllocator, DemandSpawnPlacementRejection, ExplicitServicePlacementRejection,
     baseline_private_zone_slot, resolve_building_economy_profile_binding_with_catalog,
@@ -39,6 +40,44 @@ const EXPLICIT_SERVICE_SITE_OVERLAP_EPS_M: f32 = 0.05;
 const EXPLICIT_SERVICE_ROAD_OVERLAP_QUERY_PAD_M: f32 = 128.0;
 
 impl BuildingAllocator {
+    /// Returns unique initial asset footprints for event-driven cell lot derivation.
+    /// Reuses the same content/profile/economy eligibility as the demand spawn selector.
+    pub(crate) fn cell_lot_sizes(
+        &self,
+        zoning: &ZoningSystem,
+        catalog: &RuntimeEconomyCatalog,
+    ) -> Vec<crate::simulation::zoning::cells::CellLotSize> {
+        use crate::simulation::zoning::cells::{CELL_DEPTH, CellLotSize};
+        let mut sizes = Vec::new();
+        for (profile, assets) in self.collect_spawn_asset_candidates_by_profile(zoning, catalog) {
+            for asset in assets.candidates {
+                let params = asset.params;
+                if params.width_cells == 0
+                    || params.depth_cells == 0
+                    || params.depth_cells > CELL_DEPTH
+                    || params.width_cells as f32 * zoning.config.zone_cell_m
+                        > crate::simulation::zoning::MAX_PARCEL_FRONTAGE_M
+                {
+                    continue;
+                }
+                let (Ok(width), Ok(depth)) = (
+                    u16::try_from(params.width_cells),
+                    u8::try_from(params.depth_cells),
+                ) else {
+                    continue;
+                };
+                sizes.push(CellLotSize {
+                    profile,
+                    width,
+                    depth,
+                });
+            }
+        }
+        sizes.sort_unstable();
+        sizes.dedup();
+        sizes
+    }
+
     pub(crate) fn collect_demand_spawn_candidates_by_use(
         &self,
         zoning: &ZoningSystem,
@@ -467,16 +506,21 @@ impl BuildingAllocator {
         &self,
         asset_id: &str,
         point: Vector2,
-        zone_cell_m: f32,
+        zoning: &ZoningSystem,
         graph: &RegionGraph,
         road_surface: &RoadSurfaceSystem,
         terrain: &TerrainSystem,
         catalog: &RuntimeEconomyCatalog,
     ) -> Result<ExplicitServicePlacementPreview, ExplicitServicePlacementRejection> {
         let params = self.explicit_service_placement_params(asset_id, catalog)?;
-        let placement =
-            self.resolve_explicit_service_placement(asset_id, &params, point, zone_cell_m, graph)?;
-        self.preview_resolved_site(placement, graph, road_surface, terrain)
+        let placement = self.resolve_explicit_service_placement(
+            asset_id,
+            &params,
+            point,
+            zoning.config.zone_cell_m,
+            graph,
+        )?;
+        self.preview_resolved_site(placement, graph, road_surface, terrain, zoning)
     }
 
     fn preview_resolved_site(
@@ -485,6 +529,7 @@ impl BuildingAllocator {
         graph: &RegionGraph,
         road_surface: &RoadSurfaceSystem,
         terrain: &TerrainSystem,
+        zoning: &ZoningSystem,
     ) -> Result<ExplicitServicePlacementPreview, ExplicitServicePlacementRejection> {
         // Keep a resolved invalid pose, but avoid apron work when cheap overlap checks reject it.
         let (preferred_height, connections) = self
@@ -492,7 +537,8 @@ impl BuildingAllocator {
             .map_err(explicit_rejection_from_site_rejection)?;
         placement.support_height_m = preferred_height;
         let rejection = self
-            .validate_explicit_site_overlap(&placement)
+            .validate_explicit_zoning_reservation(&placement, zoning)
+            .and_then(|()| self.validate_explicit_site_overlap(&placement))
             .err()
             .or_else(|| {
                 self.validate_explicit_site_road_overlap(&placement, graph)
@@ -523,7 +569,7 @@ impl BuildingAllocator {
         &mut self,
         asset_id: &str,
         point: Vector2,
-        zone_cell_m: f32,
+        zoning: &ZoningSystem,
         graph: &RegionGraph,
         road_surface: &RoadSurfaceSystem,
         terrain: &TerrainSystem,
@@ -531,32 +577,50 @@ impl BuildingAllocator {
         tuning: &RuntimeEconomyTuning,
     ) -> Result<usize, ExplicitServicePlacementRejection> {
         let params = self.explicit_service_placement_params(asset_id, catalog)?;
-        let placement =
-            self.resolve_explicit_service_placement(asset_id, &params, point, zone_cell_m, graph)?;
-        self.commit_explicit_site(placement, graph, road_surface, terrain, catalog, tuning)
+        let placement = self.resolve_explicit_service_placement(
+            asset_id,
+            &params,
+            point,
+            zoning.config.zone_cell_m,
+            graph,
+        )?;
+        self.commit_explicit_site(
+            placement,
+            graph,
+            road_surface,
+            terrain,
+            catalog,
+            tuning,
+            zoning,
+        )
     }
 
     pub(crate) fn preview_explicit_industry_placement(
         &self,
         asset_id: &str,
         point: Vector2,
-        zone_cell_m: f32,
+        zoning: &ZoningSystem,
         graph: &RegionGraph,
         road_surface: &RoadSurfaceSystem,
         terrain: &TerrainSystem,
         catalog: &RuntimeEconomyCatalog,
     ) -> Result<ExplicitServicePlacementPreview, ExplicitServicePlacementRejection> {
         let params = self.explicit_industry_placement_params(asset_id, catalog)?;
-        let placement =
-            self.resolve_explicit_service_placement(asset_id, &params, point, zone_cell_m, graph)?;
-        self.preview_resolved_site(placement, graph, road_surface, terrain)
+        let placement = self.resolve_explicit_service_placement(
+            asset_id,
+            &params,
+            point,
+            zoning.config.zone_cell_m,
+            graph,
+        )?;
+        self.preview_resolved_site(placement, graph, road_surface, terrain, zoning)
     }
 
     pub(crate) fn execute_explicit_industry_placement(
         &mut self,
         asset_id: &str,
         point: Vector2,
-        zone_cell_m: f32,
+        zoning: &ZoningSystem,
         graph: &RegionGraph,
         road_surface: &RoadSurfaceSystem,
         terrain: &TerrainSystem,
@@ -564,9 +628,22 @@ impl BuildingAllocator {
         tuning: &RuntimeEconomyTuning,
     ) -> Result<usize, ExplicitServicePlacementRejection> {
         let params = self.explicit_industry_placement_params(asset_id, catalog)?;
-        let placement =
-            self.resolve_explicit_service_placement(asset_id, &params, point, zone_cell_m, graph)?;
-        self.commit_explicit_site(placement, graph, road_surface, terrain, catalog, tuning)
+        let placement = self.resolve_explicit_service_placement(
+            asset_id,
+            &params,
+            point,
+            zoning.config.zone_cell_m,
+            graph,
+        )?;
+        self.commit_explicit_site(
+            placement,
+            graph,
+            road_surface,
+            terrain,
+            catalog,
+            tuning,
+            zoning,
+        )
     }
 
     fn commit_explicit_site(
@@ -577,7 +654,9 @@ impl BuildingAllocator {
         terrain: &TerrainSystem,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
+        zoning: &ZoningSystem,
     ) -> Result<usize, ExplicitServicePlacementRejection> {
+        self.validate_explicit_zoning_reservation(&placement, zoning)?;
         self.validate_explicit_site_overlap(&placement)?;
         self.validate_explicit_site_road_overlap(&placement, graph)?;
         self.prepare_site_support(&mut placement, graph, road_surface, terrain)
@@ -595,6 +674,19 @@ impl BuildingAllocator {
             self.buildings[building_idx].support_height_m,
         );
         Ok(building_idx)
+    }
+
+    fn validate_explicit_zoning_reservation(
+        &self,
+        placement: &ResolvedPlacement,
+        zoning: &ZoningSystem,
+    ) -> Result<(), ExplicitServicePlacementRejection> {
+        let footprint = PolygonFootprint::new(&self.placement_site_corners(placement));
+        if zoning.overlaps_reservation(&footprint) {
+            Err(ExplicitServicePlacementRejection::SiteOverlap)
+        } else {
+            Ok(())
+        }
     }
 
     fn explicit_service_placement_params(
@@ -936,19 +1028,46 @@ impl BuildingAllocator {
         geometry: &ParcelGeometry,
         zone_cell_m: f32,
     ) -> bool {
+        self.zoning_footprint_overlaps_explicit_site(
+            geometry.aabb_min,
+            geometry.aabb_max,
+            zone_cell_m,
+            |lot| {
+                flat_support_footprints_overlap(
+                    &geometry.corners,
+                    lot,
+                    EXPLICIT_SERVICE_SITE_OVERLAP_EPS_M,
+                )
+            },
+        )
+    }
+
+    /// Checks cell/derived-lot reservations through the same explicit-site index with strict edges.
+    pub(crate) fn cell_footprint_overlaps_explicit_site(
+        &self,
+        footprint: &PolygonFootprint,
+        zone_cell_m: f32,
+    ) -> bool {
+        self.zoning_footprint_overlaps_explicit_site(
+            footprint.min,
+            footprint.max,
+            zone_cell_m,
+            |lot| footprint.overlaps(&PolygonFootprint::new(lot)),
+        )
+    }
+
+    fn zoning_footprint_overlaps_explicit_site(
+        &self,
+        min: Vector2,
+        max: Vector2,
+        zone_cell_m: f32,
+        overlaps: impl Fn(&[Vector2; 4]) -> bool,
+    ) -> bool {
         if self.building_sites.is_empty() {
             return false;
         }
-        let candidate_indices = self.lot_candidate_indices_for_bounds(
-            (
-                geometry.aabb_min.x,
-                geometry.aabb_min.y,
-                geometry.aabb_max.x,
-                geometry.aabb_max.y,
-            ),
-            zone_cell_m,
-            None,
-        );
+        let candidate_indices =
+            self.lot_candidate_indices_for_bounds((min.x, min.y, max.x, max.y), zone_cell_m, None);
         for building_idx in candidate_indices {
             let Some(building) = self.buildings.get(building_idx) else {
                 continue;
@@ -960,18 +1079,11 @@ impl BuildingAllocator {
                 continue;
             };
             let (site_min_x, site_min_z, site_max_x, site_max_z) = site.lot_bounds();
-            if site_min_x > geometry.aabb_max.x
-                || site_max_x < geometry.aabb_min.x
-                || site_min_z > geometry.aabb_max.y
-                || site_max_z < geometry.aabb_min.y
+            if site_min_x > max.x || site_max_x < min.x || site_min_z > max.y || site_max_z < min.y
             {
                 continue;
             }
-            if flat_support_footprints_overlap(
-                &geometry.corners,
-                &site.lot_footprint_world,
-                EXPLICIT_SERVICE_SITE_OVERLAP_EPS_M,
-            ) {
+            if overlaps(&site.lot_footprint_world) {
                 return true;
             }
         }

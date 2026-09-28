@@ -4,34 +4,80 @@
 
 use super::*;
 use crate::nodes::sim::core::RoadEditPlan;
+use crate::simulation::network::surface::RoadSurfaceSystem;
 use godot::prelude::Vector2;
 use std::time::Instant;
+
+mod memory;
+
+#[derive(Clone, Copy, PartialEq)]
+enum CellScenario {
+    None,
+    Placement,
+    NodeMovement,
+    Snapshot,
+    Memory,
+}
 
 #[test]
 #[ignore = "unprofiled scaling measurement; run alone with --release --ignored --nocapture"]
 fn populated_road_plan_scaling() {
-    measure_populated_road_plan_scaling(false, false, false);
+    measure_populated_road_plan_scaling(false, false, false, CellScenario::None);
 }
 
 #[test]
 #[ignore = "unprofiled field reservation scaling; run alone with --release --ignored --nocapture"]
 fn populated_field_road_plan_scaling() {
-    measure_populated_road_plan_scaling(false, false, true);
+    measure_populated_road_plan_scaling(false, false, true, CellScenario::None);
 }
 
 #[test]
 #[ignore = "unprofiled paved-site scaling measurement; run alone with --release --ignored --nocapture"]
 fn populated_paved_road_plan_scaling() {
-    measure_populated_road_plan_scaling(true, false, false);
+    measure_populated_road_plan_scaling(true, false, false, CellScenario::None);
 }
 
 #[test]
 #[ignore = "unprofiled cached zoning feasibility scaling; run alone with --release --ignored --nocapture"]
 fn populated_zoning_feasibility_scaling() {
-    measure_populated_road_plan_scaling(true, true, false);
+    measure_populated_road_plan_scaling(true, true, false, CellScenario::None);
 }
 
-fn measure_populated_road_plan_scaling(paved: bool, zoning_only: bool, fields: bool) {
+#[test]
+#[ignore = "matched populated cell-reservation planning locality; run without competing work"]
+fn populated_cell_road_plan_scaling() {
+    measure_populated_road_plan_scaling(false, false, false, CellScenario::Placement);
+}
+
+#[test]
+#[ignore = "snapshot component diagnostic; run release alone without profiling"]
+fn populated_cell_snapshot_scaling() {
+    measure_populated_road_plan_scaling(false, false, false, CellScenario::Snapshot);
+}
+
+#[test]
+#[ignore = "populated node-move reservation validation; run release alone without profiling"]
+fn populated_cell_node_move_validation_scaling() {
+    // Opt into existing compiler phase diagnostics only for a separate diagnostic run.
+    // Acceptance timings keep METRUM_DEBUG=0 and never initialize logging here.
+    if std::env::var("METRUM_DEBUG").is_ok_and(|value| value == "1") {
+        crate::debug::init();
+    }
+    measure_populated_road_plan_scaling(false, false, false, CellScenario::NodeMovement);
+}
+
+fn measure_populated_road_plan_scaling(
+    paved: bool,
+    zoning_only: bool,
+    fields: bool,
+    scenario: CellScenario,
+) {
+    let mut memory_phase = 0;
+    let mut previous_memory_products = None;
+    if scenario == CellScenario::Memory {
+        memory::calibrate(&mut memory_phase);
+    }
+    let cells = scenario != CellScenario::None;
     let mut core = test_core();
     road_terrain_plan::commit_ready(
         &mut core,
@@ -85,6 +131,35 @@ fn measure_populated_road_plan_scaling(paved: bool, zoning_only: bool, fields: b
     let mut background_roads = 0;
     let mut previous_patches: Option<Vec<_>> = None;
     let mut initial_site_solves = None;
+    let mut background_cells = 0;
+    let mut previous_move_surfaces: [Option<RoadSurfaceSystem>; 2] = [None, None];
+    let cell_grid = if cells {
+        use crate::simulation::zoning::cells::{CellBounds, CellSelectionShape, GridFrame};
+        use glam::DVec2;
+        core.zoning.generate_cells(
+            &core.region_graph,
+            CellBounds {
+                min: DVec2::splat(-200.0),
+                max: DVec2::splat(200.0),
+            },
+            |_| false,
+        );
+        let selection = core
+            .zoning
+            .cells
+            .select(CellSelectionShape::Cell, &[DVec2::new(55.0, -12.0)]);
+        assert!(!selection.cells.is_empty());
+        core.zoning.paint_cells(&selection, 1, |_| false).unwrap();
+        let grid = core.zoning.cells.saved_frames().count() as u64 + 1;
+        assert!(
+            core.zoning
+                .cells
+                .restore_saved_frame(grid, GridFrame::new(DVec2::ZERO, DVec2::X, 10.0).unwrap())
+        );
+        grid
+    } else {
+        0
+    };
     if fields {
         core.allocator.field_clearance.set(
             0,
@@ -146,6 +221,20 @@ fn measure_populated_road_plan_scaling(paved: bool, zoning_only: bool, fields: b
             }
             insert_populated_site(&mut core, building);
         }
+        if cells {
+            // Reserved cells occupy separate distant land, outside the background parcels.
+            for index in background_cells..remote_buildings {
+                assert!(core.zoning.cells.restore_saved_cell(
+                    crate::simulation::zoning::cells::CellKey {
+                        grid: cell_grid,
+                        x: 200 + (index % 700) as i32,
+                        y: 200 + (index / 700) as i32,
+                    },
+                    1
+                ));
+            }
+            background_cells = remote_buildings;
+        }
         core.allocator.dirty_index = true;
         core.allocator
             .rebuild_building_site_clients(core.config.zone_cell_m);
@@ -157,6 +246,86 @@ fn measure_populated_road_plan_scaling(paved: bool, zoning_only: bool, fields: b
                 .road_surface
                 .published_generation_matches_source()
         );
+        if scenario == CellScenario::Memory {
+            let products = memory::measure(&mut core, remote_buildings, &mut memory_phase);
+            if let Some(previous) = &previous_memory_products {
+                assert_eq!(
+                    &products, previous,
+                    "remote population changed local selections"
+                );
+            }
+            previous_memory_products = Some(products);
+            continue;
+        }
+        if scenario == CellScenario::Snapshot {
+            measure_snapshot_components(&core, remote_buildings);
+            continue;
+        }
+        if scenario == CellScenario::NodeMovement {
+            let node = core.region_graph.edge(0).end_node;
+            let original_position = core.region_graph.node(node).pos;
+            for (index, (position, blocked)) in [
+                (Vector3::new(120.0, 0.0, 0.0), false),
+                (Vector3::new(96.0, 0.0, -12.0), true),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let check = || {
+                    let surface = core
+                        .transit_network
+                        .road_surface
+                        .compile_node_move_surface(
+                            &core.region_graph,
+                            &core.heightmap,
+                            &core.zoning,
+                            node,
+                            position,
+                        )
+                        .unwrap();
+                    assert_eq!(surface.overlaps_cell_zoning(&core.zoning), blocked);
+                    surface
+                };
+                for _ in 0..5 {
+                    std::hint::black_box(check());
+                }
+                let mut samples = Vec::with_capacity(100);
+                for _ in 0..100 {
+                    let start = Instant::now();
+                    let surface = std::hint::black_box(check());
+                    drop(surface);
+                    samples.push(start.elapsed().as_secs_f64() * 1000.0);
+                }
+                samples.sort_by(f64::total_cmp);
+                let surface = check();
+                if let Some(previous) = &previous_move_surfaces[index] {
+                    assert_eq!(
+                        surface.compiled_visual_span_pieces(),
+                        previous.compiled_visual_span_pieces()
+                    );
+                    assert_eq!(
+                        surface.compiled_visual_node_pieces(),
+                        previous.compiled_visual_node_pieces()
+                    );
+                }
+                assert_eq!(core.region_graph.node(node).pos, original_position);
+                println!(
+                    "CELL_NODE_MOVE_VALIDATION_SCALING {}",
+                    serde_json::json!({
+                        "remote_buildings": remote_buildings, "remote_roads": background_roads,
+                        "agents": core.agents.len(), "parcels": core.zoning.parcels().len(),
+                        "remote_cells": background_cells, "blocked": blocked,
+                        "rayon_threads": rayon::current_num_threads(), "samples": samples.len(),
+                        "p50_ms": (samples[49] + samples[50]) * 0.5, "p95_ms": samples[94],
+                        "spans": surface.compiled_visual_span_pieces().len(),
+                        "nodes": surface.compiled_visual_node_pieces().len(),
+                        "identical_local_products": true,
+                    })
+                );
+                previous_move_surfaces[index] = Some(surface);
+            }
+            continue;
+        }
         if zoning_only {
             let geometry = core
                 .zoning
@@ -263,6 +432,7 @@ fn measure_populated_road_plan_scaling(paved: bool, zoning_only: bool, fields: b
             serde_json::json!({
                 "remote_buildings": remote_buildings, "remote_roads": background_roads,
                 "field_reservations": fields,
+                "cell_reservations": cells, "remote_painted_cells": background_cells,
                 "agents": core.agents.len(), "parcels": core.zoning.parcels.parcels().len(),
                 "rayon_threads": rayon::current_num_threads(), "samples": samples.len(),
                 "compile_p50_ms": (samples[49] + samples[50]) * 0.5, "compile_p95_ms": samples[94],
@@ -273,6 +443,105 @@ fn measure_populated_road_plan_scaling(paved: bool, zoning_only: bool, fields: b
             })
         );
     }
+}
+
+fn measure_snapshot_components(core: &SimCore, background: usize) {
+    use std::hint::black_box;
+    let mut samples: [Vec<f64>; 6] = std::array::from_fn(|_| Vec::with_capacity(21));
+    for iteration in 0..24 {
+        let start = Instant::now();
+        let terrain = black_box(core.heightmap.clone());
+        let terrain_us = start.elapsed().as_secs_f64() * 1_000_000.0;
+        let start = Instant::now();
+        let graph = black_box(core.region_graph.clone());
+        let graph_us = start.elapsed().as_secs_f64() * 1_000_000.0;
+        let start = Instant::now();
+        let surface = black_box(core.transit_network.road_surface.clone());
+        let surface_us = start.elapsed().as_secs_f64() * 1_000_000.0;
+        let start = Instant::now();
+        let water = black_box(core.watermap.clone());
+        let water_us = start.elapsed().as_secs_f64() * 1_000_000.0;
+        assert_eq!(graph.edge_count(), core.region_graph.edge_count());
+        assert!(surface.published_generation_matches_source());
+        drop((terrain, graph, surface, water));
+        let start = Instant::now();
+        let snapshot = black_box(road_tool_snapshots_from_core(core).unwrap());
+        let snapshot_us = start.elapsed().as_secs_f64() * 1_000_000.0;
+        let start = Instant::now();
+        drop(snapshot);
+        let release_us = start.elapsed().as_secs_f64() * 1_000_000.0;
+        if iteration >= 3 {
+            for (values, value) in samples.iter_mut().zip([
+                terrain_us,
+                graph_us,
+                surface_us,
+                water_us,
+                snapshot_us,
+                release_us,
+            ]) {
+                values.push(value);
+            }
+        }
+    }
+    let mut result = serde_json::json!({
+        "background": background, "roads": core.region_graph.edge_count(),
+        "agents": core.agents.len(), "parcels": core.zoning.parcels().len(),
+        "samples": 21, "rayon_threads": rayon::current_num_threads(),
+    });
+    for (name, values) in [
+        "terrain", "graph", "surface", "water", "snapshot", "release",
+    ]
+    .into_iter()
+    .zip(samples.iter_mut())
+    {
+        values.sort_by(f64::total_cmp);
+        result[name] = serde_json::json!({ "p50_us": values[10], "p95_us": values[19] });
+    }
+    println!("CELL_SNAPSHOT_COMPONENTS {result}");
+    measure_surface_snapshot_fields(&core.transit_network.road_surface, background);
+}
+
+fn measure_surface_snapshot_fields(surface: &RoadSurfaceSystem, background: usize) {
+    fn clone_us<T: Clone>(value: &T) -> f64 {
+        let mut samples = [0.0_f64; 21];
+        for iteration in 0..24 {
+            let start = Instant::now();
+            let cloned = std::hint::black_box(value.clone());
+            let elapsed = start.elapsed().as_secs_f64() * 1_000_000.0;
+            drop(cloned);
+            if iteration >= 3 {
+                samples[iteration - 3] = elapsed;
+            }
+        }
+        samples.sort_by(f64::total_cmp);
+        samples[10]
+    }
+    let mut result = serde_json::json!({ "background": background });
+    macro_rules! measure {
+        ($($field:ident),+ $(,)?) => {
+            $(result[stringify!($field)] = serde_json::json!(clone_us(&surface.$field));)+
+        };
+    }
+    measure!(
+        compiled_sections,
+        compiled_visual_span_pieces,
+        compiled_visual_node_pieces,
+        compiled_visual_node_inputs,
+        compiled_visual_node_earthwork_boundaries,
+        compiled_visual_node_topologies,
+        surface_span_chunks,
+        surface_node_chunks,
+        earthwork_span_chunks,
+        earthwork_node_chunks,
+        query_span_chunks,
+        query_node_chunks,
+        surface_chunk_cache,
+        earthwork_chunk_cache,
+        last_rebuilt_surface_chunks,
+        last_rebuilt_terrain_chunks,
+        last_rebuilt_query_chunks,
+    );
+    println!("CELL_SURFACE_SNAPSHOT_FIELDS {result}");
 }
 
 fn insert_populated_site(core: &mut SimCore, mut building: Building) {

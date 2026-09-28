@@ -14,7 +14,7 @@ impl ZoningSystem {
             .find_at_point(point)
             .and_then(|id| self.parcels.get(id))
     }
-    /// Returns every authored zoning parcel.
+    /// Returns authored parcels and cell-derived lots consumed by the building allocator.
     pub fn parcels(&self) -> &[ZoningParcel] {
         self.parcels.parcels()
     }
@@ -31,9 +31,8 @@ impl ZoningSystem {
 
     /// Returns true when one world-space point is inside an authored parcel.
     pub fn has_parcel_at(&self, world_x: f32, world_z: f32) -> bool {
-        self.parcels
-            .find_at_point(Vector2::new(world_x, world_z))
-            .is_some()
+        self.parcel_at(Vector2::new(world_x, world_z))
+            .is_some_and(|parcel| parcel.cell_lot().is_none())
     }
 
     /// Returns the runtime zoning-profile id of the parcel under one world-space point.
@@ -45,6 +44,7 @@ impl ZoningSystem {
     /// Returns the authored parcel geometry under one world-space point.
     pub fn parcel_geometry_at(&self, world_x: f32, world_z: f32) -> Option<ParcelGeometry> {
         self.parcel_at(Vector2::new(world_x, world_z))
+            .filter(|parcel| parcel.cell_lot().is_none())
             .map(parcels::geometry_for_parcel)
     }
 }

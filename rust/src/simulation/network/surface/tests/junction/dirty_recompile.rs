@@ -1070,6 +1070,7 @@ fn exact_xz_nonuniform_height_topology_reuse_matches_cold_compile() {
         .compiled_visual_node_inputs
         .get(&center)
         .expect("cold JunctionN compilation must retain its input")
+        .as_ref()
         .clone();
     let topology = surface
         .compiled_visual_node_topologies
@@ -1526,7 +1527,8 @@ fn dirty_recompile_removes_node_from_previous_chunks_after_topology_shrink() {
         .cloned()
         .unwrap_or_default();
     let removed_chunks: Vec<SurfaceChunkKey> = previous_node_chunks
-        .into_iter()
+        .iter()
+        .copied()
         .filter(|chunk| !new_node_chunks.contains(chunk))
         .collect();
     assert!(

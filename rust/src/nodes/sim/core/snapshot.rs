@@ -119,6 +119,8 @@ pub(crate) enum SimulationRuntimeSnapshot {
     BuildingRemoval(BuildingRemovalUndo),
     /// Cells changed by one vegetation brush stroke.
     VegetationEdit(VegetationEditUndo),
+    /// Previous designations and affected lots of one gesture; buildings are never snapshotted.
+    CellZoningEdit(crate::simulation::zoning::CellZoningEdit),
 }
 
 /// Bounded inverse journal for one vegetation brush stroke.
@@ -182,18 +184,15 @@ impl VegetationEditUndo {
     }
 
     /// Consumes the journal into its cell records and the patches to re-stale.
-    pub(crate) fn into_parts(
-        self,
-    ) -> (
-        HashMap<VegetationCell, Option<CellEdit>>,
-        HashSet<i64>,
-    ) {
+    pub(crate) fn into_parts(self) -> (HashMap<VegetationCell, Option<CellEdit>>, HashSet<i64>) {
         (self.cells, self.patch_keys)
     }
 }
 
 /// Bounded inverse journal for one building deletion.
 pub(crate) struct BuildingRemovalUndo {
+    /// Cell-derived parcel released by this deletion, including paint-independent grace claims.
+    pub(crate) cell_lot: Option<crate::simulation::zoning::CellLotRemovalUndo>,
     /// City-funded freight refunds posted by this deletion, reversed when it is undone.
     pub(crate) treasury_refund: f64,
     pub(crate) building_idx: usize,

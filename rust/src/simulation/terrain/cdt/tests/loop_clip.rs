@@ -5,6 +5,36 @@
 use super::*;
 
 #[test]
+fn clipping_keeps_exact_intersection_when_inside_vertex_has_same_identity() {
+    let patch = TerrainCdtPatch::new(64.0, -160.0, 96.0, -128.0, [0.0; 4]);
+    let original = vec![
+        TerrainCdtVertex::new(30.0, 0.12, -155.0),
+        TerrainCdtVertex::new(200.0, 0.12, -155.0),
+        TerrainCdtVertex::new(200.0, 0.12, -145.0),
+        TerrainCdtVertex::new(64.000_007_629_394_53, 0.12, -145.0),
+        TerrainCdtVertex::new(30.0, 0.12, -145.0),
+    ];
+    for reverse in [false, true] {
+        for start in 0..original.len() {
+            let mut points = original.clone();
+            if reverse {
+                points.reverse();
+            }
+            points.rotate_left(start);
+            let clipped = clip_loop_to_patch_components(&points, patch);
+            assert_eq!(clipped.len(), 1);
+            let seam = clipped[0]
+                .iter()
+                .find(|point| same_xz(**point, TerrainCdtVertex::new(64.0, 0.12, -145.0)))
+                .unwrap();
+            assert_eq!(seam.x, 64.0);
+            assert_eq!(seam.height_m, 0.12);
+            assert!(clipped[0].iter().all(|point| patch_contains(*point, patch)));
+        }
+    }
+}
+
+#[test]
 fn disconnected_clip_preserves_exact_boundary_at_large_world_coordinates() {
     let road_loop = TerrainCdtRoadLoop::new(
         95,

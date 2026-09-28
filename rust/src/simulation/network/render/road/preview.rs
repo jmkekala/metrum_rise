@@ -101,8 +101,18 @@ impl RoadPreviewRenderInput {
                     existing.earthwork_node_chunks.get(node),
                 ),
             };
-            chunks.extend(surface_chunks.into_iter().flatten().copied());
-            chunks.extend(earthwork_chunks.into_iter().flatten().copied());
+            chunks.extend(
+                surface_chunks
+                    .into_iter()
+                    .flat_map(|chunks| chunks.iter())
+                    .copied(),
+            );
+            chunks.extend(
+                earthwork_chunks
+                    .into_iter()
+                    .flat_map(|chunks| chunks.iter())
+                    .copied(),
+            );
         }
         let mut lanes = LaneSystem::new();
         lanes.rebuild(&mut self.graph);

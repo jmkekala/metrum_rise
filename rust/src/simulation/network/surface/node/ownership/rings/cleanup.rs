@@ -16,7 +16,7 @@ use super::super::seams::{ConstraintOverlapMode, owned_shape_is_discardable_nume
 use super::super::topology_keys::{NodeOwnershipPointKey, ownership_key_from_overlay_point};
 use super::super::{NodeBooleanOwnedRegion, NodeBooleanOwnershipError};
 use super::noding::{
-    canonicalize_final_join_or_cap_owned_region_boundary_edges,
+    NodeRingCanonicalization, canonicalize_final_join_or_cap_owned_region_boundary_edges,
     canonicalize_final_owned_region_boundary_edges_for_piece_kind,
     canonicalize_owned_region_rings_with_rail_point_set_for_piece_kind,
     dedup_consecutive_overlay_points,
@@ -53,6 +53,8 @@ pub(in crate::simulation::network::surface::node::ownership) fn clean_canonical_
     piece_kind: RoadSurfaceVisualNodePieceKind,
     reuse: &mut NodeOwnershipBuildReuseContext<'_>,
 ) -> Result<(), NodeBooleanOwnershipError> {
+    // All passes share immutable rail authority; only region contours change between passes.
+    let mut prepared = NodeRingCanonicalization::new(rail_canonical_points);
     let mut cleaned_regions = Vec::with_capacity(regions.len());
     for region in regions.drain(..) {
         let source = OwnedRegionRebuildSource::from_region(&region);
@@ -70,26 +72,26 @@ pub(in crate::simulation::network::surface::node::ownership) fn clean_canonical_
     }
     canonicalize_owned_region_rings_with_rail_point_set_for_piece_kind(
         &mut cleaned_regions,
-        rail_canonical_points,
+        &mut prepared,
         piece_kind,
     )?;
     clean_owned_region_shapes_once(&mut cleaned_regions, rail_constraints, overlap_mode, reuse)?;
     canonicalize_owned_region_rings_with_rail_point_set_for_piece_kind(
         &mut cleaned_regions,
-        rail_canonical_points,
+        &mut prepared,
         piece_kind,
     )?;
     canonicalize_final_owned_region_boundary_edges_for_piece_kind(
         &mut cleaned_regions,
         footprint_shapes,
-        rail_canonical_points,
+        &mut prepared,
         piece_kind,
     )?;
     clean_owned_region_shapes_once(&mut cleaned_regions, rail_constraints, overlap_mode, reuse)?;
     canonicalize_final_owned_region_boundary_edges_for_piece_kind(
         &mut cleaned_regions,
         footprint_shapes,
-        rail_canonical_points,
+        &mut prepared,
         piece_kind,
     )?;
     split_final_canonical_owned_region_self_touches(
@@ -100,14 +102,14 @@ pub(in crate::simulation::network::surface::node::ownership) fn clean_canonical_
     );
     canonicalize_owned_region_rings_with_rail_point_set_for_piece_kind(
         &mut cleaned_regions,
-        rail_canonical_points,
+        &mut prepared,
         piece_kind,
     )?;
     clean_owned_region_shapes_once(&mut cleaned_regions, rail_constraints, overlap_mode, reuse)?;
     canonicalize_final_join_or_cap_owned_region_boundary_edges(
         &mut cleaned_regions,
         footprint_shapes,
-        rail_canonical_points,
+        &mut prepared,
     )?;
     *regions = cleaned_regions;
     Ok(())

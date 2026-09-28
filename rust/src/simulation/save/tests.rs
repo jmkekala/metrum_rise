@@ -2,6 +2,8 @@
 
 //! Simulation snapshot persistence regressions.
 
+mod cell_zoning;
+
 use super::*;
 use crate::assets::AssetManifest;
 use crate::assets::asset::{BuildingData, MeshPart, PlacementMode, ZoneClass};

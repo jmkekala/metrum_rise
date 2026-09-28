@@ -42,6 +42,15 @@ pub(crate) enum SimCommand {
     /// Update the camera world-space AABB used for agent frustum culling.
     /// Values: (x_min, x_max, z_min, z_max) in world units, padded by ~200 m.
     SetCameraAabb(f32, f32, f32, f32),
+    /// Prepare one visible cell chunk using current authority, including while paused.
+    PrepareCellChunk {
+        /// World-zero spatial chunk address.
+        chunk: (i32, i32),
+        /// Global terrain payload epoch, advanced by world replacement and loading.
+        world_generation: u64,
+        /// Releases the bridge's single outstanding request after completion or stale rejection.
+        completion: std::sync::mpsc::SyncSender<()>,
+    },
     /// Place a new road segment.  Executed in the sim thread so the main thread
     /// never blocks on the expensive lane-rebuild and zoning-obstruction passes.
     AddRoad {
@@ -175,6 +184,21 @@ pub(crate) fn run_sim_thread(
                     commands_processed += 1;
                     camera_aabb_commands += 1;
                     pending_camera_aabb = Some((x0, x1, z0, z1));
+                }
+                Ok(SimCommand::PrepareCellChunk {
+                    chunk,
+                    world_generation,
+                    completion,
+                }) => {
+                    commands_processed += 1;
+                    {
+                        let mut core = core.lock().expect("simulation core lock poisoned");
+                        record_crash_phase_for_core(&core, "cell chunk preparation");
+                        run_sim_phase("cell chunk preparation", || {
+                            core.prepare_requested_cell_chunk(chunk, world_generation);
+                        });
+                    }
+                    let _ = completion.try_send(());
                 }
                 Ok(SimCommand::Undo) => {
                     commands_processed += 1;
@@ -392,8 +416,8 @@ pub(crate) fn run_sim_thread(
                                 edit_metrics.routing_ms =
                                     routing_start.elapsed().as_secs_f64() * 1000.0;
 
-                                // Zone flush is deferred to the next simulate_tick_internal call
-                                // so it does not block road placement. zoning_dirty_edges accumulates.
+                                // Cell-lot preparation consumes queued painted neighborhoods at
+                                // the next hourly demand pass; road placement does not scan cells.
 
                                 let total_us = road_total.elapsed().as_micros();
                                 let msg = format!(
