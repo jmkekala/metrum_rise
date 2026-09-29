@@ -233,7 +233,7 @@ class MockRoadCandidateSimulation:
 		preview_requests += 1
 		return preview_requests
 
-	func get_preview_road_surface_result(request_id: int, _retained_revision: int) -> Variant:
+	func get_preview_road_surface_result(request_id: int, _retained_revision: int, _terrain_revisions: PackedInt64Array) -> Variant:
 		if completed_preview != null and int(completed_preview["request_id"]) == request_id:
 			return completed_preview
 		return null
@@ -1206,7 +1206,7 @@ func _test_native_road_preview_contract(simulation: SimulationNode) -> void:
 	var completed: Variant = null
 	var deadline := Time.get_ticks_msec() + 10000
 	while completed == null and Time.get_ticks_msec() < deadline:
-		completed = simulation.get_preview_road_surface_result(request, 0)
+		completed = simulation.get_preview_road_surface_result(request, 0, PackedInt64Array())
 		await process_frame
 	_expect(completed is Dictionary, "native exact preview must finish")
 	if completed is Dictionary:

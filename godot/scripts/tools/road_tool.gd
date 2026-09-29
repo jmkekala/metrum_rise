@@ -478,7 +478,7 @@ func _poll_pending_preview_result() -> bool:
 	if not _preview_result_pending or _preview_request == null:
 		return false
 	var poll_us := Time.get_ticks_usec() if preview_metrics != null else 0
-	var preview = simulation_node.get_preview_road_surface_result(_preview_request.id, _junction_preview.retained_revision)
+	var preview = simulation_node.get_preview_road_surface_result(_preview_request.id, _junction_preview.retained_revision, _terrain_preview.revisions())
 	if preview_metrics != null:
 		preview_metrics.poll(_preview_request.id, Time.get_ticks_usec() - poll_us, preview)
 	if preview == null:
@@ -541,6 +541,17 @@ func _draw_compiled_preview_surface(
 			if not payloads.is_empty():
 				_terrain_preview.metrics = _preview_metric_row
 				staged = _terrain_preview.stage(terrain_node, payloads, int(preview["surface_generation"]))
+				if staged.is_empty() and _terrain_preview.missing_revision:
+					# A delta names preview terrain no longer held. Re-export the same result against
+					# the current holdings; if it was superseded, request this pose again.
+					var complete: Variant = simulation_node.get_preview_road_surface_result(preview_request_id, _junction_preview.retained_revision, _terrain_preview.revisions())
+					if not complete is Dictionary or not complete.has("terrain_preview"):
+						if is_same(preview, _preview_cache_surface):
+							_preview_cache_surface = {}
+						_preview_update_pending = true
+						return false
+					preview["terrain_preview"] = complete["terrain_preview"]
+					staged = _terrain_preview.stage(terrain_node, complete["terrain_preview"].get("patches"), int(preview["surface_generation"]))
 				if staged.is_empty():
 					if not _preview_metric_row.is_empty():
 						_preview_metric_row.terrain_retries += 1

@@ -333,11 +333,14 @@ impl SimulationNode {
     /// Returns the completed road-tool preview for `request_id`, or `null` while pending/stale.
     /// `retained_revision` identifies retained geometry already installed by the caller; zero
     /// requests a complete payload. A matching revision omits unchanged retained mesh buffers.
+    /// `terrain_revisions` lists preview terrain products the caller still holds; each matching
+    /// patch is exported as metadata plus `unchanged`, and every other patch is complete.
     #[func]
     pub fn get_preview_road_surface_result(
         &self,
         request_id: i64,
         retained_revision: i64,
+        terrain_revisions: PackedInt64Array,
     ) -> Variant {
         let Ok(request_id) = u64::try_from(request_id) else {
             return Variant::nil();
@@ -357,6 +360,7 @@ impl SimulationNode {
         self.road_preview_snapshot_to_variant(
             preview,
             u64::try_from(retained_revision).unwrap_or(0),
+            terrain_revisions.as_slice(),
             result_lock_ms,
         )
     }
@@ -365,6 +369,7 @@ impl SimulationNode {
         &self,
         preview: &RoadPreviewSnapshot,
         retained_revision: u64,
+        held_terrain: &[i64],
         result_lock_ms: f64,
     ) -> Variant {
         let export_start = preview.timing.as_ref().map(|_| Instant::now());
@@ -463,11 +468,20 @@ impl SimulationNode {
             if let Some(patches) = terrain_patches {
                 let mut payloads = Array::<VarDictionary>::new();
                 for patch in patches {
-                    let mut data = if patch.input_road_loops == 0 {
+                    let revision = preview.terrain_revisions.get(&patch.key).copied();
+                    let revision = revision.and_then(|r| i64::try_from(r).ok()).unwrap_or(0);
+                    // The caller's display for this revision is identical: send only the metadata
+                    // that its residency and generation checks need. O(held revisions) per patch.
+                    let unchanged = revision > 0 && held_terrain.contains(&revision);
+                    let mut data = if unchanged {
+                        Self::terrain_patch_metadata_dict(&patch.patch)
+                    } else if patch.input_road_loops == 0 {
                         Self::terrain_patch_dict(&patch.patch)
                     } else {
                         Self::cached_refined_terrain_patch_dict(&patch, false)
                     };
+                    data.set("terrain_revision", revision);
+                    data.set("unchanged", unchanged);
                     data.set(
                         "surface_generation",
                         i64::try_from(preview.surface_generation).unwrap_or(i64::MAX),

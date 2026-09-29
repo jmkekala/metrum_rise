@@ -71,7 +71,7 @@ func native_terrain_face() -> ArrayMesh:
 	var result: Variant = null
 	var deadline := Time.get_ticks_msec() + 15000
 	while result == null and Time.get_ticks_msec() < deadline:
-		result = simulation.get_preview_road_surface_result(request, 0)
+		result = simulation.get_preview_road_surface_result(request, 0, PackedInt64Array())
 		await process_frame
 	var selected := PackedVector3Array()
 	var faces := 0

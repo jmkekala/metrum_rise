@@ -3,16 +3,20 @@
 //! Asynchronous road-preview requests, worker snapshots, and compilation.
 
 mod requests;
+mod terrain_revisions;
 mod timing;
 pub(crate) use requests::{RoadPreviewSender, road_preview_channel};
+pub(super) use terrain_revisions::RoadPreviewTerrainRevisions;
 pub(crate) use timing::RoadPreviewTiming;
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock, TryLockError};
 use std::time::{Duration, Instant};
 
 use super::road_edit_plan::RoadEditPlan;
 use super::road_terrain_plan::RoadTerrainSiteInputs;
 use super::state::SimCore;
+use super::terrain_payloads::RefinedTerrainPatchCacheKey;
 use crate::debug_log;
 use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
 use crate::simulation::network::graph::RegionGraph;
@@ -39,6 +43,8 @@ pub(crate) struct RoadPreviewSnapshot {
     pub(crate) prepared_points: Vec<godot::prelude::Vector3>,
     pub(crate) visual_mesh: RoadPreviewVisualMesh,
     pub(crate) junction_preview: Option<RoadJunctionPreview>,
+    /// Display revision of each full-mode terrain product; equal revisions display identically.
+    pub(crate) terrain_revisions: HashMap<RefinedTerrainPatchCacheKey, u64>,
     pub(crate) validation: RoadPreviewValidation,
     pub(crate) is_valid: bool,
     edit_plan: Option<Arc<RoadEditPlan>>,
@@ -164,6 +170,7 @@ pub(crate) fn run_road_preview_worker(
 ) {
     let mut ready_request = None;
     let mut retained_cache = RoadPreviewRetainedCache::default();
+    let mut terrain_revisions = RoadPreviewTerrainRevisions::default();
     'requests: loop {
         let Some(request) = ready_request.take().or_else(|| rx.recv().ok()) else {
             return;
@@ -260,13 +267,17 @@ pub(crate) fn run_road_preview_worker(
             if let Some((sites, meshes)) = inputs {
                 if let Some(earthworks) = &earthworks {
                     if let Some(plan) = &preview.edit_plan {
-                        preview.edit_plan = Some(Arc::new(plan.with_preview_terrain(
+                        let plan = plan.with_preview_terrain(
                             &context.terrain,
                             &context.region_graph,
                             &context.road_surface,
                             earthworks,
                             sites,
-                        )));
+                        );
+                        if let Some(patches) = plan.terrain().and_then(|t| t.preview_patches()) {
+                            preview.terrain_revisions = terrain_revisions.assign(&patches);
+                        }
+                        preview.edit_plan = Some(Arc::new(plan));
                     }
                 }
                 if let Some(t) = &mut timing {
@@ -463,6 +474,7 @@ fn prepare_road_preview_from_context(
         prepared_points: preview.prepared_points,
         visual_mesh,
         junction_preview,
+        terrain_revisions: HashMap::new(),
         validation: preview.validation,
         is_valid: preview.is_valid,
         edit_plan,

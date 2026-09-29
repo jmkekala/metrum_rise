@@ -3,14 +3,18 @@
 ## Reversible plan-owned terrain display. Rust supplies geometry and planned ownership.
 ## Reuses terrain validation/mesh builders; never changes payload caches, samples or acknowledgments.
 ## Preview-owned nodes, materials, images and textures are recycled through detached spare slots.
+## Each filled slot keeps its Rust display revision; an `unchanged` payload reuses that slot.
 extends RefCounted
 
 var metrics: Dictionary = {}
 var request_id: int = 0
+# Set when an `unchanged` payload names a revision no slot still holds. The caller must fetch
+# the same result again with `revisions()`, which then yields complete payloads.
+var missing_revision := false
 var _patches: Dictionary = {}
-# Detached slots {node, walls, material, image, texture, texture_size}. Staging writes only
-# these, never the displayed slots, so a failed batch leaves the previous display intact.
-# Trimmed to the displayed count on commit: one staging set, not cursor history.
+# Detached slots {node, walls, material, image, texture, texture_size, key, revision, lod}.
+# Staging writes only these, never the displayed slots, so a failed batch leaves the previous
+# display intact. Trimmed to the displayed count on commit: one staging set, not cursor history.
 var _spares: Array[Dictionary] = []
 var _renderer: Node3D
 var _invalidated: Callable
@@ -24,34 +28,76 @@ func _notification(what: int) -> void:
 			if is_instance_valid(slot["node"]) and slot["node"].get_parent() == null:
 				slot["node"].free()
 
+# Returns revisions whose display this helper can reproduce without payload data: displayed
+# slots and detached slots whose content survived since they were filled. O(slots).
+func revisions() -> PackedInt64Array:
+	var held := PackedInt64Array()
+	for entry in _patches.values():
+		if int(entry["slot"].get("revision", 0)) > 0 and is_instance_valid(entry["slot"]["node"]):
+			held.append(entry["slot"]["revision"])
+	for slot in _spares:
+		if int(slot.get("revision", 0)) > 0 and is_instance_valid(slot["node"]):
+			held.append(slot["revision"])
+	return held
+
 func stage(terrain: Node3D, payloads: Variant, generation: int) -> Array:
+	missing_revision = false
 	if not is_instance_valid(terrain) or not terrain.has_signal("patch_render_will_change") or not payloads is Array or payloads.is_empty():
 		return []
 	var validation_us := Time.get_ticks_usec() if not metrics.is_empty() else 0
 	# Check residency before constructing any GPU resources. Streaming may need another frame.
+	# Unchanged payloads carry metadata only; their geometry was validated when first staged.
+	var held := {}
 	for data in payloads:
 		if not data is Dictionary or not data.has("patch_x") or not data.has("patch_z"):
 			return []
 		var key := Vector2i(data["patch_x"], data["patch_z"])
-		if not terrain._terrain_patch_payload_is_stageable(key, data, generation, int(data.get("render_step_mm", 0)), true):
+		if data.get("unchanged", false):
+			if not _metadata_is_stageable(terrain, key, data, generation) or held.has(key):
+				return []
+			var slot := _held_slot(terrain, key, int(data["terrain_revision"]))
+			if slot.is_empty():
+				missing_revision = true
+				return []
+			held[key] = slot
+		elif not terrain._terrain_patch_payload_is_stageable(key, data, generation, int(data.get("render_step_mm", 0)), true):
 			return []
 	if not metrics.is_empty():
 		metrics["terrain_preflight_ms"] = float(Time.get_ticks_usec() - validation_us) / 1000.0
 	var staged: Array = []
 	var seen := {}
+	# Claim held slots before fresh payloads take spares, so no fill overwrites a reused slot.
+	for data in payloads:
+		var key := Vector2i(data["patch_x"], data["patch_z"])
+		if not held.has(key):
+			continue
+		seen[key] = true
+		if not _matches_resident(terrain.patches[key], data):
+			discard(staged)
+			return []
+		var slot: Dictionary = held[key]
+		var carried: bool = _patches.has(key) and is_same(_patches[key]["slot"], slot)
+		if not carried:
+			# A detached slot is not displayed, so it can be brought up to date now. A displayed
+			# slot is only resynchronized in commit, after the whole batch has staged.
+			_spares.erase(slot)
+			_mirror_resident(terrain, slot, terrain.patches[key])
+		staged.append({"key": key, "slot": slot, "carried": carried})
+		if not metrics.is_empty():
+			metrics["terrain_patches_reused"] = metrics.get("terrain_patches_reused", 0) + 1
 	for data in payloads:
 		if not data is Dictionary or not data.has("patch_x") or not data.has("patch_z"):
 			discard(staged)
 			return []
 		var key := Vector2i(data["patch_x"], data["patch_z"])
+		if held.has(key):
+			continue
 		if seen.has(key) or not terrain._terrain_patch_payload_is_stageable(key, data, generation, int(data.get("render_step_mm", 0)), true):
 			discard(staged)
 			return []
 		seen[key] = true
 		var patch: Dictionary = terrain.patches[key]
-		var original: MeshInstance3D = patch["node"]
-		var center := Vector3(float(data["world_origin_x"]) + float(data["world_size_x"]) * 0.5, 0.0, float(data["world_origin_z"]) + float(data["world_size_z"]) * 0.5)
-		if original.position != center or patch["world_size_x"] != data["world_size_x"] or patch["world_size_z"] != data["world_size_z"]:
+		if not _matches_resident(patch, data):
 			discard(staged)
 			return []
 		var cached_meshes_before: int = terrain.patch_mesh_cache.size() if not metrics.is_empty() else 0
@@ -68,12 +114,9 @@ func stage(terrain: Node3D, payloads: Variant, generation: int) -> Array:
 		var node: MeshInstance3D = slot["node"]
 		node.name = "RoadTerrainPreview_%d_%d" % [key.x, key.y]
 		node.mesh = mesh
-		node.extra_cull_margin = original.extra_cull_margin
-		node.cast_shadow = original.cast_shadow
 		var material: ShaderMaterial = slot["material"]
 		# Mirror the resident material as a fresh duplicate would; only the heights differ.
-		if _sync_material(material, patch["material"]):
-			slot.erase("texture")
+		_mirror_resident(terrain, slot, patch)
 		var size := Vector2i(int(data["texture_width"]), int(data["texture_height"]))
 		var image: Image = slot.get("image", Image.new())
 		image.set_data(size.x, size.y, false, Image.FORMAT_RF, terrain._terrain_patch_height_bytes(data))
@@ -89,9 +132,10 @@ func stage(terrain: Node3D, payloads: Variant, generation: int) -> Array:
 		material.set_shader_parameter("height_is_baked", terrain._terrain_patch_mesh_is_baked(data))
 		var walls: MeshInstance3D = slot["walls"]
 		walls.mesh = terrain._retaining_wall_patch_mesh(data)
-		walls.material_override = terrain._retaining_wall_material()
-		walls.cast_shadow = original.cast_shadow
-		walls.extra_cull_margin = original.extra_cull_margin
+		# The filled content now reproduces this revision at this resident level of detail.
+		slot["key"] = key
+		slot["revision"] = int(data.get("terrain_revision", 0))
+		slot["lod"] = _resident_lod(patch)
 		staged.append({"key": key, "slot": slot})
 		if not metrics.is_empty():
 			metrics["terrain_resources_ms"] = metrics.get("terrain_resources_ms", 0.0) + float(Time.get_ticks_usec() - texture_us) / 1000.0
@@ -111,6 +155,12 @@ func stage(terrain: Node3D, payloads: Variant, generation: int) -> Array:
 func commit(terrain: Node3D, staged: Array, id: int, invalidated: Callable) -> void:
 	var install_us := Time.get_ticks_usec() if not metrics.is_empty() else 0
 	# Called synchronously after the road batch stages successfully, with no await in between.
+	# Carried slots stay attached; clear() restores only the patches this batch drops.
+	var carried := {}
+	for entry in staged:
+		if entry.get("carried", false):
+			carried[entry["key"]] = _patches[entry["key"]]
+			_patches.erase(entry["key"])
 	clear()
 	_invalidated = invalidated
 	if not staged.is_empty():
@@ -118,6 +168,11 @@ func commit(terrain: Node3D, staged: Array, id: int, invalidated: Callable) -> v
 		_renderer.patch_render_will_change.connect(_patch_will_change)
 		_renderer.patches_will_reset.connect(_reset_will_change)
 	for entry in staged:
+		if carried.has(entry["key"]):
+			# The resident material or shadow settings may have changed since this slot was filled.
+			_mirror_resident(terrain, entry["slot"], terrain.patches[entry["key"]])
+			_patches[entry["key"]] = carried[entry["key"]]
+			continue
 		var patch: Dictionary = terrain.patches[entry["key"]]
 		var original: MeshInstance3D = patch["node"]
 		var walls: MeshInstance3D = patch["retaining_wall_node"]
@@ -163,19 +218,78 @@ func reset() -> void:
 
 func discard(staged: Array) -> void:
 	for entry in staged:
-		_spares.append(entry["slot"])
+		# A carried slot is still displayed; only detached slots return to the spares.
+		if not entry.get("carried", false):
+			_spares.append(entry["slot"])
 	staged.clear()
 
 func _take_slot() -> Dictionary:
 	while not _spares.is_empty():
 		var slot: Dictionary = _spares.pop_back()
 		if is_instance_valid(slot["node"]):
+			# Its previous content is about to be overwritten.
+			slot["revision"] = 0
 			return slot
 	var node := MeshInstance3D.new()
 	var walls := MeshInstance3D.new()
 	node.add_child(walls)
 	node.material_override = ShaderMaterial.new()
 	return {"node": node, "walls": walls, "material": node.material_override}
+
+# Finds the displayed or detached slot holding this revision. Its mesh was built for one
+# resident level of detail, and a displayed slot hangs under the resident node it replaced.
+# A slot failing either condition forgets its revision, so revisions() stops offering it and
+# the caller's refetch receives complete data. O(slots).
+func _held_slot(terrain: Node3D, key: Vector2i, revision: int) -> Dictionary:
+	var resident: Dictionary = terrain.patches[key]
+	var displayed: Dictionary = _patches[key]["slot"] if _patches.has(key) else {}
+	var candidates: Array = [displayed] + _spares if not displayed.is_empty() else _spares.duplicate()
+	for slot in candidates:
+		if revision <= 0 or slot.get("revision", 0) != revision or slot.get("key") != key or not is_instance_valid(slot["node"]):
+			continue
+		var attached_current := not is_same(slot, displayed) or is_same(_patches[key]["original"], resident["node"])
+		if slot.get("lod") == _resident_lod(resident) and attached_current:
+			return slot
+		slot["revision"] = 0
+	return {}
+
+# Residency and generation checks for a metadata-only payload; its buffers are not re-sent.
+func _metadata_is_stageable(terrain: Node3D, key: Vector2i, data: Dictionary, generation: int) -> bool:
+	if not terrain.patches.has(key):
+		return false
+	var patch: Dictionary = terrain.patches[key]
+	return (
+		patch.get("node", null) is MeshInstance3D
+		and patch.get("retaining_wall_node", null) is MeshInstance3D
+		and patch.get("material", null) is ShaderMaterial
+		and typeof(data.get("surface_generation", null)) == TYPE_INT
+		and int(data["surface_generation"]) == generation
+		and typeof(data.get("terrain_revision", null)) == TYPE_INT
+		and terrain._terrain_numeric_field_is_finite(data, "world_origin_x")
+		and terrain._terrain_numeric_field_is_finite(data, "world_origin_z")
+		and terrain._terrain_numeric_field_is_finite(data, "world_size_x")
+		and terrain._terrain_numeric_field_is_finite(data, "world_size_z")
+	)
+
+func _matches_resident(patch: Dictionary, data: Dictionary) -> bool:
+	var center := Vector3(float(data["world_origin_x"]) + float(data["world_size_x"]) * 0.5, 0.0, float(data["world_origin_z"]) + float(data["world_size_z"]) * 0.5)
+	return patch["node"].position == center and patch["world_size_x"] == data["world_size_x"] and patch["world_size_z"] == data["world_size_z"]
+
+func _resident_lod(patch: Dictionary) -> Vector2i:
+	return Vector2i(int(patch.get("lod_step", 1)), int(patch.get("subdivision_factor", 1)))
+
+# Copies resident draw settings and material values; the preview heights stay slot-owned.
+func _mirror_resident(terrain: Node3D, slot: Dictionary, patch: Dictionary) -> void:
+	var original: MeshInstance3D = patch["node"]
+	var node: MeshInstance3D = slot["node"]
+	var walls: MeshInstance3D = slot["walls"]
+	node.extra_cull_margin = original.extra_cull_margin
+	node.cast_shadow = original.cast_shadow
+	walls.material_override = terrain._retaining_wall_material()
+	walls.cast_shadow = original.cast_shadow
+	walls.extra_cull_margin = original.extra_cull_margin
+	if _sync_material(slot["material"], patch["material"]) and slot.get("texture") != null:
+		slot["material"].set_shader_parameter("heightmap", slot["texture"])
 
 # O(shader uniforms) reads; writes only changed values so reused materials stay clean.
 # Returns true when the shader changed and the heightmap must be assigned again.

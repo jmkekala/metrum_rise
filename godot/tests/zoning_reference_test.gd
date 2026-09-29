@@ -44,7 +44,7 @@ func _commit(points: PackedVector3Array, forward: int = 1, backward: int = 1) ->
 	var preview_deadline := Time.get_ticks_msec() + 20000
 	var preview: Variant = null
 	while preview == null and Time.get_ticks_msec() < preview_deadline:
-		preview = simulation.get_preview_road_surface_result(preview_request, 0)
+		preview = simulation.get_preview_road_surface_result(preview_request, 0, PackedInt64Array())
 		await process_frame
 	_expect(preview is Dictionary and preview.get("is_valid", false), "Reference road preview %s: %s" % [points, preview.get("invalid_reason", "missing") if preview is Dictionary else "timeout"])
 	if not preview is Dictionary or not preview.get("is_valid", false):

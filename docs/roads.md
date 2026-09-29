@@ -1060,8 +1060,8 @@ Deployed extension identity remains unchanged.
 
 ### Preview display performance plan (`ROAD-30`–`ROAD-36`)
 
-**Status: `ROAD-30`–`ROAD-33` done; `ROAD-34`–`ROAD-36` planned (2026-09-29).** Implement and
-validate one task at a time. `ROAD-30` establishes the baseline below. Next: `ROAD-34`; use the
+**Status: `ROAD-30`–`ROAD-34` done; `ROAD-35`–`ROAD-36` planned (2026-09-29).** Implement and
+validate one task at a time. `ROAD-30` establishes the baseline below. Next: `ROAD-35`; use the
 measurements to justify any reprioritization. Each task has a separate roadmap entry and acceptance evidence. These are
 candidate improvements identified by source inspection, with no measured speedup yet.
 The `ROAD-29` native comparison (16.383 vs 21.986 ms) excludes frontend presentation costs
@@ -1417,7 +1417,7 @@ detached staging set.
   display.
 - Exact terrain product retention is not implemented: every request builds fresh
   `CachedRefinedTerrainPatch` Arcs, so no cross-request product identity exists yet. `ROAD-34`
-  owns product revisions.
+  adds display revisions for unchanged terrain products.
 - Material sync is O(shader uniforms) per staged patch. Every other step is O(staged products).
   Memory is bounded by twice the displayed footprint.
 
@@ -1631,6 +1631,123 @@ generation checked independently of cached geometry.
 **Bound:** O(changed payload bytes + local metadata); bounded cache for active context only.
 **Exit:** full and delta delivery produce identical displays, missing/outdated cache revisions
 request a complete payload, and export allocations/bytes/time fall in matched replays.
+
+**Implementation (validated 2026-09-29):** measurement first showed which products actually repeat.
+In the benchmark fixtures, every pose moves the planned road and the junction bounds, so every
+planned and approach chunk changes between poses. Retained chunks already travel only on a revision
+change (`ROAD-33`). Of the 16 full-mode terrain patches per pose, 12 (10 in `dense`) are road-free
+heightfields that the moving road never touches, yet each pose re-exported and restaged all 16.
+This task revises terrain products; planned and approach chunks stay per-pose.
+
+- `RoadPreviewTerrainRevisions` (`rust/src/nodes/sim/core/road_preview/terrain_revisions.rs`)
+  lives in the preview worker. After each terrain compile it gives every product a display
+  revision. A road-free patch (`input_road_loops == 0`) whose height snapshot equals the previous
+  product for its key keeps that product's revision, because the bridge exports nothing else for
+  it. Refined patches rebuild their buffers per request and always get a fresh revision. The map
+  is replaced per compile, so it holds one footprint, not drag history. Cost: O(patches + compared
+  road-free samples), on the worker. The comparison replaces the main-thread copy, upload and
+  validation of the same bytes.
+- `get_preview_road_surface_result(request_id, retained_revision, terrain_revisions)` takes the
+  revisions Godot still holds. Each patch carries `terrain_revision`. A held revision is exported
+  as `terrain_patch_metadata_dict` plus `unchanged: true`, with no height or mesh buffers. Every
+  other patch is complete. Zero or unknown revisions always export complete.
+- `road_terrain_preview.gd` records `key`, `revision` and resident level of detail on each filled
+  slot. `revisions()` lists displayed slots and detached slots whose content survived.
+  - An `unchanged` payload still passes the residency, generation and world-extent checks.
+  - A displayed slot is carried into the new display untouched until commit, which resyncs its
+    material and draw settings from the resident patch. A detached slot is resynced while detached.
+  - Held slots are claimed before fresh payloads take spares, so no fill overwrites them.
+  - Carried slots never return to the spares on failure, so a failed batch leaves the previous
+    display intact.
+- If no slot holds a named revision, or the resident node or level of detail changed, the slot
+  forgets its revision and staging sets `missing_revision`. `road_tool.gd` then re-polls the same
+  request with the current holdings, which exports those patches complete. If that result was
+  superseded, the cached pose is dropped and requested again.
+
+**Acceptance evidence (2026-09-29):** matched baseline (committed `HEAD` `ad96f3c9`: scripts and
+library `6a402274…222822ec`) and candidate (library `34d83730…35666719`) processes were
+interleaved: two unprofiled acceptance runs and one `METRUM_DEBUG_PERF=1` diagnostic run each. The
+workload, hardware, settings, window and command match `ROAD-30` v3. All 72 captures passed
+`--validate`; none dropped observations.
+
+Diagnostic medians, full mode (stationary; moving medians agree within 0.2 ms). Times in ms:
+
+| Fixture | Patches restaged | Terrain resources | Terrain install | Stage + install total | Packed KB |
+| --- | --- | --- | --- | --- | --- |
+| `flat_t` | 16 → 4 | 0.81 → 0.31 | 0.16 → 0.42 | 2.43 → 1.95 | 621 → 592 |
+| `sloped_t` | 16 → 4 | 0.86 → 0.33 | 0.17 → 0.43 | 2.50 → 1.98 | 634 → 605 |
+| `flat_multi` | 16 → 4 | 0.92 → 0.35 | 0.18 → 0.52 | 2.62 → 2.24 | 832 → 803 |
+| `sloped_multi` | 16 → 4 | 0.93 → 0.35 | 0.17 → 0.52 | 2.68 → 2.27 | 868 → 839 |
+| `dense` | 16 → 6 | 0.99 → 0.49 | 0.18 → 0.47 | 2.78 → 2.45 | 817 → 793 |
+| `residency_retry` | 16 → 4 | 0.97 → 0.34 | 0.12 → 0.14 | 2.74 → 2.45 | 621 → 592 |
+
+- Height images, texture uploads and preflight validation now follow the changed patches only. The
+  texture updates per result fall from 16 to 4 (6 in `dense`).
+- Commit now resyncs the carried slots' materials (O(shader uniforms) each), so terrain install
+  rises by about 0.3 ms. The net main-thread stage-and-install gain is 0.3–0.5 ms.
+- The skipped road-free patches are small (about 2.5 KB of heights each), so packed bytes fall by
+  only 25–30 KB (3–5%). Bridge packing is unchanged within noise.
+- Road-only payloads and staging are unchanged, as expected. Worker medians match except two
+  candidate road-only diagnostic medians (`flat_multi`, `residency_retry` stationary, about 27 vs
+  17 ms). Those are in `road_ms`, which this change does not touch; the same process-to-process
+  spread was reproduced on the baseline during `ROAD-33`.
+
+Unprofiled acceptance ranges (two processes per side, milliseconds; not confidence intervals):
+
+| Fixture / mode | Stationary p50 | Stationary p95 | Moving displayed-age p95 |
+| --- | --- | --- | --- |
+| `flat_t` / full | 40.0–40.2 → 39.4–39.5 | 42.8–43.0 → 41.5–41.9 | 55.4–59.9 → 53.4–56.5 |
+| `sloped_t` / full | 39.9 → 39.1–40.2 | 56.2 → 55.4–55.6 | 69.2–69.3 → 59.0–69.6 |
+| `flat_multi` / full | 40.3–40.8 → 39.5–40.2 | 42.9–43.4 → 42.1–42.4 | 53.5–56.6 → 53.8–68.8 |
+| `sloped_multi` / full | 56.9–57.4 → 56.4 | 59.9–60.3 → 58.9–59.0 | 86.7 → 86.7 |
+| `dense` / full | 40.5–40.8 → 40.1–40.5 | 43.7–43.9 → 42.6–43.0 | 53.6–58.1 → 56.5–57.1 |
+| `residency_retry` / full | 88.6–88.7 → 88.3–88.4 | 101.4–104.7 → 92.5–104.2 | 53.7–59.3 → 53.4–55.9 |
+| `flat_t` / road-only | 21.3–21.9 → 21.7–22.1 | 37.8–38.5 → 38.3–38.4 | 53.4–54.0 → 53.3–53.6 |
+| `sloped_t` / road-only | 37.1 → 37.1 | 38.9–53.4 → 39.7–53.4 | 53.3–53.9 → 53.4–53.8 |
+| `flat_multi` / road-only | 37.0–37.1 → 37.0–37.2 | 38.9–39.0 → 38.8 | 53.5–56.0 → 53.4–54.6 |
+| `sloped_multi` / road-only | 38.2–38.3 → 37.7–38.0 | 53.9–54.8 → 53.6–54.0 | 69.3–71.3 → 69.8–70.0 |
+| `dense` / road-only | 22.3–22.7 → 22.0–22.4 | 38.4–38.5 → 38.3–42.0 | 53.4–53.6 → 53.3–54.5 |
+| `residency_retry` / road-only | 21.5–22.0 → 21.3–21.9 | 38.7–39.3 → 37.9–38.4 | 53.3–53.4 → 53.0–53.3 |
+
+Full-mode stationary medians fall by up to about 1 ms, consistent with the main-thread saving, but
+the ranges touch or overlap in `sloped_t` (39.9 → 39.1–40.2) and `dense` (40.5–40.8 → 40.1–40.5). Full-mode p95s
+fall by 0.5–1.5 ms, except `residency_retry`, whose ranges overlap and are dominated by its injected delay. Road-only is unchanged within noise. Moving displayed age is dominated by frame
+cadence and worker time; individual p95s move by about one frame in both directions, so no
+moving-latency change is claimed. No frame interval exceeded 33.333 ms in any run. This is a small
+controlled-neighbourhood result, not a city-scale claim.
+
+Not done here, by measurement: planned and approach chunks change with every pose in these
+fixtures, and an approach clip depends on every bound whose x/z planes cross its triangles, not
+only overlapping bounds. Per-chunk reuse would need content comparison for no measured gain.
+Refined terrain patches could keep their revision only if the worker offered previous CDT windows
+to the builder; the moving road changes every window it crosses, so that is left out.
+
+Artifacts: `rust/target/road34-artifacts/` holds `{baseline,candidate}-{a,b,diag}.json`, their logs
+and manifests, `run_ab.py`, `summarize.py`/`diagnostic-compare.txt` and
+`acceptance.py`/`acceptance-compare.txt`. The isolated projects and the frozen baseline scripts,
+tests and library are under `rust/target/road34/`.
+
+**Correctness checks:**
+- Rust `only_identical_plain_patches_keep_their_revision`: equal road-free snapshots in fresh Arcs keep
+  their revision; changed heights, refined patches and patches dropped from the footprint get new ones;
+  revisions are never reused.
+- Rust `preview_terrain_revisions_keep_unchanged_plain_patches_across_poses`: over two real preview
+  poses, revisions are kept exactly for the patches whose road-free snapshots are equal, at least one
+  is kept, and the patch under the moving road changes.
+- Godot `road_junction_preview_test` now verifies, in every terrain fixture:
+  - a poll with all revisions held exports every patch as metadata with no packed buffers;
+  - a mixed delta exports exactly the withheld patch complete, restages only that patch, keeps the
+    other displayed slots, and displays exactly what complete delivery displays (heights, meshes,
+    walls, baked flag);
+  - after `reset`, a delta for a superseded result fails without a partial display and requests the
+    pose again, and a delta for the current result refetches complete terrain and displays identically.
+
+All 74 release `network::render`, `road_preview` and revision tests pass; rustdoc reports no warnings;
+clippy reports nothing new. The junction, stream-preview, chunk-renderer, preview-metrics and
+benchmark-metrics suites pass headless in the isolated profile. `zoning_reference_test` (78 errors)
+and the windowed `plot_material_lighting_test` fail identically with the baseline and with the
+`ROAD-32` library, so both failures predate this change. The verified library was deployed to
+`godot/bin`.
 
 #### `ROAD-35` — Keep the worker fed with the latest pending input
 

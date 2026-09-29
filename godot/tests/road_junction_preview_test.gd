@@ -7,6 +7,7 @@ const RoadToolScript := preload("res://scripts/tools/road_tool.gd")
 const WorldMaterialsScript := preload("res://scripts/renderers/world_materials.gd")
 const TerrainScript := preload("res://scripts/renderers/terrain.gd")
 const ZoningToolScript := preload("res://scripts/tools/zoning_tool.gd")
+const PreviewMetrics := preload("res://scripts/benchmarks/road_preview_metrics.gd")
 var _failures := 0
 var simulation: SimulationNode
 var _capture_baseline_sky := {}
@@ -203,7 +204,7 @@ func _fixture(fixture: Dictionary) -> void:
 	var deadline := Time.get_ticks_msec() + 20000
 	var preview: Variant = null
 	while preview == null and Time.get_ticks_msec() < deadline:
-		preview = simulation.get_preview_road_surface_result(request, 0)
+		preview = simulation.get_preview_road_surface_result(request, 0, PackedInt64Array())
 		await process_frame
 	_expect(preview is Dictionary and preview.get("is_valid", false), "%s native junction preview must validate: %s" % [fixture["name"], preview.get("invalid_reason", "missing") if preview is Dictionary else "timeout"])
 	if not preview is Dictionary or not preview.get("is_valid", false):
@@ -248,7 +249,7 @@ func _fixture(fixture: Dictionary) -> void:
 	var shifted: Variant = null
 	deadline = Time.get_ticks_msec() + 20000
 	while shifted == null and Time.get_ticks_msec() < deadline:
-		shifted = simulation.get_preview_road_surface_result(shifted_request, tool._junction_preview.retained_revision)
+		shifted = simulation.get_preview_road_surface_result(shifted_request, tool._junction_preview.retained_revision, PackedInt64Array())
 		await process_frame
 	_expect(shifted is Dictionary and shifted.get("is_valid", false), "successive pointer input must compile")
 	if shifted is Dictionary and shifted.get("is_valid", false):
@@ -288,12 +289,12 @@ func _fixture(fixture: Dictionary) -> void:
 	var click_preview: Variant = null
 	deadline = Time.get_ticks_msec() + 20000
 	while click_preview == null and Time.get_ticks_msec() < deadline:
-		click_preview = simulation.get_preview_road_surface_result(click_request, 0)
+		click_preview = simulation.get_preview_road_surface_result(click_request, 0, PackedInt64Array())
 		await process_frame
 	_expect(click_preview is Dictionary and click_preview.get("plan_state", "") == "ready", "exact click road plan must become ready without terrain")
 	if await _commit(points, tool.fwd_lanes, tool.bkw_lanes):
 		_expect(simulation.get_road_benchmark_state()["command"].get("preview_plan_reused", false), "matching click must reuse the worker road solve")
-		var old_result: Variant = simulation.get_preview_road_surface_result(shifted_request, 0)
+		var old_result: Variant = simulation.get_preview_road_surface_result(shifted_request, 0, PackedInt64Array())
 		_expect(old_result == null or old_result.get("plan_state", "") == "stale", "a road revision must stale the whole plan even when terrain did not change")
 		generation = simulation.get_network_render_generation()
 		_expect(tool.update_main_mesh(generation) == generation, "committed chunks must replace the source generation")
@@ -389,7 +390,7 @@ func _test_preview_keeps_terrain(tool: Node3D, preview: Dictionary, points: Pack
 	var full: Variant = null
 	deadline = Time.get_ticks_msec() + 20000
 	while full == null and Time.get_ticks_msec() < deadline:
-		full = simulation.get_preview_road_surface_result(full_request, 0)
+		full = simulation.get_preview_road_surface_result(full_request, 0, PackedInt64Array())
 		await process_frame
 	_expect(full is Dictionary and full.has("terrain_preview") and full.get("plan_state", "") == "ready", "Full mode publishes complete road and terrain products")
 	if full is Dictionary and full.has("terrain_preview"):
@@ -428,6 +429,7 @@ func _test_preview_keeps_terrain(tool: Node3D, preview: Dictionary, points: Pack
 		tool.set_road_preview_mode(1)
 		_expect(tool._draw_compiled_preview_surface(points, full, full), "Full preview can be shown again")
 		_test_preview_resource_reuse(tool, terrain, points, full, label == "t")
+		_test_terrain_delta(tool, points, full)
 		if not tool._terrain_preview._patches.is_empty():
 			terrain.patch_render_will_change.emit(tool._terrain_preview._patches.keys()[0])
 			_expect(tool._terrain_preview.request_id == 0 and tool._junction_preview.request_id == 0, "Terrain invalidation retires the paired road preview")
@@ -482,6 +484,74 @@ func _test_preview_resource_reuse(tool: Node3D, terrain: Node3D, points: PackedV
 	for key in tool._terrain_preview._patches:
 		var slot: Dictionary = tool._terrain_preview._patches[key].slot
 		_expect(slot.node.get_parent() == terrain.patches[key]["node"] and terrain.patches[key]["node"].mesh == null, "failed staging must keep the displayed terrain substitution")
+
+func _test_terrain_delta(tool: Node3D, points: PackedVector3Array, full: Dictionary) -> void:
+	# Terrain-free fixtures, such as bridges, have no products to revise.
+	if tool._terrain_preview._patches.is_empty():
+		return
+	var request := int(full["request_id"])
+	var complete_display := _terrain_display(tool)
+	var before := _preview_resource_ids(tool)
+	var held: PackedInt64Array = tool._terrain_preview.revisions()
+	_expect(not held.is_empty(), "displayed preview terrain must advertise its revisions")
+	var delta: Variant = simulation.get_preview_road_surface_result(request, tool._junction_preview.retained_revision, held)
+	_expect(delta is Dictionary and delta.has("terrain_preview"), "a poll with held revisions still returns the result")
+	if not delta is Dictionary or not delta.has("terrain_preview"):
+		return
+	var patches: Array = delta["terrain_preview"]["patches"]
+	_expect(not patches.is_empty() and patches.all(func(data): return data.get("unchanged", false) and not data.has("height_bytes")), "held terrain products are exported as metadata only")
+	_expect(PreviewMetrics.packed_bytes(delta["terrain_preview"]) == 0 and PreviewMetrics.packed_bytes(full["terrain_preview"]) > 0, "an unchanged terrain batch sends no packed buffers")
+	# Withhold one revision: that patch arrives complete and restages; the rest stay displayed.
+	var dropped: int = held[0]
+	var partial_held := PackedInt64Array()
+	for revision in held:
+		if revision != dropped:
+			partial_held.append(revision)
+	var partial: Variant = simulation.get_preview_road_surface_result(request, tool._junction_preview.retained_revision, partial_held)
+	var fresh := {}
+	for data in partial["terrain_preview"]["patches"]:
+		if not data["unchanged"]:
+			fresh[Vector2i(data["patch_x"], data["patch_z"])] = true
+	_expect(fresh.size() == 1, "only the withheld revision is exported complete")
+	var stale: Dictionary = partial.duplicate(true)
+	stale["request_id"] = request + 100000
+	tool._preview_drawn_request_id = 0
+	tool._junction_preview.request_id = 0
+	_expect(tool._draw_compiled_preview_surface(points, partial, partial), "a mixed delta must display")
+	var after := _preview_resource_ids(tool)
+	for key in before.terrain:
+		_expect((after.terrain[key] == before.terrain[key]) != fresh.has(key), "unchanged products keep their displayed slot; changed ones restage")
+	_expect(_terrain_display(tool) == complete_display, "delta and complete delivery must display identically")
+	# Released products cannot satisfy a delta. A superseded result asks for the pose again;
+	# the current result is re-exported complete.
+	tool._clear_preview_visual()
+	tool._terrain_preview.reset()
+	_expect(tool._terrain_preview.revisions().is_empty(), "reset releases every held revision")
+	tool._preview_update_pending = false
+	_expect(not tool._draw_compiled_preview_surface(points, stale, stale), "a delta for a superseded result cannot display")
+	_expect(tool._terrain_preview.missing_revision and tool._preview_update_pending, "a missing revision requests the pose again")
+	_expect(tool._terrain_preview._patches.is_empty() and tool._junction_preview.request_id == 0, "a failed delta leaves no partial display")
+	_expect(tool._draw_compiled_preview_surface(points, partial, partial), "a delta naming released products refetches the complete result")
+	_expect(partial["terrain_preview"]["patches"].all(func(data): return not data["unchanged"]), "the refetched complete terrain replaces the cached delta")
+	_expect(_terrain_display(tool) == complete_display, "a refetched complete result displays identically")
+
+# Everything a staged terrain slot draws: heights, meshes and the baked flag.
+func _terrain_display(tool: Node3D) -> Dictionary:
+	var display := {}
+	for key in tool._terrain_preview._patches:
+		var slot: Dictionary = tool._terrain_preview._patches[key].slot
+		display[key] = [slot.image.get_data(), _mesh_signature(slot.node.mesh), _mesh_signature(slot.walls.mesh),
+			slot.material.get_shader_parameter("height_is_baked"), slot.material.get_shader_parameter("heightmap") == slot.texture]
+	return display
+
+func _mesh_signature(mesh: Mesh) -> Variant:
+	# Cached regular planes are shared by identity; baked and wall meshes are compared by content.
+	if not mesh is ArrayMesh:
+		return mesh
+	var surfaces := []
+	for surface in mesh.get_surface_count():
+		surfaces.append(mesh.surface_get_arrays(surface))
+	return surfaces
 
 func _preview_resource_ids(tool: Node3D) -> Dictionary:
 	var terrain_ids := {}

@@ -1652,6 +1652,55 @@ fn road_preview_modes_preserve_live_state_and_share_completed_terrain_on_click()
 }
 
 #[test]
+fn preview_terrain_revisions_keep_unchanged_plain_patches_across_poses() {
+    let mut core = test_core();
+    road_terrain_plan::commit_ready(
+        &mut core,
+        vec![Vector3::new(-96.0, 0.0, 0.0), Vector3::new(96.0, 0.0, 0.0)],
+    );
+    core.allocator
+        .prepare_building_site_query_index(core.config.zone_cell_m);
+    let (context, query) = road_tool_snapshots_from_core(&core).unwrap();
+    let mut revisions = super::road_preview::RoadPreviewTerrainRevisions::default();
+    let mut pose = |x: f32| {
+        let preview = super::road_preview::compile_road_preview_with_sites(
+            &context,
+            RoadPreviewRequest {
+                enqueued_at: None,
+                include_terrain: true,
+                request_id: 1,
+                surface_generation: query.surface_generation,
+                points: vec![Vector3::new(0.0, 0.0, -80.0), Vector3::new(x, 0.0, 0.0)],
+                fwd_lanes: 1,
+                bkw_lanes: 1,
+                snap_to_existing_roads: true,
+            },
+            &core,
+        );
+        let plan = preview.edit_plan().unwrap();
+        let patches = plan.terrain().unwrap().preview_patches().unwrap();
+        let assigned = revisions.assign(&patches);
+        (patches, assigned)
+    };
+    // Each pose builds fresh product Arcs; only the moving road's patches change.
+    let (first, before) = pose(1.0);
+    let (second, after) = pose(1.5);
+    let mut kept = 0;
+    for (old, new) in first.iter().zip(&second) {
+        assert_eq!(old.key, new.key);
+        assert!(!std::sync::Arc::ptr_eq(old, new));
+        let same = old.input_road_loops == 0 && new.input_road_loops == 0 && old.patch == new.patch;
+        assert_eq!(before[&old.key] == after[&new.key], same, "{:?}", old.key);
+        kept += usize::from(same);
+    }
+    assert!(kept > 0, "the fixture must keep road-free patches");
+    assert!(
+        kept < first.len(),
+        "the patch under the moving road must change"
+    );
+}
+
+#[test]
 #[ignore = "matched native preview-mode release timings; run alone"]
 fn benchmark_road_preview_modes() {
     let mut core = test_core();
