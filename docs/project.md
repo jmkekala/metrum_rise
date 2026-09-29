@@ -231,7 +231,7 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Current Priorities
 
-- **Road preview display performance (`ROAD-30`–`ROAD-31` done; `ROAD-32`–`ROAD-36` planned)**: prioritize **Road and
+- **Road preview display performance (`ROAD-30`–`ROAD-33` done; `ROAD-34`–`ROAD-36` planned)**: prioritize **Road and
   terrain**. With input-to-display baselines captured, tackle native buffer validation, rendering
   resource reuse, retained geometry locality, packed payload deltas, worker scheduling and
   compatible mesh updates one at a time. Each step needs matched performance and correctness
@@ -240,7 +240,11 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
   baselines and a diagnostic matrix. Road validation and terrain-resource creation are the
   larger measured frontend costs. `ROAD-31` moves road-buffer validation into a Rust seal certificate.
   Main-thread validation drops from 1.9–5.0 ms to ≤0.11 ms, and matched stationary medians improve 1.6–4.7 ms
-  in full mode. Next: `ROAD-32` terrain-resource reuse.
+  in full mode. `ROAD-32` recycles preview nodes, meshes, materials and textures through a bounded
+  display/staging pair. Per-request terrain resource creation drops to zero and full-mode stationary
+  medians improve 3.0–4.2 ms. `ROAD-33` keeps unaffected existing road geometry resident while
+  junction bounds move. Only the edited approaches are re-clipped and sent, which cuts dense moving
+  payloads by 43–66%. Next: `ROAD-34` changed-payload export.
   [Ordered plan and acceptance criteria](roads.md#preview-display-performance-plan-road-30road-36).
 
 - **Codebase audit (`AUDIT-01`, paused by user)**: review the economy, buildings/save lifecycle, Rust/Godot boundary, and network/terrain for obsolete code, duplicated authority, correctness and scaling problems. Coverage and fresh validation are tracked in [`code_audit.md`](code_audit.md).

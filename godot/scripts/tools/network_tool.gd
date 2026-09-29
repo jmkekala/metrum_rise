@@ -537,16 +537,49 @@ func _build_road_chunk_instance(
 	chunk_origin_x_m: float,
 	chunk_origin_z_m: float
 ) -> MeshInstance3D:
+	var instance := _new_road_chunk_node()
+	if not _fill_road_chunk_mesh(instance.mesh, chunk_data):
+		instance.free()
+		return null
+	instance.name = "RoadChunk_%d_%d" % [key.x, key.y]
+	_place_road_chunk_instance(instance, key, chunk_span_m, chunk_origin_x_m, chunk_origin_z_m)
+	return instance
+
+# Detached chunk node with an empty ArrayMesh; callers own it until it enters the tree.
+func _new_road_chunk_node() -> MeshInstance3D:
+	var instance := MeshInstance3D.new()
+	instance.mesh = ArrayMesh.new()
+	SceneLightingConfig.apply_shadow_policy(
+		instance,
+		SceneLightingConfig.SHADOW_RECEIVER_ONLY,
+		"roads"
+	)
+	return instance
+
+func _place_road_chunk_instance(
+	instance: MeshInstance3D,
+	key: Vector2i,
+	chunk_span_m: float,
+	chunk_origin_x_m: float,
+	chunk_origin_z_m: float
+) -> void:
+	instance.position = Vector3(
+		chunk_origin_x_m + float(key.x) * chunk_span_m,
+		0.0,
+		chunk_origin_z_m + float(key.y) * chunk_span_m
+	)
+
+# Appends every chunk layer to an empty mesh. Callers discard or clear the mesh on failure.
+func _fill_road_chunk_mesh(arr_mesh: ArrayMesh, chunk_data: Dictionary) -> bool:
 	_ensure_road_mesh_materials()
 	# Rust certifies the exact immutable chunk buffers off the main thread. A missing
 	# certificate falls back to the full scan; a malformed one rejects the chunk.
 	var certificate = chunk_data.get("road_mesh_payload_validated", false)
 	if typeof(certificate) != TYPE_BOOL:
-		return null
+		return false
 	var rust_validated: bool = certificate
-	var arr_mesh := ArrayMesh.new()
 	if not _append_road_surface(arr_mesh, chunk_data, "earthwork", _earthwork_mat, rust_validated):
-		return null
+		return false
 	if not _append_road_surface(
 		arr_mesh,
 		chunk_data,
@@ -554,7 +587,7 @@ func _build_road_chunk_instance(
 		WorldMaterials.road_sidewalk_face_material(),
 		rust_validated
 	):
-		return null
+		return false
 	if not _append_road_surface(
 		arr_mesh,
 		chunk_data,
@@ -562,7 +595,7 @@ func _build_road_chunk_instance(
 		WorldMaterials.road_sidewalk_face_material(),
 		rust_validated
 	):
-		return null
+		return false
 	if not _append_road_surface(
 		arr_mesh,
 		chunk_data,
@@ -570,7 +603,7 @@ func _build_road_chunk_instance(
 		WorldMaterials.road_sidewalk_material(),
 		rust_validated
 	):
-		return null
+		return false
 	if not _append_road_surface(
 		arr_mesh,
 		chunk_data,
@@ -578,9 +611,9 @@ func _build_road_chunk_instance(
 		WorldMaterials.road_asphalt_material(),
 		rust_validated
 	):
-		return null
+		return false
 	if not _append_road_surface(arr_mesh, chunk_data, "marking", _marking_mat, rust_validated):
-		return null
+		return false
 	if not _append_road_surface(
 		arr_mesh,
 		chunk_data,
@@ -588,24 +621,8 @@ func _build_road_chunk_instance(
 		WorldMaterials.road_concrete_material(),
 		rust_validated
 	):
-		return null
-	if arr_mesh.get_surface_count() == 0:
-		return null
-
-	var instance := MeshInstance3D.new()
-	instance.name = "RoadChunk_%d_%d" % [key.x, key.y]
-	instance.position = Vector3(
-		chunk_origin_x_m + float(key.x) * chunk_span_m,
-		0.0,
-		chunk_origin_z_m + float(key.y) * chunk_span_m
-	)
-	instance.mesh = arr_mesh
-	SceneLightingConfig.apply_shadow_policy(
-		instance,
-		SceneLightingConfig.SHADOW_RECEIVER_ONLY,
-		"roads"
-	)
-	return instance
+		return false
+	return arr_mesh.get_surface_count() > 0
 
 func _append_road_surface(
 	arr_mesh: ArrayMesh,

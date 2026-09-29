@@ -254,6 +254,9 @@ func _fixture(fixture: Dictionary) -> void:
 	if shifted is Dictionary and shifted.get("is_valid", false):
 		var same_footprint: bool = int(shifted["junction_preview"]["retained_revision"]) == tool._junction_preview.retained_revision
 		_expect(shifted["junction_preview"].has("retained_chunks") != same_footprint, "changed clip boundaries need fresh retained buffers; identical boundaries use deltas")
+		if fixture["name"] in ["t", "wide_t", "sloped_t"]:
+			# Sliding the junction along the same road moves only its approach clips.
+			_expect(same_footprint and not shifted["junction_preview"]["approach_chunks"].is_empty(), "moved junction bounds must keep the resident retained split")
 		_expect(tool._draw_compiled_preview_surface(shifted_points, shifted, shifted), "delta preview must install")
 		if same_footprint:
 			_expect(retained_instances == tool._junction_preview._retained_instances, "identical-footprint GPU meshes must survive pointer updates")
@@ -313,7 +316,7 @@ func _expect_existing_road_height(scene: Dictionary) -> void:
 	# Both the retained source and the local replacement use committed/solved heights.
 	var checked := 0
 	var raised := 0
-	for chunk in scene["chunks"] + scene.get("retained_chunks", []):
+	for chunk in scene["chunks"] + scene["approach_chunks"] + scene.get("retained_chunks", []):
 		var origin := Vector3(scene["chunk_origin_x_m"] + chunk["chunk_x"] * scene["chunk_span_m"], 0.0, scene["chunk_origin_z_m"] + chunk["chunk_z"] * scene["chunk_span_m"])
 		for local in chunk.get("road_vertices", PackedVector3Array()):
 			var point: Vector3 = local + origin
@@ -402,7 +405,7 @@ func _test_preview_keeps_terrain(tool: Node3D, preview: Dictionary, points: Pack
 		var new_meshes := {}
 		var reused_meshes := 0
 		for entry in tool._terrain_preview._patches.values():
-			var node: MeshInstance3D = entry.node
+			var node: MeshInstance3D = entry.slot.node
 			for mesh in [node.mesh, node.get_child(0).mesh]:
 				if old_meshes.has(mesh.get_instance_id()) or new_meshes.has(mesh.get_instance_id()):
 					reused_meshes += 1
@@ -424,9 +427,13 @@ func _test_preview_keeps_terrain(tool: Node3D, preview: Dictionary, points: Pack
 		_expect(tool._terrain_preview.request_id == 0 and tool._junction_preview.request_id == 0, "Changing mode clears both preview halves")
 		tool.set_road_preview_mode(1)
 		_expect(tool._draw_compiled_preview_surface(points, full, full), "Full preview can be shown again")
+		_test_preview_resource_reuse(tool, terrain, points, full, label == "t")
 		if not tool._terrain_preview._patches.is_empty():
 			terrain.patch_render_will_change.emit(tool._terrain_preview._patches.keys()[0])
 			_expect(tool._terrain_preview.request_id == 0 and tool._junction_preview.request_id == 0, "Terrain invalidation retires the paired road preview")
+		var spare_nodes: Array = tool._terrain_preview._spares.map(func(slot): return slot.node)
+		tool.set_road_preview_mode(0)
+		_expect(tool._terrain_preview._spares.is_empty() and spare_nodes.all(func(node): return not is_instance_valid(node)), "Leaving full mode frees every terrain preview slot")
 	tool.set_road_preview_mode(0)
 	_expect(tool._draw_compiled_preview_surface(points, preview, preview), "Road-only preview restores independently of terrain mode")
 	terrain._remove_patch(originals.keys()[0])
@@ -438,6 +445,52 @@ func _test_preview_keeps_terrain(tool: Node3D, preview: Dictionary, points: Pack
 		_expect(terrain.patches[key]["node"].mesh == originals[key].mesh, "cancel preserves terrain mesh identity")
 	tool.terrain_node = null
 	terrain.free()
+
+func _test_preview_resource_reuse(tool: Node3D, terrain: Node3D, points: PackedVector3Array, full: Dictionary, requires_terrain: bool) -> void:
+	# Replacements alternate between one displayed and one spare set; the third reuses the first.
+	var displays: Array[Dictionary] = []
+	for attempt in 3:
+		if attempt > 0:
+			tool._preview_drawn_request_id = 0
+			tool._junction_preview.request_id = 0
+			_expect(tool._draw_compiled_preview_surface(points, full, full), "a replacement pose must restage into spare slots")
+		displays.append(_preview_resource_ids(tool))
+	_expect(not displays[0].road.is_empty(), "the reuse fixture must display road chunks")
+	if requires_terrain:
+		_expect(not displays[0].terrain.is_empty(), "the T fixture must exercise terrain slot reuse")
+	_expect(displays[1].terrain.values().all(func(ids): return not displays[0].terrain.values().has(ids)), "staging must never write the displayed terrain slots")
+	_expect(displays[2].terrain.values().all(func(ids): return displays[0].terrain.values().has(ids)), "the spare terrain nodes, materials and textures must be reused")
+	_expect(displays[2].road == displays[0].road and displays[1].road != displays[0].road, "road preview nodes must alternate between display and spare")
+	_expect(tool._terrain_preview._spares.size() <= tool._terrain_preview._patches.size(), "terrain spares are bounded by the displayed footprint")
+	_expect(tool._junction_preview._spare.size() <= tool._junction_preview._instances.size() + tool._junction_preview._retained_instances.size(), "road spares are bounded by the displayed footprint")
+	for key in tool._terrain_preview._patches:
+		var slot: Dictionary = tool._terrain_preview._patches[key].slot
+		var source: ShaderMaterial = terrain.patches[key]["material"]
+		_expect(slot.node.get_parent() == terrain.patches[key]["node"] and terrain.patches[key]["node"].mesh == null, "the resident patch draws only the preview replacement")
+		_expect(slot.material.get_shader_parameter("heightmap") == slot.texture and slot.texture != terrain.patches[key]["height_texture"], "preview heights use a preview-owned texture")
+		for uniform in source.shader.get_shader_uniform_list():
+			if uniform.name != "heightmap" and uniform.name != "height_is_baked":
+				_expect(slot.material.get_shader_parameter(uniform.name) == source.get_shader_parameter(uniform.name), "reused material must mirror %s" % uniform.name)
+	# A road batch that fails after terrain staged returns both halves' spares untouched by display.
+	var broken: Dictionary = full.duplicate(true)
+	broken["request_id"] = int(full["request_id"]) + 100000
+	var chunks: Array = broken["junction_preview"]["chunks"]
+	chunks[chunks.size() - 1].erase("road_vertices")
+	var before := _preview_resource_ids(tool)
+	_expect(not tool._draw_compiled_preview_surface(points, broken, broken), "a malformed road half must reject the paired batch")
+	_expect(_preview_resource_ids(tool) == before and tool._terrain_preview.request_id == int(full["request_id"]), "failed staging must leave the previous complete display intact")
+	for key in tool._terrain_preview._patches:
+		var slot: Dictionary = tool._terrain_preview._patches[key].slot
+		_expect(slot.node.get_parent() == terrain.patches[key]["node"] and terrain.patches[key]["node"].mesh == null, "failed staging must keep the displayed terrain substitution")
+
+func _preview_resource_ids(tool: Node3D) -> Dictionary:
+	var terrain_ids := {}
+	for key in tool._terrain_preview._patches:
+		var slot: Dictionary = tool._terrain_preview._patches[key].slot
+		terrain_ids[key] = [slot.node.get_instance_id(), slot.material.get_instance_id(), slot.texture.get_instance_id()]
+	var road_ids: Array = tool._junction_preview._instances.map(func(instance): return [instance.get_instance_id(), instance.mesh.get_instance_id()])
+	road_ids.sort()
+	return {"terrain": terrain_ids, "road": road_ids}
 
 func _retry_terrain_payloads(ready: Dictionary, pending: Dictionary) -> void:
 	# Fresh-world payload work can be deferred by the native generation fence. Honor the same

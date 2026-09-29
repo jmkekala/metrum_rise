@@ -2,6 +2,7 @@
 
 ## Reversible render-only junction replacements; Rust owns all geometry and source selection.
 ## Originals stay resident; unchanged retained meshes survive successive pointer updates.
+## Replaced preview nodes and their ArrayMeshes are recycled as detached staging spares.
 extends RefCounted
 
 var generation: int = -1
@@ -12,12 +13,15 @@ var _retained_instances: Array[MeshInstance3D] = []
 var _retained_keys := PackedInt32Array()
 var _retained_source_generation: int = -1
 var _hidden: Array[MeshInstance3D] = []
+# Never displayed. Staging fills only these, so a failed batch cannot touch the visible one.
+# Trimmed to the displayed count on install: the pool is one staging set, not cursor history.
+var _spare: Array[MeshInstance3D] = []
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_PREDELETE:
 		# Detached cache nodes have no SceneTree owner. Final helper teardown must free them
 		# synchronously, including tools destroyed outside the tree or during engine shutdown.
-		for instance in _retained_instances:
+		for instance in _retained_instances + _spare:
 			if is_instance_valid(instance) and instance.get_parent() == null:
 				instance.free()
 
@@ -51,27 +55,34 @@ func show_preview(tool: Node3D, data: Dictionary, requested_id: int) -> bool:
 		return false
 	var staged: Array[MeshInstance3D] = []
 	var retained: Array[MeshInstance3D] = []
-	if not _stage(tool, data.get("chunks"), key_set, span, origin_x, origin_z, staged):
-		_discard(staged)
+	if not _stage(tool, data.get("chunks"), key_set, span, origin_x, origin_z, staged, "JunctionPreview"):
+		_recycle(staged)
 		return false
-	if not reuse_retained and not _stage(tool, data.get("retained_chunks"), key_set, span, origin_x, origin_z, retained):
-		_discard(staged)
-		_discard(retained)
+	var planned_count := staged.size()
+	# Clipped existing approaches follow the junction bounds; they replace with every pose while
+	# the resident retained split stays uploaded.
+	if not _stage(tool, data.get("approach_chunks"), key_set, span, origin_x, origin_z, staged, "JunctionApproach"):
+		_recycle(staged)
+		return false
+	if not reuse_retained and not _stage(tool, data.get("retained_chunks"), key_set, span, origin_x, origin_z, retained, "JunctionRetained"):
+		_recycle(staged)
+		_recycle(retained)
 		return false
 	var install_us := Time.get_ticks_usec() if not tool._preview_metric_row.is_empty() else 0
 	# Stage everything before hiding originals. No frame can expose a half-built replacement.
 	if staged.is_empty() or int(tool.simulation_node.get_road_tool_surface_generation()) != source_generation:
-		_discard(staged)
-		_discard(retained)
+		_recycle(staged)
+		_recycle(retained)
 		return false
 	if not reuse_retained:
-		reset()
+		clear()
+		_recycle(_retained_instances)
 		_retained_instances = retained
 		_retained_keys = keys
 		_retained_source_generation = mesh_generation
 		retained_revision = revision
 	else:
-		_discard(_instances)
+		_recycle(_instances)
 	if generation < 0:
 		for key in key_set:
 			if tool._road_chunk_instances.has(key):
@@ -85,10 +96,13 @@ func show_preview(tool: Node3D, data: Dictionary, requested_id: int) -> bool:
 	_instances = staged
 	generation = source_generation
 	request_id = requested_id
+	while _spare.size() > _instances.size() + _retained_instances.size():
+		_spare.pop_back().free()
 	if not tool._preview_metric_row.is_empty():
 		tool._preview_metric_row["road_install_ms"] = float(Time.get_ticks_usec() - install_us) / 1000.0
 		tool._preview_metric_row["retained_chunks_reused"] = _retained_instances.size() if reuse_retained else 0
-		tool._preview_metric_row["planned_chunks"] = staged.size()
+		tool._preview_metric_row["planned_chunks"] = planned_count
+		tool._preview_metric_row["approach_chunks"] = staged.size() - planned_count
 		var reused_layers := 0
 		if reuse_retained:
 			for instance in _retained_instances:
@@ -101,7 +115,7 @@ func clear() -> void:
 		if is_instance_valid(instance):
 			instance.visible = true
 	_hidden.clear()
-	_discard(_instances)
+	_recycle(_instances)
 	# Keep one detached retained revision during a drag. Re-entering a valid preview needs no
 	# upload, and a delta payload remains usable after a temporary invalid candidate.
 	for instance in _retained_instances:
@@ -110,14 +124,16 @@ func clear() -> void:
 	generation = -1
 	request_id = 0
 
+# Releases every preview-owned node, including spares. Use when the preview session ends.
 func reset() -> void:
 	clear()
 	_discard(_retained_instances)
+	_discard(_spare)
 	_retained_keys = PackedInt32Array()
 	_retained_source_generation = -1
 	retained_revision = 0
 
-func _stage(tool: Node3D, chunks: Variant, keys: Dictionary, span: float, origin_x: float, origin_z: float, output: Array[MeshInstance3D]) -> bool:
+func _stage(tool: Node3D, chunks: Variant, keys: Dictionary, span: float, origin_x: float, origin_z: float, output: Array[MeshInstance3D], prefix: String) -> bool:
 	if not chunks is Array:
 		return false
 	var seen := {}
@@ -130,15 +146,31 @@ func _stage(tool: Node3D, chunks: Variant, keys: Dictionary, span: float, origin
 		seen[key] = true
 		if not tool._preview_metric_row.is_empty():
 			tool._road_upload_metrics = tool._preview_metric_row
-		var instance: MeshInstance3D = tool._build_road_chunk_instance(chunk, key, span, origin_x, origin_z)
+		var reused := not _spare.is_empty()
+		var instance: MeshInstance3D = _spare.pop_back() if reused else tool._new_road_chunk_node()
+		# Spares are detached and hidden from the display, so clearing their surfaces is safe.
+		instance.mesh.clear_surfaces()
+		var filled: bool = tool._fill_road_chunk_mesh(instance.mesh, chunk)
 		if not tool._preview_metric_row.is_empty():
 			tool._road_upload_metrics = {}
-			tool._preview_metric_row["road_meshes_created"] = tool._preview_metric_row.get("road_meshes_created", 0) + 1
-		if instance == null:
-			return false
-		instance.name = "JunctionPreview_%d_%d" % [key.x, key.y]
+			var counter := "road_meshes_reused" if reused else "road_meshes_created"
+			tool._preview_metric_row[counter] = tool._preview_metric_row.get(counter, 0) + 1
+		# Keep the spare; its partial surfaces are cleared before the next fill.
 		output.append(instance)
+		if not filled:
+			return false
+		instance.name = "%s_%d_%d" % [prefix, key.x, key.y]
+		tool._place_road_chunk_instance(instance, key, span, origin_x, origin_z)
 	return true
+
+# Returns replaced or failed staging nodes to the detached spare set.
+func _recycle(instances: Array[MeshInstance3D]) -> void:
+	for instance in instances:
+		if is_instance_valid(instance):
+			if instance.get_parent() != null:
+				instance.get_parent().remove_child(instance)
+			_spare.append(instance)
+	instances.clear()
 
 func _discard(instances: Array[MeshInstance3D]) -> void:
 	for instance in instances:

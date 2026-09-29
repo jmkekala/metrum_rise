@@ -109,6 +109,12 @@ impl CurveSourceKey {
 }
 
 impl CellCurveSource {
+    /// Columns of a non-terminal curved group, counted from its lattice-rounded origin.
+    /// Generation and validation share this so micrometre phase rounding cannot add a sliver.
+    pub(super) fn open_columns(chord_along: f64, cell_m: f64) -> i32 {
+        ((chord_along - 1e-7) / cell_m).ceil() as i32
+    }
+
     /// Validates the complete guide/strip relationship, preventing unrelated saved geometry
     /// from granting frontage to a rectangle elsewhere in the world.
     pub(super) fn is_valid(&self) -> bool {
@@ -174,10 +180,10 @@ impl CellCurveSource {
         }
         let local = key.frame.local(origin).round();
         let count = if self.terminal {
-            ((tangent.dot(chord) + epsilon) / cell_m).floor()
+            ((tangent.dot(chord) + epsilon) / cell_m).floor() as i32
         } else {
-            ((tangent.dot(chord) - 1e-7) / cell_m).ceil()
-        } as i32;
+            Self::open_columns(tangent.dot(chord), cell_m)
+        };
         let along_min = local[along] as i32 - if along_sign < 0.0 { count } else { 0 };
         let depth_min = local[depth] as i32 - if depth_sign < 0 { CELL_DEPTH as i32 } else { 0 };
         key.min[along] == along_min && key.min[depth] == depth_min && width == i64::from(count)

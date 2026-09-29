@@ -1060,8 +1060,8 @@ Deployed extension identity remains unchanged.
 
 ### Preview display performance plan (`ROAD-30`–`ROAD-36`)
 
-**Status: `ROAD-30` and `ROAD-31` done; `ROAD-32`–`ROAD-36` planned (2026-09-29).** Implement and
-validate one task at a time. `ROAD-30` establishes the baseline below. Next: `ROAD-32`; use the
+**Status: `ROAD-30`–`ROAD-33` done; `ROAD-34`–`ROAD-36` planned (2026-09-29).** Implement and
+validate one task at a time. `ROAD-30` establishes the baseline below. Next: `ROAD-34`; use the
 measurements to justify any reprioritization. Each task has a separate roadmap entry and acceptance evidence. These are
 candidate improvements identified by source inspection, with no measured speedup yet.
 The `ROAD-29` native comparison (16.383 vs 21.986 ms) excludes frontend presentation costs
@@ -1396,6 +1396,103 @@ preview/staging footprint, no retained cursor history; work proportional to chan
 **Exit:** fewer resource creations in matched runs; exact restoration on cancel, mode change,
 teardown and patch recycling; failed staging leaves the previous complete display intact.
 
+**Implementation (validated 2026-09-29):** both preview halves keep one displayed set and one
+detached staging set.
+- `road_terrain_preview.gd` owns slots of a node, a retaining-wall child, a `ShaderMaterial`, an
+  `Image` and an `ImageTexture`. Staging only takes spare slots, never displayed ones.
+  - Each reused material copies the resident patch material's shader parameters, writing only
+    changed values; `heightmap` and `height_is_baked` stay preview-owned. The result matches a fresh
+    `duplicate()`. The committed material is never written.
+  - Heights go into the slot's `Image`. A texture with matching dimensions is updated in place with
+    `ImageTexture.update()`; otherwise a new texture is created and bound.
+  - `commit` returns the previous display to the spares and trims them to the displayed patch count.
+  - `reset` frees every slot. `road_tool.gd` calls it on cancel, mode change, main-mesh reset and
+    teardown.
+  - Slots are not tied to patch keys, so they survive footprint moves. A slot whose resident parent
+    was freed is skipped.
+- `road_junction_preview.gd` recycles replaced and failed chunk nodes and their `ArrayMesh`es as
+  detached spares, trimmed to the displayed count. `network_tool.gd::_fill_road_chunk_mesh` fills a
+  cleared mesh; committed chunk construction shares it.
+- A road batch that fails after terrain staged returns both halves' staging slots untouched by the
+  display.
+- Exact terrain product retention is not implemented: every request builds fresh
+  `CachedRefinedTerrainPatch` Arcs, so no cross-request product identity exists yet. `ROAD-34`
+  owns product revisions.
+- Material sync is O(shader uniforms) per staged patch. Every other step is O(staged products).
+  Memory is bounded by twice the displayed footprint.
+
+A headless microbenchmark on the acceptance machine (CPU side only) measured 143 µs per material
+`duplicate()` against 22 µs per parameter sync of the 123-uniform terrain shader, and 8.4 against
+2.3 µs for image/texture creation against `set_data` plus `update`.
+
+**Acceptance evidence (2026-09-29):** matched baseline (`HEAD` `f8db533c` scripts) and candidate
+processes were interleaved: two unprofiled acceptance runs and one `METRUM_DEBUG_PERF=1`
+diagnostic run each. Both sides loaded the same frozen release library (SHA-256 `837f5616…23fb88e4`),
+because this task changes only GDScript. The workload, hardware, settings, window and command match
+`ROAD-30` v3. All 72 case/mode captures passed `--validate` and none dropped observations.
+
+Diagnostic stationary medians show every per-request terrain material, texture, image and node
+creation eliminated (16/16/16/32 → 0). The eight road chunk meshes are reused instead of created,
+in both modes. Values in milliseconds:
+
+| Fixture (full mode) | Terrain resources | Stage + install total | Worker |
+| --- | --- | --- | --- |
+| `flat_t` | 3.60 → 0.81 | 6.04 → 2.38 | 20.0 → 19.7 |
+| `sloped_t` | 3.69 → 0.87 | 6.22 → 2.55 | 27.9 → 27.5 |
+| `flat_multi` | 3.86 → 1.01 | 6.72 → 2.89 | 23.2 → 23.0 |
+| `sloped_multi` | 4.07 → 0.94 | 7.09 → 2.82 | 37.5 → 37.4 |
+| `dense` | 4.02 → 1.03 | 7.41 → 3.20 | 23.9 → 23.9 |
+| `residency_retry` | 4.53 → 0.93 | 6.42 → 2.64 | 20.3 → 20.3 |
+
+Road-only stage-and-install totals stay at 0.72–1.15 ms on both sides. Detaching and reattaching
+road nodes costs about what creating them did. During the continuous drag, full-mode median
+stage-and-install fell from 7.7–10.9 to 2.5–3.2 ms per installed result. Retained reuse stayed at
+0% of moving installs on both sides, because moving clip bounds invalidate the retained batch
+(`ROAD-33`).
+
+Unprofiled acceptance ranges (two processes per side, milliseconds; not confidence intervals):
+
+| Fixture / mode | Stationary p50 | Stationary p95 | Moving displayed-age p95 |
+| --- | --- | --- | --- |
+| `flat_t` / full | 43.0–43.4 → 39.8 | 46.9–48.1 → 42.5 | 53.1–61.8 → 56.4–56.6 |
+| `sloped_t` / full | 43.4–43.6 → 39.7–39.9 | 46.3–46.7 → 42.7–43.7 | 68.5–68.8 → 55.4–68.4 |
+| `flat_multi` / full | 43.9 → 40.3–40.5 | 47.3–48.6 → 43.2 | 52.9–53.2 → 57.4–57.8 |
+| `sloped_multi` / full | 60.5–60.7 → 57.2–57.4 | 63.2–64.5 → 59.9–60.0 | 86.5–86.7 → 86.5–102.0 |
+| `dense` / full | 44.8–45.0 → 41.0–41.8 | 47.9–48.2 → 43.4–44.3 | 53.2–63.2 → 53.1–53.4 |
+| `residency_retry` / full | 92.3–92.5 → 88.3–88.7 | 96.2–106.9 → 90.7–96.4 | 53.2–53.5 → 57.9–59.2 |
+| `flat_t` / road-only | 21.3–21.6 → 20.9–21.5 | 37.1 → 36.8–38.1 | 53.2–53.3 → 52.8–55.1 |
+| `sloped_t` / road-only | 37.3–37.4 → 37.1–37.3 | 38.7–38.9 → 38.5–38.7 | 53.2–53.8 → 53.1–53.2 |
+| `flat_multi` / road-only | 36.7–37.1 → 36.8–37.0 | 38.0–39.2 → 38.6–38.8 | 53.2–53.5 → 55.7–56.0 |
+| `sloped_multi` / road-only | 37.8–39.0 → 38.2 | 41.4–54.3 → 40.5–53.6 | 69.7–70.0 → 69.9 |
+| `dense` / road-only | 22.6–23.2 → 22.6–22.9 | 38.5–39.2 → 38.4–38.9 | 53.1–56.5 → 53.1–68.6 |
+| `residency_retry` / road-only | 21.5 → 22.0–22.1 | 37.6 → 38.3–38.7 | 53.0–53.6 → 53.0–53.3 |
+
+Full-mode stationary medians improved by about 3.0–4.2 ms in every fixture and both processes. The p95s
+improved by similar amounts, except `residency_retry`, whose ranges overlap. Road-only is unchanged within noise, as expected: its only reused resources are road nodes.
+Frame intervals over 33.333 ms fell from 1/5 to 0/0; none exceeded 50 ms. Moving displayed age is
+dominated by frame cadence and worker time. Individual p95s moved by about one frame in both
+directions, so no moving-latency change is claimed. This is a small controlled-neighbourhood result,
+not a city-scale or cross-hardware claim.
+
+Artifacts: `rust/target/road32-artifacts/` holds `{baseline,candidate}-{a,b,diag}.json`, their logs
+and manifests, `run_ab.py`, `summarize.py`/`diagnostic-compare.txt` and
+`acceptance.py`/`acceptance-compare.txt`. Isolated projects live under
+`rust/target/road32/{baseline,candidate}/godot`; the baseline scripts come from a detached `HEAD` worktree.
+
+**Correctness checks:** `road_junction_preview_test` now also verifies:
+- successive replacements alternate between two terrain slot sets and two road node sets, and the
+  third replacement reuses the first set's nodes, materials and textures;
+- spares stay within the displayed footprint;
+- reused materials equal the resident material for every uniform except the preview heights, and the
+  preview heights use a preview-owned texture;
+- a malformed road half fails the paired batch without changing the displayed terrain or road
+  resources;
+- leaving full mode frees every terrain slot.
+
+Existing checks still verify that committed meshes, materials, textures and payloads keep their
+identities across mode change, cancel and invalidation. That suite plus the stream-preview,
+chunk-renderer, preview-metrics and benchmark-metrics suites pass headless in the isolated profile.
+
 #### `ROAD-33` — Keep unaffected road geometry resident across boundary changes
 
 `RoadPreviewRetainedCache::reuse` already skips filtering/export/upload for matching source
@@ -1409,6 +1506,117 @@ changed local owner ranges/triangles, without rescanning unrelated resident city
 **Exit:** dense-chunk cursor replays preserve unaffected mesh identities and attributes,
 including markings, while reducing retained bytes and uploads; no holes, duplicated road
 surfaces or existing-road height changes outside the allowed junction/approach footprint.
+
+**Implementation (validated 2026-09-29):** `RoadJunctionPreview::retain_existing` makes two
+`preview_partition` passes over each snapshotted source chunk. Both copy triangles without clipping,
+so every attribute and owner range is preserved:
+- the resident split: every owner except the replaced nodes and bounded source edges. This is
+  sealed as `retained`.
+- the approach sources: whole bounded-owner triangles, held unsealed behind an `Arc`.
+
+`clip_approaches` then clips the approach sources to the current junction/profile bounds and seals
+the result as `approach`. This is the same per-triangle operation the previous single pass used, so
+resident plus approach equals the old retained output triangle for triangle.
+
+`RoadPreviewRetainedCache` stores both halves and no longer depends on `bounds`. It still requires
+the source mesh generation, chunk grid, replacement chunks, replaced nodes and bounded edges to
+match. On a hit, the worker adopts the resident `Arc` without the core lock or a snapshot, and
+re-clips only the approach sources inside its retained stage. The bridge sends `approach_chunks` with
+every pose; `retained_chunks` is still sent only when the retained revision changes.
+`road_junction_preview.gd` stages approach chunks into the per-request set, so staging stays
+failure-atomic, and records `approach_chunks`.
+
+**Bound:** the split is O(snapshot triangles), once per owner set. Repeated work is
+O(bounded-owner triangles × junction bounds), and O(approach vertices) to seal and export. Unrelated
+resident city geometry is never rescanned. No spatial index or chunk-size change was added.
+
+**Acceptance evidence (2026-09-29):** matched baseline (the `ROAD-32` workspace scripts and library
+`837f5616…23fb88e4`, snapshotted before this change) and candidate (library
+`025e4cd3…a69da1ec`) processes were interleaved: two unprofiled acceptance runs and one
+`METRUM_DEBUG_PERF=1` diagnostic run each. A second diagnostic pair ran in reversed order. The
+workload, hardware, settings, window and command match `ROAD-30` v3. All 96 case/mode captures
+passed `--validate` and none dropped observations.
+
+The stationary phase repeats one pose, which already hit the old retained cache. The change shows
+during the continuous drag, where every new pose moves the junction bounds. Moving-phase medians per
+installed result from the first diagnostic pair:
+
+| Fixture | Retained reuse (moves) | Packed payload, full / road-only (KB) | Retained stage, full / road-only (ms) |
+| --- | --- | --- | --- |
+| `flat_t` | 0% → 100% | 637 → 621 / 333 → 316 | 0.12 → 0.12 / 0.20 → 0.19 |
+| `sloped_t` | 0% → 100% | 651 → 634 / 346 → 330 | 0.12 → 0.12 / 0.17 → 0.19 |
+| `flat_multi` | 0% → 100% | 924 → 832 / 573 → 482 | 0.23 → 0.22 / 0.31 → 0.27 |
+| `sloped_multi` | 0% → 100% | 968 → 868 / 607 → 508 | 0.25 → 0.22 / 0.30 → 0.29 |
+| `dense` | 0% → 100% | 1421 → 815 / 920 → 316 | 0.25 → 0.12 / 0.35 → 0.17 |
+| `residency_retry` | 0% → 100% | 638 → 620 / 333 → 316 | 0.14 → 0.12 / 0.20 → 0.18 |
+
+- Each moving install now reuses four retained chunks (20 layers) instead of re-uploading them.
+- The per-request set becomes four planned plus four approach chunks. The approach chunks replace
+  the four re-uploaded retained chunks, so the uploaded chunk and layer count is unchanged (8 chunks,
+  40 layers). Only the bytes shrink. Uploads fall only where an affected chunk has no bounded source
+  owner.
+- The dense fixture, which has the most unrelated geometry in the affected chunks, cuts moving
+  payloads by 43% in full mode and 66% in road-only mode.
+- Stage-and-install medians changed by less than 0.5 ms (dense road-only 1.49 → 0.96 ms).
+
+Worker medians are unchanged within run-to-run variation. Moving-phase worker medians agree within
+1.5 ms across all four diagnostic runs. Stationary `road_ms` medians vary by up to 9 ms between
+processes on either side (for example baseline `flat_t` road-only: 17.0 ms and 26.5 ms), and the
+reversed-order pair reproduced the spread on the baseline. The unchanged road solve dominates that
+stage; the new clip is inside the retained stage, 0.09–0.30 ms.
+
+Unprofiled acceptance ranges (two processes per side, milliseconds; not confidence intervals):
+
+| Fixture / mode | Stationary p50 | Stationary p95 | Moving displayed-age p95 |
+| --- | --- | --- | --- |
+| `flat_t` / full | 40.0–40.1 → 40.0–40.1 | 42.7 → 42.6–42.7 | 53.4–54.3 → 53.3–53.4 |
+| `sloped_t` / full | 40.8 → 40.1–40.3 | 55.4–58.6 → 55.8–56.0 | 68.5–68.7 → 68.9–69.8 |
+| `flat_multi` / full | 40.5–40.6 → 40.2–40.4 | 43.8–59.4 → 43.2 | 53.4–68.6 → 53.4–58.1 |
+| `sloped_multi` / full | 57.2–57.4 → 57.1 | 59.8–60.1 → 59.5–60.0 | 86.7–86.9 → 86.7–88.2 |
+| `dense` / full | 41.3–41.9 → 40.8 | 44.4–44.7 → 44.0–57.0 | 53.3–57.7 → 57.2–57.4 |
+| `residency_retry` / full | 88.7–88.8 → 88.8–89.7 | 97.8–98.1 → 101.3–105.2 | 53.4–60.2 → 53.4–69.0 |
+| `flat_t` / road-only | 21.8–22.0 → 21.6–22.0 | 38.4–38.5 → 38.3 | 53.2–53.4 → 53.3 |
+| `sloped_t` / road-only | 37.1 → 37.0 | 38.7 → 38.6 | 53.3–55.1 → 53.5–53.9 |
+| `flat_multi` / road-only | 37.0–37.2 → 36.9–37.4 | 38.9 → 39.0–39.1 | 53.4–53.9 → 53.3 |
+| `sloped_multi` / road-only | 37.7–38.5 → 38.2–38.9 | 53.7–54.0 → 53.7–54.0 | 69.9–71.6 → 69.9–70.2 |
+| `dense` / road-only | 23.0–23.2 → 22.1–22.7 | 39.3–39.4 → 38.5–38.8 | 53.3–54.5 → 53.3–53.6 |
+| `residency_retry` / road-only | 22.0–22.1 → 22.2–22.3 | 37.9–38.5 → 38.9–39.0 | 53.5–54.1 → 53.4–53.9 |
+
+End-to-end latency is unchanged within frame-cadence noise. Removed retained filtering and upload
+bytes cost well under a millisecond in these small neighbourhoods, so a latency gain was not
+expected. The benefit is locality: repeated work and bytes now follow the edited approaches rather
+than all existing geometry in the affected chunks. Frame intervals over 33.333 ms were 0/0 (baseline)
+and 1/0 (candidate); none exceeded 50 ms. The residency-retry fixture's full-mode p95 is dominated by
+its injected staging delay. This is a controlled-neighbourhood result, not a city-scale claim.
+
+Artifacts: `rust/target/road33-artifacts/` holds `{baseline,candidate}-{a,b,diag,diag2}.json`, their
+logs and manifests, `run_ab.py`/`run_diag2.py`, `summarize.py`/`diagnostic-compare.txt`,
+`moving.py`/`moving-compare.txt` and `acceptance.py`/`acceptance-compare.txt`. Isolated projects and
+the frozen baseline scripts and libraries are under `rust/target/road33/`.
+
+**Correctness checks:** new Rust test `moving_junction_bounds_reuse_resident_split_and_clip_only_approaches`
+slides a T 6 m along an existing road on flat and sloped terrain, beside an unrelated road in the same
+chunks. It verifies that:
+- the owners and chunks are equal while the bounds differ;
+- the cache hit shares the resident `Arc` and keeps the revision;
+- every mesh is certified;
+- the unrelated markings stay resident;
+- approach vertices are fewer than resident vertices;
+- resident plus approach equals, bit for bit, a fresh single-pass partition at the new bounds in
+  every chunk;
+- the approach geometry actually changes.
+
+The retained-cache test now requires reuse across moved bounds. The cold-commit parity and
+neighbouring-cross tests compare planned + retained + approach. All 72 release `network::render` and
+`road_preview` tests pass, rustdoc reports no warnings, and clippy reports nothing new.
+
+The Godot junction test now:
+- includes approach chunks in the existing-road height check;
+- requires the T, wide T and sloped T shifted poses to keep the retained revision and send approach
+  chunks.
+
+That suite plus the stream-preview, chunk-renderer, preview-metrics and benchmark-metrics suites pass
+headless in the isolated profile.
 
 #### `ROAD-34` — Export only changed packed payloads
 
@@ -1697,11 +1905,11 @@ Each interaction process uses one warmup and three measured repetitions per mode
 measured clicks per mode/build across processes). The following are medians of process
 medians; this sample count does not support tail estimates.
 
-| T click mode | Generation ready, before → after (ms) | Atomic render acknowledgment (ms) | First idle (ms) | Five-idle-frame settlement (ms) |
-|---|---:|---:|---:|---:|
-| Stationary completed preview | 6.73 → 10.21 | 27.56 → 32.54 | 34.34 → 36.36 | 62.10 → 62.13 |
-| After pointer trace | 6.80 → 9.58 | 28.71 → 27.46 | 34.42 → 34.38 | 62.01 → 62.00 |
-| Immediate, no completed preview | 40.09 → 38.79 | 52.14 → 52.56 | 59.09 → 59.51 | 86.75 → 87.07 |
+| T click mode                    | Generation ready, before → after (ms) | Atomic render acknowledgment (ms) | First idle (ms) | Five-idle-frame settlement (ms) |
+| ---------------------------------| --------------------------------------:| ----------------------------------:| ----------------:| --------------------------------:|
+| Stationary completed preview    | 6.73 → 10.21                          | 27.56 → 32.54                     | 34.34 → 36.36   | 62.10 → 62.13                   |
+| After pointer trace             | 6.80 → 9.58                           | 28.71 → 27.46                     | 34.42 → 34.38   | 62.01 → 62.00                   |
+| Immediate, no completed preview | 40.09 → 38.79                         | 52.14 → 52.56                     | 59.09 → 59.51   | 86.75 → 87.07                   |
 
 Every measured candidate stationary/trace click reused its road plan; all immediate clicks
 used the cold local road compiler. Reuse eligibility takes 0.016–0.017 ms, followed by

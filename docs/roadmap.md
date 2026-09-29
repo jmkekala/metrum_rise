@@ -24,7 +24,7 @@ Kind values:
 ## Active Priorities
 
 Road preview display performance: **Road and terrain is the primary performance target**.
-`ROAD-30` measurement and `ROAD-31` are complete. Tackle `ROAD-32`–`ROAD-36` one at a time; prioritize measured
+`ROAD-30` measurement and `ROAD-31`–`ROAD-33` are complete. Tackle `ROAD-34`–`ROAD-36` one at a time; prioritize measured
 full-mode bottlenecks and shared improvements. Keep Road only for comparison, then review
 whether both modes remain worthwhile after optimization. Mode removal/default changes are
 a later product decision. These are planned candidates, not established speedup claims. The owning
@@ -35,8 +35,8 @@ preserve both preview modes and local geometry/commit correctness.
 | --- | --- | --- | --- | --- |
 | `ROAD-30` | `hardening` | `done` | `P1` | Request-correlated stage timings; two matched rendered release runs and diagnostic matrix validated. Next: `ROAD-31`. |
 | `ROAD-31` | `refactor` | `done` | `P1` | Road buffers sealed and certified off-thread in Rust; Godot keeps type/count checks. Main-thread validation 1.9–5.0 → ≤0.11 ms, both modes. Next: `ROAD-32`. |
-| `ROAD-32` | `refactor` | `open` | `P1` | Reuse preview nodes, materials and compatible terrain textures with atomic staging. |
-| `ROAD-33` | `refactor` | `open` | `P1` | Preserve unaffected road mesh portions when junction/approach clip boundaries move. |
+| `ROAD-32` | `refactor` | `done` | `P1` | Preview nodes, meshes, materials, images and textures recycled through a bounded display/staging pair; per-request terrain resource creation 16/16/16/32 → 0. Full-mode stationary p50 −3.0–4.2 ms. Next: `ROAD-33`. |
+| `ROAD-33` | `refactor` | `done` | `P1` | Existing chunks split once per owner set into a resident part and re-clipped approaches; moving retained reuse 0% → 100%, dense moving payload −43% (full) / −66% (road-only). Next: `ROAD-34`. |
 | `ROAD-34` | `refactor` | `open` | `P1` | Reuse packed payloads and export changed chunks/layers/products only. |
 | `ROAD-35` | `refactor` | `open` | `P1` | Feed the existing worker one latest pending input while consuming completed previews. |
 | `ROAD-36` | `refactor` | `open` | `P2` | Evaluate compatible mesh buffer updates, retaining rebuilds for topology changes. |

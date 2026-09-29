@@ -1540,6 +1540,16 @@ frontage suppliers without moving the grid or its lots. A geometrically changed 
 borrow the old guide simply by being nearby. No-build suppliers retain only existing claim
 metadata; new construction still requires complete eligible frontage.
 
+Generation and guide validation count a non-terminal curved group's columns with the same rule,
+`CellCurveSource::open_columns`, measured from the lattice-rounded strip origin. Lattice phases
+are stored in micrometres, so the road start can lie up to about 0.5 µm from that origin.
+Generation previously measured column fronts from the start instead. A chord ending a fraction of
+a micrometre past a column boundary then produced a sliver fifth column that validation rejected.
+That debug assertion panicked zoning chunk preparation and poisoned the simulation core. Fixed
+2026-09-29 with regression `curved_group_ignores_submicrometre_sliver_columns`, which uses the
+recorded road. The same bug caused the two long-standing zoning test failures (partial paint/erase
+chunk rebuild parity and node-merge regeneration).
+
 Each group shares one reference-counted guide across its candidates. Contiguous intervals from
 one supplier are merged before publishing cells. Retained groups use the existing candidate
 priority, road-surface exclusion and exact cell conflict checks. The guide identity check adds

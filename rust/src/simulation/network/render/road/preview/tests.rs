@@ -280,6 +280,18 @@ fn verify_connection<const N: usize>(mut fixture: Fixture, points: [Vector3; N],
     }
 }
 
+// Existing geometry displayed in one chunk: the resident split plus the clipped approaches.
+fn existing_signature(scene: &RoadJunctionPreview, key: &SurfaceChunkKey) -> [Vec<[[u32; 12]; 3]>; 7] {
+    let empty = NetworkMeshData::new();
+    let mut output = signature(scene.retained.get(key).map(Arc::as_ref).unwrap_or(&empty));
+    let approach = signature(scene.approach.get(key).map(Arc::as_ref).unwrap_or(&empty));
+    for (layer, approach) in output.iter_mut().zip(approach) {
+        layer.extend(approach);
+        layer.sort_unstable();
+    }
+    output
+}
+
 #[test]
 fn t_preview_matches_cold_commit_and_preserves_unrelated_owners() {
     verify_junction(false, 1, false, false);
@@ -408,6 +420,7 @@ fn isolated_strokes_export_canonical_cold_commit_meshes_and_retain_neighbors() {
             scene
                 .retained
                 .values()
+                .chain(scene.approach.values())
                 .all(|mesh| mesh.render_payload_validated())
         );
         fixture.add(&points, 1, 1);
@@ -422,8 +435,7 @@ fn isolated_strokes_export_canonical_cold_commit_meshes_and_retain_neighbors() {
         for key in &scene.replacement_chunks {
             let mut displayed =
                 signature(scene.planned.get(key).map(Arc::as_ref).unwrap_or(&empty));
-            let retained = signature(scene.retained.get(key).map(Arc::as_ref).unwrap_or(&empty));
-            for (layer, retained) in displayed.iter_mut().zip(retained) {
+            for (layer, retained) in displayed.iter_mut().zip(existing_signature(&scene, key)) {
                 layer.extend(retained);
                 layer.sort_unstable();
             }
@@ -446,6 +458,7 @@ fn retained_cache_requires_exact_source_ownership_but_not_planned_positions() {
         planned: BTreeMap::new(),
         retained: Arc::new(BTreeMap::from([((0, 0), Arc::new(NetworkMeshData::new()))])),
         retained_revision: 0,
+        approach: BTreeMap::new(),
         replacement_chunks: BTreeSet::from([(0, 0)]),
         chunk_span_m: 256.0,
         chunk_origin_x_m: -512.0,
@@ -453,6 +466,7 @@ fn retained_cache_requires_exact_source_ownership_but_not_planned_positions() {
         removed: HashSet::from([NetworkMeshOwner::Edge(4), NetworkMeshOwner::Node(2)]),
         bounded: HashSet::new(),
         bounds: vec![],
+        approach_sources: Arc::new(BTreeMap::new()),
     };
     let mut cache = RoadPreviewRetainedCache::default();
     assert!(!cache.reuse(&mut scene));
@@ -463,10 +477,12 @@ fn retained_cache_requires_exact_source_ownership_but_not_planned_positions() {
     moved
         .planned
         .insert((0, 0), Arc::new(NetworkMeshData::new()));
+    // Moving junction/approach bounds changes only the per-request approach clips.
+    moved.bounds.push([0.0, 0.0, 16.0, 16.0]);
     assert!(cache.reuse(&mut moved));
     assert!(Arc::ptr_eq(&retained, &moved.retained));
     assert_eq!(revision, moved.retained_revision);
-    for changed_key in 0..7 {
+    for changed_key in 0..6 {
         let mut changed = scene.clone();
         match changed_key {
             0 => changed.source_mesh_generation += 1,
@@ -478,11 +494,8 @@ fn retained_cache_requires_exact_source_ownership_but_not_planned_positions() {
             4 => {
                 changed.removed.insert(NetworkMeshOwner::Edge(9));
             }
-            5 => {
-                changed.bounded.insert(NetworkMeshOwner::Edge(9));
-            }
             _ => {
-                changed.bounds.push([0.0, 0.0, 16.0, 16.0]);
+                changed.bounded.insert(NetworkMeshOwner::Edge(9));
             }
         }
         assert!(
@@ -645,14 +658,117 @@ fn neighboring_cross_is_reused_and_existing_geometry_outside_edit_is_unchanged()
                 origin,
                 false,
             ));
-            let mut retained = signature(after);
             for layer in &mut old_outside {
                 layer.sort_unstable();
             }
-            for layer in &mut retained {
+            assert_eq!(old_outside, existing_signature(&scene, key));
+        }
+    }
+}
+
+// Sliding a T along an existing road moves only its junction/approach bounds. The resident
+// split, including an unrelated road's markings in the same chunks, must be reused exactly.
+#[test]
+fn moving_junction_bounds_reuse_resident_split_and_clip_only_approaches() {
+    for sloped in [false, true] {
+        let mut fixture = Fixture::new(sloped);
+        fixture.add(
+            &[fixture.point(-110.0, 0.0), fixture.point(110.0, 0.0)],
+            1,
+            1,
+        );
+        fixture.add(
+            &[fixture.point(-110.0, 40.0), fixture.point(110.0, 40.0)],
+            1,
+            1,
+        );
+        let scene_at = |fixture: &Fixture, x: f32| {
+            let points = [fixture.point(x, -60.0), fixture.point(x, 0.0)];
+            let (preview, _, input) = fixture
+                .network
+                .road_surface
+                .compile_preview_surface_mesh_only_with_existing_surface_snap_and_topology_reuse(
+                    &points,
+                    1,
+                    1,
+                    &fixture.terrain,
+                    &fixture.graph,
+                    &fixture.network.road_surface,
+                    true,
+                );
+            assert!(preview.is_valid);
+            input
+                .expect("a T on an existing road must have a render scene")
+                .render(&fixture.terrain, &fixture.network.road_surface)
+                .expect("valid canonical road scene must render")
+        };
+        let mut first = scene_at(&fixture, 10.0);
+        let mut second = scene_at(&fixture, 16.0);
+        assert_eq!(
+            (&first.removed, &first.bounded, &first.replacement_chunks),
+            (&second.removed, &second.bounded, &second.replacement_chunks),
+            "the fixture must move only the junction bounds, sloped={sloped}"
+        );
+        assert!(!first.bounded.is_empty() && first.bounds != second.bounds);
+        let originals: BTreeMap<_, _> = RoadRenderer
+            .generate_mesh_chunks_with_surface(
+                &fixture.graph,
+                &mut fixture.network.lane_system,
+                &fixture.terrain,
+                &fixture.network.road_surface,
+                &first.replacement_chunks,
+            )
+            .into_iter()
+            .map(|(key, mesh)| (key, Arc::new(mesh)))
+            .collect();
+        let mut cache = RoadPreviewRetainedCache::default();
+        first.retain_existing(&originals);
+        cache.store(&mut first);
+        assert!(cache.reuse(&mut second));
+        second.clip_approaches();
+        assert!(Arc::ptr_eq(&first.retained, &second.retained));
+        assert_eq!(first.retained_revision, second.retained_revision);
+        assert!(
+            first
+                .retained
+                .values()
+                .chain(second.approach.values())
+                .all(|mesh| mesh.render_payload_validated())
+        );
+        let vertices = |meshes: &BTreeMap<SurfaceChunkKey, Arc<NetworkMeshData>>| {
+            meshes.values().map(|mesh| mesh.vertex_count()).sum::<usize>()
+        };
+        let markings: usize = first
+            .retained
+            .values()
+            .map(|mesh| mesh.marking_vertices.len())
+            .sum();
+        assert!(markings > 0, "unrelated markings must stay resident");
+        assert!(
+            vertices(&second.approach) < vertices(&second.retained),
+            "per-request approach clips must be smaller than the resident split"
+        );
+        let mut moved = false;
+        for (key, mesh) in &originals {
+            let origin = second.chunk_origin(*key);
+            // The previous single-pass partition at the new bounds is the exact reference.
+            let mut expected = signature(&mesh.preview_partition(
+                &second.removed,
+                &second.bounded,
+                &second.bounds,
+                origin,
+                false,
+            ));
+            for layer in &mut expected {
                 layer.sort_unstable();
             }
-            assert_eq!(old_outside, retained);
+            assert_eq!(
+                expected,
+                existing_signature(&second, key),
+                "resident split plus approach must equal a fresh partition in {key:?}, sloped={sloped}"
+            );
+            moved |= existing_signature(&first, key) != existing_signature(&second, key);
         }
+        assert!(moved, "the approach clips must follow the moved bounds");
     }
 }

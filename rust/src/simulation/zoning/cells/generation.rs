@@ -409,12 +409,27 @@ fn edge_candidates(
             } else {
                 (first_boundary - 1e-7).ceil() as i32
             };
+            // Open curved groups are validated from the rounded lattice origin. Measuring
+            // column fronts from `start` instead lets its sub-micrometre phase offset admit a
+            // sliver column past the chord, so count them exactly as validation does.
+            let open_curve = (!straight && end_station != length).then(|| {
+                (
+                    frame.local(origin).round()[along_axis],
+                    CellCurveSource::open_columns(tangent.dot(end - start), cell_m),
+                )
+            });
             for _ in 0..=GROUP_COLUMNS as usize {
                 let mut local = frame.local(origin).round();
                 local[along_axis] = f64::from(along_sign * boundary);
                 let front = frame.world(local.x, local.y);
                 let along = tangent.dot(front - start);
-                if along >= tangent.dot(end - start) - 1e-7 {
+                let past_end = match open_curve {
+                    Some((first, columns)) => {
+                        (local[along_axis] - first).abs() >= f64::from(columns)
+                    }
+                    None => along >= tangent.dot(end - start) - 1e-7,
+                };
+                if past_end {
                     break;
                 }
                 if along < -1e-6 && !(straight && station == 0.0) {

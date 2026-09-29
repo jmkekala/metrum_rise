@@ -286,6 +286,10 @@ pub(crate) fn run_road_preview_worker(
                 preview.validation.invalid_reason = "stale_surface_generation";
             }
         }
+        // A reused split keeps its resident meshes; only the moved approach clips are rebuilt.
+        if retained_reused && let Some(scene) = &mut preview.junction_preview {
+            scene.clip_approaches();
+        }
         if let Some(t) = &mut timing {
             t.finish_retained();
         }

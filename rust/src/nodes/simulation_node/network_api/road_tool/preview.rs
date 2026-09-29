@@ -422,25 +422,25 @@ impl SimulationNode {
         Self::append_road_preview_visual_mesh(&mut dict, &preview.visual_mesh);
         if let Some(scene) = &preview.junction_preview {
             let empty = BTreeSet::new();
-            let mut replacement = SimCore::road_mesh_chunks_dict(
-                &scene.planned,
-                &empty,
-                true,
-                preview.surface_generation,
-                scene.chunk_span_m,
-                scene.chunk_origin_x_m,
-                scene.chunk_origin_z_m,
-            );
-            if scene.retained_revision != retained_revision || retained_revision == 0 {
-                let retained = SimCore::road_mesh_chunks_dict(
-                    &scene.retained,
+            let export = |meshes| {
+                SimCore::road_mesh_chunks_dict(
+                    meshes,
                     &empty,
                     true,
                     preview.surface_generation,
                     scene.chunk_span_m,
                     scene.chunk_origin_x_m,
                     scene.chunk_origin_z_m,
-                );
+                )
+            };
+            let mut replacement = export(&scene.planned);
+            // Approach clips follow the moving junction bounds, so they travel with every pose.
+            replacement.set(
+                "approach_chunks",
+                export(&scene.approach).get("chunks").unwrap(),
+            );
+            if scene.retained_revision != retained_revision || retained_revision == 0 {
+                let retained = export(scene.retained.as_ref());
                 replacement.set("retained_chunks", retained.get("chunks").unwrap());
             }
             replacement.set(

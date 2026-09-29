@@ -25,12 +25,17 @@ pub(crate) struct RoadPreviewRenderInput {
 }
 
 /// Immutable render-only meshes; retained chunks exclude precisely the replaced source owners.
+///
+/// Existing geometry is split once per exact owner set. `retained` holds every untouched owner
+/// and stays resident while junction/approach bounds move. `approach` holds only the bounded
+/// source owners' triangles outside the current bounds and is re-clipped for each request.
 #[derive(Clone, Debug)]
 pub(crate) struct RoadJunctionPreview {
     pub(crate) source_mesh_generation: u64,
     pub(crate) planned: BTreeMap<SurfaceChunkKey, Arc<NetworkMeshData>>,
     pub(crate) retained: Arc<BTreeMap<SurfaceChunkKey, Arc<NetworkMeshData>>>,
     pub(crate) retained_revision: u64,
+    pub(crate) approach: BTreeMap<SurfaceChunkKey, Arc<NetworkMeshData>>,
     pub(crate) replacement_chunks: BTreeSet<SurfaceChunkKey>,
     pub(crate) chunk_span_m: f32,
     pub(crate) chunk_origin_x_m: f32,
@@ -38,6 +43,8 @@ pub(crate) struct RoadJunctionPreview {
     removed: HashSet<NetworkMeshOwner>,
     bounded: HashSet<NetworkMeshOwner>,
     bounds: Vec<[f32; 4]>,
+    // Unclipped bounded-owner source triangles, attributes intact; shared with the cache.
+    approach_sources: Arc<BTreeMap<SurfaceChunkKey, NetworkMeshData>>,
 }
 
 impl RoadPreviewRenderInput {
@@ -189,6 +196,7 @@ impl RoadPreviewRenderInput {
                 .collect(),
             retained: Arc::new(BTreeMap::new()),
             retained_revision: 0,
+            approach: BTreeMap::new(),
             replacement_chunks: chunks,
             chunk_span_m: self.surface.chunk_span_m(),
             chunk_origin_x_m: origin_x,
@@ -196,36 +204,74 @@ impl RoadPreviewRenderInput {
             removed: self.replaced_nodes,
             bounded: self.bounded,
             bounds: self.bounds,
+            approach_sources: Arc::new(BTreeMap::new()),
         })
     }
 }
 
 impl RoadJunctionPreview {
-    /// Filters a bounded snapshot of existing chunks off-lock. Unchanged attributes are copied
-    /// exactly, including crosswalks, markings and roads unrelated to the edited junction.
+    /// Splits a bounded snapshot of existing chunks off-lock, then clips the approaches.
+    /// Unchanged attributes are copied exactly, including crosswalks, markings and roads
+    /// unrelated to the edited junction. O(snapshot triangles), once per exact owner set.
     pub(crate) fn retain_existing(
         &mut self,
         meshes: &BTreeMap<SurfaceChunkKey, Arc<NetworkMeshData>>,
     ) {
-        self.retained = Arc::new(
-            meshes
-                .par_iter()
-                .filter_map(|(key, mesh)| {
-                    let origin = Vector2::new(
-                        self.chunk_origin_x_m + key.0 as f32 * self.chunk_span_m,
-                        self.chunk_origin_z_m + key.1 as f32 * self.chunk_span_m,
-                    );
-                    let retained = mesh.preview_partition(
-                        &self.removed,
-                        &self.bounded,
-                        &self.bounds,
-                        origin,
-                        false,
-                    );
-                    (!retained.is_empty()).then(|| (*key, retained.seal()))
-                })
-                .collect(),
-        );
+        let edited: HashSet<_> = self.removed.union(&self.bounded).copied().collect();
+        let none = HashSet::new();
+        let split: Vec<_> = meshes
+            .par_iter()
+            .map(|(key, mesh)| {
+                let origin = self.chunk_origin(*key);
+                let stable = mesh.preview_partition(&edited, &none, &[], origin, false);
+                let approach = if self.bounded.is_empty() {
+                    NetworkMeshData::new()
+                } else {
+                    mesh.preview_partition(&self.bounded, &none, &[], origin, true)
+                };
+                (*key, stable, approach)
+            })
+            .collect();
+        let mut retained = BTreeMap::new();
+        let mut sources = BTreeMap::new();
+        for (key, stable, approach) in split {
+            if !stable.is_empty() {
+                retained.insert(key, stable.seal());
+            }
+            if !approach.is_empty() {
+                sources.insert(key, approach);
+            }
+        }
+        self.retained = Arc::new(retained);
+        self.approach_sources = Arc::new(sources);
+        self.clip_approaches();
+    }
+
+    /// Clips the bounded owners' source triangles to the current junction/approach bounds.
+    /// This is the only per-request retained work: O(bounded-owner triangles × bounds).
+    pub(crate) fn clip_approaches(&mut self) {
+        let none = HashSet::new();
+        self.approach = self
+            .approach_sources
+            .par_iter()
+            .filter_map(|(key, source)| {
+                let clipped = source.preview_partition(
+                    &none,
+                    &self.bounded,
+                    &self.bounds,
+                    self.chunk_origin(*key),
+                    false,
+                );
+                (!clipped.is_empty()).then(|| (*key, clipped.seal()))
+            })
+            .collect();
+    }
+
+    fn chunk_origin(&self, key: SurfaceChunkKey) -> Vector2 {
+        Vector2::new(
+            self.chunk_origin_x_m + key.0 as f32 * self.chunk_span_m,
+            self.chunk_origin_z_m + key.1 as f32 * self.chunk_span_m,
+        )
     }
 }
 
@@ -242,13 +288,15 @@ struct RetainedEntry {
     chunks: BTreeSet<SurfaceChunkKey>,
     removed: HashSet<NetworkMeshOwner>,
     bounded: HashSet<NetworkMeshOwner>,
-    bounds: Vec<[f32; 4]>,
     meshes: Arc<BTreeMap<SurfaceChunkKey, Arc<NetworkMeshData>>>,
+    approach_sources: Arc<BTreeMap<SurfaceChunkKey, NetworkMeshData>>,
 }
 
 impl RoadPreviewRetainedCache {
-    /// Reuses filtering only when the mesh revision, chunk grid, keys and excluded owners match.
-    /// O(affected chunks + owners), independent of resident city size; payload reuse is O(1).
+    /// Reuses the split when the mesh revision, chunk grid, keys and edited owners match.
+    /// Junction/approach bounds are not a dependency: the caller re-clips only the approach
+    /// sources with `clip_approaches`. O(affected chunks + owners), independent of resident
+    /// city size; payload reuse is O(1).
     pub(crate) fn reuse(&self, scene: &mut RoadJunctionPreview) -> bool {
         let Some(entry) = &self.entry else {
             return false;
@@ -263,11 +311,11 @@ impl RoadPreviewRetainedCache {
             || entry.chunks != scene.replacement_chunks
             || entry.removed != scene.removed
             || entry.bounded != scene.bounded
-            || entry.bounds != scene.bounds
         {
             return false;
         }
         scene.retained = Arc::clone(&entry.meshes);
+        scene.approach_sources = Arc::clone(&entry.approach_sources);
         scene.retained_revision = self.revision;
         true
     }
@@ -286,8 +334,8 @@ impl RoadPreviewRetainedCache {
             chunks: scene.replacement_chunks.clone(),
             removed: scene.removed.clone(),
             bounded: scene.bounded.clone(),
-            bounds: scene.bounds.clone(),
             meshes: Arc::clone(&scene.retained),
+            approach_sources: Arc::clone(&scene.approach_sources),
         });
     }
 }

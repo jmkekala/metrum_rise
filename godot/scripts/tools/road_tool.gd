@@ -84,13 +84,14 @@ var _sticky_network_snap: Dictionary = {}
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_PREDELETE:
-		_terrain_preview.clear()
+		_terrain_preview.reset()
 
 func set_road_preview_mode(mode: int) -> void:
 	mode = mode if mode in [0, 1] else GameSettings.DEFAULT_ROAD_PREVIEW_MODE
 	if mode == _road_preview_mode:
 		return
 	_clear_preview_visual()
+	_terrain_preview.reset()
 	_clear_preview_cache()
 	_road_preview_mode = mode
 	_preview_update_pending = true
@@ -838,6 +839,7 @@ func cancel_road():
 	current_state = State.IDLE
 	_clear_sticky_network_snap()
 	_clear_preview_visual()
+	_terrain_preview.reset()
 	_junction_preview.reset()
 	if current_path:
 		current_path.queue_free()
@@ -849,6 +851,7 @@ func cancel_road():
 
 func reset_main_mesh_chunks() -> void:
 	_clear_preview_visual()
+	_terrain_preview.reset()
 	_junction_preview.reset()
 	_clear_preview_cache()
 	super.reset_main_mesh_chunks()

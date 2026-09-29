@@ -656,3 +656,29 @@ fn benchmark_cell_zoning_locality() {
         );
     }
 }
+
+// Recorded crash: micrometre lattice phase rounding left the chord end 0.42 µm past a fifth
+// column boundary. The generated curved group must count columns like its validator.
+#[test]
+fn curved_group_ignores_submicrometre_sliver_columns() {
+    let vertices = [
+        [52.51714324951172_f32, 96.5968017578125],
+        [50.24566650390625, 91.08895874023438],
+        [47.97386932373047, 85.58112335205078],
+        [45.701805114746094, 80.07331085205078],
+        [43.42951202392578, 74.56549835205078],
+        [41.15704345703125, 69.05770111083984],
+        [38.88443374633789, 63.54991149902344],
+    ];
+    let mut points: Vec<_> = vertices.iter().map(|p| Vector3::new(p[0], 0.0, p[1])).collect();
+    let tail = points[6] - points[5];
+    points.push(points[6] + tail.normalized() * 60.0);
+    let mut graph = RegionGraph::new();
+    let a = graph.add_node(points[0], NodeType::Junction);
+    let b = graph.add_node(points[7], NodeType::Junction);
+    polyline(&mut graph, a, b, points);
+    let mut store = CellStore::default();
+    let report = store.generate_in_bounds(&graph, &WorldConfig::default(), extent(), |_| false);
+    assert!(report.accepted > 0);
+    assert_disjoint(&store, extent());
+}
