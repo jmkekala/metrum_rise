@@ -231,12 +231,14 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Current Priorities
 
-- **Road preview display performance (`ROAD-30`–`ROAD-36`, planned)**: prioritize **Road and
-  terrain**, first measuring input-to-display stages in both modes, then tackle native buffer validation, rendering
+- **Road preview display performance (`ROAD-30` done; `ROAD-31`–`ROAD-36` planned)**: prioritize **Road and
+  terrain**. With input-to-display baselines captured, tackle native buffer validation, rendering
   resource reuse, retained geometry locality, packed payload deltas, worker scheduling and
   compatible mesh updates one at a time. Each step needs matched performance and correctness
   evidence. Keep Road only as a comparison; decide whether to retain both modes after measuring
-  the improvements. Next: `ROAD-30`; no frontend speedup is established yet.
+  the improvements. `ROAD-30` now has request-correlated timings, two matched rendered release
+  baselines and a diagnostic matrix. Road validation and terrain-resource creation are the
+  larger measured frontend costs. Next: `ROAD-31`, then `ROAD-32`; no optimization speedup claimed.
   [Ordered plan and acceptance criteria](roads.md#preview-display-performance-plan-road-30road-36).
 
 - **Codebase audit (`AUDIT-01`, paused by user)**: review the economy, buildings/save lifecycle, Rust/Godot boundary, and network/terrain for obsolete code, duplicated authority, correctness and scaling problems. Coverage and fresh validation are tracked in [`code_audit.md`](code_audit.md).

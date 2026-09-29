@@ -1060,8 +1060,8 @@ Deployed extension identity remains unchanged.
 
 ### Preview display performance plan (`ROAD-30`–`ROAD-36`)
 
-**Status: planned, all tasks open (2026-09-28).** Implement and validate one task at a time.
-Start with `ROAD-30`, then follow the order below; use its measurements to justify any
+**Status: `ROAD-30` done; `ROAD-31`–`ROAD-36` planned (2026-09-29).** Implement and validate one task at a time.
+`ROAD-30` establishes the baseline below. Next: `ROAD-31`; use the measurements to justify any
 reprioritization. Each task has a separate roadmap entry and acceptance evidence. These are
 candidate improvements identified by source inspection, with no measured speedup yet.
 The `ROAD-29` native comparison (16.383 vs 21.986 ms) excludes frontend presentation costs
@@ -1098,6 +1098,185 @@ creations and worker utilization. Keep instrumentation behind the existing bench
 facilities; establish acceptance timings with matched unprofiled release runs.
 **Exit:** reproducible baseline with stage attribution, workload/build/worker/render settings,
 commands and artifact locations in this section. No implementation speedup claimed.
+
+**Implementation (validated 2026-09-29):** the existing gameplay benchmark now
+accepts `METRUM_GAMEPLAY_BENCHMARK_MATRIX=preview`. It drives the production RoadTool through
+flat/sloped T, flat/sloped neighboring-cross, dense-chunk and controlled terrain-residency
+retry fixtures, with Road and terrain first and Road only second. Each case/mode resets its
+512 m world, waits for each setup commit and renderer to settle, warms the preview, then
+measures stationary replacements and a moving pointer followed by an exact final pose.
+Moving input uses absolute 60 Hz deadlines (400 scheduled samples at 100 repetitions);
+late frames coalesce overdue inputs. The capture records scheduling lateness and validates
+total trace duration, so a relative timer cannot silently halve one mode's input rate.
+Latency starts at scripted world-space input sampling, excluding OS input/raycast latency.
+Setup commits and snapshot construction are outside the measured drag. Existing
+`METRUM_DEBUG_PERF=1` snapshot diagnostics attribute one-time copying separately.
+
+The opt-in collector correlates sampled input IDs with native request IDs. Rust adds a
+fixed-size optional timing record per request; disabled captures do not read clocks in
+these new stages. Frontend capture is enabled by the benchmark or `METRUM_DEBUG_PERF=1`.
+It holds at most eight live request records and 4,096 observations per stream. Packed byte
+accounting visits payload containers and array lengths, never vertices. Complexity is
+O(changed payload metadata) per result and O(1) per frame; no city-wide query or index is added.
+
+- Native durations: mailbox queue, context read-lock/Arc capture, road solve/render,
+  retained-cache lookup plus earthwork preparation, core-lock wait, local site/mesh capture,
+  terrain compilation and retained-mesh filtering. Disjoint worker stages sum to worker
+  elapsed time. Bridge diagnostics add result read-lock wait, readiness and packing.
+- Frontend: total polling calls/time, road buffer validation, CPU mesh submission,
+  terrain preflight, mesh and resource creation, road/terrain installation, and first
+  `frame_post_draw` after installation while that request is still displayed. Headless
+  runs use a separately labelled process-frame boundary and are not rendered acceptance.
+- Totals and sub-stages overlap intentionally: queue timing starts inside request
+  dispatch; `poll_ms` includes bridge operations;
+  worker-end-to-poll includes publication and result read-lock wait; `stage_install_ms` includes the
+  validation/resource/install sub-stages. Do not sum overlapping fields. Terrain resource
+  time includes node/material/image/texture and retaining-wall creation, not GPU upload time.
+- Moving observations include both age when a new result first appears and displayed
+  result age on subsequent frames. Stationary observations require the exact sampled pose;
+  the final stop-to-exact-frame time is recorded separately. Frame hitches use 33.333/50 ms
+  thresholds. Packed bytes exclude dictionary/object overhead; resource counts describe
+  Godot objects, not physical GPU allocations. Changed/reused road
+  chunks/layers and created terrain meshes/nodes/materials/images/textures are counted.
+- Worker service fraction is observed, polled worker wall time excluding core-lock wait,
+  divided by the moving interval. Boundary jobs may remain incomplete; this is not CPU
+  core utilization. Diagnostic captures also collect latest engine viewport CPU/GPU
+  timings and an out-of-band post-workload CPU command-drain measurement. Those values
+  do not establish a request's physical GPU upload duration or monitor presentation.
+  See [Godot RenderingServer timing contracts](https://docs.godotengine.org/en/stable/classes/class_renderingserver.html#class-renderingserver-method-viewport-get-measured-render-time-gpu).
+
+The existing `tools/road_benchmark_report.py --validate` accepts the preview matrix and
+rejects missing modes, duplicate request observations, reversed milestones, stale final
+poses, missing residency retries, truncated captures and mutations of authoritative road
+state. Existing quantile policy is retained: p95 needs 100 observations, p99 needs 1,000;
+otherwise the report uses null. Diagnostic stage attribution and unprofiled release latency
+captures are separate artifacts. No implementation speedup is claimed by `ROAD-30`.
+
+Run the complete matrix through the existing launcher (synthetic world, no authored map
+required). Use a distinct run ID for each process; do not run builds or other benchmarks
+concurrently with acceptance measurements:
+
+```bash
+RAYON_NUM_THREADS=4 METRUM_DEBUG=0 METRUM_DEBUG_PERF=0 \
+METRUM_GAMEPLAY_BENCHMARK_MATRIX=preview \
+METRUM_GAMEPLAY_BENCHMARK_REPETITIONS=100 \
+METRUM_GAMEPLAY_BENCHMARK_WARMUP_REPETITIONS=8 \
+METRUM_GAMEPLAY_BENCHMARK_MAX_FPS=60 \
+METRUM_GAMEPLAY_BENCHMARK_RUN_ID=road30-release-a \
+./run.sh --benchmark-gameplay-roads
+```
+
+Repeat with a new run ID for an independent process; use `METRUM_DEBUG_PERF=1` only for
+separate stage/GPU diagnostics. `METRUM_GAMEPLAY_BENCHMARK_CASES` can select a comma-separated
+subset of `flat_t,sloped_t,flat_multi,sloped_multi,dense,residency_retry`; both modes still run.
+Optional `METRUM_GAMEPLAY_PREVIEW_CAPTURE_DIR` captures final rendered poses after timers
+finish; keep it unset for acceptance. Headless runs are suitable for pipeline correctness
+checks but cannot establish rendered latency. The renderer's original preview geometry,
+terrain, scheduling and commit rules are unchanged by this measurement task.
+
+**Acceptance evidence (2026-09-29):** two independent unprofiled release processes, each
+with eight warmup poses, 100 measured stationary replacements and 400 absolute-deadline
+60 Hz moving samples per fixture/mode. All 12 case/mode combinations passed in each run;
+a separate diagnostic process passed the same matrix with native/GPU timing enabled.
+Inputs, authoritative state, cadence and exact final-pose checks passed; no observations
+were dropped. These are small controlled neighborhoods, not a city-scale or cross-hardware claim.
+
+Hardware/settings: Core i9-12900K, Radeon RX 7900 XTX / RADV, Godot 4.7.2, X11,
+Forward+ Vulkan, 1280×720, VSync enabled, 60 FPS cap, four Rayon workers, simulation paused.
+Build: `cargo build --offline --release --manifest-path rust/Cargo.toml`,
+Rust 1.98.1 (`48a229cea`), existing release profile (optimized, debug info level 1).
+All captures use release library SHA-256
+`f01783c0d56537a0e67fc060ba614c8eaa5e1183672d6bb109b5a9af67ed7ac7`.
+
+The table reports ranges of the two process-level quantiles, in milliseconds; ranges are
+not confidence intervals. Displayed age includes frames between new result installations.
+
+| Fixture | Full p50 / p95 | Road-only p50 / p95 | Moving displayed-age p95: full / road-only |
+| --- | --- | --- | --- |
+| `flat_t` | 45.4–45.8 / 50.9–51.8 | 23.1–25.4 / 41.5–42.0 | 63.6–64.5 / 53.0–55.4 |
+| `sloped_t` | 45.3 / 62.3–62.6 | 39.1–39.2 / 42.6–44.7 | 68.5–68.7 / 55.6–57.8 |
+| `flat_multi` | 47.3–47.7 / 51.8–52.2 | 40.3 / 44.5–45.9 | 67.1–67.5 / 53.2 |
+| `sloped_multi` | 64.4–64.5 / 68.1–69.0 | 41.4–41.8 / 57.3–57.8 | 86.7–102.1 / 69.5–69.8 |
+| `dense` | 49.6–49.7 / 53.3–55.5 | 27.4–42.8 / 44.8–51.3 | 56.4–70.4 / 59.3–67.5 |
+| `residency_retry` | 94.1–94.3 / 103.5–103.7 | 23.0–25.7 / 39.2–43.3 | 63.3–66.5 / 53.0–53.1 |
+
+The 60 FPS cadence matters: dense road-only medians varied from 27.4 to 42.8 ms
+between the two processes. Work crossing a frame boundary can change observed latency
+by approximately one frame. These descriptive baselines do not establish a fixed mode
+speedup ratio or an optimization gain over earlier development captures.
+
+The retry fixture deliberately withholds resident patch lookup until three failed staging
+attempts; its ~94 ms full-mode median includes that injected delay. It is not a natural
+streaming-latency estimate. Ordinary final-stop observations ranged from 46.8–98.6 ms in
+full mode and 39.0–75.1 ms in road-only mode (one continuous-drag stop per case/process).
+Across all cases the two acceptance runs recorded 58/45 frame intervals over 33.333 ms
+and 0/0 over 50 ms; per-case counts and distributions are retained in the raw captures.
+
+Diagnostic stationary medians below locate costs; they are not acceptance latency or
+additive totals. Worker time and polling gaps vary between runs/modes even where the
+road algorithm is shared. All values are milliseconds.
+
+| Fixture / mode | Worker | Worker end → poll | Bridge packing | Road validation | CPU mesh submission | Terrain resource creation | Stage + install total |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| flat_t / full | 19.69 | 13.52 | 0.39 | 1.91 | 0.29 | 3.50 | 7.70 |
+| flat_t / road-only | 15.88 | 1.48 | 0.15 | 1.94 | 0.33 | 0.00 | 2.58 |
+| sloped_multi / full | 36.62 | 13.30 | 0.48 | 3.37 | 0.43 | 3.90 | 10.10 |
+| sloped_multi / road-only | 29.89 | 3.70 | 0.24 | 3.42 | 0.50 | 0.00 | 4.23 |
+| dense / full | 23.27 | 8.67 | 0.57 | 5.06 | 0.59 | 4.08 | 12.54 |
+| dense / road-only | 16.27 | 1.75 | 0.27 | 5.12 | 0.66 | 0.00 | 6.11 |
+
+For those full-mode fixtures each new pose created a median eight road meshes/40 road
+layers and 16 terrain patches (32 nodes, 16 materials/images/textures). Regular planes
+already use the terrain mesh cache: the final identity-checked counters report 20 new
+terrain meshes/12 reused planes for the T and multi-junction cases, or 22 new meshes/10
+reused planes for the dense case. Retaining-wall ArrayMeshes count as creations even
+when they have no drawable surfaces.
+Retained GPU chunk/layer reuse was zero while clipping footprints moved. Median packed
+payloads were 0.654 MB (flat T), 0.991 MB (sloped multi) and 1.455 MB (dense). Observed
+worker service fractions ranged from 0.55–0.84 across the six rows above. Diagnostic
+viewport GPU medians were 0.67–0.87 ms; the separate quiescent CPU command drains were
+0.001–0.002 ms. Neither figure isolates GPU transfers or internal waits inside API calls.
+
+These measurements support tackling `ROAD-31` validation and `ROAD-32` terrain-resource
+reuse next. `ROAD-33` can reduce retained-buffer validation/upload volume; `ROAD-35` has
+a measurable polling/scheduling interval to investigate. Packing and CPU mesh submission
+are smaller costs in these fixtures. Road/junction solving remains separate, and the
+choice to retain one or both preview modes remains deferred until after improvements.
+
+Artifacts: `rust/target/road30-artifacts/` (also available as `/tmp/road30`) contains
+`acceptance-v3-a.json`, `acceptance-v3-b.json`, `diagnostic-v3.json`, their matching logs
+and `*-manifest.json` files. Manifests pin source hashes, binary, command, working directory
+and environment. `run_baselines.py` reproduces the isolated-profile sequence. These runs
+used the existing `/tmp/metrum-road28/candidate/godot` project with workspace scripts and
+library, the workspace `rust/target/preview-test-tmp` TMPDIR/XDG profile, and the direct
+command `godot --path /tmp/metrum-road28/candidate/godot --windowed --resolution 1280x720 -- --gameplay-road-benchmark`.
+The launcher recipe above uses its default 1920×1080 window, so use the recorded command
+and manifests when matching these exact numbers. Only v3 artifacts constitute the accepted
+baseline; earlier development captures are superseded.
+`captures3/` contains diagnostic final-pose screenshots taken outside operation timers.
+
+**Correctness/build checks:** five release Rust mailbox/timing tests, nine Python report
+validation/comparison tests, and the Godot metrics, junction-preview, stream-preview and
+chunk-renderer suites pass. The junction suite verifies resource counters against distinct
+mesh identities, including reused planes and terrain-free bridge previews. Rustdoc completes
+without warnings; `bash -n run.sh` and `git diff --check` pass. The verified release library
+was deployed atomically to `godot/bin/libmetrum_rise.so` with the capture hash above.
+Logs live alongside the captures:
+`rust-tests-final.log`, `rustdoc.log`, `metrics-final.log`, `mesh-count-final.log`, and
+`final-road_preview_stream_test.log` / `final-network_tool_chunk_renderer_test.log`.
+
+Commands used for targeted checks:
+
+```bash
+TMPDIR="$PWD/rust/target/preview-test-tmp" cargo test --offline --release --manifest-path rust/Cargo.toml --lib road_preview::
+cargo doc --offline --no-deps --manifest-path rust/Cargo.toml
+python3 -m unittest discover -s tools -p test_road_benchmark_report.py
+```
+
+Godot checks use `godot --headless --path /tmp/metrum-road28/candidate/godot --script
+res://tests/<suite>.gd` with the isolated TMPDIR/XDG profile and four Rayon workers from the
+capture manifests. No road-planning algorithm changed, so this task does not establish a
+new populated-map planning speedup or repeat the unrelated city-scale acceptance suite.
 
 #### `ROAD-31` — Validate immutable road buffers once in Rust
 

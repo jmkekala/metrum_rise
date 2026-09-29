@@ -390,8 +390,29 @@ func _test_preview_keeps_terrain(tool: Node3D, preview: Dictionary, points: Pack
 		await process_frame
 	_expect(full is Dictionary and full.has("terrain_preview") and full.get("plan_state", "") == "ready", "Full mode publishes complete road and terrain products")
 	if full is Dictionary and full.has("terrain_preview"):
+		var trace: RefCounted = tool.begin_preview_measurement()
+		var sampled_us := Time.get_ticks_usec()
+		trace.sample(points, sampled_us)
+		trace.dispatch(full_request, sampled_us, sampled_us, true)
+		var old_meshes := {}
+		for mesh in terrain.patch_mesh_cache.values():
+			old_meshes[mesh.get_instance_id()] = true
 		_expect(tool._draw_compiled_preview_surface(points, full, full), "Full road-and-terrain preview must stage atomically")
 		_expect(tool._terrain_preview.request_id == full_request, "Terrain and road share the displayed request")
+		var new_meshes := {}
+		var reused_meshes := 0
+		for entry in tool._terrain_preview._patches.values():
+			var node: MeshInstance3D = entry.node
+			for mesh in [node.mesh, node.get_child(0).mesh]:
+				if old_meshes.has(mesh.get_instance_id()) or new_meshes.has(mesh.get_instance_id()):
+					reused_meshes += 1
+				else:
+					new_meshes[mesh.get_instance_id()] = true
+		var measured: Dictionary = trace.request(full_request)
+		_expect(measured.get("terrain_meshes_created", 0) == new_meshes.size(), "preview creation counters must match distinct new mesh identities: %s vs %d" % [measured.get("terrain_meshes_created", 0), new_meshes.size()])
+		_expect(measured.get("terrain_meshes_reused", 0) == reused_meshes, "cached terrain planes must count as reused resources: %s vs %d" % [measured.get("terrain_meshes_reused", 0), reused_meshes])
+		if label == "t":
+			_expect(reused_meshes > 0, "the T fixture must exercise cached terrain mesh accounting")
 		if not OS.get_environment("METRUM_JUNCTION_PREVIEW_CAPTURE").is_empty():
 			await _capture(tool.road_mesh_root, label + "_full", false, terrain)
 		for key in originals:

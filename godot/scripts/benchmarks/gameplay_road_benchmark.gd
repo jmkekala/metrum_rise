@@ -117,6 +117,9 @@ func _ready() -> void:
 func run() -> void:
 	_resolve_configuration()
 	_resolve_nodes()
+	if matrix_name == "preview":
+		await preload("res://scripts/benchmarks/road_preview_replay.gd").new().run(self)
+		return
 	if matrix_name == "terrain":
 		_terrain_replay = preload("res://scripts/benchmarks/road_terrain_replay.gd").new()
 		await _terrain_replay.run(self)

@@ -717,6 +717,7 @@ fn road_preview_rejects_a_mismatched_surface_generation() {
     let preview = super::road_preview::compile_road_preview_from_context(
         &context,
         RoadPreviewRequest {
+            enqueued_at: None,
             include_terrain: false,
             request_id: 11,
             surface_generation: query.surface_generation.wrapping_add(1),
@@ -958,6 +959,7 @@ fn planned_topology_terrain_rejection_restores_split_dependents() {
     let preview = super::road_preview::compile_road_preview_from_context(
         &context,
         RoadPreviewRequest {
+            enqueued_at: None,
             include_terrain: false,
             request_id: 1,
             surface_generation: query.surface_generation,
@@ -1015,6 +1017,7 @@ fn stale_topology_plan_is_rejected_before_authoritative_mutation() {
     let preview = super::road_preview::compile_road_preview_from_context(
         &context,
         RoadPreviewRequest {
+            enqueued_at: None,
             include_terrain: false,
             request_id: 1,
             surface_generation: query.surface_generation,
@@ -1614,6 +1617,7 @@ fn road_preview_modes_preserve_live_state_and_share_completed_terrain_on_click()
         let preview = super::road_preview::compile_road_preview_with_sites(
             &context,
             RoadPreviewRequest {
+                enqueued_at: None,
                 include_terrain,
                 request_id: 1,
                 surface_generation: query.surface_generation,
@@ -1665,6 +1669,7 @@ fn benchmark_road_preview_modes() {
             let preview = super::road_preview::compile_road_preview_with_sites(
                 &context,
                 RoadPreviewRequest {
+                    enqueued_at: None,
                     include_terrain,
                     request_id: i,
                     surface_generation: query.surface_generation,

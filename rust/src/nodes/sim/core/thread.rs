@@ -312,6 +312,7 @@ pub(crate) fn run_sim_thread(
                             Arc::new(super::RoadEditPlan::compile_road(
                                 &c,
                                 super::road_preview::RoadPreviewRequest {
+                                    enqueued_at: None,
                                     include_terrain: false,
                                     request_id: 0,
                                     surface_generation: c.road_tool_surface_generation,

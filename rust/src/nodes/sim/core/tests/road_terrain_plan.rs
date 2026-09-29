@@ -21,6 +21,7 @@ fn road_only_preview_completes_on_click_without_copying_or_resolving_roads() {
     let preview = super::super::road_preview::compile_road_preview_from_context(
         &context,
         RoadPreviewRequest {
+            enqueued_at: None,
             include_terrain: false,
             request_id: 7,
             surface_generation: generation,
@@ -85,6 +86,7 @@ fn road_only_preview_rejects_visual_terrain_changes_before_click_reuse() {
     let road = RoadEditPlan::compile_road(
         &core,
         RoadPreviewRequest {
+            enqueued_at: None,
             include_terrain: false,
             request_id: 1,
             surface_generation: core.road_tool_surface_generation,
@@ -131,6 +133,7 @@ fn prepare_with_lanes(
     let preview = crate::nodes::sim::core::road_preview::compile_road_preview_from_context(
         &context,
         RoadPreviewRequest {
+            enqueued_at: None,
             include_terrain: false,
             request_id: 1,
             surface_generation: query.surface_generation,
@@ -407,6 +410,7 @@ fn complete_readiness_rechecks_water_inputs_and_pending_dependencies() {
     let rebuilt = RoadEditPlan::compile(
         &core,
         RoadPreviewRequest {
+            enqueued_at: None,
             include_terrain: false,
             request_id: 2,
             surface_generation: core.road_tool_surface_generation,

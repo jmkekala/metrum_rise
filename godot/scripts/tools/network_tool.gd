@@ -29,6 +29,8 @@ var _road_chunk_span_m: float = 0.0
 var _road_chunk_origin_x_m: float = 0.0
 var _road_chunk_origin_z_m: float = 0.0
 var _staged_road_mesh_update: Dictionary = {}
+# Populated only while benchmark/diagnostic preview meshes are staged.
+var _road_upload_metrics: Dictionary = {}
 var blueprint_mesh: MeshInstance3D # The preview line/spline
 var blueprint_mat: StandardMaterial3D
 var node_multimesh: MultiMeshInstance3D # Holographic snapping points
@@ -600,6 +602,7 @@ func _append_road_surface(
 	layer: String,
 	material: Material
 ) -> bool:
+	var validation_us := Time.get_ticks_usec() if not _road_upload_metrics.is_empty() else 0
 	var vertices_key := layer + "_vertices"
 	var normals_key := layer + "_normals"
 	var colors_key := layer + "_colors"
@@ -650,6 +653,9 @@ func _append_road_surface(
 			or not is_finite(color.a)
 		):
 			return false
+	var upload_us := Time.get_ticks_usec() if not _road_upload_metrics.is_empty() else 0
+	if not _road_upload_metrics.is_empty():
+		_road_upload_metrics["road_validation_ms"] = _road_upload_metrics.get("road_validation_ms", 0.0) + float(upload_us - validation_us) / 1000.0
 	var arrays := []
 	arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = vertices
@@ -661,6 +667,9 @@ func _append_road_surface(
 	if arr_mesh.get_surface_count() != previous_surface_count + 1:
 		return false
 	arr_mesh.surface_set_material(previous_surface_count, material)
+	if not _road_upload_metrics.is_empty():
+		_road_upload_metrics["road_submit_ms"] = _road_upload_metrics.get("road_submit_ms", 0.0) + float(Time.get_ticks_usec() - upload_us) / 1000.0
+		_road_upload_metrics["road_layers_created"] = _road_upload_metrics.get("road_layers_created", 0) + 1
 	return true
 
 func _ensure_road_mesh_materials() -> void:

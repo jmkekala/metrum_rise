@@ -1034,6 +1034,7 @@ impl SimCore {
             Some(RoadEditPlan::compile(
                 self,
                 crate::nodes::sim::core::RoadPreviewRequest {
+                    enqueued_at: None,
                     include_terrain: false,
                     request_id: 0,
                     surface_generation: self.road_tool_surface_generation,

@@ -814,6 +814,7 @@ if [ -n "$GAMEPLAY_ROAD_PROFILE_MODE" ]; then
        [ "${METRUM_GAMEPLAY_BENCHMARK_MATRIX:-paired}" != "interaction" ] && \
        [ "${METRUM_GAMEPLAY_BENCHMARK_MATRIX:-paired}" != "saved" ] && \
        [ "${METRUM_GAMEPLAY_BENCHMARK_MATRIX:-paired}" != "terrain" ] && \
+       [ "${METRUM_GAMEPLAY_BENCHMARK_MATRIX:-paired}" != "preview" ] && \
        [ ! -f "$GAMEPLAY_WORLD_PATH" ]; then
         echo "Error: Kuopio world definition not found at $GAMEPLAY_WORLD_PATH" >&2
         exit 2
@@ -968,7 +969,7 @@ if [ $TEST -eq 1 ]; then
         economy_machinery_test field_edit_tool_test building_asset_reload_test \
         environment_overlay_test surface_patch_debug_test simulation_speed_input_test \
         vehicle_ground_support_test selection_gesture_test ui_settings_test \
-        network_tool_chunk_renderer_test road_benchmark_metrics_test \
+        network_tool_chunk_renderer_test road_benchmark_metrics_test road_preview_metrics_test \
         road_junction_preview_test road_preview_stream_test vegetation_invalidation_test \
         vegetation_edit_test vegetation_appearance_test vegetation_land_cover_test \
         new_game_dialog_test day_cycle_test camera_save_load_test \

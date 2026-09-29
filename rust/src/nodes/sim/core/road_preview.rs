@@ -3,7 +3,9 @@
 //! Asynchronous road-preview requests, worker snapshots, and compilation.
 
 mod requests;
+mod timing;
 pub(crate) use requests::{RoadPreviewSender, road_preview_channel};
+pub(crate) use timing::RoadPreviewTiming;
 
 use std::sync::{Arc, Mutex, RwLock, TryLockError};
 use std::time::{Duration, Instant};
@@ -25,6 +27,8 @@ use crate::simulation::water::WaterSystem;
 
 #[derive(Clone, Debug)]
 pub(crate) struct RoadPreviewSnapshot {
+    /// Fixed-size worker stage measurements, present only in performance captures.
+    pub(crate) timing: Option<RoadPreviewTiming>,
     pub(crate) include_terrain: bool,
     pub(crate) request_id: u64,
     pub(crate) surface_generation: u64,
@@ -64,6 +68,8 @@ pub(crate) struct RoadPreviewWorkerContext {
 
 #[derive(Debug)]
 pub(crate) struct RoadPreviewRequest {
+    /// Diagnostic enqueue clock; absent outside performance captures.
+    pub(crate) enqueued_at: Option<Instant>,
     pub(crate) include_terrain: bool,
     pub(crate) request_id: u64,
     pub(crate) surface_generation: u64,
@@ -163,6 +169,7 @@ pub(crate) fn run_road_preview_worker(
             return;
         };
 
+        let mut timing = request.enqueued_at.map(RoadPreviewTiming::new);
         let road_debug = crate::debug::category_enabled("road");
         let total_start = road_debug.then(Instant::now);
         let point_count = request.points.len();
@@ -172,7 +179,13 @@ pub(crate) fn run_road_preview_worker(
             .read()
             .expect("road preview context lock poisoned")
             .clone();
+        if let Some(t) = &mut timing {
+            t.finish_context();
+        }
         let mut preview = prepare_road_preview_from_context(&context, request);
+        if let Some(t) = &mut timing {
+            t.finish_road();
+        }
         let retained_reused = preview
             .junction_preview
             .as_mut()
@@ -188,12 +201,18 @@ pub(crate) fn run_road_preview_worker(
                 })
             })
             .flatten();
+        if let Some(t) = &mut timing {
+            t.finish_earthworks();
+        }
         if earthworks.is_some() || (preview.junction_preview.is_some() && !retained_reused) {
             // Snapshot only the affected chunk Arcs. Never hold SimCore while filtering meshes
             // or doing Rayon work, and never wait for it while retaining the context read lock.
             let inputs = loop {
                 match core.try_lock() {
                     Ok(core) => {
+                        if let Some(t) = &mut timing {
+                            t.finish_core_wait();
+                        }
                         if core.road_tool_surface_generation != preview.surface_generation
                             || core.terrain_stroke_active
                             || preview.junction_preview.as_ref().is_some_and(|scene| {
@@ -220,6 +239,9 @@ pub(crate) fn run_road_preview_worker(
                         let sites = earthworks
                             .as_ref()
                             .and_then(|plan| RoadTerrainSiteInputs::capture(&core, plan));
+                        if let Some(t) = &mut timing {
+                            t.finish_capture();
+                        }
                         break Some((sites, meshes));
                     }
                     Err(TryLockError::Poisoned(_)) => panic!("simulation core lock poisoned"),
@@ -247,6 +269,9 @@ pub(crate) fn run_road_preview_worker(
                         )));
                     }
                 }
+                if let Some(t) = &mut timing {
+                    t.finish_terrain();
+                }
                 if let Some(scene) = &mut preview.junction_preview
                     && let Some(meshes) = meshes
                 {
@@ -261,6 +286,10 @@ pub(crate) fn run_road_preview_worker(
                 preview.validation.invalid_reason = "stale_surface_generation";
             }
         }
+        if let Some(t) = &mut timing {
+            t.finish_retained();
+        }
+        preview.timing = timing;
         let prepared_count = preview.prepared_points.len();
         let surface_vertex_count = preview.visual_mesh.vertices.len();
         let is_valid = preview.is_valid;
@@ -419,6 +448,7 @@ fn prepare_road_preview_from_context(
         ))
     });
     RoadPreviewSnapshot {
+        timing: None,
         include_terrain,
         request_id,
         surface_generation: generation_matches

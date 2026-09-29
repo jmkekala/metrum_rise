@@ -36,6 +36,46 @@ def capture(scale=1.0):
 
 
 class RoadBenchmarkReportTest(unittest.TestCase):
+    def test_preview_correlation_modes_and_boundaries(self):
+        def row(request):
+            return dict(request_id=request, input_us=100, dispatch_us=200,
+                        received_us=300, installed_us=400, frame_us=500,
+                        input_to_frame_ms=0.4, exact_at_frame=True, native={},
+                        full_terrain=False, frame_boundary="frame_post_draw")
+
+        state = dict.fromkeys(("generation", "live_edges", "edge_slots", "nodes", "lanes", "agents", "buildings"), 0)
+        case = dict(case_id="flat_t", mode=0, ok=True, dropped=0,
+                    stationary=[row(1)], moving=[row(2)], final=row(3),
+                    state_before=state, state_after=state, scheduled_input_count=120,
+                    scheduled_input_hz=60, moving_interval_ms=2000, frame_ms={"max": 17})
+        full = copy.deepcopy(case)
+        full["mode"] = 1
+        for sample in full["stationary"] + full["moving"] + [full["final"]]:
+            sample["full_terrain"] = True
+        data = dict(benchmark="road_preview_latency", schema_version=1,
+                    success=True, samples=1, expected_cases=["flat_t"],
+                    mode="windowed", cases=[case, full])
+        self.assertIs(validate_capture(data), data)
+        for change in ("missing_mode", "wrong_boundary", "duplicate", "stale_final", "bad_order", "cadence", "missing_native"):
+            bad = copy.deepcopy(data)
+            candidate = bad["cases"][0]
+            if change == "missing_mode":
+                bad["cases"].pop()
+            elif change == "wrong_boundary":
+                candidate["final"]["frame_boundary"] = "headless_process_frame"
+            elif change == "duplicate":
+                candidate["final"]["request_id"] = 1
+            elif change == "stale_final":
+                candidate["final"]["exact_at_frame"] = False
+            elif change == "missing_native":
+                bad["runtime"] = {"diagnostic_environment": {"METRUM_DEBUG_PERF": "1"}}
+            elif change == "cadence":
+                candidate["moving_interval_ms"] = 4000
+            else:
+                candidate["final"]["installed_us"] = 600
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                validate_capture(bad)
+
     def test_valid_capture_and_paired_process_delta(self):
         self.assertIsNotNone(validate_capture(capture()))
         result = compare_pairs([capture(), capture()], [capture(0.8), capture(1.0)], "render_ack_ms")

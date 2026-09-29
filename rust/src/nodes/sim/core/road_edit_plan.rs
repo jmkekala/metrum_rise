@@ -330,6 +330,7 @@ mod tests {
         );
         let plan = RoadEditPlan::new(
             RoadPreviewRequest {
+                enqueued_at: None,
                 include_terrain: false,
                 request_id: 7,
                 surface_generation: 11,
@@ -381,6 +382,7 @@ mod tests {
         });
         let plan = RoadEditPlan::new(
             RoadPreviewRequest {
+                enqueued_at: None,
                 include_terrain: false,
                 request_id: 7,
                 surface_generation: 11,

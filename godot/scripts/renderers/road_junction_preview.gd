@@ -58,6 +58,7 @@ func show_preview(tool: Node3D, data: Dictionary, requested_id: int) -> bool:
 		_discard(staged)
 		_discard(retained)
 		return false
+	var install_us := Time.get_ticks_usec() if not tool._preview_metric_row.is_empty() else 0
 	# Stage everything before hiding originals. No frame can expose a half-built replacement.
 	if staged.is_empty() or int(tool.simulation_node.get_road_tool_surface_generation()) != source_generation:
 		_discard(staged)
@@ -84,6 +85,15 @@ func show_preview(tool: Node3D, data: Dictionary, requested_id: int) -> bool:
 	_instances = staged
 	generation = source_generation
 	request_id = requested_id
+	if not tool._preview_metric_row.is_empty():
+		tool._preview_metric_row["road_install_ms"] = float(Time.get_ticks_usec() - install_us) / 1000.0
+		tool._preview_metric_row["retained_chunks_reused"] = _retained_instances.size() if reuse_retained else 0
+		tool._preview_metric_row["planned_chunks"] = staged.size()
+		var reused_layers := 0
+		if reuse_retained:
+			for instance in _retained_instances:
+				reused_layers += instance.mesh.get_surface_count()
+		tool._preview_metric_row["retained_layers_reused"] = reused_layers
 	return true
 
 func clear() -> void:
@@ -118,7 +128,12 @@ func _stage(tool: Node3D, chunks: Variant, keys: Dictionary, span: float, origin
 		if not keys.has(key) or seen.has(key) or chunk.get("removed", true):
 			return false
 		seen[key] = true
+		if not tool._preview_metric_row.is_empty():
+			tool._road_upload_metrics = tool._preview_metric_row
 		var instance: MeshInstance3D = tool._build_road_chunk_instance(chunk, key, span, origin_x, origin_z)
+		if not tool._preview_metric_row.is_empty():
+			tool._road_upload_metrics = {}
+			tool._preview_metric_row["road_meshes_created"] = tool._preview_metric_row.get("road_meshes_created", 0) + 1
 		if instance == null:
 			return false
 		instance.name = "JunctionPreview_%d_%d" % [key.x, key.y]

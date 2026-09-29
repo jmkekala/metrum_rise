@@ -14,6 +14,8 @@ from statistics import median
 
 
 def validate_capture(data):
+    if data.get("benchmark") == "road_preview_latency":
+        return validate_preview_capture(data)
     if data.get("schema_version") != 4 or data.get("success") is not True:
         raise ValueError("capture must be successful schema 4")
     definitions = {case["case_id"]: case for case in data["matrix_cases"]}
@@ -66,6 +68,59 @@ def validate_capture(data):
                 raise ValueError(f"invalid settlement fence: {key}")
     if seen != expected or not expected:
         raise ValueError("missing fixtures or empty workload")
+    return data
+
+
+def validate_preview_capture(data):
+    """Reject incomplete modes, stale correlations and invalid timing boundaries."""
+    if data.get("schema_version") != 1 or data.get("success") is not True:
+        raise ValueError("preview capture must be successful schema 1")
+    expected = {(name, mode) for name in data["expected_cases"] for mode in (0, 1)}
+    seen = set()
+    for case in data["cases"]:
+        key = case["case_id"], case["mode"]
+        if key not in expected or key in seen or not case["ok"] or case["dropped"]:
+            raise ValueError(f"missing, duplicate, failed or truncated preview case: {key}")
+        seen.add(key)
+        if len(case["stationary"]) != data["samples"] or not case["moving"]:
+            raise ValueError(f"incomplete preview samples: {key}")
+        target_ms = case["scheduled_input_count"] * 1000 / case["scheduled_input_hz"]
+        if not target_ms <= case["moving_interval_ms"] <= target_ms + case["frame_ms"]["max"] + 1:
+            raise ValueError(f"moving input cadence drift: {key}")
+        ids = set()
+        for row in case["stationary"] + case["moving"] + [case["final"]]:
+            if row["request_id"] in ids:
+                raise ValueError(f"duplicate displayed request: {key}")
+            ids.add(row["request_id"])
+            times = [row[field] for field in ("input_us", "dispatch_us", "received_us", "installed_us", "frame_us")]
+            if times != sorted(times) or any(not math.isfinite(t) or t < 0 for t in times):
+                raise ValueError(f"invalid preview milestone order: {key}")
+            if row["full_terrain"] != (case["mode"] == 1):
+                raise ValueError(f"wrong preview mode: {key}")
+            boundary = "headless_process_frame" if data["mode"] == "headless" else "frame_post_draw"
+            if row["frame_boundary"] != boundary:
+                raise ValueError(f"wrong render boundary: {key}")
+            if abs(row["input_to_frame_ms"] - (row["frame_us"] - row["input_us"]) / 1000) > 0.001:
+                raise ValueError(f"inconsistent latency: {key}")
+            native = row["native"]
+            diagnostic = data.get("runtime", {}).get("diagnostic_environment", {}).get("METRUM_DEBUG_PERF") == "1"
+            if diagnostic and not native:
+                raise ValueError(f"missing diagnostic worker stages: {key}")
+            if native:
+                fields = ("context_ms", "road_ms", "earthworks_ms", "core_wait_ms", "capture_ms", "terrain_ms", "retained_ms")
+                if abs(sum(native[field] for field in fields) - native["worker_ms"]) > 0.001:
+                    raise ValueError(f"unaccounted worker stages: {key}")
+                if any(not math.isfinite(v) or v < 0 for v in native.values()):
+                    raise ValueError(f"invalid native timing: {key}")
+        if not case["final"]["exact_at_frame"] or any(not row["exact_at_frame"] for row in case["stationary"]):
+            raise ValueError(f"stationary/final pose did not converge: {key}")
+        if key == ("residency_retry", 1) and any(row["terrain_retries"] < 3 for row in case["stationary"]):
+            raise ValueError("residency workload did not exercise retries")
+        for field in ("generation", "live_edges", "edge_slots", "nodes", "lanes", "agents", "buildings"):
+            if case["state_before"][field] != case["state_after"][field]:
+                raise ValueError(f"preview mutated authoritative state: {key}: {field}")
+    if not expected or expected != seen:
+        raise ValueError("incomplete preview mode matrix")
     return data
 
 
@@ -172,7 +227,7 @@ def main():
     try:
         if args.validate:
             capture = load_capture(args.validate)
-            print(f"Validated {len(capture['fixtures'])} complete road fixtures")
+            print(f"Validated {len(capture.get('fixtures', capture.get('cases', [])))} complete road fixtures")
         else:
             if not args.baseline or not args.candidate:
                 parser.error("use --validate, or both --baseline and --candidate")

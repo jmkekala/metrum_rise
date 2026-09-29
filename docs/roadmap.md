@@ -24,7 +24,7 @@ Kind values:
 ## Active Priorities
 
 Road preview display performance: **Road and terrain is the primary performance target**.
-Tackle `ROAD-30`–`ROAD-36` one at a time, starting with measurement; prioritize measured
+`ROAD-30` measurement is complete. Tackle `ROAD-31`–`ROAD-36` one at a time; prioritize measured
 full-mode bottlenecks and shared improvements. Keep Road only for comparison, then review
 whether both modes remain worthwhile after optimization. Mode removal/default changes are
 a later product decision. These are planned candidates, not established speedup claims. The owning
@@ -33,7 +33,7 @@ preserve both preview modes and local geometry/commit correctness.
 
 | ID | Kind | Status | Priority | Next deliverable |
 | --- | --- | --- | --- | --- |
-| `ROAD-30` | `hardening` | `open` | `P1` | Measure input-to-display stages, result age, payload bytes and resource churn in both modes. |
+| `ROAD-30` | `hardening` | `done` | `P1` | Request-correlated stage timings; two matched rendered release runs and diagnostic matrix validated. Next: `ROAD-31`. |
 | `ROAD-31` | `refactor` | `open` | `P1` | Validate final road buffers once in Rust; retain cheap Godot boundary checks. |
 | `ROAD-32` | `refactor` | `open` | `P1` | Reuse preview nodes, materials and compatible terrain textures with atomic staging. |
 | `ROAD-33` | `refactor` | `open` | `P1` | Preserve unaffected road mesh portions when junction/approach clip boundaries move. |

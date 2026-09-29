@@ -4,6 +4,7 @@
 ## Reuses terrain validation/mesh builders; never changes payload caches, samples or acknowledgments.
 extends RefCounted
 
+var metrics: Dictionary = {}
 var request_id: int = 0
 var _patches: Dictionary = {}
 var _renderer: Node3D
@@ -12,6 +13,7 @@ var _invalidated: Callable
 func stage(terrain: Node3D, payloads: Variant, generation: int) -> Array:
 	if not is_instance_valid(terrain) or not terrain.has_signal("patch_render_will_change") or not payloads is Array or payloads.is_empty():
 		return []
+	var validation_us := Time.get_ticks_usec() if not metrics.is_empty() else 0
 	# Check residency before constructing any GPU resources. Streaming may need another frame.
 	for data in payloads:
 		if not data is Dictionary or not data.has("patch_x") or not data.has("patch_z"):
@@ -19,6 +21,8 @@ func stage(terrain: Node3D, payloads: Variant, generation: int) -> Array:
 		var key := Vector2i(data["patch_x"], data["patch_z"])
 		if not terrain._terrain_patch_payload_is_stageable(key, data, generation, int(data.get("render_step_mm", 0)), true):
 			return []
+	if not metrics.is_empty():
+		metrics["terrain_preflight_ms"] = float(Time.get_ticks_usec() - validation_us) / 1000.0
 	var staged: Array = []
 	var seen := {}
 	for data in payloads:
@@ -36,10 +40,15 @@ func stage(terrain: Node3D, payloads: Variant, generation: int) -> Array:
 		if original.position != center or patch["world_size_x"] != data["world_size_x"] or patch["world_size_z"] != data["world_size_z"]:
 			discard(staged)
 			return []
+		var cached_meshes_before: int = terrain.patch_mesh_cache.size() if not metrics.is_empty() else 0
+		var mesh_us := Time.get_ticks_usec() if not metrics.is_empty() else 0
 		var mesh: Mesh = terrain._terrain_patch_mesh_from_data(data, int(patch.get("lod_step", 1)), int(patch.get("subdivision_factor", 1)))
 		if mesh == null:
 			discard(staged)
 			return []
+		if not metrics.is_empty():
+			metrics["terrain_mesh_ms"] = metrics.get("terrain_mesh_ms", 0.0) + float(Time.get_ticks_usec() - mesh_us) / 1000.0
+		var texture_us := Time.get_ticks_usec() if not metrics.is_empty() else 0
 		var node := MeshInstance3D.new()
 		node.name = "RoadTerrainPreview_%d_%d" % [key.x, key.y]
 		node.mesh = mesh
@@ -57,9 +66,21 @@ func stage(terrain: Node3D, payloads: Variant, generation: int) -> Array:
 		walls.extra_cull_margin = original.extra_cull_margin
 		node.add_child(walls)
 		staged.append({"key": key, "node": node})
+		if not metrics.is_empty():
+			metrics["terrain_resources_ms"] = metrics.get("terrain_resources_ms", 0.0) + float(Time.get_ticks_usec() - texture_us) / 1000.0
+			metrics["terrain_patches_created"] = metrics.get("terrain_patches_created", 0) + 1
+			# Baked ArrayMeshes are fresh; regular PlaneMeshes come from the existing cache.
+			var created_meshes := int(mesh is ArrayMesh) + int(terrain.patch_mesh_cache.size()) - cached_meshes_before
+			metrics["terrain_meshes_created"] = metrics.get("terrain_meshes_created", 0) + created_meshes + int(walls.mesh != null)
+			metrics["terrain_meshes_reused"] = metrics.get("terrain_meshes_reused", 0) + 1 - created_meshes
+			metrics["terrain_nodes_created"] = metrics.get("terrain_nodes_created", 0) + 2
+			metrics["terrain_materials_created"] = metrics.get("terrain_materials_created", 0) + 1
+			metrics["terrain_images_created"] = metrics.get("terrain_images_created", 0) + 1
+			metrics["terrain_textures_created"] = metrics.get("terrain_textures_created", 0) + 1
 	return staged
 
 func commit(terrain: Node3D, staged: Array, id: int, invalidated: Callable) -> void:
+	var install_us := Time.get_ticks_usec() if not metrics.is_empty() else 0
 	# Called synchronously after the road batch stages successfully, with no await in between.
 	clear()
 	_invalidated = invalidated
@@ -82,6 +103,8 @@ func commit(terrain: Node3D, staged: Array, id: int, invalidated: Callable) -> v
 		original.add_child(entry["node"])
 		_patches[entry["key"]] = entry
 	request_id = id
+	if not metrics.is_empty():
+		metrics["terrain_install_ms"] = float(Time.get_ticks_usec() - install_us) / 1000.0
 
 func clear() -> void:
 	if is_instance_valid(_renderer):

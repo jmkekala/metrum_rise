@@ -386,6 +386,7 @@ fn measure_populated_road_plan_scaling(
         let mut terrain_samples = Vec::new();
         let generation = core.road_tool_surface_generation;
         let request = || RoadPreviewRequest {
+            enqueued_at: None,
             include_terrain: false,
             request_id: 1,
             surface_generation: generation,

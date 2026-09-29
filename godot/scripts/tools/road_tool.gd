@@ -35,6 +35,10 @@ var _info_label: Label = null
 # World-space preview-label anchor — used each frame to project to screen.
 var _label_world_pos: Vector3 = Vector3.ZERO
 
+var preview_metrics: RefCounted
+var _preview_input_us := 0
+var _preview_metric_row: Dictionary = {}
+
 var _road_debug_enabled: bool = false
 var _preview_cache_points: PackedVector3Array = PackedVector3Array()
 var _preview_cache_surface: Dictionary = {}
@@ -95,6 +99,19 @@ func _invalidate_terrain_preview() -> void:
 	_clear_preview_visual()
 	_preview_update_pending = true
 
+func begin_preview_measurement() -> RefCounted:
+	preview_metrics = preload("res://scripts/benchmarks/road_preview_metrics.gd").new()
+	if DisplayServer.get_name() != "headless" and not RenderingServer.frame_post_draw.is_connected(_preview_frame_completed):
+		RenderingServer.frame_post_draw.connect(_preview_frame_completed)
+	if is_inside_tree() and OS.get_environment("METRUM_DEBUG_PERF") == "1" and DisplayServer.get_name() != "headless":
+		preview_metrics.viewport = get_viewport().get_viewport_rid()
+		RenderingServer.viewport_set_measure_render_time(preview_metrics.viewport, true)
+	return preview_metrics
+
+func _preview_frame_completed() -> void:
+	if preview_metrics != null:
+		preview_metrics.frame(_preview_drawn_request_id, DisplayServer.get_name() != "headless")
+
 func _ready():
 	super._ready()
 	add_to_group("road_preview_tools")
@@ -103,6 +120,8 @@ func _ready():
 		_road_preview_material = WorldMaterials.road_preview_material()
 		blueprint_mesh.material_override = _road_preview_material
 	_road_debug_enabled = _road_debug_is_enabled()
+	if OS.get_environment("METRUM_DEBUG_PERF") == "1":
+		begin_preview_measurement()
 	_hud_canvas = CanvasLayer.new()
 	_hud_canvas.layer = 10
 	add_child(_hud_canvas)
@@ -117,6 +136,8 @@ func _ready():
 	_hud_canvas.add_child(_info_label)
 
 func _process(delta):
+	if preview_metrics != null and DisplayServer.get_name() == "headless":
+		preview_metrics.frame(_preview_drawn_request_id, false)
 	_poll_road_commit_result()
 	var previous_mouse_pos := _last_world_mouse_pos
 	var had_mouse_pos := _has_last_world_mouse_pos
@@ -282,6 +303,8 @@ func _handle_click():
 func _update_preview():
 	if current_path == null or _commit_request_id > 0: return
 	var points := _refresh_preview_curve()
+	if preview_metrics != null:
+		preview_metrics.sample(points, _preview_input_us if _preview_input_us > 0 else Time.get_ticks_usec())
 	if _preview_display_request != null and not _preview_display_request.matches_context(self):
 		_clear_preview_visual()
 	_poll_pending_preview_result()
@@ -299,7 +322,10 @@ func _update_preview():
 		_update_preview_measurement_label(validation.get("prepared_points", points), validation)
 		return
 	if is_valid and exact.is_empty() and not _preview_result_pending and points.size() > 1:
+		var dispatch_us := Time.get_ticks_usec() if preview_metrics != null else 0
 		_preview_request_id = simulation_node.request_preview_road_surface_with_options(points, fwd_lanes, bkw_lanes, _snap_to_roads_enabled(), _road_preview_mode == 1)
+		if preview_metrics != null:
+			preview_metrics.dispatch(_preview_request_id, dispatch_us, Time.get_ticks_usec(), _road_preview_mode == 1)
 		_preview_request = PreviewRequest.new(self, points, _preview_request_id)
 		_preview_result_pending = true
 	if is_valid and not exact.is_empty():
@@ -359,6 +385,8 @@ func _refresh_preview_curve() -> PackedVector3Array:
 func _queue_preview_update() -> void:
 	if current_path == null:
 		return
+	if preview_metrics != null:
+		_preview_input_us = Time.get_ticks_usec()
 	# Coalesce input bursts; validation, curve baking and mesh upload happen once in _process.
 	_preview_update_pending = true
 
@@ -448,7 +476,10 @@ func _preview_zoning_revision_is_current(preview: Dictionary) -> bool:
 func _poll_pending_preview_result() -> bool:
 	if not _preview_result_pending or _preview_request == null:
 		return false
+	var poll_us := Time.get_ticks_usec() if preview_metrics != null else 0
 	var preview = simulation_node.get_preview_road_surface_result(_preview_request.id, _junction_preview.retained_revision)
+	if preview_metrics != null:
+		preview_metrics.poll(_preview_request.id, Time.get_ticks_usec() - poll_us, preview)
 	if preview == null:
 		return false
 	_preview_result_pending = false
@@ -493,6 +524,9 @@ func _draw_compiled_preview_surface(
 		_update_preview_measurement_label(preview_verts if preview_verts.size() > 1 else points, validation, preview.get("plan_state", ""))
 		return true
 
+	if preview_metrics != null:
+		_preview_metric_row = preview_metrics.request(preview_request_id)
+	var stage_us := Time.get_ticks_usec() if preview_metrics != null else 0
 	if preview.has("junction_preview"):
 		var scene: Dictionary = preview["junction_preview"]
 		var staged: Array = []
@@ -504,8 +538,11 @@ func _draw_compiled_preview_surface(
 			if not payloads is Array:
 				return false
 			if not payloads.is_empty():
+				_terrain_preview.metrics = _preview_metric_row
 				staged = _terrain_preview.stage(terrain_node, payloads, int(preview["surface_generation"]))
 				if staged.is_empty():
+					if not _preview_metric_row.is_empty():
+						_preview_metric_row.terrain_retries += 1
 					_preview_update_pending = true
 					return false
 		if not _junction_preview.show_preview(self, scene, preview_request_id):
@@ -522,6 +559,9 @@ func _draw_compiled_preview_surface(
 		if not _upload_road_preview_mesh(preview):
 			return false
 	_preview_drawn_request_id = preview_request_id
+	if preview_metrics != null:
+		_preview_metric_row["stage_install_ms"] = float(Time.get_ticks_usec() - stage_us) / 1000.0
+		preview_metrics.installed(preview_request_id)
 	_update_preview_measurement_label(preview_verts if preview_verts.size() > 1 else points, validation, preview.get("plan_state", ""))
 	return true
 

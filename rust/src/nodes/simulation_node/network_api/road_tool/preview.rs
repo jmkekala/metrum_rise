@@ -299,6 +299,7 @@ impl SimulationNode {
             .surface_generation;
         let send_start = road_debug.then(Instant::now);
         let send_ok = self.road_preview_tx.submit(RoadPreviewRequest {
+            enqueued_at: None,
             include_terrain,
             request_id,
             surface_generation,
@@ -341,7 +342,11 @@ impl SimulationNode {
         let Ok(request_id) = u64::try_from(request_id) else {
             return Variant::nil();
         };
+        let result_lock_start = crate::debug::is_perf_enabled().then(Instant::now);
         let preview_result = self.road_preview_result.read().unwrap();
+        let result_lock_ms = result_lock_start
+            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
         let Some(preview) = preview_result.as_ref() else {
             return Variant::nil();
         };
@@ -352,6 +357,7 @@ impl SimulationNode {
         self.road_preview_snapshot_to_variant(
             preview,
             u64::try_from(retained_revision).unwrap_or(0),
+            result_lock_ms,
         )
     }
 
@@ -359,7 +365,9 @@ impl SimulationNode {
         &self,
         preview: &RoadPreviewSnapshot,
         retained_revision: u64,
+        result_lock_ms: f64,
     ) -> Variant {
+        let export_start = preview.timing.as_ref().map(|_| Instant::now());
         let Some(mut dict) = self.road_candidate_dictionary_with_parcel_clearance(
             &preview.validation,
             &preview.prepared_points,
@@ -410,6 +418,7 @@ impl SimulationNode {
                 );
             }
         }
+        let readiness_ms = export_start.map(|t| t.elapsed().as_secs_f64() * 1000.0);
         Self::append_road_preview_visual_mesh(&mut dict, &preview.visual_mesh);
         if let Some(scene) = &preview.junction_preview {
             let empty = BTreeSet::new();
@@ -475,6 +484,33 @@ impl SimulationNode {
                 dict.set("terrain_preview", batch);
             }
             dict.set("junction_preview", replacement);
+        }
+        if let (Some(t), Some(start)) = (&preview.timing, export_start) {
+            let mut metrics = VarDictionary::new();
+            for (name, value) in [
+                ("result_read_lock_ms", result_lock_ms),
+                ("queue_ms", t.queue_ms),
+                ("context_ms", t.context_ms),
+                ("road_ms", t.road_ms),
+                ("earthworks_ms", t.earthworks_ms),
+                ("core_wait_ms", t.core_wait_ms),
+                ("capture_ms", t.capture_ms),
+                ("terrain_ms", t.terrain_ms),
+                ("retained_ms", t.retained_ms),
+                ("worker_ms", t.worker_ms),
+                (
+                    "worker_end_to_poll_ms",
+                    start.duration_since(t.completed_at).as_secs_f64() * 1000.0,
+                ),
+                ("readiness_ms", readiness_ms.unwrap_or(0.0)),
+                (
+                    "packing_ms",
+                    start.elapsed().as_secs_f64() * 1000.0 - readiness_ms.unwrap_or(0.0),
+                ),
+            ] {
+                metrics.set(name, value);
+            }
+            dict.set("preview_timing", metrics);
         }
         dict.to_variant()
     }
