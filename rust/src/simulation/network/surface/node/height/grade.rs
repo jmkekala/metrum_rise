@@ -174,6 +174,23 @@ mod tests {
     }
 
     #[test]
+    fn carrier_accepts_same_material_heights_split_only_by_float_rounding() {
+        // f32 and f64 evaluations of 1.6375 m straddle the half-millimetre key boundary.
+        let mut regions = vec![
+            manual_region(RoadSurfaceBandKind::Carriageway, 2, 1.6374999627839066),
+            manual_region(RoadSurfaceBandKind::Carriageway, 3, 1.6375),
+        ];
+
+        apply_junctionn_height_authority_normalization(&mut regions)
+            .expect("float rounding across a millimetre key boundary is not a conflict");
+
+        assert_eq!(
+            regions[0].shape[0][0].height_m,
+            regions[1].shape[0][0].height_m
+        );
+    }
+
+    #[test]
     fn carrier_rejects_same_material_vertex_height_conflict() {
         let mut regions = vec![
             manual_region(RoadSurfaceBandKind::Carriageway, 9, 2.0),

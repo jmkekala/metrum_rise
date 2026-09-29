@@ -75,7 +75,8 @@ def validate_preview_capture(data):
     """Reject incomplete modes, stale correlations and invalid timing boundaries."""
     if data.get("schema_version") != 1 or data.get("success") is not True:
         raise ValueError("preview capture must be successful schema 1")
-    expected = {(name, mode) for name in data["expected_cases"] for mode in (0, 1)}
+    # Older captures ran both modes and do not record them.
+    expected = {(name, mode) for name in data["expected_cases"] for mode in data.get("modes", (0, 1))}
     seen = set()
     for case in data["cases"]:
         key = case["case_id"], case["mode"]

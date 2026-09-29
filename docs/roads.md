@@ -1105,6 +1105,13 @@ flat/sloped T, flat/sloped neighboring-cross, dense-chunk and controlled terrain
 retry fixtures, with Road and terrain first and Road only second. Each case/mode resets its
 512 m world, waits for each setup commit and renderer to settle, warms the preview, then
 measures stationary replacements and a moving pointer followed by an exact final pose.
+Since 2026-09-29 the matrix runs Road and terrain only. The T-family endpoint sweeps 130 m along
+the main road, and the moving pointer runs at 30 m/s. `*_branch` adds a leg from an existing
+T junction to free ground and circles the target at 15 m. `*_cross` crosses four parallel
+roads, planning four junctions, and circles the end at 20 m. Captures before that date
+used a few-metre endpoint jitter and both modes; they are not comparable. `sloped_branch`
+first exposed a false same-material height conflict in the 4-way junction; the fix and its
+regression are described in `docs/project.md`.
 Moving input uses absolute 60 Hz deadlines (400 scheduled samples at 100 repetitions);
 late frames coalesce overdue inputs. The capture records scheduling lateness and validates
 total trace duration, so a relative timer cannot silently halve one mode's input rate.
@@ -1168,7 +1175,7 @@ METRUM_GAMEPLAY_BENCHMARK_RUN_ID=road30-release-a \
 
 Repeat with a new run ID for an independent process; use `METRUM_DEBUG_PERF=1` only for
 separate stage/GPU diagnostics. `METRUM_GAMEPLAY_BENCHMARK_CASES` can select a comma-separated
-subset of `flat_t,sloped_t,flat_multi,sloped_multi,dense,residency_retry`; both modes still run.
+subset of `flat_t,sloped_t,flat_multi,sloped_multi,dense,residency_retry,flat_branch,sloped_branch,flat_cross,sloped_cross`.
 Optional `METRUM_GAMEPLAY_PREVIEW_CAPTURE_DIR` captures final rendered poses after timers
 finish; keep it unset for acceptance. Headless runs are suitable for pipeline correctness
 checks but cannot establish rendered latency. The renderer's original preview geometry,

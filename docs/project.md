@@ -1071,8 +1071,10 @@ reopening requires a current reproduction, not an assumption that the old geomet
   explicit owner instead of reviving the old node-wide grade sampler; same-height seam validation
   now keys separate materialized owner-pair seams independently even when they came from the same
   source rail index. Same-material carrier tie-breaks now require equal `SurfaceHeightMmKey`
-  heights, so elevated multi-arm nodes with contradictory same-XZ carriageway owners reject
-  deterministically until ownership selects one carrier before height sampling. Source-band height
+  heights or raw heights within 0.1 mm, so elevated multi-arm nodes with contradictory same-XZ
+  carriageway owners reject deterministically until ownership selects one carrier before height
+  sampling. The 0.1 mm allowance (2026-09-29) stops f32 rounding splitting two band fields
+  across a half-millimetre key boundary; a sloped 4-way junction was rejected this way. Source-band height
   carriers now also reject one-sided explicit paths during height-field
   construction; any required opposite rail must already be materialized by the rail / topology
   stage with matching canonical path vertices before height evaluation. Source handoff and

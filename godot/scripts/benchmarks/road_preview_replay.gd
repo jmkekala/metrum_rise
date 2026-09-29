@@ -5,7 +5,12 @@
 extends RefCounted
 
 const Metrics := preload("res://scripts/benchmarks/road_benchmark_metrics.gd")
-const CASES := ["flat_t", "sloped_t", "flat_multi", "sloped_multi", "dense", "residency_retry"]
+const CASES := ["flat_t", "sloped_t", "flat_multi", "sloped_multi", "dense", "residency_retry",
+	"flat_branch", "sloped_branch", "flat_cross", "sloped_cross"]
+# Road and terrain only: it is the mode with terrain preview work to measure.
+const MODE := 1
+# Moving-phase pointer speed: 0.5 m per 60 Hz input.
+const MOVE_SPEED_MPS := 30.0
 var _report: Dictionary
 
 func run(bench: Node) -> void:
@@ -13,9 +18,11 @@ func run(bench: Node) -> void:
 	bench.input_manager.set_process_input(false)
 	bench.input_manager.set_process_unhandled_input(false)
 	Engine.max_fps = bench._environment_int("METRUM_GAMEPLAY_BENCHMARK_MAX_FPS", 60, 1)
+	if bench.mode != "headless":
+		DisplayServer.window_set_title("Metrum Rise - road preview benchmark")
 	_report = {
 		"schema_version": 1, "benchmark": "road_preview_latency", "success": false,
-		"runtime": bench._runtime_metadata(), "cases": [], "phases": [], "mode": bench.mode,
+		"runtime": bench._runtime_metadata(), "cases": [], "phases": [], "mode": bench.mode, "modes": [MODE],
 		"expected_cases": CASES.filter(func(name): return bench.selected_case_ids.is_empty() or name in bench.selected_case_ids),
 		"samples": bench.repetitions, "warmups": bench.warmup_repetitions,
 		"timing_contract": "scripted world-space input to frame_post_draw; headless uses process_frame and is not rendering; no GPU upload or monitor presentation claim",
@@ -29,14 +36,13 @@ func run(bench: Node) -> void:
 	for name in CASES:
 		if not bench.selected_case_ids.is_empty() and not name in bench.selected_case_ids:
 			continue
-		for mode in [1, 0]:
-			var result: Dictionary = await _case(bench, name, mode)
-			_report.cases.append(result)
-			bench._metrics = _report
-			if not bench._write_metrics() or not result.get("ok", false):
-				bench._fail("preview matrix failed", result)
-				return
-			print("[PREVIEW_BENCH] %s mode=%d stationary=%d moving=%d" % [name, mode, result.stationary.size(), result.moving.size()])
+		var result: Dictionary = await _case(bench, name, MODE)
+		_report.cases.append(result)
+		bench._metrics = _report
+		if not bench._write_metrics() or not result.get("ok", false):
+			bench._fail("preview matrix failed", result)
+			return
+		print("[PREVIEW_BENCH] %s mode=%d stationary=%d moving=%d" % [name, MODE, result.stationary.size(), result.moving.size()])
 	_report.success = not _report.cases.is_empty()
 	bench._stop_scripted_tool()
 	bench._metrics = _report
@@ -56,13 +62,8 @@ func _case(bench: Node, name: String, mode: int) -> Dictionary:
 	bench.camera.set("orthogonal", true)
 	bench.camera.projection = Camera3D.PROJECTION_ORTHOGONAL
 	bench.camera.focus_on(bench._surface_point(Vector2.ZERO), 150.0)
-	var roads := [[Vector2(-110, 0), Vector2(110, 0)]]
-	if name.ends_with("multi"):
-		roads.append([Vector2(-65, -60), Vector2(-65, 60)])
-	if name == "dense":
-		for z in range(32, 113, 16):
-			roads.append([Vector2(-100, z), Vector2(100, z)])
-	for road in roads:
+	var scenario := _scenario(name)
+	for road in scenario.roads:
 		var generation: int = sim.get_network_render_generation()
 		sim.add_road_with_snap(PackedVector3Array([bench._surface_point(road[0]), bench._surface_point(road[1])]), 1, 1, true)
 		var deadline := Time.get_ticks_msec() + 30000
@@ -83,18 +84,18 @@ func _case(bench: Node, name: String, mode: int) -> Dictionary:
 		"setup_ms": float(Time.get_ticks_usec() - setup_us) / 1000.0,
 		"stationary": [], "moving": [], "state_before": state}
 	var segment := {"draw_mode": 0, "fwd_lanes": 1, "bkw_lanes": 1}
-	bench._begin_scripted_road(Vector2.ZERO, segment, bench._surface_point(Vector2(0, -80)), bench._surface_point(Vector2.ZERO))
+	bench._begin_scripted_road(Vector2.ZERO, segment, bench._surface_point(scenario.start), bench._surface_point(_pose(scenario, 0.0)))
 	# Warmup uses the same motion sequence but is excluded from the capture collector.
 	tool.begin_preview_measurement()
 	for index in range(bench.warmup_repetitions):
-		_set_pointer(bench, Vector2(float(index % 8), 0))
+		_set_pointer(bench, _pose(scenario, float(index % 8) / 8.0))
 		if not await _wait_exact(bench):
 			return {"ok": false, "error": "warmup preview timeout"}
 	var trace: RefCounted = tool.begin_preview_measurement()
 	# Force a new result after resetting the collector, including when warmup was disabled.
 	tool._clear_preview_cache()
 	for index in range(bench.repetitions):
-		_set_pointer(bench, Vector2(float((index + 1) % 8), 0))
+		_set_pointer(bench, _pose(scenario, float((index + 1) % 8) / 8.0))
 		if name == "residency_retry" and mode == 1:
 			# Withhold reference patch lookup for three retry frames. Do not destroy its resources.
 			tool._clear_preview_cache()
@@ -124,7 +125,7 @@ func _case(bench: Node, name: String, mode: int) -> Dictionary:
 		while Time.get_ticks_usec() < due_us:
 			await bench.get_tree().process_frame
 		input_lateness_ms.append(float(Time.get_ticks_usec() - due_us) / 1000.0)
-		_set_pointer(bench, Vector2(float(index % 16) * 0.5, 0))
+		_set_pointer(bench, _moving_pose(scenario, index))
 	while Time.get_ticks_usec() < move_start + int(float(input_count) * 1000000.0 / 60.0):
 		await bench.get_tree().process_frame
 	result["scheduled_input_count"] = input_count
@@ -132,7 +133,7 @@ func _case(bench: Node, name: String, mode: int) -> Dictionary:
 	result["input_lateness_ms"] = Metrics.distribution(input_lateness_ms)
 	var stop_us := Time.get_ticks_usec()
 	var observed_service_ms: float = trace.worker_service_ms - moving_service_start
-	_set_pointer(bench, Vector2(3.25, 0))
+	_set_pointer(bench, _pose(scenario, 9.0 / 16.0))
 	if not await _wait_exact(bench):
 		return {"ok": false, "error": "final pose timeout"}
 	for row in trace.rows.slice(stationary_count):
@@ -171,6 +172,43 @@ func _case(bench: Node, name: String, mode: int) -> Dictionary:
 		result.ok = result.ok and bench.get_viewport().get_texture().get_image().save_png(result.capture) == OK
 	tool.cancel_road()
 	return result
+
+# Setup roads, preview start and pointer path: a "sweep" segment or an "orbit" [center, radius].
+func _scenario(name: String) -> Dictionary:
+	var main := [Vector2(-110, 0), Vector2(110, 0)]
+	if name.ends_with("branch"):
+		# New leg from the T junction at (-65, 0) to free ground; the pointer circles the target.
+		return {"roads": [main, [Vector2(-65, 0), Vector2(-65, 60)]], "start": Vector2(-65, 0),
+			"orbit": [Vector2(-60, -55), 15.0]}
+	if name.ends_with("cross"):
+		# Free start and end; the preview crosses four parallel roads, planning four junctions.
+		var parallel := []
+		for x in [-45.0, -15.0, 15.0, 45.0]:
+			parallel.append([Vector2(x, -90), Vector2(x, 90)])
+		return {"roads": parallel, "start": Vector2(-90, -30), "orbit": [Vector2(90, 30), 20.0]}
+	var roads := [main]
+	if name.ends_with("multi"):
+		roads.append([Vector2(-65, -60), Vector2(-65, 60)])
+	if name == "dense":
+		for z in range(32, 113, 16):
+			roads.append([Vector2(-100, z), Vector2(100, z)])
+	# T onto the main road; the endpoint slides along it, clear of the multi crossing at x = -65.
+	return {"roads": roads, "start": Vector2(0, -80), "sweep": [Vector2(-40, 0), Vector2(90, 0)]}
+
+# u in [0, 1): fraction along the sweep or of a turn around the orbit.
+func _pose(scenario: Dictionary, u: float) -> Vector2:
+	if scenario.has("sweep"):
+		return scenario.sweep[0].lerp(scenario.sweep[1], u)
+	return scenario.orbit[0] + Vector2.from_angle(TAU * u) * float(scenario.orbit[1])
+
+# Constant-speed pointer: back and forth along a sweep, round and round an orbit.
+func _moving_pose(scenario: Dictionary, index: int) -> Vector2:
+	var travelled := float(index) * MOVE_SPEED_MPS / 60.0
+	if scenario.has("sweep"):
+		var length: float = scenario.sweep[0].distance_to(scenario.sweep[1])
+		return _pose(scenario, pingpong(travelled, length) / length)
+	var circumference := TAU * float(scenario.orbit[1])
+	return _pose(scenario, fposmod(travelled, circumference) / circumference)
 
 func _set_pointer(bench: Node, xz: Vector2) -> void:
 	bench.road_tool.set_scripted_pointer(true, bench._surface_point(xz))

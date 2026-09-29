@@ -1371,3 +1371,63 @@ fn assert_orthogonal_block_cells(
     cells.sort_unstable();
     cells
 }
+
+#[test]
+fn branch_from_existing_t_compiles_four_way_junction_on_flat_and_slope() {
+    // The sloped benchmark leg ending at (-70.6, -44.4) put a shared carriageway vertex on
+    // an exact half-millimetre height; f32 rounding split its bands into a false conflict.
+    for slope_end_m in [0.0, 6.4] {
+        let mut core = test_core();
+        core.create_blank_world_internal(512.0, 512.0, 8.0, 128.0, 0.0)
+            .unwrap();
+        core.slope_terrain_internal(
+            Vector2::ZERO,
+            256.0,
+            Vector2::new(-128.0, 0.0),
+            0.0,
+            Vector2::new(128.0, 0.0),
+            slope_end_m,
+            1.0,
+        );
+        let surface = |core: &SimCore, x: f32, z: f32| {
+            Vector3::new(
+                x,
+                core.get_world_surface_height_internal(Vector2::new(x, z)),
+                z,
+            )
+        };
+        for ((ax, az), (bx, bz)) in [((-110.0, 0.0), (110.0, 0.0)), ((-65.0, 0.0), (-65.0, 60.0))] {
+            let points = vec![surface(&core, ax, az), surface(&core, bx, bz)];
+            assert!(
+                core.add_road_internal_with_snap(points, 1, 1, true)
+                    .committed
+            );
+        }
+        core.precompute_road_mesh_data();
+        core.allocator
+            .prepare_building_site_query_index(core.config.zone_cell_m);
+        let (context, query) = road_tool_snapshots_from_core(&core).unwrap();
+        for step in 0..16 {
+            let angle = std::f32::consts::TAU * step as f32 / 16.0;
+            let (x, z) = (-60.0 + 15.0 * angle.cos(), -55.0 + 15.0 * angle.sin());
+            let preview = crate::nodes::sim::core::road_preview::compile_road_preview_from_context(
+                &context,
+                RoadPreviewRequest {
+                    enqueued_at: None,
+                    include_terrain: false,
+                    request_id: step + 1,
+                    surface_generation: query.surface_generation,
+                    points: vec![surface(&core, -65.0, 0.0), surface(&core, x, z)],
+                    fwd_lanes: 1,
+                    bkw_lanes: 1,
+                    snap_to_existing_roads: true,
+                },
+            );
+            assert!(
+                preview.validation.is_valid,
+                "slope {slope_end_m} leg end ({x}, {z}): {:?}",
+                preview.validation
+            );
+        }
+    }
+}

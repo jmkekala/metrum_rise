@@ -462,16 +462,31 @@ pub(super) fn push_unique_same_material_candidate<K: Ord>(
     candidates.push(candidate);
 }
 
+// Independent band fields evaluate one shared vertex with f32 source-height rounding
+// (about 4e-8 m at 1.6 m). Millimetre keys alone split such a pair when it straddles a
+// half-millimetre boundary. Heights this close are one height; callers then write the
+// selected candidate's height to every occurrence, so later exact key checks agree.
+const SAME_MATERIAL_HEIGHT_AGREEMENT_M: f64 = 1.0e-4;
+
+fn same_material_heights_agree(
+    candidates: impl IntoIterator<Item = SameMaterialVertexHeightCandidate>,
+) -> bool {
+    let (mut min_m, mut max_m) = (f64::INFINITY, f64::NEG_INFINITY);
+    let mut height_key = None;
+    let mut same_key = true;
+    for candidate in candidates {
+        min_m = min_m.min(candidate.height_m);
+        max_m = max_m.max(candidate.height_m);
+        let key = SurfaceHeightMmKey::from_m_f64(candidate.height_m);
+        same_key &= *height_key.get_or_insert(key) == key;
+    }
+    same_key || max_m - min_m <= SAME_MATERIAL_HEIGHT_AGREEMENT_M
+}
+
 pub(super) fn same_height_selected_candidate(
     candidates: &[SameMaterialVertexHeightCandidate],
 ) -> Option<SameMaterialVertexHeightCandidate> {
-    let first = candidates.first().copied()?;
-    let height_key = SurfaceHeightMmKey::from_m_f64(first.height_m);
-    if candidates
-        .iter()
-        .copied()
-        .all(|candidate| SurfaceHeightMmKey::from_m_f64(candidate.height_m) == height_key)
-    {
+    if same_material_heights_agree(candidates.iter().copied()) {
         candidates
             .iter()
             .copied()
@@ -486,6 +501,10 @@ pub(super) fn reject_same_material_height_conflict(
     point: SurfaceXzKey,
     candidates: impl IntoIterator<Item = SameMaterialVertexHeightCandidate>,
 ) -> Result<(), NodeHeightFieldError> {
+    let candidates = candidates.into_iter().collect::<Vec<_>>();
+    if same_material_heights_agree(candidates.iter().copied()) {
+        return Ok(());
+    }
     let mut candidates_by_height = BTreeMap::<i64, SameMaterialVertexHeightCandidate>::new();
     for candidate in candidates {
         let height_mm = SurfaceHeightMmKey::from_m_f64(candidate.height_m).as_i64();
