@@ -330,6 +330,14 @@ impl SimulationNode {
         i64::try_from(request_id).unwrap_or(i64::MAX)
     }
 
+    /// Latest preview request the worker has started, or zero. Every older request has already
+    /// published or been abandoned; newer ones are pending or were displaced and never run.
+    /// Read it before polling results to retire outstanding requests exactly, in O(1).
+    #[func]
+    pub fn get_preview_road_surface_started_request_id(&self) -> i64 {
+        i64::try_from(self.road_preview_tx.started()).unwrap_or(i64::MAX)
+    }
+
     /// Returns the completed road-tool preview for `request_id`, or `null` while pending/stale.
     /// `retained_revision` identifies retained geometry already installed by the caller; zero
     /// requests a complete payload. A matching revision omits unchanged retained mesh buffers.
@@ -504,6 +512,7 @@ impl SimulationNode {
             for (name, value) in [
                 ("result_read_lock_ms", result_lock_ms),
                 ("queue_ms", t.queue_ms),
+                ("idle_ms", t.idle_ms),
                 ("context_ms", t.context_ms),
                 ("road_ms", t.road_ms),
                 ("earthworks_ms", t.earthworks_ms),

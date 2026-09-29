@@ -9,6 +9,8 @@ use std::time::Instant;
 pub(crate) struct RoadPreviewTiming {
     /// Mailbox submission to worker receipt.
     pub(crate) queue_ms: f64,
+    /// Worker free (previous publication or abandonment) to this receipt; outside `worker_ms`.
+    pub(crate) idle_ms: f64,
     /// Immutable context read-lock acquisition and Arc copies.
     pub(crate) context_ms: f64,
     /// Candidate preparation, junction solve and planned road mesh construction.
@@ -36,7 +38,7 @@ mod tests {
 
     #[test]
     fn disjoint_stages_account_for_the_worker_interval() {
-        let mut timing = RoadPreviewTiming::new(Instant::now());
+        let mut timing = RoadPreviewTiming::new(Instant::now(), Instant::now());
         timing.finish_context();
         timing.finish_road();
         timing.finish_earthworks();
@@ -57,7 +59,7 @@ mod tests {
 
     #[test]
     fn reused_products_leave_skipped_stages_zero() {
-        let mut timing = RoadPreviewTiming::new(Instant::now());
+        let mut timing = RoadPreviewTiming::new(Instant::now(), Instant::now());
         timing.finish_context();
         timing.finish_road();
         timing.finish_earthworks();
@@ -69,10 +71,11 @@ mod tests {
 }
 
 impl RoadPreviewTiming {
-    pub(super) fn new(enqueued_at: Instant) -> Self {
+    pub(super) fn new(enqueued_at: Instant, free_since: Instant) -> Self {
         let now = Instant::now();
         Self {
             queue_ms: now.duration_since(enqueued_at).as_secs_f64() * 1000.0,
+            idle_ms: now.duration_since(free_since).as_secs_f64() * 1000.0,
             context_ms: 0.0,
             road_ms: 0.0,
             earthworks_ms: 0.0,

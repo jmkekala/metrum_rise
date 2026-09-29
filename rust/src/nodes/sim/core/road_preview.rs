@@ -171,12 +171,16 @@ pub(crate) fn run_road_preview_worker(
     let mut ready_request = None;
     let mut retained_cache = RoadPreviewRetainedCache::default();
     let mut terrain_revisions = RoadPreviewTerrainRevisions::default();
+    // Diagnostic only: when the worker last became free, to expose scheduling gaps.
+    let mut free_since = Instant::now();
     'requests: loop {
         let Some(request) = ready_request.take().or_else(|| rx.recv().ok()) else {
             return;
         };
 
-        let mut timing = request.enqueued_at.map(RoadPreviewTiming::new);
+        let mut timing = request
+            .enqueued_at
+            .map(|enqueued| RoadPreviewTiming::new(enqueued, free_since));
         let road_debug = crate::debug::category_enabled("road");
         let total_start = road_debug.then(Instant::now);
         let point_count = request.points.len();
@@ -258,6 +262,7 @@ pub(crate) fn run_road_preview_worker(
                 match rx.recv_timeout(Duration::from_millis(1)) {
                     Ok(next) => {
                         ready_request = Some(next);
+                        free_since = Instant::now();
                         continue 'requests;
                     }
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
@@ -340,6 +345,7 @@ pub(crate) fn run_road_preview_worker(
             );
         }
         *result.write().expect("road preview result lock poisoned") = Some(preview);
+        free_since = Instant::now();
     }
 }
 

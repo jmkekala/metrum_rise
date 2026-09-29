@@ -43,13 +43,16 @@ var _road_debug_enabled: bool = false
 var _preview_cache_points: PackedVector3Array = PackedVector3Array()
 var _preview_cache_surface: Dictionary = {}
 const PreviewRequest := preload("res://scripts/tools/road_preview_request.gd")
-var _preview_request: RefCounted
+# Outstanding exact requests, oldest first: the running one, the latest pending one and at most
+# one more submitted before its start was observable. Bounded by the one-input native mailbox.
+var _preview_requests: Array[RefCounted] = []
 var _preview_cache_request: RefCounted
 var _preview_display_request: RefCounted
 var _preview_request_id: int = 0
 var _preview_drawn_request_id: int = 0
 var _preview_update_pending: bool = false
-var _preview_result_pending: bool = false
+var _preview_result_pending: bool:
+	get: return not _preview_requests.is_empty()
 var _commit_request_id: int = 0
 var _commit_path_id: int = 0
 var _commit_points := PackedVector3Array()
@@ -168,8 +171,8 @@ func _process(delta):
 			_queue_preview_update()
 	if current_path != null and not _preview_zoning_revision_is_current(_candidate_cache_validation):
 		_preview_update_pending = true
-	# A running job never suppresses fresh input or result consumption. The current curve is
-	# the single replaceable pending input; only dispatch again after consuming the running job.
+	# A running job never suppresses fresh input or result consumption. The current curve
+	# replaces the native mailbox's single pending input while the worker runs the older one.
 	if _preview_update_pending or _preview_result_pending:
 		_preview_update_pending = false
 		_update_preview()
@@ -322,13 +325,12 @@ func _update_preview():
 		_preview_update_pending = true
 		_update_preview_measurement_label(validation.get("prepared_points", points), validation)
 		return
-	if is_valid and exact.is_empty() and not _preview_result_pending and points.size() > 1:
+	if is_valid and exact.is_empty() and points.size() > 1 and not _preview_input_is_requested(points):
 		var dispatch_us := Time.get_ticks_usec() if preview_metrics != null else 0
 		_preview_request_id = simulation_node.request_preview_road_surface_with_options(points, fwd_lanes, bkw_lanes, _snap_to_roads_enabled(), _road_preview_mode == 1)
 		if preview_metrics != null:
 			preview_metrics.dispatch(_preview_request_id, dispatch_us, Time.get_ticks_usec(), _road_preview_mode == 1)
-		_preview_request = PreviewRequest.new(self, points, _preview_request_id)
-		_preview_result_pending = true
+		_preview_requests.append(PreviewRequest.new(self, points, _preview_request_id))
 	if is_valid and not exact.is_empty():
 		if _draw_compiled_preview_surface(points, exact, validation):
 			_preview_display_request = _preview_cache_request
@@ -475,19 +477,54 @@ func _preview_zoning_revision_is_current(preview: Dictionary) -> bool:
 	)
 
 func _poll_pending_preview_result() -> bool:
-	if not _preview_result_pending or _preview_request == null:
+	if _preview_requests.is_empty():
 		return false
-	var poll_us := Time.get_ticks_usec() if preview_metrics != null else 0
-	var preview = simulation_node.get_preview_road_surface_result(_preview_request.id, _junction_preview.retained_revision, _terrain_preview.revisions())
+	# Read before polling: every request older than the started one has already published or
+	# been abandoned, so a result missed below can never arrive later.
+	var started := int(simulation_node.get_preview_road_surface_started_request_id())
+	var consumed := false
+	# The native slot holds one result; newest first, older records are superseded by it.
+	for index in range(_preview_requests.size() - 1, -1, -1):
+		var request: RefCounted = _preview_requests[index]
+		var poll_us := Time.get_ticks_usec() if preview_metrics != null else 0
+		var preview = simulation_node.get_preview_road_surface_result(request.id, _junction_preview.retained_revision, _terrain_preview.revisions())
+		if preview_metrics != null:
+			preview_metrics.poll(request.id, Time.get_ticks_usec() - poll_us, preview)
+		if preview == null:
+			continue
+		for older in _preview_requests.slice(0, index):
+			_forget_preview_request(older)
+		_preview_requests = _preview_requests.slice(index + 1)
+		# Older completed poses stay usable as display-only feedback while their context holds.
+		if request.matches_context(self) and _preview_surface_generation_is_current(preview):
+			_remember_preview_surface(request.points, preview, request)
+			consumed = true
+		break
+	_retire_preview_requests(started)
+	return consumed
+
+func _retire_preview_requests(started: int) -> void:
+	# Keep the running request and the latest submission if it may still be pending. Other newer
+	# ones were displaced from the mailbox unrun; context changes retire every request.
+	var kept: Array[RefCounted] = []
+	var latest: RefCounted = _preview_requests.back() if not _preview_requests.is_empty() else null
+	for request in _preview_requests:
+		if (request.id == started or (request == latest and request.id > started)) and request.matches_context(self):
+			kept.append(request)
+		else:
+			_forget_preview_request(request)
+	_preview_requests = kept
+
+func _preview_input_is_requested(points: PackedVector3Array) -> bool:
+	# The latest submission already covers this pose; resubmitting would only restart the worker.
+	if _preview_requests.is_empty():
+		return false
+	var latest: RefCounted = _preview_requests.back()
+	return latest.matches_context(self) and _road_surface_points_match(points, latest.points)
+
+func _forget_preview_request(request: RefCounted) -> void:
 	if preview_metrics != null:
-		preview_metrics.poll(_preview_request.id, Time.get_ticks_usec() - poll_us, preview)
-	if preview == null:
-		return false
-	_preview_result_pending = false
-	if not _preview_request.matches_context(self) or not _preview_surface_generation_is_current(preview):
-		return false
-	_remember_preview_surface(_preview_request.points, preview, _preview_request)
-	return true
+		preview_metrics.forget(request.id)
 
 func _draw_candidate_preview(points: PackedVector3Array, validation: Dictionary) -> void:
 	if bool(validation.get("is_pending", false)):
@@ -1003,7 +1040,9 @@ func _clear_preview_cache() -> void:
 	_preview_cache_points = PackedVector3Array()
 	_preview_cache_surface = {}
 	_preview_cache_request = null
-	_preview_request = null
+	for request in _preview_requests:
+		_forget_preview_request(request)
+	_preview_requests.clear()
 	_preview_display_request = null
 	_candidate_cache_points = PackedVector3Array()
 	_candidate_cache_validation = {}

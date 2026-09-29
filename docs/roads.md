@@ -1060,8 +1060,8 @@ Deployed extension identity remains unchanged.
 
 ### Preview display performance plan (`ROAD-30`–`ROAD-36`)
 
-**Status: `ROAD-30`–`ROAD-34` done; `ROAD-35`–`ROAD-36` planned (2026-09-29).** Implement and
-validate one task at a time. `ROAD-30` establishes the baseline below. Next: `ROAD-35`; use the
+**Status: `ROAD-30`–`ROAD-35` done; `ROAD-36` planned (2026-09-29).** Implement and
+validate one task at a time. `ROAD-30` establishes the baseline below. Next: `ROAD-36`; use the
 measurements to justify any reprioritization. Each task has a separate roadmap entry and acceptance evidence. These are
 candidate improvements identified by source inspection, with no measured speedup yet.
 The `ROAD-29` native comparison (16.383 vs 21.986 ms) excludes frontend presentation costs
@@ -1761,6 +1761,106 @@ mailbox and worker; add no request backlog, per-input thread or simulation work 
 **Exit:** measured reduction in worker idle gaps/result age, prompt exact-pose convergence
 after stopping, and regressions for rapid motion, context/mode changes, stale results and
 click/cancel ordering. A scheduling gain must not silently increase geometry work unboundedly.
+
+**Implementation (validated 2026-09-29):** the mailbox already held one replaceable pending input,
+but `road_tool.gd` dispatched only after polling the running result, so the worker waited up to a
+frame for its next pose.
+
+- The mailbox receiver publishes the ID of each request it takes, under the input lock
+  (`RoadPreviewSender::started`, bridged as `get_preview_road_surface_started_request_id()`).
+  Every older request has then published or been abandoned; every newer one is pending or was
+  displaced unrun.
+- `road_tool.gd` submits each new pose as soon as it is valid, replacing the pending input while
+  the worker runs. It keeps at most three request records: the running one, the latest submission
+  and one submitted before its start was observable. Each frame it reads the started ID, then
+  polls newest first. A found result retires every older record; afterwards only the started
+  request and a still-pending latest submission survive, and context changes retire all.
+  O(1) bookkeeping and at most three polls per frame, independent of input rate.
+- An identical pose already submitted is not resubmitted, so a stopped pointer converges on one
+  exact request. Older completed poses remain display-only; exact matching still governs click
+  adoption. A pending placement neither dispatches nor adopts previews, and rejection, cancel and
+  cache resets retire every outstanding record.
+- Fixed on the way: clearing the preview cache while a request ran (mode switch, snap toggle)
+  left `_preview_result_pending` set with no request to poll, blocking every later dispatch.
+- Geometry work stays bounded: one compile at a time, and displaced inputs never run.
+- Diagnostic `preview_timing.idle_ms` reports the gap between the worker becoming free and
+  taking its next request (outside `worker_ms`).
+
+**Acceptance evidence (2026-09-29):** baseline is committed `ROAD-34` GDScript (`HEAD`
+`bbefe09c`); candidate is the workspace. Both load the candidate library `fb6ec6c9…e54192`, whose
+only Rust changes are the started-request query and `idle_ms`, so both sides report idle gaps.
+Two unprofiled acceptance runs and one `METRUM_DEBUG_PERF=1` diagnostic run per side, interleaved;
+workload, settings, window and command match `ROAD-30` v3. All 72 captures passed `--validate`;
+none dropped observations.
+
+Diagnostic moving phase (medians; service = polled worker time / moving interval):
+
+| Fixture / mode | Idle gap ms | Worker busy | Results shown | Worker ms |
+| --- | --- | --- | --- | --- |
+| `flat_t` / full | 11.9 → 0.0 | 0.60 → 0.91 | 198 → 311 | 20.2 → 19.4 |
+| `sloped_t` / full | 4.6 → 0.0 | 0.80 → 0.94 | 194 → 232 | 27.7 → 27.0 |
+| `flat_multi` / full | 8.7 → 0.0 | 0.70 → 0.93 | 199 → 275 | 23.3 → 22.6 |
+| `sloped_multi` / full | 8.8 → 0.0 | 0.76 → 0.91 | 133 → 165 | 38.0 → 36.4 |
+| `dense` / full | 8.4 → 0.0 | 0.71 → 0.93 | 200 → 265 | 23.6 → 23.0 |
+| `residency_retry` / full | 11.7 → 0.0 | 0.63 → 0.91 | 199 → 308 | 20.4 → 19.5 |
+| road-only (six fixtures) | 1.1–14.7 → 0.0 | 0.55–0.82 → 0.84–0.91 | 180–231 → 205–350 | unchanged |
+
+Unprofiled acceptance ranges (two processes per side, ms; not confidence intervals):
+
+| Fixture / mode | Moving display age p50 | Moving display age p95 | Per-result age p50 | Stop → exact frame |
+| --- | --- | --- | --- | --- |
+| `flat_t` / full | 51.9–52.2 → 40.6–41.2 | 53.3–68.9 → 56.8–57.2 | 40.0–40.1 → 39.9–40.2 | 39.1–58.3 → 56.0–56.6 |
+| `sloped_t` / full | 52.2 → 56.4–56.5 | 69.2 → 71.8–72.7 | 40.3–40.4 → 56.1–56.2 | 56.0–74.9 → 55.9–75.4 |
+| `flat_multi` / full | 52.1–52.2 → 52.6–52.9 | 59.3–68.8 → 59.3–59.4 | 40.5–40.8 → 42.1–42.5 | 39.3–56.6 → 39.7–56.3 |
+| `sloped_multi` / full | 69.5–69.8 → 70.5–73.3 | 86.7–86.8 → 87.0–102.5 | 57.5–57.7 → 59.3–61.0 | 57.5–90.2 → 56.6–57.0 |
+| `dense` / full | 51.9–52.0 → 52.8–52.9 | 53.3–57.2 → 60.2–60.4 | 40.9–41.0 → 43.5–43.5 | 39.7–41.0 → 40.9–56.7 |
+| `residency_retry` / full | 52.1 → 41.9–42.4 | 53.7–68.7 → 58.0–58.6 | 40.0–40.2 → 40.5–40.8 | 56.4–56.7 → 55.7–56.2 |
+| `flat_t` / road-only | 38.1–38.4 → 37.3–37.4 | 53.2–53.4 → 52.3–52.4 | 37.3–37.4 → 37.3–37.4 | 37.4–54.2 → 36.8–37.6 |
+| `sloped_t` / road-only | 52.0–52.1 → 52.7–53.1 | 53.4–54.1 → 57.8–69.1 | 38.2 → 38.9–40.0 | 55.1–55.4 → 37.8–53.5 |
+| `flat_multi` / road-only | 52.0 → 37.9–38.2 | 53.5–54.5 → 54.1–54.3 | 38.2–38.3 → 37.7–37.9 | 37.3–38.6 → 36.7–38.9 |
+| `sloped_multi` / road-only | 52.3–52.5 → 56.2–68.7 | 69.3–70.0 → 70.2–85.4 | 39.2–39.5 → 54.6–54.8 | 36.9–53.7 → 55.6–57.8 |
+| `dense` / road-only | 38.1–38.8 → 37.5–37.8 | 53.4–54.3 → 53.1–53.7 | 37.3–37.9 → 37.5–37.6 | 36.7–54.3 → 36.9–37.7 |
+| `residency_retry` / road-only | 37.8–38.1 → 37.3–37.6 | 53.2–53.4 → 52.4–52.9 | 37.4–37.6 → 37.3–37.5 | 37.0–37.5 → 36.9–37.7 |
+
+Worker idle gaps disappear and 15–70% more results are shown while moving, with worker time per
+result unchanged. Stationary latency and frame hitches are unchanged within noise (no frame over
+33.333 ms in any acceptance run). Displayed age is a trade-off set by frame quantization, accepted
+as shipped:
+
+- Input is resolved once per frame, so a queued pose is up to a frame old when the worker takes
+  it (median queue 5–12 ms). Starting it immediately never shows a result later, but gains a frame
+  only when the rest of the current frame plus the compile still fits the compile's own frame count.
+- Compiles well under the frame budget win: displayed age p50 falls about 11 ms in `flat_t` and
+  `residency_retry` full and up to 14 ms in road-only `flat_multi`.
+- Compiles of 1.5–2 frames lose: `sloped_t` and `sloped_multi` show each result up to one frame
+  older (per-result p50 +16 ms in `sloped_t` full and `sloped_multi` road-only) and displayed age
+  p50 +1–4 ms (+16 ms in one `sloped_multi` road-only run).
+- Choosing per cycle between starting now and waiting for the next frame's input would need
+  predicted compile time and frame phase across the Rust/Godot boundary; its best case only
+  recovers these rows, and mispredictions cost a whole frame. It is deliberately not done. Reducing
+  worker time moves more fixtures into the winning region.
+
+Artifacts: `rust/target/road35-artifacts/` holds `{baseline,candidate}-{a,b,diag}.json`, logs,
+manifests, `run_ab.py`, `summarize.py`, `acceptance-compare.txt` and `diagnostic-compare.txt`.
+The isolated projects, frozen baseline scripts/tests and library are under `rust/target/road35/`.
+
+**Correctness checks:**
+- Rust `started_id_separates_finished_from_pending_requests`: pending input has not started, a
+  taken request publishes its ID, and displaced input never starts; the existing mailbox burst,
+  shutdown and timing tests still pass.
+- Godot `network_tool_chunk_renderer_test`, with a mock modelling one running request and one
+  replaceable pending input:
+  - rapid motion replaces the pending input each frame and never keeps more than three records;
+  - a completed older pose displays while the newest input stays queued, without authorizing a click;
+  - consumed and superseded requests are never polled again, and a stopped pointer is not resubmitted;
+  - width and snap-target changes retire in-flight results;
+  - a cache reset during a running request neither blocks the next dispatch nor revives the result;
+  - results finishing after cancel neither display nor dispatch;
+  - a pending placement neither dispatches nor adopts previews, and rejection retires them.
+
+The release `road_preview` Rust tests pass; clippy and rustfmt report nothing new in the touched
+files. The junction, stream-preview, chunk-renderer, preview-metrics and benchmark-metrics suites
+pass headless in the isolated profile. The verified library was deployed to `godot/bin`.
 
 #### `ROAD-36` — Update compatible mesh buffers in place
 

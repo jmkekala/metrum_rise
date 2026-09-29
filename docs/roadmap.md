@@ -24,7 +24,7 @@ Kind values:
 ## Active Priorities
 
 Road preview display performance: **Road and terrain is the primary performance target**.
-`ROAD-30` measurement and `ROAD-31`–`ROAD-34` are complete. Tackle `ROAD-35`–`ROAD-36` one at a time; prioritize measured
+`ROAD-30` measurement and `ROAD-31`–`ROAD-35` are complete. Tackle `ROAD-36` next; prioritize measured
 full-mode bottlenecks and shared improvements. Keep Road only for comparison, then review
 whether both modes remain worthwhile after optimization. Mode removal/default changes are
 a later product decision. These are planned candidates, not established speedup claims. The owning
@@ -38,7 +38,7 @@ preserve both preview modes and local geometry/commit correctness.
 | `ROAD-32` | `refactor` | `done` | `P1` | Preview nodes, meshes, materials, images and textures recycled through a bounded display/staging pair; per-request terrain resource creation 16/16/16/32 → 0. Full-mode stationary p50 −3.0–4.2 ms. Next: `ROAD-33`. |
 | `ROAD-33` | `refactor` | `done` | `P1` | Existing chunks split once per owner set into a resident part and re-clipped approaches; moving retained reuse 0% → 100%, dense moving payload −43% (full) / −66% (road-only). Next: `ROAD-34`. |
 | `ROAD-34` | `refactor` | `done` | `P1` | Full-mode terrain products carry display revisions; unchanged road-free patches are sent as metadata and keep their displayed slots. Patches restaged per pose 16 → 4–6, full-mode stage + install −0.3–0.5 ms. Planned/approach chunks change every pose in the fixtures and stay per-pose. Next: `ROAD-35`. |
-| `ROAD-35` | `refactor` | `open` | `P1` | Feed the existing worker one latest pending input while consuming completed previews. |
+| `ROAD-35` | `refactor` | `done` | `P1` | Each new pose replaces the mailbox's pending input while the worker runs; Godot keeps ≤3 request records retired by the worker's started ID. Idle gaps → 0 ms, 15–70% more moving updates; displayed age −11 ms for sub-frame compiles, up to +1 frame per result for 1.5–2-frame compiles (accepted). Next: `ROAD-36`. |
 | `ROAD-36` | `refactor` | `open` | `P2` | Evaluate compatible mesh buffer updates, retaining rebuilds for topology changes. |
 
 `ROAD-29` — `feature`, `done`, `P1` (2026-09-28). Gameplay option for default

@@ -31,8 +31,8 @@ func sample(points: PackedVector3Array, sampled_us: int) -> void:
 		input_us = sampled_us
 
 func dispatch(id: int, start_us: int, end_us: int, full: bool) -> void:
-	# At most one running request, one cached result and one displayed result in production.
-	# Retire older entries even when cancellation prevents an installation.
+	# Production keeps at most three outstanding requests plus a cached and a displayed result,
+	# and forgets displaced ones. Retire older entries even when cancellation prevents installation.
 	if _requests.size() >= 8:
 		_requests.erase(_requests.keys().front())
 	_requests[id] = {
@@ -57,6 +57,10 @@ func poll(id: int, elapsed_us: int, payload: Variant) -> void:
 			worker_results += 1
 			worker_service_ms += row.native.worker_ms - row.native.core_wait_ms
 			worker_wait_ms += row.native.core_wait_ms
+
+func forget(id: int) -> void:
+	# A displaced or retired request will never be installed.
+	_requests.erase(id)
 
 func request(id: int) -> Dictionary:
 	return _requests.get(id, {})
