@@ -47,15 +47,79 @@ pub(super) const PRESETS: &[BrushPreset] = &[
     // mesh the seed picks is only an unnamed two-to-one mix of pine and spruce and the mixes
     // below write their ratios down. They stay here because they are what the generator plants
     // and therefore what a repaint of a cleared cell has to match to collapse back to no edit.
-    BrushPreset { accept: 1.0, scale: DEFAULT_SCALE, mix: &[MixEntry { weight: 1, species: 0, variants: &[] }] },
-    BrushPreset { accept: 1.0, scale: DEFAULT_SCALE, mix: &[MixEntry { weight: 1, species: 1, variants: &[] }] },
-    BrushPreset { accept: 1.0, scale: DEFAULT_SCALE, mix: &[MixEntry { weight: 1, species: 2, variants: &[] }] },
-    BrushPreset { accept: 1.0, scale: DEFAULT_SCALE, mix: &[MixEntry { weight: 1, species: 3, variants: &[] }] },
+    BrushPreset {
+        accept: 1.0,
+        scale: DEFAULT_SCALE,
+        mix: &[MixEntry {
+            weight: 1,
+            species: 0,
+            variants: &[],
+        }],
+    },
+    BrushPreset {
+        accept: 1.0,
+        scale: DEFAULT_SCALE,
+        mix: &[MixEntry {
+            weight: 1,
+            species: 1,
+            variants: &[],
+        }],
+    },
+    BrushPreset {
+        accept: 1.0,
+        scale: DEFAULT_SCALE,
+        mix: &[MixEntry {
+            weight: 1,
+            species: 2,
+            variants: &[],
+        }],
+    },
+    BrushPreset {
+        accept: 1.0,
+        scale: DEFAULT_SCALE,
+        mix: &[MixEntry {
+            weight: 1,
+            species: 3,
+            variants: &[],
+        }],
+    },
     // 4 Pine, 5 Spruce, 6 Birch, 7 Aspen: one named tree, pinned over the seed's choice.
-    BrushPreset { accept: 1.0, scale: DEFAULT_SCALE, mix: &[MixEntry { weight: 1, species: 0, variants: PINE_OR_BIRCH }] },
-    BrushPreset { accept: 1.0, scale: DEFAULT_SCALE, mix: &[MixEntry { weight: 1, species: 0, variants: SPRUCE_OR_ASPEN }] },
-    BrushPreset { accept: 1.0, scale: DEFAULT_SCALE, mix: &[MixEntry { weight: 1, species: 1, variants: PINE_OR_BIRCH }] },
-    BrushPreset { accept: 1.0, scale: DEFAULT_SCALE, mix: &[MixEntry { weight: 1, species: 1, variants: SPRUCE_OR_ASPEN }] },
+    BrushPreset {
+        accept: 1.0,
+        scale: DEFAULT_SCALE,
+        mix: &[MixEntry {
+            weight: 1,
+            species: 0,
+            variants: PINE_OR_BIRCH,
+        }],
+    },
+    BrushPreset {
+        accept: 1.0,
+        scale: DEFAULT_SCALE,
+        mix: &[MixEntry {
+            weight: 1,
+            species: 0,
+            variants: SPRUCE_OR_ASPEN,
+        }],
+    },
+    BrushPreset {
+        accept: 1.0,
+        scale: DEFAULT_SCALE,
+        mix: &[MixEntry {
+            weight: 1,
+            species: 1,
+            variants: PINE_OR_BIRCH,
+        }],
+    },
+    BrushPreset {
+        accept: 1.0,
+        scale: DEFAULT_SCALE,
+        mix: &[MixEntry {
+            weight: 1,
+            species: 1,
+            variants: SPRUCE_OR_ASPEN,
+        }],
+    },
     // 8, 9 and 10 are the three mixes, which the brush numbers rather than names.
     //
     // 8 is a managed stand. The weights are Finnish growing stock: pine leads, spruce follows,
@@ -65,10 +129,26 @@ pub(super) const PRESETS: &[BrushPreset] = &[
         accept: 0.85,
         scale: DEFAULT_SCALE,
         mix: &[
-            MixEntry { weight: 50, species: 0, variants: PINE_OR_BIRCH },
-            MixEntry { weight: 30, species: 0, variants: SPRUCE_OR_ASPEN },
-            MixEntry { weight: 15, species: 1, variants: PINE_OR_BIRCH },
-            MixEntry { weight: 5, species: 1, variants: SPRUCE_OR_ASPEN },
+            MixEntry {
+                weight: 50,
+                species: 0,
+                variants: PINE_OR_BIRCH,
+            },
+            MixEntry {
+                weight: 30,
+                species: 0,
+                variants: SPRUCE_OR_ASPEN,
+            },
+            MixEntry {
+                weight: 15,
+                species: 1,
+                variants: PINE_OR_BIRCH,
+            },
+            MixEntry {
+                weight: 5,
+                species: 1,
+                variants: SPRUCE_OR_ASPEN,
+            },
         ],
     },
     // 9 is scattered broadleaf-led trees, about 62 stems/ha, which reads as standing apart
@@ -78,10 +158,26 @@ pub(super) const PRESETS: &[BrushPreset] = &[
         accept: 0.10,
         scale: (0.95, 1.45),
         mix: &[
-            MixEntry { weight: 45, species: 1, variants: PINE_OR_BIRCH },
-            MixEntry { weight: 25, species: 1, variants: SPRUCE_OR_ASPEN },
-            MixEntry { weight: 20, species: 0, variants: PINE_OR_BIRCH },
-            MixEntry { weight: 10, species: 0, variants: SPRUCE_OR_ASPEN },
+            MixEntry {
+                weight: 45,
+                species: 1,
+                variants: PINE_OR_BIRCH,
+            },
+            MixEntry {
+                weight: 25,
+                species: 1,
+                variants: SPRUCE_OR_ASPEN,
+            },
+            MixEntry {
+                weight: 20,
+                species: 0,
+                variants: PINE_OR_BIRCH,
+            },
+            MixEntry {
+                weight: 10,
+                species: 0,
+                variants: SPRUCE_OR_ASPEN,
+            },
         ],
     },
     // 10 is small trees at moderate spacing: a narrow birch-and-pine set at about 220
@@ -91,8 +187,16 @@ pub(super) const PRESETS: &[BrushPreset] = &[
         accept: 0.35,
         scale: (0.45, 0.75),
         mix: &[
-            MixEntry { weight: 65, species: 1, variants: PINE_OR_BIRCH },
-            MixEntry { weight: 35, species: 0, variants: PINE_OR_BIRCH },
+            MixEntry {
+                weight: 65,
+                species: 1,
+                variants: PINE_OR_BIRCH,
+            },
+            MixEntry {
+                weight: 35,
+                species: 0,
+                variants: PINE_OR_BIRCH,
+            },
         ],
     },
 ];

@@ -281,7 +281,10 @@ fn verify_connection<const N: usize>(mut fixture: Fixture, points: [Vector3; N],
 }
 
 // Existing geometry displayed in one chunk: the resident split plus the clipped approaches.
-fn existing_signature(scene: &RoadJunctionPreview, key: &SurfaceChunkKey) -> [Vec<[[u32; 12]; 3]>; 7] {
+fn existing_signature(
+    scene: &RoadJunctionPreview,
+    key: &SurfaceChunkKey,
+) -> [Vec<[[u32; 12]; 3]>; 7] {
     let empty = NetworkMeshData::new();
     let mut output = signature(scene.retained.get(key).map(Arc::as_ref).unwrap_or(&empty));
     let approach = signature(scene.approach.get(key).map(Arc::as_ref).unwrap_or(&empty));
@@ -736,7 +739,10 @@ fn moving_junction_bounds_reuse_resident_split_and_clip_only_approaches() {
                 .all(|mesh| mesh.render_payload_validated())
         );
         let vertices = |meshes: &BTreeMap<SurfaceChunkKey, Arc<NetworkMeshData>>| {
-            meshes.values().map(|mesh| mesh.vertex_count()).sum::<usize>()
+            meshes
+                .values()
+                .map(|mesh| mesh.vertex_count())
+                .sum::<usize>()
         };
         let markings: usize = first
             .retained

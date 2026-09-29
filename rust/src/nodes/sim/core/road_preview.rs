@@ -2,6 +2,7 @@
 
 //! Asynchronous road-preview requests, worker snapshots, and compilation.
 
+mod reclaim;
 mod requests;
 mod terrain_revisions;
 mod timing;
@@ -168,6 +169,15 @@ pub(crate) fn run_road_preview_worker(
     result: Arc<RwLock<Option<RoadPreviewSnapshot>>>,
     rx: requests::RoadPreviewReceiver,
 ) {
+    // One pool for the worker's lifetime, sized like Rayon's global default: one thread per
+    // logical CPU (or RAYON_NUM_THREADS). Node compiles are indivisible 15–45 ms tasks; in the
+    // shared global pool they stall every main-thread caller that joins it.
+    let pool = rayon::ThreadPoolBuilder::new()
+        .thread_name(|index| format!("road-preview-{index}"))
+        .build()
+        .expect("road preview thread pool must start");
+    // Superseded snapshots own a planned surface and its topology caches; free them elsewhere.
+    let reclaimer = reclaim::Reclaimer::spawn("road-preview-reclaim");
     let mut ready_request = None;
     let mut retained_cache = RoadPreviewRetainedCache::default();
     let mut terrain_revisions = RoadPreviewTerrainRevisions::default();
@@ -193,7 +203,7 @@ pub(crate) fn run_road_preview_worker(
         if let Some(t) = &mut timing {
             t.finish_context();
         }
-        let mut preview = prepare_road_preview_from_context(&context, request);
+        let mut preview = pool.install(|| prepare_road_preview_from_context(&context, request));
         if let Some(t) = &mut timing {
             t.finish_road();
         }
@@ -201,14 +211,16 @@ pub(crate) fn run_road_preview_worker(
             .junction_preview
             .as_mut()
             .is_some_and(|scene| retained_cache.reuse(scene));
-        let earthworks = include_terrain
-            .then(|| {
-                preview.edit_plan.as_ref().and_then(|plan| {
-                    plan.preview_earthworks(
-                        &context.terrain,
-                        &context.region_graph,
-                        &context.road_surface,
-                    )
+        let earthworks = pool
+            .install(|| {
+                include_terrain.then(|| {
+                    preview.edit_plan.as_ref().and_then(|plan| {
+                        plan.preview_earthworks(
+                            &context.terrain,
+                            &context.region_graph,
+                            &context.road_surface,
+                        )
+                    })
                 })
             })
             .flatten();
@@ -261,6 +273,7 @@ pub(crate) fn run_road_preview_worker(
                 // Keep the completed compile while contended, but a newer pointer request wins.
                 match rx.recv_timeout(Duration::from_millis(1)) {
                     Ok(next) => {
+                        reclaimer.retire(preview);
                         ready_request = Some(next);
                         free_since = Instant::now();
                         continue 'requests;
@@ -272,13 +285,15 @@ pub(crate) fn run_road_preview_worker(
             if let Some((sites, meshes)) = inputs {
                 if let Some(earthworks) = &earthworks {
                     if let Some(plan) = &preview.edit_plan {
-                        let plan = plan.with_preview_terrain(
-                            &context.terrain,
-                            &context.region_graph,
-                            &context.road_surface,
-                            earthworks,
-                            sites,
-                        );
+                        let plan = pool.install(|| {
+                            plan.with_preview_terrain(
+                                &context.terrain,
+                                &context.region_graph,
+                                &context.road_surface,
+                                earthworks,
+                                sites,
+                            )
+                        });
                         if let Some(patches) = plan.terrain().and_then(|t| t.preview_patches()) {
                             preview.terrain_revisions = terrain_revisions.assign(&patches);
                         }
@@ -291,7 +306,7 @@ pub(crate) fn run_road_preview_worker(
                 if let Some(scene) = &mut preview.junction_preview
                     && let Some(meshes) = meshes
                 {
-                    scene.retain_existing(&meshes);
+                    pool.install(|| scene.retain_existing(&meshes));
                     retained_cache.store(scene);
                 }
             } else {
@@ -304,7 +319,7 @@ pub(crate) fn run_road_preview_worker(
         }
         // A reused split keeps its resident meshes; only the moved approach clips are rebuilt.
         if retained_reused && let Some(scene) = &mut preview.junction_preview {
-            scene.clip_approaches();
+            pool.install(|| scene.clip_approaches());
         }
         if let Some(t) = &mut timing {
             t.finish_retained();
@@ -344,7 +359,14 @@ pub(crate) fn run_road_preview_worker(
                     .unwrap_or(0.0)
             );
         }
-        *result.write().expect("road preview result lock poisoned") = Some(preview);
+        // O(1) under the lock; readers never wait for the previous snapshot's destruction.
+        let previous = result
+            .write()
+            .expect("road preview result lock poisoned")
+            .replace(preview);
+        if let Some(previous) = previous {
+            reclaimer.retire(previous);
+        }
         free_since = Instant::now();
     }
 }

@@ -231,8 +231,8 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Current Priorities
 
-- **Road preview display performance (`ROAD-30`–`ROAD-35` done; `ROAD-36` parked)**: prioritize **Road and
-  terrain**. With input-to-display baselines captured, tackle native buffer validation, rendering
+- **Road preview display performance (`ROAD-30`–`ROAD-35`, `ROAD-37`, `ROAD-38` done; `ROAD-36`
+  parked; `ROAD-39`–`ROAD-42` open)**: prioritize **Road and terrain**. With input-to-display baselines captured, tackle native buffer validation, rendering
   resource reuse, retained geometry locality, packed payload deltas, worker scheduling and
   compatible mesh updates one at a time. Each step needs matched performance and correctness
   evidence. Keep Road only as a comparison; decide whether to retain both modes after measuring
@@ -251,7 +251,16 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
   about 11 ms where compiles fit a frame but each result can be a frame older where they take 1.5–2
   frames; that trade-off is accepted. `ROAD-36` measured in-place mesh buffer updates and parked
   them: only 5–30% of moving road-layer bytes are compatible and all submission costs under 0.5 ms
-  per result. Next: review whether Road only still earns its place.
+  per result. The 2026-09-29 bottleneck analysis of the 10-case matrix shows the Rust junction
+  compile dominates: `road_ms` is 75–90% of worker time, and a four-way `JunctionN` takes 30–38 ms on
+  one thread. Two cheaper defects add to it. The previous preview is freed under the result lock,
+  costing 1–6 ms per result plus main-thread waits. Junction tasks also starve a small shared Rayon
+  pool, causing 40–103 hitch frames in the crossing fixtures with four workers. `ROAD-37` now frees the
+  previous preview on a bounded reclaim thread after an O(1) swap, and the lock wait is gone. `ROAD-38`
+  gives the preview worker its own Rayon pool, sized to the machine's logical CPUs. The four-worker
+  crossing hitches fall to zero with identical products. Next: `ROAD-39`–`ROAD-42` in order
+  ([findings and tasks](roads.md#preview-compile-bottlenecks-road-37road-42)).
+  The Road only review follows those fixes.
   [Ordered plan and acceptance criteria](roads.md#preview-display-performance-plan-road-30road-36).
 
 - **Codebase audit (`AUDIT-01`, paused by user)**: review the economy, buildings/save lifecycle, Rust/Godot boundary, and network/terrain for obsolete code, duplicated authority, correctness and scaling problems. Coverage and fresh validation are tracked in [`code_audit.md`](code_audit.md).

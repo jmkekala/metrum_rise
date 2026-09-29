@@ -97,7 +97,9 @@ impl ZoningSystem {
                             .corners()
                             .map(|p| DVec2::new(f64::from(p.x), f64::from(p.y))),
                     )
-                    .expanded((super::cells::CELL_DEPTH + 1) as f64 * f64::from(self.config.zone_cell_m)),
+                    .expanded(
+                        (super::cells::CELL_DEPTH + 1) as f64 * f64::from(self.config.zone_cell_m),
+                    ),
                 );
             }
         });
@@ -124,7 +126,9 @@ impl ZoningSystem {
                             .corners()
                             .map(|p| DVec2::new(f64::from(p.x), f64::from(p.y))),
                     )
-                    .expanded((super::cells::CELL_DEPTH + 1) as f64 * f64::from(self.config.zone_cell_m)),
+                    .expanded(
+                        (super::cells::CELL_DEPTH + 1) as f64 * f64::from(self.config.zone_cell_m),
+                    ),
                 );
             }
         });

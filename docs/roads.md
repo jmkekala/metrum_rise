@@ -1060,7 +1060,9 @@ Deployed extension identity remains unchanged.
 
 ### Preview display performance plan (`ROAD-30`–`ROAD-36`)
 
-**Status: `ROAD-30`–`ROAD-35` done; `ROAD-36` parked after measurement (2026-09-29).** Implement and
+**Status: `ROAD-30`–`ROAD-35` done; `ROAD-36` parked after measurement (2026-09-29).** The measured
+preview-compile bottlenecks that remain are tracked as `ROAD-37`–`ROAD-42` in
+[Preview compile bottlenecks](#preview-compile-bottlenecks-road-37road-42). Implement and
 validate one task at a time. `ROAD-30` establishes the baseline below. Remaining: the preview-mode
 review below; use the measurements to justify any reprioritization. Each task has a separate roadmap entry and acceptance evidence. These are
 candidate improvements identified by source inspection, with no measured speedup yet.
@@ -1955,6 +1957,266 @@ API references: [ImageTexture update](https://docs.godotengine.org/en/4.7/classe
 and [Godot thread-safety constraints](https://docs.godotengine.org/en/4.7/tutorials/performance/thread_safe_apis.html).
 Moving GPU resource creation to workers can introduce synchronization stalls; treat it as
 a measured design choice, not an automatic consequence of moving validation into Rust.
+
+### Preview compile bottlenecks (`ROAD-37`–`ROAD-42`)
+
+**Status: `ROAD-37` and `ROAD-38` done (2026-09-29); `ROAD-39`–`ROAD-42` open.** See
+[results](#road-37-and-road-38-results) below. A bottleneck analysis of the 10-case preview matrix (Road and
+terrain) on committed `HEAD` `dde35ee0` found that the frontend is no longer the limit. The Rust
+preview worker is. Its road stage (`road_ms`: prepare, junction/span compile, junction scene render)
+is 75–90% of worker time. A single four-way `JunctionN` compile takes about 30–38 ms on one thread.
+Two cheaper defects add serial worker time and main-thread hitches on top. Fix them one ID at a time,
+in the order below, with the shared acceptance rules of the `ROAD-30`–`ROAD-36` plan: matched,
+unprofiled release runs before and after, a separate diagnostic run, and correctness checks.
+
+**Baseline workload.** Same hardware, window and settings as the `ROAD-30` v3 captures (i9-12900K,
+RX 7900 XTX / RADV, Godot 4.7.2, X11, 1280×720, VSync, 60 FPS cap, four Rayon workers). Release library
+SHA-256 `4672197b…c989bc6dee` (`HEAD` build). One unprofiled run (`head-a`), one `METRUM_DEBUG_PERF=1`
+diagnostic run (`head-diag`) and one diagnostic run with Rayon's default 24 workers (`r24-diag`); all
+passed `--validate`. Command, with the isolated `rust/target/preview-test-tmp` TMPDIR/XDG profile,
+`METRUM_GAMEPLAY_BENCHMARK_MATRIX=preview`, 100 repetitions, 8 warmups and
+`METRUM_GAMEPLAY_BENCHMARK_MAX_FPS=60`:
+`godot --path rust/target/preview-bench/godot --windowed --resolution 1280x720 -- --gameplay-road-benchmark`.
+
+Unprofiled acceptance run, milliseconds. Single-process values, not ranges:
+
+| Fixture | Stationary p50 / p95 | Moving displayed age p50 / p95 | Stop → exact | Frames > 33 ms |
+| --- | --- | --- | --- | --- |
+| `flat_t` | 39.8 / 61.4 | 41.5 / 57.7 | 55.8 | 0 |
+| `sloped_t` | 40.7 / 60.3 | 55.9 / 70.1 | 56.9 | 0 |
+| `flat_multi` | 39.7 / 60.4 | 52.1 / 59.1 | 57.3 | 0 |
+| `sloped_multi` | 56.4 / 73.6 | 68.7 / 86.2 | 74.6 | 0 |
+| `dense` | 41.4 / 62.1 | 52.5 / 59.6 | 42.6 | 0 |
+| `residency_retry` | 98.7 / 118.0 | 42.5 / 58.8 | 39.1 | 0 |
+| `flat_branch` | 58.4 / 89.2 | 70.1 / 103.1 | 106.4 | 0 |
+| `sloped_branch` | 58.6 / 89.6 | 85.4 / 119.6 | 72.2 | 0 |
+| `flat_cross` | 73.8 / 92.9 | 117.6 / 153.5 | 141.2 | 40 |
+| `sloped_cross` | 91.1 / 124.2 | 139.8 / 185.6 | 209.2 | 103 |
+
+Diagnostic moving-phase medians, milliseconds (`worker` p95 in the last column). Stage + install on the
+main thread stays 1.9–2.8 ms in every fixture:
+
+| Fixture | Worker | Road | Terrain | Earthworks | Queue | Worker end → poll | Worker p95 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `flat_t` | 20.2 | 15.8 | 3.1 | 1.1 | 8.0 | 7.8 | 23.9 |
+| `sloped_multi` | 30.7 | 23.7 | 4.8 | 1.6 | 10.7 | 8.7 | 40.1 |
+| `dense` | 23.1 | 15.9 | 5.3 | 1.7 | 8.8 | 8.2 | 25.5 |
+| `flat_branch` | 34.4 | 29.3 | 3.4 | 1.2 | 10.6 | 8.4 | 57.5 |
+| `sloped_branch` | 43.2 | 37.8 | 3.6 | 1.2 | 10.9 | 8.8 | 62.9 |
+| `flat_cross` | 52.9 | 40.9 | 8.7 | 2.5 | 18.1 | 8.1 | 76.0 |
+| `sloped_cross` | 70.1 | 56.5 | 9.7 | 3.1 | 14.5 | 10.0 | 96.3 |
+
+**Findings.** CPU attribution comes from `perf` LBR call graphs (1999 Hz) of `flat_t`, `sloped_branch`
+and `sloped_cross`. LBR truncates deep stacks, so the shares are approximate. Main-thread blocking
+comes from `perf` context-switch records. Per-node counts and stage timings come from short
+`METRUM_DEBUG=1 METRUM_DEBUG_FILTER=road` headless runs. Logging inflates those timings, so use them
+for proportions only.
+
+1. **Junction compile dominates.** Each `sloped_cross` pose compiles four `JunctionN` nodes and two
+   new `Terminal` nodes; T/multi/branch poses compile one junction and one terminal. No existing
+   terminal is recompiled. The junction compile is about 50% (`flat_t`), 62% (`sloped_branch`) and
+   76% (`sloped_cross`) of Rayon CPU. Inside it, `sloped_cross` spends rails/contact noding 34%,
+   boolean ownership 28%, region export 12%, heights 12%, arrangement 6.5%, triangulation 3.7% and
+   validation 1.9%. Logged four-way medians: 37–39 ms per junction (rails 14–15, ownership 10) and
+   3.3 ms per terminal. A four-way junction nodes 965–1235 contact constraints against 348 for the T.
+   Nothing carries over between poses: every compile logged `matched=false`,
+   `rail_topology_reused=false` and zero `previous_hits`.
+2. **The previous preview is freed under the result lock.** `*result.write() = Some(preview)` in
+   `rust/src/nodes/sim/core/road_preview.rs` drops the previous `RoadPreviewSnapshot` while holding
+   the write lock. The chain is `RoadEditPlan` → `RoadTerrainPlan` → `RoadEarthworkPlan` →
+   `PlannedRoadSurfaceQuery` → the planned `RoadSurfaceSystem` and its node topology caches.
+   - This drop is 51% of the worker thread's own CPU in `sloped_cross`. It costs about 1.1, 2.0 and
+     6.1 ms per displayed result in `flat_t`, `sloped_branch` and `sloped_cross`, all before the worker
+     takes the next pose. `worker_ms` excludes it.
+   - Main-thread `get_preview_road_surface_result` waits for the read lock meanwhile: `result_read_lock_ms`
+     p95 2.4/6.8 ms and max 9.1/8.1 ms in `flat_cross`/`sloped_cross`, against p95 ≤ 0.84 ms elsewhere.
+     Polls that return nothing are not recorded, so the real wait can be larger.
+3. **Preview compiles starve the shared Rayon pool.** Each node compile is one indivisible Rayon task
+   of 15–45 ms, so four concurrent junctions fill a four-worker global pool. Main-thread or async-job
+   calls that join the pool then wait for a node to finish.
+   - Moving from 4 to 24 workers changes frames over 33 ms from 49 → 2 (`flat_cross`) and 111 → 2
+     (`sloped_cross`), and moving displayed-age p95 from 151.9 → 121.4 and 202.5 → 154.8 ms. Worker
+     time barely moves (`sloped_cross` road 56.5 → 51.2 ms).
+   - The main thread's raw-futex blocked time falls 223 → 43 ms/s. Waits over 10 ms fall 150 → 25, and
+     the longest present wait falls 45.5 → 14.2 ms.
+   - Confirmed main-thread pool entry points are vegetation `get_vegetation_land_cover`
+     (`land_cover.rs` `into_par_iter`) and `get_decorative_tree_patch`. The blocked call behind each
+     hitch is not yet isolated: DWARF unwinding stops at libc `syscall`, and `strace -k` distorts
+     timing enough to create its own hitches.
+   - The game defaults to one worker per logical CPU, so 4–8-thread machines hit this during normal play.
+4. **Constant-factor overhead dominates junction CPU.** Shares of `sloped_branch` junction CPU:
+   - allocator about 15%: `malloc`/`free`/`realloc` plus unsymbolized libc internals, mostly `realloc`,
+     `Vec` growth and B-tree nodes;
+   - sorting 11.6%: `canonicalize_seam_constraints`, raised-step contact sorts, seam coverage and the
+     `i_overlay` split solver;
+   - SipHash 6.4%: contact-noding candidate maps and `NetworkMeshData::preview_partition`;
+   - B-tree operations 6.3%;
+   - libm `round` 5.5%. The release library contains no `roundsd`, so every `f64::round`/`floor`/`ceil`
+     is an out-of-line call;
+   - `i_overlay` 5.5%.
+5. **One scan grows with vertices × steps.** `NodeExportTopHeightContext::raised_owner_vertex_matches_explicit_step_lower_height`
+   (`node.rs`) runs `.any()` over every explicit-step lower edge for each queried vertex. A four-way
+   junction has about 110 vertical steps. The function is 3.9% self time of all Rayon CPU in
+   `sloped_cross`, and 4.9% of junction CPU in the call tree.
+6. **Smaller or non-code items.**
+   - Serial worker-thread work: mesh generation with lane-height sync about 0.6 ms per result, and
+     `preview_partition` about 0.35 ms (`flat_t`).
+   - Terrain and earthworks: 4–13 ms combined, already parallel.
+   - Stationary `road_ms` is 7–13 ms higher than moving in single-junction fixtures at both pool
+     sizes, while `terrain_ms` is equal. The machine runs `powersave` (intel_pstate HWP), so this fits
+     a clock/C-state ramp after the ~20 ms idle gaps. It is not a code target.
+   - Queue and worker end → poll times are the accepted `ROAD-35` frame-quantization trade-off.
+
+**Tasks, in order.** Each needs its own matched before/after evidence and correctness checks.
+
+- **`ROAD-37` — Retire the previous preview off the lock and off the worker's path (`bug`, `P1`,
+  done).** Swap the snapshot under the write lock, release the guard, then hand the old value to a dedicated
+  reclaim thread through a bounded channel. Do not use the Rayon pool (`ROAD-38`). When the channel is
+  full, drop inline so memory stays bounded. Check the other large drops on the worker path too.
+  **Bound:** O(1) under the lock; freeing stays O(freed allocations) off the worker and main threads.
+  **Exit:** `result_read_lock_ms` p95 < 0.1 ms in every fixture; moving queue and new-result age fall
+  in `*_cross`; identical products; publication, stale-result and poll-ordering tests still pass.
+- **`ROAD-38` — Keep preview compiles from starving the shared Rayon pool (`bug`, `P1`, done).** First
+  identify each main-thread Rayon join during preview, with bounded timing behind `METRUM_DEBUG_PERF`.
+  Then run the worker's parallel compile in a dedicated `rayon::ThreadPool`, created once and entered
+  with `install`, or make those main-thread callers asynchronous and polled, like terrain payloads.
+  Indexed collection keeps output order deterministic. **Bound:** no per-request threads; one pool
+  for the process lifetime. **Exit:** with four global workers, `*_cross` frames over 33 ms and
+  main-thread blocked time match the 24-worker run (≤ 2 frames); no worker-time regression at four or
+  default workers.
+- **`ROAD-39` — Index explicit-step lower edges in node export (`refactor`, `P1`).** Bucket the lower
+  edges by raised owner, and by segment bounds if needed, when building the export context. Keep the
+  exact `lies_on_segment` and height-parameter predicates. **Bound:** O(S log S) build; each query
+  visits candidates instead of all S steps. **Exit:** identical export products, including a
+  targeted sloped four-way equality check, and lower measured `export_ms`.
+- **`ROAD-40` — Cut constant-factor overhead in the junction compile (`refactor`, `P2`).** Land each
+  item separately, with its own measurement:
+  - **Rounding.** Either build for `x86-64-v2` (SSE4.1 inlines rounding; results are unchanged
+    because Rust does not contract floating point, but it is a minimum-CPU product decision), or
+    route mm/point-key quantization through one inline helper with identical semantics.
+  - **Hashing.** Replace `RandomState` in node-compile and `preview_partition` hot maps with a fixed
+    deterministic fast hasher. Audit any map iteration that reaches outputs, because the current
+    per-process random order would be a determinism bug.
+  - **Allocation.** Pre-size vectors and reuse per-thread scratch buffers where `realloc`/`Vec` growth
+    and B-tree node allocation dominate.
+  - **Sorting.** `canonicalize_seam_constraints` recomputes its sort key in `retain` after
+    `sort_by_cached_key`. Per-shape and per-edge callers re-sort shared inputs; sort once per compile.
+
+  **Bound:** unchanged complexity. **Exit:** identical products across runs and processes, and a
+  matched improvement in worker/road time for each item.
+- **`ROAD-41` — Parallelize work inside one junction compile (`refactor`, `P1`).** Single-junction
+  poses (T, multi, branch) run their `JunctionN` on one thread while the others idle. Candidate units:
+  - contact-noding components and pairs (rails);
+  - owned regions in ownership, heights and export.
+
+  Triangulation already splits at eight regions. Use indexed collection for deterministic order, with
+  thresholds that keep small nodes serial. This depends on `ROAD-38`, because finer tasks in a starved
+  shared pool would worsen hitches. **Bound:** the same total work; wall time follows the stage
+  dependency path. **Exit:** identical products; lower single-junction `road_ms` at four and default
+  workers. Target: `flat_t` worker time of about 12–14 ms, so stationary results land a frame earlier
+  (see `ROAD-35`).
+- **`ROAD-42` — Measure pose-to-pose junction reuse (`refactor`, `P2`).** Rail topology reuse needs
+  whole-topology equality (`NodeRailTopologyKey`), which suits height-only edits and never matches
+  a moving preview. The incremental pair and contributor caches (same-material and source-authorized
+  contacts, contact-noding pairs, retained contacts, ownership cleanup and seams) could still hit for
+  unchanged legs, if the previous pose's topology cache for the same junction were offered. Measure
+  hit rates in a diagnostic build first; neighbouring mouth setbacks move with the edited leg, so
+  gains may be small. Retaining one previous cache would also replace the per-result drop that
+  `ROAD-37` moves. **Exit:** recorded hit rates for branch and cross fixtures, with a go/no-go decision.
+
+#### `ROAD-37` and `ROAD-38` results
+
+**Implementation** (`rust/src/nodes/sim/core/road_preview.rs`, `road_preview/reclaim.rs`):
+- **`ROAD-37`.** The worker swaps the new snapshot in with `Option::replace` under the write lock and
+  releases the guard. It then hands the previous snapshot to one `road-preview-reclaim` thread through a
+  `sync_channel(1)`; when that slot is full, the value drops inline. At most one snapshot is queued and one
+  is being freed. A snapshot displaced while the worker waits for `SimCore` is retired the same way.
+  Other worker-path drops are small or rare and stay inline: retained-cache and terrain-revision
+  replacement, and the old context `Arc`s after a commit.
+- **`ROAD-38`.** The worker owns one `rayon::ThreadPool` (`road-preview-N` threads), built once when the
+  worker starts. Each parallel stage (road compile and junction render, earthworks, terrain plan,
+  retained split and approach clip) runs through `pool.install`. The pool is sized like Rayon's global
+  pool: one thread per logical CPU, or `RAYON_NUM_THREADS` when set. No count is hard-coded. Node
+  compiles no longer occupy the global pool that main-thread callers join, so identifying each joining
+  call was not needed for the fix. Output order still comes from indexed collection, so products do not
+  depend on either pool's size.
+
+**Evidence.** Build identity:
+- baseline: `HEAD` `dde35ee0` library, SHA-256 `4672197b…c989bc6dee`;
+- candidate: `HEAD` plus only these two files, built in a clean worktree, SHA-256 `3985b268…6cce442`;
+- same GDScript for both, hash `e12f9ffa…`, unchanged before and after every run.
+
+Everything else matches the baseline workload above. Alternating unprofiled runs: three per side with
+`RAYON_NUM_THREADS=4`, and two per side with the default one worker per logical CPU (24 on this machine).
+One `METRUM_DEBUG_PERF=1` diagnostic run per side at each setting, plus a second four-worker pair. All 18
+captures passed `--validate`. Product fields match baseline versus candidate; only timings and request IDs,
+which depend on scheduling, differ. That includes all 100 stationary packed payload sizes per fixture.
+
+| Four workers, ranges | Baseline | Candidate |
+| --- | --- | --- |
+| Frames > 33 ms, all 10 fixtures | 163–179 | 1–2 |
+| `flat_cross` / `sloped_cross` frames > 33 ms | 52–53 / 109–124 | 0 / 0 |
+| `flat_cross` / `sloped_cross` frames > 50 ms | 1–2 / 3–6 | 0 / 0 |
+| `flat_cross` moving age p50 / p95 | 113.4–116.2 / 152.2–153.5 | 102.3–102.7 / 135.6–136.7 |
+| `sloped_cross` moving age p50 / p95 | 137.4–141.3 / 189.1–201.8 | 120.0–120.1 / 169.6–185.3 |
+| `flat_cross` / `sloped_cross` new-result age p50 | 90.4–93.2 / 107.1–108.3 | 75.2–80.2 / 91.6–94.2 |
+| `result_read_lock_ms` max, any fixture (diagnostic) | 0.67–8.52 | 0.00 |
+
+- At four workers, other fixtures stay within or below the baseline ranges. `sloped_multi` moving age
+  p50 falls 68.7 → 58.2–60.6 ms. Stop → exact is frame-quantized and moves by a frame either way
+  between runs.
+- At default workers, frames over 33 ms total 7–9 → 3–5, and `flat_cross` moving age p50 falls
+  102.3 → 87.0–90.7 ms. Two single-run outliers were seen:
+  - `residency_retry` stationary p50 of 111.3 ms, against a baseline of 95.2–96.9;
+  - one `flat_t` stop → exact of 85.2 ms.
+
+  The other candidate run was inside the baseline range both times, so no regression is claimed from
+  them. `result_read_lock_ms` max falls from 1.2–8.7 ms to 0.00 at both settings.
+- Moving queue medians fall in every fixture; in `*_cross` they fall 13.7–15.9 → 7.7–10.8 ms.
+- The `ROAD-38` exit is met: four-worker `*_cross` hitches match the 24-worker baseline (≤ 2 frames).
+  Main-thread futex time was not re-profiled; the frame counts are the acceptance measure.
+
+**Accepted trade-off.** In the crossing fixtures, candidate `worker_ms` is higher: `sloped_cross`
++3.4–4.8 ms (67.5–68.5 → 71.9–72.3) and `flat_cross` +1.5–2.0 ms, at four workers. Single-junction
+fixtures are unchanged (within ±0.6 ms). An attribution build, SHA-256 `85d9f213…e827272a08`, keeps the
+`ROAD-37` lock swap but drops on the worker, and ran alternating diagnostic pairs of the two crossing
+fixtures. It recovers the `worker_ms`:
+- `sloped_cross` 68.3–68.7 against 70.4–70.6 ms for the candidate;
+- `flat_cross` 52.3–52.5 against 54.3–54.6 ms.
+
+So the extra time comes from freeing on the reclaim thread while the next compile allocates, which
+contends in the allocator. That variant, however, keeps the drop on the worker's own path: the observed
+worker service fraction falls to 0.86–0.90, against 0.98–0.99 with the reclaim thread. The reclaim thread
+therefore stays; lowering the allocation and free volume is `ROAD-40` work.
+
+**Checks.** Freshly run in the candidate worktree:
+- `cargo test --release --lib`: 2,024 passed, 0 failed, 83 ignored;
+- the new `reclaim` unit test;
+- `cargo clippy` (no new warnings);
+- `cargo doc` (no missing docs);
+- headless Godot suites against the candidate library, in the isolated profile:
+  `network_tool_chunk_renderer_test`, `road_benchmark_metrics_test`, `road_preview_metrics_test`,
+  `road_junction_preview_test`, `road_preview_stream_test`, `zoning_road_tool_test` and
+  `vegetation_land_cover_test`.
+
+**Artifacts:** `rust/target/road37-38/artifacts/`:
+- captures, logs and manifests: `{base,cand}-{w4,wdef}-{a,b,c,diag,diag2}`, and the attribution runs
+  `{var,cand}-w4-diag{x,y}`;
+- scripts: `run_ab.py`, `summarize.py`;
+- results: `summary.txt`, `attribution.txt`;
+- Godot suite logs.
+
+The libraries are in `rust/target/road37-38/lib/`.
+
+**Artifacts:** `rust/target/preview-bottlenecks-artifacts/` holds:
+- captures, logs and manifests: `head-a`, `head-diag`, `r24-diag`, plus the per-case `prof-*`,
+  `off*`, `st-*` and `dbg-*` runs;
+- `perf` recordings: `prof-*.data` (cycles, LBR) and `off*-sloped_cross.data` (context switches);
+- runner and analysis scripts: `run.py`, `run24.py`, `prof.sh`, `offcpu*.sh`, `stracefutex.sh`,
+  `summarize.py`, `agg*.py`, `tree.py`, `callers.py`, `dropcost.py`, `offcpu.py`, `leafcallers.py`.
+
+The `perf` data decodes with `perf script --no-inline` against the library in `rust/target/preview-bench/lib/`.
+No production code changed during this analysis.
 
 ### Junction preview without terrain reconstruction (`ROAD-28`)
 

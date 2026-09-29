@@ -670,7 +670,10 @@ fn curved_group_ignores_submicrometre_sliver_columns() {
         [41.15704345703125, 69.05770111083984],
         [38.88443374633789, 63.54991149902344],
     ];
-    let mut points: Vec<_> = vertices.iter().map(|p| Vector3::new(p[0], 0.0, p[1])).collect();
+    let mut points: Vec<_> = vertices
+        .iter()
+        .map(|p| Vector3::new(p[0], 0.0, p[1]))
+        .collect();
     let tail = points[6] - points[5];
     points.push(points[6] + tail.normalized() * 60.0);
     let mut graph = RegionGraph::new();

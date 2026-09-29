@@ -25,7 +25,9 @@ Kind values:
 
 Road preview display performance: **Road and terrain is the primary performance target**.
 `ROAD-30` measurement and `ROAD-31`–`ROAD-35` are complete; `ROAD-36` is parked after measurement. Prioritize measured
-full-mode bottlenecks and shared improvements. Keep Road only for comparison, then review
+full-mode bottlenecks and shared improvements. The 2026-09-29 bottleneck analysis found the Rust junction compile dominant.
+`ROAD-37`–`ROAD-42` track its fixes; `ROAD-37` and `ROAD-38` are done, `ROAD-39` is next. See the
+[findings and task order](roads.md#preview-compile-bottlenecks-road-37road-42). Keep Road only for comparison, then review
 whether both modes remain worthwhile after optimization. Mode removal/default changes are
 a later product decision. These are planned candidates, not established speedup claims. The owning
 [plan and acceptance criteria](roads.md#preview-display-performance-plan-road-30road-36)
@@ -40,6 +42,12 @@ preserve both preview modes and local geometry/commit correctness.
 | `ROAD-34` | `refactor` | `done` | `P1` | Full-mode terrain products carry display revisions; unchanged road-free patches are sent as metadata and keep their displayed slots. Patches restaged per pose 16 → 4–6, full-mode stage + install −0.3–0.5 ms. Planned/approach chunks change every pose in the fixtures and stay per-pose. Next: `ROAD-35`. |
 | `ROAD-35` | `refactor` | `done` | `P1` | Each new pose replaces the mailbox's pending input while the worker runs; Godot keeps ≤3 request records retired by the worker's started ID. Idle gaps → 0 ms, 15–70% more moving updates; displayed age −11 ms for sub-frame compiles, up to +1 frame per result for 1.5–2-frame compiles (accepted). Next: `ROAD-36`. |
 | `ROAD-36` | `refactor` | `parked` | `P2` | Measured, not implemented: only 5–30% of moving road-layer bytes keep their vertex count in the double-buffered target, and all layer submission costs 0.29–0.46 ms per result, so in-place updates save <0.14 ms. On 2–4 pinned E-cores submission scales with worker time (≤3% of it). Revisit only if rendered or larger workloads show submission/upload as material. |
+| `ROAD-37` | `bug` | `done` | `P1` | The previous preview is swapped out under the result lock and freed on a bounded reclaim thread. It used to be freed under the write lock: 1.1–6.1 ms of serial worker time per result, and main-thread poll waits up to 9 ms (`*_cross`). The lock wait maximum is now 0.00 ms in every fixture, and products are identical. Freeing concurrently adds about 2–5 ms of cross-fixture compile time, which is accepted (see `ROAD-40`). |
+| `ROAD-38` | `bug` | `done` | `P1` | The preview worker runs its parallel stages in its own Rayon pool, created once and sized like the global pool: one thread per logical CPU, or `RAYON_NUM_THREADS`. With four workers, frames over 33 ms in `flat_cross`/`sloped_cross` fall from 52–53/109–124 to 0/0, and moving age p95 falls 15–30 ms. |
+| `ROAD-39` | `refactor` | `open` | `P1` | Index explicit-step lower edges in node export. `raised_owner_vertex_matches_explicit_step_lower_height` scans every step per vertex (about 110 steps in a four-way junction; 3.9% of Rayon CPU). Exit: identical export products, lower `export_ms`. |
+| `ROAD-40` | `refactor` | `open` | `P2` | Cut constant factors in the junction compile, each item measured separately. Out-of-line libm `round` (~5%, no SSE4.1 codegen), SipHash (~6%), allocation and `Vec` growth (~15%) and repeated sorts (~12%). Exit: identical products across processes, matched worker-time gain per item. |
+| `ROAD-41` | `refactor` | `open` | `P1` | Parallelize work inside one `JunctionN` compile. T/multi/branch poses solve one junction on one thread (four-way about 30–38 ms). Depends on `ROAD-38`. Exit: identical products; single-junction `road_ms` falls, targeting `flat_t` worker time of about 12–14 ms. |
+| `ROAD-42` | `refactor` | `open` | `P2` | Measure pose-to-pose junction reuse. Topology reuse requires whole-topology equality and never matches a moving preview (`previous_hits=0`). Offer the previous pose's pair/contributor caches in a diagnostic build; implement only if hit rates are material. |
 
 `ROAD-29` — `feature`, `done`, `P1` (2026-09-28). Gameplay option for default
 road-only previews or full road-and-terrain replacement. Both retain bounded road replacement

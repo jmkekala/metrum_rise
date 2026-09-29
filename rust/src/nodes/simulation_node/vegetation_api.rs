@@ -4,11 +4,11 @@
 
 use super::*;
 use crate::nodes::sim::core::VegetationEditUndo;
-use brush::preset;
 use crate::simulation::vegetation::edits::{
     AuthoredPlant as Plant, VARIANT_FROM_SEED, VegetationCell, VegetationLayer, pack_patch_key,
 };
 use crate::simulation::vegetation::{hash, unit};
+use brush::preset;
 
 mod brush;
 mod land_cover;
@@ -334,11 +334,7 @@ pub(crate) fn plant_at(core: &SimCore, pos: Vector2) -> Option<(Plant, f32)> {
                     })
                     .min_by(|a, b| a.0.total_cmp(&b.0).then(a.2.cmp(&b.2)))
             })
-            .min_by(|a, b| {
-                a.0.total_cmp(&b.0)
-                    .then(a.1.cmp(&b.1))
-                    .then(a.2.cmp(&b.2))
-            });
+            .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
         if let Some((distance, _, _, plant)) = nearest {
             // Strict replacement retains canopy first on a cross-layer distance tie.
             if best.is_none_or(|(best_distance, _)| distance < best_distance) {
@@ -483,8 +479,14 @@ fn paint_at(core: &mut SimCore, pos: Vector2, radius: f32, option: i64, stroke: 
     // never edit-store identities: every position is mapped back to its owning canopy cell.
     // Each carries the cell it came from, because the preset thins and mixes on that cell's
     // own grid rather than on the canopy cell the position ends up in.
-    let generated_points = disc_cells(pos, radius, cell_m, layer)
-        .map(|cell| (candidate(cell.x, cell.z, cell_m, salt), true, cell.x, cell.z));
+    let generated_points = disc_cells(pos, radius, cell_m, layer).map(|cell| {
+        (
+            candidate(cell.x, cell.z, cell_m, salt),
+            true,
+            cell.x,
+            cell.z,
+        )
+    });
     let brush_points = disc_cells(pos, radius, BRUSH_SPACING_M, layer)
         .map(|cell| (brush_candidate(cell.x, cell.z, salt), false, cell.x, cell.z));
     let plans: Vec<_> = generated_points
@@ -529,9 +531,7 @@ fn paint_at(core: &mut SimCore, pos: Vector2, radius: f32, option: i64, stroke: 
                     // Only an unpinned plant can be the same edit as the regrown one. A
                     // player who named the tree gets that tree authored over the tombstone,
                     // not whichever mesh the generator's own seed had chosen.
-                    Some(p)
-                        if p.species == plant.species && plant.variant == VARIANT_FROM_SEED =>
-                    {
+                    Some(p) if p.species == plant.species && plant.variant == VARIANT_FROM_SEED => {
                         Some((cell, plant, true, true))
                     }
                     _ => (!occupied && placement_clear(core, x, z, layer))

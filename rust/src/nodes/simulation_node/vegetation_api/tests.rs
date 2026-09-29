@@ -66,7 +66,10 @@ fn bulldoze_plant_lookup_is_bounded_deterministic_and_refuses_coincident_plants(
     assert!(plant_at(&core, Vector2::new(1.0, 1.0)).is_none());
     // Declining a bulldoze target must not alter the vegetation brush's area clear.
     assert_eq!(remove_at(&mut core, Vector2::new(1.0, 1.0), 0.0, 0), 2);
-    assert_eq!(plant_at(&core, Vector2::new(3.0, 1.0)).unwrap().0.species, 3);
+    assert_eq!(
+        plant_at(&core, Vector2::new(3.0, 1.0)).unwrap().0.species,
+        3
+    );
 }
 
 #[test]
@@ -101,7 +104,13 @@ fn vegetation_paint_fills_rejected_candidates_and_leaves_generated_cells_alone()
     let mut core = core();
     let generated = first_candidate(&core, true);
     assert_eq!(
-        paint_at(&mut core, Vector2::new(generated.x, generated.z), 0.01, 1, 0),
+        paint_at(
+            &mut core,
+            Vector2::new(generated.x, generated.z),
+            0.01,
+            1,
+            0
+        ),
         0
     );
     assert_eq!(core.vegetation_edits.len(), 0);
@@ -289,15 +298,15 @@ fn vegetation_clears_under_a_committed_field_and_returns_when_it_is_removed() {
     let remote = layout.key(layout.span * 2.0, layout.span * 2.0);
     let covered_before = core.vegetation_edits.patch_generation(covered);
     let remote_before = core.vegetation_edits.patch_generation(remote);
-    core.invalidate_vegetation_over((
-        Vector2::new(-120.0, -20.0),
-        Vector2::new(-80.0, 20.0),
-    ));
+    core.invalidate_vegetation_over((Vector2::new(-120.0, -20.0), Vector2::new(-80.0, 20.0)));
     assert_eq!(
         core.vegetation_edits.patch_generation(covered),
         covered_before + 1
     );
-    assert_eq!(core.vegetation_edits.patch_generation(remote), remote_before);
+    assert_eq!(
+        core.vegetation_edits.patch_generation(remote),
+        remote_before
+    );
 
     // Clearance is re-evaluated rather than destructive, so removing the field restores the
     // plant bit for bit, exactly as removing a road deck or a building pad does.
@@ -870,7 +879,10 @@ fn a_named_tree_plants_only_the_meshes_that_are_that_tree() {
 
     let mut pine_core = core();
     assert!(paint_at(&mut pine_core, Vector2::ZERO, 64.0, PINE, 0) > 0);
-    let pines: Vec<_> = planted(&pine_core).into_iter().filter(|p| p.1 != 0).collect();
+    let pines: Vec<_> = planted(&pine_core)
+        .into_iter()
+        .filter(|p| p.1 != 0)
+        .collect();
     assert!(!pines.is_empty());
     for (species, variant, _) in &pines {
         assert_eq!(*species, 0);
