@@ -538,44 +538,55 @@ func _build_road_chunk_instance(
 	chunk_origin_z_m: float
 ) -> MeshInstance3D:
 	_ensure_road_mesh_materials()
+	# Rust certifies the exact immutable chunk buffers off the main thread. A missing
+	# certificate falls back to the full scan; a malformed one rejects the chunk.
+	var certificate = chunk_data.get("road_mesh_payload_validated", false)
+	if typeof(certificate) != TYPE_BOOL:
+		return null
+	var rust_validated: bool = certificate
 	var arr_mesh := ArrayMesh.new()
-	if not _append_road_surface(arr_mesh, chunk_data, "earthwork", _earthwork_mat):
+	if not _append_road_surface(arr_mesh, chunk_data, "earthwork", _earthwork_mat, rust_validated):
 		return null
 	if not _append_road_surface(
 		arr_mesh,
 		chunk_data,
 		"curb",
-		WorldMaterials.road_sidewalk_face_material()
+		WorldMaterials.road_sidewalk_face_material(),
+		rust_validated
 	):
 		return null
 	if not _append_road_surface(
 		arr_mesh,
 		chunk_data,
 		"raised_step",
-		WorldMaterials.road_sidewalk_face_material()
+		WorldMaterials.road_sidewalk_face_material(),
+		rust_validated
 	):
 		return null
 	if not _append_road_surface(
 		arr_mesh,
 		chunk_data,
 		"sidewalk",
-		WorldMaterials.road_sidewalk_material()
+		WorldMaterials.road_sidewalk_material(),
+		rust_validated
 	):
 		return null
 	if not _append_road_surface(
 		arr_mesh,
 		chunk_data,
 		"road",
-		WorldMaterials.road_asphalt_material()
+		WorldMaterials.road_asphalt_material(),
+		rust_validated
 	):
 		return null
-	if not _append_road_surface(arr_mesh, chunk_data, "marking", _marking_mat):
+	if not _append_road_surface(arr_mesh, chunk_data, "marking", _marking_mat, rust_validated):
 		return null
 	if not _append_road_surface(
 		arr_mesh,
 		chunk_data,
 		"concrete",
-		WorldMaterials.road_concrete_material()
+		WorldMaterials.road_concrete_material(),
+		rust_validated
 	):
 		return null
 	if arr_mesh.get_surface_count() == 0:
@@ -600,7 +611,8 @@ func _append_road_surface(
 	arr_mesh: ArrayMesh,
 	chunk_data: Dictionary,
 	layer: String,
-	material: Material
+	material: Material,
+	rust_validated: bool
 ) -> bool:
 	var validation_us := Time.get_ticks_usec() if not _road_upload_metrics.is_empty() else 0
 	var vertices_key := layer + "_vertices"
@@ -633,6 +645,33 @@ func _append_road_surface(
 		return true
 	if material == null:
 		return false
+	if not rust_validated and not _road_layer_is_finite(vertices, normals, uvs, colors):
+		return false
+	var upload_us := Time.get_ticks_usec() if not _road_upload_metrics.is_empty() else 0
+	if not _road_upload_metrics.is_empty():
+		_road_upload_metrics["road_validation_ms"] = _road_upload_metrics.get("road_validation_ms", 0.0) + float(upload_us - validation_us) / 1000.0
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = vertices
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_COLOR] = colors
+	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	var previous_surface_count := arr_mesh.get_surface_count()
+	arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	if arr_mesh.get_surface_count() != previous_surface_count + 1:
+		return false
+	arr_mesh.surface_set_material(previous_surface_count, material)
+	if not _road_upload_metrics.is_empty():
+		_road_upload_metrics["road_submit_ms"] = _road_upload_metrics.get("road_submit_ms", 0.0) + float(Time.get_ticks_usec() - upload_us) / 1000.0
+		_road_upload_metrics["road_layers_created"] = _road_upload_metrics.get("road_layers_created", 0) + 1
+	return true
+
+func _road_layer_is_finite(
+	vertices: PackedVector3Array,
+	normals: PackedVector3Array,
+	uvs: PackedVector2Array,
+	colors: PackedColorArray
+) -> bool:
 	for index in vertices.size():
 		var vertex := vertices[index]
 		var normal := normals[index]
@@ -653,23 +692,6 @@ func _append_road_surface(
 			or not is_finite(color.a)
 		):
 			return false
-	var upload_us := Time.get_ticks_usec() if not _road_upload_metrics.is_empty() else 0
-	if not _road_upload_metrics.is_empty():
-		_road_upload_metrics["road_validation_ms"] = _road_upload_metrics.get("road_validation_ms", 0.0) + float(upload_us - validation_us) / 1000.0
-	var arrays := []
-	arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = vertices
-	arrays[Mesh.ARRAY_NORMAL] = normals
-	arrays[Mesh.ARRAY_COLOR] = colors
-	arrays[Mesh.ARRAY_TEX_UV] = uvs
-	var previous_surface_count := arr_mesh.get_surface_count()
-	arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	if arr_mesh.get_surface_count() != previous_surface_count + 1:
-		return false
-	arr_mesh.surface_set_material(previous_surface_count, material)
-	if not _road_upload_metrics.is_empty():
-		_road_upload_metrics["road_submit_ms"] = _road_upload_metrics.get("road_submit_ms", 0.0) + float(Time.get_ticks_usec() - upload_us) / 1000.0
-		_road_upload_metrics["road_layers_created"] = _road_upload_metrics.get("road_layers_created", 0) + 1
 	return true
 
 func _ensure_road_mesh_materials() -> void:

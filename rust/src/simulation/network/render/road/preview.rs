@@ -184,7 +184,7 @@ impl RoadPreviewRenderInput {
                         origin,
                         true,
                     );
-                    (!mesh.is_empty()).then(|| (key, Arc::new(mesh)))
+                    (!mesh.is_empty()).then(|| (key, mesh.seal()))
                 })
                 .collect(),
             retained: Arc::new(BTreeMap::new()),
@@ -222,7 +222,7 @@ impl RoadJunctionPreview {
                         origin,
                         false,
                     );
-                    (!retained.is_empty()).then(|| (*key, Arc::new(retained)))
+                    (!retained.is_empty()).then(|| (*key, retained.seal()))
                 })
                 .collect(),
         );

@@ -1060,9 +1060,9 @@ Deployed extension identity remains unchanged.
 
 ### Preview display performance plan (`ROAD-30`–`ROAD-36`)
 
-**Status: `ROAD-30` done; `ROAD-31`–`ROAD-36` planned (2026-09-29).** Implement and validate one task at a time.
-`ROAD-30` establishes the baseline below. Next: `ROAD-31`; use the measurements to justify any
-reprioritization. Each task has a separate roadmap entry and acceptance evidence. These are
+**Status: `ROAD-30` and `ROAD-31` done; `ROAD-32`–`ROAD-36` planned (2026-09-29).** Implement and
+validate one task at a time. `ROAD-30` establishes the baseline below. Next: `ROAD-32`; use the
+measurements to justify any reprioritization. Each task has a separate roadmap entry and acceptance evidence. These are
 candidate improvements identified by source inspection, with no measured speedup yet.
 The `ROAD-29` native comparison (16.383 vs 21.986 ms) excludes frontend presentation costs
 and does not establish which frontend stage dominates. Road/junction solving remains a
@@ -1289,6 +1289,96 @@ or malformed inputs must still be checked or rejected. Do not weaken failure-ato
 **Bound:** O(produced vertices) native validation; O(changed layers) frontend shape checks,
 plus unavoidable buffer upload. **Exit:** malformed/non-finite payload rejection tests,
 identical valid geometry, and measured main-thread validation reduction in both modes.
+
+**Implementation (validated 2026-09-29):** `NetworkMeshData::seal` is the only way to set the
+certificate. It checks every layer, including empty layers, for whole triangles,
+matching normal/UV/colour counts and finite components, then freezes the mesh in its `Arc`.
+`NetworkMeshData` is not `Clone`, so shared buffers cannot change after certification.
+All three publishers seal on the producing thread, never Godot's main thread:
+committed chunks in `precompute_road_mesh_data` (simulation thread), and planned and
+retained preview chunks on the preview worker. Retained-cache reuse shares the sealed `Arc`,
+so reused chunks are not validated again. Each exported chunk dictionary carries
+`road_mesh_payload_validated`. `network_tool.gd::_build_road_chunk_instance` reads it once
+per chunk. A non-bool value rejects the chunk; a missing or `false` value keeps the
+per-vertex GDScript scan. Certified chunks still pass the per-layer key, Variant type,
+triangle-count, attribute-count and material checks. Staging remains failure-atomic.
+Native validation is O(chunk vertices) per sealed chunk and runs off the main thread. Its
+cost is included in worker timings, with no separate timer.
+
+**Acceptance evidence (2026-09-29):** matched baseline (`HEAD` `358e8313`, clean worktree) and
+candidate processes were interleaved: two unprofiled acceptance runs and one
+`METRUM_DEBUG_PERF=1` diagnostic run each. The workload, hardware, settings, window and
+command were the same as the `ROAD-30` v3 captures. All 72 case/mode captures passed
+`--validate`; none dropped observations. The median of stationary replacements
+in the diagnostic runs, in milliseconds:
+
+| Fixture / mode | Road validation | Stage + install total | Worker |
+| --- | --- | --- | --- |
+| flat_t / full | 1.87 → 0.07 | 7.71 → 5.97 | 19.4 → 19.9 |
+| flat_t / road-only | 1.94 → 0.07 | 2.56 → 0.68 | 15.9 → 15.7 |
+| sloped_multi / full | 3.35 → 0.08 | 10.17 → 6.65 | 37.0 → 36.9 |
+| sloped_multi / road-only | 3.43 → 0.09 | 4.28 → 0.88 | 30.0 → 29.6 |
+| dense / full | 5.02 → 0.08 | 12.30 → 7.28 | 23.6 → 23.8 |
+| dense / road-only | 5.05 → 0.09 | 5.98 → 1.08 | 16.1 → 16.5 |
+
+Road validation fell to 0.07–0.11 ms in all 12 case/mode combinations. What remains is the
+constant-per-layer type/count checks. CPU mesh submission and packing are unchanged
+within noise. Worker medians moved by at most ±0.8 ms in either direction, which is within run-to-run
+variation. The native seal therefore has no measurable worker cost in these fixtures.
+
+The unprofiled acceptance ranges below span two processes per side, in milliseconds.
+Ranges are not confidence intervals.
+
+| Fixture / mode | Stationary p50 | Stationary p95 | Moving displayed-age p95 |
+| --- | --- | --- | --- |
+| `flat_t` / full | 45.2–45.4 → 43.1–43.7 | 48.2–48.8 → 46.1–46.4 | 53.3–60.2 → 53.0–58.3 |
+| `sloped_t` / full | 45.3 → 43.1–43.3 | 50.1–51.9 → 47.8–48.3 | 68.7–68.8 → 68.4 |
+| `flat_multi` / full | 46.7–46.9 → 43.8–44.0 | 50.4 → 47.6–48.6 | 66.2–66.6 → 53.1–53.7 |
+| `sloped_multi` / full | 64.0–64.1 → 60.7 | 66.9–67.0 → 63.1 | 86.6–102.1 → 86.5–87.2 |
+| `dense` / full | 49.5–49.7 → 44.8–45.2 | 51.3–52.6 → 48.0–49.0 | 69.4–70.7 → 53.1–68.5 |
+| `residency_retry` / full | 93.5–93.6 → 91.9 | 97.6–97.7 → 95.3–95.6 | 65.3–65.5 → 53.1–53.2 |
+| `flat_t` / road-only | 22.9–24.3 → 21.4–21.5 | 39.1–41.1 → 38.0 | 52.8–53.1 → 52.9–53.4 |
+| `sloped_t` / road-only | 39.1–39.2 → 37.0–37.2 | 42.0–42.6 → 38.7–38.9 | 55.9–56.0 → 55.1–55.4 |
+| `flat_multi` / road-only | 27.1–39.9 → 36.9–37.1 | 42.1–43.3 → 38.9 | 52.9–53.4 → 53.2–53.3 |
+| `sloped_multi` / road-only | 41.5–41.7 → 37.8–38.0 | 45.9–46.5 → 40.3–53.7 | 69.8 → 69.3–69.8 |
+| `dense` / road-only | 27.1–29.6 → 22.4–22.6 | 44.1–45.6 → 38.3–39.2 | 52.7–52.9 → 53.1–53.4 |
+| `residency_retry` / road-only | 23.2–25.5 → 21.1–21.9 | 40.8–41.7 → 37.3–38.4 | 53.0–53.3 → 53.1–53.3 |
+
+Full mode stationary medians improved by about 1.6–4.7 ms in every fixture in both processes. Road-only
+improved except `flat_multi`: its baseline medians straddled a frame boundary (27.1 vs
+39.9 ms), so that row is inconclusive. One candidate process's `sloped_multi` road-only p95 was
+53.7 ms; the other was 40.3 ms. Frame intervals over 33.333 ms fell from 27/56 (baseline
+processes) to 0/0 (candidate); none exceeded 50 ms on either side. Moving displayed age
+is dominated by cadence and worker time. Some full-mode p95s dropped by about one frame. This is
+a small controlled-neighbourhood result, not a city-scale or cross-hardware claim.
+
+Artifacts: `rust/target/road31-artifacts/` holds `{baseline,candidate}-{a,b,diag}.json`,
+their logs and manifests, `run_ab.py` (the reproducer), `summarize.py`/`diagnostic-compare.txt`
+and `acceptance.py`/`acceptance-compare.txt`. The isolated projects are under
+`rust/target/road31/{baseline,candidate}/godot`. They use the workspace or baseline-worktree
+scripts and release libraries, with the `ROAD-30` override profile name. The `rust/target/preview-test-tmp`
+TMPDIR/XDG profile was used, with four Rayon workers and 1280×720. The benchmarked candidate
+library SHA-256 is `d3f1dea4…a2103495`; the baseline is `f3eb73fa…2f2264a`. After the runs, an
+`is_multiple_of(3)` clippy fix produced the deployed `godot/bin` library
+`837f5616…23fb88e4`. That fix does not change behaviour, and the Rust and Godot checks were rerun on it.
+`tools/road_benchmark_report.py --baseline/--candidate` does not yet accept preview-matrix
+captures; the two helper scripts compute the tables above.
+
+**Correctness checks:** new Rust test `seal_certifies_only_well_formed_finite_buffers`
+covers NaN/Inf in each attribute, a missing colour and a partial triangle. Preview parity
+tests now also assert that planned and retained meshes are certified. All 71 release `network::render`
+and `road_preview` tests pass; rustdoc reports no warnings; clippy reports nothing new.
+The Godot `network_tool_chunk_renderer_test` covers:
+- a certified payload uploads the same surface arrays as an uncertified one;
+- a non-bool certificate is rejected;
+- certified payloads with bad counts or wrong Variant types are rejected;
+- an uncertified non-finite payload is rejected.
+
+That suite plus the junction-preview, stream-preview, preview-metrics and benchmark-metrics
+suites pass headless in the isolated profile. The full debug `cargo test --lib` shows 2014 passed and 2 failed. Both failures
+are zoning tests (`partial_paint_erase_and_external_exclusion_match_full_chunk_rebuilds`,
+`occupied_cells_survive_native_node_merge_regeneration_and_undo`), and both fail identically on
+the clean baseline worktree. They are unrelated to this change.
 
 #### `ROAD-32` — Reuse preview rendering resources
 

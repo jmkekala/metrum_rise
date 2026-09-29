@@ -420,6 +420,7 @@ func _run() -> void:
 	_expect(road_tool._road_chunk_span_m == CHUNK_SPAN_M, "invalid batch must retain span")
 	_expect(road_tool._road_chunk_origin_x_m == CHUNK_ORIGIN_X_M, "invalid batch must retain x origin")
 	_expect(road_tool._road_chunk_origin_z_m == CHUNK_ORIGIN_Z_M, "invalid batch must retain z origin")
+	_test_road_payload_certificate(road_tool)
 
 	simulation.generation = 7
 	simulation.response = _batch(
@@ -968,6 +969,55 @@ func _batch(
 		"chunk_origin_z_m": chunk_origin_z_m,
 		"chunks": chunks,
 	}
+
+func _test_road_payload_certificate(road_tool: Node) -> void:
+	# The Rust certificate may skip only the per-vertex scan, never the boundary shape checks.
+	var key := Vector2i(1, 1)
+	var uncertified: MeshInstance3D = road_tool._build_road_chunk_instance(
+		_triangle_chunk(1, 1), key, CHUNK_SPAN_M, CHUNK_ORIGIN_X_M, CHUNK_ORIGIN_Z_M
+	)
+	var certified_chunk := _triangle_chunk(1, 1)
+	certified_chunk["road_mesh_payload_validated"] = true
+	var certified: MeshInstance3D = road_tool._build_road_chunk_instance(
+		certified_chunk, key, CHUNK_SPAN_M, CHUNK_ORIGIN_X_M, CHUNK_ORIGIN_Z_M
+	)
+	_expect(uncertified != null and certified != null, "valid road payloads must build")
+	if uncertified != null and certified != null:
+		_expect(
+			certified.mesh.get_surface_count() == uncertified.mesh.get_surface_count()
+			and certified.mesh.surface_get_arrays(0) == uncertified.mesh.surface_get_arrays(0),
+			"certified payload must upload identical geometry"
+		)
+		certified.free()
+		uncertified.free()
+
+	var wrong_type := _triangle_chunk(1, 1)
+	wrong_type["road_mesh_payload_validated"] = 1
+	_expect(
+		road_tool._build_road_chunk_instance(wrong_type, key, CHUNK_SPAN_M, CHUNK_ORIGIN_X_M, CHUNK_ORIGIN_Z_M) == null,
+		"non-bool road payload certificate must be rejected"
+	)
+	var certified_bad_count := _triangle_chunk(1, 1)
+	certified_bad_count["road_mesh_payload_validated"] = true
+	certified_bad_count["road_normals"] = PackedVector3Array([Vector3.UP])
+	_expect(
+		road_tool._build_road_chunk_instance(certified_bad_count, key, CHUNK_SPAN_M, CHUNK_ORIGIN_X_M, CHUNK_ORIGIN_Z_M) == null,
+		"certified payload must still pass attribute count checks"
+	)
+	var certified_bad_type := _triangle_chunk(1, 1)
+	certified_bad_type["road_mesh_payload_validated"] = true
+	certified_bad_type["road_uvs"] = PackedVector3Array()
+	_expect(
+		road_tool._build_road_chunk_instance(certified_bad_type, key, CHUNK_SPAN_M, CHUNK_ORIGIN_X_M, CHUNK_ORIGIN_Z_M) == null,
+		"certified payload must still pass Variant type checks"
+	)
+	var uncertified_nan := _triangle_chunk(1, 1)
+	uncertified_nan["road_mesh_payload_validated"] = false
+	uncertified_nan["road_colors"] = PackedColorArray([Color(NAN, 0.0, 0.0), Color.WHITE, Color.WHITE])
+	_expect(
+		road_tool._build_road_chunk_instance(uncertified_nan, key, CHUNK_SPAN_M, CHUNK_ORIGIN_X_M, CHUNK_ORIGIN_Z_M) == null,
+		"uncertified non-finite payload must be rejected"
+	)
 
 func _triangle_chunk(chunk_x: int, chunk_z: int, x_offset: float = 0.0) -> Dictionary:
 	var chunk := {

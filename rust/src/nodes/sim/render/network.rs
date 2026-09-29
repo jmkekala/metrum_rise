@@ -83,7 +83,7 @@ impl SimCore {
                         published_chunks.remove(chunk);
                     } else {
                         rebuilt_vertex_count += mesh.vertex_count();
-                        let mesh = Arc::new(mesh);
+                        let mesh = mesh.seal();
                         self.cached_road_mesh_chunks
                             .insert(*chunk, Arc::clone(&mesh));
                         published_chunks.insert(*chunk, mesh);
@@ -163,6 +163,11 @@ impl SimCore {
 
     pub(crate) fn network_mesh_data_dict(mesh_data: &NetworkMeshData) -> VarDictionary {
         let mut dict = VarDictionary::new();
+        // Certified off the Godot main thread; Godot still checks Variant types and counts.
+        dict.set(
+            "road_mesh_payload_validated",
+            mesh_data.render_payload_validated(),
+        );
         dict.set(
             "earthwork_vertices",
             PackedVector3Array::from_iter(mesh_data.earthwork_vertices.iter().copied()),

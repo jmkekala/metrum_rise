@@ -11,6 +11,7 @@ use godot::prelude::*;
 pub(crate) use ownership::NetworkMeshOwner;
 use ownership::OwnedVertexRange;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 #[derive(Debug)]
 struct NetworkMeshChunkPartition {
@@ -87,6 +88,9 @@ pub struct NetworkMeshData {
     current_owner: Option<NetworkMeshOwner>,
     owner_ranges: [Vec<OwnedVertexRange>; 7],
     chunk_partition: Option<NetworkMeshChunkPartition>,
+    // Set only by `seal`: the type is not `Clone`, so the certified buffers cannot change
+    // once shared behind the returned `Arc`.
+    render_payload_validated: bool,
 }
 
 impl NetworkMeshData {
@@ -124,6 +128,7 @@ impl NetworkMeshData {
             current_owner: None,
             owner_ranges: Default::default(),
             chunk_partition: None,
+            render_payload_validated: false,
         }
     }
 
@@ -164,6 +169,88 @@ impl NetworkMeshData {
             && self.concrete_vertices.is_empty()
     }
 
+    /// Validates the final render buffers once and freezes them for publication.
+    ///
+    /// Every layer must hold whole triangles with matching attribute counts and finite
+    /// components. The certificate travels with these exact immutable buffers so the Godot
+    /// boundary can skip its per-vertex scan. O(vertices); run it on the producing thread.
+    pub(crate) fn seal(mut self) -> Arc<Self> {
+        self.render_payload_validated = self.render_payload_is_valid();
+        Arc::new(self)
+    }
+
+    /// Reports whether `seal` certified these buffers; uncertified meshes need full validation.
+    pub(crate) fn render_payload_validated(&self) -> bool {
+        self.render_payload_validated
+    }
+
+    fn render_payload_is_valid(&self) -> bool {
+        fn layer_valid(
+            vertices: &[Vector3],
+            normals: &[Vector3],
+            uvs: &[Vector2],
+            colors: &[Color],
+        ) -> bool {
+            let finite3 = |v: &Vector3| v.x.is_finite() && v.y.is_finite() && v.z.is_finite();
+            vertices.len().is_multiple_of(3)
+                && normals.len() == vertices.len()
+                && uvs.len() == vertices.len()
+                && colors.len() == vertices.len()
+                && vertices.iter().all(finite3)
+                && normals.iter().all(finite3)
+                && uvs.iter().all(|uv| uv.x.is_finite() && uv.y.is_finite())
+                && colors.iter().all(|c| {
+                    c.r.is_finite() && c.g.is_finite() && c.b.is_finite() && c.a.is_finite()
+                })
+        }
+        [
+            (
+                &self.earthwork_vertices,
+                &self.earthwork_normals,
+                &self.earthwork_uvs,
+                &self.earthwork_colors,
+            ),
+            (
+                &self.curb_vertices,
+                &self.curb_normals,
+                &self.curb_uvs,
+                &self.curb_colors,
+            ),
+            (
+                &self.raised_step_vertices,
+                &self.raised_step_normals,
+                &self.raised_step_uvs,
+                &self.raised_step_colors,
+            ),
+            (
+                &self.sidewalk_vertices,
+                &self.sidewalk_normals,
+                &self.sidewalk_uvs,
+                &self.sidewalk_colors,
+            ),
+            (
+                &self.road_vertices,
+                &self.road_normals,
+                &self.road_uvs,
+                &self.road_colors,
+            ),
+            (
+                &self.marking_vertices,
+                &self.marking_normals,
+                &self.marking_uvs,
+                &self.marking_colors,
+            ),
+            (
+                &self.concrete_vertices,
+                &self.concrete_normals,
+                &self.concrete_uvs,
+                &self.concrete_colors,
+            ),
+        ]
+        .into_iter()
+        .all(|(vertices, normals, uvs, colors)| layer_valid(vertices, normals, uvs, colors))
+    }
+
     /// Returns the total number of non-indexed vertices across all material layers.
     pub(crate) fn vertex_count(&self) -> usize {
         self.earthwork_vertices.len()
@@ -185,4 +272,46 @@ pub trait TransitRenderer {
         lane_system: &crate::simulation::network::lanes::LaneSystem,
         terrain: &crate::simulation::terrain::TerrainSystem,
     ) -> NetworkMeshData;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn triangle() -> NetworkMeshData {
+        let mut mesh = NetworkMeshData::new();
+        mesh.road_vertices = vec![Vector3::ZERO, Vector3::RIGHT, Vector3::BACK];
+        mesh.road_normals = vec![Vector3::UP; 3];
+        mesh.road_uvs = vec![Vector2::ZERO; 3];
+        mesh.road_colors = vec![Color::WHITE; 3];
+        mesh
+    }
+
+    #[test]
+    fn seal_certifies_only_well_formed_finite_buffers() {
+        assert!(!triangle().render_payload_validated());
+        assert!(triangle().seal().render_payload_validated());
+        assert!(NetworkMeshData::new().seal().render_payload_validated());
+
+        let malformed: [fn(&mut NetworkMeshData); 6] = [
+            |mesh| mesh.road_vertices[1].y = f32::NAN,
+            |mesh| mesh.road_normals[0].z = f32::INFINITY,
+            |mesh| mesh.road_uvs[2].x = f32::NEG_INFINITY,
+            |mesh| mesh.road_colors[0].a = f32::NAN,
+            |mesh| {
+                mesh.road_colors.pop();
+            },
+            |mesh| {
+                mesh.marking_vertices.push(Vector3::ZERO);
+                mesh.marking_normals.push(Vector3::UP);
+                mesh.marking_uvs.push(Vector2::ZERO);
+                mesh.marking_colors.push(Color::WHITE);
+            },
+        ];
+        for corrupt in malformed {
+            let mut mesh = triangle();
+            corrupt(&mut mesh);
+            assert!(!mesh.seal().render_payload_validated());
+        }
+    }
 }

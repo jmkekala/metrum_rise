@@ -253,6 +253,7 @@ fn verify_connection<const N: usize>(mut fixture: Fixture, points: [Vector3; N],
         // still has independent cold-commit parity coverage.
         assert!(unlifted.contains_key(key));
         assert!(mesh.vertex_count() > 0);
+        assert!(mesh.render_payload_validated());
     }
     fixture.add(&points, forward, 1);
     for (index, (mut displayed, mut committed)) in combined
@@ -403,6 +404,12 @@ fn isolated_strokes_export_canonical_cold_commit_meshes_and_retain_neighbors() {
                 .collect(),
         );
         assert_eq!(!scene.retained.is_empty(), neighbor);
+        assert!(
+            scene
+                .retained
+                .values()
+                .all(|mesh| mesh.render_payload_validated())
+        );
         fixture.add(&points, 1, 1);
         let committed = RoadRenderer.generate_mesh_chunks_with_surface(
             &fixture.graph,
