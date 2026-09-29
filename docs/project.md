@@ -231,7 +231,7 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Current Priorities
 
-- **Road preview display performance (`ROAD-30`–`ROAD-35` done; `ROAD-36` planned)**: prioritize **Road and
+- **Road preview display performance (`ROAD-30`–`ROAD-35` done; `ROAD-36` parked)**: prioritize **Road and
   terrain**. With input-to-display baselines captured, tackle native buffer validation, rendering
   resource reuse, retained geometry locality, packed payload deltas, worker scheduling and
   compatible mesh updates one at a time. Each step needs matched performance and correctness
@@ -249,7 +249,9 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
   of 16 patches and full-mode stage-and-install falls 0.3–0.5 ms. `ROAD-35` keeps the worker fed with
   the latest pose: idle gaps vanish and 15–70% more previews show while moving. Displayed age falls
   about 11 ms where compiles fit a frame but each result can be a frame older where they take 1.5–2
-  frames; that trade-off is accepted. Next: `ROAD-36` compatible mesh buffer updates.
+  frames; that trade-off is accepted. `ROAD-36` measured in-place mesh buffer updates and parked
+  them: only 5–30% of moving road-layer bytes are compatible and all submission costs under 0.5 ms
+  per result. Next: review whether Road only still earns its place.
   [Ordered plan and acceptance criteria](roads.md#preview-display-performance-plan-road-30road-36).
 
 - **Codebase audit (`AUDIT-01`, paused by user)**: review the economy, buildings/save lifecycle, Rust/Godot boundary, and network/terrain for obsolete code, duplicated authority, correctness and scaling problems. Coverage and fresh validation are tracked in [`code_audit.md`](code_audit.md).

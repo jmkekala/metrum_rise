@@ -1060,9 +1060,9 @@ Deployed extension identity remains unchanged.
 
 ### Preview display performance plan (`ROAD-30`–`ROAD-36`)
 
-**Status: `ROAD-30`–`ROAD-35` done; `ROAD-36` planned (2026-09-29).** Implement and
-validate one task at a time. `ROAD-30` establishes the baseline below. Next: `ROAD-36`; use the
-measurements to justify any reprioritization. Each task has a separate roadmap entry and acceptance evidence. These are
+**Status: `ROAD-30`–`ROAD-35` done; `ROAD-36` parked after measurement (2026-09-29).** Implement and
+validate one task at a time. `ROAD-30` establishes the baseline below. Remaining: the preview-mode
+review below; use the measurements to justify any reprioritization. Each task has a separate roadmap entry and acceptance evidence. These are
 candidate improvements identified by source inspection, with no measured speedup yet.
 The `ROAD-29` native comparison (16.383 vs 21.986 ms) excludes frontend presentation costs
 and does not establish which frontend stage dominates. Road/junction solving remains a
@@ -1873,6 +1873,63 @@ Godot rendering backend/API before selecting dynamic-buffer flags or lower-level
 **Exit:** stable-topology and topology-changing replays match rebuilt meshes and cancellation
 behavior, with a measured upload/staging improvement. Defer this larger refactor if the
 baseline shows too little compatible work to justify its complexity.
+
+**Evaluation (2026-09-29): parked, not implemented.** The measurement below triggered the deferral
+clause above. Road chunk layers are non-indexed triangle lists, so equal vertex counts mean equal
+connectivity; a layer can be region-updated only when the same chunk and layer had the same
+non-zero count in the mesh being overwritten. Staging never writes the displayed set, so that mesh
+is the one staged two installs earlier.
+
+A throwaway instrumented copy of the `ROAD-35` scripts (deployed library `fb6ec6c9…e54192`) logged
+every staged planned/approach layer's vertex count through the full preview matrix: 100 repetitions,
+8 warmups, headless, all 12 captures valid. Headless runs count geometry only; they do not time
+rendering. Compatible share against the mesh two installs back, with the displayed mesh (an upper
+bound no double-buffered scheme can reach) in parentheses:
+
+| Fixture | Layers, moving | Bytes, moving | Bytes, stationary |
+| --- | --- | --- | --- |
+| `flat_t` | 48–51% (65–67%) | 27–29% (41–43%) | 15% (31%) |
+| `sloped_t` | 38–41% (56–58%) | 18–20% (29–30%) | 15% (24%) |
+| `flat_multi` | 31–41% (53–59%) | 17–28% (40–47%) | 9% (37%) |
+| `sloped_multi` | 14–19% (36–41%) | 5–8% (22–28%) | 6% (30%) |
+| `dense` | 42–52% (61–67%) | 22–30% (39–44%) | 15% (31%) |
+| `residency_retry` | 46–52% (64–68%) | 26–30% (41–44%) | 15% (31%) |
+
+Ranges span both modes. Mostly the small layers match; the large asphalt, sidewalk and earthwork
+layers change vertex count as the road and junction clips move. Only 11–44% of moving chunks match
+in every layer.
+
+The possible gain is too small for the complexity:
+- In the `ROAD-35` diagnostic capture, CPU submission of all 40 layers
+  (`add_surface_from_arrays`) costs 0.29–0.46 ms per result in both modes. That is under 2% of the
+  20–37 ms worker time and a fraction of the 0.7–2.5 ms stage-and-install total.
+- Region updates would still copy the compatible bytes, so the saving is below
+  0.46 ms × 30% ≈ 0.14 ms per result even in the best fixture. That is far inside the frame-cadence
+  noise of every acceptance measurement so far.
+- `ArrayMesh.surface_update_*_region` takes bytes in the surface's internal stream layout, not the
+  exported arrays. Producing it would couple the Rust exporter to Godot's vertex format (per-surface
+  strides, offsets and normal encoding) or add a per-vertex GDScript encoding pass that costs more
+  than the submission it replaces.
+- Keyed double buffering would also require partial surface rebuilds with the material partition
+  and bounds kept intact, adding failure paths to the atomic staging that `ROAD-32` made simple.
+
+**Slower-CPU check (2026-09-29):** single rendered diagnostic runs of the same HEAD scripts and
+library, unpinned (reference) and pinned with `taskset` to four or two E-cores (3.9 GHz max, Rayon 4
+and 2). The GPU was unchanged, so this simulates a weak CPU, not a weak GPU or driver. Road-layer
+submission medians slowed by 1.7–2.0× (to 0.57–0.84 ms) while worker time slowed by 1.5–2.3× (to
+25–83 ms). Submission stays at or below 3% of worker time, and the best-case in-place saving stays at
+about 0.25 ms. On two cores, submission p95 rose to 1.4–2.3 ms in some fixtures, and `sloped_multi`
+had 159/188 frames over 33 ms (66/54 over 50 ms, full/road-only; ≤2 elsewhere). Stage-and-install
+medians stayed at 1.2–4.5 ms, so those hitches point to core contention between the main, render and
+preview worker threads, which in-place buffer updates would not remove. Artifacts:
+`rust/target/road36-throttle/` (`run.py`, `summarize.py`, `compare.txt`, captures, logs,
+manifests); all three captures passed `--validate`.
+
+Revisit only if a larger workload or rendered GPU timing shows mesh submission or upload as a
+material cost, and then prefer reducing uploaded geometry (as `ROAD-33` did) over in-place updates.
+Artifacts: `rust/target/road36-artifacts/` holds `instrumentation.diff`, `layers.jsonl`,
+`measure.json`/`measure.log`, `analyze.py` and `compat.txt`; the instrumented project is
+`rust/target/road36/measure/godot`. No production code changed.
 
 **Shared acceptance and references.** Report full-mode responsiveness first and both-mode
 comparisons for every step; shared-path changes must not regress the comparison mode.

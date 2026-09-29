@@ -24,7 +24,7 @@ Kind values:
 ## Active Priorities
 
 Road preview display performance: **Road and terrain is the primary performance target**.
-`ROAD-30` measurement and `ROAD-31`–`ROAD-35` are complete. Tackle `ROAD-36` next; prioritize measured
+`ROAD-30` measurement and `ROAD-31`–`ROAD-35` are complete; `ROAD-36` is parked after measurement. Prioritize measured
 full-mode bottlenecks and shared improvements. Keep Road only for comparison, then review
 whether both modes remain worthwhile after optimization. Mode removal/default changes are
 a later product decision. These are planned candidates, not established speedup claims. The owning
@@ -39,7 +39,7 @@ preserve both preview modes and local geometry/commit correctness.
 | `ROAD-33` | `refactor` | `done` | `P1` | Existing chunks split once per owner set into a resident part and re-clipped approaches; moving retained reuse 0% → 100%, dense moving payload −43% (full) / −66% (road-only). Next: `ROAD-34`. |
 | `ROAD-34` | `refactor` | `done` | `P1` | Full-mode terrain products carry display revisions; unchanged road-free patches are sent as metadata and keep their displayed slots. Patches restaged per pose 16 → 4–6, full-mode stage + install −0.3–0.5 ms. Planned/approach chunks change every pose in the fixtures and stay per-pose. Next: `ROAD-35`. |
 | `ROAD-35` | `refactor` | `done` | `P1` | Each new pose replaces the mailbox's pending input while the worker runs; Godot keeps ≤3 request records retired by the worker's started ID. Idle gaps → 0 ms, 15–70% more moving updates; displayed age −11 ms for sub-frame compiles, up to +1 frame per result for 1.5–2-frame compiles (accepted). Next: `ROAD-36`. |
-| `ROAD-36` | `refactor` | `open` | `P2` | Evaluate compatible mesh buffer updates, retaining rebuilds for topology changes. |
+| `ROAD-36` | `refactor` | `parked` | `P2` | Measured, not implemented: only 5–30% of moving road-layer bytes keep their vertex count in the double-buffered target, and all layer submission costs 0.29–0.46 ms per result, so in-place updates save <0.14 ms. On 2–4 pinned E-cores submission scales with worker time (≤3% of it). Revisit only if rendered or larger workloads show submission/upload as material. |
 
 `ROAD-29` — `feature`, `done`, `P1` (2026-09-28). Gameplay option for default
 road-only previews or full road-and-terrain replacement. Both retain bounded road replacement
