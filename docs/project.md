@@ -473,6 +473,11 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- `RENDER-14`: car render interpolation moved from GDScript to Rust (`smooth_car_render_data`,
+  `nodes/sim/render/car_visual.rs`). Behaviour is unchanged: same rates, 80 m snap, height-owner snap
+  and busy-support fallback. `agents.gd` now only uploads buffers. Main-thread cost for lane cars fell
+  from about 1.2 µs to 0.06 µs per car (20,000 cars: 25 → 1.2 ms per frame, windowed matched A/B).
+  Off-lane cars keep the native support solve. See [`traffic.md`](traffic.md).
 - `EARTH-02`: fixed the missing farm-city terrain chunk caused by conflicting site/road guide
   heights and ungraded building aprons at tile sides. New Game advances terrain payload versions,
   resets camera framing and clears the old save filename. See

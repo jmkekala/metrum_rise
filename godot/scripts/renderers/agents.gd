@@ -2,7 +2,7 @@
 
 ## Agent renderer — streams agent positions from Rust into a MultiMeshInstance3D each frame.
 ##
-## Rust methods called: get_agent_transforms(), get_car_render_data(), ground_car_transforms(),
+## Rust methods called: get_agent_transforms(), get_car_render_data(), smooth_car_render_data(),
 ##   set_vehicle_ground_support(),
 ##   get_agent_paths_debug(), get_agent_cull_far_m(), get_agent_cull_padding_m(), set_camera_aabb()
 ## Agent transforms arrive as a flat PackedFloat32Array of 12 floats per agent:
@@ -24,9 +24,6 @@ const WALKER_VAT_FRAMES := 30.0
 # Quaternius walk clips are baked in the opposite temporal direction from our distance phase.
 const WALKER_VAT_REVERSE_PHASE := true
 const CAR_TRANSFORM_STRIDE := 12
-const CAR_INTERPOLATION_RATE := 24.0
-const CAR_ROTATION_INTERPOLATION_RATE := 18.0
-const CAR_INTERPOLATION_SNAP_DISTANCE_M := 80.0
 const DEBUG_LABEL_LIMIT := 96
 const GLB_MAGIC := 0x46546c67
 const GLB_CHUNK_JSON := 0x4e4f534a
@@ -36,12 +33,6 @@ const GLTF_COMPONENT_UNSIGNED_SHORT := 5123
 const GLTF_COMPONENT_UNSIGNED_INT := 5125
 const GLTF_COMPONENT_FLOAT := 5126
 const GLTF_MODE_TRIANGLES := 4
-var _car_visual_origins: Dictionary = {}
-var _car_next_visual_origins: Dictionary = {}
-var _car_visual_bases: Dictionary = {}
-var _car_next_visual_bases: Dictionary = {}
-var _car_visual_ground_ids: Dictionary = {}
-var _car_next_visual_ground_ids: Dictionary = {}
 var _vehicle_glb_cache: Dictionary = {}
 
 var debug_mesh_instance: MeshInstance3D
@@ -268,59 +259,19 @@ func update_swarm(delta: float = 0.0):
 		if count > 0:
 			mmi.multimesh.buffer = buffer
 
-	# Cars (Now grouped by vehicle type and color variant)
-	var car_data = simulation_node.get_car_render_data()
-	var interpolation_alpha := 1.0
-	if delta > 0.0:
-		interpolation_alpha = clampf(delta * CAR_INTERPOLATION_RATE, 0.0, 1.0)
-	_car_next_visual_origins.clear()
-	_car_next_visual_bases.clear()
-	_car_next_visual_ground_ids.clear()
-	
-	# Clear types that are no longer present in the simulation (optional, but clean)
+	# Cars (grouped by vehicle type and color variant). Rust moves each drawn pose toward its
+	# snapshot pose and grounds off-lane cars, so they do not step at the simulation tick rate.
+	var car_buffers: Dictionary = simulation_node.smooth_car_render_data(
+		simulation_node.get_car_render_data(), delta
+	)
 	for type_key in car_mmis:
 		var mmi = car_mmis[type_key]
-		var bucket: Dictionary = car_data.get(type_key, {})
-		var buffer: PackedFloat32Array = bucket.get("transforms", PackedFloat32Array())
-		var ids: PackedInt64Array = bucket.get("ids", PackedInt64Array())
-		var ground_flags: PackedByteArray = bucket.get("ground_flags", PackedByteArray())
+		var buffer: PackedFloat32Array = car_buffers.get(type_key, PackedFloat32Array())
 		var count := int(buffer.size() / CAR_TRANSFORM_STRIDE)
-		
 		if count != mmi.multimesh.instance_count:
 			mmi.multimesh.instance_count = count
 		if count > 0:
-			if ids.size() == count and ground_flags.size() == count:
-				var visual := _interpolate_car_buffer(buffer, ids, count, interpolation_alpha, ground_flags)
-				if ground_flags.has(1):
-					# Interpolation changes XZ and heading; the shared Rust solver must support that
-					# final pose, too. A busy worker leaves us on the validated snapshot this frame.
-					var supported: PackedFloat32Array = simulation_node.ground_car_transforms(int(type_key) / 10, visual, ground_flags)
-					if supported.size() == buffer.size():
-						visual = supported
-					else:
-						# Preserve ordinary lane interpolation even when the access solve is busy.
-						for i in range(count):
-							if ground_flags[i] == 0:
-								continue
-							for j in range(CAR_TRANSFORM_STRIDE):
-								visual[i * CAR_TRANSFORM_STRIDE + j] = buffer[i * CAR_TRANSFORM_STRIDE + j]
-				for i in range(count):
-					if ground_flags[i] != 0:
-						_car_next_visual_ground_ids[ids[i]] = true
-				_cache_car_visual_buffer(visual, ids, count)
-				mmi.multimesh.buffer = visual
-			else:
-				mmi.multimesh.buffer = buffer
-
-	var old_origins = _car_visual_origins
-	_car_visual_origins = _car_next_visual_origins
-	_car_next_visual_origins = old_origins
-	var old_bases = _car_visual_bases
-	_car_visual_bases = _car_next_visual_bases
-	_car_next_visual_bases = old_bases
-	var old_ground_ids = _car_visual_ground_ids
-	_car_visual_ground_ids = _car_next_visual_ground_ids
-	_car_next_visual_ground_ids = old_ground_ids
+			mmi.multimesh.buffer = buffer
 
 	if show_paths:
 		var data = simulation_node.get_agent_paths_debug()
@@ -411,69 +362,6 @@ func _pedestrian_debug_mode_description(mode: int) -> String:
 			return "off/offset shows VAT offset magnitude while applying offsets; normal textures are hidden."
 		_:
 			return ""
-
-func _interpolate_car_buffer(
-	target_buffer: PackedFloat32Array,
-	render_ids: PackedInt64Array,
-	count: int,
-	alpha: float,
-	ground_flags: PackedByteArray
-) -> PackedFloat32Array:
-	var out := PackedFloat32Array()
-	out.resize(count * CAR_TRANSFORM_STRIDE)
-	var snap_distance_sq := CAR_INTERPOLATION_SNAP_DISTANCE_M * CAR_INTERPOLATION_SNAP_DISTANCE_M
-
-	for i in range(count):
-		var base := i * CAR_TRANSFORM_STRIDE
-		for j in range(CAR_TRANSFORM_STRIDE):
-			out[base + j] = target_buffer[base + j]
-
-		var target_origin := Vector3(
-			target_buffer[base + 3],
-			target_buffer[base + 7],
-			target_buffer[base + 11]
-		)
-		var target_basis := Basis(
-			Vector3(target_buffer[base + 0], target_buffer[base + 4], target_buffer[base + 8]),
-			Vector3(target_buffer[base + 1], target_buffer[base + 5], target_buffer[base + 9]),
-			Vector3(target_buffer[base + 2], target_buffer[base + 6], target_buffer[base + 10])
-		).orthonormalized()
-		var render_id: int = render_ids[i]
-		var previous_origin: Vector3 = _car_visual_origins.get(render_id, target_origin)
-		var previous_basis: Basis = _car_visual_bases.get(render_id, target_basis)
-		var visual_origin := target_origin
-		var visual_basis := target_basis
-		# Lane geometry and yard support are distinct owners. Snap at that handoff instead of
-		# interpolating a pose between owners without either one's support contract.
-		var owner_changed := _car_visual_ground_ids.has(render_id) != (ground_flags[i] != 0)
-		if not owner_changed and previous_origin.distance_squared_to(target_origin) <= snap_distance_sq:
-			visual_origin = previous_origin.lerp(target_origin, alpha)
-			var rotation_alpha := clampf(alpha * (CAR_ROTATION_INTERPOLATION_RATE / CAR_INTERPOLATION_RATE), 0.0, 1.0)
-			visual_basis = previous_basis.slerp(target_basis, rotation_alpha).orthonormalized()
-
-		out[base + 0] = visual_basis.x.x
-		out[base + 1] = visual_basis.y.x
-		out[base + 2] = visual_basis.z.x
-		out[base + 3] = visual_origin.x
-		out[base + 4] = visual_basis.x.y
-		out[base + 5] = visual_basis.y.y
-		out[base + 6] = visual_basis.z.y
-		out[base + 7] = visual_origin.y
-		out[base + 8] = visual_basis.x.z
-		out[base + 9] = visual_basis.y.z
-		out[base + 10] = visual_basis.z.z
-		out[base + 11] = visual_origin.z
-	return out
-
-func _cache_car_visual_buffer(buffer: PackedFloat32Array, ids: PackedInt64Array, count: int) -> void:
-	# Retain the pose actually uploaded, including any Rust support correction or busy fallback.
-	for i in range(count):
-		var p := i * CAR_TRANSFORM_STRIDE
-		_car_next_visual_origins[ids[i]] = Vector3(buffer[p + 3], buffer[p + 7], buffer[p + 11])
-		_car_next_visual_bases[ids[i]] = Basis(
-			Vector3(buffer[p], buffer[p + 4], buffer[p + 8]),
-			Vector3(buffer[p + 1], buffer[p + 5], buffer[p + 9]),
-			Vector3(buffer[p + 2], buffer[p + 6], buffer[p + 10]))
 
 func _load_source_texture(path: String) -> Texture2D:
 	if texture_cache.has(path):

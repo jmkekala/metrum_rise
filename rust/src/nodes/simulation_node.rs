@@ -108,7 +108,8 @@
 //! | | `try_get_zoning_parcels_overlay_packed` | `zoning_overlay.gd` |
 //! | **Agents** | `get_agent_transforms` | `agent_renderer.gd` |
 //! | | `get_car_render_data` | `agents.gd` |
-//! | | `ground_car_transforms` | `agents.gd` |
+//! | | `smooth_car_render_data` | `agents.gd` |
+//! | | `ground_car_transforms` | `vehicle_ground_support_test.gd` |
 //! | | `set_camera_aabb` | `agents.gd` (culling update) |
 
 use godot::classes::{INode3D, Node3D};
@@ -281,6 +282,8 @@ pub struct SimulationNode {
     pub(crate) water_patch_mesh_jobs: Arc<Mutex<WaterPatchMeshAsyncState>>,
     /// Main-thread presentation cache; never serialized or used by simulation decisions.
     pub(crate) building_lods: crate::nodes::sim::render::building_lod::spatial::SpatialBatches,
+    /// Main-thread drawn car poses between snapshots; never serialized or read by simulation.
+    pub(crate) car_visuals: crate::nodes::sim::render::car_visual::CarVisualSmoother,
     terrain_patch_payload_jobs: Arc<Mutex<TerrainPatchPayloadAsyncState>>,
     water_patch_payload_jobs: Arc<Mutex<WaterPatchPayloadAsyncState>>,
     /// Monotonic ids for stale-safe asynchronous road preview requests.
@@ -565,6 +568,7 @@ impl INode3D for SimulationNode {
             road_tool_query_snapshot,
             water_patch_mesh_jobs,
             building_lods: Default::default(),
+            car_visuals: Default::default(),
             terrain_patch_payload_jobs,
             water_patch_payload_jobs,
             road_preview_request_counter: AtomicU64::new(0),

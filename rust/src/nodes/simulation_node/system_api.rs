@@ -177,6 +177,72 @@ impl SimulationNode {
         }
     }
 
+    /// Returns bucket → MultiMesh transform buffer for this frame's drawn cars, from buckets
+    /// shaped like `get_car_render_data`. Poses move toward their snapshot poses and off-lane cars
+    /// are grounded; if the support solve is busy they show their validated snapshot pose. A
+    /// bucket with mismatched identity or flag counts is returned unsmoothed.
+    /// O(cars) per frame; one non-blocking core attempt per bucket with off-lane cars.
+    #[func]
+    pub fn smooth_car_render_data(&mut self, car_data: VarDictionary, delta: f64) -> VarDictionary {
+        use crate::nodes::sim::render::car_visual::{CarVisualSmoother, restore_off_lane_targets};
+        let alpha = CarVisualSmoother::alpha(delta);
+        let mut result = VarDictionary::new();
+        for (key, bucket) in car_data.iter_shared() {
+            let Ok(bucket) = bucket.try_to::<VarDictionary>() else {
+                continue;
+            };
+            let field = |name: &str| bucket.get(name).unwrap_or_default();
+            let targets = field("transforms")
+                .try_to::<PackedFloat32Array>()
+                .unwrap_or_default();
+            let ids = field("ids")
+                .try_to::<PackedInt64Array>()
+                .unwrap_or_default();
+            let flags = field("ground_flags")
+                .try_to::<PackedByteArray>()
+                .unwrap_or_default();
+            let count = targets.len() / 12;
+            if targets.len() % 12 != 0 || ids.len() != count || flags.len() != count {
+                result.set(key, targets);
+                continue;
+            }
+            let mut poses = PackedFloat32Array::from(targets.as_slice());
+            self.car_visuals.interpolate(
+                poses.as_mut_slice(),
+                ids.as_slice(),
+                flags.as_slice(),
+                alpha,
+            );
+            if flags.as_slice().contains(&1) {
+                let vehicle = key
+                    .try_to::<i64>()
+                    .ok()
+                    .and_then(|k| u8::try_from(k / 10).ok());
+                let grounded = vehicle.is_some_and(|vehicle| {
+                    Self::try_lock_shared_core(&self.core).is_some_and(|core| {
+                        core.ground_vehicle_transforms(
+                            vehicle,
+                            poses.as_mut_slice(),
+                            flags.as_slice(),
+                        )
+                    })
+                });
+                if !grounded {
+                    restore_off_lane_targets(
+                        poses.as_mut_slice(),
+                        targets.as_slice(),
+                        flags.as_slice(),
+                    );
+                }
+            }
+            self.car_visuals
+                .record(poses.as_slice(), ids.as_slice(), flags.as_slice());
+            result.set(key, poses);
+        }
+        self.car_visuals.finish_frame();
+        result
+    }
+
     /// Returns debug path geometry for active agents.
     #[func]
     pub fn get_agent_paths_debug(&self) -> VarDictionary {

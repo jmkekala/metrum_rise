@@ -333,21 +333,73 @@ Lane pose sampling in `nodes/sim/render/lane_pose.rs`:
 - samples active lane-change S-curves by smoothstep blending source-lane and target-lane positions
 - derives S-curve tangent from blended lane tangents plus the lateral blend derivative
 
-Godot applies render-side interpolation in `godot/scripts/renderers/agents.gd`:
+Render-side car interpolation runs in Rust (`nodes/sim/render/car_visual.rs`, `RENDER-14`).
+Each frame `godot/scripts/renderers/agents.gd` passes `get_car_render_data()` to
+`smooth_car_render_data(car_data, delta)` and uploads the returned per-bucket buffers:
 
-- cars have stable render IDs from Rust
+- cars have stable render IDs from Rust; drawn poses are main-thread presentation state on
+  `SimulationNode`, never saved or read by the simulation
 - pedestrian and vehicle MultiMeshes use the shared dynamic shadow-caster policy
 - origin interpolation smooths per-tick position updates
-- basis interpolation smooths rotation
+- basis interpolation smooths rotation (Godot's `Basis.slerp` formula, reimplemented on `glam`;
+  godot-rust's `Quaternion::slerp` is an engine call per car)
 - large jumps above `80 m` snap instead of interpolating across the map
+- a change between lane and off-lane height owners snaps instead of blending
+- off-lane cars are grounded by the shared support solve after interpolation; when the core is
+  busy they show their validated snapshot pose, never an unsupported interpolated one
+- a car absent from one frame is forgotten; degenerate or non-finite snapshot poses pass through
+  unchanged and are not remembered
 - transform uploads happen every render frame so fast sim multipliers do not quantize cars to the
   simulation tick rate
 
 Current render interpolation constants:
 
-- `CAR_INTERPOLATION_RATE = 24.0`
-- `CAR_ROTATION_INTERPOLATION_RATE = 18.0`
-- `CAR_INTERPOLATION_SNAP_DISTANCE_M = 80.0`
+- `INTERPOLATION_RATE = 24.0`
+- `ROTATION_INTERPOLATION_RATE = 18.0`
+- `SNAP_DISTANCE_M = 80.0`
+
+**Cost (`RENDER-14`, 2026-09-30).** Smoothing is O(visible cars) with one hash lookup and insert
+per car. Buckets of at least 2,048 cars interpolate in parallel on the global Rayon pool, the pool
+the support solve already used from the main thread. A populated-city run should confirm that the
+main thread does not wait on a pool the simulation tick is saturating.
+
+Matched A/B, `godot/tests/vehicle_ground_support_test.gd -- --benchmark-vehicle-support`: 100 timed
+`update_swarm` frames with cars advancing every frame. Baseline is `HEAD` `eedd0094` GDScript;
+both sides load the same release library (SHA-256 `92a4c47b…94841fda`), whose only change is the
+new function. Runs were interleaved, two per side, headless and windowed 640×360, with
+`RAYON_NUM_THREADS=4` on an i9-12900K / RX 7900 XTX. Windowed p50 ranges in milliseconds:
+
+| Cars | Lane cars | Off-lane cars |
+| --- | --- | --- |
+| 1,000 | 1.22 → 0.074 | 1.87–1.96 → 0.60–0.63 |
+| 5,000 | 6.06–6.12 → 0.34–0.49 | 8.74–9.28 → 2.23–2.37 |
+| 20,000 | 24.9–25.3 → 1.19–1.25 | 34.8–35.3 → 8.22–8.26 |
+
+Headless numbers agree (lane cars at 20,000: 24.6–24.8 → 0.82–0.88 ms). Off-lane cars keep the
+unchanged native support solve, about 0.4 µs per car, which is now their dominant cost. Real off-lane
+counts are limited to cars in an access phase. The Rust-only kernel
+(`car_smoothing_frame_cost`, ignored test) measures 0.045 / 0.17 / 0.66 ms for 1,000 / 5,000 /
+20,000 lane cars. Artifacts are in `rust/target/render14-artifacts/`: logs, `summarize.py` and
+`compare.txt`. The isolated projects are in `rust/target/render14/`. After the runs, a clippy
+cleanup (`as_chunks` in place of `chunks_exact`, with no behaviour change) produced the deployed
+`godot/bin` library `7a09021d…bb31156e`. The native tests and the headless and windowed vehicle
+grounding test were rerun on it.
+
+**Correctness checks:**
+- Native `car_visual` tests cover:
+  - a first sighting shows the snapshot pose;
+  - origin and heading close their gaps at 24/s and 18/s, and the next frame starts from the drawn
+    pose;
+  - long jumps and height-owner changes snap;
+  - absent cars are forgotten;
+  - degenerate and non-finite poses pass through unrecorded;
+  - a busy support solve restores only the off-lane snapshot poses.
+- The 156 related release vehicle, car and render tests pass. Rustdoc reports no warnings. Clippy
+  reports nothing new in the touched files.
+- `vehicle_ground_support_test.gd` drives the production `agents.gd` update through the native
+  call with real vehicle meshes, and passes headless and windowed. It checks 4,840 poses: no buried
+  contact, windowed MultiMesh buffers equal to the drawn pose, and the height-owner snap within the
+  snap distance.
 
 ## Debugging
 
