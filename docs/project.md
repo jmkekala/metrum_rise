@@ -473,6 +473,11 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- `ZONE-05`: road-side cells now appear with the committed road instead of 9–15 frames later.
+  Terrain keeps per-512 m height revisions from exactly changed samples, replacing the global
+  generations that re-uploaded every visible cell chunk. While the overlay is shown, the sim tick
+  regenerates edited warm chunks before publishing the edit. Chunk state polling returns four
+  values per chunk. See [`zoning.md`](zoning.md#road-commit-cell-overlay-latency--2026-09-30).
 - `RENDER-14`: car render interpolation moved from GDScript to Rust (`smooth_car_render_data`,
   `nodes/sim/render/car_visual.rs`). Behaviour is unchanged: same rates, 80 m snap, height-owner snap
   and busy-support fallback. `agents.gd` now only uploads buffers. Main-thread cost for lane cars fell

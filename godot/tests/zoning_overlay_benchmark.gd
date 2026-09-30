@@ -228,11 +228,11 @@ func _versions_match(cells: Node) -> bool:
 	if metadata.get("busy", true):
 		return false
 	var states: PackedInt64Array = metadata.states
-	if states.size() != keys.size() * 5:
+	if states.size() != keys.size() * 4:
 		return false
 	for i in range(keys.size()):
-		var expected := PackedInt64Array([states[i * 5], states[i * 5 + 2], states[i * 5 + 3], states[i * 5 + 4]])
-		if states[i * 5 + 1] == 0 or cells._versions.get(keys[i], PackedInt64Array()) != expected:
+		var expected := PackedInt64Array([states[i * 4], states[i * 4 + 2], states[i * 4 + 3]])
+		if states[i * 4 + 1] == 0 or cells._versions.get(keys[i], PackedInt64Array()) != expected:
 			return false
 	return not keys.is_empty()
 

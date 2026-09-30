@@ -204,8 +204,8 @@ func _settle_cell_overlay(overlay: Node) -> void:
 		var states: PackedInt64Array = metadata.states
 		var settled := not keys.is_empty()
 		for i in range(keys.size()):
-			var expected := PackedInt64Array([states[i * 5], states[i * 5 + 2], states[i * 5 + 3], states[i * 5 + 4]])
-			settled = settled and states[i * 5 + 1] != 0 and cells._versions.get(keys[i], PackedInt64Array()) == expected
+			var expected := PackedInt64Array([states[i * 4], states[i * 4 + 2], states[i * 4 + 3]])
+			settled = settled and states[i * 4 + 1] != 0 and cells._versions.get(keys[i], PackedInt64Array()) == expected
 		if settled:
 			return
 	_expect(false, "Production cell overlay must settle all visible chunk versions")

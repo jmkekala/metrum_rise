@@ -9,6 +9,7 @@ var _chunks: Dictionary = {}
 var _versions: Dictionary = {}
 var _material: StandardMaterial3D
 var _span: float
+var _reported_visible := false
 const VIEW_DISTANCE_M := 2000.0
 const UPLOADS_PER_FRAME := 2
 
@@ -27,6 +28,10 @@ func _ready() -> void:
 
 func _process(_delta: float) -> void:
 	visible = get_parent().is_overlay_requested()
+	# While shown, Rust regenerates edited chunks before publishing the edit's snapshot.
+	if visible != _reported_visible:
+		_reported_visible = visible
+		simulation_node.set_zoning_cell_overlay_visible(visible)
 	if not visible:
 		return
 	var keys := _visible_chunks()
@@ -45,14 +50,15 @@ func _process(_delta: float) -> void:
 	if bool(metadata.get("busy", true)):
 		return
 	var states: PackedInt64Array = metadata.get("states", PackedInt64Array())
-	if states.size() != keys.size() * 5:
+	if states.size() != keys.size() * 4:
 		return
 	var uploads := 0
 	for i in range(keys.size()):
 		var key: Vector2i = keys[i]
-		var version := PackedInt64Array([states[i * 5], states[i * 5 + 2], states[i * 5 + 3], states[i * 5 + 4]])
+		# Per chunk: cell revision, generated flag, parcel revision, local height revision.
+		var version := PackedInt64Array([states[i * 4], states[i * 4 + 2], states[i * 4 + 3]])
 		var known: PackedInt64Array = _versions.get(key, PackedInt64Array())
-		if states[i * 5 + 1] != 0 and known == version:
+		if states[i * 4 + 1] != 0 and known == version:
 			continue
 		var payload: Dictionary = simulation_node.try_get_zoning_cell_chunk_packed(key.x, key.y, known)
 		if bool(payload.get("busy", true)):

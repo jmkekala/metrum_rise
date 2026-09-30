@@ -47,6 +47,51 @@ fn queued_cell_preparation_uses_current_roads_and_discards_replaced_worlds() {
 }
 
 #[test]
+fn shown_overlay_regenerates_edited_warm_chunks_in_the_publishing_tick() {
+    let mut core = test_core();
+    road_terrain_plan::commit_ready(
+        &mut core,
+        vec![Vector3::new(-96.0, 0.0, 0.0), Vector3::new(96.0, 0.0, 0.0)],
+    );
+    assert!(core.prepare_cell_chunk_internal((0, 0)));
+    assert!(core.zoning.cells.take_stale_chunks().is_empty());
+
+    // Hidden: the edit's warm chunk stays for a later overlay request; the list still drains.
+    road_terrain_plan::commit_ready(
+        &mut core,
+        vec![
+            Vector3::new(-96.0, 0.0, 150.0),
+            Vector3::new(96.0, 0.0, 150.0),
+        ],
+    );
+    let stale = core.zoning.cells.chunk_state((0, 0));
+    assert!(!stale.1);
+    core.prepare_stale_cell_chunks_internal();
+    assert_eq!(core.zoning.cells.chunk_state((0, 0)), stale);
+    assert!(core.zoning.cells.take_stale_chunks().is_empty());
+
+    // Shown: the next edit is complete before its snapshot, with no overlay request.
+    core.cell_overlay_visible = true;
+    assert!(core.prepare_cell_chunk_internal((0, 0)));
+    let warm = core.zoning.cells.chunk_state((0, 0));
+    road_terrain_plan::commit_ready(
+        &mut core,
+        vec![
+            Vector3::new(-96.0, 0.0, 300.0),
+            Vector3::new(96.0, 0.0, 300.0),
+        ],
+    );
+    assert!(core.zoning.cells.pick(DVec2::new(25.0, 325.0)).is_none());
+    assert!(!core.zoning.cells.chunk_state((0, 0)).1);
+    core.prepare_stale_cell_chunks_internal();
+    let ready = core.zoning.cells.chunk_state((0, 0));
+    assert!(ready.1 && ready.0 > warm.0);
+    assert!(core.zoning.cells.pick(DVec2::new(25.0, 325.0)).is_some());
+    // Cold chunks were never shown and stay lazy.
+    assert!(!core.zoning.cells.chunk_state((1, 1)).1);
+}
+
+#[test]
 fn native_rotated_straight_road_keeps_unobstructed_frontage_cells() {
     use crate::simulation::zoning::cells::CellStore;
 

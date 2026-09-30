@@ -19,17 +19,23 @@ pub use chunks::{
 };
 
 use godot::prelude::Vector3;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::config::HEIGHT_SCALE;
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::sparse_chunk_grid::SparseChunkGrid;
+use crate::simulation::network::graph::RegionGraph;
 
 const DEFAULT_TERRAIN_CHUNK_CELLS: usize = 64;
 const TERRAIN_RENDER_PATCH_BORDER_TEXELS: usize = 4;
 const TERRAIN_CDT_LOCAL_MIN_SAMPLE_MARGIN_M: f32 = 8.0;
 const TERRAIN_CDT_LOCAL_SAMPLE_MARGIN_RENDER_STEPS: f32 = 4.0;
 const TERRAIN_CDT_LOCAL_SAMPLE_MARGIN_TERRAIN_CELLS: f32 = 2.0;
+// Local height revisions use the shared world-zero-aligned 512 m chunk grid. The margin covers
+// draped overlays owned by a chunk centre but reaching past it: an 80 m x 120 m parcel extends
+// at most 72 m, a cell under 8 m. One terrain cell is added for bilinear sampling.
+const HEIGHT_REVISION_REGION_M: f32 = RegionGraph::CHUNK_SIZE;
+const HEIGHT_REVISION_MARGIN_M: f32 = 96.0;
 
 /// Fine render step used by planned and committed road-clipped terrain patches.
 pub(crate) const ROAD_LOCKED_TERRAIN_RENDER_STEP_M: f32 = 2.0;
@@ -112,6 +118,12 @@ pub struct TerrainSystem {
     visual_generation: u64,
     /// Render patches whose visible terrain textures must be refreshed.
     dirty_render_patches: HashSet<(usize, usize)>,
+    /// Latest local height revision per 512 m region, including writes within the draping margin.
+    height_region_revisions: HashMap<(i32, i32), u64>,
+    /// Monotonic counter shared by local writes and whole-grid replacements.
+    height_revision: u64,
+    /// Revision of the latest whole-grid replacement; every region is at least this new.
+    height_epoch: u64,
 }
 
 impl TerrainSystem {
@@ -141,6 +153,9 @@ impl TerrainSystem {
             source_generation: 0,
             visual_generation: 0,
             dirty_render_patches: HashSet::new(),
+            height_region_revisions: HashMap::new(),
+            height_revision: 0,
+            height_epoch: 0,
         }
     }
 
@@ -210,6 +225,38 @@ impl TerrainSystem {
     /// Visual-only revision, checked together with the authoritative source revision.
     pub(crate) fn visual_generation(&self) -> u64 {
         self.visual_generation
+    }
+
+    /// Returns the latest source or visual height change that can move a draped overlay owned by
+    /// one world-zero-aligned 512 m chunk. O(1); unrelated edits elsewhere leave it unchanged.
+    pub(crate) fn height_revision_for_chunk(&self, chunk: (i32, i32)) -> u64 {
+        self.height_region_revisions
+            .get(&chunk)
+            .copied()
+            .unwrap_or(0)
+            .max(self.height_epoch)
+    }
+
+    // O(regions touched); called after every local source or visual sample write.
+    fn record_height_grid_rect(&mut self, min_x: usize, max_x: usize, min_z: usize, max_z: usize) {
+        self.height_revision += 1;
+        let (x0, z0) = self.grid_to_world_coords(min_x, min_z);
+        let (x1, z1) = self.grid_to_world_coords(max_x, max_z);
+        let margin = HEIGHT_REVISION_MARGIN_M + self.cell_size;
+        let region = |value: f32| (value / HEIGHT_REVISION_REGION_M).floor() as i32;
+        for z in region(z0 - margin)..=region(z1 + margin) {
+            for x in region(x0 - margin)..=region(x1 + margin) {
+                self.height_region_revisions
+                    .insert((x, z), self.height_revision);
+            }
+        }
+    }
+
+    // Whole-grid replacements supersede every local entry.
+    fn record_height_reset(&mut self) {
+        self.height_revision += 1;
+        self.height_epoch = self.height_revision;
+        self.height_region_revisions.clear();
     }
 
     fn interpolate_grid_height(&self, grid: &SparseChunkGrid<f32>, x: f32, z: f32) -> f32 {
@@ -584,16 +631,19 @@ impl TerrainSystem {
             return;
         };
 
-        self.mark_render_patches_for_grid_rect(min_grid_x, max_grid_x, min_grid_z, max_grid_z);
+        self.dirty_render_patches_for_grid_rect(min_grid_x, max_grid_x, min_grid_z, max_grid_z);
 
         self.visual_generation = self.visual_generation.wrapping_add(1);
-        self.data.copy_rect_from(
+        // Road earthwork resets whole surface chunks; only samples that differ move overlays.
+        if let Some((x0, x1, z0, z1)) = self.data.copy_rect_from(
             &self.source_data,
             min_grid_x,
             max_grid_x,
             min_grid_z,
             max_grid_z,
-        );
+        ) {
+            self.record_height_grid_rect(x0, x1, z0, z1);
+        }
     }
 
     /// Returns a dense row-major snapshot of the visual terrain buffer.
@@ -627,6 +677,7 @@ impl TerrainSystem {
     pub(crate) fn replace_source_from_dense(&mut self, dense: &[f32]) -> Result<(), String> {
         self.source_data.replace_from_dense(dense)?;
         self.source_generation = self.source_generation.wrapping_add(1);
+        self.record_height_reset();
         Ok(())
     }
 
@@ -634,11 +685,18 @@ impl TerrainSystem {
     pub(crate) fn set_visual_heights_at_grid_unmarked<U>(
         &mut self,
         writes: &[U],
-        sample: impl FnMut(&U) -> (usize, usize, f32),
+        mut sample: impl FnMut(&U) -> (usize, usize, f32),
     ) {
-        self.data.set_cells_grouped_by_chunk(writes, sample);
+        // Render patches are the caller's concern; draped overlays still need the exact extent.
+        let mut rect = (usize::MAX, 0, usize::MAX, 0);
+        for write in writes {
+            let (x, z, _) = sample(write);
+            rect = (rect.0.min(x), rect.1.max(x), rect.2.min(z), rect.3.max(z));
+        }
+        self.data.set_cells_grouped_by_chunk(writes, &mut sample);
         if !writes.is_empty() {
             self.visual_generation = self.visual_generation.wrapping_add(1);
+            self.record_height_grid_rect(rect.0, rect.1, rect.2, rect.3);
         }
     }
 
@@ -774,6 +832,7 @@ impl TerrainSystem {
 
     /// Marks every terrain render patch dirty after a whole-world replacement.
     pub(crate) fn mark_all_render_patches_dirty(&mut self) {
+        self.record_height_reset();
         for patch_z in 0..self.render_patch_rows() {
             for patch_x in 0..self.render_patch_cols() {
                 self.dirty_render_patches.insert((patch_x, patch_z));
@@ -944,6 +1003,7 @@ impl TerrainSystem {
         ray_origin.length() + world_diag + 10_000.0
     }
 
+    // Samples in this rectangle were written: refresh render patches and draped overlays.
     fn mark_render_patches_for_grid_rect(
         &mut self,
         min_x: usize,
@@ -954,7 +1014,21 @@ impl TerrainSystem {
         if self.width == 0 || self.height == 0 {
             return;
         }
+        self.record_height_grid_rect(min_x, max_x, min_z, max_z);
+        self.dirty_render_patches_for_grid_rect(min_x, max_x, min_z, max_z);
+    }
 
+    // Render refresh only; the caller records the exact changed extent separately.
+    fn dirty_render_patches_for_grid_rect(
+        &mut self,
+        min_x: usize,
+        max_x: usize,
+        min_z: usize,
+        max_z: usize,
+    ) {
+        if self.width == 0 || self.height == 0 {
+            return;
+        }
         let (min_patch_x, max_patch_x) =
             self.patch_range_for_sample_range(min_x, max_x, self.render_patch_cols());
         let (min_patch_z, max_patch_z) =
@@ -1092,6 +1166,52 @@ mod tests {
             assert!((height - field(x.clamp(-8.0, 8.0), z.clamp(-8.0, 8.0))).abs() < 1e-5);
             assert_eq!(terrain.sample_height_world(x, z), 0.0);
         }
+    }
+
+    #[test]
+    fn height_revisions_follow_changed_samples_per_512m_chunk() {
+        // 2048 m world centred on zero: chunks -2..=1 on each axis, 8 m samples.
+        let mut terrain = TerrainSystem::with_chunking(257, 257, 8.0, 64, 0.0);
+        let revision = |terrain: &TerrainSystem, chunk| terrain.height_revision_for_chunk(chunk);
+        assert_eq!(revision(&terrain, (0, 0)), 0);
+
+        // World (256, 256) is interior: the draping margin stays inside chunk (0, 0).
+        terrain.set_height(160, 160, 2.0);
+        let interior = revision(&terrain, (0, 0));
+        assert!(interior > 0);
+        for chunk in [(1, 0), (0, 1), (-1, 0), (0, -1), (1, 1)] {
+            assert_eq!(revision(&terrain, chunk), 0);
+        }
+
+        // World x = 496 m is within the margin of x = 512 m, so the neighbour moves too.
+        terrain.set_height(190, 160, 1.0);
+        assert!(revision(&terrain, (0, 0)) > interior);
+        assert_eq!(revision(&terrain, (1, 0)), revision(&terrain, (0, 0)));
+        assert_eq!(revision(&terrain, (-1, 0)), 0);
+
+        // Resetting identical visual samples changes nothing a draped overlay can see.
+        let before: Vec<_> = [(0, 0), (1, 0), (-2, -2)]
+            .map(|chunk| revision(&terrain, chunk))
+            .into();
+        terrain.reset_visual_region_from_source_world(-1024.0, -1024.0, 1024.0, 1024.0);
+        let after: Vec<_> = [(0, 0), (1, 0), (-2, -2)]
+            .map(|chunk| revision(&terrain, chunk))
+            .into();
+        assert_eq!(after, before);
+
+        // A visual-only write and its reset each move only the written chunk.
+        terrain.set_visual_heights_at_grid_unmarked(&[(32_usize, 32_usize)], |&(x, z)| (x, z, 3.0));
+        let written = revision(&terrain, (-2, -2));
+        assert!(written > 0);
+        terrain.reset_visual_region_from_source_world(-1024.0, -1024.0, 1024.0, 1024.0);
+        assert!(revision(&terrain, (-2, -2)) > written);
+        assert_eq!(revision(&terrain, (1, 0)), after[1]);
+
+        // Whole-grid replacement supersedes every local revision.
+        terrain.mark_all_render_patches_dirty();
+        let epoch = revision(&terrain, (-2, 1));
+        assert!(epoch > after[0]);
+        assert_eq!(revision(&terrain, (0, 0)), epoch);
     }
 
     #[test]

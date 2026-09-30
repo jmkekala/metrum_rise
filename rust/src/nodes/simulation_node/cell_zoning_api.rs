@@ -46,8 +46,17 @@ impl SimulationNode {
         f64::from(crate::simulation::network::graph::RegionGraph::CHUNK_SIZE)
     }
 
-    /// Polls visible chunk metadata in one nonblocking call. Each input XZ pair has five output
-    /// values: cell revision, generation-complete flag, parcel revision and two height epochs.
+    /// Reports cell overlay visibility without waiting on the simulation. While shown, chunks a
+    /// local edit invalidates are regenerated before that edit's snapshot is published, so the
+    /// first poll after a road appears already exports its cells. Call on visibility changes.
+    #[func]
+    pub fn set_zoning_cell_overlay_visible(&mut self, visible: bool) {
+        let _ = self.cmd_tx.send(SimCommand::SetCellOverlayVisible(visible));
+    }
+
+    /// Polls visible chunk metadata in one nonblocking call. Each input XZ pair has four output
+    /// values: cell revision, generation-complete flag, parcel revision and local height revision.
+    /// Height revisions are per chunk, so a local terrain or road edit re-exports only nearby chunks.
     #[func]
     pub fn try_get_zoning_cell_chunk_states(&self, chunks: PackedInt32Array) -> VarDictionary {
         let mut result = VarDictionary::new();
@@ -65,8 +74,8 @@ impl SimulationNode {
                 revision as i64,
                 i64::from(generated),
                 core.zoning.parcels.chunk_revision((chunk[0], chunk[1])) as i64,
-                core.heightmap.source_generation() as i64,
-                core.heightmap.visual_generation() as i64,
+                core.heightmap
+                    .height_revision_for_chunk((chunk[0], chunk[1])) as i64,
             ]);
         }
         result.set("busy", false);
@@ -116,8 +125,7 @@ impl SimulationNode {
         let version = [
             core.zoning.cells.chunk_state(chunk).0 as i64,
             core.zoning.parcels.chunk_revision(chunk) as i64,
-            core.heightmap.source_generation() as i64,
-            core.heightmap.visual_generation() as i64,
+            core.heightmap.height_revision_for_chunk(chunk) as i64,
         ];
         result.set("version", PackedInt64Array::from(version.as_slice()));
         let unchanged = known.as_slice() == version;

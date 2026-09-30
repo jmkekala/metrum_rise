@@ -225,6 +225,9 @@ pub struct SimCore {
     /// Agents outside this rect are excluded from `RenderSnapshot` transforms.
     /// Updated each frame via `SimCommand::SetCameraAabb`. Defaults to "show all".
     pub camera_aabb: (f32, f32, f32, f32),
+    /// Whether the zoning cell overlay is shown; stale warm cell chunks then regenerate in the
+    /// same tick as the edit that invalidated them. UI state, kept across world resets.
+    pub(crate) cell_overlay_visible: bool,
     /// Runtime mesh support geometry; rendering metadata, not saved simulation state.
     pub(crate) vehicle_ground_support:
         [crate::nodes::sim::render::vehicle_ground::VehicleGroundSupport; 5],

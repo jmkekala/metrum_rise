@@ -67,6 +67,8 @@ pub(crate) struct CellStore {
     frame_ids: HashMap<GridFrame, u64>,
     blocks: HashMap<BlockKey, CellBlock>,
     chunks: HashMap<(i32, i32), CellChunk>,
+    // Warm chunks invalidated since the last drain; bounded by the edits' footprints.
+    stale_chunks: Vec<(i32, i32)>,
     frontages: HashMap<CellKey, Vec<CellRoadFrontage>>,
     curve_sources: HashMap<CurveSourceKey, Arc<CellCurveSource>>,
     road_alignments: imbl::HashMap<usize, RoadCellAlignment>,

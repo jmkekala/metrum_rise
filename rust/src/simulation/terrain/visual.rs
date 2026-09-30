@@ -74,8 +74,12 @@ impl TerrainVisualOverlay {
                 z * size,
                 ((z + 1) * size - 1).min(terrain.height - 1),
             );
-            terrain.data.copy_rect_from(&self.data, x0, x1, z0, z1);
-            terrain.mark_render_patches_for_grid_rect(x0, x1, z0, z1);
+            if let Some((cx0, cx1, cz0, cz1)) =
+                terrain.data.copy_rect_from(&self.data, x0, x1, z0, z1)
+            {
+                terrain.record_height_grid_rect(cx0, cx1, cz0, cz1);
+            }
+            terrain.dirty_render_patches_for_grid_rect(x0, x1, z0, z1);
         }
     }
 

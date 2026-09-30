@@ -195,7 +195,9 @@ impl<T: Copy + PartialEq> SparseChunkGrid<T> {
     /// Copies an inclusive rectangular region from a layout-compatible grid.
     ///
     /// Shared chunks are already identical and cost only one pointer comparison. Diverged
-    /// chunks are copied row-wise and compacted back to sparse storage when they become default.
+    /// chunks are compared first, so equal regions stay shared and unwritten; changed chunks are
+    /// copied row-wise and compacted back to sparse storage when they become default.
+    /// Returns the inclusive `(min_x, max_x, min_y, max_y)` bounds of cells whose value changed.
     pub(crate) fn copy_rect_from(
         &mut self,
         source: &Self,
@@ -203,13 +205,14 @@ impl<T: Copy + PartialEq> SparseChunkGrid<T> {
         max_x: usize,
         min_y: usize,
         max_y: usize,
-    ) {
+    ) -> Option<(usize, usize, usize, usize)> {
         debug_assert_eq!(self.width, source.width);
         debug_assert_eq!(self.height, source.height);
         debug_assert_eq!(self.chunk_size, source.chunk_size);
         if self.width == 0 || self.height == 0 || min_x > max_x || min_y > max_y {
-            return;
+            return None;
         }
+        let mut changed: Option<(usize, usize, usize, usize)> = None;
 
         let min_x = min_x.min(self.width - 1);
         let max_x = max_x.min(self.width - 1);
@@ -244,10 +247,26 @@ impl<T: Copy + PartialEq> SparseChunkGrid<T> {
                 let local_max_y = max_y
                     .saturating_sub(chunk_origin_y)
                     .min(self.chunk_size - 1);
+                let chunk_changed = self.changed_local_rect(
+                    self.chunks.get(&key).map(|chunk| chunk.as_slice()),
+                    source_chunk.as_ref().map(|chunk| chunk.as_slice()),
+                    (local_min_x, local_max_x, local_min_y, local_max_y),
+                );
+                if let Some((x0, x1, y0, y1)) = chunk_changed {
+                    let (x0, x1) = (chunk_origin_x + x0, chunk_origin_x + x1);
+                    let (y0, y1) = (chunk_origin_y + y0, chunk_origin_y + y1);
+                    changed = Some(changed.map_or((x0, x1, y0, y1), |c| {
+                        (c.0.min(x0), c.1.max(x1), c.2.min(y0), c.3.max(y1))
+                    }));
+                }
                 let covers_whole_chunk = local_min_x == 0
                     && local_max_x == self.chunk_size - 1
                     && local_min_y == 0
                     && local_max_y == self.chunk_size - 1;
+                if !covers_whole_chunk && chunk_changed.is_none() {
+                    continue;
+                }
+                // Whole-chunk copies re-share the source payload even when values already match.
                 if covers_whole_chunk {
                     if let Some(source_chunk) = source_chunk {
                         self.chunks.insert(key, source_chunk);
@@ -279,6 +298,32 @@ impl<T: Copy + PartialEq> SparseChunkGrid<T> {
                 }
             }
         }
+        changed
+    }
+
+    // Local inclusive bounds of differing cells inside one chunk's rectangle; absent chunks read
+    // as the default value. O(rectangle cells), no allocation.
+    fn changed_local_rect(
+        &self,
+        target: Option<&[T]>,
+        source: Option<&[T]>,
+        (min_x, max_x, min_y, max_y): (usize, usize, usize, usize),
+    ) -> Option<(usize, usize, usize, usize)> {
+        let value =
+            |chunk: Option<&[T]>, index: usize| chunk.map_or(self.default_value, |c| c[index]);
+        let mut changed: Option<(usize, usize, usize, usize)> = None;
+        for y in min_y..=max_y {
+            let row = y * self.chunk_size;
+            let differs = |x: &usize| value(target, row + x) != value(source, row + x);
+            let Some(first) = (min_x..=max_x).find(differs) else {
+                continue;
+            };
+            let last = (first..=max_x).rev().find(differs).unwrap_or(first);
+            changed = Some(changed.map_or((first, last, y, y), |c| {
+                (c.0.min(first), c.1.max(last), c.2.min(y), y)
+            }));
+        }
+        changed
     }
 
     /// Copies an inclusive rectangular region into an existing row-major buffer.
@@ -555,11 +600,21 @@ mod tests {
         visual.set(3, 3, 5);
         visual.set(6, 6, 4);
 
-        visual.copy_rect_from(&source, 1, 4, 1, 4);
+        // Only (2, 2) and (3, 3) differ inside the rectangle; (6, 6) is outside it.
+        assert_eq!(
+            visual.copy_rect_from(&source, 1, 4, 1, 4),
+            Some((2, 3, 2, 3))
+        );
 
         assert_eq!(visual.get(2, 2), 7);
         assert_eq!(visual.get(3, 3), 0);
         assert_eq!(visual.get(6, 6), 4);
+        assert_eq!(visual.copy_rect_from(&source, 0, 7, 0, 5), None);
+        assert_eq!(
+            visual.copy_rect_from(&source, 0, 7, 0, 7),
+            Some((6, 6, 6, 6))
+        );
+        assert_eq!(visual.get(6, 6), 9);
     }
 
     #[test]

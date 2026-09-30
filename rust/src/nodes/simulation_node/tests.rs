@@ -230,6 +230,7 @@ fn test_core_with_flat_terrain(raw_height: f32) -> SimCore {
         cached_network_node_positions_dirty: true,
         road_tool_surface_generation: 1,
         camera_aabb: (0.0, 0.0, 0.0, 0.0),
+        cell_overlay_visible: false,
         vehicle_ground_support: Default::default(),
     };
     core.transit_network

@@ -42,6 +42,8 @@ pub(crate) enum SimCommand {
     /// Update the camera world-space AABB used for agent frustum culling.
     /// Values: (x_min, x_max, z_min, z_max) in world units, padded by ~200 m.
     SetCameraAabb(f32, f32, f32, f32),
+    /// Show or hide the zoning cell overlay; shown overlays regenerate edited chunks eagerly.
+    SetCellOverlayVisible(bool),
     /// Prepare one visible cell chunk using current authority, including while paused.
     PrepareCellChunk {
         /// World-zero spatial chunk address.
@@ -155,6 +157,7 @@ pub(crate) fn run_sim_thread(
     // Coalesced controls survive wakes until the next tick or structural-edit snapshot.
     let mut pending_speed = None;
     let mut pending_camera_aabb = None;
+    let mut pending_cell_overlay_visible = None;
 
     loop {
         let frame_start = Instant::now();
@@ -184,6 +187,10 @@ pub(crate) fn run_sim_thread(
                     commands_processed += 1;
                     camera_aabb_commands += 1;
                     pending_camera_aabb = Some((x0, x1, z0, z1));
+                }
+                Ok(SimCommand::SetCellOverlayVisible(visible)) => {
+                    commands_processed += 1;
+                    pending_cell_overlay_visible = Some(visible);
                 }
                 Ok(SimCommand::PrepareCellChunk {
                     chunk,
@@ -572,6 +579,7 @@ pub(crate) fn run_sim_thread(
         let mut hourly_ms = 0.0;
         let mut daily_ms = 0.0;
         let snapshot_ms: f64;
+        let cell_prepare_ms: f64;
         let lock_held_ms: f64;
         let mut elapsed_minutes = 0_u16;
         let mut pending_spawns_executed = 0_usize;
@@ -602,6 +610,9 @@ pub(crate) fn run_sim_thread(
                         z_max: camera_aabb.3,
                     },
                 );
+            }
+            if let Some(visible) = pending_cell_overlay_visible.take() {
+                core.cell_overlay_visible = visible;
             }
             record_crash_phase_for_core(&core, "sim frame");
             let speed = core.time.speed_multiplier;
@@ -692,6 +703,14 @@ pub(crate) fn run_sim_thread(
                 minute_ms = minute_start.elapsed().as_secs_f64() * 1000.0;
             }
 
+            // Edits and ticks publish with their shown cell chunks already regenerated.
+            let cell_prepare_start = Instant::now();
+            record_crash_phase_for_core(&core, "stale cell chunk preparation");
+            run_sim_phase("stale cell chunk preparation", || {
+                core.prepare_stale_cell_chunks_internal()
+            });
+            cell_prepare_ms = cell_prepare_start.elapsed().as_secs_f64() * 1000.0;
+
             let snapshot_start = Instant::now();
             let available_snapshot = std::mem::take(&mut recycled_snapshot);
             record_crash_phase_for_core(&core, "snapshot build");
@@ -736,7 +755,7 @@ pub(crate) fn run_sim_thread(
             (active_ms - command_ms - lock_wait_ms - lock_held_ms - snapshot_write_ms).max(0.0);
         if perf_enabled && (active_ms >= 8.0 || command_ms >= 8.0 || elapsed_minutes > 0) {
             println!(
-                "[DEBUG:perf] sim_frame active_ms={:.3} command_ms={:.3} lock_wait_ms={:.3} lock_held_ms={:.3} pathing_ms={:.3} agent_ms={:.3} minute_ms={:.3} pending_spawn_ms={:.3} hourly_ms={:.3} daily_ms={:.3} snapshot_ms={:.3} snapshot_write_ms={:.3} unaccounted_ms={:.3} elapsed_minutes={} pending_spawns={} hourly_ticks={} daily_ticks={} agents={} pathfinds={} commands={} set_speed_cmds={} camera_aabb_cmds={} add_road_cmds={} undo_cmds={} bulldoze_cmds={}",
+                "[DEBUG:perf] sim_frame active_ms={:.3} command_ms={:.3} lock_wait_ms={:.3} lock_held_ms={:.3} pathing_ms={:.3} agent_ms={:.3} minute_ms={:.3} pending_spawn_ms={:.3} hourly_ms={:.3} daily_ms={:.3} cell_prepare_ms={:.3} snapshot_ms={:.3} snapshot_write_ms={:.3} unaccounted_ms={:.3} elapsed_minutes={} pending_spawns={} hourly_ticks={} daily_ticks={} agents={} pathfinds={} commands={} set_speed_cmds={} camera_aabb_cmds={} add_road_cmds={} undo_cmds={} bulldoze_cmds={}",
                 active_ms,
                 command_ms,
                 lock_wait_ms,
@@ -747,6 +766,7 @@ pub(crate) fn run_sim_thread(
                 pending_spawn_ms,
                 hourly_ms,
                 daily_ms,
+                cell_prepare_ms,
                 snapshot_ms,
                 snapshot_write_ms,
                 unaccounted_ms,

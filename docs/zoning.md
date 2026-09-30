@@ -1282,8 +1282,10 @@ lots are represented by their cells, so they do not cause a second whole-city pa
 Parcel insert/remove/rezone/occupancy operations maintain versions beside the existing parcel
 chunk index. Idle polling is `O(visible chunks)`; payload work visits only changed chunks' cell
 blocks and parcel candidates. The 6% cell inset is visual only; selection and reservations retain
-the complete canonical square. Terrain height epochs currently refresh all visible payloads;
-they do not trigger a whole-city upload. Rendering latency/memory acceptance remains outstanding.
+the complete canonical square. Height changes refresh only chunks whose 512 m region (plus a
+96 m draping margin) changed samples; see
+[road-commit overlay latency](#road-commit-cell-overlay-latency--2026-09-30).
+Rendering memory acceptance remains outstanding.
 
 Completed gestures use the shared Rust undo stack with local paint and affected-lot journals.
 An unchanged immediate inverse restores the original lot identities and redevelopment generations.
@@ -3408,3 +3410,112 @@ Raw results are `<fixture>-{before,after}.log` in the artifact directory above.
 
 Restart the game and redraw the continuation for visual acceptance. Existing saved grid
 choices remain retained; this change does not globally rephase already-authored roads.
+
+### Road-commit cell overlay latency — 2026-09-30
+
+After a road commit, the cells on both sides appeared visibly after the road. The new
+[`zoning_road_commit_latency.gd`](../godot/tests/zoning_road_commit_latency.gd) fixture measured
+the gap: cells reached the overlay **9–15 frames (≈170–300 ms)** after the road snapshot. Two
+causes stacked:
+
+- Every visible chunk's version included the global heightmap source/visual generations. Road
+  earthwork resets visual terrain over whole road-surface chunks, so every commit bumped them and
+  all visible chunks (16–24 in the fixture) re-exported at two uploads per frame.
+- Invalidated chunks regenerated only on request: the overlay polled, the export queued one
+  `PrepareCellChunk` command (one job in flight) and returned busy, and the chunk uploaded on a
+  later frame. Each dirty chunk cost at least one round trip.
+
+**Local height revisions.** `TerrainSystem` keeps a revision per world-zero-aligned 512 m region.
+Every sample write records its exact changed rectangle, expanded by a 96 m draping margin plus one
+terrain cell, into the regions it reaches. A centre-owned parcel reaches at most 72 m past its
+chunk and a cell under 8 m. Covered writes are the grid-rect patch marker (`set_height`, brushes,
+slope, region reset, visual-overlay restore), `set_visual_heights_at_grid_unmarked` and the dense
+replacements. Whole-grid replacements and mark-all record a global epoch instead.
+`SparseChunkGrid::copy_rect_from` now returns the bounds of cells whose value changed. It skips
+unchanged partial chunks without copying them and still re-shares whole-chunk payloads. Resets of
+identical samples record nothing. A query is O(1), and a write costs O(regions touched).
+
+Chunk state polling now returns four values per chunk: cell revision, generated flag, parcel
+revision and local height revision (previously five, with two global epochs).
+
+**Eager preparation.** `CellStore` lists warm chunks whose generated state a local edit cleared.
+Cold chunks and whole-world invalidations are never listed. The overlay reports visibility
+changes via `set_zoning_cell_overlay_visible`, a queued command like the camera AABB. While the
+overlay is shown, the simulation tick regenerates the listed chunks inside its existing lock,
+before building the snapshot, so an edit's snapshot publishes with its cells ready. A hidden
+overlay drains the list without work. Invalidations from building growth therefore cost nothing
+while zoning is not displayed. Work is O(edited chunks) using the existing bounded dirty-region
+generation; it adds no thread, index or saved state.
+
+Trade-off: the road snapshot now waits for this preparation. With `METRUM_DEBUG_PERF=1`, the
+fixture's commit ticks spent **0.5–12.6 ms (median ≈7 ms)** in `cell_prepare_ms`, which grows as
+crossing roads accumulate in the dirty envelope. The lazy path performed the same generation
+later, in separate lock-holding commands. The road becomes visible 1–3 frames after submit on
+both builds; per-run medians differ by one frame in both directions (baseline run A: 1 frame,
+candidate running run B: 3), so no road delay is resolved at 24 commits per run. Publishing the
+road first would leave cells one frame behind again.
+
+Matched runs: 8 roads per world (inside a chunk, across one boundary, across both), fresh world
+per repetition, 3 repetitions per run, paused and running, 60 FPS cap, 4 Rayon workers, isolated
+Godot profile. Headless has two runs per variant, alternating builds; windowed has one. Frames
+count from the frame the road snapshot is observable to the frame after the last cell upload
+(0 = same frame). Median run p50 / worst run p95 / maximum:
+
+| Mode | Speed | Variant | Cell lag frames | Cell seen after road, ms | Changed chunks | Upload frames |
+| --- | --- | --- | --- | --- | --- | --- |
+| headless | paused | baseline | 11 / 13 / 15 | 200.0 / 233.5 / 266.7 | 16 / 16 / 16 | 9 / 10 / 10 |
+| headless | paused | height revisions only | 3 / 6 / 7 | 66.7 / 116.7 / 133.4 | 2 / 4 / 4 | 2 / 5 / 6 |
+| headless | paused | both changes | 0 / 1 / 7 | 16.7 / 34.7 / 133.5 | 2 / 4 / 4 | 1 / 2 / 4 |
+| headless | running | baseline | 11 / 15 / 15 | 200.1 / 266.7 / 266.8 | 16 / 16 / 16 | 9 / 11 / 11 |
+| headless | running | both changes | 0 / 1 / 2 | 16.8 / 33.5 / 49.9 | 2 / 4 / 4 | 1 / 2 / 2 |
+| windowed | paused | baseline | 15 / 17 / 17 | 266.8 / 300.1 / 300.1 | 24 / 24 / 24 | 14 / 14 / 14 |
+| windowed | paused | both changes | 0 / 1 / 2 | 16.7 / 33.4 / 50.1 | 2 / 4 / 4 | 1 / 2 / 3 |
+| windowed | running | baseline | 15 / 16 / 17 | 266.6 / 283.5 / 300.0 | 24 / 24 / 24 | 14 / 14 / 14 |
+| windowed | running | both changes | 0 / 1 / 1 | 16.7 / 33.4 / 33.4 | 2 / 4 / 4 | 1 / 2 / 2 |
+
+"Cell seen" includes the one-frame observation offset, so 16.7 ms is the floor. Height-only
+running and windowed rows (3 / 6 / 6–7 frames) are in `compare.txt`. The remaining
+one-frame cases are commits that dirty four chunks, which drain at the unchanged two-upload cap.
+Each changed chunk now uploads exactly once. Before, the lazy path could upload the same chunk
+twice for one edit (two partial preparation steps).
+
+Fresh verification: all **2,033** release library tests pass (85 ignored). New regressions cover:
+
+- changed-bound reporting from `copy_rect_from`;
+- per-chunk height revisions: interior writes, margin spill, unchanged resets, visual writes and
+  epochs;
+- hidden-versus-shown eager preparation after native road commits.
+
+Headless `zoning_cells_tool_test`, `zoning_road_tool_test`, `field_edit_tool_test`,
+`road_junction_preview_test` and `network_tool_chunk_renderer_test` pass.
+`zoning_reference_test` fails `03_orthogonal_t` "uninterrupted backside" identically on the
+HEAD baseline (the same 78 errors and per-layout cell counts). The failure predates this change
+and remains open.
+
+Paint edits also benefit, since a paint commit's warm chunks regenerate on the next tick.
+The existing [`zoning_overlay_benchmark.gd`](../godot/tests/zoning_overlay_benchmark.gd) ran twice
+per build: windowed Forward+, one Rayon worker, order reversed for the second pair. Median edit
+settling stays at 2 frames and main-thread edit-frame p95 at 2.1–2.3 ms on both builds; idle
+p95 stays ≤ 0.35 ms. p95 settling is 3 frames in 7 of 8 candidate cases and 4 of 8 baseline
+cases. The baseline misses the 50 ms completion/presentation p95 budget in 4 of 8 cases, the
+candidate in 1 of 8. The budget sits exactly at three 60 Hz frames, so single runs flip on one
+frame. Results are in `overlay-compare.txt`. Edit replacements, packed bytes and resident
+geometry are unchanged. Both builds sometimes hang in engine shutdown after printing results
+(candidate run A, baseline run B); the processes were stopped. This matches the intermittent
+shutdown hang recorded above and remains open.
+
+Not measured: lock contention in a populated city (no loadable populated fixture) and
+preparation cost in dense 512 m chunks. Cost is local to the edited chunks, but a dense downtown
+chunk can hold the road snapshot longer than this fixture's 12.6 ms maximum.
+
+Builds: baseline is HEAD `398f7bab` with extension SHA-256
+`7a09021db5f8f2e54d521b6625dc0b3ae360c2c1ee4b2168e9aa6192bb31156e`. Height revisions only:
+`93a5b1eebbee03f4427784ffec7489b3db0d8fce14cc41d4140678b70b612263`. Both changes:
+`23cb570e059b1035ac719809d0223ba24678c4f4605ba605c0d7e53d053f6552`. The deployed build differs
+only by rustfmt line moves: `1cc1b854accd2524b7f3d935288870438d2dc722c4856033bee6b4e6275672e0`,
+rechecked with one headless run (`final-headless-a`: lag 0 / 1 / 4 paused, 0 / 1 / 2 running).
+Machine: i9-12900K,
+Godot 4.7.2. Isolated projects, logs, per-run JSON, `run.sh` and `summarize.py` / `compare.txt`
+are under `rust/target/zone-latency/`. Reproduce a run with
+`rust/target/zone-latency/artifacts/run.sh <baseline|height|candidate> <label>`; set
+`GODOT_MODE=--windowed` for the windowed runs.

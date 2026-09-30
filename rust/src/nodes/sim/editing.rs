@@ -2384,6 +2384,7 @@ mod tests {
             cached_network_node_positions_dirty: true,
             road_tool_surface_generation: 1,
             camera_aabb: (0.0, 0.0, 0.0, 0.0),
+            cell_overlay_visible: false,
             vehicle_ground_support: Default::default(),
         }
     }

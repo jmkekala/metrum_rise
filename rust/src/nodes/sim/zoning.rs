@@ -45,6 +45,18 @@ impl SimCore {
             && self.prepare_cell_chunk_internal(chunk)
     }
 
+    /// Regenerates warm chunks that local edits invalidated while the overlay is shown, so a
+    /// published edit already carries its cells; hidden overlays leave them for a later request.
+    /// O(edited chunks); no work or allocation without local invalidations.
+    pub(crate) fn prepare_stale_cell_chunks_internal(&mut self) {
+        let chunks = self.zoning.cells.take_stale_chunks();
+        if self.cell_overlay_visible {
+            for chunk in chunks {
+                self.prepare_cell_chunk_internal(chunk);
+            }
+        }
+    }
+
     /// Ensures one visible chunk is complete, keeping cold/dirty work independent of city size.
     pub(crate) fn prepare_cell_chunk_internal(&mut self, chunk: (i32, i32)) -> bool {
         if !self.cell_chunk_in_world(chunk) {

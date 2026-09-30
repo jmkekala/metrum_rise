@@ -79,6 +79,7 @@ impl CellStore {
                     };
                     if entry.generated {
                         entry.dirty_bounds = Some(dirty);
+                        self.stale_chunks.push(chunk);
                     } else if let Some(previous) = &mut entry.dirty_bounds {
                         previous.min = previous.min.min(dirty.min);
                         previous.max = previous.max.max(dirty.max);
@@ -95,6 +96,17 @@ impl CellStore {
             entry.generated = false;
             entry.dirty_bounds = None;
         }
+        // Whole-world rebuilds stay lazy: only chunks the overlay requests are prepared.
+        self.stale_chunks.clear();
+    }
+
+    /// Drains warm chunks invalidated since the last call, sorted and unique. Each was complete
+    /// before a local edit; cold and whole-world invalidations are never listed.
+    pub(crate) fn take_stale_chunks(&mut self) -> Vec<(i32, i32)> {
+        let mut chunks = std::mem::take(&mut self.stale_chunks);
+        chunks.sort_unstable();
+        chunks.dedup();
+        chunks
     }
 
     /// Constant-time check before enumerating local road geometry for cache invalidation.
