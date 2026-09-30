@@ -14,7 +14,7 @@ use super::super::super::topology_keys::{
 use super::super::predicates::{
     constraint_applies_to_owner, constraint_is_material_transition, constraint_is_point_contact,
 };
-use std::collections::HashMap;
+use crate::simulation::network::surface::node::NodeHashMap;
 
 #[derive(Clone, Copy)]
 struct OwnedEdgeRailConstraintBounds {
@@ -29,9 +29,9 @@ pub(in crate::simulation::network::surface::node::ownership) struct OwnedEdgeRai
     constraints: &'a [NodeRailConstraint],
     point_keys: Vec<Vec<NodeOwnershipPointKey>>,
     bounds: Vec<Option<OwnedEdgeRailConstraintBounds>>,
-    constraint_bits_by_owner: HashMap<NodeBandOwner, Vec<u64>>,
+    constraint_bits_by_owner: NodeHashMap<NodeBandOwner, Vec<u64>>,
     ownerless_constraint_bits: Vec<u64>,
-    point_contacts: HashMap<
+    point_contacts: NodeHashMap<
         (
             NodeOwnershipPointKey,
             NodeRailConstraintKind,
@@ -48,9 +48,9 @@ impl<'a> OwnedEdgeRailConstraintIndex<'a> {
     ) -> Self {
         let mut point_keys_by_constraint = Vec::with_capacity(constraints.len());
         let mut bounds = Vec::with_capacity(constraints.len());
-        let mut point_contacts = HashMap::new();
+        let mut point_contacts = NodeHashMap::default();
         let constraint_word_count = constraints.len().div_ceil(u64::BITS as usize);
-        let mut constraint_bits_by_owner = HashMap::<NodeBandOwner, Vec<u64>>::new();
+        let mut constraint_bits_by_owner = NodeHashMap::<NodeBandOwner, Vec<u64>>::default();
         let mut ownerless_constraint_bits = vec![0; constraint_word_count];
         for (constraint_position, constraint) in constraints.iter().enumerate() {
             let point_keys = constraint

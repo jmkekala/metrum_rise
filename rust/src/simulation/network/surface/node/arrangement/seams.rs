@@ -7,7 +7,7 @@ use super::super::backend::RoadVec2;
 use super::super::keys::SurfaceXzKey;
 use super::super::segments::{key_collinear_with_overlay_grid_segment, segment_parameter_key};
 use super::{NodeArrangementKey, NodeBandOwner};
-use std::collections::HashMap;
+use crate::simulation::network::surface::node::NodeHashMap;
 
 const SEAM_COVERAGE_TILE_KEYS: i64 = 8_000_000;
 const SEAM_COVERAGE_MAX_INDEX_TILES: i64 = 256;
@@ -97,7 +97,7 @@ struct PreparedSeamConstraintCoverage {
 pub(in crate::simulation::network::surface::node) struct PreparedSeamConstraintCoverages<'a> {
     constraints: &'a [NodeRegionSeamConstraint],
     prepared: Vec<PreparedSeamConstraintCoverage>,
-    constraint_indices_by_tile: HashMap<SeamCoverageTile, Vec<usize>>,
+    constraint_indices_by_tile: NodeHashMap<SeamCoverageTile, Vec<usize>>,
     global_constraint_indices: Vec<usize>,
 }
 
@@ -132,7 +132,7 @@ impl<'a> PreparedSeamConstraintCoverages<'a> {
                 }
             })
             .collect::<Vec<_>>();
-        let mut constraint_indices_by_tile = HashMap::new();
+        let mut constraint_indices_by_tile = NodeHashMap::default();
         let mut global_constraint_indices = Vec::new();
         for (constraint_index, constraint) in prepared.iter().enumerate() {
             if constraint.start == constraint.end {
@@ -162,6 +162,16 @@ impl<'a> PreparedSeamConstraintCoverages<'a> {
         scratch: &mut SeamConstraintCoverageScratch,
     ) {
         scratch.candidate_indices.clear();
+        // Bounds are filtered before sorting, so only overlapping candidates are sorted and deduped.
+        let overlaps = |&constraint_index: &usize| {
+            prepared_seam_constraint_bounds_overlap(
+                &self.prepared[constraint_index],
+                min_x,
+                min_z,
+                max_x,
+                max_z,
+            )
+        };
         let min_tile = SeamCoverageTile {
             x: min_x.div_euclid(SEAM_COVERAGE_TILE_KEYS),
             z: min_z.div_euclid(SEAM_COVERAGE_TILE_KEYS),
@@ -173,18 +183,24 @@ impl<'a> PreparedSeamConstraintCoverages<'a> {
         let tile_width = max_tile.x.saturating_sub(min_tile.x).saturating_add(1);
         let tile_height = max_tile.z.saturating_sub(min_tile.z).saturating_add(1);
         if tile_width.saturating_mul(tile_height) > SEAM_COVERAGE_MAX_INDEX_TILES {
-            scratch.candidate_indices.extend(0..self.prepared.len());
-        } else {
             scratch
                 .candidate_indices
-                .extend_from_slice(&self.global_constraint_indices);
+                .extend((0..self.prepared.len()).filter(overlaps));
+        } else {
+            scratch.candidate_indices.extend(
+                self.global_constraint_indices
+                    .iter()
+                    .filter(|i| overlaps(i)),
+            );
             for x in min_tile.x..=max_tile.x {
                 for z in min_tile.z..=max_tile.z {
                     if let Some(indices) = self
                         .constraint_indices_by_tile
                         .get(&SeamCoverageTile { x, z })
                     {
-                        scratch.candidate_indices.extend_from_slice(indices);
+                        scratch
+                            .candidate_indices
+                            .extend(indices.iter().filter(|i| overlaps(i)));
                     }
                 }
             }
@@ -193,15 +209,6 @@ impl<'a> PreparedSeamConstraintCoverages<'a> {
                 scratch.candidate_indices.dedup();
             }
         }
-        scratch.candidate_indices.retain(|&constraint_index| {
-            prepared_seam_constraint_bounds_overlap(
-                &self.prepared[constraint_index],
-                min_x,
-                min_z,
-                max_x,
-                max_z,
-            )
-        });
     }
 }
 
@@ -311,7 +318,7 @@ fn prepared_seam_constraint_bounds_overlap(
 }
 
 fn index_seam_coverage_constraint(
-    constraint_indices_by_tile: &mut HashMap<SeamCoverageTile, Vec<usize>>,
+    constraint_indices_by_tile: &mut NodeHashMap<SeamCoverageTile, Vec<usize>>,
     global_constraint_indices: &mut Vec<usize>,
     constraint_index: usize,
     constraint: &PreparedSeamConstraintCoverage,

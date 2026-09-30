@@ -5,6 +5,7 @@
 use super::*;
 
 mod arbitrary;
+mod compile_benchmark;
 mod dirty_recompile;
 mod elevated;
 mod flat;

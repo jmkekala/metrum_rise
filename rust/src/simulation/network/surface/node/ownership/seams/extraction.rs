@@ -17,7 +17,7 @@ use super::predicates::{
     constraint_constrains_shared_height, constraint_is_material_transition,
     edge_lies_on_constraint_polyline_or_path, seam_source_from_constraint,
 };
-use std::collections::HashMap;
+use crate::simulation::network::surface::node::NodeHashMap;
 
 const PREPARED_RAIL_CONSTRAINT_TILE_KEYS: i64 = 8_000_000;
 const PREPARED_RAIL_CONSTRAINT_MAX_INDEX_TILES: i64 = 256;
@@ -158,7 +158,7 @@ impl PreparedRailConstraintSegment {
 
 pub(in crate::simulation::network::surface::node::ownership) struct PreparedRailConstraints<'a> {
     constraints: Vec<PreparedRailConstraint<'a>>,
-    constraint_indices_by_tile: HashMap<PreparedRailConstraintTile, Vec<usize>>,
+    constraint_indices_by_tile: NodeHashMap<PreparedRailConstraintTile, Vec<usize>>,
     global_constraint_indices: Vec<usize>,
 }
 
@@ -260,7 +260,7 @@ impl<'a> PreparedRailConstraints<'a> {
                 }
             })
             .collect::<Vec<_>>();
-        let mut constraint_indices_by_tile = HashMap::new();
+        let mut constraint_indices_by_tile = NodeHashMap::default();
         let mut global_constraint_indices = Vec::new();
         for (constraint_index, constraint) in constraints.iter().enumerate() {
             for segment in &constraint.segments {
@@ -667,7 +667,7 @@ impl<'a> PreparedRailConstraints<'a> {
 
 #[allow(clippy::too_many_arguments)]
 fn index_prepared_constraint_bounds(
-    constraint_indices_by_tile: &mut HashMap<PreparedRailConstraintTile, Vec<usize>>,
+    constraint_indices_by_tile: &mut NodeHashMap<PreparedRailConstraintTile, Vec<usize>>,
     global_constraint_indices: &mut Vec<usize>,
     constraint_index: usize,
     min_x: i64,

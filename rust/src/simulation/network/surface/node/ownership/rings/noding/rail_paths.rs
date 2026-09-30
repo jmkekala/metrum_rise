@@ -3,15 +3,15 @@
 //! Rail-path assisted edge noding helpers.
 
 use super::*;
+use crate::simulation::network::surface::node::NodeHashMap;
 use std::cmp::Ordering;
-use std::collections::HashMap;
 use std::ops::Range;
 
 pub(super) struct PreparedRailPaths<'a> {
     paths: &'a [Vec<NodeOwnershipPointKey>],
     path_has_consecutive_duplicates: Vec<bool>,
     occurrences: Vec<(NodeOwnershipPointKey, usize, usize)>,
-    occurrence_ranges: HashMap<NodeOwnershipPointKey, Range<usize>>,
+    occurrence_ranges: NodeHashMap<NodeOwnershipPointKey, Range<usize>>,
 }
 
 impl<'a> PreparedRailPaths<'a> {
@@ -38,7 +38,7 @@ impl<'a> PreparedRailPaths<'a> {
             );
         }
         occurrences.sort_unstable();
-        let mut occurrence_ranges = HashMap::new();
+        let mut occurrence_ranges = NodeHashMap::default();
         let mut start = 0;
         while start < occurrences.len() {
             let point = occurrences[start].0;

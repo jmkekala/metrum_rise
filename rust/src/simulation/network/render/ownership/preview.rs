@@ -107,6 +107,10 @@ impl NetworkMeshData {
         macro_rules! layer {
             ($index:expr, $p:ident, $n:ident, $uv:ident, $c:ident) => {{
                 let mut range_index = 0;
+                // Owner membership is constant within a range, so hash once per range, not per
+                // triangle.
+                let mut classified_range = usize::MAX;
+                let (mut full, mut partial) = (false, false);
                 for start in (0..self.$p.len()).step_by(3) {
                     while self.owner_ranges[$index]
                         .get(range_index)
@@ -117,8 +121,11 @@ impl NetworkMeshData {
                     let owner = self.owner_ranges[$index]
                         .get(range_index)
                         .and_then(|r| r.owner);
-                    let full = owner.is_some_and(|o| whole.contains(&o));
-                    let partial = owner.is_some_and(|o| bounded.contains(&o));
+                    if classified_range != range_index {
+                        classified_range = range_index;
+                        full = owner.is_some_and(|o| whole.contains(&o));
+                        partial = owner.is_some_and(|o| bounded.contains(&o));
+                    }
                     selected.clear();
                     let mut triangle = Polygon {
                         vertices: [Vertex::default(); 8],

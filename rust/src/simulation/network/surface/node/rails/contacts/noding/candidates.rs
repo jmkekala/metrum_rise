@@ -15,10 +15,11 @@ use super::super::{
     quantized_proper_segment_intersection, road_point_key,
 };
 use super::ContactNodingCandidate;
+use crate::simulation::network::surface::node::{NodeHashMap, NodeHashSet};
 use rayon::prelude::*;
+use std::collections::BTreeMap;
 #[cfg(test)]
 use std::collections::BTreeSet;
-use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 const CONTACT_NODING_BOUNDS_MARGIN_KEYS: i64 = 4096;
@@ -28,8 +29,8 @@ const CONTACT_NODING_PARALLEL_PAIR_THRESHOLD: usize = 32;
 /// Immutable pair-local candidate outputs reusable across contact-noding passes and generations.
 #[derive(Clone, Debug, Default)]
 pub(in crate::simulation::network::surface::node::rails) struct NodeContactNodingPairCache {
-    entries: HashMap<ContactNodingPairKey, Arc<[ContactNodingPairCandidate]>>,
-    active_pair_keys: HashSet<ContactNodingPairKey>,
+    entries: NodeHashMap<ContactNodingPairKey, Arc<[ContactNodingPairCandidate]>>,
+    active_pair_keys: NodeHashSet<ContactNodingPairKey>,
     pub(super) component_entries:
         BTreeMap<ContactNodingComponentKey, Arc<ContactNodingComponentOutput>>,
 }

@@ -32,6 +32,12 @@ pub(super) use super::{
     backend::{self, RoadVec2, RoadVec3},
     band_semantics, indices, keys, paths, segments,
 };
+
+// Fixed-seed hashing for node-compile lookup maps: SipHash with a per-process random seed cost about
+// 6% of junction compile CPU (ROAD-40). Hash order must never reach compile products; these maps are
+// only probed, or feed sorted and B-tree outputs.
+type NodeHashMap<K, V> = std::collections::HashMap<K, V, foldhash::fast::FixedState>;
+type NodeHashSet<K> = std::collections::HashSet<K, foldhash::fast::FixedState>;
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::terrain::TerrainSystem;
 use std::collections::BTreeSet;
@@ -193,7 +199,11 @@ impl NodeExportExplicitStepLowerEdges {
         steps.sort_by_key(|step| step.raised_owner);
         Self {
             #[cfg(test)]
-            reference: reference_step_lower_edges(arrangement, explicit_vertical_step_segments),
+            reference: if EXPLICIT_STEP_REFERENCE_CHECK.with(std::cell::Cell::get) {
+                reference_step_lower_edges(arrangement, explicit_vertical_step_segments)
+            } else {
+                Vec::new()
+            },
             steps,
             lower_edges,
         }
@@ -219,11 +229,13 @@ impl NodeExportExplicitStepLowerEdges {
             });
         #[cfg(test)]
         {
-            assert_eq!(
-                matches,
-                self.reference_matches(raised_owner, key, height_mm),
-                "indexed explicit-step lower-height match diverged from the full scan"
-            );
+            if EXPLICIT_STEP_REFERENCE_CHECK.with(std::cell::Cell::get) {
+                assert_eq!(
+                    matches,
+                    self.reference_matches(raised_owner, key, height_mm),
+                    "indexed explicit-step lower-height match diverged from the full scan"
+                );
+            }
             EXPLICIT_STEP_MATCH_STATS.with(|stats| {
                 let (queries, hits) = stats.get();
                 stats.set((queries + 1, hits + usize::from(matches)));
@@ -253,6 +265,15 @@ thread_local! {
     // serially on the compiling thread.
     static EXPLICIT_STEP_MATCH_STATS: std::cell::Cell<(usize, usize)> =
         const { std::cell::Cell::new((0, 0)) };
+    // Whether export on this thread also answers every lookup with the unindexed full scan. Timing
+    // harnesses turn it off so the O(S * E) reference does not dilute their measurements.
+    static EXPLICIT_STEP_REFERENCE_CHECK: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+/// Enables or disables the full-scan reference check for export on this thread.
+#[cfg(test)]
+pub(in crate::simulation::network::surface) fn set_explicit_step_reference_check(enabled: bool) {
+    EXPLICIT_STEP_REFERENCE_CHECK.with(|check| check.set(enabled));
 }
 
 /// Returns and resets this thread's explicit-step lower-height (queries, matches) counts.

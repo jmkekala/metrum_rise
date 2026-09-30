@@ -23,7 +23,8 @@ use super::{
     NodeArrangement, NodeArrangementBuildProfile, NodeArrangementError, NodeArrangementKey,
     NodeArrangementVertex, NodeArrangementVertexId, NodeBandHeightFieldId, NodeBandOwner,
 };
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use crate::simulation::network::surface::node::NodeHashMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 fn elapsed_profile_ms(start: Option<Instant>) -> f64 {
@@ -516,7 +517,7 @@ impl MaterialHeightConflictIndex {
     ) {
         let relevant_key_index = RelevantArrangementKeyIndex::new(relevant_keys);
         let mut owners_by_key_constraint =
-            HashMap::<(NodeArrangementKey, usize), Vec<NodeBandOwner>>::new();
+            NodeHashMap::<(NodeArrangementKey, usize), Vec<NodeBandOwner>>::default();
         for region in arrangement.regions() {
             for constraint in &region.seam_constraints {
                 if !constraint.is_material_transition {

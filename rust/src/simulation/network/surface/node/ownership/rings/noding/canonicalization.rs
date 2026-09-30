@@ -4,10 +4,11 @@
 
 use super::*;
 use crate::simulation::network::surface::RoadSurfaceBandKind;
+use crate::simulation::network::surface::node::NodeHashMap;
 use crate::simulation::network::surface::{
     NODE_OVERLAY_NUMERIC_DUST_WIDTH_M, keys::SURFACE_XZ_KEY_SCALE,
 };
-use std::collections::{BTreeMap, HashMap, btree_map::Entry};
+use std::collections::{BTreeMap, btree_map::Entry};
 
 pub(in crate::simulation::network::surface::node::ownership) fn canonicalize_owned_region_rings(
     regions: &mut [NodeBooleanOwnedRegion],
@@ -213,7 +214,7 @@ struct RegionSourceKey {
 
 struct PreparedRegionSource<'a> {
     preserved_points: Vec<NodeOwnershipPointKey>,
-    preserved_points_by_mm: Option<HashMap<NodeOwnershipPointKey, Vec<NodeOwnershipPointKey>>>,
+    preserved_points_by_mm: Option<NodeHashMap<NodeOwnershipPointKey, Vec<NodeOwnershipPointKey>>>,
     has_source_carrier: bool,
     uses_generated_join_or_cap: bool,
     allow_source_carrier_key_adoption: bool,
@@ -330,7 +331,7 @@ impl<'a> PreparedRegionSource<'a> {
         }
         let preserved_points_by_mm = canonicalize_source_height_numeric_dust.then(|| {
             let mut points_by_mm =
-                HashMap::<NodeOwnershipPointKey, Vec<NodeOwnershipPointKey>>::new();
+                NodeHashMap::<NodeOwnershipPointKey, Vec<NodeOwnershipPointKey>>::default();
             for &point in &preserved_points {
                 points_by_mm
                     .entry(ownership_mm_key(point))
@@ -405,7 +406,7 @@ fn region_noding_point_for_owner_source(
     owner: NodeBandOwner,
     preserved_source_points: &[NodeOwnershipPointKey],
     preserved_source_points_by_mm: Option<
-        &HashMap<NodeOwnershipPointKey, Vec<NodeOwnershipPointKey>>,
+        &NodeHashMap<NodeOwnershipPointKey, Vec<NodeOwnershipPointKey>>,
     >,
     point: NodeOwnershipPointKey,
     rail_points: &NodeRailCanonicalPointSet,
@@ -452,7 +453,7 @@ fn canonical_source_height_numeric_dust_points(
 }
 
 fn unique_preserved_source_numeric_dust_point(
-    preserved_source_points_by_mm: &HashMap<NodeOwnershipPointKey, Vec<NodeOwnershipPointKey>>,
+    preserved_source_points_by_mm: &NodeHashMap<NodeOwnershipPointKey, Vec<NodeOwnershipPointKey>>,
     point: NodeOwnershipPointKey,
 ) -> Option<NodeOwnershipPointKey> {
     let point_mm = ownership_mm_key(point);
@@ -488,7 +489,7 @@ fn canonicalize_owned_region_contour_to_owner_source_points(
     allow_source_carrier_key_adoption: bool,
     canonicalize_source_height_numeric_dust: bool,
     preserved_source_points_by_mm: Option<
-        &HashMap<NodeOwnershipPointKey, Vec<NodeOwnershipPointKey>>,
+        &NodeHashMap<NodeOwnershipPointKey, Vec<NodeOwnershipPointKey>>,
     >,
     rail_points: &NodeRailCanonicalPointSet,
 ) -> Result<(), NodeBooleanOwnershipError> {

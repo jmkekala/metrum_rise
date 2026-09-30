@@ -231,7 +231,11 @@ pub(in crate::simulation::network::surface::node::rails) fn collect_source_autho
             }
         }
     }
-    contacts.sort_unstable();
+    // Callers pass an already sorted and deduplicated vector (or an empty one). Sort only this
+    // call's additions; the stable sort then merges the two sorted runs in linear time, and still
+    // sorts correctly if the prefix is unsorted.
+    contacts[contacts_before..].sort_unstable();
+    contacts.sort();
     contacts.dedup();
     let emission_ms = elapsed_profile_ms(emission_start);
     let source_constraint_count = source_authority.constraints().len();

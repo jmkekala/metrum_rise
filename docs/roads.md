@@ -1960,9 +1960,9 @@ a measured design choice, not an automatic consequence of moving validation into
 
 ### Preview compile bottlenecks (`ROAD-37`–`ROAD-42`)
 
-**Status: `ROAD-37` and `ROAD-38` done (2026-09-29), `ROAD-39` done (2026-09-30); `ROAD-40`–`ROAD-42`
-open.** See [`ROAD-37`/`ROAD-38` results](#road-37-and-road-38-results) and
-[`ROAD-39` results](#road-39-results) below. A bottleneck analysis of the 10-case preview matrix (Road and
+**Status: `ROAD-37` and `ROAD-38` done (2026-09-29), `ROAD-39` and `ROAD-40` done (2026-09-30);
+`ROAD-41` and `ROAD-42` open.** See [`ROAD-37`/`ROAD-38` results](#road-37-and-road-38-results),
+[`ROAD-39` results](#road-39-results) and [`ROAD-40` results](#road-40-results) below. A bottleneck analysis of the 10-case preview matrix (Road and
 terrain) on committed `HEAD` `dde35ee0` found that the frontend is no longer the limit. The Rust
 preview worker is. Its road stage (`road_ms`: prepare, junction/span compile, junction scene render)
 is 75–90% of worker time. A single four-way `JunctionN` compile takes about 30–38 ms on one thread.
@@ -2090,7 +2090,8 @@ for proportions only.
   exact `lies_on_segment` and height-parameter predicates. **Bound:** O(S log S) build; each query
   visits candidates instead of all S steps. **Exit:** identical export products, including a
   targeted sloped four-way equality check, and lower measured `export_ms`.
-- **`ROAD-40` — Cut constant-factor overhead in the junction compile (`refactor`, `P2`).** Land each
+- **`ROAD-40` — Cut constant-factor overhead in the junction compile (`refactor`, `P2`, done;
+  allocation deferred).** Land each
   item separately, with its own measurement:
   - **Rounding.** Either build for `x86-64-v2` (SSE4.1 inlines rounding; results are unchanged
     because Rust does not contract floating point, but it is a minimum-CPU product decision), or
@@ -2274,6 +2275,136 @@ No GDScript changed, so the Godot suites were not rerun. The preview matrix exer
 
 The libraries are in `rust/target/road39/lib/`. The baseline library reads runtime data through its
 build path, so it needs the detached worktree `rust/target/road37-38/wt` at `310248e2`.
+
+#### `ROAD-40` results
+
+Rounding, hashing and sorting landed as separate stacked stages, each measured against the one before.
+Allocation is deferred as a product decision: see the allocation finding below.
+
+**Implementation:**
+- **Rounding.** `rust/.cargo/config.toml` builds x86-64 targets for `x86-64-v2` (SSE4.1/4.2, POPCNT).
+  `f64::round`/`floor`/`ceil`/`trunc` now compile to inline `roundsd` (0 → about 3,700 sites in the
+  library) instead of libm calls. Godot 4.5+ already requires SSE4.2 on x86-64, and the Godot 4.7.2 binary
+  used here emits `roundsd` itself, so the minimum CPU does not change. Rust never contracts or
+  reassociates floating point, so results are bit-identical.
+- **Hashing.** The node-compile lookup maps (contact-noding pair cache, contact-authority, seam-coverage
+  and rail-constraint tile indices, seam candidates, ring canonicalization, rail paths, material
+  adjacency) use `NodeHashMap`/`NodeHashSet` (`node.rs`): `std` maps with `foldhash::fast::FixedState`,
+  a fixed seed that is identical in every process. `foldhash` 0.2 was already compiled in through
+  parry2d and spade. Audit: every converted map is only probed, or feeds sorted or B-tree output, so hash
+  order cannot reach products. `NetworkMeshData::preview_partition` keeps `std` sets but classifies each
+  owner range once instead of hashing two sets per triangle.
+- **Sorting.**
+  - `canonicalize_seam_constraints` computes keys once and reuses them for the dedup. It skips the
+    already canonical prefix, sorts only the tail and merges the two runs. Materialization passes an
+    already canonical list plus additions.
+  - Seam-coverage candidate queries filter by bounds before sorting and deduplicating.
+  - Raised-step contact collection sorts only its own additions and merges them with the caller's
+    sorted contacts, instead of re-sorting the whole shared vector.
+
+  All three keep the old order: a stable key order that keeps the first of equal keys, or a total order
+  over `Copy` values.
+- **Bound:** unchanged complexity. The sort changes turn re-sorts of canonical prefixes into O(n) merges.
+
+**Correctness.** Evidence:
+- The new ignored release test `junction_compile_constant_factors` (`surface/tests/junction/compile_benchmark.rs`)
+  compiles six `JunctionN` fixtures: flat and sloped T and four-way, the oblique mixed-width sloped
+  four-way, and a sloped five-way. It hashes the whole compiled piece (`Debug` output, fixed-key hasher)
+  and asserts that every repeat matches. The digests are identical across all stages and across separate
+  processes.
+- In the Godot runs, stationary and final product fields match `s0` in every stage and every run pair,
+  1,010 rows each.
+
+**Harness evidence.** The harness runs single-threaded, pinned to one P-core (`taskset -c 2`). It
+alternates three runs per stage and reports the median of per-run medians. Setup and digests are not
+timed, and the test-only `ROAD-39` full-scan check is switched off for this thread
+(`set_explicit_step_reference_check`). Milliseconds per compile:
+
+| Fixture | `s0` `HEAD` | `s1` rounding | `s2` hashing | `s3` sorting | `s0` → `s3` |
+| --- | --- | --- | --- | --- | --- |
+| `flat_t` | 19.56 | 18.93 | 17.81 | 17.80 | −9.0% |
+| `sloped_t` | 25.55 | 24.74 | 23.26 | 23.09 | −9.6% |
+| `flat_cross` | 25.05 | 24.76 | 22.68 | 22.73 | −9.3% |
+| `sloped_cross` | 26.44 | 25.59 | 23.99 | 24.04 | −9.1% |
+| `sloped_oblique` | 46.58 | 44.21 | 41.88 | 41.65 | −10.6% |
+| `sloped_five` | 139.68 | 131.23 | 125.30 | 123.73 | −11.4% |
+
+- Each item was measured against its own predecessor:
+  - rounding −1.1% to −6.1%;
+  - hashing −4.2% to −8.3%;
+  - sorting −1.2% in total (−2.3% to +1.0% per case; run-to-run spread is about 1%).
+- Consecutive stages were run as separate matched pairs, so adjacent columns come from different run
+  sets.
+
+**Godot evidence.** Build identity:
+- stages `s0`–`s3` were built in the main workspace on `HEAD` `5bb669fb`;
+- release library SHA-256s: `s0` `a07c6ea5…38ab06c2d`, `s1` `00af3e5a…`, `s2` `2503b22a…`, `s3`
+  `916af22a…` (full hashes in the manifests);
+- GDScript unchanged, with the same hash before and after every run.
+
+Workload as for `ROAD-37`/`ROAD-38`. The diagnostic runs are two `METRUM_DEBUG_PERF=1` runs per stage at
+default workers (24 on this machine), in rotation `s0`→`s3` twice. The acceptance runs alternate `s0`
+and `s3`: three unprofiled runs per side at default workers and two with `RAYON_NUM_THREADS=4`. One
+`METRUM_DEBUG=1 METRUM_DEBUG_FILTER=road` run per side gives per-node timings. All 20 captures passed
+`--validate`.
+
+Diagnostic moving `worker_ms` medians, mean of two runs, milliseconds:
+
+| Fixture | `s0` | `s1` | `s2` | `s3` | `s0` → `s3` |
+| --- | --- | --- | --- | --- | --- |
+| `flat_t` | 20.67 | 20.43 | 19.67 | 19.63 | −5.1% |
+| `sloped_multi` | 30.55 | 30.05 | 28.82 | 28.53 | −6.6% |
+| `dense` | 22.35 | 22.33 | 21.67 | 21.51 | −3.8% |
+| `flat_branch` | 34.07 | 33.77 | 32.22 | 31.14 | −8.6% |
+| `sloped_branch` | 42.70 | 41.69 | 39.37 | 38.10 | −10.8% |
+| `flat_cross` | 50.06 | 50.07 | 47.83 | 46.68 | −6.7% |
+| `sloped_cross` | 63.39 | 62.40 | 60.28 | 58.92 | −7.0% |
+
+- Per item, the moving medians change as follows:
+  - rounding: 0.0 to −1.0 ms (`flat_cross` +0.01);
+  - hashing: −0.7 to −2.3 ms;
+  - sorting: 0.0 to −1.4 ms, largest in branch and cross fixtures; `sloped_t` +0.2.
+- Moving `road_ms` follows the same pattern: `sloped_cross` 50.4 → 46.5, `flat_t` 16.4 → 15.1 ms.
+- Stationary worker medians move ±3 ms between runs in both directions. The `ROAD-37` analysis attributes
+  this to the `powersave` clock ramp after idle gaps, so it is not used.
+- Per-node `JunctionN` `total_ms` medians from the road-debug run: `flat_cross` 29.9 → 26.3,
+  `sloped_cross` 40.0 → 36.3, `flat_branch` 30.0 → 28.5, `sloped_branch` 35.4 → 33.6 ms.
+- Rounding's Godot gain is the smallest. It is two diagnostic runs per stage, so read it as a direction.
+  Its harness gain is matched and consistent.
+
+Acceptance, `s0` → `s3`:
+- Frames over 33 ms stay 0–2 per fixture.
+- Moving age p50 is unchanged or lower everywhere. At four workers `sloped_branch` falls
+  85.1–85.2 → 72.5–73.4 ms and `flat_cross` 102.5 → 90.5 ms.
+- Stationary p50 at four workers lands a frame earlier in both crossings: `flat_cross` 73.8–73.9 →
+  57.5–58.4 and `sloped_cross` 90.3–90.4 → 74.4–74.5 ms.
+- Stop → exact stays frame-quantized and moves by one to two frames in both directions between runs, as
+  in earlier captures. No regression is claimed from it.
+
+**Allocation finding (deferred).** In the harness profile, glibc takes 14.8% of CPU: about 10% in malloc
+and free internals, 2–3% in `memcpy`. It is spread over about 45 call sites, none above about 1%, so
+pre-sizing vectors would recover about 1–2% at most.
+- As a reverted experiment, mimalloc as the Rust global allocator gave −6.3% to −11.9% per fixture
+  (−7.4% in total) on top of `s2`, with identical digests.
+- Adopting it means a new dependency: `mimalloc` plus `libmimalloc-sys`, which builds C. It would affect
+  only Rust allocations; Godot keeps its own allocator. It may also ease the `ROAD-37` reclaim-thread
+  allocator contention.
+- This is left as a product decision and is not implemented.
+
+**Checks.** Freshly run on the `s3` tree:
+- `cargo test --release --lib` and `cargo test --lib` (debug assertions): 2,025 passed, 0 failed, 84
+  ignored each;
+- `cargo clippy`: no warnings on changed lines. The existing `mut_from_ref` error in
+  `economy/agents/tick/slices.rs` still fails the clippy build;
+- `cargo doc`: no missing docs.
+
+No GDScript changed, so the Godot suites were not rerun. The preview matrix exercised the bridge.
+
+**Artifacts:** `rust/target/road40/`:
+- `lib/` (stage libraries), `bin/` (stage test binaries, plus `x-mimalloc`), `godot-s0`–`godot-s3`;
+- `harness/` (`ab.sh`, `cmp.py`, `stage.sh`, runs `round-*`, `hash-*`, `sort-*`, `alloc-x-*`);
+- `prof/` (`perf` LBR recordings and `cat.py`/`allocsite.py`);
+- `artifacts/` (`run_ab.py`, `summarize.py`, `summary.txt`, captures, logs and manifests).
 
 **Artifacts:** `rust/target/preview-bottlenecks-artifacts/` holds:
 - captures, logs and manifests: `head-a`, `head-diag`, `r24-diag`, plus the per-case `prof-*`,

@@ -685,6 +685,7 @@ dependencies = [
  "cavalier_contours",
  "chrono",
  "criterion",
+ "foldhash",
  "glam",
  "godot",
  "i_overlay",

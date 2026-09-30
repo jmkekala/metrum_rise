@@ -4,7 +4,7 @@
 
 use super::super::super::super::super::keys::surface_overlay_grid_collinearity_error_bound;
 use super::*;
-use std::collections::HashMap;
+use crate::simulation::network::surface::node::NodeHashMap;
 
 const GENERATED_CONTACT_AUTHORITY_BOUNDS_MARGIN_KEYS: i64 = 4096;
 const GENERATED_CONTACT_AUTHORITY_TILE_KEYS: i64 = 8_000_000;
@@ -77,7 +77,7 @@ struct GeneratedContactAuthorityTile {
 #[derive(Default)]
 struct GeneratedContactAuthorityBucket {
     constraints: Vec<GeneratedContactAuthorityConstraint>,
-    constraint_indices_by_tile: HashMap<GeneratedContactAuthorityTile, Vec<usize>>,
+    constraint_indices_by_tile: NodeHashMap<GeneratedContactAuthorityTile, Vec<usize>>,
 }
 
 /// Pair-scoped view that avoids repeating the owner-pair lookup for every candidate point.
@@ -90,7 +90,7 @@ pub(in crate::simulation::network::surface::node::rails::contacts) struct Genera
 pub(in crate::simulation::network::surface::node::rails::contacts) struct GeneratedContactAuthorityIndex
 {
     buckets: Vec<GeneratedContactAuthorityBucket>,
-    bucket_indices_by_owner_pair: HashMap<(NodeBandOwner, NodeBandOwner), usize>,
+    bucket_indices_by_owner_pair: NodeHashMap<(NodeBandOwner, NodeBandOwner), usize>,
 }
 
 impl GeneratedContactAuthorityIndex {
@@ -98,7 +98,7 @@ impl GeneratedContactAuthorityIndex {
         constraints: &[NodeRailConstraint],
     ) -> Self {
         let mut buckets = Vec::<GeneratedContactAuthorityBucket>::new();
-        let mut bucket_indices_by_owner_pair = HashMap::new();
+        let mut bucket_indices_by_owner_pair = NodeHashMap::default();
         for constraint in constraints {
             if constraint.kind != NodeRailConstraintKind::RaisedStepContact {
                 continue;

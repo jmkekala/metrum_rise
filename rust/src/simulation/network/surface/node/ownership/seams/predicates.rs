@@ -17,15 +17,38 @@ use super::super::topology_keys::{
 pub(in crate::simulation::network::surface::node::ownership) fn canonicalize_seam_constraints(
     seams: &mut Vec<NodeRegionSeamConstraint>,
 ) {
-    seams.sort_by_cached_key(seam_constraint_sort_key);
-    let mut previous_key = None;
-    seams.retain(|constraint| {
-        let key = seam_constraint_sort_key(constraint);
-        if previous_key == Some(key) {
-            return false;
+    // Stable sort by key, keeping the first constraint of each key. Keys are computed once and
+    // reused for the dedup; callers often pass an already canonical list plus some additions.
+    let mut keyed = seams
+        .iter()
+        .map(seam_constraint_sort_key)
+        .zip(0..)
+        .collect::<Vec<_>>();
+    let canonical_prefix = keyed
+        .windows(2)
+        .take_while(|pair| pair[0].0 < pair[1].0)
+        .count()
+        + 1;
+    if canonical_prefix >= keyed.len() {
+        return;
+    }
+    // Unique indices break key ties, so (key, index) order is the stable order. Sort the tail
+    // only; the stable sort then merges the two sorted runs in linear time.
+    keyed[canonical_prefix..].sort_unstable();
+    keyed.sort();
+    // Apply the permutation in place, as `sort_by_cached_key` does: follow already-moved slots.
+    for position in 0..keyed.len() {
+        let mut index = keyed[position].1;
+        while index < position {
+            index = keyed[index].1;
         }
-        previous_key = Some(key);
-        true
+        keyed[position].1 = index;
+        seams.swap(position, index);
+    }
+    let mut position = 0;
+    seams.retain(|_| {
+        position += 1;
+        position == 1 || keyed[position - 1].0 != keyed[position - 2].0
     });
 }
 
