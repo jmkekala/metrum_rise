@@ -1,0 +1,6 @@
+# x86-64-v2 (SSE4.1/4.2, POPCNT) matches the minimum CPU of the Godot 4.5+ engine that loads this
+# extension. SSE4.1 lets f64::round/floor/ceil/trunc compile to inline `roundsd` instead of libm
+# calls in the road compile (ROAD-40). Rust never contracts or reassociates floating point, so
+# results are bit-identical to the x86-64 baseline build.
+[target.'cfg(target_arch = "x86_64")']
+rustflags = ["-C", "target-cpu=x86-64-v2"]

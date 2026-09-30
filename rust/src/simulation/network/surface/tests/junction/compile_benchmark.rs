@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Matched single-thread JunctionN compile timings with a cross-process product digest.
+//! Matched JunctionN compile timings in a dedicated pool, with a cross-process product digest.
 
 use super::*;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -61,8 +61,15 @@ fn junction_compile_constant_factors() {
     let flat = planar_world_terrain(1601, 1601, 1.0, 150.0, 0.0, 0.0);
     let sloped = planar_world_terrain(1601, 1601, 1.0, 150.0, 0.035, -0.014);
     let mut total_ms = 0.0;
-    // Every case compiles on this thread; the test-only full-scan check would dominate timings.
-    crate::simulation::network::surface::node::set_explicit_step_reference_check(false);
+    // Compile inside a dedicated pool, like the preview worker, so parallel stages start on a pool
+    // thread. RAYON_NUM_THREADS sizes it; 1 gives the single-thread timing. The test-only
+    // full-scan check would dominate timings, so every pool thread turns it off.
+    let pool = rayon::ThreadPoolBuilder::new()
+        .start_handler(|_| {
+            crate::simulation::network::surface::node::set_explicit_step_reference_check(false)
+        })
+        .build()
+        .expect("benchmark thread pool must start");
     for case in &CASES {
         let terrain = if case.sloped { &sloped } else { &flat };
         let (graph, center) = generated_multiway_junction_graph_with_edge_widths(
@@ -103,19 +110,23 @@ fn junction_compile_constant_factors() {
             format!("{piece:?}").hash(&mut hash);
             hash.finish()
         };
-        let reference = surface
-            .compile_visual_node_piece_from_input(&graph, terrain, center, &input)
+        let reference = pool
+            .install(|| {
+                surface.compile_visual_node_piece_from_input(&graph, terrain, center, &input)
+            })
             .unwrap_or_else(|| panic!("{} must compile", case.name));
         let products = digest(&reference);
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..SAMPLES {
             let start = Instant::now();
-            let piece = surface.compile_visual_node_piece_from_input(
-                black_box(&graph),
-                black_box(terrain),
-                center,
-                black_box(&input),
-            );
+            let piece = pool.install(|| {
+                surface.compile_visual_node_piece_from_input(
+                    black_box(&graph),
+                    black_box(terrain),
+                    center,
+                    black_box(&input),
+                )
+            });
             samples.push(start.elapsed().as_secs_f64() * 1e3);
             let piece = piece.expect("benchmark fixture must keep compiling");
             assert_eq!(

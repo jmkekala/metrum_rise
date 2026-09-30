@@ -1961,8 +1961,9 @@ a measured design choice, not an automatic consequence of moving validation into
 ### Preview compile bottlenecks (`ROAD-37`–`ROAD-42`)
 
 **Status: `ROAD-37` and `ROAD-38` done (2026-09-29), `ROAD-39` and `ROAD-40` done (2026-09-30);
-`ROAD-41`–`ROAD-43` open.** See [`ROAD-37`/`ROAD-38` results](#road-37-and-road-38-results),
-[`ROAD-39` results](#road-39-results) and [`ROAD-40` results](#road-40-results) below. A bottleneck analysis of the 10-case preview matrix (Road and
+`ROAD-41` parked after measurement (2026-09-30); `ROAD-42` and `ROAD-43` open.** See
+[`ROAD-37`/`ROAD-38` results](#road-37-and-road-38-results), [`ROAD-39` results](#road-39-results),
+[`ROAD-40` results](#road-40-results) and [`ROAD-41` results](#road-41-results) below. A bottleneck analysis of the 10-case preview matrix (Road and
 terrain) on committed `HEAD` `dde35ee0` found that the frontend is no longer the limit. The Rust
 preview worker is. Its road stage (`road_ms`: prepare, junction/span compile, junction scene render)
 is 75–90% of worker time. A single four-way `JunctionN` compile takes about 30–38 ms on one thread.
@@ -2106,7 +2107,8 @@ for proportions only.
 
   **Bound:** unchanged complexity. **Exit:** identical products across runs and processes, and a
   matched improvement in worker/road time for each item.
-- **`ROAD-41` — Parallelize work inside one junction compile (`refactor`, `P1`).** Single-junction
+- **`ROAD-41` — Parallelize work inside one junction compile (`refactor`, `P1`, parked after
+  measurement; see [results](#road-41-results)).** Single-junction
   poses (T, multi, branch) run their `JunctionN` on one thread while the others idle. Candidate units:
   - contact-noding components and pairs (rails);
   - owned regions in ownership, heights and export.
@@ -2461,6 +2463,89 @@ No GDScript changed, so the Godot suites were not rerun. The preview matrix exer
 - `artifacts/` (`run_ab.py`, `summarize.py`, `summary.txt`, captures, logs and manifests);
 - `mimalloc/` (`run.py`, `summarize.py`, `summary.txt`, `sha256.txt`, `lib/`, `bench/`, `godot-sys`/`godot-mi`,
   and `artifacts/` with captures, Criterion output, logs and manifests).
+
+#### `ROAD-41` results
+
+**Parked after measurement (2026-09-30).** A single `JunctionN` compile has no large independent unit
+of work. The one change tried was neutral in Godot, so it was reverted. Only the harness change was kept.
+
+**Where one junction's time goes.** Stage timings come from the `ROAD-40` harness with road-debug
+timers, on one thread, as medians of 22 compiles. `flat_t` totals 17.4 ms:
+
+| Stage | `flat_t` ms | `sloped_five` ms |
+| --- | --- | --- |
+| Rails | 6.2 | 39.7 |
+| Ownership | 5.6 | 36.9 |
+| Heights | 2.0 | 12.9 |
+| Arrangement | 1.1 | 9.2 |
+| Export | 1.1 | 8.5 |
+| Triangulation | 0.8 | 7.2 |
+
+- The stages form one dependency chain, and each is itself a chain of 0.1–2 ms sub-stages.
+  - Rails runs three contact-noding passes and three raised-step collections, and each pass consumes
+    the constraints the previous one emitted.
+  - Ownership claims asphalt, then the non-road bands. It rebuilds seams and the arrangement three
+    times and repeats final-boundary materialization until the owned regions stop changing.
+  - Most sub-stages thread a mutable memoization context (`NodeOwnershipBuildReuseContext`, the rail
+    incremental caches).
+- `flat_t` has 13 owned regions, 39 contours and 585 constraints. Per-item work is about 2–40 µs.
+- At 24 threads only triangulation scales (`sloped_five` 7.2 → 1.3 ms). The existing same-band and
+  contact-noding pair parallelism gains 0.3 ms in `flat_t`.
+- The source-authority miss thresholds (1024) never fire in these fixtures. Lowering them to 64 changed
+  nothing measurable: the serial path's per-group clip cache offsets the parallel gain.
+
+**Harness change (kept).** `junction_compile_constant_factors` now compiles inside a dedicated Rayon
+pool, as the preview worker does since `ROAD-38`, sized by `RAYON_NUM_THREADS`. Every pool thread turns
+off the `ROAD-39` reference check. Before, parallel stages injected from the test thread into the global
+pool. `RAYON_NUM_THREADS=1` still gives the single-thread timing, and the product digests are unchanged.
+
+**Candidate (reverted).** In same-band emission, the source-authorized raised-step collection reads only
+the constraints and contours, never the pair contacts. It therefore ran under `rayon::join` with the pair
+side, merging both sorted, deduplicated `Copy` sets afterwards. Products were identical.
+- Harness, alternating, median of three runs per side:
+  - four threads: −1.3% to −4.1% per fixture (`flat_t` 17.38 → 16.69 ms);
+  - eight threads pinned one per P-core: −2.1% to −3.7% (`sloped_five` +0.9%);
+  - 24 unpinned threads: −2.6% to +3.9%.
+
+  This i9-12900K is hybrid: 8 P-cores with SMT (CPUs 0–15) and 8 E-cores (16–23). At default workers
+  the stolen half of a join can land on an E-core or on an SMT sibling of the busy core, which erases
+  a sub-millisecond gain.
+- Godot, with the workload and alternation of the mimalloc A/B above:
+  - base `916af22a…fa52b1a8` (`s3`), candidate `3a108e49…8a3d1151`;
+  - all 14 captures passed `--validate`, with identical products in every pair (7,070 rows);
+  - diagnostic moving `worker_ms`: −0.3% to −1.3% in single-junction fixtures and +0.1–0.2% in the
+    crossings (`road_ms` +1.5–1.7%); −0.5% summed;
+  - acceptance latencies within the run-to-run ranges at both worker settings;
+  - frames over 33 ms 0–1 → 0–4 in a few default-worker runs;
+  - process CPU about +4% at default workers (399–406 → 417–421 s);
+  - peak RSS unchanged.
+
+  This missed the exit condition of lower single-junction `road_ms` at four and default workers.
+
+**Decision.** Do not pursue the remaining intra-junction candidates:
+- claiming asphalt and non-road regions concurrently;
+- per-region seam extraction and per-edge seam materialization, in three rebuilds of about 1 ms each;
+- height fields (0.5 ms);
+- raised-step source groups.
+
+Each needs its reuse context split into read-only lookups plus an ordered merge. The whole set is
+estimated at 2–3 ms of `flat_t` at four to eight P-core workers and about zero at default workers on
+hybrid CPUs. The 12–14 ms `flat_t` worker target is not reachable by parallelism. Cutting work instead
+is `ROAD-42` (pose-to-pose reuse) and `ROAD-43` (allocation). Revisit only if a compile gains a coarse
+independent stage.
+
+**Checks.** Fresh runs:
+- the harness passes at one thread with the `ROAD-40` digests;
+- the release test build compiles with no warnings.
+
+Only a test file changed, so the full suite was not rerun.
+
+**Artifacts:** `rust/target/road41/`:
+- Godot A/B: `run.py`, `summarize.py`, `summary.txt`, `sha256.txt`, `lib/`, `godot-base`/`godot-cand`, and
+  `artifacts/` with captures, logs and manifests;
+- `harness/`: `ab.py`, `bench.sh`, `results.txt` and both test binaries;
+- `prof/`: road-debug stage logs, `road41_stages.py`, and the temporary instrumentation patch that
+  logged every sub-stage.
 
 **Artifacts:** `rust/target/preview-bottlenecks-artifacts/` holds:
 - captures, logs and manifests: `head-a`, `head-diag`, `r24-diag`, plus the per-case `prof-*`,
