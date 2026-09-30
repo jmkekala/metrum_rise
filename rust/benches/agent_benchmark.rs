@@ -135,6 +135,7 @@ fn register_test_asset(
             length_m: None,
         }],
         building: Some(BuildingData {
+            window_brightness: BuildingData::default_window_brightness(),
             appearance: None,
             flat_size_m2: None,
             placement_mode: PlacementMode::Explicit,

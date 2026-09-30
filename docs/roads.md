@@ -1961,7 +1961,7 @@ a measured design choice, not an automatic consequence of moving validation into
 ### Preview compile bottlenecks (`ROAD-37`–`ROAD-42`)
 
 **Status: `ROAD-37` and `ROAD-38` done (2026-09-29), `ROAD-39` and `ROAD-40` done (2026-09-30);
-`ROAD-41` and `ROAD-42` open.** See [`ROAD-37`/`ROAD-38` results](#road-37-and-road-38-results),
+`ROAD-41`–`ROAD-43` open.** See [`ROAD-37`/`ROAD-38` results](#road-37-and-road-38-results),
 [`ROAD-39` results](#road-39-results) and [`ROAD-40` results](#road-40-results) below. A bottleneck analysis of the 10-case preview matrix (Road and
 terrain) on committed `HEAD` `dde35ee0` found that the frontend is no longer the limit. The Rust
 preview worker is. Its road stage (`road_ms`: prepare, junction/span compile, junction scene render)
@@ -2091,7 +2091,7 @@ for proportions only.
   visits candidates instead of all S steps. **Exit:** identical export products, including a
   targeted sloped four-way equality check, and lower measured `export_ms`.
 - **`ROAD-40` — Cut constant-factor overhead in the junction compile (`refactor`, `P2`, done;
-  allocation deferred).** Land each
+  allocation moved to `ROAD-43`).** Land each
   item separately, with its own measurement:
   - **Rounding.** Either build for `x86-64-v2` (SSE4.1 inlines rounding; results are unchanged
     because Rust does not contract floating point, but it is a minimum-CPU product decision), or
@@ -2100,7 +2100,7 @@ for proportions only.
     deterministic fast hasher. Audit any map iteration that reaches outputs, because the current
     per-process random order would be a determinism bug.
   - **Allocation.** Pre-size vectors and reuse per-thread scratch buffers where `realloc`/`Vec` growth
-    and B-tree node allocation dominate.
+    and B-tree node allocation dominate. Deferred to `ROAD-43`.
   - **Sorting.** `canonicalize_seam_constraints` recomputes its sort key in `retain` after
     `sort_by_cached_key`. Per-shape and per-edge callers re-sort shared inputs; sort once per compile.
 
@@ -2125,6 +2125,20 @@ for proportions only.
   hit rates in a diagnostic build first; neighbouring mouth setbacks move with the edited leg, so
   gains may be small. Retaining one previous cache would also replace the per-result drop that
   `ROAD-37` moves. **Exit:** recorded hit rates for branch and cross fixtures, with a go/no-go decision.
+- **`ROAD-43` — Reuse junction-compile scratch storage across compiles (`refactor`, `P2`).** The
+  allocation item deferred from `ROAD-40`.
+  - The glibc allocator takes about 10% of single-thread `JunctionN` CPU, but no single call site is
+    above about 1%. Pre-sizing individual vectors would recover about 1–2% at most.
+  - The mimalloc A/B shows how much churn there is: road-chunk benches −6% to −30% and moving
+    `worker_ms` −6%.
+  - Keep one owned scratch workspace per compile thread for the largest stage buffers: contact
+    noding, seam canonicalization and ownership rings. Clear it between junctions instead of dropping
+    it, and pass it explicitly rather than through new thread-locals (see `CODE-11`). Profile the
+    allocation sites again first, and move only the buffers that recur in every compile.
+
+  **Bound:** unchanged complexity. Retained capacity is bounded by the largest junction compiled on
+  that thread. **Exit:** identical products across runs and processes; a matched harness and Godot
+  improvement in `road_ms`; no material peak-RSS growth at default workers.
 
 #### `ROAD-37` and `ROAD-38` results
 
@@ -2338,8 +2352,8 @@ timed, and the test-only `ROAD-39` full-scan check is switched off for this thre
 
 **Godot evidence.** Build identity:
 - stages `s0`–`s3` were built in the main workspace on `HEAD` `5bb669fb`;
-- release library SHA-256s: `s0` `a07c6ea5…38ab06c2d`, `s1` `00af3e5a…`, `s2` `2503b22a…`, `s3`
-  `916af22a…` (full hashes in the manifests);
+- release library SHA-256s: `s0` `a07c6ea5…8ab06c2d`, `s1` `00af3e5a…1ec533c7`, `s2`
+  `2503b22a…9f3ee662`, `s3` `916af22a…fa52b1a8` (full hashes in the manifests);
 - GDScript unchanged, with the same hash before and after every run.
 
 Workload as for `ROAD-37`/`ROAD-38`. The diagnostic runs are two `METRUM_DEBUG_PERF=1` runs per stage at
@@ -2391,6 +2405,46 @@ pre-sizing vectors would recover about 1–2% at most.
   allocator contention.
 - This is left as a product decision and is not implemented.
 
+**mimalloc A/B (2026-09-30, rejected for now).** A matched follow-up measured mimalloc end to end, for
+shipping on all platforms:
+- Build: `HEAD` `0a520ae5`, changing only the global allocator (`mimalloc` 0.1.52, C library v2,
+  `default-features = false`).
+  - System allocator library `916af22a…fa52b1a8` (the `s3` binary); mimalloc library
+    `a98cf7f3…d0864405`.
+  - The mimalloc edit was reverted after building.
+- Workload:
+  - Godot preview matrix as above. Seven runs per side, alternating: three unprofiled and two
+    `METRUM_DEBUG_PERF=1` at default workers, two unprofiled at `RAYON_NUM_THREADS=4`.
+  - Criterion `agent_benchmark`, `road_chunk_benchmark` and `surface_benchmark`, two rounds per side
+    (sys, mi, mi, sys).
+  - Every process's peak RSS comes from `wait4`.
+- Results:
+  - All 14 captures passed `--validate`. Products were identical in every pair (7,070 rows).
+  - **Speed:**
+    - Diagnostic moving `worker_ms` −6.2% summed (−3.1% to −9.2% in all 10 fixtures; nearly all in
+      `road_ms`, for example `sloped_cross` 58.9 → 55.6 ms).
+    - Stationary −4.0% summed, with three fixtures slower.
+    - Godot process CPU unchanged at default workers (about 417 s) and −3% at four workers.
+    - Displayed latency is frame-quantized. It overlaps at default workers; at four workers a few
+      fixtures land a frame earlier (`sloped_cross` moving age p50 119.0–119.2 → 102.9–103.1 ms).
+    - Criterion road benches −6% to −30% (`full_network_emit/1024` 41.4 → 29.6 ms; dirty surface
+      compiles −6% to −25%), `CchRebuild` −3% to −12%, and `compile_all_grid` +1%.
+  - **Memory:** Godot peak RSS 1,078–1,096 → 1,418–1,460 MiB (+31%, about +340 MiB) at default workers
+    and 737–742 → 843–848 MiB (+14%) at four workers. Bench processes grew by 150–220 MiB each. The
+    growth scales with thread count.
+  - **Regression:** `AgentSystem::tick/idle_scaling/1000000` 2.23–2.30 → 2.76–2.83 ms (+23%) in both
+    rounds, on the 1M-agent path. Other agent-tick results are inside the system allocator's own
+    round-to-round spread (up to 40%, for example `on_road/10000` 0.79 vs 0.48 ms).
+  - macOS is unmeasured.
+- Decision: do not adopt. The preview gain is about 6% of worker time and rarely changes a displayed
+  frame, while it costs about 30% more peak memory at default workers and regresses the 1M-agent idle
+  tick.
+  - Revisit after `ROAD-43` lowers allocation volume in the road compile, with mimalloc's purge options
+    tuned, measured on macOS as well.
+  - The idle-tick regression is unexplained (possibly per-tick buffers that mimalloc returns to the OS
+    and refaults). `CODE-15` tracks it, and it must be resolved before any allocator change.
+- `benches/agent_benchmark.rs` needed `window_brightness` in its `BuildingData` fixture to compile.
+
 **Checks.** Freshly run on the `s3` tree:
 - `cargo test --release --lib` and `cargo test --lib` (debug assertions): 2,025 passed, 0 failed, 84
   ignored each;
@@ -2404,7 +2458,9 @@ No GDScript changed, so the Godot suites were not rerun. The preview matrix exer
 - `lib/` (stage libraries), `bin/` (stage test binaries, plus `x-mimalloc`), `godot-s0`–`godot-s3`;
 - `harness/` (`ab.sh`, `cmp.py`, `stage.sh`, runs `round-*`, `hash-*`, `sort-*`, `alloc-x-*`);
 - `prof/` (`perf` LBR recordings and `cat.py`/`allocsite.py`);
-- `artifacts/` (`run_ab.py`, `summarize.py`, `summary.txt`, captures, logs and manifests).
+- `artifacts/` (`run_ab.py`, `summarize.py`, `summary.txt`, captures, logs and manifests);
+- `mimalloc/` (`run.py`, `summarize.py`, `summary.txt`, `sha256.txt`, `lib/`, `bench/`, `godot-sys`/`godot-mi`,
+  and `artifacts/` with captures, Criterion output, logs and manifests).
 
 **Artifacts:** `rust/target/preview-bottlenecks-artifacts/` holds:
 - captures, logs and manifests: `head-a`, `head-diag`, `r24-diag`, plus the per-case `prof-*`,
