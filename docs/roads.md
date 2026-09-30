@@ -1961,9 +1961,10 @@ a measured design choice, not an automatic consequence of moving validation into
 ### Preview compile bottlenecks (`ROAD-37`–`ROAD-42`)
 
 **Status: `ROAD-37` and `ROAD-38` done (2026-09-29), `ROAD-39` and `ROAD-40` done (2026-09-30);
-`ROAD-41` parked after measurement (2026-09-30); `ROAD-42` and `ROAD-43` open.** See
+`ROAD-41` and `ROAD-43` parked after measurement, `ROAD-42` done with a no-go decision (2026-09-30).** See
 [`ROAD-37`/`ROAD-38` results](#road-37-and-road-38-results), [`ROAD-39` results](#road-39-results),
-[`ROAD-40` results](#road-40-results) and [`ROAD-41` results](#road-41-results) below. A bottleneck analysis of the 10-case preview matrix (Road and
+[`ROAD-40` results](#road-40-results), [`ROAD-41` results](#road-41-results),
+[`ROAD-42` results](#road-42-results) and [`ROAD-43` results](#road-43-results) below. A bottleneck analysis of the 10-case preview matrix (Road and
 terrain) on committed `HEAD` `dde35ee0` found that the frontend is no longer the limit. The Rust
 preview worker is. Its road stage (`road_ms`: prepare, junction/span compile, junction scene render)
 is 75–90% of worker time. A single four-way `JunctionN` compile takes about 30–38 ms on one thread.
@@ -2119,7 +2120,8 @@ for proportions only.
   dependency path. **Exit:** identical products; lower single-junction `road_ms` at four and default
   workers. Target: `flat_t` worker time of about 12–14 ms, so stationary results land a frame earlier
   (see `ROAD-35`).
-- **`ROAD-42` — Measure pose-to-pose junction reuse (`refactor`, `P2`).** Rail topology reuse needs
+- **`ROAD-42` — Measure pose-to-pose junction reuse (`refactor`, `P2`, done: no-go; see
+  [results](#road-42-results)).** Rail topology reuse needs
   whole-topology equality (`NodeRailTopologyKey`), which suits height-only edits and never matches
   a moving preview. The incremental pair and contributor caches (same-material and source-authorized
   contacts, contact-noding pairs, retained contacts, ownership cleanup and seams) could still hit for
@@ -2127,7 +2129,8 @@ for proportions only.
   hit rates in a diagnostic build first; neighbouring mouth setbacks move with the edited leg, so
   gains may be small. Retaining one previous cache would also replace the per-result drop that
   `ROAD-37` moves. **Exit:** recorded hit rates for branch and cross fixtures, with a go/no-go decision.
-- **`ROAD-43` — Reuse junction-compile scratch storage across compiles (`refactor`, `P2`).** The
+- **`ROAD-43` — Reuse junction-compile scratch storage across compiles (`refactor`, `P2`, parked after
+  measurement; see [results](#road-43-results)).** The
   allocation item deferred from `ROAD-40`.
   - The glibc allocator takes about 10% of single-thread `JunctionN` CPU, but no single call site is
     above about 1%. Pre-sizing individual vectors would recover about 1–2% at most.
@@ -2441,8 +2444,9 @@ shipping on all platforms:
 - Decision: do not adopt. The preview gain is about 6% of worker time and rarely changes a displayed
   frame, while it costs about 30% more peak memory at default workers and regresses the 1M-agent idle
   tick.
-  - Revisit after `ROAD-43` lowers allocation volume in the road compile, with mimalloc's purge options
-    tuned, measured on macOS as well.
+  - Revisit with mimalloc's purge options tuned, measured on macOS as well. `ROAD-43` found that
+    scratch reuse cannot lower the compile's allocation volume materially, so the allocator is the
+    remaining lever for this cost.
   - The idle-tick regression is unexplained (possibly per-tick buffers that mimalloc returns to the OS
     and refaults). `CODE-15` tracks it, and it must be resolved before any allocator change.
 - `benches/agent_benchmark.rs` needed `window_brightness` in its `BuildingData` fixture to compile.
@@ -2546,6 +2550,136 @@ Only a test file changed, so the full suite was not rerun.
 - `harness/`: `ab.py`, `bench.sh`, `results.txt` and both test binaries;
 - `prof/`: road-debug stage logs, `road41_stages.py`, and the temporary instrumentation patch that
   logged every sub-stage.
+
+#### `ROAD-42` results
+
+**Done, no-go (2026-09-30).** Offering the previous pose's topology cache to the next junction compile
+keeps products identical but saves no time. Nothing landed.
+
+**Method.** A temporary diagnostic patch (reverted) changed one step:
+- When the exact preview candidate misses, the dirty compile offers the previous cursor's cached topology
+  for the same junction instead of the live one. It matches by local node id and shape (kind and mouth
+  count), falling back to the nearest same-shape node within 20 m.
+- It always matched by local node id: 23 of 23 moving branch compiles, 92 of 92 cross compiles.
+- All existing keys still decide each hit, so a hit cannot change products.
+- A throwaway ignored test replayed the drags of the Godot preview matrix through the worker's compile
+  entry point (`compile_prepared_preview_surface_with_topology_reuse`, `PreviewWorker` reason):
+  - T onto the main road with the endpoint sliding along it;
+  - a new leg from the existing T at (−65, 0) orbiting its target (`branch`);
+  - a stroke crossing four parallel roads, orbiting its end (`cross`);
+  - flat and sloped terrain, 24 poses 2 m apart, the first pose excluded.
+- Every pose's preview result and every compiled node piece are hashed. The digests are identical with
+  and without the offer in all six cases.
+
+**Hit rates**, from `METRUM_DEBUG=1 METRUM_DEBUG_FILTER=road`, one thread, summed over the moving poses:
+- **Cross:** zero additional hits in every cache. All four junctions move with the stroke, so no
+  contributor key survives.
+- **Branch:** the junction centre is fixed, so a few keys survive:
+  - raised-step source contacts: 455 → 1,932 of 29,025 lookups (flat) and 0 → 4,051 of 42,438 (sloped);
+  - export top edges: 0 → 1,665 of 7,751 (flat) and 117 → 3,011 of 11,194 (sloped);
+  - ownership cleanup: 48 and 40 previous-pose hits in about 2,000 lookups;
+  - contact-noding pairs: +99 and +118 hits in about 11,000.
+
+  Neighbouring mouth setbacks, bands and contacts move with the edited leg, so most keys change.
+- **T:** the three-mouth junction logs no previous-pose ownership or export hits.
+
+**Timing.** Unprofiled, one pinned P-core thread, three alternating rounds, median of the moving-pose
+totals, in ms:
+
+| Case | Live offer (current) | Previous-pose offer | Change |
+| --- | --- | --- | --- |
+| `flat_t` | 401.7 | 404.6 | +0.7% |
+| `sloped_t` | 544.3 | 552.1 | +1.4% |
+| `flat_branch` | 834.2 | 852.6 | +2.2% |
+| `sloped_branch` | 1230.5 | 1234.1 | +0.3% |
+| `flat_cross` | 2664.1 | 2705.7 | +1.6% |
+| `sloped_cross` | 3340.1 | 3417.2 | +2.3% |
+
+Probing the previous pose's larger caches costs more than the few hits save.
+
+**Decision.** Do not offer pose-to-pose topology.
+- The per-result drop that `ROAD-37` moved off the worker stays as it is.
+- Revisit only if the contributor keys become relative to a fixed-leg frame, so that unchanged legs keep
+  their keys while the edited leg moves. That is a redesign of the key scheme, not a cache offer.
+
+**Artifacts:** `rust/target/road42/`:
+- `diagnostic.patch` (the reverted offer) and `road42_diag.rs` (the replay test);
+- the test binary, `diag-bin`, SHA-256 `4fecc269…06caeb11`;
+- `base.log`/`offer.log` (road-debug runs), `parse.py`, `hits.txt` and `timing.txt`.
+
+#### `ROAD-43` results
+
+**Parked after measurement (2026-09-30).** The allocations are not recurring scratch buffers, and removing
+the largest reusable set does not change compile time. Nothing landed.
+
+**Allocation profile.** A temporary counting global allocator (reverted) in the `ROAD-40` harness,
+counting only the timed compiles on one thread at `HEAD` `422f38de`:
+
+| Fixture | Allocations per compile | Bytes per compile |
+| --- | --- | --- |
+| `flat_t` | 88,853 | 39.6 MB |
+| `sloped_t` | 104,674 | 52.0 MB |
+| `flat_cross` | 119,444 | 50.4 MB |
+| `sloped_cross` | 124,944 | 53.2 MB |
+| `sloped_oblique` | 177,404 | 88.8 MB |
+| `sloped_five` | 380,517 | 244.3 MB |
+
+- **Size classes.** From backtraces sampled at every 97th allocation (about 216,000 samples, inlined
+  frames resolved):
+  - 75% of calls are 256 bytes or smaller, and 93% are 1 KiB or smaller;
+  - allocations above 4 KiB are 1.4% of calls, but 50% of bytes.
+- **Sites.** No single site is above 4.3% of calls. The largest groups are:
+  - i_overlay's internal buffers plus the conversion vectors in `surface/overlay.rs` (about 12%);
+  - `GeneratedContactAuthorityConstraint::new` (5.2%);
+  - `NodeRailConstraint` clones (2.9%);
+  - contact-noding summaries;
+  - arrangement vertex sources;
+  - seam materialization.
+
+  These are stage outputs, cache keys and entries, clones and nested `Vec`s. Most live until their stage
+  or the compile ends, so clearing and reusing a buffer does not apply.
+- **CPU.** In a profile without the harness's per-sample `Debug` digests, libc is 16% of samples:
+  - about 12.6% is malloc/free (the rest is `memmove`/`memcpy`);
+  - kernel time is below 1%, with 27,000 page faults in the whole run, so page faults and trimming are
+    not a cost.
+- **The ROAD-40 finding needs a correction.** Its profile included the digests. The allocator share
+  inside the compile is real, but it comes from small-object churn across the whole compiler, not from
+  a few recurring buffers.
+- **glibc tuning is no remedy.** Raising glibc's per-thread cache (`glibc.malloc.tcache_count=65000`,
+  diagnostic only) made the harness about 5% slower.
+
+**Candidate (reverted).** The largest reusable set was the overlay booleans. One reused i_overlay
+`Overlay` per thread (`clear` + `add_contour`), with a reused integer-contour scratch vector:
+- Output conversion and canonicalization were fused into one pass.
+- Products were identical.
+- Allocation calls fell 9–11% and bytes 5–8% (`flat_t` 88,853 → 79,650).
+- Harness, two A/B sets of four alternating rounds each, median of per-run medians:
+  - first set: −1.4% to +1.4% per fixture, total 254.40 → 254.45 ms;
+  - second set: −0.1% to −0.9% per fixture, total 253.82 → 252.34 ms (−0.6%);
+  - both within the run-to-run spread.
+
+  A committed version would also need an explicit workspace parameter threaded through about 30
+  overlay call sites, because `CODE-11` excludes new thread-locals.
+
+**Decision.** Do not pursue scratch reuse.
+- To recover the roughly 6% that mimalloc showed, about half of the ~90,000 allocations per compile
+  would have to go. That means redesigning the compiler's data layout (flattened contours, interned
+  keys, fewer owned clones), not a scratch workspace.
+- The allocator itself stays the remaining lever. The mimalloc revisit above still depends on `CODE-15`
+  and on bounding peak RSS.
+- Revisit if a later compile redesign flattens stage outputs.
+
+**Artifacts:** `rust/target/road43/`:
+- binaries: `base-bin` (`HEAD`, SHA-256 `dc72267a…c721b332`), `proto1-bin` (overlay workspace,
+  `95f5f112…8dbb8dc8`), `count-bin`/`proto1-count-bin` (counting allocator) and `base-nodigest-bin`;
+- patches: `compile_benchmark.counting.rs`, `overlay-workspace-prototype.patch` and
+  `no-digest-harness.patch`;
+- `ab.py` and `ab-overlay.txt` (the second A/B set; the first was printed only), and `base-alloc.txt`;
+- `prof/`:
+  - `base.data`/`nodigest.data` (`perf`);
+  - `traces.txt` (sampled backtraces);
+  - `sites.py`/`sites.txt` and `sizes.py`/`sizes.txt`;
+  - `nodigest-libc.txt`.
 
 **Artifacts:** `rust/target/preview-bottlenecks-artifacts/` holds:
 - captures, logs and manifests: `head-a`, `head-diag`, `r24-diag`, plus the per-case `prof-*`,

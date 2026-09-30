@@ -231,8 +231,8 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Current Priorities
 
-- **Road preview display performance (`ROAD-30`–`ROAD-35`, `ROAD-37`–`ROAD-40` done; `ROAD-36` and
-  `ROAD-41` parked; `ROAD-42`–`ROAD-43` open)**: prioritize **Road and terrain**. With input-to-display baselines captured, tackle native buffer validation, rendering
+- **Road preview display performance (`ROAD-30`–`ROAD-35`, `ROAD-37`–`ROAD-40` and `ROAD-42` done;
+  `ROAD-36`, `ROAD-41` and `ROAD-43` parked)**: prioritize **Road and terrain**. With input-to-display baselines captured, tackle native buffer validation, rendering
   resource reuse, retained geometry locality, packed payload deltas, worker scheduling and
   compatible mesh updates one at a time. Each step needs matched performance and correctness
   evidence. Keep Road only as a comparison; decide whether to retain both modes after measuring
@@ -262,9 +262,13 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
   node export: junction `export_ms` roughly halves in crossings, with identical products. `ROAD-40`
   inlines rounding, uses fixed-seed hashing and removes re-sorts. A single-thread junction compile is
   9–11% faster, and moving worker time falls 4–11%, with identical products. mimalloc was measured and
-  rejected for now: worker time −6%, but peak RSS +31% and a +23% 1M-agent idle tick. Allocation reuse is `ROAD-43`; the idle-tick regression is `CODE-15`. `ROAD-41` (parallelism inside one junction) is parked: the compile is a chain of 0.1–2 ms stages, and the one candidate was neutral in Godot. Next: `ROAD-42`, then `ROAD-43`
+  rejected for now: worker time −6%, but peak RSS +31% and a +23% 1M-agent idle tick. The idle-tick regression is `CODE-15`. Three items were measured and dropped:
+  - `ROAD-41` (parallelism inside one junction) is parked: the compile is a chain of 0.1–2 ms stages, and the one candidate was neutral in Godot.
+  - `ROAD-42` is a no-go: offering the previous pose's topology cache found almost no reusable keys and slowed moving compiles by up to 2%.
+  - `ROAD-43` is parked: the roughly 90,000 allocations per junction compile are small stage products, not reusable scratch, and removing 10% of them changed nothing measurable.
+
+  Next: the Road only review
   ([findings and tasks](roads.md#preview-compile-bottlenecks-road-37road-42)).
-  The Road only review follows those fixes.
   [Ordered plan and acceptance criteria](roads.md#preview-display-performance-plan-road-30road-36).
 
 - **Codebase audit (`AUDIT-01`, paused by user)**: review the economy, buildings/save lifecycle, Rust/Godot boundary, and network/terrain for obsolete code, duplicated authority, correctness and scaling problems. Coverage and fresh validation are tracked in [`code_audit.md`](code_audit.md).
