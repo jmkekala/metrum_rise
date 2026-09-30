@@ -42,18 +42,38 @@ const PASS_THROUGH_DOT_THRESHOLD: f32 = 0.98;
 struct NodeExportTopHeightContext {
     carriageway_height_keys: BTreeSet<(arrangement::NodeArrangementKey, i64)>,
     flat_carriageway_height_mm: Option<i64>,
-    explicit_step_lower_edges: Vec<NodeExportExplicitStepLowerEdge>,
+    explicit_step_lower_edges: NodeExportExplicitStepLowerEdges,
+}
+
+// Explicit steps sorted by raised owner, each pointing at its lower carriageway owner's edges, so a
+// raised-vertex query visits only that owner's steps and, for a step containing the vertex, the
+// lower owner's edges. Build O(S log S + E log E); the flat step × edge product it replaces made
+// every query O(S · E_lower).
+struct NodeExportExplicitStepLowerEdges {
+    steps: Vec<NodeExportExplicitStep>,
+    lower_edges: Vec<(NodeBandOwner, NodeExportLowerEdge)>,
+    // The unindexed step × edge product, built as before the index; test builds check every
+    // query against it.
+    #[cfg(test)]
+    reference: Vec<(NodeExportExplicitStep, NodeExportLowerEdge)>,
 }
 
 #[derive(Clone, Copy)]
-struct NodeExportExplicitStepLowerEdge {
+struct NodeExportExplicitStep {
     raised_owner: NodeBandOwner,
-    step_start: arrangement::NodeArrangementKey,
-    step_end: arrangement::NodeArrangementKey,
-    edge_start: arrangement::NodeArrangementKey,
-    edge_end: arrangement::NodeArrangementKey,
-    edge_start_height_mm: i64,
-    edge_end_height_mm: i64,
+    start: arrangement::NodeArrangementKey,
+    end: arrangement::NodeArrangementKey,
+    // Range of `lower_edges` owned by this step's lower carriageway owner.
+    lower_edges_start: usize,
+    lower_edges_end: usize,
+}
+
+#[derive(Clone, Copy)]
+struct NodeExportLowerEdge {
+    start: arrangement::NodeArrangementKey,
+    end: arrangement::NodeArrangementKey,
+    start_height_mm: i64,
+    end_height_mm: i64,
 }
 
 impl NodeExportTopHeightContext {
@@ -75,7 +95,7 @@ impl NodeExportTopHeightContext {
         Self {
             flat_carriageway_height_mm: flat_carriageway_height_mm(&carriageway_height_keys),
             carriageway_height_keys,
-            explicit_step_lower_edges: explicit_step_lower_edges(
+            explicit_step_lower_edges: NodeExportExplicitStepLowerEdges::new(
                 arrangement,
                 explicit_vertical_step_segments,
             ),
@@ -99,11 +119,8 @@ impl NodeExportTopHeightContext {
         key: arrangement::NodeArrangementKey,
         height_mm: i64,
     ) -> bool {
-        self.explicit_step_lower_edges.iter().any(|edge| {
-            edge.raised_owner == owner
-                && key.lies_on_segment(edge.step_start, edge.step_end)
-                && edge.lower_height_mm_at(key) == Some(height_mm)
-        })
+        self.explicit_step_lower_edges
+            .raised_vertex_matches_lower_height(owner, key, height_mm)
     }
 }
 
@@ -121,54 +138,146 @@ fn curb_step_height_mm() -> i64 {
     (f64::from(CURB_STEP_HEIGHT_M) * 1000.0).round() as i64
 }
 
-impl NodeExportExplicitStepLowerEdge {
-    fn lower_height_mm_at(self, key: arrangement::NodeArrangementKey) -> Option<i64> {
-        if !key.lies_on_segment(self.edge_start, self.edge_end) {
-            return None;
-        }
-        let parameter = segments::overlay_segment_parameter(
-            segments::arrangement_key(key),
-            segments::arrangement_key(self.edge_start),
-            segments::arrangement_key(self.edge_end),
-        )
-        .or_else(|| {
-            segments::exact_line_parameter(
-                segments::arrangement_key(key),
-                segments::arrangement_key(self.edge_start),
-                segments::arrangement_key(self.edge_end),
+impl NodeExportExplicitStepLowerEdges {
+    fn new(
+        arrangement: &NodeArrangement,
+        explicit_vertical_step_segments: &[NodeExplicitVerticalStepSegment],
+    ) -> Self {
+        let owned_steps = explicit_vertical_step_segments
+            .iter()
+            .copied()
+            .filter_map(|segment| {
+                explicit_step_lower_and_raised_owner(segment)
+                    .map(|(lower_owner, raised_owner)| (lower_owner, raised_owner, segment))
+            })
+            .collect::<Vec<_>>();
+        let mut lower_owners = owned_steps
+            .iter()
+            .map(|(lower_owner, _, _)| *lower_owner)
+            .collect::<Vec<_>>();
+        lower_owners.sort_unstable();
+        lower_owners.dedup();
+        let mut lower_edges = arrangement
+            .edges()
+            .iter()
+            .filter(|edge| lower_owners.binary_search(&edge.owner()).is_ok())
+            .filter_map(|edge| {
+                let start = arrangement.vertices().get(edge.start().index())?;
+                let end = arrangement.vertices().get(edge.end().index())?;
+                Some((
+                    edge.owner(),
+                    NodeExportLowerEdge {
+                        start: start.key(),
+                        end: end.key(),
+                        start_height_mm: start.height_mm(),
+                        end_height_mm: end.height_mm(),
+                    },
+                ))
+            })
+            .collect::<Vec<_>>();
+        lower_edges.sort_by_key(|(owner, _)| *owner);
+        let mut steps = owned_steps
+            .into_iter()
+            .map(
+                |(lower_owner, raised_owner, segment)| NodeExportExplicitStep {
+                    raised_owner,
+                    start: segment.start(),
+                    end: segment.end(),
+                    lower_edges_start: lower_edges
+                        .partition_point(|(owner, _)| *owner < lower_owner),
+                    lower_edges_end: lower_edges
+                        .partition_point(|(owner, _)| *owner <= lower_owner),
+                },
             )
-        })?;
-        Some(segments::interpolate_height_i64(
-            self.edge_start_height_mm,
-            self.edge_end_height_mm,
-            parameter,
-        ))
+            .collect::<Vec<_>>();
+        steps.sort_by_key(|step| step.raised_owner);
+        Self {
+            #[cfg(test)]
+            reference: reference_step_lower_edges(arrangement, explicit_vertical_step_segments),
+            steps,
+            lower_edges,
+        }
+    }
+
+    fn raised_vertex_matches_lower_height(
+        &self,
+        raised_owner: NodeBandOwner,
+        key: arrangement::NodeArrangementKey,
+        height_mm: i64,
+    ) -> bool {
+        let first = self
+            .steps
+            .partition_point(|step| step.raised_owner < raised_owner);
+        let matches = self.steps[first..]
+            .iter()
+            .take_while(|step| step.raised_owner == raised_owner)
+            .filter(|step| key.lies_on_segment(step.start, step.end))
+            .any(|step| {
+                self.lower_edges[step.lower_edges_start..step.lower_edges_end]
+                    .iter()
+                    .any(|(_, edge)| edge.lower_height_mm_at(key) == Some(height_mm))
+            });
+        #[cfg(test)]
+        {
+            assert_eq!(
+                matches,
+                self.reference_matches(raised_owner, key, height_mm),
+                "indexed explicit-step lower-height match diverged from the full scan"
+            );
+            EXPLICIT_STEP_MATCH_STATS.with(|stats| {
+                let (queries, hits) = stats.get();
+                stats.set((queries + 1, hits + usize::from(matches)));
+            });
+        }
+        matches
+    }
+
+    #[cfg(test)]
+    fn reference_matches(
+        &self,
+        raised_owner: NodeBandOwner,
+        key: arrangement::NodeArrangementKey,
+        height_mm: i64,
+    ) -> bool {
+        self.reference.iter().any(|(step, edge)| {
+            step.raised_owner == raised_owner
+                && key.lies_on_segment(step.start, step.end)
+                && edge.lower_height_mm_at(key) == Some(height_mm)
+        })
     }
 }
 
-fn explicit_step_lower_edges(
+#[cfg(test)]
+thread_local! {
+    // (queries, matches) of explicit-step lower-height lookups on this thread; export runs them
+    // serially on the compiling thread.
+    static EXPLICIT_STEP_MATCH_STATS: std::cell::Cell<(usize, usize)> =
+        const { std::cell::Cell::new((0, 0)) };
+}
+
+/// Returns and resets this thread's explicit-step lower-height (queries, matches) counts.
+#[cfg(test)]
+pub(in crate::simulation::network::surface) fn take_explicit_step_match_stats() -> (usize, usize) {
+    EXPLICIT_STEP_MATCH_STATS.with(|stats| stats.replace((0, 0)))
+}
+
+#[cfg(test)]
+fn reference_step_lower_edges(
     arrangement: &NodeArrangement,
     explicit_vertical_step_segments: &[NodeExplicitVerticalStepSegment],
-) -> Vec<NodeExportExplicitStepLowerEdge> {
+) -> Vec<(NodeExportExplicitStep, NodeExportLowerEdge)> {
     let mut lower_edges = Vec::new();
     for segment in explicit_vertical_step_segments.iter().copied() {
-        let owners = [segment.owner(), segment.opposite_owner()];
-        let Some(lower_owner) = owners
-            .iter()
-            .copied()
-            .find(|owner| segment.owner_matches_height_side(*owner, true))
+        let Some((lower_owner, raised_owner)) = explicit_step_lower_and_raised_owner(segment)
         else {
             continue;
         };
-        if lower_owner.kind() != RoadSurfaceBandKind::Carriageway {
-            continue;
-        }
-        let Some(raised_owner) = owners
-            .iter()
-            .copied()
-            .find(|owner| segment.owner_matches_height_side(*owner, false))
-        else {
-            continue;
+        let step = NodeExportExplicitStep {
+            raised_owner,
+            start: segment.start(),
+            end: segment.end(),
+            lower_edges_start: 0,
+            lower_edges_end: 0,
         };
         lower_edges.extend(
             arrangement
@@ -178,19 +287,62 @@ fn explicit_step_lower_edges(
                 .filter_map(|edge| {
                     let start = arrangement.vertices().get(edge.start().index())?;
                     let end = arrangement.vertices().get(edge.end().index())?;
-                    Some(NodeExportExplicitStepLowerEdge {
-                        raised_owner,
-                        step_start: segment.start(),
-                        step_end: segment.end(),
-                        edge_start: start.key(),
-                        edge_end: end.key(),
-                        edge_start_height_mm: start.height_mm(),
-                        edge_end_height_mm: end.height_mm(),
-                    })
+                    Some((
+                        step,
+                        NodeExportLowerEdge {
+                            start: start.key(),
+                            end: end.key(),
+                            start_height_mm: start.height_mm(),
+                            end_height_mm: end.height_mm(),
+                        },
+                    ))
                 }),
         );
     }
     lower_edges
+}
+
+impl NodeExportLowerEdge {
+    fn lower_height_mm_at(self, key: arrangement::NodeArrangementKey) -> Option<i64> {
+        if !key.lies_on_segment(self.start, self.end) {
+            return None;
+        }
+        let parameter = segments::overlay_segment_parameter(
+            segments::arrangement_key(key),
+            segments::arrangement_key(self.start),
+            segments::arrangement_key(self.end),
+        )
+        .or_else(|| {
+            segments::exact_line_parameter(
+                segments::arrangement_key(key),
+                segments::arrangement_key(self.start),
+                segments::arrangement_key(self.end),
+            )
+        })?;
+        Some(segments::interpolate_height_i64(
+            self.start_height_mm,
+            self.end_height_mm,
+            parameter,
+        ))
+    }
+}
+
+// Returns the (lower, raised) owners of a step whose lower side is carriageway; other steps never
+// lift a raised vertex.
+fn explicit_step_lower_and_raised_owner(
+    segment: NodeExplicitVerticalStepSegment,
+) -> Option<(NodeBandOwner, NodeBandOwner)> {
+    let owners = [segment.owner(), segment.opposite_owner()];
+    let lower_owner = owners
+        .into_iter()
+        .find(|owner| segment.owner_matches_height_side(*owner, true))?;
+    if lower_owner.kind() != RoadSurfaceBandKind::Carriageway {
+        return None;
+    }
+    let raised_owner = owners
+        .into_iter()
+        .find(|owner| segment.owner_matches_height_side(*owner, false))?;
+    Some((lower_owner, raised_owner))
 }
 
 fn node_export_top_height_m(

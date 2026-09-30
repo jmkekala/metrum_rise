@@ -255,6 +255,56 @@ fn elevated_mixed_width_junction_matrix_preserves_exact_raw_polygon_identity() {
 }
 
 #[test]
+fn sloped_four_way_explicit_step_index_matches_full_scan() {
+    let terrain = generated_elevated_planar_terrain();
+    let (graph, center) = generated_multiway_junction_graph_with_edge_widths(
+        96.0,
+        &[0.0, 73.0, 180.0, 244.0],
+        &[7.0, 10.5, 5.5, 8.75],
+        GeneratedEdgeDirection::FromCenter,
+        GeneratedEditOrder::Forward,
+        GeneratedEndpointProfileMode::SolveJunctionEndpointProfiles,
+        |xz| generated_elevated_point_at_xz(&terrain, xz),
+        |start_xz, end_xz| generated_elevated_edge_points(&terrain, start_xz, end_xz),
+    );
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    for edge_idx in 0..graph.edge_count() {
+        surface.compiled_sections.insert(
+            edge_idx,
+            std::sync::Arc::new(surface.compile_edge_sections(&graph, edge_idx)),
+        );
+    }
+    for edge_idx in 0..graph.edge_count() {
+        let span_piece = surface.compile_visual_span_piece(&graph, &terrain, edge_idx);
+        surface.apply_span_compile_result(edge_idx, span_piece);
+    }
+    let input = surface
+        .visual_node_compile_input(&graph, center)
+        .expect("sloped four-way fixture must produce a JunctionN input");
+
+    // Test builds assert every lookup against the unindexed step x edge scan. Compiling on this
+    // thread lets the counts prove the fixture exercises both outcomes; the oblique mixed-width
+    // case is the sloped four-way whose raised vertices land on explicit-step lower edges.
+    crate::simulation::network::surface::node::take_explicit_step_match_stats();
+    let node_piece = surface.compile_visual_node_piece_from_input(&graph, &terrain, center, &input);
+    let (queries, matches) =
+        crate::simulation::network::surface::node::take_explicit_step_match_stats();
+
+    assert!(
+        node_piece.is_some(),
+        "sloped four-way junction must compile"
+    );
+    assert!(
+        matches > 0,
+        "no explicit-step lower-height match in {queries} lookups"
+    );
+    assert!(
+        matches < queries,
+        "every lookup matched ({queries}); fixture has no negatives"
+    );
+}
+
+#[test]
 fn elevated_mixed_profile_mode_junction_matrix_preserves_exact_raw_polygon_identity() {
     use GeneratedEdgeProfileMode::{Shoulder, SidewalkCurb};
 

@@ -1960,8 +1960,9 @@ a measured design choice, not an automatic consequence of moving validation into
 
 ### Preview compile bottlenecks (`ROAD-37`–`ROAD-42`)
 
-**Status: `ROAD-37` and `ROAD-38` done (2026-09-29); `ROAD-39`–`ROAD-42` open.** See
-[results](#road-37-and-road-38-results) below. A bottleneck analysis of the 10-case preview matrix (Road and
+**Status: `ROAD-37` and `ROAD-38` done (2026-09-29), `ROAD-39` done (2026-09-30); `ROAD-40`–`ROAD-42`
+open.** See [`ROAD-37`/`ROAD-38` results](#road-37-and-road-38-results) and
+[`ROAD-39` results](#road-39-results) below. A bottleneck analysis of the 10-case preview matrix (Road and
 terrain) on committed `HEAD` `dde35ee0` found that the frontend is no longer the limit. The Rust
 preview worker is. Its road stage (`road_ms`: prepare, junction/span compile, junction scene render)
 is 75–90% of worker time. A single four-way `JunctionN` compile takes about 30–38 ms on one thread.
@@ -2084,7 +2085,7 @@ for proportions only.
   for the process lifetime. **Exit:** with four global workers, `*_cross` frames over 33 ms and
   main-thread blocked time match the 24-worker run (≤ 2 frames); no worker-time regression at four or
   default workers.
-- **`ROAD-39` — Index explicit-step lower edges in node export (`refactor`, `P1`).** Bucket the lower
+- **`ROAD-39` — Index explicit-step lower edges in node export (`refactor`, `P1`, done).** Bucket the lower
   edges by raised owner, and by segment bounds if needed, when building the export context. Keep the
   exact `lies_on_segment` and height-parameter predicates. **Bound:** O(S log S) build; each query
   visits candidates instead of all S steps. **Exit:** identical export products, including a
@@ -2207,6 +2208,72 @@ therefore stays; lowering the allocation and free volume is `ROAD-40` work.
 - Godot suite logs.
 
 The libraries are in `rust/target/road37-38/lib/`.
+
+#### `ROAD-39` results
+
+**Implementation** (`rust/src/simulation/network/surface/node.rs`). The export context no longer
+materializes every explicit step × every edge of its lower carriageway owner. It keeps the steps sorted
+by raised owner, and each step holds a range into the lower edges, grouped once per lower owner. A
+raised-vertex query binary-searches its owner's steps, applies the exact `lies_on_segment` test to each,
+and scans lower-owner edges only for a step containing the vertex. Both predicates are unchanged, and the
+query is a boolean `any`, so order cannot reach the output. **Bound:** build O(S log S + E log E), down
+from O(S · E); query O(log S + S_owner + lower edges of the containing steps).
+
+**Correctness.** In test builds, every lookup is also answered by the unindexed step × edge product,
+built as before, and the two must agree. The whole suite runs with that check. The targeted test
+`sloped_four_way_explicit_step_index_matches_full_scan` compiles the oblique sloped four-way
+(0/73/180/244°, mixed widths) on the test thread, and a test-only counter shows both outcomes: 4 matches
+in 2,318 lookups. The symmetric sloped four-ways produce no matches, so they cannot serve as this check.
+
+**Evidence.** Build identity:
+- baseline: `HEAD` `310248e2` library, SHA-256 `3985b268…6cce442` (the `ROAD-37`/`ROAD-38` candidate);
+- candidate: `HEAD` plus `node.rs`, SHA-256 `7517c3d8…c95b4f`;
+- same GDScript for both, unchanged before and after every run.
+
+Workload as for `ROAD-37`/`ROAD-38`. Alternating unprofiled runs: three per side at default workers (24
+on this machine) and two per side with `RAYON_NUM_THREADS=4`. One `METRUM_DEBUG_PERF=1` diagnostic run per
+side, and one `METRUM_DEBUG=1 METRUM_DEBUG_FILTER=road` run per side for per-node `export_ms`. All 14
+captures passed `--validate`. An earlier baseline attempt failed in `flat_multi` setup because its water
+payloads never settled within 30 s. That run is kept as `base-wdef-a-failed`, and its rerun passed.
+Stationary and final product fields (packed bytes, chunk, layer and patch counts) are identical base
+versus candidate in all seven run pairs, 1,010 rows each.
+
+Per-node `JunctionN` export, road-debug run, default workers, milliseconds. Fixtures without logged
+`JunctionN` compiles are omitted:
+
+| Fixture | Compiles | `export_ms` median | `export_ms` p95 | `face_export_ms` median |
+| --- | --- | --- | --- | --- |
+| `sloped_multi` | 114 → 115 | 2.58 → 1.83 | 3.92 → 2.88 | 0.82 → 0.15 |
+| `flat_branch` | 274 → 277 | 2.33 → 1.96 | 6.45 → 3.48 | 0.45 → 0.14 |
+| `sloped_branch` | 248 → 257 | 4.18 → 2.36 | 11.00 → 3.56 | 1.82 → 0.21 |
+| `flat_cross` | 948 → 954 | 2.75 → 1.89 | 3.23 → 2.44 | 0.91 → 0.15 |
+| `sloped_cross` | 838 → 855 | 4.56 → 2.45 | 6.20 → 2.91 | 2.06 → 0.22 |
+
+- Diagnostic moving `worker_ms` medians fall in the junction-heavy fixtures: `sloped_cross`
+  65.1 → 63.1, `sloped_branch` 43.8 → 41.5, `flat_branch` 35.2 → 34.2 ms. Single-junction fixtures are
+  within ±1 ms. That is one diagnostic run per side, so it is a direction, not a range.
+- Acceptance runs at both worker settings are unchanged or better within run-to-run spread. At default
+  workers, `sloped_cross` moving age p50 falls 118.4–119.0 → 103.3–107.2 ms. At four workers, its
+  p95 falls 185.8–186.7 → 169.1–170.1 ms. Stop → exact stays frame-quantized and moves by a frame
+  either way. Frames over 33 ms stay 0–2 per fixture.
+- The exit is met: products are identical and `export_ms` is lower.
+
+**Checks.** Freshly run on the candidate:
+- `cargo test --release --lib`: 2,025 passed, 0 failed, 83 ignored, with the reference check live;
+- `cargo clippy`: no warnings in the changed files. The existing `mut_from_ref` error in
+  `economy/agents/tick/slices.rs` still fails the clippy build;
+- `cargo doc`: no missing docs.
+
+No GDScript changed, so the Godot suites were not rerun. The preview matrix exercised the bridge.
+
+**Artifacts:** `rust/target/road39/artifacts/`:
+- captures, logs and manifests: `{base,cand}-{wdef-{a,b,c,diag,road},w4-{a,b}}`, plus
+  `base-wdef-a-failed`;
+- scripts: `run_ab.py`, `summarize.py`;
+- results: `summary.txt`.
+
+The libraries are in `rust/target/road39/lib/`. The baseline library reads runtime data through its
+build path, so it needs the detached worktree `rust/target/road37-38/wt` at `310248e2`.
 
 **Artifacts:** `rust/target/preview-bottlenecks-artifacts/` holds:
 - captures, logs and manifests: `head-a`, `head-diag`, `r24-diag`, plus the per-case `prof-*`,

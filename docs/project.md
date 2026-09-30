@@ -231,8 +231,8 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Current Priorities
 
-- **Road preview display performance (`ROAD-30`–`ROAD-35`, `ROAD-37`, `ROAD-38` done; `ROAD-36`
-  parked; `ROAD-39`–`ROAD-42` open)**: prioritize **Road and terrain**. With input-to-display baselines captured, tackle native buffer validation, rendering
+- **Road preview display performance (`ROAD-30`–`ROAD-35`, `ROAD-37`–`ROAD-39` done; `ROAD-36`
+  parked; `ROAD-40`–`ROAD-42` open)**: prioritize **Road and terrain**. With input-to-display baselines captured, tackle native buffer validation, rendering
   resource reuse, retained geometry locality, packed payload deltas, worker scheduling and
   compatible mesh updates one at a time. Each step needs matched performance and correctness
   evidence. Keep Road only as a comparison; decide whether to retain both modes after measuring
@@ -258,7 +258,9 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
   pool, causing 40–103 hitch frames in the crossing fixtures with four workers. `ROAD-37` now frees the
   previous preview on a bounded reclaim thread after an O(1) swap, and the lock wait is gone. `ROAD-38`
   gives the preview worker its own Rayon pool, sized to the machine's logical CPUs. The four-worker
-  crossing hitches fall to zero with identical products. Next: `ROAD-39`–`ROAD-42` in order
+  crossing hitches fall to zero with identical products. `ROAD-39` indexes explicit-step lookups in
+  node export: junction `export_ms` roughly halves in crossings, with identical products. Next:
+  `ROAD-40`–`ROAD-42` in order
   ([findings and tasks](roads.md#preview-compile-bottlenecks-road-37road-42)).
   The Road only review follows those fixes.
   [Ordered plan and acceptance criteria](roads.md#preview-display-performance-plan-road-30road-36).
