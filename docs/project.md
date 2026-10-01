@@ -519,6 +519,10 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- `TOOLS-11`: pack rows in Options → Mods gain `Verify` (imported packs, against the kept
+  `checksums.sha256`), `Show folder` and `Remove…` (to Trash; drops the enabled entry; refused for
+  bundled packs and packs a running city uses). See
+  [installed pack actions](asset_editor.md#installed-pack-actions--tools-11).
 - `TOOLS-10`: Options → Mods gains `Import pack…`. It picks a `.metrum.zip`, refuses it unless the
   SHA-256 entered separately matches, and has Rust re-check every export rule, size limits and
   `checksums.sha256` off the main thread before staging and renaming the pack into `user://mods/`.

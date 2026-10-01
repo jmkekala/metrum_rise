@@ -54,6 +54,21 @@ pub(crate) fn pack_directory(mods: &Path, pack: &str) -> Result<PathBuf, String>
     Ok(directory)
 }
 
+/// Resolve an installed pack that may be moved to Trash. Bundled packs are refused: startup
+/// seeds them back whenever they are missing, so they are disabled instead.
+pub(crate) fn removal_target(
+    mods: &Path,
+    pack: &str,
+    bundled: &[String],
+) -> Result<PathBuf, String> {
+    if bundled.iter().any(|id| id == pack) {
+        return Err(format!(
+            "'{pack}' is bundled with the game and comes back at startup; disable it instead"
+        ));
+    }
+    pack_directory(mods, pack)
+}
+
 /// Validate and atomically replace a pack's editable metadata.
 pub(crate) fn update_pack(
     mods: &Path,
@@ -631,6 +646,26 @@ mod tests {
              bounding_size_m = [1.0, 1.0, 1.0]\nsnap_mode = \"free\"\nterrain_behavior = \"flat_ground\"\n\
              [[lods]]\nfile = \"model.gltf\"\ndistance_min_m = 0.0\n"
         )
+    }
+
+    #[test]
+    fn only_installed_user_packs_can_be_removed() {
+        let fixture = Fixture::new();
+        fixture.write("mods/user-pack/pack.toml", "");
+        fixture.write("mods/kenney/pack.toml", "");
+        let mods = fixture.0.join("mods");
+        let bundled = ["kenney".to_owned()];
+        assert_eq!(
+            removal_target(&mods, "user-pack", &bundled).unwrap(),
+            mods.join("user-pack")
+        );
+        assert!(
+            removal_target(&mods, "kenney", &bundled)
+                .unwrap_err()
+                .contains("bundled")
+        );
+        assert!(removal_target(&mods, "absent", &bundled).is_err());
+        assert!(removal_target(&mods, "../mods", &bundled).is_err());
     }
 
     #[test]

@@ -362,6 +362,14 @@ Import refuses, without changing `user://mods/`, when:
 
 Installing: entries are extracted into a hidden `user://mods/.import-<token>/` staging folder, verified, then renamed into place, so a failed import leaves nothing behind. The pack scanner and the pack list skip `.`-prefixed folders, so a staging folder left by a crash is never loaded. Such folders are removed at startup and before each import: staging names carry the creating process id, and a folder from another process is removed once it is an hour old, so a second game instance sharing the profile keeps the pack it is reviewing. Closing the dialog removes a staged pack. The archive is hashed again from the same open handle that is unzipped, so the verified bytes are the ones installed. A replaced pack moves to the system Trash first; if the rename then fails, the error says the previous copy is in Trash. `checksums.sha256` stays in the installed folder for post-install verification. Hashing, inspection and extraction run on the `WorkerThreadPool`; cost is linear in the archive's entries and bytes.
 
+### Installed pack actions — `TOOLS-11`
+
+Each row in Options → Mods carries three buttons (`godot/scripts/ui/pack_actions.gd`; Rust side in `rust/src/assets/archive/verify.rs` and `files::removal_target`):
+
+- `Verify` — shown only for packs that have a `checksums.sha256`, i.e. imported ones. On the `WorkerThreadPool`, every listed file is hashed (in parallel) and compared; the report lists files changed since import, missing files, and files the pack would now export that the checksums do not list (e.g. an added asset), plus the reason if the pack no longer validates. Unreferenced files such as drafts are not reported. Re-importing the archive restores the original files. Read-only; cost is O(listed files + bytes).
+- `Show folder` — opens `user://mods/<pack_id>/` in the system file manager.
+- `Remove…` — after confirmation, moves the pack folder to the system Trash and removes its `pack_id` from `active_packs.cfg`, keeping other unapplied checkbox changes. Refused for bundled packs (startup seeds them back, so they are disabled instead; the button is disabled with that reason) and, during gameplay, for packs enabled in `active_packs.cfg`. Eligibility is checked again on confirmation.
+
 ## Integrity, Corruption, And Authenticity
 
 The export pipeline supports pack hashing by default.

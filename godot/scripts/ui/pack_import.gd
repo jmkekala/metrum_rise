@@ -5,6 +5,8 @@
 ## the SHA-256 prompt and the confirmation, and keeps the work off the main thread.
 extends RefCounted
 
+const BackgroundTask = preload("res://scripts/core/background_task.gd")
+
 const MODS := "user://mods"
 const BUNDLED := "res://bootstrap/mods"
 
@@ -80,7 +82,7 @@ func open_archive(path: String) -> ConfirmationDialog:
 
 func _hash(dialog: ConfirmationDialog, state: Dictionary) -> void:
 	var path: String = state.path
-	state.actual = await _in_background(func(): return AssetAuthoringFiles.file_sha256(path))
+	state.actual = await BackgroundTask.run(host.get_tree(), func(): return AssetAuthoringFiles.file_sha256(path))
 	if is_instance_valid(dialog) and state.actual.has("error"):
 		_fail(dialog, state, "The archive cannot be read: " + str(state.actual.error))
 
@@ -110,7 +112,7 @@ func _confirm(dialog: ConfirmationDialog, state: Dictionary) -> void:
 	var mods := ProjectSettings.globalize_path(MODS)
 	var archive: String = state.path
 	var bundled := DirAccess.get_directories_at(BUNDLED)
-	var staged := await _in_background(func(): return AssetAuthoringFiles.stage_import(mods, archive, expected, bundled))
+	var staged := await BackgroundTask.run(host.get_tree(), func(): return AssetAuthoringFiles.stage_import(mods, archive, expected, bundled))
 	state.staging = str(staged.get("staging", ""))
 	if not is_instance_valid(dialog):
 		_discard(state)
@@ -181,15 +183,6 @@ func _discard(state: Dictionary) -> void:
 	var error := AssetAuthoringFiles.discard_import(ProjectSettings.globalize_path(MODS), state.staging)
 	if not error.is_empty(): push_warning("Could not remove import staging folder: " + error)
 	state.staging = ""
-
-# Runs `work` on the WorkerThreadPool and resumes on the main thread with its Dictionary.
-func _in_background(work: Callable) -> Dictionary:
-	var box := {}
-	var task := WorkerThreadPool.add_task(func(): box.result = work.call())
-	while not WorkerThreadPool.is_task_completed(task):
-		await host.get_tree().process_frame
-	WorkerThreadPool.wait_for_task_completion(task)
-	return box.get("result", {"error": "The background task returned no result."})
 
 func _label(body: VBoxContainer, text: String) -> Label:
 	var label := Label.new()

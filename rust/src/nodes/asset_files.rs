@@ -356,6 +356,42 @@ impl AssetAuthoringFiles {
         }
     }
 
+    /// Folder of an installed pack that may be moved to Trash; bundled ids are refused.
+    #[func]
+    pub fn inspect_pack_removal(
+        mods: GString,
+        pack: GString,
+        bundled: PackedStringArray,
+    ) -> VarDictionary {
+        let bundled: Vec<String> = bundled.as_slice().iter().map(GString::to_string).collect();
+        match files::removal_target(&native_path(mods), &pack.to_string(), &bundled) {
+            Ok(path) => vdict! { "path": path.to_string_lossy().as_ref() },
+            Err(error) => vdict! { "error": error },
+        }
+    }
+
+    /// Compare an installed pack with the `checksums.sha256` its import kept (`TOOLS-11`).
+    /// Native paths; safe on a worker thread.
+    #[func]
+    pub fn verify_installed_pack(mods: GString, pack: GString) -> VarDictionary {
+        let list = |paths: Vec<String>| {
+            paths
+                .iter()
+                .map(GString::from)
+                .collect::<PackedStringArray>()
+        };
+        match archive::verify(Path::new(&mods.to_string()), &pack.to_string()) {
+            Ok(report) => vdict! {
+                "files": report.files as i64,
+                "changed": list(report.changed),
+                "missing": list(report.missing),
+                "extra": list(report.extra),
+                "invalid": report.invalid.unwrap_or_default(),
+            },
+            Err(error) => vdict! { "error": error },
+        }
+    }
+
     /// Remove import staging folders an earlier process left behind (e.g. after a crash).
     #[func]
     pub fn sweep_imports(mods: GString) {

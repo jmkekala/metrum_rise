@@ -10,7 +10,7 @@
 //!
 //! [`asset_files`]: super::asset_files
 
-use super::{CHECKSUMS, hash_copy, inventory};
+use super::{CHECKSUMS, hash_copy, inventory, parse_checksums};
 use crate::assets::{PackManifest, authoring::files};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
@@ -261,35 +261,25 @@ fn extract(
     Ok(sums)
 }
 
-// `checksums.sha256` must list every other extracted entry once, sorted, with its real hash.
+// `checksums.sha256` must list every other extracted entry once, with its real hash.
 fn verify_checksums(root: &Path, sums: &BTreeMap<String, String>) -> Result<(), String> {
     let text = fs::read_to_string(root.join(CHECKSUMS))
         .map_err(|_| format!("{CHECKSUMS} is missing or not UTF-8"))?;
-    let mut listed = Vec::new();
-    for line in text.lines() {
-        let (digest, path) = line
-            .split_once("  ")
-            .ok_or_else(|| format!("{CHECKSUMS}: malformed line '{line}'"))?;
-        match sums.get(path) {
-            Some(actual) if path != CHECKSUMS && *actual == digest => listed.push(path),
-            Some(_) if path != CHECKSUMS => {
-                return Err(format!("{path} does not match {CHECKSUMS}"));
-            }
-            _ => {
+    let listed = parse_checksums(&text)?;
+    for (path, digest) in &listed {
+        match sums.get(*path) {
+            Some(actual) if actual == digest => {}
+            Some(_) => return Err(format!("{path} does not match {CHECKSUMS}")),
+            None => {
                 return Err(format!(
                     "{CHECKSUMS} lists {path}, which is not in the archive"
                 ));
             }
         }
     }
-    if !listed.is_sorted_by(|a, b| a < b) {
-        return Err(format!(
-            "{CHECKSUMS} must list each file once, sorted by path"
-        ));
-    }
     if let Some(missing) = sums
         .keys()
-        .find(|path| *path != CHECKSUMS && listed.binary_search(&path.as_str()).is_err())
+        .find(|path| *path != CHECKSUMS && !listed.contains_key(path.as_str()))
     {
         return Err(format!("{missing} is not listed in {CHECKSUMS}"));
     }

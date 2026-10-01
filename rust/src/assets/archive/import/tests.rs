@@ -238,7 +238,10 @@ fn sweep_removes_only_stale_staging_from_other_processes() {
     for name in [".import-1-0", ".import-2-0", &own, "kept-pack", ".other"] {
         fs::create_dir_all(mods.join(name).join("p")).unwrap();
         if name != ".import-2-0" {
-            File::open(mods.join(name)).unwrap().set_modified(old).unwrap();
+            File::open(mods.join(name))
+                .unwrap()
+                .set_modified(old)
+                .unwrap();
         }
     }
     sweep(&mods);

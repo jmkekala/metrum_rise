@@ -7,12 +7,14 @@
 ## starter pack; an explicitly saved empty list disables all packs.
 ##
 ## Pack loading happens in buildings.gd via load_asset_packs(). This script manages the
-## config file and the UI; `Import pack…` hands share archives to pack_import.gd.
+## config file and the UI; `Import pack…` hands share archives to pack_import.gd, and the
+## per-pack Verify / Show folder / Remove buttons go through pack_actions.gd.
 extends VBoxContainer
 
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const ModPackConfig = preload("res://scripts/core/mod_pack_config.gd")
 const PackImport = preload("res://scripts/ui/pack_import.gd")
+const PackActions = preload("res://scripts/ui/pack_actions.gd")
 
 const MODS_DIR := "user://mods/"
 
@@ -24,6 +26,7 @@ var _initial_enabled: Array = []
 var _list: VBoxContainer
 var _status_label: Label
 var importer: PackImport
+var actions: PackActions
 
 func _ready() -> void:
 	_build_ui()
@@ -45,6 +48,9 @@ func _build_ui() -> void:
 	importer = PackImport.new(self)
 	importer.pack_in_use = _pack_in_use
 	importer.installed.connect(_on_pack_installed)
+	actions = PackActions.new(self)
+	actions.pack_in_use = _pack_in_use
+	actions.removed.connect(_on_pack_removed)
 	var import_btn := Button.new()
 	import_btn.name = "ImportPack"
 	import_btn.text = "Import pack…"
@@ -105,7 +111,9 @@ func reset_defaults() -> void:
 	_emit_dirty_state()
 
 func _refresh_list(list: VBoxContainer) -> void:
+	# Detach at once so rebuilt rows keep their pack_id names.
 	for child in list.get_children():
+		list.remove_child(child)
 		child.queue_free()
 	_checks.clear()
 
@@ -145,6 +153,17 @@ func _on_pack_installed(pack_id: String, replaced: bool) -> void:
 	var message := "Imported %s." % pack_id
 	if not replaced and _forget_enabled(pack_id) != OK:
 		message += " Could not update the active pack selection; uncheck it and apply."
+	_reload(message)
+
+func _on_pack_removed(pack_id: String) -> void:
+	var message := "Moved %s to Trash." % pack_id
+	if _forget_enabled(pack_id) != OK:
+		message += " Could not update the active pack selection."
+	_initial_enabled.erase(pack_id)
+	_reload(message)
+
+# Rebuilds the list after an install or removal without losing unapplied checkbox changes.
+func _reload(message: String) -> void:
 	var pending := _selected_pack_ids()
 	_refresh_list(_list)
 	for id in _checks:
@@ -167,6 +186,7 @@ func _pack_in_use(pack_id: String) -> bool:
 
 func _add_pack_row(list: VBoxContainer, pack_id: String, meta: Dictionary, enabled: bool) -> void:
 	var panel := PanelContainer.new()
+	panel.name = pack_id
 	var style := StyleBoxFlat.new()
 	style.bg_color = Color(0.15, 0.15, 0.15, 1.0)
 	style.set_corner_radius_all(6)
@@ -205,6 +225,26 @@ func _add_pack_row(list: VBoxContainer, pack_id: String, meta: Dictionary, enabl
 	detail.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
 	UIStyle.set_font_size(detail, 11)
 	info.add_child(detail)
+
+	var verify := _row_button(hbox, "Verify", "Verify", "Check the files against the checksums saved when the pack was imported.")
+	verify.visible = actions.can_verify(pack_id)
+	verify.pressed.connect(actions.verify_dialog.bind(pack_id))
+	var folder := _row_button(hbox, "ShowFolder", "Show folder", "Open the pack folder in the file manager.")
+	folder.pressed.connect(actions.show_folder.bind(pack_id))
+	var remove := _row_button(hbox, "Remove", "Remove…", "Move the pack to the system Trash.")
+	if actions.is_bundled(pack_id):
+		remove.disabled = true
+		remove.tooltip_text = "Bundled with the game and restored at startup; uncheck it to disable it instead."
+	remove.pressed.connect(func(): actions.remove_dialog(pack_id, func(text: String): _status_label.text = text))
+
+func _row_button(row: HBoxContainer, node_name: String, text: String, tooltip: String) -> Button:
+	var button := Button.new()
+	button.name = node_name
+	button.text = text
+	button.tooltip_text = tooltip
+	button.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(button)
+	return button
 
 func _read_pack_meta(path: String) -> Dictionary:
 	var meta: Dictionary = {}

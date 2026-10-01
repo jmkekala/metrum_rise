@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! Share archives (`TOOLS-09`): a pack's referenced file set and its deterministic zip.
-//! Import (`TOOLS-10`) lives in [`import`] and re-checks every rule export enforces.
+//! Import (`TOOLS-10`) lives in [`import`] and re-checks every rule export enforces;
+//! [`verify`] checks an installed pack against the checksums import kept (`TOOLS-11`).
 //!
 //! [`asset_files`] is the single definition of what an installed asset consists of.
 //! Publication checks its staged asset against it and export packages exactly it, so the
@@ -20,7 +21,9 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
 mod import;
+mod verify;
 pub(crate) use import::{Installed, commit, discard, expected_sha256, sha256, stage, sweep};
+pub(crate) use verify::verify;
 
 const CHECKSUMS: &str = "checksums.sha256";
 
@@ -327,6 +330,34 @@ fn hash_copy(
         hasher.update(&buffer[..count]);
         sink(&buffer[..count])?;
     }
+}
+
+// Parse `checksums.sha256` as export writes it: `<sha256 hex>  <path>` lines, each path safe,
+// relative to the pack root, listed once and sorted. Returns path -> digest.
+fn parse_checksums(text: &str) -> Result<BTreeMap<&str, &str>, String> {
+    let mut listed = BTreeMap::new();
+    let mut previous = "";
+    for line in text.lines() {
+        let (digest, path) = line
+            .split_once("  ")
+            .filter(|(digest, path)| {
+                digest.len() == 64
+                    && digest
+                        .bytes()
+                        .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+                    && files::safe_relative(path)
+                    && *path != CHECKSUMS
+            })
+            .ok_or_else(|| format!("{CHECKSUMS}: malformed line '{line}'"))?;
+        if path <= previous {
+            return Err(format!(
+                "{CHECKSUMS} must list each file once, sorted by path"
+            ));
+        }
+        previous = path;
+        listed.insert(path, digest);
+    }
+    Ok(listed)
 }
 
 fn hex(bytes: &[u8]) -> String {
