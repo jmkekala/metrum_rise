@@ -79,8 +79,17 @@ func _run() -> void:
 		# This tiny disc covers only the generator candidate: its standing tree must not
 		# acquire a duplicate when repainted.
 		_expect(simulation.paint_vegetation(second, 0.01, 0, 0) == 0, "a standing tree must not be repainted")
-	_expect(simulation.paint_vegetation(Vector2(-80.0, -80.0), 64.0, 1, 0) > 750, "brush must fill its dense lattice across existing forest")
-	_expect(simulation.paint_vegetation(Vector2(-80.0, -80.0), 64.0, 1, 0) == 0, "repeated brush must not stack plants")
+	# One stamp adds 10 stems/ha of its 1.29 ha disc. Repeats thicken the stand to the preset's
+	# density and then add nothing, so held stamps never stack plants.
+	_expect(simulation.paint_vegetation(Vector2(-80.0, -80.0), 64.0, 1, 0) == 13, "one stamp must add a thin share")
+	var stand := 13
+	for i in range(200):
+		var added := simulation.paint_vegetation(Vector2(-80.0, -80.0), 64.0, 1, 0)
+		stand += added
+		if added == 0:
+			break
+	_expect(stand > 400, "repeated stamps must add a spaced stand across existing forest")
+	_expect(simulation.paint_vegetation(Vector2(-80.0, -80.0), 64.0, 1, 0) == 0, "a full stand must not stack plants")
 
 	var tool := VegetationTool.new()
 	tool.name = "VegetationTool"
@@ -124,6 +133,19 @@ func _run() -> void:
 	tool.mode = VegetationTool.Mode.PLANT
 	_expect(tool.radius == 256.0, "switching to planting must clamp the preview radius")
 	_expect(simulation.paint_vegetation(Vector2.ZERO, 256.01, 0, 0) == 0, "native brush must reject oversized stamps")
+	tool.option_index = 4
+	_expect(tool.radius == 64.0, "bush selection must clamp to the native ground-cover budget")
+	_expect(simulation.paint_vegetation(Vector2.ZERO, 64.01, 2, 0) == 0, "native ground-cover cap must reject oversized stamps")
+	# A hedge option lays a row between two ends rather than stamping, and a redrawn row stacks nothing.
+	for index in range(VegetationTool.BRUSH_OPTIONS.size()):
+		if VegetationTool.BRUSH_OPTIONS[index].get("line", false):
+			tool.option_index = index
+			break
+	_expect(tool.is_line_option(), "a hedge option must lay rows")
+	var row := tool.apply_line(Vector2(-150.0, 150.0), Vector2(-138.0, 150.0), 41)
+	_expect(row == 12, "a 12 m hedge must lay twelve modules, got %d" % row)
+	_expect(tool.apply_line(Vector2(-150.0, 150.0), Vector2(-138.0, 150.0), 42) == 0, "a redrawn hedge must not stack")
+	tool.option_index = 0
 	# An open species dropdown is an embedded subwindow holding the input grab, and the click
 	# that dismisses it also reaches the tool. That click must dismiss and nothing else, or
 	# picking a species costs the player a tree wherever the cursor happened to rest.
@@ -234,7 +256,7 @@ func _run() -> void:
 			pinned += 1
 			_expect(packed & Vegetation.SPECIES_MASK == TreeSpecies.CONIFER,
 				"a named %s must pack as a conifer" % tree)
-			_expect(TreeSpecies._is_pine(pin - 1) == named[1],
+			_expect(TreeSpecies.canopy_model(TreeSpecies.CONIFER, pin - 1).begins_with("pine_") == named[1],
 				"a %s stroke planted a mesh that is not a %s" % [tree, tree])
 		_expect(pinned > 0, "a %s stroke must pin the meshes it planted" % tree)
 

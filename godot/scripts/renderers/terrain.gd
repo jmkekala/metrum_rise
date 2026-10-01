@@ -22,6 +22,7 @@ signal patches_will_reset
 
 const TERRAIN_SHADER := preload("res://assets/materials/terrain.gdshader")
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
+const TreeSpecies := preload("res://scripts/renderers/tree_species.gd")
 const PerfDebug := preload("res://scripts/core/perf_debug.gd")
 const RenderDebug := preload("res://scripts/renderers/render_debug.gd")
 const WorldMaterials := preload("res://scripts/renderers/world_materials.gd")
@@ -79,6 +80,7 @@ const RETAINING_WALL_COLOR := Color(0.54, 0.54, 0.50)
 const RETAINING_WALL_ROUGHNESS := 0.88
 const PATCH_RESIDENCY_CULL_FAR_M := 8000.0
 const PATCH_EXTRA_CULL_MARGIN_M := 4096.0
+const PATCH_CULL_PAD_M := 64.0
 const TERRAIN_DEBUG_LOG_INTERVAL_S := 0.5
 const PATCH_RESIDENCY_HYSTERESIS_PATCHES := 2
 const PATCH_RESIDENCY_MUTATION_MAX_PER_FRAME := 256
@@ -155,6 +157,10 @@ var handled_bad_cdt_patch_failures: Dictionary = {}
 var patch_mesh_cache: Dictionary = {}
 var patch_resource_pool: Array[Dictionary] = []
 var patch_prewarm_queue: Array[Vector2i] = []
+# Count of payload commits over all patches. See get_surface_commit_revision.
+var _surface_commit_revision := 0
+# Land cover epoch at which every built patch was last found current, or -1 for none.
+var _land_cover_clean_epoch := -1
 var patch_lod_refresh_queue: Array[Vector2i] = []
 var patch_lod_refresh_lookup: Dictionary = {}
 var water_texture_sync_queue: Array[Vector2i] = []
@@ -523,6 +529,12 @@ func get_visibility_cull_far_m(camera: Camera3D) -> float:
 func get_render_patch_span_m() -> float:
 	return patch_span_m
 
+## Advances whenever any patch commits a payload, so a consumer of get_patch_surface_generation
+## can skip its per-patch comparison while this is unchanged. Never reset: an old value can
+## only cause one redundant comparison, never a missed one.
+func get_surface_commit_revision() -> int:
+	return _surface_commit_revision
+
 func get_patch_surface_generation(key: Vector2i) -> int:
 	# The generation stamped on the payload this patch last committed. It advances only
 	# when a road/terrain edit dirties this patch, so consumers can detect a stale
@@ -703,6 +715,7 @@ func _sync_patch_residency(
 		return false
 
 	_sort_patch_keys_by_camera_priority(keys_to_add)
+	keys_to_add = _patch_keys_in_view_first(keys_to_add)
 	_sort_patch_keys_by_camera_priority(keys_to_remove)
 	keys_to_remove.reverse()
 	_request_terrain_patch_payloads(keys_to_add, PATCH_PAYLOAD_REQUEST_BUDGET_PER_FRAME)
@@ -823,9 +836,21 @@ func _desired_patch_bounds() -> Dictionary:
 
 	return _camera_patch_bounds(camera)
 
+## Residency is every patch within the cull distance in every direction, not only in view.
+## A frustum-derived set dropped what a turn brought into view, and a quick 90 degree turn then
+## built about 300 patches at about 5 per frame, so the distance filled in for about 2.5 s.
+## Godot's frustum culling already skips drawing the patches behind the camera. The set only
+## changes when the camera crosses a patch, and it holds what one look around already held,
+## because a patch that left the view was hidden, not freed.
 func _camera_patch_bounds(camera: Camera3D) -> Dictionary:
 	var cull_far := get_visibility_cull_far_m(camera)
 	_terrain_debug_last_cull_far_m = cull_far
+	var centre := Vector2(camera.global_position.x, camera.global_position.z)
+	return _world_patch_bounds(centre - Vector2.ONE * cull_far, centre + Vector2.ONE * cull_far)
+
+## The ground footprint of the view, which orders loading so the patches in view come first.
+func _camera_view_patch_bounds(camera: Camera3D) -> Dictionary:
+	var cull_far := get_visibility_cull_far_m(camera)
 	var viewport_size := get_viewport().get_visible_rect().size
 	var corners := [
 		Vector2.ZERO,
@@ -848,14 +873,17 @@ func _camera_patch_bounds(camera: Camera3D) -> Dictionary:
 		max_x = max(max_x, point.x)
 		min_z = min(min_z, point.z)
 		max_z = max(max_z, point.z)
+	return _world_patch_bounds(Vector2(min_x, min_z), Vector2(max_x, max_z))
 
+## Patch bounds covering a world-space XZ rectangle, padded by one patch, clamped to the world.
+func _world_patch_bounds(min_xz: Vector2, max_xz: Vector2) -> Dictionary:
 	var pad := patch_span_m
 	var half_world_w := terrain_world_size.x * 0.5
 	var half_world_h := terrain_world_size.y * 0.5
-	var min_patch_x := clampi(int(floor((min_x - pad + half_world_w) / patch_span_m)), 0, patch_cols - 1)
-	var max_patch_x := clampi(int(floor((max_x + pad + half_world_w) / patch_span_m)), 0, patch_cols - 1)
-	var min_patch_z := clampi(int(floor((min_z - pad + half_world_h) / patch_span_m)), 0, patch_rows - 1)
-	var max_patch_z := clampi(int(floor((max_z + pad + half_world_h) / patch_span_m)), 0, patch_rows - 1)
+	var min_patch_x := clampi(int(floor((min_xz.x - pad + half_world_w) / patch_span_m)), 0, patch_cols - 1)
+	var max_patch_x := clampi(int(floor((max_xz.x + pad + half_world_w) / patch_span_m)), 0, patch_cols - 1)
+	var min_patch_z := clampi(int(floor((min_xz.y - pad + half_world_h) / patch_span_m)), 0, patch_rows - 1)
+	var max_patch_z := clampi(int(floor((max_xz.y + pad + half_world_h) / patch_span_m)), 0, patch_rows - 1)
 	return {
 		"min_x": min_patch_x,
 		"max_x": max_patch_x,
@@ -917,7 +945,10 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 
 	var patch_node: MeshInstance3D = patch_resources["node"] as MeshInstance3D
 	patch_node.name = "TerrainPatch_%d_%d" % [key.x, key.y]
-	patch_node.extra_cull_margin = PATCH_EXTRA_CULL_MARGIN_M
+	# The heightmap moves vertices in the shader, so the mesh bounds do not hold the surface.
+	# A margin on every axis kept patches 4 km behind the camera drawn; only height is unknown.
+	patch_node.extra_cull_margin = 0.0
+	patch_node.custom_aabb = patch_cull_aabb(Vector2(world_size_x, world_size_z))
 	patch_node.mesh = patch_mesh
 	patch_node.visible = false
 	patch_node.position = Vector3(
@@ -966,6 +997,7 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 	)
 	SceneLightingConfig.apply_ground_shadow_parameters(material)
 	SceneLightingConfig.apply_canopy_floor_shading(material)
+	TreeSpecies.apply_far_canopy(material)
 	material.set_shader_parameter("heightmap_texture_size", Vector2(texture_width, texture_height))
 	material.set_shader_parameter("inner_sample_offset_texels", Vector2(inner_offset_x, inner_offset_z))
 	material.set_shader_parameter("inner_sample_size_texels", Vector2(sample_width, sample_height))
@@ -1059,6 +1091,7 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 		"engineered_bad_cdt_blocked": false,
 		"last_patch_data": patch_data,
 	}
+	_surface_commit_revision += 1
 
 	patches[key]["land_cover"] = patch_resources.get("land_cover", {})
 	patches[key]["spare_land_cover"] = patch_resources.get("spare_land_cover", {})
@@ -1256,6 +1289,7 @@ func _commit_staged_patch_data(
 	patch["spare_height_texture_width"] = old_texture_width
 	patch["spare_height_texture_height"] = old_texture_height
 	patch["last_patch_data"] = patch_data
+	_surface_commit_revision += 1
 	_commit_patch_land_cover(patch, stage["land_cover"])
 	patch["engineered_bad_cdt_blocked"] = false
 	_clear_bad_cdt_generation_handled(key)
@@ -1343,6 +1377,7 @@ func _commit_staged_patch_data(
 func _block_engineered_patch_until_valid_cdt(patch: Dictionary) -> void:
 	patch["engineered_bad_cdt_blocked"] = true
 	patch["last_patch_data"] = {}
+	_surface_commit_revision += 1
 	patch["height_is_baked"] = true
 	var patch_node: MeshInstance3D = patch.get("node", null) as MeshInstance3D
 	if patch_node != null:
@@ -1493,6 +1528,8 @@ func _clear_patches() -> void:
 	patch_payload_road_generation = -1
 	pending_terrain_ack_states = PackedInt64Array()
 	patch_prewarm_queue.clear()
+	# A load restarts both epoch counters, so an old value could match a new world.
+	_land_cover_clean_epoch = -1
 	patch_lod_refresh_queue.clear()
 	patch_lod_refresh_lookup.clear()
 	_terrain_lod_refresh_camera_valid = false
@@ -1571,6 +1608,15 @@ func _release_terrain_patch_resources(patch: Dictionary) -> void:
 		"spare_height_texture_height": int(patch.get("spare_height_texture_height", 0)),
 	})
 	_terrain_resource_pool_release_count += 1
+
+## Culling bounds for a patch centred on its node: its own footprint with a small pad for
+## skirts, and the full height margin, because a sculpted height has no cached range.
+static func patch_cull_aabb(size_xz: Vector2) -> AABB:
+	var half := size_xz * 0.5 + Vector2.ONE * PATCH_CULL_PAD_M
+	return AABB(
+		Vector3(-half.x, -PATCH_EXTRA_CULL_MARGIN_M, -half.y),
+		Vector3(half.x * 2.0, PATCH_EXTRA_CULL_MARGIN_M * 2.0, half.y * 2.0)
+	)
 
 func _new_terrain_patch_resources() -> Dictionary:
 	var patch_node := MeshInstance3D.new()
@@ -1654,14 +1700,20 @@ func _commit_patch_land_cover(patch: Dictionary, stage: Dictionary) -> void:
 	material.set_shader_parameter("land_cover_world_bounds", stage["world_bounds"])
 
 func _sync_land_cover() -> void:
-	# O(resident patches), nine pairs of existing revisions per patch. No candidate queries
-	# until either stream moves; budget the independent plant-edit path to one upload/frame.
+	# O(1) while no revision moved: the epoch advances with either stream, and a patch built
+	# since the last walk stamped the generations current at its build. Otherwise O(built
+	# patches), nine pairs of existing revisions per patch, one upload per frame.
+	var epoch: int = simulation_node.get_land_cover_epoch()
+	if epoch == _land_cover_clean_epoch:
+		return
 	for key: Vector2i in patches:
 		var patch: Dictionary = patches[key]
 		var current: Dictionary = patch["land_cover"]
 		if not simulation_node.is_vegetation_land_cover_current(key, current["generations"]):
 			_commit_patch_land_cover(patch, _stage_patch_land_cover(key, patch))
 			return
+	# Read before the walk, so a revision that moved during it is walked again next frame.
+	_land_cover_clean_epoch = epoch
 
 func _upload_terrain_patch_height_texture(
 	resources: Dictionary,
@@ -1758,6 +1810,23 @@ func _time_budget_exhausted(start_us: int, budget_ms: float, completed_count: in
 
 func _terrain_frame_headroom_available(frame_start_us: int, start_budget_ms: float) -> bool:
 	return float(Time.get_ticks_usec() - frame_start_us) / 1000.0 < start_budget_ms
+
+## O(keys). Keeps the distance order within the patches in view and within the rest.
+func _patch_keys_in_view_first(keys: Array[Vector2i]) -> Array[Vector2i]:
+	var viewport := get_viewport()
+	var camera := viewport.get_camera_3d() if viewport != null else null
+	if camera == null or _terrain_force_full_world:
+		return keys
+	var view := _camera_view_patch_bounds(camera)
+	var in_view: Array[Vector2i] = []
+	var rest: Array[Vector2i] = []
+	for key in keys:
+		if _patch_key_in_bounds(key, view):
+			in_view.append(key)
+		else:
+			rest.append(key)
+	in_view.append_array(rest)
+	return in_view
 
 func _sort_patch_keys_by_camera_priority(keys: Array[Vector2i]) -> void:
 	if keys.size() <= 1:

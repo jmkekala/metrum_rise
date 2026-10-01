@@ -343,6 +343,21 @@ Current WorldEditor shortcuts:
 | F12        | Add 1,000,000 money and lock R/C/I demand at 100% |
 | 7 / 8 / 9 / 0 / - | Overlay modes |
 
+**Camera** (owned by `input_manager.gd`):
+
+| Input | Action |
+|-------|--------|
+| Middle Mouse drag | Orbit camera |
+| Alt+Left Mouse drag (Option on macOS) | Orbit camera, for a touchpad with no middle button |
+| Mouse Wheel | Zoom camera, one step per notch |
+| Two-finger scroll (touchpad) | Zoom camera, in fractions of a step |
+| Pinch (touchpad) | Zoom camera by the pinch factor |
+
+Godot 4.7.1 dispatches each touchpad gesture twice, so `input_manager.gd` consumes the repeated
+copy before any handler sees it. The vegetation brush takes Ctrl (radius) and Shift (option) with
+the wheel or a two-finger scroll. macOS turns Shift with a vertical scroll into a horizontal one,
+so wheel left and right step the brush like wheel up and down.
+
 ---
 
 ### 3. Selection Windows

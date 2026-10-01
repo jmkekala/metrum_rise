@@ -270,8 +270,8 @@ pub fn unit(x: i32, z: i32, salt: u32) -> f32 {
     (hash(x, z, salt) >> 8) as f32 / 16_777_216.0
 }
 
-// One octave of smoothed value noise on the integer lattice, in [0, 1).
-fn value_noise(x: f32, z: f32, salt: u32) -> f32 {
+/// One octave of smoothed value noise on the integer lattice, in [0, 1).
+pub(crate) fn value_noise(x: f32, z: f32, salt: u32) -> f32 {
     let (fx, fz) = (x.floor(), z.floor());
     let (ix, iz) = (fx as i32, fz as i32);
     // Smoothstep the cell-local fraction so stand edges curve instead of showing the lattice.

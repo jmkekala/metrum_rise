@@ -40,8 +40,8 @@ def distant_coverage():
     return float(re.search(r"uniform float crown_coverage[^;]*=\s*([0-9.]+);", source)[1])
 
 
-def atlas_mips():
-    data = (ROOT / "godot/assets/textures/vegetation/foliage_atlas.dds").read_bytes()
+def atlas_mips(path="res://assets/textures/vegetation/foliage_atlas.dds"):
+    data = (ROOT / "godot" / path.removeprefix("res://")).read_bytes()
     header = struct.unpack_from("<31I", data, 4)
     assert data[:4] == b"DDS " and header[0] == 124 and header[21] == 32
     h, w, count = header[2], header[3], header[6]
@@ -231,7 +231,7 @@ def measure(meshes, height, mips, elevation=45.):
 def summarize(rows):
     result = []
     for species in (0, 1):
-        for lod in range(3):
+        for lod in sorted({r["lod"] for r in rows if r["species"] == species}):
             for mode in MODES:
                 group = [r for r in rows if (r["species"], r["lod"], r["mode"]) == (species, lod, mode)]
                 result.append(dict(species=species, lod=lod, mode=mode, samples=len(group),

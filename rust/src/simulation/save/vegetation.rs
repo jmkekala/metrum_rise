@@ -154,8 +154,8 @@ mod tests {
     #[test]
     fn a_pin_past_the_renderer_s_variants_is_rejected_rather_than_drawn_as_nothing() {
         let mut edits = VegetationEdits::default();
-        // Bush models six variants, so a biased pin of seven names a mesh that does not exist.
-        edits.add(cell(2), plant(2, 7));
+        // Rock models six variants, so a biased pin of seven names a mesh that does not exist.
+        edits.add(cell(2), plant(3, 7));
         let mut conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(SCHEMA).unwrap();
         let tx = conn.transaction().unwrap();

@@ -53,12 +53,33 @@ uniform vec3 scene_shadow_split_distances_m = vec3(144.0, 396.0, 900.0);
 uniform float ground_shadow_ambient = 0.64;
 uniform float ground_shadow_sun_strength = 0.36;
 uniform float ground_shadow_min_visibility = 0.10;
-// Forest-floor shading past the shadow cascades. See CANOPY_FLOOR_SHADE_FLOOR in
-// scene_lighting.gd; the crown half of the same term lives in vegetation_wind.gdshaderinc.
+// Forest-floor shading past the shadow cascades; the crown half of the same term lives in
+// vegetation_wind.gdshaderinc.
 uniform float canopy_floor_shade_begin_m = 327.6;
 uniform float canopy_floor_shade_end_m = 420.0;
-uniform float canopy_floor_shade_floor : hint_range(0.0, 1.0) = 0.51;
 uniform float canopy_floor_shade : hint_range(0.0, 2.0) = 1.0;
+// Share of the sky light a floor under closed crowns still receives, through and off the
+// crowns. See CANOPY_FLOOR_SKY_TRANSMISSION in scene_lighting.gd.
+uniform float canopy_floor_sky_transmission : hint_range(0.0, 1.0) = 1.0;
+// Crown coverage of an 8 m texel below which the floor stays meadow, and at which it becomes
+// full forest floor. A lone crown peaks near 0.45 and a closed stand near 1.
+const float CANOPY_FLOOR_OPEN_COVER = 0.35;
+const float CANOPY_FLOOR_CLOSED_COVER = 0.7;
+// Past the distance the trees stop being drawn, the ground stands in for the crowns on it. Set
+// from tree_species.gd; the defaults leave the term off.
+uniform float canopy_far_begin_m = 1.0e9;
+uniform float canopy_far_end_m = 1.0e9;
+// Crown area seen from the side over crown area seen from above.
+uniform float canopy_far_side_ratio = 1.0;
+uniform vec3 canopy_far_albedo = vec3(0.12, 0.13, 0.05);
+// Relative crown-to-crown albedo spread of the stand-in; see CANOPY_FAR_SPECKLE in
+// tree_species.gd. Zero draws one flat albedo.
+uniform float canopy_far_speckle = 0.0;
+// World cell of the speckle, about one far crown across once CROWN_GROWTH has grown it.
+const float CANOPY_FAR_SPECKLE_CELL_M = 8.0;
+// Per-channel response of the speckle: a bright cell turns yellow like a sunlit birch and a dark
+// one blue like a spruce in shade, while the stand's mean stays on canopy_far_albedo.
+const vec3 CANOPY_FAR_SPECKLE_TILT = vec3(1.2, 1.0, 0.73);
 uniform vec2 heightmap_texture_size = vec2(256.0, 256.0);
 uniform vec2 inner_sample_offset_texels = vec2(1.0, 1.0);
 uniform vec2 inner_sample_size_texels = vec2(2.0, 2.0);
@@ -556,6 +577,18 @@ void fragment() {
 		vec2 cover_uv = (var_world_pos.xz - land_cover_world_bounds.xy)
 			/ max(land_cover_world_bounds.zw, vec2(0.001));
 		float land_cover = texture(land_cover_texture, cover_uv).r;
+		// A lone crown fills at most about 0.45 of its 8 m texel, and bilinear filtering spreads it
+		// over 16 m. Its own shadow is smaller than that and lies off to one side, so as floor it
+		// drew a blurred brown disc larger than the tree. Litter and shade therefore follow only
+		// ground where crowns close up; a closed stand saturates near 1 and keeps its full floor.
+		float floor_cover = land_cover * smoothstep(CANOPY_FLOOR_OPEN_COVER, CANOPY_FLOOR_CLOSED_COVER, land_cover);
+		// Sky light that reaches the ground under the published crown coverage. A crown blocks a
+		// sight line to the sky as it blocks one from a far camera (see the far canopy term below),
+		// and averaging that gap over the cosine-weighted sky gives (1 - cover) squared to within
+		// 0.3 of the exponent for any coverage. Crowns are not opaque to sky light, so a closed
+		// canopy still passes its transmission share.
+		float sky_gap = (1.0 - land_cover) * (1.0 - land_cover);
+		float floor_sky = mix(canopy_floor_sky_transmission, 1.0, sky_gap);
 		float world_elevation = h * height_scale;
 		float macro_mask = macro_variation(var_world_pos.xz);
 		float local_relief = sample_local_relief(var_centered_uv);
@@ -618,13 +651,13 @@ void fragment() {
 			SPECULAR = PAVING_SPECULAR;
 		} else {
 			color = apply_grass_detail(color, var_world_pos, clamp(grass_detail_mask, 0.0, 1.0));
-			// Litter, moss and duff replace grass hue at the same albedo luminance. Inside shadow
-			// range the trees themselves supply every bit of the darkness, so coverage changes
-			// hue only and never adds any of its own.
+			// Litter, moss and duff replace grass hue at the same albedo luminance. The floor is
+			// darker than a meadow because of the light that reaches it, not because of its albedo:
+			// the tree shadows remove the sun, and the sky term below removes the sky the crowns hide.
 			vec3 forest_floor = mix(vec3(0.46, 0.40, 0.28), vec3(0.38, 0.45, 0.30), macro_mask);
 			vec3 luminance_weights = vec3(0.2126, 0.7152, 0.0722);
 			forest_floor *= dot(color, luminance_weights) / dot(forest_floor, luminance_weights);
-			color = mix(color, forest_floor, land_cover);
+			color = mix(color, forest_floor, floor_cover);
 			// Past the cascades there are no tree shadows left to supply it, and the floor of a
 			// closed stand returned to open-meadow brightness while the crowns standing on it kept
 			// their own replacement term. That is the pale far field: lit field with dark specks,
@@ -638,8 +671,53 @@ void fragment() {
 				canopy_floor_shade_end_m,
 				var_view_distance_m
 			) * canopy_floor_shade;
-			float floor_shade = mix(1.0, canopy_floor_shade_floor, land_cover);
+			// Ground lit by sky s and sun keeps A * s + S of its light. A share of it equal to the
+			// coverage lies in crown shadow and keeps only the minimum visibility m of the sun, so
+			// the floor keeps (A * s + S * (1 - cover * (1 - m))) of it; the shade is that ratio.
+			float sun_lost = ground_shadow_sun_strength * floor_cover
+				* (1.0 - clamp(ground_shadow_min_visibility, 0.0, 1.0));
+			float floor_shade = 1.0 - sun_lost / max(
+				ground_shadow_ambient * floor_sky + ground_shadow_sun_strength, 0.001);
 			color *= clamp(mix(1.0, floor_shade, floor_shade_ramp), 0.0, 1.0);
+			// Past the trees the ground stands in for them, and what a viewer sees of a stand there
+			// is not the ground its crowns cover from above. A sight line at elevation angle a
+			// crosses the side of every crown in a strip cot(a) times longer than the crown is wide,
+			// so for a random stand the chance it reaches the ground falls from (1 - cover) to
+			// (1 - cover) ^ (1 + side_ratio * cot(a)). At a few degrees a stand that covers a tenth
+			// of the ground from above hides most of it. O(1): one pow, on a fetch already made.
+			float far_ramp = smoothstep(canopy_far_begin_m, canopy_far_end_m, var_view_distance_m);
+			float crowns_seen = 0.0;
+			if (far_ramp > 0.0) {
+				vec3 to_camera = CAMERA_POSITION_WORLD - var_world_pos;
+				float cot_elevation = length(to_camera.xz) / max(to_camera.y, 0.001);
+				float gap = pow(1.0 - min(land_cover, 0.999),
+					1.0 + canopy_far_side_ratio * cot_elevation);
+				crowns_seen = (1.0 - gap) * far_ramp;
+				// Crown-to-crown light and hue. A drawn crown stands upright, so every pixel of a far
+				// stand shows about one crown and the grain keeps one strength at any distance. The
+				// ground under it is foreshortened: along the view one pixel covers many crown cells,
+				// and a single tap there would shimmer, while cells grown to the pixel drew blotches.
+				// So the pixel sums the cells along its longer footprint axis and divides by the root
+				// of their count, which keeps one tap's variance and zero mean. At most eight taps,
+				// and only past canopy_far_begin_m.
+				vec2 xz = var_world_pos.xz;
+				vec2 across = dFdx(xz);
+				vec2 along = dFdy(xz);
+				vec2 axis = dot(across, across) > dot(along, along) ? across : along;
+				float taps = clamp(ceil(length(axis) / CANOPY_FAR_SPECKLE_CELL_M), 1.0, 8.0);
+				float speckle = 0.0;
+				for (float t = 0.5; t < taps; t += 1.0) {
+					speckle += noise2d((xz + axis * (t / taps - 0.5)) / CANOPY_FAR_SPECKLE_CELL_M) * 2.0 - 1.0;
+				}
+				speckle *= inversesqrt(taps);
+				speckle *= canopy_far_speckle;
+				vec3 crown_albedo = canopy_far_albedo * max(vec3(1.0) + speckle * CANOPY_FAR_SPECKLE_TILT, vec3(0.0));
+				color = mix(color, crown_albedo, crowns_seen);
+			}
+			// The crowns this stands in for see the open sky; only the floor seen between them
+			// lies under the canopy. Taking the floor's sky share for the crowns too left a closed
+			// stand at 40% of the sky past the far range, which turned a dense stand nearly black.
+			floor_sky = mix(floor_sky, 1.0, crowns_seen);
 			vec2 world_uv = clamp(
 				vec2(
 					var_world_pos.x / max(world_size.x, 0.001),
@@ -753,7 +831,8 @@ void fragment() {
 			// with the ambient floor rather than staying vivid against a grey ground.
 			color = mix(color, vec3(dot(color, vec3(0.2126, 0.7152, 0.0722))), scene_ambient_desaturation);
 			ALBEDO = color;
-			EMISSION = color * clamp(ground_shadow_ambient, 0.0, 1.0) * scene_ambient_light.rgb;
+			EMISSION = color * clamp(ground_shadow_ambient, 0.0, 1.0) * floor_sky
+				* scene_ambient_light.rgb;
 			ROUGHNESS = mix(mix(0.96, 0.76, rock_mask), 0.90, cliff_face * 0.70);
 			SPECULAR = 0.08;
 		}
