@@ -22,7 +22,8 @@
 //!     ...
 //! ```
 //!
-//! Each immediate subdirectory of `mods_dir` is treated as one content pack.
+//! Each immediate subdirectory of `mods_dir` is treated as one content pack, except
+//! hidden (`.`-prefixed) folders such as in-progress import staging.
 //! `asset.toml` files are discovered recursively within the pack directory.
 //! Broken packs (missing `pack.toml`, invalid TOML, validation failure) are skipped
 //! with a diagnostic entry in [`ScanResult::warnings`].
@@ -51,7 +52,7 @@ pub struct ScanResult {
 
 /// Scans `dir` for content packs and returns the results.
 ///
-/// Each immediate subdirectory of `dir` is treated as one pack. If `dir` does not exist
+/// Each immediate, non-hidden subdirectory of `dir` is treated as one pack. If `dir` does not exist
 /// or cannot be read, an empty `ScanResult` with one warning is returned — callers must
 /// not treat a missing mods directory as a fatal error.
 pub fn scan_pack_dir(dir: &Path) -> ScanResult {
@@ -70,6 +71,7 @@ pub fn scan_pack_dir(dir: &Path) -> ScanResult {
 
     let mut pack_dirs: Vec<std::path::PathBuf> = read_dir
         .filter_map(|e| e.ok())
+        .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
         .map(|e| e.path())
         .filter(|p| p.is_dir())
         .collect();
@@ -216,6 +218,11 @@ distance_min_m = 0.0
         write(
             &pack.join("buildings/residential/house/asset.toml"),
             BUILDING_TOML,
+        );
+        // An unfinished import's staging folder is hidden and never loaded.
+        write(
+            &base.join(".import-1-0/test-pack/pack.toml"),
+            VALID_PACK_TOML,
         );
 
         let result = scan_pack_dir(&base);

@@ -6,12 +6,13 @@
 ## to persist which packs are enabled. Missing config defaults to the bundled
 ## starter pack; an explicitly saved empty list disables all packs.
 ##
-## No Rust methods called directly — pack loading happens in buildings.gd via
-## load_asset_packs(). This script only manages the config file and the UI.
+## Pack loading happens in buildings.gd via load_asset_packs(). This script manages the
+## config file and the UI; `Import pack…` hands share archives to pack_import.gd.
 extends VBoxContainer
 
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const ModPackConfig = preload("res://scripts/core/mod_pack_config.gd")
+const PackImport = preload("res://scripts/ui/pack_import.gd")
 
 const MODS_DIR := "user://mods/"
 
@@ -22,6 +23,7 @@ var _checks: Dictionary = {}   # pack_id -> CheckBox
 var _initial_enabled: Array = []
 var _list: VBoxContainer
 var _status_label: Label
+var importer: PackImport
 
 func _ready() -> void:
 	_build_ui()
@@ -32,11 +34,22 @@ func _build_ui() -> void:
 	size_flags_vertical = Control.SIZE_EXPAND_FILL
 	add_theme_constant_override("separation", 10)
 
+	var header := HBoxContainer.new()
+	add_child(header)
 	var title_lbl := Label.new()
 	title_lbl.text = "Installed Packs"
+	title_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	UIStyle.set_font_size(title_lbl, 18)
 	title_lbl.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
-	add_child(title_lbl)
+	header.add_child(title_lbl)
+	importer = PackImport.new(self)
+	importer.pack_in_use = _pack_in_use
+	importer.installed.connect(_on_pack_installed)
+	var import_btn := Button.new()
+	import_btn.name = "ImportPack"
+	import_btn.text = "Import pack…"
+	import_btn.pressed.connect(importer.pick)
+	header.add_child(import_btn)
 
 	var restart_lbl := Label.new()
 	restart_lbl.text = "Pack selection takes effect after restarting the game."
@@ -125,6 +138,32 @@ func _refresh_list(list: VBoxContainer) -> void:
 		lbl.add_theme_color_override("font_color", Color.YELLOW)
 		list.add_child(lbl)
 	_status_label.text = ""
+
+# Lists the new pack without discarding unapplied checkbox changes; a new pack starts
+# disabled, a replaced one keeps its state.
+func _on_pack_installed(pack_id: String, replaced: bool) -> void:
+	var message := "Imported %s." % pack_id
+	if not replaced and _forget_enabled(pack_id) != OK:
+		message += " Could not update the active pack selection; uncheck it and apply."
+	var pending := _selected_pack_ids()
+	_refresh_list(_list)
+	for id in _checks:
+		(_checks[id] as CheckBox).button_pressed = id in pending
+	_status_label.text = message
+	_emit_dirty_state()
+
+# A deleted pack can still be listed as enabled; without this, reinstalling it would load it
+# at the next start although the list shows it disabled.
+func _forget_enabled(pack_id: String) -> Error:
+	var enabled := ModPackConfig.load_enabled_pack_ids()
+	if not pack_id in enabled:
+		return OK
+	enabled.erase(pack_id)
+	return ModPackConfig.save_enabled_pack_ids(enabled)
+
+# A running city has loaded its enabled packs; their files must not change underneath it.
+func _pack_in_use(pack_id: String) -> bool:
+	return str(get_window().get("context")) == "gameplay" and pack_id in _load_enabled_packs()
 
 func _add_pack_row(list: VBoxContainer, pack_id: String, meta: Dictionary, enabled: bool) -> void:
 	var panel := PanelContainer.new()

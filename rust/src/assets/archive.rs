@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! Share archives (`TOOLS-09`): a pack's referenced file set and its deterministic zip.
+//! Import (`TOOLS-10`) lives in [`import`] and re-checks every rule export enforces.
 //!
 //! [`asset_files`] is the single definition of what an installed asset consists of.
 //! Publication checks its staged asset against it and export packages exactly it, so the
@@ -17,6 +18,9 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
+
+mod import;
+pub(crate) use import::{Installed, commit, discard, expected_sha256, sha256, stage, sweep};
 
 const CHECKSUMS: &str = "checksums.sha256";
 

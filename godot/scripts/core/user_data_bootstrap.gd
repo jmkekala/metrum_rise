@@ -21,6 +21,8 @@ static func run() -> void:
 	_ensure_user_dir(USER_SAVES_DIR)
 	_seed_top_level_entries(BOOTSTRAP_WORLDS_DIR, USER_WORLDS_DIR)
 	_seed_top_level_entries(BOOTSTRAP_MODS_DIR, USER_MODS_DIR)
+	# Pack imports that never finished (a crash mid-import) leave hidden staging folders.
+	AssetAuthoringFiles.sweep_imports(USER_MODS_DIR)
 	GameSettings.seed_default_config_if_missing()
 	GameSettings.apply_display_settings()
 	ModPackConfig.seed_default_config_if_missing()

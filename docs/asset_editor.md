@@ -335,6 +335,33 @@ Pack settings:
 
 - `Pack settings…` in the library pack menu edits `display_name`, `version`, `author`, `license` and `description`. Values go through `PackManifest` validation, including a semantic-version check on `version`, and `pack.toml` is rewritten atomically. `pack_id` is not editable.
 
+### Share archive import — `TOOLS-10`
+
+Entry point: `Import pack…` in Options → Mods (`godot/scripts/ui/pack_import.gd`; Rust side in `rust/src/assets/archive/import.rs`).
+
+Flow:
+
+1. A file dialog picks a `.metrum.zip`. The archive's SHA-256 starts computing on the `WorkerThreadPool` immediately.
+2. A separate prompt asks for the expected SHA-256. It accepts 64 hex characters or a pasted sidecar line (`<hex>  <file>`), ignoring case and surrounding whitespace; a `Paste` button fills it from the clipboard. A `.sha256` file next to the archive is never used to fill the field: a hash from the same source as the archive only proves the download is intact, not that it is the file the author published.
+3. A mismatch refuses the import. There is no install-anyway path.
+4. Rust inspects the archive and reports the pack's name, `pack_id`, version, author, asset count and size. When the `pack_id` is already installed:
+   - Identical contents — every entry in the archive's `checksums.sha256` matches the installed file at that path, and the installed pack has no other file the archive would carry — end the import with "Already installed": nothing is replaced, moved to Trash or re-enabled. Files an archive never carries (drafts, `.blend` sources, `.import` files, derived caches) do not affect the comparison.
+   - Otherwise the prompt shows the installed and incoming versions by semantic-version precedence: an update, a same-version import with different contents, or a downgrade, warning on the last two.
+   - During gameplay, a pack enabled in `active_packs.cfg` cannot be replaced: the running city has loaded it, so its files must not change underneath it. Return to the main menu to replace it.
+5. On confirmation, the pack is installed and appears in the pack list disabled. A fresh install also removes its `pack_id` from `active_packs.cfg`, where a previously deleted copy may still be listed as enabled. A replaced pack keeps its enabled state, and unapplied checkbox changes in the list are kept. Enabling it follows the normal apply flow; a running city is never hot-reloaded.
+
+Import refuses, without changing `user://mods/`, when:
+
+- the archive breaks any `TOOLS-09` structure rule, or the root folder differs from the `pack_id` in its `pack.toml`
+- `checksums.sha256` is missing, lists an entry that is absent or mismatched, or the archive holds an entry it does not list
+- an asset's files differ from `asset_files` for its manifest, or `pack.toml` or any `asset.toml` fails validation
+- the entry count, any entry's uncompressed size, the total uncompressed size or the compression ratio exceeds the import limits; sizes are enforced on the bytes actually decompressed, not on header values. Limits: 10,000 entries, 256 MiB per entry, 1 GiB in total, and a 200:1 ratio for entries over 1 MiB.
+- the end-of-central-directory entry count differs from the entries the reader sees (duplicate paths), or the archive is zip64
+- the `pack_id` belongs to a bundled pack (a folder in `res://bootstrap/mods`)
+- moving the installed copy to Trash fails
+
+Installing: entries are extracted into a hidden `user://mods/.import-<token>/` staging folder, verified, then renamed into place, so a failed import leaves nothing behind. The pack scanner and the pack list skip `.`-prefixed folders, so a staging folder left by a crash is never loaded. Such folders are removed at startup and before each import: staging names carry the creating process id, and a folder from another process is removed once it is an hour old, so a second game instance sharing the profile keeps the pack it is reviewing. Closing the dialog removes a staged pack. The archive is hashed again from the same open handle that is unzipped, so the verified bytes are the ones installed. A replaced pack moves to the system Trash first; if the rename then fails, the error says the previous copy is in Trash. `checksums.sha256` stays in the installed folder for post-install verification. Hashing, inspection and extraction run on the `WorkerThreadPool`; cost is linear in the archive's entries and bytes.
+
 ## Integrity, Corruption, And Authenticity
 
 The export pipeline supports pack hashing by default.
@@ -359,9 +386,9 @@ Hashing design:
 
 Verification flow:
 
-- On archive import (`TOOLS-10`; the exact flow is defined with that item, likely including a prompt for the expected SHA-256):
+- On archive import (`TOOLS-10`, see [Share archive import](#share-archive-import--tools-10)):
   - compute archive SHA-256
-  - compare against the expected hash from the sidecar, the player, or a trusted catalog entry
+  - compare against the expected hash entered by the player (later: a trusted catalog entry)
   - unpack into a temporary directory
   - verify the unpacked file set against `checksums.sha256`
   - only then move/install into the real `user://mods/` directory

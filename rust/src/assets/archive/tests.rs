@@ -5,11 +5,11 @@
 use super::*;
 use std::io::Cursor;
 
-struct Fixture(PathBuf);
+pub(super) struct Fixture(pub(super) PathBuf);
 impl Fixture {
     // mods/test-pack with one prop whose glTF loads an image and a buffer, plus credits,
     // a thumbnail and unreferenced files export must leave out.
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let fixture = Self(std::env::temp_dir().join(format!("metrum-archive-{}", files::token())));
         fixture.write(
             "pack.toml",
@@ -35,15 +35,15 @@ impl Fixture {
         fs::create_dir_all(fixture.0.join("out")).unwrap();
         fixture
     }
-    fn pack(&self) -> PathBuf {
+    pub(super) fn pack(&self) -> PathBuf {
         self.0.join("mods/test-pack")
     }
-    fn write(&self, relative: &str, data: &str) {
+    pub(super) fn write(&self, relative: &str, data: &str) {
         let path = self.pack().join(relative);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, data).unwrap();
     }
-    fn export(&self, out: &str, bump: Option<&str>) -> Result<Exported, String> {
+    pub(super) fn export(&self, out: &str, bump: Option<&str>) -> Result<Exported, String> {
         let destination = self.0.join(out);
         fs::create_dir_all(&destination).unwrap();
         export(&self.0.join("mods"), "test-pack", &destination, bump)

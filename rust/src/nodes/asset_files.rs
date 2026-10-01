@@ -6,7 +6,7 @@
 use crate::assets::PackManifest;
 use crate::assets::archive;
 use crate::assets::authoring::{colours, files};
-use crate::assets::pack::{PackSettings, bump_version};
+use crate::assets::pack::{PackSettings, bump_version, compare_versions};
 use crate::nodes::sim::asset_export::{ExportParams, validated_tomls};
 use godot::builtin::vdict;
 use godot::classes::{Image, Json, ProjectSettings};
@@ -276,6 +276,103 @@ impl AssetAuthoringFiles {
             },
             Err(error) => vdict! { "error": error },
         }
+    }
+
+    /// SHA-256 of a file as lowercase hex. Native path; safe on a worker thread.
+    #[func]
+    pub fn file_sha256(path: GString) -> VarDictionary {
+        match archive::sha256(Path::new(&path.to_string())) {
+            Ok(sha256) => vdict! { "sha256": sha256 },
+            Err(error) => vdict! { "error": error },
+        }
+    }
+
+    /// Normalised expected SHA-256 from 64 hex digits or a `sha256sum` line; empty if invalid.
+    #[func]
+    pub fn expected_sha256(text: GString) -> GString {
+        archive::expected_sha256(&text.to_string())
+            .unwrap_or_default()
+            .as_str()
+            .into()
+    }
+
+    /// Verify a share archive against `expected` and stage it inside `mods` (`TOOLS-10`).
+    /// `installed` is `absent`, `identical` (nothing staged) or `different`, with `change`
+    /// relating the versions; a staged pack must be passed to `commit_import` or
+    /// `discard_import`. Native paths; worker-safe.
+    #[func]
+    pub fn stage_import(
+        mods: GString,
+        archive: GString,
+        expected: GString,
+        bundled: PackedStringArray,
+    ) -> VarDictionary {
+        let bundled: Vec<String> = bundled.as_slice().iter().map(GString::to_string).collect();
+        let result = archive::stage(
+            Path::new(&archive.to_string()),
+            &expected.to_string(),
+            Path::new(&mods.to_string()),
+            &bundled,
+        );
+        let staged = match result {
+            Ok(staged) => staged,
+            Err(error) => return vdict! { "error": error },
+        };
+        let mut summary = pack_dictionary(&staged.pack);
+        summary.set("assets", staged.assets as i64);
+        summary.set("files", staged.files as i64);
+        summary.set("bytes", staged.bytes as i64);
+        let staging = staged.staging.unwrap_or_default();
+        summary.set("staging", staging.to_string_lossy().as_ref());
+        let (installed, version) = match staged.installed {
+            archive::Installed::Absent => ("absent", None),
+            archive::Installed::Identical => ("identical", None),
+            archive::Installed::Different { version } => ("different", version),
+        };
+        // `update`, `same` or `downgrade` against the installed version; empty if unreadable.
+        let change = version
+            .as_deref()
+            .and_then(|current| compare_versions(&staged.pack.version, current))
+            .map_or("", |order| match order {
+                std::cmp::Ordering::Greater => "update",
+                std::cmp::Ordering::Equal => "same",
+                std::cmp::Ordering::Less => "downgrade",
+            });
+        summary.set("installed", installed);
+        summary.set("installed_version", version.unwrap_or_default());
+        summary.set("change", change);
+        summary
+    }
+
+    /// Rename a staged import into place; any installed copy must already be in Trash.
+    #[func]
+    pub fn commit_import(mods: GString, staging: GString) -> VarDictionary {
+        match archive::commit(
+            Path::new(&mods.to_string()),
+            Path::new(&staging.to_string()),
+        ) {
+            Ok(pack_id) => vdict! { "pack_id": pack_id },
+            Err(error) => vdict! { "error": error },
+        }
+    }
+
+    /// Remove import staging folders an earlier process left behind (e.g. after a crash).
+    #[func]
+    pub fn sweep_imports(mods: GString) {
+        archive::sweep(&native_path(mods));
+    }
+
+    /// Remove a staged import without installing it.
+    #[func]
+    pub fn discard_import(mods: GString, staging: GString) -> GString {
+        archive::discard(
+            Path::new(&mods.to_string()),
+            Path::new(&staging.to_string()),
+        )
+        .err()
+        .unwrap_or_default()
+        .as_str()
+        .into()
     }
 
     /// Validate and publish a document's complete model/dependency set transactionally.

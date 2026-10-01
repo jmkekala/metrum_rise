@@ -519,6 +519,12 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- `TOOLS-10`: Options → Mods gains `Import pack…`. It picks a `.metrum.zip`, refuses it unless the
+  SHA-256 entered separately matches, and has Rust re-check every export rule, size limits and
+  `checksums.sha256` off the main thread before staging and renaming the pack into `user://mods/`.
+  Identical reinstalls change nothing; replacements go to Trash first; new packs install disabled.
+  The pack scanner now skips hidden folders. See
+  [share archive import](asset_editor.md#share-archive-import--tools-10).
 - `TOOLS-09`: the library pack menu gains `Pack settings…` (validated `pack.toml` edits; versions
   must now be semantic versions) and `Export pack as zip…`, which writes a deterministic
   `<pack_id>-<version>.metrum.zip` plus `.sha256` sidecar off the main thread. The archive holds

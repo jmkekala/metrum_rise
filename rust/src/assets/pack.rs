@@ -125,6 +125,49 @@ fn is_valid_semver(version: &str) -> bool {
         && build.is_none_or(|b| identifiers(b, false))
 }
 
+/// Semantic Versioning precedence of `a` against `b`; `None` if either is not a semver.
+/// Build metadata is ignored, and a pre-release sorts before its release.
+pub(crate) fn compare_versions(a: &str, b: &str) -> Option<std::cmp::Ordering> {
+    use std::cmp::Ordering;
+    // Numeric identifiers compare as numbers and sort before alphanumeric ones.
+    fn identifier(a: &str, b: &str) -> Ordering {
+        match (a.parse::<u64>(), b.parse::<u64>()) {
+            (Ok(x), Ok(y)) => x.cmp(&y),
+            (Ok(_), Err(_)) => Ordering::Less,
+            (Err(_), Ok(_)) => Ordering::Greater,
+            _ => a.cmp(b),
+        }
+    }
+    fn parts(version: &str) -> (&str, Option<&str>) {
+        let rest = version.split('+').next().unwrap_or_default();
+        rest.split_once('-')
+            .map_or((rest, None), |(core, pre)| (core, Some(pre)))
+    }
+    if !is_valid_semver(a) || !is_valid_semver(b) {
+        return None;
+    }
+    let ((core_a, pre_a), (core_b, pre_b)) = (parts(a), parts(b));
+    let order = core_a
+        .split('.')
+        .zip(core_b.split('.'))
+        .map(|(x, y)| identifier(x, y))
+        .find(|order| order.is_ne())
+        .unwrap_or(Ordering::Equal);
+    Some(order.then_with(|| {
+        match (pre_a, pre_b) {
+            (None, None) => Ordering::Equal,
+            (None, Some(_)) => Ordering::Greater,
+            (Some(_), None) => Ordering::Less,
+            (Some(x), Some(y)) => x
+                .split('.')
+                .zip(y.split('.'))
+                .map(|(p, q)| identifier(p, q))
+                .find(|order| order.is_ne())
+                .unwrap_or_else(|| x.split('.').count().cmp(&y.split('.').count())),
+        }
+    }))
+}
+
 /// Next release for `part` (`patch`, `minor` or `major`), following npm's rules: a
 /// pre-release of the target version is released rather than skipped, and build
 /// metadata is dropped.
@@ -331,6 +374,32 @@ license = "MIT"
         ] {
             assert_eq!(bump_version(from, part).unwrap(), to, "{from} {part}");
         }
+        // Precedence example from the Semantic Versioning 2.0.0 specification.
+        let ordered = [
+            "1.0.0-alpha",
+            "1.0.0-alpha.1",
+            "1.0.0-alpha.beta",
+            "1.0.0-beta",
+            "1.0.0-beta.2",
+            "1.0.0-beta.11",
+            "1.0.0-rc.1",
+            "1.0.0",
+            "1.0.1",
+            "1.2.0",
+            "10.0.0",
+        ];
+        for pair in ordered.windows(2) {
+            assert_eq!(
+                compare_versions(pair[0], pair[1]),
+                Some(std::cmp::Ordering::Less),
+                "{pair:?}"
+            );
+        }
+        assert_eq!(
+            compare_versions("1.0.0+a", "1.0.0+b"),
+            Some(std::cmp::Ordering::Equal)
+        );
+        assert_eq!(compare_versions("1.0", "1.0.0"), None);
         assert!(bump_version("1.0", "patch").is_err());
         assert!(bump_version("1.0.0", "build").is_err());
         assert!(bump_version("1.0.18446744073709551615", "patch").is_err());
