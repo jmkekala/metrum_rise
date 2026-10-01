@@ -473,6 +473,11 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- `TOOLS-08`: asset publication now writes a fresh folder containing only the files the document
+  references, instead of merging into the previous one; textures, LODs and thumbnails dropped by an
+  edit no longer pile up in packs. Published `colours/` names come from the current schemes, not
+  editing history. Existing packs are cleaned by republishing each asset. See
+  [`asset_editor.md`](asset_editor.md).
 - `ZONE-05`: road-side cells now appear with the committed road instead of 9–15 frames later.
   Terrain keeps per-512 m height revisions from exactly changed samples, replacing the global
   generations that re-uploaded every visible cell chunk. While the overlay is shown, the sim tick

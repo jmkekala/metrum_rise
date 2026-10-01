@@ -460,13 +460,18 @@ pub(crate) fn publish(
     };
     fs::create_dir(&stage.path).map_err(|e| e.to_string())?;
     stage.preserve = false;
+    // The plan is the complete asset: files a previous publication used but this one does
+    // not are dropped, never carried forward. Sources may live in `target`, which stays
+    // intact until the staged copy is complete.
     let staged = stage.path.join("asset");
     let target = assets.join(asset_id);
-    if target.exists() || target.is_symlink() {
-        copy_directory(&target, &staged)?;
-    } else {
-        fs::create_dir(&staged).map_err(|e| e.to_string())?;
+    if target.is_symlink() {
+        return Err(format!(
+            "Cannot publish through a symbolic link: {}",
+            target.display()
+        ));
     }
+    fs::create_dir(&staged).map_err(|e| e.to_string())?;
     for (relative, source) in files {
         let destination = staged.join(relative);
         fs::create_dir_all(destination.parent().ok_or("Missing dependency parent")?)
@@ -808,7 +813,7 @@ mod tests {
     }
 
     #[test]
-    fn publication_preserves_unmanaged_files_and_failed_copy_preserves_previous_asset() {
+    fn publication_replaces_unreferenced_files_and_failed_copy_preserves_previous_asset() {
         let fixture = Fixture::new();
         let model = fixture.write("source/model.gltf", "{}");
         let output = fixture.0.join("pack");
@@ -822,7 +827,7 @@ mod tests {
         )
         .unwrap();
         let asset = output.join("assets/building.test");
-        fs::write(asset.join("unmanaged.txt"), "keep").unwrap();
+        fs::write(asset.join("unreferenced.png"), "stale").unwrap();
         publish(
             &output,
             "building.test",
@@ -835,20 +840,21 @@ mod tests {
             fs::read_to_string(output.join("pack.toml")).unwrap(),
             "first pack"
         );
-        assert_eq!(
-            fs::read_to_string(asset.join("unmanaged.txt")).unwrap(),
-            "keep"
-        );
+        assert!(!asset.join("unreferenced.png").exists());
+        assert!(asset.join("model.gltf").is_file());
+        // Republishing from sources inside the published asset itself must still work.
+        let files = plan(&[("model.gltf".into(), asset.join("model.gltf"))], &[]).unwrap();
+        publish(&output, "building.test", &files, "second manifest", "").unwrap();
+        assert!(asset.join("model.gltf").is_file());
+        fs::write(asset.join("unreferenced.png"), "stale").unwrap();
+        let files = plan(&[("model.gltf".into(), model.clone())], &[]).unwrap();
         fs::remove_file(model).unwrap();
         assert!(publish(&output, "building.test", &files, "bad replacement", "").is_err());
         assert_eq!(
             fs::read_to_string(asset.join("asset.toml")).unwrap(),
             "second manifest"
         );
-        assert_eq!(
-            fs::read_to_string(asset.join("unmanaged.txt")).unwrap(),
-            "keep"
-        );
+        assert!(asset.join("unreferenced.png").is_file());
         assert!(!fs::read_dir(&output).unwrap().any(|e| {
             e.unwrap()
                 .file_name()

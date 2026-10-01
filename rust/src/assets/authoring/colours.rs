@@ -29,6 +29,73 @@ pub(crate) fn exported_sources(
     Ok(paths.into())
 }
 
+const CHANNELS: [&str; 4] = ["albedo", "orm", "normal", "emission"];
+
+// Strip the `<n>_` the editor adds to keep working names unique within one session.
+fn base_name(relative: &str) -> &str {
+    let file = relative.rsplit('/').next().unwrap_or(relative);
+    match file.split_once('_') {
+        Some((n, rest))
+            if !n.is_empty() && !rest.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            rest
+        }
+        _ => file,
+    }
+}
+
+// Rename colour textures from the current scheme references alone, so published names never
+// depend on editing history: one name per distinct source, first reference in manifest order
+// gets `colours/<file>`, later same-named sources get `colours/<n>_<file>`. Unreferenced
+// working entries are dropped. O(T log T) for T texture references, at publication only.
+pub(crate) fn canonical_names(state: &mut serde_json::Value) -> Result<(), String> {
+    use std::collections::{BTreeMap, BTreeSet};
+    // `pointer_mut`, not IndexMut: indexing a null appearance would materialise an object.
+    let sources = state.get("colour_sources").cloned().unwrap_or_default();
+    let Some(schemes) = state
+        .pointer_mut("/params/appearance/schemes")
+        .and_then(|schemes| schemes.as_array_mut())
+    else {
+        return Ok(());
+    };
+    let mut names = BTreeMap::<String, String>::new();
+    let mut taken = BTreeSet::new();
+    let mut renamed = serde_json::Map::new();
+    let overrides = schemes
+        .iter_mut()
+        .filter_map(|scheme| scheme["overrides"].as_array_mut())
+        .flatten();
+    for entry in overrides {
+        for channel in CHANNELS {
+            let Some(relative) = entry[channel].as_str() else {
+                continue;
+            };
+            let path = sources[relative]
+                .as_str()
+                .ok_or_else(|| format!("Relink colour scheme texture: {relative}"))?
+                .to_owned();
+            let base = base_name(relative).to_owned();
+            let name = names.entry(path.clone()).or_insert_with(|| {
+                let mut name = format!("colours/{base}");
+                let mut suffix = 1;
+                while taken.contains(&name) {
+                    name = format!("colours/{suffix}_{base}");
+                    suffix += 1;
+                }
+                taken.insert(name.clone());
+                name
+            });
+            if !files::safe_relative(name) {
+                return Err(format!("Unsafe colour scheme texture path: {relative}"));
+            }
+            renamed.insert(name.clone(), path.into());
+            entry[channel] = name.clone().into();
+        }
+    }
+    state["colour_sources"] = renamed.into();
+    Ok(())
+}
+
 // Resolve declarations to concrete preview part/LOD paths. This runs on scheme/document
 // changes only; GDScript applies the returned textures without making binding decisions.
 pub(crate) fn preview_plan(
@@ -58,7 +125,7 @@ pub(crate) fn preview_plan(
             .ok_or("Missing colour scheme part")?;
         let encoded = serde_json::to_value(entry).map_err(|e| e.to_string())?;
         let mut textures = serde_json::Map::new();
-        for channel in ["albedo", "orm", "normal", "emission"] {
+        for channel in CHANNELS {
             if let Some(relative) = encoded[channel].as_str() {
                 textures.insert(channel.into(), state["colour_sources"][relative].clone());
             }
@@ -248,5 +315,41 @@ mod tests {
         assert!(resolve("", &inventory).is_err());
         inventory.push(inventory[0].clone());
         assert!(resolve("walls", &inventory).is_err());
+    }
+
+    #[test]
+    fn published_colour_names_depend_on_references_not_editing_history() {
+        use serde_json::json;
+        let overrides = |red: &str, blue: &str, normal: &str| {
+            json!([{"part": "p", "materials": ["m"], "albedo": red},
+                   {"part": "p", "materials": ["m"], "albedo": blue, "normal": normal}])
+        };
+        let mut state = json!({
+            "params": {"appearance": {"schemes": [{"id": "a", "overrides": overrides(
+                "colours/red.png", "colours/2_blue.png", "colours/1_red.png")}]}},
+            "colour_sources": {
+                "colours/red.png": "/new/red.png",
+                "colours/blue.png": "/old/blue.png",
+                "colours/2_blue.png": "/new/blue.png",
+                "colours/1_red.png": "/other/red.png",
+            },
+        });
+        canonical_names(&mut state).unwrap();
+        // Same-named distinct sources stay distinct; the stale working entry is dropped.
+        assert_eq!(
+            state["params"]["appearance"]["schemes"][0]["overrides"],
+            overrides("colours/red.png", "colours/blue.png", "colours/1_red.png")
+        );
+        assert_eq!(
+            state["colour_sources"],
+            json!({"colours/red.png": "/new/red.png", "colours/blue.png": "/new/blue.png",
+                   "colours/1_red.png": "/other/red.png"})
+        );
+        let mut missing = json!({"params": {"appearance": {"schemes": [{"overrides": [
+            {"albedo": "colours/gone.png"}]}]}}, "colour_sources": {}});
+        assert!(canonical_names(&mut missing).is_err());
+        let mut plain = json!({"params": {"appearance": null}});
+        canonical_names(&mut plain).unwrap();
+        assert!(plain["params"]["appearance"].is_null());
     }
 }

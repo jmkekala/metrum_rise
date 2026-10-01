@@ -175,8 +175,9 @@ impl AssetAuthoringFiles {
     #[func]
     pub fn publish_document(document: GString, output: GString) -> GString {
         let result = (|| {
-            let state: Value =
+            let mut state: Value =
                 serde_json::from_str(&document.to_string()).map_err(|e| e.to_string())?;
+            colours::canonical_names(&mut state)?;
             let params: ExportParams =
                 serde_json::from_value(state["params"].clone()).map_err(|e| e.to_string())?;
             let (asset, pack) = validated_tomls(&params)?;

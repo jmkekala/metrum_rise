@@ -52,6 +52,13 @@ copied on the next publish. The per-LOD material mapping stays explicit in the d
 the dialog preselects a tier that has a single source material and otherwise matches LOD0's
 chosen name; only a genuinely ambiguous tier is left for the author to resolve.
 
+Published colour texture names are derived from the current schemes alone (`TOOLS-08`), never
+from editing history. In manifest order (scheme, override, then albedo/ORM/normal/emission),
+each distinct source path gets `colours/<file>`; a later source with the same file name gets
+`colours/<n>_<file>`. The editor's working `<n>_` prefix, which only keeps names unique within
+one session, is stripped first, so replacing a texture keeps its plain name. Republishing an
+asset therefore normalizes names left by earlier edits.
+
 ## V1 Design Constraints
 
 The first implementation must stay narrow. The asset editor is a packaging, validation, preview, and metadata-authoring tool, not a general-purpose content pipeline for every asset type or every possible runtime behavior.
@@ -1628,8 +1635,9 @@ Thumbnail generation rules:
   authored yard surfaces remain. Helper visibility and interaction are restored after the captured
   frame, before saving the image.
 - Captures live beside editor drafts, are packaged as `thumbnail.webp` (lossy, quality 0.9) on
-  runtime export, and survive draft and published-asset reopening. Publication is additive, so an
-  asset previously exported with `thumbnail.png` keeps that file until it is removed by hand.
+  runtime export, and survive draft and published-asset reopening. Publication replaces the asset
+  folder with exactly the files the document references (`TOOLS-08`), so a `thumbnail.png` left
+  by an earlier export is removed on the next publish.
 - Capture requires a rendered window; headless validation/export still works with existing thumbnail files.
 - Standardized per-class catalog-thumbnail rigs remain later work; current captures use the author's preview camera and lighting.
 

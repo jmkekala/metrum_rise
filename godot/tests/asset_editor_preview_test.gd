@@ -182,9 +182,12 @@ func _run() -> void:
 	_expect(is_equal_approx(editor._session.params.window_brightness, 4.2) and is_equal_approx(panel._asset_window_brightness, 4.2), "saved brightness survives export/reopen and drives preview")
 	editor._export_asset(false)
 	var before := FileAccess.get_file_as_bytes(manifest_path)
-	_write(asset_dir.path_join("unmanaged.txt"), "keep this creator-owned file")
+	_write(asset_dir.path_join("unreferenced.png"), "stale file from an earlier publication")
 	editor._export_asset(false)
-	_expect(FileAccess.get_file_as_string(asset_dir.path_join("unmanaged.txt")) == "keep this creator-owned file", "saving preserves unmanaged asset files")
+	# The reopened document's sources live in asset_dir itself; republishing must keep them.
+	_expect(not FileAccess.file_exists(asset_dir.path_join("unreferenced.png")), "publication drops files the asset no longer references")
+	for level in 4:
+		_expect(FileAccess.file_exists(asset_dir.path_join("model_lod%d.glb" % level)) and FileAccess.file_exists(asset_dir.path_join("window_%d.png" % level)), "republishing from the installed asset keeps every referenced file")
 	var invalid: Dictionary = editor._session.document.snapshot()
 	invalid["params"]["household_capacity"] = 0
 	var failure := AssetAuthoringFiles.publish_document(JSON.stringify(invalid), _output)
