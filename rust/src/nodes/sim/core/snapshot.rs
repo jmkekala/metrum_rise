@@ -160,6 +160,15 @@ impl VegetationEditUndo {
         self.cells.entry(cell).or_insert(prior);
     }
 
+    /// Captures a cell only on its first change, avoiding repeated clones in dense brushes.
+    pub(crate) fn record_cell_with(
+        &mut self,
+        cell: VegetationCell,
+        prior: impl FnOnce() -> Option<CellEdit>,
+    ) {
+        self.cells.entry(cell).or_insert_with(prior);
+    }
+
     /// Records a render patch whose revision must advance again when this stroke is undone.
     pub(crate) fn record_patch(&mut self, key: i64) {
         self.patch_keys.insert(key);

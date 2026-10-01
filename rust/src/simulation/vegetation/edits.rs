@@ -53,9 +53,10 @@ pub const VARIANT_FROM_SEED: u8 = 0;
 /// Mesh variants the renderer models for each species ordinal.
 ///
 /// This mirrors `TreeSpecies.VARIANT_COUNTS` on the Godot side, which owns the meshes
-/// themselves. The simulation needs the counts only to bound a pin, and the bridge test
+/// themselves. Bush variants past the sixth are named landscape plants that only a brush pin
+/// selects. The simulation needs the counts only to bound a pin, and the bridge test
 /// `vegetation_variant_test.gd` fails if the two ever drift apart.
-pub const VARIANT_COUNTS: [u8; 4] = [12, 12, 6, 6];
+pub const VARIANT_COUNTS: [u8; 4] = [12, 12, 15, 6];
 
 /// Whether a biased variant pin names a mesh the renderer models for that species.
 pub fn variant_in_range(species: u8, variant: u8) -> bool {
@@ -97,12 +98,19 @@ pub struct VegetationEdits {
     cells: HashMap<VegetationCell, CellEdit>,
     patch_generations: HashMap<i64, u64>,
     blocks: HashSet<(VegetationLayer, i32, i32)>,
+    // Advances with every patch generation, so one comparison says whether any moved.
+    epoch: u64,
 }
 
 impl VegetationEdits {
     /// Returns the revision of one packed render-patch key, or zero when untouched.
     pub fn patch_generation(&self, key: i64) -> u64 {
         self.patch_generations.get(&key).copied().unwrap_or(0)
+    }
+
+    /// Advances whenever any patch generation does, and never otherwise.
+    pub fn epoch(&self) -> u64 {
+        self.epoch
     }
 
     /// Whether any edited cell of one layer falls in an inclusive cell range, in O(blocks).
@@ -134,6 +142,7 @@ impl VegetationEdits {
     /// Reserves batch capacity before committing edits and touched patch revisions.
     pub(crate) fn reserve(&mut self, cells: usize, patches: usize) {
         self.cells.reserve(cells);
+        self.blocks.reserve(cells);
         self.patch_generations.reserve(patches);
     }
 
@@ -141,6 +150,7 @@ impl VegetationEdits {
     pub(crate) fn bump_patch(&mut self, key: i64) {
         let generation = self.patch_generations.entry(key).or_default();
         *generation = generation.wrapping_add(1);
+        self.epoch = self.epoch.wrapping_add(1);
     }
 
     /// Sets a generated-cell tombstone, pruning a restored cell with no additions.
@@ -178,6 +188,7 @@ impl VegetationEdits {
             if let Some(key) = remove(plant) {
                 let generation = self.patch_generations.entry(key).or_default();
                 *generation = generation.wrapping_add(1);
+                self.epoch = self.epoch.wrapping_add(1);
                 false
             } else {
                 true
@@ -192,7 +203,10 @@ impl VegetationEdits {
 
     /// Clones one cell's whole delta so an edit can be reversed, or `None` when untouched.
     pub(crate) fn snapshot_cell(&self, cell: VegetationCell) -> Option<CellEdit> {
-        self.cells.get(&cell).cloned()
+        self.cells
+            .get(&cell)
+            .filter(|edit| edit.generated_removed || !edit.added.is_empty())
+            .cloned()
     }
 
     /// Puts one cell back to a snapshot taken before an edit, in expected O(1).

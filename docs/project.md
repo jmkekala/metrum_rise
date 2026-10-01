@@ -6,6 +6,52 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
+Trees, yard shrubs, clipped hedges and rocks are now Blender models; every tree casts its own baked silhouette in place of the old per-species lathe blob, and hedges are laid as rows with a line tool ([VEG-09 and VEG-10 details](terrain.md#authored-trees-silhouette-shadows-yard-plants-and-rocks-2026-09-27)). The brush now thickens gradually: each click or held tenth of a second adds 10 trees/ha until the preset's density ([VEG-11](terrain.md#gradual-brush--veg-11-2026-09-27)). From a distance, lone trees no longer sit on blurred forest-floor blots, far crowns grow up to 1.6x past the shadow range, and the far ground stand-in matches the authored trees' colour and crown-to-crown texture ([details](terrain.md#forest-from-a-distance-2026-09-28)). A far tree now renders within 12% of its near level at every tested pose: small pine crowns no longer vanish from its baked mips, and it catches the near crown's sun sheen ([VEG-12](terrain.md#impostor-refit-to-the-authored-trees--veg-12-2026-09-29)). Each impostor quad is now cropped to what its baked views draw, which takes a dense painted stand from `39.9` to `28.8 ms` of GPU at eye level ([details](terrain.md#impostor-quads-cropped-to-their-views-2026-09-30)).
+
+Vegetation painting now uses live, clumped darts with separate tree, ground-cover and rock spacing, repeat-stamp stability, and single-plant bulldozing ([VEG-05 details and verification](terrain.md#natural-brush-proposals-and-independent-occupancy--veg-05-2026-09-26)).
+
+- **Vegetation grid and near canopy (in progress)**: the vegetation scatter no longer rides the
+  terrain grid. A two-tier grid subdivides only ground inside the near canopy and understory, and
+  the per-frame staleness sweep caches its generation reads per owner. In a generator-density
+  forest that took resident patches from 2518 to 415 and frame time from `27.66 ms` to `13.01 ms`
+  with the GPU unchanged. The near band is back at `800 m` after `200 m` proved to be tuned on a
+  brush-painted worst case. Foliage cards are cropped to their own alpha bounds, worth about
+  `1.1 ms` of GPU from inside a dense stand. Past `SHADOW_PROXY_M` trees cast from the lathe
+  crown rather than from the branched tree, worth `19.6 ms` of a close dense forest frame;
+  inside it the branched tree still casts, because a proxy shadows the crown it stands in.
+  Subdividing the near grid to 8 is worth `10 ms` of GPU and was rejected: it costs more than
+  that in CPU spikes while the camera moves, because the residency sweep scales with the square
+  of the subdivision. A third canopy level sits between the branched tree and the lathe: it
+  keeps every foliage card and drops the interior wood, which is `41%` to `50%` of the near
+  triangles and `25.8 ms` of a close painted-stand frame. Each tree dissolves from the full
+  into the reduced level by its own distance over `45-55 m`, dithered like the impostor
+  handover; a patch the band crosses draws both levels from one mesh. It replaced a whole-patch
+  swap on the patch-centre distance, which popped trees `15 m` from the camera during an orbit. Past `250 m` every tree is now a
+  hemi-octahedral impostor baked offline from the near tree, and the lathe only casts shadows.
+  The painted stand drops from `40.0` to `23.6 ms` of GPU in the stand and from `52.0` to
+  `16.5 ms` from the air. Trees stop receiving cast shadows past `120 m`, where every caster
+  is a solid proxy that shadowed the trees inside it. Each tree now hands over to its own baked
+  impostor by its own distance, dithered over `150-200 m`, instead of a patch at a time. A tree
+  now keeps its form when its terrain patch changes between the fine and the coarse patch grid,
+  and changes its shadow caster by its own distance rather than its patch's. The impostor is
+  now lit by each tree's own yaw; see
+  [the impostor lighting](terrain.md#each-impostor-is-lit-by-its-own-yaw-2026-09-25). Past
+  `4.5 km` the ground stands in for the trees at their seen density; see
+  [the far range](terrain.md#the-ground-stands-in-for-the-trees-past-the-far-range-2026-09-25).
+  The forest floor now loses the sky its crowns hide, so a stand's floor in shade is no longer
+  lighter than the meadow; see
+  [the floor sky](terrain.md#the-forest-floor-loses-the-sky-its-crowns-hide-2026-09-26).
+  Past the handover a tree's trunk zone is shaded, so a far stand no longer floats on lit
+  trunks; see [the far stand](terrain.md#a-far-stand-is-dark-under-its-crowns-2026-09-26).
+  Terrain residency now covers the cull distance in every direction, so a quick turn no longer
+  builds the distance in view for about 2.5 s; terrain and water patches cull by their own
+  footprint, which keeps the draw count under its old value (terrain.md, streaming list).
+  See [the grid fix](terrain.md#a-tree-keeps-its-form-across-the-patch-grids-2026-09-25),
+  [the per-tree handover](terrain.md#each-tree-hands-over-to-its-impostor-on-its-own-distance-2026-09-24),
+  [the shadow fade](terrain.md#trees-stop-receiving-the-shadows-of-the-proxies-they-stand-in-2026-09-23),
+  [the impostors](terrain.md#distant-trees-are-impostors-of-the-near-tree-2026-09-22),
+  [the intermediate canopy measurements](terrain.md#the-branched-tree-at-half-the-wood-is-worth-26-ms-2026-09-22) and
+  [the shadow proxy and the measurements behind it](terrain.md#trees-cast-from-the-lathe-crown-not-from-the-tree-2026-09-22).
 - **Road preview modes (`ROAD-29`, done)**: Options → Gameplay selects Road only
   (faster, default) or Road and terrain. Changes apply immediately; full preview uses reversible
   terrain rendering and the same placement rules. Tests and rendered checks pass; release deployed. [Contract](roads.md#player-selectable-road-preview-modes-road-29).

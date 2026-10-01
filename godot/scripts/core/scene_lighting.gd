@@ -59,20 +59,14 @@ const SHADOW_BLUR := 1.80
 const GROUND_SHADOW_AMBIENT := 0.50
 const GROUND_SHADOW_SUN_STRENGTH := 0.50
 const GROUND_SHADOW_MIN_VISIBILITY := 0.02
-# Share of its open-ground brightness a fully covered forest floor keeps once the shadow
-# cascades stop reaching it. The crowns past the cascade edge already replace the shadow their
-# neighbours stop casting; the ground they stand on did not, so a distant stand read as lit
-# field with dark specks on it. This is the receiver half of the same term.
-#
-# The value is derived and not chosen. Terrain ground takes the key light at
-# GROUND_SHADOW_SUN_STRENGTH and the sky at GROUND_SHADOW_AMBIENT, and a fragment the cascades
-# put in shadow keeps GROUND_SHADOW_MIN_VISIBILITY of the key term. Where sun and sky are of
-# comparable strength, that is the ratio below, so ground outside the cascades holds what the
-# same ground held inside them.
-const CANOPY_FLOOR_SHADE_FLOOR := (
-	(GROUND_SHADOW_AMBIENT + GROUND_SHADOW_SUN_STRENGTH * GROUND_SHADOW_MIN_VISIBILITY)
-	/ (GROUND_SHADOW_AMBIENT + GROUND_SHADOW_SUN_STRENGTH)
-)
+# Share of the sky light that still reaches a forest floor under closed crowns. The terrain
+# takes the rest away in proportion to the sky the published crown coverage hides, so the
+# floor of a stand in shade no longer keeps the sky of open ground in the shade of a house.
+# Only the terrain takes this term: trunks and understory keep the full sky, and a floor
+# darker than the trunks standing on it reads as burnt ground. The share is therefore set
+# where the shaded floor of a 625 stems/ha pine stand renders just above its shaded trunks, at
+# 57 against 52 in 8-bit luminance, where 0.20 put it at 40 and the old floor sat at 88.
+const CANOPY_FLOOR_SKY_TRANSMISSION := 0.40
 const STATIC_CASTER_EXTRA_CULL_MARGIN_M := 32.0
 const DYNAMIC_CASTER_EXTRA_CULL_MARGIN_M := 12.0
 const RECEIVER_EXTRA_CULL_MARGIN_M := 2.0
@@ -137,14 +131,15 @@ static func canopy_shade_strength() -> float:
 
 ## Ties the forest-floor shading ramp to the shadow cascades, exactly as the canopy half in
 ## `tree_species.gd` is tied to them. The term begins where the cascades begin to fade and
-## reaches full strength where they end, so no ground inside shadow range changes at all.
+## reaches full strength where they end, so inside shadow range the floor loses only the sky
+## its crowns hide, which holds at every distance.
 static func apply_canopy_floor_shading(material: ShaderMaterial) -> void:
 	if material == null:
 		return
 	var far_m := shadow_max_distance_m()
 	material.set_shader_parameter("canopy_floor_shade_begin_m", far_m * SHADOW_FADE_START)
 	material.set_shader_parameter("canopy_floor_shade_end_m", far_m)
-	material.set_shader_parameter("canopy_floor_shade_floor", CANOPY_FLOOR_SHADE_FLOOR)
+	material.set_shader_parameter("canopy_floor_sky_transmission", CANOPY_FLOOR_SKY_TRANSMISSION)
 	material.set_shader_parameter("canopy_floor_shade", canopy_shade_strength())
 
 static func apply_shadow_policy(

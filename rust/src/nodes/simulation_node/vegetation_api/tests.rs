@@ -17,14 +17,22 @@ fn scatter(core: &SimCore, canopy: bool) -> Vec<f32> {
         VegetationLayer::Understory
     };
     let (cell_m, _) = grid(core, layer);
-    scatter_layer(
+    let origin = Vector2::new(-255.0, -255.0);
+    // Relative to the patch, which is what every assertion here was written against. The
+    // f32 subtraction is the one the packing itself did before it packed world positions.
+    let mut records = scatter_layer(
         core,
-        Vector2::new(-255.0, -255.0),
+        origin,
         510.0,
         cell_m,
         if canopy { CANOPY_SALT } else { UNDERSTORY_SALT },
         canopy,
-    )
+    );
+    for record in records.chunks_exact_mut(6) {
+        record[0] -= origin.x;
+        record[2] -= origin.y;
+    }
+    records
 }
 
 fn first_candidate(core: &SimCore, accepted: bool) -> Plant {
@@ -50,24 +58,42 @@ fn first_candidate(core: &SimCore, accepted: bool) -> Plant {
 }
 
 #[test]
-fn bulldoze_plant_lookup_is_bounded_deterministic_and_refuses_coincident_plants() {
+fn bulldoze_plant_lookup_is_bounded_and_removes_one_coincident_plant() {
     let mut core = core();
     core.vegetation.config.enabled = false;
     assert!(add_at(&mut core, Vector2::new(1.0, 1.0), 2));
     assert!(add_at(&mut core, Vector2::new(3.0, 1.0), 3));
     let picked = plant_at(&core, Vector2::new(2.0, 1.0)).unwrap();
-    assert_eq!((picked.0.x, picked.0.z, picked.0.species), (1.0, 1.0, 2));
+    assert_eq!(
+        (picked.0.plant.x, picked.0.plant.z, picked.0.plant.species),
+        (1.0, 1.0, 2)
+    );
     assert!(picked.1 > 0.0);
     assert_eq!(plant_at(&core, Vector2::new(2.0, 1.0)), Some(picked));
     assert_eq!(plant_at(&core, Vector2::new(1.0, 1.0)), Some(picked));
     assert!(plant_at(&core, Vector2::new(1.0, 5.01)).is_none());
     assert!(plant_at(&core, Vector2::new(f32::NAN, 1.0)).is_none());
     assert!(add_at(&mut core, Vector2::new(1.0, 1.0), 0));
-    assert!(plant_at(&core, Vector2::new(1.0, 1.0)).is_none());
-    // Declining a bulldoze target must not alter the vegetation brush's area clear.
+    assert_eq!(plant_at(&core, Vector2::new(1.0, 1.0)), Some(picked));
+    assert!(remove_target(&mut core, picked.0));
+    assert!(!remove_target(&mut core, picked.0));
+    assert_eq!(
+        plant_at(&core, Vector2::new(1.0, 1.0))
+            .unwrap()
+            .0
+            .plant
+            .species,
+        0
+    );
+    assert!(core.undo_action_internal());
+    // Area clear still removes both classes at the same position.
     assert_eq!(remove_at(&mut core, Vector2::new(1.0, 1.0), 0.0, 0), 2);
     assert_eq!(
-        plant_at(&core, Vector2::new(3.0, 1.0)).unwrap().0.species,
+        plant_at(&core, Vector2::new(3.0, 1.0))
+            .unwrap()
+            .0
+            .plant
+            .species,
         3
     );
 }
@@ -100,44 +126,16 @@ fn vegetation_removal_matches_scatter_disc_in_both_layers() {
 }
 
 #[test]
-fn vegetation_paint_fills_rejected_candidates_and_leaves_generated_cells_alone() {
+fn vegetation_point_and_brush_respect_visible_generated_stems() {
     let mut core = core();
     let generated = first_candidate(&core, true);
-    assert_eq!(
-        paint_at(
-            &mut core,
-            Vector2::new(generated.x, generated.z),
-            0.01,
-            1,
-            0
-        ),
-        0
-    );
-    assert_eq!(core.vegetation_edits.len(), 0);
-    let rejected = first_candidate(&core, false);
-    // A point elsewhere in the same cell must not occupy the brush candidate's position.
-    assert!(add_at(
-        &mut core,
-        Vector2::new(rejected.x + 1.0, rejected.z),
-        3
-    ));
-    let before = scatter(&core, true);
-    assert_eq!(
-        paint_at(&mut core, Vector2::new(rejected.x, rejected.z), 0.01, 1, 0),
-        1
-    );
-    let after = scatter(&core, true);
-    assert_eq!(after.len(), before.len() + 6);
-    assert!(after.chunks_exact(6).any(|r| r[0] == rejected.x + 255.0
-        && r[2] == rejected.z + 255.0
-        && r[3] == rejected.yaw
-        && r[4] == rejected.scale
-        && r[5] == 1.0));
-    assert_eq!(
-        paint_at(&mut core, Vector2::new(rejected.x, rejected.z), 0.01, 1, 0),
-        0
-    );
-    assert_eq!(core.vegetation_edits.len(), 1);
+    let pos = Vector2::new(generated.x, generated.z);
+    assert!(!add_at(&mut core, pos + Vector2::new(1.0, 0.0), 1));
+    assert!(add_at(&mut core, pos, 2));
+    paint_at(&mut core, pos, 32.0, 4, 0, usize::MAX);
+    for p in authored(&core).into_iter().filter(|p| p.species < 2) {
+        assert!((p.x - generated.x).powi(2) + (p.z - generated.z).powi(2) >= 2.5 * 2.5);
+    }
 }
 
 #[test]
@@ -150,7 +148,7 @@ fn vegetation_repaint_restores_generated_tree_and_prunes_tombstone() {
     assert_eq!(core.vegetation_edits.len(), 1);
     // Painting the species that was cleared reproduces the identical plant, so the edit
     // collapses back to nothing rather than authoring a copy of what the generator already has.
-    assert_eq!(paint_at(&mut core, pos, 0.01, i64::from(p.species), 0), 1);
+    assert_eq!(paint_at(&mut core, pos, 0.01, i64::from(p.species), 0, usize::MAX), 1);
     assert_eq!(core.vegetation_edits.len(), 0);
     assert_eq!(scatter(&core, true), before);
 }
@@ -165,7 +163,7 @@ fn vegetation_repaint_with_another_species_does_not_regrow_the_cleared_plant() {
     // must leave a rock standing there and no tree at all.
     let painted = SPECIES_ROCK as u8;
     assert_ne!(p.species, painted);
-    assert_eq!(paint_at(&mut core, pos, 0.01, i64::from(painted), 0), 1);
+    assert_eq!(paint_at(&mut core, pos, 0.01, i64::from(painted), 0, usize::MAX), 1);
     let standing: Vec<_> = scatter(&core, true)
         .chunks_exact(6)
         .filter(|r| r[0] == p.x + 255.0 && r[2] == p.z + 255.0)
@@ -173,7 +171,7 @@ fn vegetation_repaint_with_another_species_does_not_regrow_the_cleared_plant() {
         .collect();
     assert_eq!(standing, vec![painted]);
     // The brush is idempotent: a second pass must not stack a second rock on the same cell.
-    assert_eq!(paint_at(&mut core, pos, 0.01, i64::from(painted), 0), 0);
+    assert_eq!(paint_at(&mut core, pos, 0.01, i64::from(painted), 0, usize::MAX), 0);
 }
 
 #[test]
@@ -202,7 +200,7 @@ fn vegetation_authored_boundary_plant_belongs_to_exactly_one_patch_even_when_dis
     assert!(query(left).is_empty());
     let records = query(right);
     assert_eq!(records.len(), 6);
-    assert_eq!(records[0], 0.0);
+    assert_eq!(records[0], 3.25);
     assert_eq!(records[5], 2.0);
 }
 
@@ -329,7 +327,7 @@ fn vegetation_patch_revisions_touch_only_changed_plants() {
     assert_eq!(core.vegetation_edits.patch_generation(neighbor), 0);
     assert_eq!(core.heightmap.source_generation(), terrain_generation);
     // A disc straddling a render boundary touches both patches, not a third one.
-    assert!(add_at(&mut core, Vector2::new(-1.0, 1.0), 1));
+    assert!(add_at(&mut core, Vector2::new(-1.5, 1.0), 1));
     assert!(add_at(&mut core, Vector2::ONE, 0));
     let other = layout.key(-1.0, 1.0);
     assert_eq!(remove_at(&mut core, Vector2::ZERO, 2.0, 0), 2);
@@ -351,11 +349,11 @@ fn vegetation_invalid_inputs_store_nothing_and_empty_removal_is_sparse() {
     // One below the preset table and one past its end, so neither names a preset.
     for option in [-1, brush::PRESETS.len() as i64] {
         assert!(!add_at(&mut core, Vector2::ZERO, option));
-        assert_eq!(paint_at(&mut core, Vector2::ZERO, 8.0, option, 0), 0);
+        assert_eq!(paint_at(&mut core, Vector2::ZERO, 8.0, option, 0, usize::MAX), 0);
     }
     for radius in [-1.0, f32::NAN, f32::INFINITY, 1025.0] {
         assert_eq!(remove_at(&mut core, Vector2::ZERO, radius, 0), 0);
-        assert_eq!(paint_at(&mut core, Vector2::ZERO, radius, 0, 0), 0);
+        assert_eq!(paint_at(&mut core, Vector2::ZERO, radius, 0, 0, usize::MAX), 0);
     }
     let p = first_candidate(&core, false);
     assert_eq!(remove_at(&mut core, Vector2::new(p.x, p.z), 0.0, 0), 0);
@@ -366,7 +364,7 @@ fn vegetation_invalid_inputs_store_nothing_and_empty_removal_is_sparse() {
         .replace_baseline_depth_from_dense(&depth)
         .unwrap();
     assert!(!add_at(&mut core, Vector2::ZERO, 0));
-    assert_eq!(paint_at(&mut core, Vector2::ZERO, 32.0, 0, 0), 0);
+    assert_eq!(paint_at(&mut core, Vector2::ZERO, 32.0, 0, 0, usize::MAX), 0);
     assert_eq!(core.vegetation_edits.len(), 0);
 }
 
@@ -379,7 +377,8 @@ fn vegetation_save_round_trip_reproduces_scatter_and_v60_loads_empty_delta() {
     let p = first_candidate(&core, true);
     assert_eq!(remove_at(&mut core, Vector2::new(p.x, p.z), 0.01, 0), 1);
     assert!(add_at(&mut core, Vector2::new(3.25, -32.0), 3));
-    assert!(paint_at(&mut core, Vector2::ZERO, 45.0, 1, 0) > 0);
+    assert!(paint_at(&mut core, Vector2::ZERO, 45.0, 1, 0, usize::MAX) > 0);
+    assert!(paint_at(&mut core, Vector2::ZERO, 45.0, 2, 0, usize::MAX) > 0);
     let before = [scatter(&core, true), scatter(&core, false)];
     let path =
         std::env::temp_dir().join(format!("metrum-vegetation-{}.sqlite", std::process::id()));
@@ -467,14 +466,14 @@ fn vegetation_edit_benchmark() {
         // background map here would evict its local buckets and measure setup cache churn.
         let center = Vector2::ZERO;
         remove_at(&mut core, center, 64.0, 0);
-        let expected_added = paint_at(&mut core, center, 64.0, 0, 0);
+        let expected_added = paint_at(&mut core, center, 64.0, 0, 0, usize::MAX);
         group.bench_function(format!("paint_{background}"), |b| {
             b.iter_custom(|iterations| {
                 let mut elapsed = std::time::Duration::ZERO;
                 for _ in 0..iterations {
                     remove_at(&mut core, center, 64.0, 0);
                     let start = std::time::Instant::now();
-                    let added = black_box(paint_at(&mut core, center, 64.0, 0, 0));
+                    let added = black_box(paint_at(&mut core, center, 64.0, 0, 0, usize::MAX));
                     elapsed += start.elapsed();
                     assert_eq!(added, expected_added);
                 }
@@ -496,7 +495,7 @@ fn vegetation_edit_benchmark() {
         // Worst case for the authored clearance pass: a stroke covering the whole measured
         // patch, so every cell the generator rejected carries an authored plant that has to be
         // re-tested against the current surface on every fetch.
-        let painted = paint_at(&mut core, center, 255.0, 0, 0);
+        let painted = paint_at(&mut core, center, 255.0, 0, 0, usize::MAX);
         assert!(
             painted > 100,
             "the painted arm must fill the measured patch"
@@ -594,7 +593,7 @@ fn vegetation_brush_benchmark() {
         .warm_up_time(std::time::Duration::from_secs(1))
         .measurement_time(std::time::Duration::from_secs(3));
     remove_at(&mut core, Vector2::ZERO, 64.0, 0);
-    let expected = paint_at(&mut core, Vector2::ZERO, 64.0, 0, 0);
+    let expected = paint_at(&mut core, Vector2::ZERO, 64.0, 0, 0, usize::MAX);
     eprintln!(
         "brush radius=64m plants={expected} workers={}",
         rayon::current_num_threads()
@@ -605,62 +604,171 @@ fn vegetation_brush_benchmark() {
             for _ in 0..iterations {
                 remove_at(&mut core, Vector2::ZERO, 64.0, 0);
                 let start = std::time::Instant::now();
-                let added = paint_at(&mut core, Vector2::ZERO, 64.0, 0, 0);
+                let added = paint_at(&mut core, Vector2::ZERO, 64.0, 0, 0, usize::MAX);
                 elapsed += start.elapsed();
                 assert_eq!(added, expected);
             }
             elapsed
         })
     });
+    // A held stamp repeats about ten times a second. Its worst case is the largest tree disc
+    // over a stand already at density: every proposal is ranked and checked, and none is added.
+    remove_at(&mut core, Vector2::ZERO, 256.0, 0);
+    let full = paint_at(&mut core, Vector2::ZERO, 256.0, 8, 0, usize::MAX);
+    let limit = stamp_limit(8, 256.0);
+    eprintln!("held radius=256m stand={full} limit={limit}");
+    criterion.bench_function("VegetationBrush/held_full_256m", |b| {
+        b.iter(|| assert_eq!(paint_at(&mut core, Vector2::ZERO, 256.0, 8, 0, limit), 0))
+    });
     criterion.final_summary();
 }
 
 #[test]
-fn vegetation_brush_fills_fine_grid_in_occupied_canopy_cells_and_is_idempotent() {
-    let mut core = core();
-    let before = scatter(&core, true);
-    let count = paint_at(&mut core, Vector2::ZERO, 64.0, 3, 0);
-    assert!(
-        (800..880).contains(&count),
-        "64 m disc must add about 625 stems/ha: {count}"
-    );
-    let after = scatter(&core, true);
-    assert_eq!(after.len(), before.len() + count * 6);
-    for cell in disc_cells(
-        Vector2::ZERO,
-        64.0,
-        BRUSH_SPACING_M,
-        VegetationLayer::Canopy,
-    )
-    .collect::<Vec<_>>()
-    {
-        let (_, salt) = grid(&core, VegetationLayer::Canopy);
-        let [x, z, _, _] = brush_candidate(cell.x, cell.z, salt);
-        if Vector2::new(x, z).length_squared() > 64.0 * 64.0 {
-            continue;
+#[ignore = "release class, overlap and dense-cell brush costs"]
+fn vegetation_brush_class_benchmark() {
+    use criterion::Criterion;
+    let mut criterion = Criterion::default()
+        .sample_size(20)
+        .warm_up_time(std::time::Duration::from_secs(1))
+        .measurement_time(std::time::Duration::from_secs(3));
+    let mut group = criterion.benchmark_group("VegetationBrushClasses");
+    for background in [0, 100_000] {
+        for option in [4, 2, 3] {
+            let mut core = core();
+            core.vegetation.config.enabled = false;
+            core.vegetation_edits.reserve(background, 0);
+            for i in 0..background {
+                core.vegetation_edits.set_removed(
+                    VegetationCell {
+                        layer: VegetationLayer::Canopy,
+                        x: i as i32 + 1000,
+                        z: 1000,
+                    },
+                    true,
+                );
+            }
+            prepare_sites(&mut core);
+            let expected = paint_at(&mut core, Vector2::ZERO, 64.0, option, 0, usize::MAX);
+            assert!(core.undo_action_internal());
+            eprintln!("class preset={option} background={background} plants={expected}");
+            group.bench_function(format!("fresh_{option}_{background}"), |b| {
+                b.iter_custom(|iterations| {
+                    let mut elapsed = std::time::Duration::ZERO;
+                    for _ in 0..iterations {
+                        let start = std::time::Instant::now();
+                        let count = paint_at(&mut core, Vector2::ZERO, 64.0, option, 0, usize::MAX);
+                        elapsed += start.elapsed();
+                        assert_eq!(count, expected);
+                        assert!(core.undo_action_internal());
+                    }
+                    elapsed
+                })
+            });
+            paint_at(&mut core, Vector2::ZERO, 64.0, option, 0, usize::MAX);
+            paint_at(&mut core, Vector2::new(8.0, 0.0), 64.0, option, 0, usize::MAX);
+            group.bench_function(format!("overlap_repeat_{option}_{background}"), |b| {
+                b.iter(|| {
+                    assert_eq!(paint_at(&mut core, Vector2::ZERO, 64.0, option, 0, usize::MAX), 0)
+                })
+            });
         }
-        let owner = cell_at(
-            Vector2::new(x, z),
-            VegetationLayer::Canopy,
-            core.vegetation.canopy_cell_m,
-        );
-        assert!(
-            core.vegetation_edits
-                .cell(owner)
-                .1
-                .iter()
-                .any(|p| p.x == x && p.z == z && p.species == 3)
+    }
+    // Dense legacy vectors are permitted by old saves: report their local cost explicitly.
+    let mut core = core();
+    core.vegetation.config.enabled = false;
+    prepare_sites(&mut core);
+    let cell = cell_at(
+        Vector2::ONE,
+        VegetationLayer::Canopy,
+        core.vegetation.canopy_cell_m,
+    );
+    for i in 0..4000 {
+        core.vegetation_edits.add(
+            cell,
+            Plant {
+                x: 1.0 + i as f32 * 0.0001,
+                z: 1.0,
+                yaw: 0.0,
+                scale: 1.0,
+                species: 0,
+                variant: 0,
+            },
         );
     }
-    assert_eq!(paint_at(&mut core, Vector2::ZERO, 64.0, 3, 0), 0);
-    assert_eq!(scatter(&core, true), after);
-    // Removing the fine-grid plants must use those same canopy identities.
-    remove_at(&mut core, Vector2::ZERO, 64.0, 0);
-    assert!(
-        scatter(&core, true)
-            .chunks_exact(6)
-            .all(|r| Vector2::new(r[0] - 255.0, r[2] - 255.0).length_squared() > 64.0 * 64.0)
-    );
+    let expected = paint_at(&mut core, Vector2::ZERO, 64.0, 4, 0, usize::MAX);
+    assert!(core.undo_action_internal());
+    eprintln!("dense local legacy=4000 plants={expected}");
+    group.bench_function("dense_local_4000", |b| {
+        b.iter_custom(|iterations| {
+            let mut elapsed = std::time::Duration::ZERO;
+            for _ in 0..iterations {
+                let start = std::time::Instant::now();
+                let count = paint_at(&mut core, Vector2::ZERO, 64.0, 4, 0, usize::MAX);
+                elapsed += start.elapsed();
+                assert_eq!(count, expected);
+                assert!(core.undo_action_internal());
+            }
+            elapsed
+        })
+    });
+    group.finish();
+}
+
+fn authored(core: &SimCore) -> Vec<Plant> {
+    core.vegetation_edits
+        .sorted_cells()
+        .into_iter()
+        .flat_map(|cell| core.vegetation_edits.cell(cell).1.iter().copied())
+        .collect()
+}
+
+fn assert_spacing(plants: &[Plant]) {
+    for (i, a) in plants.iter().enumerate() {
+        let class = brush::PlantClass::of(a.species, a.variant);
+        for b in &plants[i + 1..] {
+            if brush::PlantClass::of(b.species, b.variant) == class {
+                assert!(
+                    (a.x - b.x).powi(2) + (a.z - b.z).powi(2) >= class.spacing().powi(2),
+                    "{a:?} conflicts with {b:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn vegetation_brush_spacing_repeat_and_cross_class_coexistence() {
+    for order in [[2, 4], [4, 2], [3, 4]] {
+        let mut core = core();
+        core.vegetation.config.enabled = false;
+        for option in order {
+            assert!(paint_at(&mut core, Vector2::ZERO, 32.0, option, 17, usize::MAX) > 0);
+            assert_eq!(paint_at(&mut core, Vector2::ZERO, 32.0, option, 17, usize::MAX), 0);
+        }
+        let plants = authored(&core);
+        assert_spacing(&plants);
+        assert!(plants.iter().any(|p| p.species < 2));
+        assert!(plants.iter().any(|p| p.species >= 2));
+        // Nearby cross-class pairs prove independent occupancy, beyond merely sharing a disc.
+        assert!(plants.iter().any(|a| {
+            a.species < 2
+                && plants.iter().any(|b| {
+                    b.species >= 2 && (a.x - b.x).powi(2) + (a.z - b.z).powi(2) < 0.8 * 0.8
+                })
+        }));
+        assert!(core.undo_action_internal());
+        assert!(authored(&core).is_empty());
+    }
+    for order in [[2, 4], [4, 2]] {
+        let mut core = core();
+        core.vegetation.config.enabled = false;
+        for option in order {
+            assert!(add_at(&mut core, Vector2::ZERO, option));
+        }
+        assert!(!add_at(&mut core, Vector2::new(0.1, 0.0), 2));
+        assert!(!add_at(&mut core, Vector2::new(2.49, 0.0), 0));
+        assert_eq!(remove_at(&mut core, Vector2::ZERO, 0.0, 0), 2);
+    }
 }
 
 #[test]
@@ -672,68 +780,117 @@ fn vegetation_brush_spacing_is_independent_and_parallel_order_is_stable() {
             .build()
             .unwrap();
         let mut core = core();
-        pool.install(|| paint_at(&mut core, Vector2::new(-20.0, 15.0), 64.0, 2, 0));
-        let records = scatter(&core, true);
+        pool.install(|| {
+            paint_at(&mut core, Vector2::new(-20.0, 15.0), 64.0, 2, 0, usize::MAX);
+            paint_at(&mut core, Vector2::new(-5.0, 15.0), 64.0, 4, 0, usize::MAX);
+        });
+        let records = authored(&core);
         if let Some(expected) = &reference {
             assert_eq!(&records, expected);
         }
         reference = Some(records);
     }
+    let mut reference = None;
     for canopy_m in [8.0, 16.0, 32.0] {
         let mut core = core();
         core.vegetation.config.enabled = false;
         core.vegetation.canopy_cell_m = canopy_m;
-        paint_at(&mut core, Vector2::ZERO, 16.0, 1, 0);
-        let (_, salt) = grid(&core, VegetationLayer::Canopy);
-        let [x, z, _, _] = brush_candidate(-1, 0, salt);
-        let owner = cell_at(Vector2::new(x, z), VegetationLayer::Canopy, canopy_m);
-        assert!(
-            core.vegetation_edits
-                .cell(owner)
-                .1
-                .iter()
-                .any(|p| p.x == x && p.z == z)
-        );
-        assert!(
-            scatter(&core, true)
-                .chunks_exact(6)
-                .any(|r| r[0] == x + 255.0 && r[2] == z + 255.0)
-        );
+        paint_at(&mut core, Vector2::ZERO, 32.0, 1, 0, usize::MAX);
+        let mut records = authored(&core);
+        records.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.z.total_cmp(&b.z)));
+        if let Some(expected) = &reference {
+            assert_eq!(&records, expected);
+        }
+        reference = Some(records);
     }
 }
 
 #[test]
-fn vegetation_brush_bound_and_small_jitter() {
-    let mut core = core();
-    assert_eq!(
-        paint_at(&mut core, Vector2::ZERO, MAX_PAINT_RADIUS_M + 0.01, 0, 0),
-        0
-    );
-    assert_eq!(core.vegetation_edits.len(), 0);
-    let fine = disc_cells(
-        Vector2::ZERO,
-        MAX_PAINT_RADIUS_M,
-        BRUSH_SPACING_M,
-        VegetationLayer::Canopy,
-    )
-    .len();
-    let canopy = disc_cells(
-        Vector2::ZERO,
-        MAX_PAINT_RADIUS_M,
-        8.0,
-        VegetationLayer::Canopy,
-    )
-    .len();
-    assert_eq!(fine + canopy, 20_866);
-    let added = paint_at(&mut core, Vector2::ZERO, MAX_PAINT_RADIUS_M, 0, 0);
-    assert!(added > 12_000 && added <= 20_866);
-    for x in -100..100 {
-        let p = brush_candidate(x, -7, 123);
-        assert!((p[0] - (x as f32 + 0.5) * BRUSH_SPACING_M).abs() <= 0.201);
-        assert!((p[1] - (-7.0 + 0.5) * BRUSH_SPACING_M).abs() <= 0.201);
-        assert_eq!(p, brush_candidate(x, -7, 123));
-        assert_ne!(p, brush_candidate(x, -7, 124));
+fn vegetation_brush_bounds_and_full_cell_darts() {
+    use brush::PlantClass;
+    for (option, class) in [
+        (4, PlantClass::Tree),
+        (2, PlantClass::Ground),
+        (3, PlantClass::Rock),
+    ] {
+        let mut core = core();
+        assert_eq!(
+            paint_at(
+                &mut core,
+                Vector2::ZERO,
+                class.max_radius() + 0.01,
+                option,
+                0,
+                usize::MAX,
+            ),
+            0
+        );
+        assert_eq!(core.vegetation_edits.len(), 0);
+        let step = class.spacing() * std::f32::consts::FRAC_1_SQRT_2;
+        let axis_bound = (2.0 * class.max_radius() / step).ceil() as usize + 1;
+        assert!(2 * axis_bound * axis_bound <= 169_362);
     }
+}
+
+#[test]
+fn vegetation_named_preset_density_on_clear_ground() {
+    let mut valid = true;
+    for (option, low, high) in [
+        (4, 550.0, 700.0),
+        (5, 550.0, 700.0),
+        (6, 550.0, 700.0),
+        (7, 550.0, 700.0),
+        (8, 460.0, 600.0),
+        (9, 50.0, 75.0),
+        (10, 185.0, 255.0),
+    ] {
+        let mut total = 0;
+        for seed in [0, 7, 99] {
+            let mut core = core();
+            core.vegetation.config.enabled = false;
+            core.vegetation.config.seed = seed;
+            total += paint_at(&mut core, Vector2::ZERO, 192.0, option, 0, usize::MAX);
+        }
+        let density = total as f32 / (3.0 * std::f32::consts::PI * 192.0 * 192.0 / 10_000.0);
+        eprintln!("preset={option} density={density:.2} stems/ha band={low}..{high}");
+        valid &= (low..=high).contains(&density);
+    }
+    assert!(valid, "preset density outside its documented band");
+}
+
+#[test]
+fn vegetation_occupancy_queries_both_layers_across_owner_boundaries() {
+    let mut core = core();
+    core.vegetation.config.enabled = false;
+    let pos = Vector2::new(-0.1, 0.0);
+    let owner = cell_at(
+        pos,
+        VegetationLayer::Understory,
+        core.vegetation.understory_cell_m,
+    );
+    core.vegetation_edits.add(
+        owner,
+        Plant {
+            x: pos.x,
+            z: pos.y,
+            yaw: 0.0,
+            scale: 1.0,
+            species: 3,
+            variant: 0,
+        },
+    );
+    assert!(!add_at(&mut core, Vector2::new(0.1, 0.0), 3));
+    assert!(add_at(&mut core, Vector2::new(0.1, 0.0), 4));
+}
+
+#[test]
+fn vegetation_restore_cannot_violate_new_spacing() {
+    let mut core = core();
+    let plant = first_candidate(&core, true);
+    let pos = Vector2::new(plant.x, plant.z);
+    remove_at(&mut core, pos, 0.01, 0);
+    assert!(add_at(&mut core, pos + Vector2::new(1.0, 0.0), 4));
+    assert_eq!(paint_at(&mut core, pos, 0.01, plant.species as i64, 0, usize::MAX), 0);
 }
 
 #[test]
@@ -757,7 +914,7 @@ fn undo_restores_the_scatter_a_brush_stroke_replaced() {
 
     // Painting over the cleared ground and undoing that must not resurrect the clear-cut:
     // each journal holds only the state its own stroke found.
-    assert!(paint_at(&mut core, center, 48.0, 1, 0) > 0);
+    assert!(paint_at(&mut core, center, 48.0, 1, 0, usize::MAX) > 0);
     let painted = scatter(&core, true);
     assert!(add_at(&mut core, Vector2::new(-64.0, 64.0), 3));
     assert!(core.undo_action_internal());
@@ -792,7 +949,7 @@ fn a_stroke_that_starts_over_nothing_does_not_merge_into_the_previous_action() {
     let mut core = core();
     let standing = first_candidate(&core, true);
     let center = Vector2::new(standing.x, standing.z);
-    assert!(paint_at(&mut core, center, 48.0, 1, 0) > 0);
+    assert!(paint_at(&mut core, center, 48.0, 1, 0, usize::MAX) > 0);
 
     // One earlier action of its own, so there is a vegetation entry for a later stroke to
     // wrongly fold into.
@@ -858,7 +1015,7 @@ fn planted(core: &SimCore) -> Vec<(u8, u8, f32)> {
 fn a_named_tree_plants_only_the_meshes_that_are_that_tree() {
     let mut spruce_core = core();
     let before = planted(&spruce_core).len();
-    assert!(paint_at(&mut spruce_core, Vector2::ZERO, 64.0, SPRUCE, 0) > 0);
+    assert!(paint_at(&mut spruce_core, Vector2::ZERO, 64.0, SPRUCE, 0, usize::MAX) > 0);
     let pinned: Vec<_> = planted(&spruce_core)
         .into_iter()
         .filter(|p| p.1 != 0)
@@ -878,7 +1035,7 @@ fn a_named_tree_plants_only_the_meshes_that_are_that_tree() {
     }
 
     let mut pine_core = core();
-    assert!(paint_at(&mut pine_core, Vector2::ZERO, 64.0, PINE, 0) > 0);
+    assert!(paint_at(&mut pine_core, Vector2::ZERO, 64.0, PINE, 0, usize::MAX) > 0);
     let pines: Vec<_> = planted(&pine_core)
         .into_iter()
         .filter(|p| p.1 != 0)
@@ -899,9 +1056,9 @@ fn a_named_tree_plants_only_the_meshes_that_are_that_tree() {
 }
 
 #[test]
-fn an_unpinned_preset_plants_exactly_what_it_planted_before_presets_existed() {
+fn an_unpinned_preset_preserves_seeded_variants_and_scale_band() {
     let mut core = core();
-    assert!(paint_at(&mut core, Vector2::ZERO, 64.0, CONIFER, 0) > 0);
+    assert!(paint_at(&mut core, Vector2::ZERO, 64.0, CONIFER, 0, usize::MAX) > 0);
     for (_, variant, scale) in planted(&core) {
         assert_eq!(variant, 0, "conifer leaves the mesh to the appearance seed");
         assert!((0.75..=1.35).contains(&scale));
@@ -912,26 +1069,51 @@ fn an_unpinned_preset_plants_exactly_what_it_planted_before_presets_existed() {
 fn a_thinned_preset_plants_fewer_trees_and_thins_to_the_same_ones_every_time() {
     let mut dense = core();
     let mut sparse = core();
-    let planted_dense = paint_at(&mut dense, Vector2::ZERO, 64.0, CONIFER, 0);
-    let planted_sparse = paint_at(&mut sparse, Vector2::ZERO, 64.0, MEADOW, 0);
+    let planted_dense = paint_at(&mut dense, Vector2::ZERO, 64.0, CONIFER, 0, usize::MAX);
+    let planted_sparse = paint_at(&mut sparse, Vector2::ZERO, 64.0, MEADOW, 0, usize::MAX);
     assert!(planted_dense > 0 && planted_sparse > 0);
     assert!(
         (planted_sparse as f32) < planted_dense as f32 * 0.35,
-        "a meadow keeps a tenth of the lattice, not most of it: {planted_sparse} of {planted_dense}"
+        "the meadow preset must remain substantially sparser: {planted_sparse} of {planted_dense}"
     );
 
     // Thinning is a pure function of the cell, so a repeat finds every point already taken.
     assert_eq!(
-        paint_at(&mut sparse, Vector2::ZERO, 64.0, MEADOW, 0),
+        paint_at(&mut sparse, Vector2::ZERO, 64.0, MEADOW, 0, usize::MAX),
         0,
         "a repeated stroke must not thin to a different set and fill the gaps"
     );
     let mut repeat = core();
     assert_eq!(
-        paint_at(&mut repeat, Vector2::ZERO, 64.0, MEADOW, 0),
+        paint_at(&mut repeat, Vector2::ZERO, 64.0, MEADOW, 0, usize::MAX),
         planted_sparse
     );
     assert_eq!(planted(&repeat), planted(&sparse));
+}
+
+#[test]
+fn held_stamps_thicken_a_stand_step_by_step_to_the_single_stamp_stand() {
+    let mut full = core();
+    let planted_full = paint_at(&mut full, Vector2::ZERO, 64.0, MIXED_FOREST, 0, usize::MAX);
+    let limit = stamp_limit(MIXED_FOREST, 64.0);
+    // 1.29 ha at 10 stems/ha per stamp.
+    assert_eq!(limit, 13);
+    let mut held = core();
+    let mut total = 0;
+    loop {
+        let added = paint_at(&mut held, Vector2::ZERO, 64.0, MIXED_FOREST, 3, limit);
+        assert!(added <= limit);
+        total += added;
+        if added < limit {
+            break;
+        }
+    }
+    assert!(total / limit > 20);
+    assert_eq!(total, planted_full);
+    assert_eq!(authored(&held), authored(&full));
+    assert_eq!(paint_at(&mut held, Vector2::ZERO, 64.0, MIXED_FOREST, 3, limit), 0);
+    assert!(held.undo_action_internal());
+    assert!(authored(&held).is_empty());
 }
 
 #[test]
@@ -941,7 +1123,7 @@ fn a_dwarfing_preset_moves_every_plant_into_its_own_scale_band() {
         .into_iter()
         .map(|p| (p.0, p.1, p.2.to_bits()))
         .collect();
-    assert!(paint_at(&mut core, Vector2::ZERO, 64.0, NORTHERN_DWARF, 0) > 0);
+    assert!(paint_at(&mut core, Vector2::ZERO, 64.0, NORTHERN_DWARF, 0, usize::MAX) > 0);
     let dwarfed: Vec<_> = planted(&core)
         .into_iter()
         .filter(|p| !untouched.contains(&(p.0, p.1, p.2.to_bits())))
@@ -958,7 +1140,7 @@ fn a_dwarfing_preset_moves_every_plant_into_its_own_scale_band() {
 #[test]
 fn a_mix_preset_plants_more_than_one_tree() {
     let mut core = core();
-    assert!(paint_at(&mut core, Vector2::ZERO, 64.0, MIXED_FOREST, 0) > 0);
+    assert!(paint_at(&mut core, Vector2::ZERO, 64.0, MIXED_FOREST, 0, usize::MAX) > 0);
     let kinds: HashSet<_> = planted(&core)
         .into_iter()
         .filter(|p| p.1 != 0)
@@ -980,17 +1162,38 @@ fn painting_a_named_tree_over_a_cleared_one_authors_it_instead_of_regrowing_the_
     // The generator chose this cell's species itself, so an unpinned brush of that same
     // species is the same edit and collapses back to no stored edit at all.
     assert_eq!(
-        paint_at(&mut core, pos, 0.01, i64::from(standing.species), 0),
+        paint_at(&mut core, pos, 0.01, i64::from(standing.species), 0, usize::MAX),
         1
     );
     assert_eq!(core.vegetation_edits.len(), 0);
 
     assert_eq!(remove_at(&mut core, pos, 0.01, 0), 1);
     let named = if standing.species == 0 { SPRUCE } else { PINE };
-    assert_eq!(paint_at(&mut core, pos, 0.01, named, 0), 1);
+    assert_eq!(paint_at(&mut core, pos, 0.01, named, 0, usize::MAX), 1);
     assert_eq!(
         core.vegetation_edits.len(),
         1,
         "a player who named the tree must get that tree authored over the tombstone"
     );
+}
+
+#[test]
+fn a_hedge_line_lays_facing_modules_once_and_only_along_a_line() {
+    let mut core = core();
+    core.vegetation.config.enabled = false;
+    let (from, to) = (Vector2::new(-4.0, 3.0), Vector2::new(5.0, 3.0));
+    // Nine metres close with nine modules, each facing along the row at full size.
+    assert_eq!(line_at(&mut core, from, to, 17, 1), 9);
+    let records = scatter(&core, true);
+    let hedge: Vec<_> = records.chunks_exact(6).filter(|r| r[5] != 0.0).collect();
+    assert_eq!(hedge.len(), 9);
+    for record in &hedge {
+        // Level ground: no rise along the row.
+        assert_eq!((record[3], record[4]), (0.0, 0.0));
+        assert_eq!(record[5], f32::from((13_u8 << SPECIES_BITS) | 2));
+    }
+    // Redrawing the row stacks nothing, and neither a brush nor a tree preset lays a line.
+    assert_eq!(line_at(&mut core, from, to, 17, 2), 0);
+    assert_eq!(line_at(&mut core, from, to, 4, 3), 0);
+    assert_eq!(paint_at(&mut core, Vector2::new(0.0, -20.0), 8.0, 17, 4, usize::MAX), 0);
 }

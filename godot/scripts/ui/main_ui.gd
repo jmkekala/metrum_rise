@@ -737,18 +737,7 @@ func _build_vegetation_controls() -> void:
 	)
 	# The popup grabs input; forward both brush gestures with the same Ctrl priority as the tool.
 	options.get_popup().window_input.connect(func(event: InputEvent):
-		if not (event is InputEventMouseButton and event.pressed and (event.ctrl_pressed or event.shift_pressed)):
-			return
-		var direction := 0
-		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
-			direction = 1
-		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-			direction = -1
-		if direction != 0:
-			if event.ctrl_pressed:
-				tool.step_radius(direction)
-			else:
-				tool.step_option(direction)
+		if tool.apply_brush_gesture(event):
 			options.get_popup().set_input_as_handled()
 	)
 	remove_button.toggled.connect(func(pressed: bool):

@@ -248,9 +248,12 @@ This is a local proof of concept, not persistent vegetation or a simulation reso
 Rust generates deterministic 16 m candidate cells and rejects water, steep ground,
 and sampled road/building footprints. The renderer reuses terrain residency and uploads
 at most one patch per frame. Two opaque tree species each have three geometry levels.
-Trees have no collisions. Near trees and bushes sway in a vertex-shader wind; nothing
-else moves. The initial visibility limit is 4500 m.
-Shadow casting is off by default and available for the near geometry only.
+Trees have no collisions. Near trees, bushes and yard plants sway in a vertex-shader wind;
+nothing else moves. The initial visibility limit is 4500 m.
+Every canopy tree casts its own baked impostor silhouette, faced to the sun, at every distance
+inside the shadow range; the drawn tree levels never cast. Rocks and yard plants cast; generated
+ground cover never does. `set_cast_shadows` updates both resident and cached patches. See
+[authored trees, yard plants and rocks](#authored-trees-silhouette-shadows-yard-plants-and-rocks-2026-09-27).
 
 Placement is derived from the terrain surface. The terrain renderer stamps each committed
 patch payload with the surface generation it was built from, and that generation advances
@@ -263,42 +266,48 @@ patch enters the scene tree before the previous patch is freed.
 Geometry levels switch at a hard distance boundary with no crossfade. A visibility fade
 applies to a whole `MultiMeshInstance3D`, and one instance carries a whole terrain patch, so
 a fade band made every plant in a `510 m` patch translucent together and moved the patch into
-the transparent pass. Two invariants follow from the same fact and set the bands below: a band
-must exceed the patch diagonal (`721 m`), and a range must exceed the patch half-diagonal
-(`361 m`). Trees more than about 2 km away are narrower than three pixels at 720p and still
-alias.
+the transparent pass. Two invariants follow from the same fact: a band must exceed the patch
+diagonal, and a range must exceed the patch half-diagonal. Both are a tax on the patch size,
+which is why the vegetation grid is no longer the terrain grid. Trees more than about 2 km
+away are narrower than three pixels at 720p and still alias.
 
-Distant crowns, bushes and rocks are each one surface of revolution built from a radius
-profile, with a per-ring and per-segment radius perturbation, flat shading, end caps, and a
-root flare on each trunk. The near conifer and broadleaf levels instead carry a two-level
-branch skeleton: a tapering leader, sixteen or twelve four-sided primary limbs placed on a spiral,
-two smaller children on each limb, and an opaque foliage tuft at every child tip. Branch count
-and recursion depth are fixed, so catalogue construction stays linear in emitted vertices.
-Triangles are emitted clockwise from the front, which is what Godot treats as the front face;
-the lathe walks rings in increasing angle, so `_tri` reverses the order. Emitted the other way
-every surface is inside out and back-face culling makes a small dome render as a hollow ring.
+The scatter runs on two grids. A terrain block with any part of it inside `_fine_tier_radius()`
+(the longer of the near canopy and the understory) is carried as `PATCH_SUBDIVISION` squared
+sub-patches of `127.5 m`; every block beyond it stays one `510 m` terrain patch. Only the near
+canopy and the understory have bands narrower than a terrain patch, so only they need the fine
+grid. Everything past the near band draws one distant crown mesh that distance picks per patch,
+which needs no band at all. A patch key therefore carries the grid divisor it belongs to:
+without it a coarse key and a fine key name the same square, and a block changing tier collides
+with its own cached patch. `_key_span()` turns that divisor back into a span, so a caller
+cannot measure a distance on one grid and a range on another.
+
+`TREE_NEAR_FLOOR_M` is a quality floor, not a budget. At `800 m` a 15 m tree covers 13 pixels,
+which is where the branched crown and its cards stop reading as a tree and the lathe cone can
+take over unnoticed. The grid no longer sets it.
+
+Canopy trees, yard plants and rocks are Blender models: `tools/model_trees.py` and
+`tools/model_landscape.py` author them, and `tools/prepare_tree_models.py` converts them into
+`godot/assets/models/vegetation/`. Generated ground cover (blueberry, lingonberry, grass, fern,
+prostrate juniper and a spruce sapling) is still procedural: crossed cards and thin lathes built
+at catalogue construction, linear in emitted vertices. Triangles are emitted clockwise from the
+front, which is what Godot treats as the front face; the lathe walks rings in increasing angle,
+so `_tri` reverses the order.
 Per-face vertex colours carry the crown shading. A MultiMesh instance colour multiplies
 that vertex colour rather than replacing it, so a per-placement tint costs no shader and
 keeps the face shade: the near band applies one, derived from disjoint bits of the
-appearance seed, spanning `0.94` to `1.06` in value with opposing red/blue shifts of
-`±3.5%`. The mid and far levels carry no instance colours, because a tree there is a few
+appearance seed, spanning `0.82` to `1.18` in value with opposing red/blue shifts of
+`±10%`. Hedge modules take none, because a row of modules would show one colour per metre. The mid and far levels carry no instance colours, because a tree there is a few
 pixels wide and the tint averages to one across a patch.
 
-The mesh catalogue is indexed by species, then variant, then near-to-far level. Conifer and
-broadleaf have 12 variants, bush and rock 6. Variants differ in crown proportions,
-widest-point height, taper, trunk dimensions and raggedness, all derived from the variant
-index, and stay within their species: no variant is more than `1.3x` the height of the
-smallest in its species. The 84 mesh levels share four materials: near tree and bush
-bark/foliage geometry uses one wind `ShaderMaterial`, near tree and bush cards use one
-scissor wind `ShaderMaterial`, distant crowns share one scissor/backlight `ShaderMaterial`,
-and rocks keep the original `StandardMaterial3D`. Distant crowns remain static. Only the near
-level selects a variant; the mid and far levels use variant zero and the whole species
-population, so distance does not multiply draw calls. Those two levels also share one
-instance per species: they draw the same transforms with a different mesh, so crossing the
-mid boundary swaps a mesh on the buffer already uploaded instead of rebuilding the patch.
-`TREE_MID_M` therefore selects a mesh per patch and is not a visibility band, which leaves
-`TREE_NEAR_M` as the only boundary the band-width invariant applies to. A near patch has 38
-MultiMesh nodes, 36 of them in the near band; a patch beyond the near band has two.
+The mesh catalogue is indexed by species, then variant, then level. Conifer and broadleaf
+have 12 variants with two levels each: the full tree and the reduced one past
+`TREE_NEAR_DETAIL_M`, cycling over three authored models of each form (pine and spruce, birch
+and aspen; two variants of every three take the first). Past the handover every tree is its
+own hemi-octahedral impostor. Bush has 15 variants: the six generated ground-cover plants, then
+six yard shrubs and three clipped hedge modules that only a named brush preset plants
+(`SEED_VARIANT_COUNTS` keeps the generator's seed on the first six). Rock has six Blender
+boulders on one tiled stone material. Each authored form has one wind material for its wood and
+one scissor card material for its foliage; ground cover shares one pair.
 
 Patch upload is the cost that governs this, because a patch uploads in a single frame and a
 frame at 60 fps is `16.7 ms`. What a patch costs depends on how far it is. Past the near band
@@ -563,6 +572,971 @@ them, not that the GPU stops drawing them.
 Canopy density is still roughly one tree per 330 m2 against about one per 10 m2 in a real
 stand, and closing that gap needs a canopy representation for mid and far distance rather
 than more instances.
+
+### The forest was a CPU cost pretending to be a GPU one (2026-09-21)
+
+The player reported that a brush-painted stand destroyed performance, that the tree grid read
+as visible blocks, and asked for more LOD levels. All three have one root cause: a vegetation
+patch was a terrain render patch. A `510 m` patch puts a `721 m` floor under the near band,
+which is the only reason the near cards were drawn out to `800 m`.
+
+Cutting the vegetation grid off the terrain grid removed that floor, and the near band was
+then set to `200 m` on the strength of a brush-painted stand, where the band is the largest
+single GPU cost. That was wrong. **A painted stand is about 531 stems/ha against the
+generator's 30.47, so it is the worst case by construction, not the normal one.** Experiment
+E17 swept the band at the generator's own density: `200 m` to `800 m` costs `0.94 ms` of GPU.
+The short band bought nothing in normal play and made every tree past `200 m` a smooth cone at
+53 pixels, which the player saw immediately. The floor is back at `800 m`, and the answer to a
+painted stand is its stem count, not a band every normal view has to look at.
+
+With the band restored, E17 showed the frame spending `27.66 ms` while the GPU spent `12.54 ms`.
+The scatter had become a CPU cost. Two things caused it, both consequences of subdividing:
+
+- The staleness sweep read two generations across the language boundary per sub-patch. Sixteen
+  sub-patches share one terrain owner, so fifteen of every sixteen reads repeated an answer the
+  sweep already had: 5650 calls a frame at 2518 resident patches. The sweep now caches the pair
+  per owner. `_is_patch_stale` and `_upload_patch` called from anywhere else still read live
+  values, because their answer is about the moment they are asked, and `_upload_patch` stamps
+  what it reads, so a cached value there loses an edit.
+- Subdivision applied to the whole `4500 m` scatter when only the near canopy and understory
+  need it. Restricting it to `_fine_tier_radius()` took resident patches from 2518 to 415 and
+  frame time from `27.66 ms` to `13.01 ms` with the GPU unchanged. The overhang between frame
+  time and GPU time went from `15.1 ms` to `0.22 ms`.
+
+### Tree shadow casting is the largest cost in a close forest view (2026-09-22)
+
+Experiment E19 prices shadows from inside a painted stand, in the shipped configuration. The
+pose runs near `86 ms`, which heats the card enough that trial order alone moves the result by
+several percent, so the authored range is repeated between every measurement and the drift is
+fitted out. Baselines came in at `85.33`, `86.39`, `88.25` and `88.23 ms`.
+
+| trial | GPU p50 | fitted baseline | saving | draws | primitives |
+|---|---:|---:|---:|---:|---:|
+| authored, shadow range `420 m` | `85.33` | - | - | 7316 | 106.0 M |
+| trees do not cast | `48.13` | `85.86` | **`37.72`** | 3476 | 37.1 M |
+| shadow range `250 m` | `77.73` | `87.32` | `9.59` | 5684 | 78.1 M |
+| shadow range `150 m` | `67.88` | `88.24` | `20.35` | 4724 | 60.3 M |
+
+**Tree shadow casting is `37.7 ms` of an `86 ms` frame, and 65 percent of every primitive in
+it.** The draw and primitive counts fall monotonically with the range and corroborate each
+step, which is what makes the fitted savings trustworthy at this drift.
+
+This was a consequence of the near band and the shadow range being set independently. Trees
+cast only at LOD0 in that measurement, the near band reached `800 m` and
+`SHADOW_MAX_DISTANCE_M` was `420 m`, so the full `420 m` disc of branched crowns and alpha
+scissored cards was re-rendered into four cascades. When the band was `200 m` that disc was
+the band; once it was restored the range was what bounded it, and nothing in the vegetation
+renderer knew the range existed. The section below is what replaced that caster.
+
+A whole-scene control that disabled the sun's shadows was attempted and discarded: it reported
+draw and primitive counts identical to shadows being on, so the lever did not take effect. The
+trees-do-not-cast trial isolates the same quantity and did behave, so the control was dropped
+rather than debugged.
+
+### Trees cast from the lathe crown, not from the tree (2026-09-22)
+
+The standard answer to the cost above is the one every open-world renderer uses: a tree does
+not cast from the mesh it is drawn with. A shadow is a blurred patch on ground a few metres
+away, so it needs a silhouette, not structure, and alpha scissored foliage is the worst
+possible caster because every shadow fragment does a texture fetch and a discard.
+
+The patch already holds the cheap caster. Its distant level is one `MultiMesh` over the same
+trees as the near level, and inside the near band it is simply held out of sight. Reusing it
+was not free, though: a rendered probe put a `SHADOWS_ONLY` caster inside and outside its
+visibility range and counted shadowed ground pixels, and got `2538` in range against `0` out
+of it, with the in-range case reproduced exactly on a repeat. **A range culled instance does
+not cast**, so the caster has to be an instance of its own that is never culled.
+
+The renderer therefore adds one `SHADOWS_ONLY` instance per tree species per patch. It shares
+the distant instance's `MultiMesh` resource, so it shares its transforms and follows its
+mid/far mesh swap, and its visibility range covers the whole patch life. Every visible
+instance stops casting. That is two nodes per patch and no new geometry, transform copy or
+buffer upload. Bush and rock still never cast, and the runtime toggle reaches the proxy in
+resident and cached patches, hiding it when casting is off so an `OFF` proxy cannot draw.
+
+E19 re-run on the same pose and the shipped configuration, against the table above:
+
+| trial | GPU p50 before | GPU p50 after | draws | primitives |
+|---|---:|---:|---|---|
+| authored, shadow range `420 m` | `85.33` | `58.92` | 7316 → 3652 | `106.0 M` → `44.59 M` |
+| trees do not cast | `48.13` | `48.24` | 3476 → 3476 | `37.1 M` → `37.04 M` |
+| shadow range `250 m` | `77.73` | `58.59` | 5684 → 3568 | `78.1 M` → `41.14 M` |
+| shadow range `150 m` | `67.88` | `57.81` | 4724 → 3528 | `60.3 M` → `39.36 M` |
+
+**The shipped configuration goes from `85.33 ms` to `58.92 ms`, a `26.4 ms` saving of `31%`.**
+The trees-do-not-cast trial is the control that makes the two processes comparable: it carries
+no tree shadows in either build and reproduced to `0.11 ms`, `0` draws and `0.2%` of
+primitives. Shadow primitives fall from `68.9 M` to `7.55 M` and shadow draw calls from `3840`
+to `176`. What is left of tree shadow cost is `11.06 ms` against a fitted baseline, down from
+`37.72 ms`.
+
+The sweep also loses its point, which corroborates the diagnosis: shortening the range to
+`250 m` now buys `0.9 ms` and to `150 m` buys `1.9 ms`, against `9.59` and `20.35 ms` before.
+The range was expensive because the caster was expensive.
+
+The cost is in the shape, and up close it was not acceptable. A proxy is a solid volume
+standing exactly where the branched crown stands, so every foliage card is inside its own
+caster and receives its shadow: close trees came out banded with hard dark streaks across
+the crown, and a dense clump went dark through its lower half. The proxy's trunk is a `3.1`
+to `5.0 m` stub against the real tree's full trunk, so at `SHADOW_NORMAL_BIAS 1.25` and
+`SHADOW_BLUR 1.80` the stem shadow disappeared entirely and a tree cast a bare ellipse.
+
+So the proxy is a shadow LOD, not a replacement, which is also how it is done elsewhere.
+Inside `SHADOW_PROXY_M` a patch casts from the branched tree exactly as before and builds no
+proxy at all; between that and the sun's own range it casts from the proxy; past the range it
+casts nothing, because nothing it holds can reach a cascade. The choice is one value per
+patch, rebuilt on the same sweep that already rebuilds on the near band and the understory,
+and it is deliberately independent of the runtime shadow toggle so that toggle never has to
+rebuild a placement.
+
+`SHADOW_PROXY_M` at `120 m` costs `6.8 ms` of the `26.4 ms`:
+
+| build | GPU p50 | draws | primitives | tree shadow cost |
+|---|---:|---:|---:|---:|
+| branched tree casts everywhere | `85.33` | 7316 | `106.0 M` | `37.72` |
+| proxy casts everywhere | `58.92` | 3652 | `44.59 M` | `11.06` |
+| **proxy past `120 m`** | **`65.69`** | — | `62.13 M` | `18.09` |
+
+The trees-do-not-cast control came in at `48.13`, `48.24` and `48.00 ms` across the three
+separate processes, which is what licenses comparing them. `19.6 ms` of the `26.4 ms` survives
+the gate, and the two nearest of the four cascades keep the correct caster.
+
+### The near band is the last big cost, and the grid is a free 13 ms (2026-09-22)
+
+With the shadow proxy in, `18 ms` of the close pose is tree shadows and about `44 ms` is
+vegetation drawn. E20 prices that at the E19 pose and the painted density, sweeping the band
+the branched tree is drawn in and the grid it is carried on. Baselines ran at positions 1, 3,
+5 and 7 and came in at `65.84`, `66.34`, `70.38` and `69.97 ms`, a `6.3%` drift that is fitted
+out below.
+
+| trial | GPU p50 | fitted baseline | saving | draws | primitives |
+|---|---:|---:|---:|---:|---:|
+| near band `800 m`, subdivision 4 | `65.84` | – | – | 4708 | `62.19 M` |
+| near band `400 m` | `43.74` | `66.49` | `22.75` | 3399 | `43.03 M` |
+| near band `200 m` | `34.67` | `68.13` | **`33.46`** | 2839 | `33.85 M` |
+| subdivision 8 | `56.05` | `69.78` | **`13.73`** | 10960 | `47.40 M` |
+
+**The branched tree drawn from `200 m` to `800 m` costs `33.5 ms`.** E17 priced the same band
+at the generator's own density at `0.94 ms`, so this is the painted stand's own cost and
+nothing else. It is now larger than the shadow cost, and it is the ceiling on what a level
+between the branched tree and the lathe could win.
+
+**Subdivision 8 is worth `13.7 ms` and nothing on the CPU.** It cuts primitives by `24%` while
+raising draw calls from 4708 to 10960, and the frame-to-GPU overhang stayed between `0.13` and
+`0.25 ms` in every trial including that one, so the finer cull pays for its own draw calls
+several times over on this GPU. The pose is static, though, and patch churn while the camera
+moves is what made subdivision expensive before the two-tier grid, so this wants a moving
+camera before it ships. It did not survive one; see the next section.
+
+### The branched tree at half the wood is worth 26 ms (2026-09-22)
+
+The canopy had two authored levels and a 9.4x step between them. A third now sits between
+them, catalogue index 1, and the two lathes move to 2 and 3.
+
+**It cuts wood and keeps every card.** Index 1 omits the depth-1 child branch tubes and the
+solid foliage tufts behind the cards, and turns the trunk lathes from five sides to four.
+Primary bough counts are untouched at 14, 20 and 12 for pine, spruce and broadleaf, so the
+silhouette is the same one. Every card's arrays are byte-identical between the two levels
+across all 24 variants, `_crown_envelope` is unchanged, and both levels use the same cached
+wind and card materials. The distant coverage and radiance constants still derive from index
+0 and did not move.
+
+| form | level 0 opaque | cards | level 1 opaque | cards | total retained |
+|---|---:|---:|---:|---:|---:|
+| pine | 727 | 168 | 212 | 168 | `42.5%` |
+| spruce | 1005 | 240 | 276 | 240 | `41.5%` |
+| birch | 821 | 144 | 340 | 144 | `50.2%` |
+| aspen | 721 | 144 | 260 | 144 | `46.7%` |
+
+**A patch picks its level the way it already picks its crown.** `TREE_NEAR_DETAIL_M` is a
+mesh swap on the instance already uploaded, not a visibility band, so it needs no band wider
+than a patch and adds no instance, no draw call and no second copy of the transforms: a
+populated near patch still carries 38 nodes. A band would have broken the rule this file
+states twice, because 45 m is far narrower than the 180 m diagonal of a 127.5 m sub-patch.
+The switch is therefore per patch, and a patch changes level as a whole.
+
+**E23 prices it.** Same painted stand and pose as E20, sweeping the handover distance. `d800`
+draws the whole near band from the branched tree, which is what shipped. `d1` draws all of it
+from the reduced level. Controls ran at positions 1, 3, 5 and 7 and drifted `0.33 ms` per
+position, fitted out below.
+
+| handover | GPU p50 | fitted baseline | saving | draws | primitives |
+|---|---:|---:|---:|---:|---:|
+| `800 m` (shipped) | `65.27` | – | – | 4708 | `62.19 M` |
+| `180 m` | `46.10` | `65.70` | `19.61` | 4708 | `44.44 M` |
+| `45 m` | `40.53` | `66.37` | **`25.84`** | 4708 | `34.27 M` |
+| `1 m` | `41.49` | `67.03` | `25.54` | 4708 | `31.75 M` |
+
+**Nearly all of it arrives by 45 m, and nothing arrives after.** Moving the handover from
+45 m to 1 m removes another `2.5 M` primitives and buys no time at all, inside the drift
+bracket. The detailed tree can therefore be kept as close as it looks best; there is no
+performance argument for pushing the handover nearer than 45 m, and `180 m` still returns
+three quarters of the saving if the switch proves visible.
+
+**The saving is geometry, not fill.** Draw calls are identical in every trial and primitives
+fall `45%`. E18 found the near cost follows card area rather than plane count, and that
+remains true of the cards; this is the other half of the near cost, and the branch tubes were
+carrying it. They are dense, thin and mostly inside the foliage, they are submitted again by
+the depth pre-pass, and again by up to four shadow cascades within `SHADOW_PROXY_M`.
+
+Headless suites: appearance, edit, invalidation and land cover all pass, each checked for
+both `SCRIPT ERROR` and `ERROR:`. Startup catalogue construction goes from `113` to `148 ms`,
+once, and the maximum patch upload is unchanged within noise at `19.3` to `20.2 ms`. The
+handover distance is a starting point for a rendered sweep, not a tuned result: at 1080p and
+the default 75 degree vertical FOV the projection is 703.7 px/rad, so a 15 m tree covers
+about 235 px at 45 m and about 1056 px at 10 m.
+
+### The finer grid does not survive a moving camera (2026-09-22)
+
+E21 pans the E20 pose `800 m` in `20 seconds`, through the middle of the `1600 m` painted
+square so the whole traversal stays inside the stand. E22 repeats the pan and caps the
+per-frame upload budget instead of deriving it from the subdivision. Both ran against the
+release library, which is the build the CPU side has to be judged on.
+
+**The GPU saving is real and it reproduces while moving.** Subdivision 8 came in `10.40 ms`
+below subdivision 4 back to back at the standing pose, and `10.33` and `10.04 ms` below the
+fitted baseline across the two panning trials.
+
+**The frame does not follow the GPU.** The quantity that decides this is the frame time minus
+the GPU time at the same percentile: it is what the CPU adds after the GPU has finished.
+
+| trial | grid | budget | GPU p99 | frame p99 | overhang | frame p999 |
+|---|---:|---:|---:|---:|---:|---:|
+| E21 pan a | 4 | 16 | `68.65` | `70.19` | `1.54` | `75.24` |
+| E21 pan b | 4 | 16 | `72.14` | `72.76` | `0.62` | `74.20` |
+| E21 pan c | 4 | 16 | `70.56` | `71.16` | `0.60` | `75.43` |
+| E21 pan | 8 | 64 | `66.85` | `75.14` | **`8.29`** | `89.33` |
+| E21 pan | 8 | 64 | `66.74` | `77.01` | **`10.27`** | `87.79` |
+| E22 pan a | 4 | 16 | `69.50` | `70.12` | `0.62` | `70.55` |
+| E22 pan b | 4 | 16 | `70.99` | `71.38` | `0.39` | `72.28` |
+| E22 pan c | 4 | 16 | `68.03` | `69.05` | `1.02` | `70.60` |
+| E22 pan | 8 | 64 | `63.78` | `84.80` | **`21.02`** | `90.95` |
+| E22 pan | 8 | 16 | `61.26` | `88.08` | **`26.82`** | `95.19` |
+| E22 pan | 8 | 8 | `65.96` | `70.67` | **`4.71`** | `91.81` |
+
+Six subdivision 4 trials hold the overhang at or below `1.54 ms`. Five subdivision 8 trials
+put it between `4.71` and `26.82 ms`. The tail figure itself is noisy from run to run, and the
+direction is not: the finer grid buys `10 ms` of GPU median and hands back more than that in
+CPU spikes, which is a stutter rather than a throughput gain.
+
+**The per-frame upload budget is not the cause.** The budget is the subdivision squared, so a
+finer grid also lets one frame build four times as many sub-patches, which was the obvious
+suspect. Capping it at 16 made the tail worse, not better, and raised the frames carrying
+vegetation work from 10 to 46. Capping it at 8 pulled p99 back to `70.67 ms` but left p999 at
+`91.81` and 116 frames carrying work. The spike is somewhere else.
+
+**The residency sweep is what scales.** The sweep rebuilds `wanted` from every resident
+terrain block by expanding each into the sub-patches it owns, which is the subdivision squared
+per block, then retires, restores and sorts against that set. It runs when the camera changes
+cell, which during a pan is often. Resident vegetation patches went from 483 to 1347 between
+the two grids. The steady per-frame scan under `if queue.is_empty()` is not the problem: at the
+median the frame tracks the GPU within `0.4 ms` at both subdivisions.
+
+**Subdivision 8 is therefore not taken.** `PATCH_SUBDIVISION` stays at 4. Taking the `10 ms`
+needs the sweep made incremental, so that crossing a cell costs the difference between two
+residency sets instead of a fresh construction of the whole one. That is real work and it is
+not a constant change.
+
+### Authored trees, silhouette shadows, yard plants and rocks (2026-09-27)
+
+**Trees.** The canopy is 24 Blender trees (`tools/model_trees.py`, run on the owner's M2 Pro
+Mac through `imgs/tree_models/mac_build.sh`), built to forestry targets for forest-grown and
+yard forms of pine, spruce, birch and aspen: 15 to 25 m tall, 3,456 to 3,996 triangles each,
+with a reduced level of 636 to 914 triangles that keeps the trunk and main limbs and one card
+in five, grown to cover the same crown. The shaders divide each form's atlas and bark tile by
+their measured means, so vertex colour stays the mean albedo that the impostor bake reads. The
+procedural branch skeletons, their lathe proxies and `vegetation_distant.gdshader` are gone.
+
+**Shadows.** Past `120 m` the old shadow caster was one solid lathe per species, sized to the
+mean envelope of all its variants. It cast a broad opaque blob under every narrow open crown,
+and a closed stand cast a dark halo past its edge. Every tree now casts from
+`vegetation_impostor_shadow.gdshader`: the tree's own baked view nearest the light, one fetch
+per texel, set back `0.12` of its bounds along the light so a crown does not shadow its own
+sunlit half. The branched and reduced levels never cast. Trees receive real shadows out to the
+shadow range less `20 m`, fading over `80 m`; the canopy shade term covers only what lies
+past it.
+
+Measured with `zz_look_probe.gd` experiment `E24` (a painted stand of 164,099 plants over
+`1600 m`, GTX 1060, `1280x720`, GPU p50, matched against `HEAD` 1d31078d by restoring its
+files and re-running): near sweep `34.8 ms` against `31.4 ms`, aerial `29.2-31.2 ms` against
+`31.0-32.8 ms`. Before the silhouette caster the same near sweep cost `113 ms` with every tree
+full-detail, `59 ms` with the reduced level, and `42 ms` with a single-fetch caster from `45 m`.
+These runs are for the build before the dead code was removed; the removal leaves every drawn
+and cast instance unchanged.
+
+**Yard plants.** Lilac, spirea, rugosa rose, cotoneaster, mountain pine and columnar juniper
+(1,360 to 2,240 triangles), and three clipped hedge modules (low cotoneaster, medium currant,
+tall spruce; 896 triangles each, 1 m long, a closed body under a dense layer of leaf cards), authored by `tools/model_landscape.py`. They are
+bush variants 6 to 14 and brush presets 11 to 19. Their occupancy class `Landscape` spaces
+them `0.5 m` apart and clears only a `0.3 m` disc around the stem, because a yard shrub or a
+hedge stands beside a kerb or a wall by design; ground cover keeps its `2.5 m` clearance. They
+are sunk `5 cm` rather than a tree's `25 cm`. `plant_vegetation_line` lays a hedge: one module
+per metre from one end to the other, never more than one module length apart, each facing along
+the row at full size, skipping a module that would stand on a surface or on the same hedge. It
+is O(row length), bounded at `256 m`, and is one undo step. The renderer draws a hedge module
+upright, untinted and unscaled, because any per-module spread shows each metre. A module is
+never scaled, so its scale lane carries the ground's rise across its metre instead, sampled
+when the patch is fetched, and the renderer shears the module along its row to that rise with
+its sides kept vertical. Level modules climbed a slope in visible steps.
+
+**Rocks.** Six granite boulders from `0.4` to `2.7 m`, 320 triangles each, on one tiled albedo
+and normal map with lichen and moss in vertex colour. The generator still decides where rocks
+go. They and the yard plants now cast shadows; ground cover still does not.
+
+### Each tree hands over to its reduced level on its own distance (2026-09-30)
+
+A patch used to swap every near tree between the full and the reduced level at once, when the
+distance from the camera to the patch centre crossed `TREE_NEAR_DETAIL_M` (`45 m`). A fine patch
+is about `128 m` across, so trees `15 m` from the camera changed with trees `100 m` away. There
+was no fade and no hysteresis, and an orbit moves the camera, so a small turn flipped a patch
+back and forth. At `45 m` a tree is about `235 px` tall and the reduced level is plainly a
+different tree: forcing every near patch from full to reduced changes `2%` of the pixels of a
+generated-forest view from `22 m` up and `41-51%` from inside painted stands.
+
+Each tree now dissolves from the full into the reduced level by its own 3D distance over
+`45-55 m` (`TREE_DETAIL_FADE_M`), dithered in screen space like the impostor handover. The
+impostor, reduced and full levels keep adjacent ranges of one threshold, so each pixel of a
+tree is drawn once. The full level's fine branches leave at the middle of the fade. The reduced
+level's surfaces use their own materials (`reduced_level`). Each canopy variant now carries a
+third mesh that holds both levels. A patch still swaps one mesh per variant on the buffer it
+has uploaded, from the box of its tree origins: the full level when the whole box is nearer
+than the band, the reduced level when the whole box is past it, and both levels otherwise.
+That choice decides only what is drawn, not how it looks: forcing every near patch to the
+two-level mesh changes `0.000%` of the pixels of both views above. The catalogue holds both
+levels' vertices a second time (estimated from the model files at about `5 MB`, not measured), and the impostor atlases re-bake byte-identical (only `source_sha256` moves).
+
+Matched runs on the painted stand at 1920 x 1080 (scratch profiler, `HEAD` copy against the
+change, interleaved, GPU p50):
+
+| View | `5f35792d` | Per-tree detail |
+| --- | --- | --- |
+| Inside the stand, `40 m` up, `-30` degrees | `40.51`, `40.62 ms` | `40.98`, `41.56 ms` |
+| Stand edge, `45 m` up, `700 m` back | `28.39`, `28.87 ms` | `29.13`, `28.58 ms` |
+
+The patches around the camera draw both levels, which adds `6%` of primitives in the stand.
+
+### Impostor quads cropped to their views (2026-09-30)
+
+A profile of three views at 1920 x 1080 with Godot's `--gpu-profile` (scratch probe, Kuopio
+world, wind frozen, 300 frames per state) found the trees cheap at the generator's density and
+expensive in a painted stand:
+
+| View | GPU p50, all | GPU p50, no vegetation | Tree cost |
+| --- | --- | --- | --- |
+| Generated forest, `150 m` up, `400 m` back | `18.76 ms` | `18.52 ms` | `0.2 ms` |
+| Generated forest, `420 m` up, `500 m` back | `26.06 ms` | `25.64 ms` | `0.4 ms` |
+| Painted stand (preset 4, `1.2 km` square), eye level | `39.03 ms` | `13.46 ms` | `25.6 ms` |
+
+In the stand the depth pre-pass took `16.3 ms` and the directional shadows `8.2 ms`, against
+`0.9` and `0.4 ms` with no vegetation. Drawing every tree as an impostor removed three
+quarters of the primitives but left both passes where they were. With no impostors they fell
+to `8.1` and `3.0 ms`. Halving every impostor quad about its centre took the pre-pass from
+`17.2` to `10.1 ms`, so the cost was fill: each impostor is a square as wide as its form's
+bounds, a pine covers about a twentieth of its view, and every other pixel ran the
+alpha-tested fragment before it was discarded.
+
+The bake now records, per view, the frame UV rectangle holding every texel with coverage
+(`frame_bounds` in `tree_impostors.json`; a view's rectangle averages `19%` of its frame).
+A view's UV is linear in the quad offset, so the vertex stage maps each rectangle of the
+three blended views back to a parallelogram on the quad and shrinks the quad to their bounds.
+The rectangles are padded by the mip the view is sampled at, estimated from the tree's size
+on screen, because a texel at mip `k` spans `2^k` level-zero texels and the bilinear filter
+reaches half of one further. The shadow caster crops its one view the same way against the
+shadow map's texel size. The shared view grid and the crop live in
+`vegetation_impostor.gdshaderinc`. The atlases re-bake byte-identical.
+
+| View | GPU p50, full quad | GPU p50, cropped |
+| --- | --- | --- |
+| Painted stand, eye level | `39.86`, `41.59 ms` | `28.81`, `28.71 ms` |
+| Generated forest, `150 m` up | `19.10`, `19.21 ms` | `18.51`, `18.53 ms` |
+| Generated forest, `420 m` up | `26.32`, `26.53 ms` | `25.47`, `25.50 ms` |
+
+In the stand the pre-pass falls from `17.2` to `10.6 ms` and the shadows from `8.4` to
+`3.0 ms`. The crop draws the same picture. In the level-match scene with impostor shadow
+casters added and the shadow range extended to cover the stand, cropped and full quads differ
+in about `2%` of crown pixels at the handover distance and far fewer at `900 m`. Ninety per cent
+of those differ by one level, the rest are single texels at the alpha cut. Coverage matches to
+three pixels and the mean image colour to within `0.013` of a level. Game-scene screenshots
+could not show this: two renders of one state there differ more than the two quads do.
+
+### Impostor refit to the authored trees — VEG-12 (2026-09-29)
+
+`IMPOSTOR_RADIANCE_MATCH` and `IMPOSTOR_VOLUME` were fitted to the procedural trees and were not
+refitted when the authored trees replaced them. `vegetation_level_match_test` failed 42 of 108
+poses on the merge at `adca524a`: the far conifer rendered `0.67-1.04` and the far broadleaf
+`0.75-1.01` of the near luminance. A scratch probe measured the near level once per pose and the
+impostor over a grid of (lift gain, wrap floor, wrap gain) with the radiance match at one. No
+grid point fitted the conifer (best spread `0.163` against the band's `0.12`). Two faults sat
+under the constants.
+
+**Small crowns vanished at coarse mips.** Seen steeply from above at `900 m`, with lighting off,
+the conifer impostor drew `0.79` of the near colour where a side view drew `0.90`. The baked
+texels hold one colour at every mip, and forcing mip zero made the ratio flat at every
+elevation. Eight of the twelve conifer variants are pines (linear luminance `0.18`) with a crown
+one or two texels wide from above at mip 3, and four are spruces (`0.07`) with larger crowns.
+The bake's coverage correction counted texels over the threshold, which is what a nearest
+sampler draws, and set a lone crown texel to `103` against the cut of `102`. The impostor
+samples bilinearly, and a lone texel at `103` filters over the cut almost nowhere: from above the
+pines vanished, the spruces stayed, and the stand darkened. Above one texel per frame
+`bake_tree_impostors.py` now measures coverage as the bilinear sampler draws it
+(`filtered_coverage`, reconstructing each frame between texel centres and clamping to the edge
+texel as the frame inset does) and bisects for the smallest alpha scale that keeps the frame's
+level-zero coverage (`correct_filtered`). The filtered top-frame coverage of pine variant 0 was
+`0.029`, `0.001` and `0` at mips 2, 3 and 4. It is now `0.026` at all three. A crown one texel
+wide at full alpha keeps about `0.94` of a texel through the filter, so the correction saturates
+there rather than overshoot. From above the stand now covers `82%` of the near level's crown
+pixels. The rest is lost to blending three frames and filtering between mips.
+
+**The impostor drew no sun highlight.** Against a low sun ahead at the handover distance (camera
+`3°`, sun `15°`) the near pines read pale, and the impostor rendered `0.79` of them. The near
+cards take the engine's GGX sun term. The impostor had dropped it because with the lifted normal
+the grazing Fresnel term lit it `47%` above the near crown. The impostor now draws that term from
+the baked normal, not the lifted one, scaled by `IMPOSTOR_SHEEN`. The normal passes from the
+fragment stage to the light stage only, so it takes no interpolant. Timed at two far poses,
+`12.83-12.85` against `12.86-12.87 ms` and `11.08-11.16` against `11.16 ms` of GPU p50 with and
+without the term, which is inside the run-to-run spread.
+
+Both species then fit best at one response: lift gain `2.0`, wrap floor `0`, wrap gain `0.75`,
+sheen `0.5`, with a radiance match of `1.033` (conifer) and `1.097` (broadleaf). The test reads
+sRGB pixels, so the match moves the ratios by about its 1/2.2 power and was set on the test
+itself. All 108 poses pass: the conifer renders `0.899-1.101` and the broadleaf `0.917-1.079`.
+
+### Forest from a distance (2026-09-28)
+
+At the generator's density a stand of authored trees read, from a few hundred metres up, as thin
+trees each over a blurred brown blot (`imgs/reference/game/28-09-above.png`,
+`28-09-top-down.png`). Probe renders with tree shadows off, with the sun's shadows off and with
+no trees drawn all kept the blots; zeroing the land cover removed them. They were the forest
+floor: a lone crown fills at most about `0.45` of its `8 m` texel, bilinear filtering spreads it
+over `16 m`, and the litter hue and past-cascade shade drew that as a disc larger than the tree.
+Litter and shade now follow `floor_cover`, the coverage weighted by a smoothstep from
+`CANOPY_FLOOR_OPEN_COVER` (`0.35`) to `CANOPY_FLOOR_CLOSED_COVER` (`0.7`), so lone trees stand
+on meadow and a closed stand keeps its floor. The sky term and the far stand-in still read the
+raw coverage.
+
+The authored crowns are open, so far trees covered little of the screen: over the same far
+forest the dark share was `28%` for the old closed domes (`26-09-forest-mole.png`) and `4-6%`
+for these crowns without the blots, at a similar crown luminance. Past the shadow range each
+impostor now grows from its baked size to `CROWN_GROWTH` (`1.6`) over `CROWN_GROWTH_SPAN_M`
+(`1000 m`), scaled about its bounds centre in the vertex stage, which raised the dark share in
+a far probe band from `11%` to `17%`. The handover and every cast shadow are nearer and see
+the baked size; `vegetation_level_match_test` pins the growth to one because it compares
+light, not size.
+
+Past `4 km` the ground stands in for the stand, and a dense painted stand turned into a flat
+brown patch at the handover (`28-09-far-thick-brown.png`). `CANOPY_FAR_ALBEDO` was the mean of
+the procedural trees. It is refitted by measurement: a painted managed stand `5.2 km` away,
+seen from `450 m` and `1500 m` up, rendered as ground at two albedos and as trees drawn to
+`12 km`, gives per-channel solutions of `0.129-0.139`, `0.173-0.185` and `0.049-0.061` over the
+densest stand pixels. The new `(0.135, 0.18, 0.06)` renders the stand at sRGB `(107, 124, 101)`
+against `(105, 124, 98)` for the trees, where the old albedo gave `(102, 114, 98)`.
+
+One albedo still drew the stand flat. Over the densest stand pixels the broad variation already
+matched the trees (luminance standard deviation `9.0` against `9.0` after an 8-pixel box), but
+the pixel-scale variation was `5.0` against `10.2`, and `1.1` against `2.5` in green minus red.
+The stand-in now varies its albedo by crown: value noise on a world-fixed `8 m` cell, scaled by
+`CANOPY_FAR_SPECKLE` (`0.8`), with a per-channel tilt of `(1.2, 1.0, 0.73)` so bright cells turn
+yellow and dark ones blue while the mean stays on the fitted albedo. A drawn crown stands
+upright, so each pixel of a far stand shows about one crown and the grain keeps one strength at
+any distance. The ground is foreshortened, so along the view one pixel covers several cells. A
+single tap there shimmers, and a first version that doubled the cell until it spanned two pixels
+drew dark and light blotches from higher up. Each pixel now sums up to eight taps along its
+longer footprint axis and divides by the root of their count, which keeps one tap's variance.
+Against the drawn trees, pixel-scale luminance variation is `10.1` against `10.2` from `450 m`
+up and `8.5` against `8.5` from `1500 m`, and the 8-pixel variation `9.0` against `9.0` and `6.6`
+against `6.9`. GPU p50 on the GTX 1060 at the `1500 m` pose is `15.18 ms` with eight taps
+against `15.16 ms` with one, within the same clock state; one-second captures, so only an upper
+bound on a small cost.
+
+### Gradual brush — VEG-11 (2026-09-27)
+
+One stamp used to plant its preset's full density, so a large brush gave a closed forest or
+nothing. `paint_vegetation` now stops after `PlantClass::stamp_limit`: one plant per `160`
+spacing squared of disc area, and at least one. That is `10` stems/ha for trees, `98` for
+ground cover, `250` for yard shrubs and `7` for rocks. New darts are accepted in rising rank,
+the thinning hash divided by the preset's acceptance, clump and edge influence, instead of an
+independent priority hash. A stamp that stops early therefore plants a prefix of the stand one
+unlimited stamp plants, and the next stamp continues it: repeated stamps reach exactly the
+single-stamp stand, then add nothing. Tombstoned generator sites are still restored first.
+The tool restamps a held plant brush every `0.1 s`, about `100` stems/ha a second, as one undo
+step, and stops repeating where a stamp added nothing until the cursor moves. Rust tests,
+benchmarks and the GPU probe pass `usize::MAX` or repeat to density, so their workloads keep
+the full stand. The per-owner reservation pass is removed; a restore uses `set_removed`.
+
+Matched release runs, 4 Rayon workers, `CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_INCREMENTAL=0
+RAYON_NUM_THREADS=4 cargo test --release --lib vegetation_brush_benchmark` and
+`vegetation_brush_class_benchmark -- --ignored`, commit `25ac6e33` against this change: a full
+`64 m` tree stamp `2.60` to `2.42 ms`, bush `12.06` to `11.35 ms`, rock `1.09` to `1.04 ms`,
+overlap repeats `2.04` to `1.81 ms` and `10.55` to `9.56 ms`, dense legacy cell `2.89` to
+`2.74 ms`. Stands differ by under 2% in count because the acceptance order changed. The new
+`held_full_256m` case, the largest tree stamp over a full managed stand (`10,952` stems,
+limit `206`), costs `21.7 ms`; a held stamp at that radius is a visible hitch, which is why
+the tool stops repeating over a full stand. A `64 m` stamp stays near `2 ms`.
+
+### A far stand is dark under its crowns (2026-09-26)
+
+A dense painted stand seen from about a kilometre read as floating
+(`imgs/reference/game/26-09-dense-floating.png`): a dark canopy over a band of lit trunks,
+standing on bright meadow. Past `120 m` no tree receives a cast shadow, and the canopy shade
+term that replaces those shadows was one value per instance, so the trunk zone of every far tree
+was lit like its crown top. In a real stand the crowns shade the space under them, and a stand
+seen from the side is bright at the top and dark toward the ground
+(`imgs/reference/aerial-kuopio-1.png`).
+
+The canopy shade now takes a base term. A surface at the instance origin keeps
+`CANOPY_BASE_SHADE` (`0.30`) of its light, rising by smoothstep to full at
+`CANOPY_BASE_TOP_M` (`8 m`) at unit scale. It applies only to canopy trees, because
+understory is ground cover and not a trunk under a crown. It fades in over `200-300 m`, which
+begins where the shipped handover ends, so the branched tree and its impostor never disagree
+about it while both are drawn. The impostor evaluates the term per fragment from the height of
+its card. A term taken at the card's corners and blended between them darkened the whole crown,
+because the card reaches below the ground, and it cost `0.05-0.08` of level match at the
+handover poses. From above, the card's height stays above the trunk zone, so a crown seen from
+above keeps the shade of the branched crown.
+
+`vegetation_level_match_test` passes over the same range as before, `0.881-1.111`. Its
+`900 m` poses take the term on both levels and moved by at most `0.006`. GPU p50 at two far
+poses on the GTX 1060 measures `7.77` and `6.72 ms` against `7.80` and `6.71 ms` without the
+term. The impostor bake was re-exported, because its source hash covers every float shader
+parameter; the atlases are byte-identical.
+
+A terrain term that reads the published coverage toward the sun, so a far stand shades the
+ground on its far side, was also tried. It changed a far stand's edge by `2.5` in 8-bit
+luminance and cost `0.05-0.10 ms`, so it was not kept.
+
+### Natural brush proposals and independent occupancy — VEG-05 (2026-09-26)
+
+Live painting now uses two hashed darts per conceptual cell of size `r / sqrt(2)`.
+Tree stems exclude other trees within `2.5 m`, ground cover excludes ground cover within
+`0.8 m`, and rocks exclude rocks within `3 m`. Tree crowns may overlap. The tree spacing
+permits clumps within the approximately 400–700 stems/ha managed-stand range; preset
+acceptance sets the mean density. Low plants can occupy the same ground as a tree.
+The `40 m` smoothed value-noise field modulates acceptance, and smoothstep thins the outer
+20% of each brush radius. Position, yaw, size, species, thinning and priority have separate
+hash salts from world seed and integer proposal identity. No new random state is saved.
+
+Each call evaluates proposals with Rayon, sorts by source priority, rank and integer ties,
+then accepts serially against the existing cells in both generator layers. Calls remain
+ordered input, so a dragged stroke stays visible as it happens. Since `VEG-11` one
+interactive stamp stops after a thin share, so repeating an identical stamp thickens the
+stand until the preset's density and then adds nothing; overlapping stamps do not reroll
+acceptance, although a later interior can fill an earlier soft edge. Existing generated plants participate when visible and not
+tombstoned; hidden authored plants continue to reserve space. Existing saves keep their
+positions even if their old placements do not satisfy the new minimum distance.
+
+The canopy owner cells, authored record, tombstones, stroke undo and SQLite schema are
+unchanged. Matching unpinned repaint restores an exact generated plant, subject to spacing;
+named or different-species repaint retains the tombstone and authors its chosen plant.
+Only tombstones propose generator positions: empty generator slots no longer form a second
+planting lattice. Understory tombstones restore/replace only their own occupancy class.
+Point placement obeys the same spacing. Authored bushes and rocks now use their small
+footprint when placing, rendering and picking, rather than the canopy footprint implied by
+their storage cell. Picking ties use layer, cell and insertion order; bulldoze validates the
+selected source and full plant value and removes one entry. Area clearing still removes
+all classes. Removing one coincident class does not authorize a queued command to remove
+another class at that position.
+
+Trees and rocks retain the `256 m` radius cap; ground cover is capped at `64 m`, including
+the tool's existing radius preview. Dart bounds are 169,362 trees, 103,968 ground-cover
+proposals and 118,098 rocks. At the minimum generator spacings, tombstone visits add at most
+4,225 canopy cells for trees, 289 canopy plus 4,225 understory cells for ground cover, and
+4,225 canopy plus 66,049 understory cells for rocks. The largest total is 188,372 proposal
+or tombstone visits for rock. These are bounding-square counts, before disc rejection.
+
+For `P` proposals, at most `G = 20` nearby owner cells per candidate, and `Q` authored entries
+inspected there, a call costs `O(P log P + P G + Q + local clearance)` and `O(P)` temporary
+memory, plus undo snapshots of changed cells. Dense legacy cell vectors can increase `Q`;
+there is no world-edit scan or new persistent spatial index. Proposal evaluation allocates
+nothing per candidate. Owner vectors are reserved before acceptance, and undo clones each
+changed cell only once per call. Serial acceptance is required because each accepted plant
+constrains later proposals.
+
+Preset acceptances are recalibrated for the darts, because the old values thinned a 4 m
+lattice. Density over clear ground, measured by the Rust suite: `602` stems/ha for each named
+tree, `523` for the managed-stand mix, `58` for scattered trees and `228` for small trees.
+Clumping moves the local density around those means; spacing caps it at the densest packing.
+
+Fresh verification on this tree: the full Rust suite passes, 1872 tests with 0 failures and
+66 ignored, and the vegetation tests also pass on one Rayon worker. The headless
+`vegetation_invalidation_test`, `vegetation_edit_test`, `vegetation_appearance_test` and
+`vegetation_land_cover_test` exit clean with no `SCRIPT ERROR` or `ERROR:`. A same-pose render
+of a painted pine stand no longer shows trunk rows.
+
+The stroke costs more, measured on release builds with 4 workers, one benchmark at a time. A
+`64 m` pine stamp took `0.74 ms` for 862 plants on the lattice and takes `2.71 ms` for 744 plants
+now. A `64 m` bush stamp places 5335 plants in `12.3 ms`, and repeating it over the same ground
+costs `10.8 ms` while it adds nothing. A rock stamp takes `1.09 ms`. 100,000 remote edits change
+none of these by more than `5%`. The tool stamps once per half radius of cursor travel, so
+a wide bush stroke is an occasional hitch, not a per-frame cost.
+
+### The forest floor loses the sky its crowns hide (2026-09-26)
+
+Inside a painted stand the floor read lighter than the meadow beside it
+(`imgs/reference/game/26-09-tree-planting-grid.png`). The floor takes the grass luminance with a
+litter hue, and its only darkening inside shadow range came from tree shadows, which remove the
+sun. The sky term, `GROUND_SHADOW_AMBIENT`, reached a floor under closed crowns in full. In
+shade the floor therefore kept the light of open ground in the shade of a house, and the pale,
+less saturated litter hue read as brighter than the grass. A same-pose render inside a
+`625` stems/ha pine stand measured the shaded floor at `88` in 8-bit luminance against `52`
+for the shaded trunks standing on it.
+
+The terrain now scales its sky term by the sky the published crown coverage leaves open. The
+far-range gap model, averaged over the cosine-weighted sky, gives an open share of
+`(1 - cover) ^ 2` to within `0.3` of the exponent at any coverage. Crowns pass and scatter
+some sky light, so a closed canopy keeps `CANOPY_FLOOR_SKY_TRANSMISSION`. Past the cascades the
+floor shade that replaces the tree shadows now uses the same sky share, so the ground keeps
+the same light on both sides of the cascade edge.
+
+Only the terrain takes this term. Trunks and understory keep the full sky, and a floor darker
+than the trunks on it reads as burnt ground. The share is therefore set against the trunks, not
+against a measured canopy: at `0.20` the floor rendered at `40`, and a clearing rim seen from
+the air went to `20`. At the shipped `0.40` the floor renders at `57`, just above the trunks,
+and the rim keeps its old brightness. Ground without coverage is unchanged. The cost is two
+multiplies and a mix on a coverage fetch the shader already made; no frame time was measured.
+`terrain_overlay_shader_test` holds the sky share inside the cascades and the combined shade
+past them.
+
+Past the far range the same ground also stands in for the crowns, and the first version gave
+them the floor's sky share too, so a closed stand past 4.5 km turned nearly black. Only the
+floor seen between the crowns now keeps that share; the part the crown stand-in covers takes
+the open sky. A painted closed birch stand just past the far range, at 07:30 on the GTX 1060,
+measures `99.2` luminance before and `105.6` after, against `108.7` with trees drawn to 12 km;
+at 5.2 km closed mixed and birch stands go from `0.95` and `0.88` of the trees to `1.03` and
+`0.95`. The crown albedo itself was not the cause and is unchanged. `farfit` in the scratch
+probe passes the albedo as a `Color`, which reached the shader far darker than the shipped
+`Vector3`, so fits made with it do not transfer. The overlay test captures in sRGB, so its
+floor-shade ratios are now linearised before comparison; it had failed since it was written.
+
+### The ground stands in for the trees past the far range (2026-09-25)
+
+Past `TREE_FAR_M` (`4500 m`) no tree is drawn, and the only trace of a stand was the forest-floor
+hue and the floor shade, both weighted by the published crown coverage: the share of the ground
+the crowns cover seen from above. A far stand is seen at a few degrees, where crowns hide far more
+ground than they cover from above, so in play an island that read as forest turned pale meadow
+when the camera pulled back past it (`imgs/reference/game/25-09-far-away-*.png`). The patch
+visibility range also ended the trees a whole coarse patch at a time.
+
+The terrain shader now mixes the ground toward one crown albedo by the share of each sight line a
+random stand of that coverage stops: a sight line at elevation angle `a` reaches the ground with
+probability `(1 - cover) ^ (1 + side_ratio * cot(a))`, where `side_ratio` is a crown's side
+area over its top area. The term fades in over `4000-4500 m` while each impostor dissolves by its
+own distance over the same band, with the same screen-space threshold as the handover, and the
+impostor range reaches past `TREE_FAR_M` by the patch reach so the trees dissolve instead of
+ending with their patch. `CANOPY_FAR_SIDE_RATIO` is `1.0` and `CANOPY_FAR_ALBEDO` is the mean
+baked impostor albedo after canopy shade and radiance match, `(0.12, 0.13, 0.045)`.
+
+Calibration moved the tree range to `1500 m` so the term covered most of the view, and compared
+it with the same view with trees drawn to `12 km`, on `16 px` tiles that the trees change, from
+`700 m` up at `16 degrees` down and from `300 m` up at `7 degrees`. Without the term the ground
+there was `12.3%` and `16.4%` brighter than the trees; with it, `-1.5%` and `+1.5%`, while tiles
+without trees moved by `0.002` luminance or less. A side ratio of `2` already reads `7%` dark.
+At the shipped range from the same poses the error on the tiles past it falls from `2.8%` to
+`1.6%` and from `2.3%` to `1.9%`; those poses hold only `9-13` such tiles. GPU p50 at those two
+far poses on the GTX 1060, same session: `6.14` to `6.16 ms` and `7.53` to `7.52-7.57 ms`.
+
+
+In play a birch changed its lighting as it handed over, from a crown lit on one side to one lit
+on the other. A same-pose render in the game, every tree near against every tree an impostor,
+showed the cause as lighting and not shape: a birch at `80 m` had a lit crown and a white
+trunk as the near tree and a dark crown and a blue-grey trunk as the impostor.
+
+The impostor shader turned its baked object-space normal into view space in `fragment()` with
+`MODEL_NORMAL_MATRIX`. For a MultiMesh that is the node's matrix there, not the instance's, so
+each tree's own yaw was ignored and every impostor was lit as if it faced one way. Over a stand of
+random yaws the response to the sun's direction then averages out: at `175 m` from `3 degrees`
+the broadleaf impostor measured `0.302`, `0.313` and `0.320` with the sun behind, beside and
+ahead of the camera, while the near stand measured `0.413`, `0.311` and `0.258`.
+`vegetation_level_match_test` compares whole stands from `900 m` and `20 degrees` or more, where
+the average matched, so it passed. The vertex stage now builds the view-space normal matrix of
+the instance and passes it flat.
+
+The volume response had been fitted around the defect, so it was refitted. The lift toward up
+and the diffuse wrap are now per species, and the wrap takes a floor that does not depend on the
+mip, because at the handover the frames are sampled near full resolution, where their normals
+barely disagree, and a crown of cards still scatters light through itself. The conifer takes
+lift `0.5` and a constant full wrap; the broadleaf keeps lift `1.0` and the mip-driven wrap.
+`IMPOSTOR_RADIANCE_MATCH` becomes `1.083` and `1.025`. The test adds a second pose set at the
+middle of the handover, `175 m` from `3`, `10` and `20 degrees` under a `15` and a `35 degree`
+sun, and all `108` comparisons fall within `0.881-1.111` (tolerance `0.12`); the worst low pose
+before was `0.733`. The margin is small at both ends, because the near level still takes a sun
+highlight against a low sun ahead that the impostor does not. E24 on the GTX 1060, GPU p50:
+`27.1-27.2 ms` in the stand and `20.5 ms` from the air, against `26.8-27.2` and `20.3-20.5 ms`
+for the previous commit, which is inside the run-to-run spread.
+
+
+A terrain patch is drawn as sixteen `127.5 m` vegetation patches inside the fine radius and as
+one `510 m` patch past it. Rust packed each plant relative to the patch it was fetched for, and
+the renderer keyed the cosmetic seed of a plant on that position: variant, tint, height, width
+and lean. The same plant therefore had one form in the fine patch and another in the coarse one,
+and every tree of a terrain patch changed form at once when the patch crossed the fine radius,
+about `420 m` out. In play that reads as a block of trees switching to similar trees.
+
+`get_decorative_tree_patch` now packs world positions, and the renderer subtracts the patch
+origin for the transform. The seed and the density subset read the world position, which is the
+same bits in both grids. A same-pose probe renders one pose with the vegetation state of the
+previous pose and with its own, wind frozen, along a `320 m` sideways flight at `150 m` over
+the Kuopio forest in `8 m` steps. The two grid changes on that path changed `9405` and `670`
+pixels before and `5` and `7` after. What still changes on that path: the per-patch shadow
+caster switch at `SHADOW_PROXY_M` (up to `668` pixels in one step), and the understory, which is
+built only in near-band patches and so ends at the near-band patch edge (`100-200` pixels of
+rocks and bushes per step), short of its own `420 m` range.
+
+The caster switch is taken the same day. A patch whose nearest corner is inside `SHADOW_PROXY_M`
+cast each tree from its branched level until that tree's handover ended at `200 m`; a patch past
+it casts every tree from the proxy. When a patch crossed, its trees between `120` and `200 m`
+changed shadow shape at once. A tree now casts from its branched level exactly while it is
+nearer than `SHADOW_PROXY_M`, and from its proxy past it, in either kind of patch, so the patch
+decision no longer changes a shadow. On a second flight, `120 m` up in `16 m` steps, the steps
+with a caster change went from `1394-2422` changed pixels to `10-17`. Paired E24 on the GTX 1060,
+same session, GPU p50: `26.4-26.8` → `26.8-27.2 ms` in the stand, `20.3-20.4` → `20.3-20.5 ms`
+from the air. The proxies of a near-caster patch are now drawn from `SHADOW_PROXY_M` less the
+patch reach instead of from `200 m` less it, and submitting them costs more than the branched
+shadows it removes. What that flight still shows: `400-700` faint pixels where a patch leaves
+the shadow range and stops casting while a low sun still throws its trees' shadows inside it,
+and the understory edge above.
+
+### Each tree hands over to its impostor on its own distance (2026-09-24)
+
+Every level decision was made per patch. Godot measures a visibility range once per
+`MultiMeshInstance3D`, and a patch is `127.5 m` across, so at the switch every tree in a patch
+changed at once. A per-patch jitter only moved the staircase around. The handover now happens
+per tree, in the shaders, and the patch ranges only bound which patches take part.
+
+- Each tree's impostor share is `smoothstep(150 m, 200 m)` of its origin's distance to the main
+  camera (`TREE_CROSSFADE_END_M`, `TREE_CROSSFADE_M`). The branched cards keep the screen pixels
+  whose interleaved-gradient threshold is at or above the share, and the impostor keeps the
+  rest, so the two cover each pixel once. Screen space is the only space both surfaces share.
+- A representation whose share is spent collapses to a point in the vertex stage, so it is not
+  rasterised. Wood takes no dither: a discard would move every trunk off the opaque fast path.
+  It collapses at the middle of its tree's handover.
+- Shadows hand over whole at `200 m`, per tree: the branched tree casts until then and the proxy
+  casts after. Dithering the shadow as well drew every proxy from `60 m` and cost `2.1 ms` in the
+  stand. `cast_every_tree` keeps the proxy casting for every tree behind cheap casters.
+- Understory shares the tree materials and keeps its own ranges; `hands_over` gates the handover
+  to canopy instances.
+- Wind fades out over the `50 m` before the handover begins, because the impostor does not sway.
+- A patch draws its branched level to `canopy_near_m()` plus the farthest tree origin from the
+  centre of its shared bounds, and its impostor from the handover start less the same margin.
+  `canopy_near_m()` no longer needs to clear the patch diagonal, so the grid floor is gone.
+
+E24, GTX 1060, same method as above:
+
+| pose | per-patch switch | per-tree handover | primitives |
+|---|---:|---:|---:|
+| in the stand, crown height | `23.7-23.8 ms` | `26.3-26.7 ms` | `22.03 M` → `24.40 M` |
+| aerial, 350 m up | `20.1-20.2 ms` | `20.3-20.5 ms` | `7.22 M` → `7.21 M` |
+
+The cost in the stand is the overlap: a patch holds both levels while any of its trees is in the
+band, which is the band plus the patch reach. Stills of the dense stand from altitude and from
+crown height show no patch-shaped block. Moving-camera dither shimmer is not measured.
+
+### One impostor per near variant (2026-09-24)
+
+Four baked forms (pine, spruce, birch, aspen) stood in for 24 near variants. A tree therefore
+became another tree at the switch: in play, a tall sparse pine drew as a dense bushy pine with
+orange bark in its crown at distance, and turned dark and sparse as the camera closed in. A
+paired render of one view with every tree branched and with every tree an impostor showed the
+two as different trees. The bake now makes one form per variant, from the reduced tree, which
+is the level the impostor replaces at the switch. The texture-array layer is the variant, and
+the custom data carries the near instance tint, which the impostor multiplies its albedo by.
+Frames drop from `128` to `64` px, so 24 forms take `65 MB` against `45 MB` for the four forms.
+A 15 m tree covers about 42 px at the `250 m` switch. The level-match test now compares against
+the reduced tree. `VOLUME_LIFT_GAIN` drops from `3.0` to `2.0` and `IMPOSTOR_RADIANCE_MATCH` is
+`0.98 / 0.973`, which holds `0.882-1.120` and `0.896-1.112` over the 36 poses.
+
+E24: `23.7-23.8 ms` in the stand, unchanged. From the air the frame costs `20.1-20.2 ms`, up from
+`16.1-16.2 ms`, with `1.33 M` more primitives and 31 more draws. The textures add no primitives:
+this is the proxy that near-caster patches now build, casting for branched trees that are
+range-culled from `350 m` up. Those patches cast no shadows at all before that fix.
+
+### Trees stop receiving the shadows of the proxies they stand in (2026-09-23)
+
+In play the impostor build showed a bright or dark block of forest near the camera, and blocks
+that changed brightness as the camera moved. Two causes were found, and both were measured on a
+low aerial view over the painted stand (140 m up, 35 degrees down, 07:30), as the mean colour
+on each side of the `250 m` switch.
+
+**The proxy shadowed whatever stood inside it.** Past `SHADOW_PROXY_M` a patch casts from the
+lathe proxy, a solid volume where the crown stands. The near cards of a `120-250 m` patch and
+the whole quad of every impostor are drawn inside that volume, so they received its shadow.
+A patch that changed caster changed brightness, and the distant forest read darker than the
+near one. The tree shaders now use a custom `light()` that restates the engine's Lambert,
+backlight and roughness-one GGX terms, and fades the directional shadow out over
+`TREE_SHADOW_BEGIN_M` to `TREE_SHADOW_END_M` (`90-120 m`). `SHADOW_PROXY_M` reads the end of that
+fade, so every fragment that still receives a shadow sits in a patch that casts from its own
+trees. The ground still receives the proxies. The canopy shade term now fades in over the same
+`90-120 m` instead of at the cascade edge. With the fade off, the custom light matches the
+built-in light to `0.001` luminance on both sides of the switch.
+
+**The impostor was specular-free.** The near cards reflect the sky and the impostor did not,
+so the impostor forest read warmer. It now keeps roughness one, as the cards do, and takes the
+wrap through a varying. It takes no direct sun highlight: against a low sun ahead, the grazing
+Fresnel term on its lifted normals rendered it up to `1.47x` the near level. The 36-pose test
+then holds `0.893-1.118` for conifer and `0.884-1.112` for broadleaf, with
+`IMPOSTOR_RADIANCE_MATCH` refitted to `0.99 / 0.973`.
+
+| near / impostor at the switch | near | impostor |
+|---|---|---|
+| `3e761ca2` | `0.289` | `0.252` |
+| shadow fade, sky reflection, no sun highlight | `0.326` | `0.299` |
+
+**The reduced tree kept four trunk sides.** A probe renders each camera pose twice, once with
+the vegetation state of that pose and once with the state of the next pose, with the wind
+frozen. Every difference is a switch the renderer made, and nothing else. On a low pan through
+a sparse stand (35 m up, 30 steps of 4 m), the patch under the camera crossed
+`TREE_NEAR_DETAIL_M` and changed `11,687` pixels by more than `0.03` luminance. Half of that was
+the fifth trunk side, which reshaded every trunk in the patch. The reduced tree now keeps five
+sides, and the swap changes `5,460` pixels, which are thin child branches. Two alternatives were
+priced and rejected on E24. Collapsing the extra wood per tree in the vertex shader cost
+`38.7-40.5 ms` in the stand, because the collapsed vertices are still shaded. A hybrid that
+kept full detail while any patch corner was within `45 m` cost `29.3-29.5 ms`. The other
+switches on that pan fell from `2,338`, `2,607` and `6,706` pixels to `98`, `988` and `834`.
+
+**A near-caster patch dropped its shadows short of the camera (2026-09-24).** A patch whose
+nearest corner is inside `SHADOW_PROXY_M` casts from its branched trees and built no proxy.
+That reaches patch centres near `210 m`, but Godot range-culls the branched trees at the
+jittered switch, measured in 3D from the shared bounds, and a range-culled instance casts
+nothing. The patch then showed impostors with no shadows until the camera closed in, and every
+shadow in it appeared at once. The proxy is now built for near-caster patches too, with the
+visibility range `(switch_m, far)` on the same shared bounds, so exactly one of the two casts.
+
+E24 on the fixes: `23.8-24.1 ms` in the stand and `16.1-16.2 ms` from the air, against
+`23.6 ms` and `16.5 ms` at `3e761ca2`. A motion measurement of shadow flicker is not in this
+entry: at this texture density a `0.1 m` step already moves about a pixel, so frame differences
+do not separate shadow change from motion.
+
+### Distant trees are impostors of the near tree (2026-09-22)
+
+The lathe fix in the next section matched the distant level's brightness, and a capture from
+altitude (`imgs/reference/game/22-09-lod-mush.png`) still showed the switch as a line: textured
+crowns on one side and a flat grey-green blanket on the other. A smooth lathe carries no
+structure at the scale of one tree, so the step was in detail, not in colour. The visible
+distant level is now a hemi-octahedral impostor: one camera-facing quad per tree, drawn from
+a baked picture of the full near tree. The lathe stays only as the shadow caster.
+
+**The bake is offline and on the CPU.** `tools/bake_tree_impostors.py` rasterises level 0 of
+four source forms (pine, spruce, birch, aspen) from the headless catalogue export, over an
+8 x 8 grid of views across the upper hemisphere at 128 px per view, 4 x 4 supersampled. It
+writes albedo and object-space normals as RGBA8 DDS with full mips, and
+`tree_impostors.json` records the bounds, the per-mip coverage and a SHA-256 of the source
+meshes. `vegetation_appearance_test` fails when the catalogue no longer matches that hash,
+so a change to `tree_species.gd` must be re-baked. Two runs are byte-identical.
+
+Three details in the mips decide how the impostor looks at distance:
+
+- Alpha coverage is corrected per view and per level, as in the foliage atlas, so a sparse
+  crown does not thin out with distance.
+- Colour and normal mips are weighted by coverage. An unweighted mean mixed the "up" normal
+  that fills empty texels into every crown edge, and the distant impostors brightened with
+  sun elevation.
+- The normal mips are stored unnormalised. The length records how far the normals under one
+  texel disagree. The shader lifts scattered texels toward up and wraps their diffuse, with
+  specular off. This is the same volume response the lathe needed. Without it a distant
+  crown lights by the one normal that faces the camera, which is a closed shell again.
+
+**The runtime.** `vegetation_impostor.gdshader` blends the three nearest views by their
+barycentric weights and reprojects the quad onto each view, so a tree does not jump as the
+camera turns. Each species has one `Texture2DArray` per channel, and the form is a per-instance
+layer in MultiMesh custom data. The distant placement loop computes the variant with
+`_variant_index`, so a brush pin keeps its species at every distance. The distant buffer is
+built as one packed array. The shadow proxy uses the same array as its own MultiMesh, with no
+copy. Catalogue index 3 and the `TREE_MID_M` swap are removed.
+
+**The switch moves from 800 m to 250 m.** A 15 m tree covers about 42 px at 250 m (1080p, 75
+degree FOV), which a smooth cone could not stand in for and a picture of the tree can.
+Lowering the floor below the coarse patch diagonal exposed a latent fault: `canopy_near_m`
+read `patch_span_m`, which each upload sets to its own key's span. The band then flipped
+between 250 m and 721 m with every upload, patches near the switch disagreed with their own
+record on the next frame, and the forest rebuilt itself without end at about 3 frames per
+second. The band now reads the fine grid span from `terrain_span_m`, and the appearance test
+asserts that an upload does not move it. The assertion fails with the old accessor.
+
+**Brightness over 36 poses.** `vegetation_level_match_test` now compares the near level with
+the impostor. A grid over lift gain, wrap gain and specular picked lift 3.0, wrap 1.5 and no
+specular for both species. `IMPOSTOR_RADIANCE_MATCH` is `1.0 / 0.97`. The ratio is
+`0.895-1.117` for conifer and `0.893-1.119` for broadleaf, within the `0.12` tolerance.
+
+**E24 prices it.** The painted 1.6 km stand at subdivision 4, each build at its shipped band,
+three interleaved trials per pose, release library `d9ca4c5b`, GTX 1060 3GB. The baseline is
+`eaa222e1` in a separate worktree, with a byte-identical probe.
+
+| pose | lathe GPU p50 | impostor GPU p50 | draws | primitives |
+|---|---:|---:|---:|---:|
+| in the stand, crown height | `40.00-40.31` | `23.59-23.61` | 4708 → 3569 | `34.27 M` → `22.01 M` |
+| aerial, 350 m up, 35 degrees down | `52.00-52.80` | `16.45-16.49` | 4462 → 2048 | `31.93 M` → `5.92 M` |
+
+The frame follows the GPU within about 0.2 ms at p50 in every trial. Video memory rises by
+about `43 MB`, which is the eight atlases. The maximum patch upload on the headless fixture
+went from `19.9` to `20.8-23.1 ms`, about one millisecond, inside run-to-run noise.
+
+### The distant crown was fitted at one sun (2026-09-22)
+
+A capture from altitude (`imgs/reference/game/22-09-lod-lighting-maybe.png`) shows the forest
+past the canopy switch much darker than the forest inside it. The distant level was lit, and
+it matched the near level at the one pose `vegetation_level_match_test` checked, with the sun
+behind the camera. A rendered sweep over camera elevation (20, 35, 55 and 80 degrees), sun
+elevation (15, 35 and 60 degrees) and sun azimuth relative to the view (behind the camera, to
+the side, in front of it) measured the distant/near luminance ratio at `0.49` to `1.15` for
+conifer and `0.60` to `1.23` for broadleaf. The low end is always the sun in front of the
+camera.
+
+**The near crown hardly responds to where the sun is, and the lathe does.** At a 35 degree
+camera and sun, moving the sun from behind the camera to in front of it takes the near conifer
+from `0.243` to `0.213` luminance and the distant conifer from `0.256` to `0.114`. The near
+crown is seen through: its gaps show cards on the far side of the crown, whose volume normals
+face every way. The lathe is a closed shell and shows only the half that faces the camera, so a
+camera that looks toward the sun sees the unlit half. One `DISTANT_RADIANCE_MATCH` cannot fix
+a ratio that changes by a factor of two with the view.
+
+**The distant shader now lights the crown as a volume.** It tilts the shell normals toward
+world up by `CROWN_NORMAL_LIFT` (`0.8`), which removes most of the dependence on the sun's
+azimuth. It turns specular off: with specular on and the normal fully lifted, a low sun in front of a
+low camera rendered the lathe at `1.33x` the near crown and a low sun behind it at `0.82x`. It uses `diffuse_lambert_wrap` with a per-species wrap,
+`DISTANT_CROWN_WRAP`, to match the near crown's response to sun elevation, which is flatter for
+a conifer than for a broadleaf. A grid of lift `0.5` to `1.0` and wrap `0` to `1` over the 36
+poses picked the pair with the least worst-case error: lift `0.8` for both species, wrap `0.75`
+for conifer and `0.25` for broadleaf. `DISTANT_RADIANCE_MATCH` was then refitted to centre the
+ratio, from `0.72 / 0.90` to `0.97 / 0.89`.
+
+| species | ratio before | ratio after | largest distance from 1 after |
+|---|---:|---:|---:|
+| conifer | `0.49` to `1.15` | `0.897` to `1.095` | `0.103` |
+| broadleaf | `0.60` to `1.23` | `0.919` to `1.098` | `0.098` |
+
+**The regression now checks every pose.** `vegetation_level_match_test` runs the 36 poses for
+both species at `384 px` and holds each ratio within `0.12` of one. The single-pose version
+passed the shipped shader while the back-lit ratio was `0.49`. The shader change adds one
+matrix column, one mix and one normalize per distant fragment and removes the specular term.
+It adds no vertex attribute, texture fetch, surface or draw. The mesh is unchanged.
+
+**Superseded the same day.** The lathe is no longer drawn: the section above replaces it with
+impostors and keeps it only as the shadow caster, so these constants were removed with it.
+
+### Card area is the near cost, and plane count is not (2026-09-21)
+
+Seen from a distance a dense stand is cheap; flown into, the same stand pins the GPU. The near
+canopy's foliage cards are where that goes, so two reductions were measured against each other
+in experiment E18, from inside a painted stand.
+
+**Cropping the card quads to their own alpha bounds works.** Each atlas cell is 43 to 50 percent
+opaque at the `0.4` scissor threshold, and 12 to 24 percent of each cell is margin no pixel
+survives. Cropping the quad and its UVs by one affine map took GPU p50 from `31.35 ms` to
+`30.51 ms`, bracketed by a repeated first trial at `31.91 ms`, with no visible change and a
+level-match ratio that improved to `1.013` and `0.999`.
+
+**Dropping the third of the three crossed planes does not work, and the reason is the useful
+part.** Gating that plane out by screen size left GPU p50 at `29.99 ms` against `29.87 ms` for
+cropping alone, inside the drift bracket, and `primitives` was byte-identical across trials
+because collapsing a triangle to a point still submits it. The gate was also mistuned: measured
+against the built tuft radii it removed the plane beyond `3.7 m` to `12.4 m`, so in practice it
+was an unconditional removal wearing a threshold. It was not taken.
+
+The reason it saved nothing is that `rendering/driver/depth_prepass/enable` is on, and these
+cards are alpha scissored into the opaque pass. Early-Z already rejects the planes stacked
+behind one another, so removing a plane that was mostly hidden removes work the GPU was not
+doing. **The cards cost what they cover, not how many of them there are, and they pay it twice,
+once in the prepass and once in the colour pass.** Reductions that shrink covered area keep
+paying; reductions that only lower plane count do not.
 
 ### The crowns lost half their ground cover at the LOD switch (2026-09-13)
 
@@ -1347,7 +2321,8 @@ Density presets can only thin. The lattice stays at the 4 m `VEG-05` shipped, wh
 625 points/ha and above a real stand, so a preset subtracts from it rather than tightening it;
 nothing here raises the instance count a stroke can reach. Thinning and the mix are pure
 functions of the lattice cell and the stream's salt, so a stroke thins to the same plants
-however its points are ordered and a repeat of it adds nothing rather than filling its own gaps.
+however its points are ordered, and a repeat past the preset's density adds nothing rather
+than filling its own gaps.
 The mix pick is a scan over a handful of weights and the variant pick is an index, so neither
 allocates per lattice point. A stroke also clears nothing: painting a sparse mix over standing
 forest adds scattered trees to it and does not thin the forest to match.
@@ -3737,6 +4712,38 @@ What is implemented now:
   with camera-prioritized patch order; water follows terrain's resident-set revision for the
   steady-state no-change path, and terrain/water mesh-LOD refreshes plus terrain-to-water texture
   sync drain through time-budgeted queues instead of sweeping every resident patch in one frame
+- terrain residency (2026-09-26) is every patch within the cull distance in every direction, not
+  the ground footprint of the view, and the patches in view load first. The frustum-derived set
+  dropped what a turn brought into view: a quick 90 degree turn at a low far-looking orbit then
+  built about 300 patches at about 5 per frame, so the distance filled in for about 2.5 s. Now a
+  turn loads nothing, and the set changes only when the camera crosses a patch. On the 18 km
+  Kuopio world every one of the 1296 patches is resident, which is what one look around already
+  held, because a patch that left the view was hidden, not freed. Water and vegetation follow the
+  same set. Terrain and water patch nodes now cull by their own footprint plus 64 m, with the
+  `4096 m` margin kept only vertically, since the shader moves vertices by the heightmap: the
+  margin on every axis kept patches `4 km` behind the camera drawn. Land cover currency is gated by
+  one Rust epoch (`get_land_cover_epoch`, the terrain payload generation counter plus the
+  vegetation edit epoch), so an unchanged world skips the per-patch walk. Matched release runs,
+  GTX 1060, same pose, camera still: terrain `_process` `1.35 -> 0.14 ms`, draw calls
+  `2566 -> 2490`, GPU `6.70 -> 6.65 ms` p50, video memory `697 -> 745 MB`
+- vegetation `_process` (2026-09-26) walks its patch bands only when the camera or residency moved,
+  and its staleness sweep only when `get_land_cover_epoch` or the terrain's
+  `get_surface_commit_revision` moved, so an idle frame checks no patch and an edit is found on the
+  frame it lands. Richer band content is kept `64 m` past each band's entry distance, so an orbit
+  near a threshold no longer rebuilds a patch back and forth, and uploads stop after a `2 ms`
+  budget with at least one per frame. Matched release runs, GTX 1060, same pose, camera still, with
+  the all-direction residency above: vegetation `_process` `3.87 -> 0.014 ms`, frame `10.1 -> 7.1 ms`
+  p50. One upload is indivisible and can still take `18 ms`
+- vegetation patches (2026-09-26) that leave the wanted set stay drawn as stand-ins until the
+  wanted patches over their area are built. A terrain block crossing the fine-tier radius swaps
+  one coarse patch for sixteen fine ones, and hiding the coarse one first left the whole `510 m`
+  block bare until the last fine one uploaded. Patches that draw nothing are uploaded before
+  refreshes of patches that already draw, under a `6 ms` budget instead of `2 ms`. A cached fine
+  patch is freed once its block is a whole terrain patch past the fine tier: every vegetation node
+  takes 16 of Godot's 65536 instance uniform slots, and a cache of fine patches over the whole
+  scatter disk overflowed the buffer on a long flight, so new trees failed to draw. A scripted
+  flight over 9 km of Kuopio forest: wanted patches still unbuilt peak at 26 against 220, of
+  which at most 9 show bare ground, and the cache holds 44-67 patches against over 300
 - terrain/water activation removes out-of-window patches farthest-first, drains downstream texture /
   LOD / mesh queues closest-first, and exports residency add/remove/pending counters for streaming
   perf captures

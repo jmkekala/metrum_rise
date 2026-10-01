@@ -2,7 +2,7 @@
 
 ## Player vegetation input and ground-ring preview; all placement decisions stay in Rust.
 ## Rust methods called: add_vegetation_at(), remove_vegetation_at(), paint_vegetation(),
-## intersect_world_surface().
+## plant_vegetation_line(), intersect_world_surface().
 extends Node3D
 
 enum Mode { PLANT, REMOVE }
@@ -20,12 +20,24 @@ const UIStyle = preload("res://scripts/ui/ui_style.gd")
 # generator plants and what a cleared cell regrows, not an offering: with pine and spruce both
 # nameable, "conifer" is only an unnamed two-to-one mix of them, and a mix belongs in a mix
 # preset where its ratio is written down.
+#
+# "ground" marks the presets Rust bounds to a 64 m brush. "line" marks the hedges: a press sets
+# one end of the row, the release the other, and the radius plays no part.
 const BRUSH_OPTIONS := [
 	{"label": "Pine", "preset": 4},
 	{"label": "Spruce", "preset": 5},
 	{"label": "Birch", "preset": 6},
 	{"label": "Aspen", "preset": 7},
-	{"label": "Bush", "preset": 2},
+	{"label": "Lilac", "preset": 11, "ground": true},
+	{"label": "Spirea", "preset": 12, "ground": true},
+	{"label": "Rugosa rose", "preset": 13, "ground": true},
+	{"label": "Cotoneaster", "preset": 14, "ground": true},
+	{"label": "Mountain pine", "preset": 15, "ground": true},
+	{"label": "Juniper", "preset": 16, "ground": true},
+	{"label": "Hedge, low", "preset": 17, "line": true},
+	{"label": "Hedge, medium", "preset": 18, "line": true},
+	{"label": "Hedge, tall", "preset": 19, "line": true},
+	{"label": "Bush", "preset": 2, "ground": true},
 	{"label": "Rock", "preset": 3},
 	{"label": "Mixed forest 1", "preset": 8},
 	{"label": "Mixed forest 2", "preset": 9},
@@ -37,7 +49,7 @@ const LABEL_FADE_SECONDS := 0.25
 const LABEL_OFFSET_PX := 24.0
 
 # The radius is the only size control, and it also chooses between a point edit and a brush: at
-# the minimum a plant lands exactly under the cursor, and above it the disc fills a 4 m lattice.
+# the minimum a plant lands exactly under the cursor, and above it the disc scatters spaced plants.
 # The ground ring is therefore the mode readout as well as the footprint.
 const MIN_RADIUS_M := 1.0
 const MAX_RADIUS_M := 1024.0
@@ -45,6 +57,9 @@ const MAX_RADIUS_M := 1024.0
 const MAX_PAINT_RADIUS_M := 256.0
 # Geometric, because a fixed step cannot serve both a one-tree cursor and a 1 km clear-cut.
 const RADIUS_STEP := 1.4
+# A held plant brush restamps in place this often. Each stamp adds Rust's thin share of the
+# preset, 10 stems/ha for trees, so holding thickens a stand at about 100 stems/ha a second.
+const HOLD_REPEAT_S := 0.1
 # Frames the tool keeps ignoring a stamp after an embedded popup last held the input grab. The
 # preset dropdown takes that grab, and the click that dismisses it is delivered here as well, so
 # one click used to close the menu and plant a tree. The tool cannot ask the popup directly
@@ -53,6 +68,8 @@ const RADIUS_STEP := 1.4
 const MENU_DISMISS_FRAMES := 2
 
 const PLANT_RING_COLOR := Color(0.85, 0.95, 0.45)
+# Cross-section of the bar that previews a hedge row on the ground, in metres.
+const LINE_PREVIEW_SIZE := Vector2(0.25, 0.6)
 const REMOVE_RING_COLOR := Color(0.95, 0.45, 0.35)
 
 # Ring stroke, in pixels. A fixed world-space stroke is honest in metres and useless on screen: at
@@ -73,7 +90,7 @@ var mode: Mode = Mode.PLANT:
 		if mode == value:
 			return
 		mode = value
-		radius = minf(radius, MAX_PAINT_RADIUS_M if mode == Mode.PLANT else MAX_RADIUS_M)
+		radius = minf(radius, _paint_radius_limit() if mode == Mode.PLANT else MAX_RADIUS_M)
 		_show_option_label()
 		mode_changed.emit(mode)
 var option_index := 0:
@@ -82,6 +99,7 @@ var option_index := 0:
 		if option_index == value:
 			return
 		option_index = value
+		radius = radius
 		_show_option_label()
 		option_changed.emit(option_index)
 var preset: int:
@@ -89,7 +107,7 @@ var preset: int:
 		return BRUSH_OPTIONS[option_index].preset
 var radius := MIN_RADIUS_M:
 	set(value):
-		radius = minf(value, MAX_PAINT_RADIUS_M if mode == Mode.PLANT else MAX_RADIUS_M)
+		radius = minf(value, _paint_radius_limit() if mode == Mode.PLANT else MAX_RADIUS_M)
 var preview: MeshInstance3D
 var _ring: TorusMesh
 var _ring_material: StandardMaterial3D
@@ -105,9 +123,27 @@ var _painting := false
 # the history belongs to. Zero is reserved for a standalone edit.
 var _stroke := 0
 var _last_stamp := Vector2.INF
+var _hold_left := 0.0
+# Where a stamp last added nothing. A full stand stays full, so a hold does not repeat there:
+# the largest tree stamp costs about 22 ms even when it adds nothing.
+var _idle_stamp := Vector2.INF
 # Where the ring sits while the pointer is on a popup instead of on the ground.
 var _last_hit := Vector3.INF
 var _menu_grab_frames := 0
+# Unspent part of a two-finger scroll, in the gesture's own units. One unit is one step.
+var _gesture_steps := 0.0
+# Ground position a hedge row starts from while the button is held, or INF with no row open.
+var _line_start := Vector3.INF
+var _line_preview: MeshInstance3D
+var _line_bar: BoxMesh
+
+# This mirrors the native class budget; the preview must show the accepted footprint.
+func _paint_radius_limit() -> float:
+	return 64.0 if BRUSH_OPTIONS[option_index].get("ground", false) else MAX_PAINT_RADIUS_M
+
+## Whether the selected option lays hedge rows rather than stamping plants.
+func is_line_option() -> bool:
+	return mode == Mode.PLANT and BRUSH_OPTIONS[option_index].get("line", false)
 
 func _ready() -> void:
 	_ring = TorusMesh.new()
@@ -125,6 +161,14 @@ func _ready() -> void:
 	_ring_material.no_depth_test = true
 	preview.material_override = _ring_material
 	add_child(preview)
+	_line_bar = BoxMesh.new()
+	_line_preview = MeshInstance3D.new()
+	_line_preview.mesh = _line_bar
+	_line_preview.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_line_preview.top_level = true
+	_line_preview.visible = false
+	_line_preview.material_override = _ring_material
+	add_child(_line_preview)
 	_option_label = Label3D.new()
 	_option_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	_option_label.no_depth_test = true
@@ -149,11 +193,13 @@ func _process(delta: float) -> void:
 	elif _menu_grab_frames > 0:
 		_menu_grab_frames -= 1
 	preview.visible = false
+	_line_preview.visible = false
 	_option_label.visible = false
 	_label_time_left = maxf(0.0, _label_time_left - delta)
 	# Losing the tool mid-drag must not leave a stroke armed for the next activation.
 	if not active:
 		_painting = false
+		_line_start = Vector3.INF
 	if not active or get_viewport().gui_get_hovered_control() != null:
 		return
 	# With the species popup open the pointer is over the menu, so the ray lands wherever the
@@ -186,24 +232,25 @@ func _process(delta: float) -> void:
 		)
 	preview.global_position = hit + Vector3.UP * 0.15
 	preview.visible = true
+	if _line_start != Vector3.INF:
+		_show_line(_line_start, hit)
 	_update_option_label()
+	# Removal clears the whole disc on its first stamp, so only planting repeats while held.
+	if _painting and mode == Mode.PLANT and _menu_grab_frames == 0:
+		_hold_left -= delta
+		if _hold_left <= 0.0:
+			_hold_left = HOLD_REPEAT_S
+			if (_idle_stamp == Vector2.INF
+					or Vector2(hit.x, hit.z).distance_to(_idle_stamp) > radius * 0.1):
+				_last_stamp = Vector2.INF
+				_stamp()
 
 func _unhandled_input(event: InputEvent) -> void:
 	if not active:
 		return
-	if event is InputEventMouseButton and event.pressed and (event.ctrl_pressed or event.shift_pressed):
-		var direction := 0
-		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
-			direction = 1
-		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-			direction = -1
-		if direction != 0:
-			if event.ctrl_pressed:
-				step_radius(direction)
-			else:
-				step_option(direction)
-			get_viewport().set_input_as_handled()
-			return
+	if apply_brush_gesture(event):
+		get_viewport().set_input_as_handled()
+		return
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if event.pressed:
 			# This click is the one that dismisses an open popup. Dismissing is all it does.
@@ -211,11 +258,24 @@ func _unhandled_input(event: InputEvent) -> void:
 				_menu_grab_frames = 0
 				get_viewport().set_input_as_handled()
 				return
-			_painting = mode == Mode.REMOVE or radius > MIN_RADIUS_M
 			_stroke += 1
+			if is_line_option():
+				var start = _mouse_world_pos()
+				if start != null:
+					_line_start = start
+					get_viewport().set_input_as_handled()
+				return
+			_painting = mode == Mode.REMOVE or radius > MIN_RADIUS_M
 			_last_stamp = Vector2.INF
+			_hold_left = HOLD_REPEAT_S
 			if _stamp():
 				get_viewport().set_input_as_handled()
+		elif _line_start != Vector3.INF:
+			var end = _mouse_world_pos()
+			if end != null:
+				apply_line(Vector2(_line_start.x, _line_start.z), Vector2(end.x, end.z), _stroke)
+			_line_start = Vector3.INF
+			get_viewport().set_input_as_handled()
 		elif _painting:
 			_painting = false
 			get_viewport().set_input_as_handled()
@@ -224,6 +284,35 @@ func _unhandled_input(event: InputEvent) -> void:
 	# one native call per pixel; the discs still overlap, so the stroke has no gaps.
 	elif event is InputEventMouseMotion and _painting:
 		_stamp()
+
+## Applies Ctrl (radius) or Shift (option) with a wheel or a two-finger scroll, and reports
+## whether the event was one. macOS turns Shift with a vertical scroll into a horizontal one, so
+## wheel left and right step like up and down, and a scroll takes its larger axis.
+func apply_brush_gesture(event: InputEvent) -> bool:
+	if not (event is InputEventWithModifiers and (event.ctrl_pressed or event.shift_pressed)):
+		return false
+	var direction := 0
+	if event is InputEventMouseButton and event.pressed:
+		match event.button_index:
+			MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_LEFT:
+				direction = 1
+			MOUSE_BUTTON_WHEEL_DOWN, MOUSE_BUTTON_WHEEL_RIGHT:
+				direction = -1
+	elif event is InputEventPanGesture:
+		var delta: Vector2 = event.delta
+		# A scroll arrives in fractions; whole steps are taken as the swipe accumulates.
+		_gesture_steps -= delta.y if absf(delta.y) >= absf(delta.x) else delta.x
+		direction = int(_gesture_steps)
+		_gesture_steps -= direction
+		if direction == 0:
+			return true
+	if direction == 0:
+		return false
+	if event.ctrl_pressed:
+		step_radius(direction)
+	else:
+		step_option(direction)
+	return true
 
 ## Cycles the ordered brush options, including when the dropdown holds the input grab.
 func step_option(direction: int) -> void:
@@ -297,7 +386,8 @@ func _stamp() -> bool:
 			return true
 		_last_stamp = pos
 	# A held drag is one action to the player, so all of its stamps carry one stroke id.
-	apply_at(pos, _stroke if _painting else 0)
+	var changed := apply_at(pos, _stroke if _painting else 0)
+	_idle_stamp = pos if changed == 0 else Vector2.INF
 	return true
 
 ## Applies one stamp of the active mode and returns how many plants Rust actually changed.
@@ -309,6 +399,22 @@ func apply_at(pos: Vector2, stroke := 0) -> int:
 	if radius > MIN_RADIUS_M:
 		return simulation_node.paint_vegetation(pos, radius, preset, stroke)
 	return int(simulation_node.add_vegetation_at(pos, preset))
+
+## Lays the selected hedge from `from` to `to` and returns how many modules Rust planted.
+func apply_line(from: Vector2, to: Vector2, stroke := 0) -> int:
+	return simulation_node.plant_vegetation_line(from, to, preset, stroke)
+
+# Stretches the preview bar along the ground from the row's start to the cursor.
+func _show_line(start: Vector3, end: Vector3) -> void:
+	var along := Vector3(end.x - start.x, 0.0, end.z - start.z)
+	var length := along.length()
+	if length < 0.01:
+		return
+	_line_bar.size = Vector3(length, LINE_PREVIEW_SIZE.y, LINE_PREVIEW_SIZE.x)
+	_line_preview.global_transform = Transform3D(
+		Basis(Vector3.UP, atan2(-along.z, along.x)),
+		(start + end) * 0.5 + Vector3.UP * (LINE_PREVIEW_SIZE.y * 0.5))
+	_line_preview.visible = true
 
 # World metres that cover RING_STROKE_PX at the cursor. Same projection term as the field edit
 # tool's handle scaling, which is the existing idiom for this in the tool layer.

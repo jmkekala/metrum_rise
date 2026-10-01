@@ -176,8 +176,8 @@ mod tests {
                     .chunks_exact(6)
                     .filter(|p| {
                         p[5] < 2.0
-                            && (p[0] + source_origin.x - base.x - 4.0).abs() < 10.0
-                            && (p[2] + source_origin.y - base.y - 4.0).abs() < 10.0
+                            && (p[0] - base.x - 4.0).abs() < 10.0
+                            && (p[2] - base.y - 4.0).abs() < 10.0
                     })
                     .collect();
                 let mut covered_min = 0;
@@ -185,12 +185,12 @@ mod tests {
                 for z in 0..8 {
                     for x in 0..8 {
                         let sample = base + Vector2::new(x as f32 + 0.5, z as f32 + 0.5);
-                        // Packing patch-local f32 positions and restoring world coordinates
-                        // can round by <0.1 mm on this fixture. Only samples within that
-                        // bound of the circle edge may differ; all others must agree exactly.
+                        // The splat and the packed products can round differently by <0.1 mm.
+                        // Only samples within that bound of the circle edge may differ; all
+                        // others must agree exactly.
                         let inside = |epsilon: f32| {
                             local.iter().any(|p| {
-                                let center = source_origin + Vector2::new(p[0], p[2]);
+                                let center = Vector2::new(p[0], p[2]);
                                 let radius = if p[5] == 0.0 { 3.0 } else { 3.5 } * p[4] + epsilon;
                                 sample.distance_squared_to(center) <= radius * radius
                             })
@@ -240,7 +240,7 @@ mod tests {
         let revisions = generations(&core, key);
         assert!(remove_at(&mut core, Vector2::ZERO, 40.0, 0) > 0);
         assert!(add_at(&mut core, Vector2::new(0.25, 1.0), 0));
-        assert!(add_at(&mut core, Vector2::new(-0.25, 1.0), 1));
+        assert!(add_at(&mut core, Vector2::new(-2.5, 1.0), 1));
         assert!(add_at(&mut core, Vector2::new(0.0, 15.0), 3));
         assert_ne!(generations(&core, key), revisions);
         let edited = check_products(&core);

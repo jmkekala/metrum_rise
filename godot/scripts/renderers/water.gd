@@ -13,6 +13,7 @@ const WATER_SHADER := preload("res://assets/materials/water.gdshader")
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 const PerfDebug := preload("res://scripts/core/perf_debug.gd")
 const RenderDebug := preload("res://scripts/renderers/render_debug.gd")
+const TerrainRenderer := preload("res://scripts/renderers/terrain.gd")
 const HEIGHT_SCALE := 20.0
 const SHORE_SOFTNESS_M := 0.26
 const SHORE_FOAM_BAND_M := 0.18
@@ -586,7 +587,10 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 
 	var patch_node: MeshInstance3D = patch_resources["node"] as MeshInstance3D
 	patch_node.name = "WaterPatch_%d_%d" % [key.x, key.y]
-	patch_node.extra_cull_margin = WATER_PATCH_EXTRA_CULL_MARGIN_M
+	# Same bounds as the terrain patch under it: a margin on every axis drew patches far
+	# behind the camera.
+	patch_node.extra_cull_margin = 0.0
+	patch_node.custom_aabb = TerrainRenderer.patch_cull_aabb(Vector2(world_size_x, world_size_z))
 	patch_node.mesh = _empty_water_mesh_resource()
 	patch_node.visible = false
 	patch_node.position = Vector3(

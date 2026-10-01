@@ -138,6 +138,7 @@ impl BulldozeTargetKind {
 #[derive(Clone, Debug)]
 pub(crate) struct BulldozeTarget {
     kind: BulldozeTargetKind,
+    vegetation: Option<vegetation_api::PlantTarget>,
     id: usize,
     center: Vector3,
     points: Vec<Vector3>,
@@ -349,7 +350,8 @@ impl SimCore {
     ) -> Option<bool> {
         self.prepare_bulldoze_target_indices();
         let current = self.resolve_bulldoze_target(target.center.x, target.center.z)?;
-        if current.kind != target.kind || current.id != target.id {
+        if current.kind != target.kind || current.id != target.id
+            || current.vegetation != target.vegetation {
             return None;
         }
         let road_deleted = current.kind == BulldozeTargetKind::Road;
@@ -361,16 +363,8 @@ impl SimCore {
         match target.kind {
             BulldozeTargetKind::Building => self.bulldoze_building(target.id),
             BulldozeTargetKind::Road => self.bulldoze_road_edge(target.id),
-            BulldozeTargetKind::Vegetation => {
-                // The exact stored position avoids clearing nearby plants. The existing
-                // brush path owns both patch invalidation and this click's undo entry.
-                vegetation_api::remove_at(
-                    self,
-                    Vector2::new(target.center.x, target.center.z),
-                    0.0,
-                    0,
-                ) > 0
-            }
+            BulldozeTargetKind::Vegetation => target.vegetation
+                .is_some_and(|plant| vegetation_api::remove_target(self, plant)),
         }
     }
 
@@ -387,7 +381,8 @@ impl SimCore {
     }
 
     fn resolve_bulldoze_vegetation_target(&self, pos: Vector2) -> Option<BulldozeTarget> {
-        let (plant, radius) = vegetation_api::plant_at(self, pos)?;
+        let (selected, radius) = vegetation_api::plant_at(self, pos)?;
+        let plant = selected.plant;
         // Pack the stored f32 position bits, never the compacted authored-vector index.
         // The center retains those exact coordinates, so resolving there selects this
         // zero-distance plant and reproduces its ID after unrelated authored removals.
@@ -406,6 +401,7 @@ impl SimCore {
             .collect();
         Some(BulldozeTarget {
             kind: BulldozeTargetKind::Vegetation,
+            vegetation: Some(selected),
             id,
             center: Vector3::new(plant.x, height(plant.x, plant.z), plant.z),
             points,
@@ -455,6 +451,7 @@ impl SimCore {
         }
         Some(BulldozeTarget {
             kind: BulldozeTargetKind::Building,
+            vegetation: None,
             id: building_idx,
             center: Vector3::new(
                 center.x,
@@ -547,6 +544,7 @@ impl SimCore {
             .unwrap_or(closest.y);
         Some(BulldozeTarget {
             kind: BulldozeTargetKind::Road,
+            vegetation: None,
             id: edge_idx,
             center: Vector3::new(
                 closest.x,
@@ -3138,6 +3136,26 @@ mod tests {
     }
 
     #[test]
+    fn bulldoze_coincident_classes_removes_one_and_rejects_stale_target() {
+        use crate::simulation::vegetation::edits::{AuthoredPlant, VegetationCell, VegetationLayer};
+        let mut core = test_core();
+        core.vegetation.config.enabled = false;
+        core.prepare_bulldoze_target_indices();
+        let cell = VegetationCell { layer: VegetationLayer::Canopy, x: 0, z: 0 };
+        for species in [2, 0] {
+            core.vegetation_edits.add(cell, AuthoredPlant {
+                x: 1.0, z: 1.0, yaw: 0.0, scale: 1.0, species, variant: 0,
+            });
+        }
+        let target = core.resolve_bulldoze_target(1.0, 1.0).unwrap();
+        assert_eq!(core.bulldoze_prepared_target_internal(target.clone()), Some(false));
+        assert_eq!(core.vegetation_edits.cell(cell).1.len(), 1);
+        assert_eq!(core.bulldoze_prepared_target_internal(target), None);
+        assert!(core.undo_action_internal());
+        assert_eq!(core.vegetation_edits.cell(cell).1.len(), 2);
+    }
+
+    #[test]
     fn bulldoze_generated_vegetation_writes_the_brush_tombstone() {
         use crate::nodes::simulation_node::vegetation_api;
         use crate::simulation::vegetation::edits::{VegetationCell, VegetationLayer};
@@ -3148,6 +3166,7 @@ mod tests {
         let (plant, _) = (-16..=16)
             .find_map(|i| vegetation_api::plant_at(&core, Vector2::new(i as f32 * 4.0, 0.0)))
             .expect("generated vegetation on flat ground");
+        let plant = plant.plant;
         let pos = Vector2::new(plant.x, plant.z);
         let target = core.resolve_bulldoze_target(pos.x, pos.y).unwrap();
         assert_eq!(target.kind, BulldozeTargetKind::Vegetation);

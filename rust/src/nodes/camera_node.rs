@@ -201,15 +201,12 @@ impl CameraNode {
         }
     }
 
-    /// Zooms the camera in or out.
+    /// Zooms in by `amount` wheel notches, or out when negative. A fraction of a notch is a
+    /// fraction of the step, which is what a touchpad scroll or a pinch delivers.
     #[func]
     pub fn zoom(&mut self, amount: f32) {
         if amount != 0.0 {
-            if amount > 0.0 {
-                self.distance /= self.zoom_speed;
-            } else {
-                self.distance *= self.zoom_speed;
-            }
+            self.distance /= self.zoom_speed.powf(amount);
             self.set_orbit_distance(self.distance);
             self.update_camera_transform();
         }
