@@ -43,6 +43,10 @@ var _simulation_speed: float = 0.0
 var _selected_industry_resource_id := ""
 var _industry_deposits_overlay_forced := false
 var _industry_previous_overlay_mode := 0
+# Left-drag orbit held since an Alt-click on the world.
+var _alt_orbit := false
+# The last gesture seen this frame, to drop the repeated engine dispatch of it.
+var _last_gesture := ""
 
 func _ready():
 	if not has_node("../CulDeSacTool"):
@@ -123,10 +127,46 @@ func _process(delta):
 	_handle_camera_controls(delta)
 
 func _input(event):
+	# Godot 4.7.1 dispatches every gesture twice from Input._parse_input_event_impl: once from
+	# its gesture branch and once from the generic dispatch after it. The copy arrives in the
+	# same frame with the same content, and is consumed here so no handler zooms or steps twice.
+	if event is InputEventGesture:
+		var key := "%s %d %d" % [event.as_text(), event.get_modifiers_mask(), Engine.get_process_frames()]
+		if key == _last_gesture:
+			_last_gesture = ""
+			get_viewport().set_input_as_handled()
+			return
+		_last_gesture = key
 	if _ui_has_modal_popup():
+		return
+	var camera := get_viewport().get_camera_3d() as CameraNode
+	if not camera:
 		return
 	if event is InputEventMouseButton:
 		_handle_zoom_wheel(event)
+		# Alt (Option on a Mac) with the left button stands in for the middle button, which a
+		# touchpad does not have. It starts only over the world, so Alt-clicks on UI still land.
+		if event.button_index == MOUSE_BUTTON_LEFT:
+			if event.pressed and event.alt_pressed and get_viewport().gui_get_hovered_control() == null:
+				_alt_orbit = true
+				get_viewport().set_input_as_handled()
+			elif not event.pressed and _alt_orbit:
+				_alt_orbit = false
+				get_viewport().set_input_as_handled()
+	# Orbit turns by the exact motion of each event. The polled mouse velocity it replaces is
+	# refreshed about every 100 ms, so the turn started late and ran on after the hand stopped.
+	elif event is InputEventMouseMotion:
+		if _alt_orbit or event.button_mask & MOUSE_BUTTON_MASK_MIDDLE:
+			camera.orbit(event.relative)
+			if _alt_orbit:
+				get_viewport().set_input_as_handled()
+	# A touchpad sends a two-finger scroll and a pinch as gestures, not as wheel buttons. The
+	# scroll's delta is negative where a wheel turns up, one unit to a notch; a pinch scales the
+	# orbit distance by its own factor. Modifiers belong to the brush, as they do for the wheel.
+	elif event is InputEventPanGesture and not (event.ctrl_pressed or event.shift_pressed):
+		camera.zoom(-event.delta.y)
+	elif event is InputEventMagnifyGesture:
+		camera.zoom(log(event.factor) / log(camera.zoom_speed))
 
 func _handle_camera_controls(delta):
 	var camera := get_viewport().get_camera_3d() as CameraNode
@@ -141,12 +181,6 @@ func _handle_camera_controls(delta):
 	
 	if pan_dir.length_squared() > 0.0:
 		camera.pan(pan_dir, 1.0, delta)
-		
-	# MMB Orbit
-	if Input.is_mouse_button_pressed(MOUSE_BUTTON_MIDDLE):
-		var mouse_vel = Input.get_last_mouse_velocity()
-		if mouse_vel.length() > 0.1:
-			camera.orbit(mouse_vel * delta)
 
 func _unhandled_input(event):
 	if _ui_captures_keyboard_input():

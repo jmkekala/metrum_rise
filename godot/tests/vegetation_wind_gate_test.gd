@@ -82,7 +82,8 @@ func _add(holder: Node3D, mesh: Mesh, transforms: Array[Transform3D]) -> void:
 ## fixed function of position, so a displaced stand can be compared against a still one without
 ## either sample depending on when the frame happened to be captured.
 func _set_strength(value: float) -> void:
-	for material in [Species._wind_branch_material(), Species._foliage_material()]:
+	# Canopy trees carry one material pair per authored form besides the shared understory pair.
+	for material in [Species._wind_branch_material(), Species._foliage_material()] + Species._canopy_materials:
 		material.set_shader_parameter("wind_strength", value)
 		material.set_shader_parameter("wind_speed", 0.0)
 

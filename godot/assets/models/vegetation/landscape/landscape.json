@@ -1,0 +1,128 @@
+{
+  "cotoneaster": {
+    "bark_mean": [
+      0.124069,
+      0.108981,
+      0.084228
+    ],
+    "foliage_coverage": 0.2212,
+    "leaf_depth_mean": 0.503362,
+    "leaf_mean": [
+      0.053332,
+      0.1045,
+      0.020212
+    ]
+  },
+  "hedge_low": {
+    "bark_mean": [
+      0.124236,
+      0.109128,
+      0.084339
+    ],
+    "foliage_coverage": 0.6516,
+    "leaf_depth_mean": 0.455434,
+    "leaf_mean": [
+      0.07985,
+      0.162106,
+      0.033625
+    ]
+  },
+  "hedge_mid": {
+    "bark_mean": [
+      0.124981,
+      0.109784,
+      0.084831
+    ],
+    "foliage_coverage": 0.6527,
+    "leaf_depth_mean": 0.4572,
+    "leaf_mean": [
+      0.144233,
+      0.25694,
+      0.050424
+    ]
+  },
+  "hedge_tall": {
+    "bark_mean": [
+      0.125864,
+      0.110549,
+      0.085416
+    ],
+    "foliage_coverage": 0.6306,
+    "leaf_depth_mean": 0.423526,
+    "leaf_mean": [
+      0.054923,
+      0.120289,
+      0.065097
+    ]
+  },
+  "juniper": {
+    "bark_mean": [
+      0.126191,
+      0.110834,
+      0.085636
+    ],
+    "foliage_coverage": 0.2713,
+    "leaf_depth_mean": 0.485276,
+    "leaf_mean": [
+      0.090158,
+      0.149084,
+      0.083664
+    ]
+  },
+  "lilac": {
+    "bark_mean": [
+      0.12593,
+      0.110601,
+      0.085461
+    ],
+    "foliage_coverage": 0.2351,
+    "leaf_depth_mean": 0.582168,
+    "leaf_mean": [
+      0.109327,
+      0.19658,
+      0.038847
+    ]
+  },
+  "mugo": {
+    "bark_mean": [
+      0.125812,
+      0.110502,
+      0.085385
+    ],
+    "foliage_coverage": 0.1989,
+    "leaf_depth_mean": 0.470338,
+    "leaf_mean": [
+      0.062032,
+      0.127162,
+      0.042199
+    ]
+  },
+  "rose": {
+    "bark_mean": [
+      0.125877,
+      0.110548,
+      0.085425
+    ],
+    "foliage_coverage": 0.2291,
+    "leaf_depth_mean": 0.510035,
+    "leaf_mean": [
+      0.056769,
+      0.123393,
+      0.024767
+    ]
+  },
+  "spirea": {
+    "bark_mean": [
+      0.126026,
+      0.110681,
+      0.085522
+    ],
+    "foliage_coverage": 0.2217,
+    "leaf_depth_mean": 0.504176,
+    "leaf_mean": [
+      0.121656,
+      0.218158,
+      0.04027
+    ]
+  }
+}

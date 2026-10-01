@@ -1,3 +1,59 @@
+// Handover from the branched tree to its impostor. Each tree dissolves from one into the other
+// by its own distance, so no patch changes level as a block. Set from tree_species.gd.
+uniform float tree_crossfade_begin_m = 150.0;
+uniform float tree_crossfade_end_m = 200.0;
+
+// Share of one tree drawn as its impostor. Measured to the main camera and not the rendering
+// one, so the shadow pass hands over the same tree at the same moment as the colour pass.
+float vegetation_crossfade(vec3 tree_origin, vec3 main_camera) {
+	return smoothstep(tree_crossfade_begin_m, tree_crossfade_end_m, distance(tree_origin, main_camera));
+}
+
+// Whether this vertex is drawn for a shadow map. Only the colour pass renders from the main
+// camera; a directional shadow camera stands far off along the light.
+bool vegetation_shadow_pass(vec3 camera, vec3 main_camera) {
+	return distance(camera, main_camera) > 0.01;
+}
+
+// Dither threshold of one pixel, in [0, 1). Screen space is the only space the cards and the quad
+// share. Interleaved gradient noise spreads the threshold evenly over small pixel blocks.
+float vegetation_dither_threshold(vec2 pixel) {
+	return fract(52.9829189 * fract(dot(pixel, vec2(0.06711056, 0.00583715))));
+}
+
+// Whether one pixel of one representation survives the handover. The branched level keeps the
+// pixels whose threshold is at or above the impostor share and the impostor keeps the rest, so
+// together they cover each pixel once.
+bool vegetation_crossfade_keeps(vec2 pixel, float impostor_share, bool impostor) {
+	float threshold = vegetation_dither_threshold(pixel);
+	return impostor ? threshold < impostor_share : threshold >= impostor_share;
+}
+
+// Handover from the full branched tree to its reduced level, per tree like the one above. The
+// patch used to swap the mesh of all its trees at once when its centre crossed one distance, so
+// trees 15 m away changed together with trees 100 m away. Set from tree_species.gd.
+uniform float tree_detail_begin_m = 45.0;
+uniform float tree_detail_end_m = 55.0;
+// Whether this material draws the reduced level. Its surfaces sit beside the full level's in the
+// mesh a patch inside the band draws, so each tree keeps its own share of both.
+uniform bool reduced_level = false;
+
+// Share of one tree drawn from its reduced level. A tree that takes no handover draws whichever
+// level it was given whole.
+float vegetation_reduced_share(vec3 tree_origin, vec3 main_camera, bool hands_over) {
+	return hands_over
+		? smoothstep(tree_detail_begin_m, tree_detail_end_m, distance(tree_origin, main_camera))
+		: (reduced_level ? 1.0 : 0.0);
+}
+
+// Dither thresholds one branched level keeps, as [x, y). The impostor keeps [0, impostor share),
+// the reduced level the thresholds after it up to its own share, and the full level the rest.
+// The three ranges meet, so every pixel of a tree is drawn by exactly one of them.
+vec2 vegetation_level_keeps(float impostor_share, float reduced_share) {
+	float full_from = max(impostor_share, reduced_share);
+	return reduced_level ? vec2(impostor_share, full_from) : vec2(full_from, 2.0);
+}
+
 // World XZ direction; zero direction disables displacement without a normalization NaN.
 uniform vec2 wind_direction = vec2(1.0, 0.35);
 uniform float wind_strength : hint_range(0.0, 2.0) = 1.0;
@@ -44,7 +100,10 @@ float vegetation_wind_visibility(float distance_m, vec2 viewport) {
 	// Pixels one world metre covers at this depth.
 	float px_per_m = camera_projection_scale * viewport.y * 0.5 / max(distance_m, 0.001);
 	float ramp = smoothstep(WIND_FADE_MIN_PX, WIND_FADE_FULL_PX, WIND_MAX_OFFSET_M * px_per_m);
-	return pow(ramp, WIND_FADE_EXPONENT);
+	// The impostor does not sway, so the sway is gone before a tree starts to become one.
+	float before_handover = 1.0 - smoothstep(tree_crossfade_begin_m - 50.0, tree_crossfade_begin_m,
+		distance_m);
+	return pow(ramp, WIND_FADE_EXPONENT) * before_handover;
 }
 
 // O(1) per near vertex: three sine terms, no textures or inverse transforms.
@@ -71,17 +130,50 @@ vec3 vegetation_backlight(vec3 albedo) {
 	return foliage_backlight * smoothstep(0.0, 0.05, albedo.g - albedo.r);
 }
 
-// Canopy shading. The key light runs four cascades that end at the scene shadow range, well
-// inside the vegetation draw range. Past them every crown is lit on every surface the sun can
-// reach, so a stand loses the one thing that makes a forest darker than a single tree: its
-// members shadow each other. That loss is why distant forest reads lighter than the same
-// forest close up, and it begins at the cascade edge, not at the mesh change much further out.
-//
-// The replacement is one multiplier per instance that fades in exactly where the cascades fade
-// out, so nothing inside shadow range changes. It is keyed on the instance origin, which the
-// near and the distant mesh of one tree share, so a tree keeps its shade when its mesh changes.
-uniform float canopy_shade_begin_m = 327.6;
-uniform float canopy_shade_end_m = 420.0;
+// Distance over which a tree stops receiving cast shadows, just inside the sun's shadow range.
+// A distant tree casts its own baked silhouette, set back along the light, so a stand shadows
+// itself tree by tree out to here. Past the fade the canopy shade term below stands in for those
+// shadows. Set from tree_species.gd.
+uniform float tree_receive_begin_m = 90.0;
+uniform float tree_receive_end_m = 120.0;
+
+// Share of the cast shadow a tree at this distance receives.
+float vegetation_shadow_keep(float distance_m) {
+	return 1.0 - smoothstep(tree_receive_begin_m, tree_receive_end_m, distance_m);
+}
+
+// Cast shadow a tree receives from one light. Directional attenuation is the shadow alone; other
+// lights keep theirs.
+float vegetation_shadow(float attenuation, bool directional, float shadow_keep) {
+	return directional ? mix(1.0, attenuation, shadow_keep) : attenuation;
+}
+
+// Diffuse light on a tree: the engine's Lambert, wrap and backlight terms, restated so that the
+// shadow can fade out. `wrap` zero is plain Lambert.
+vec3 vegetation_diffuse_light(vec3 normal, vec3 light, vec3 light_color, float shadow,
+		vec3 backlight, float wrap) {
+	float wrap_scale = 1.0 + wrap;
+	float n_dot_l = max(0.0, (dot(normal, light) + wrap) / (wrap_scale * wrap_scale));
+	return light_color / PI * (n_dot_l + (1.0 - n_dot_l) * backlight) * shadow;
+}
+
+// Specular light on a tree: the engine's GGX term at the roughness of one every tree material
+// uses, where the distribution is 1 / PI and the visibility term is 0.5 / (NdotL + NdotV). The
+// reflectance is the engine's 0.04 for its default specular of 0.5.
+vec3 vegetation_specular_light(vec3 normal, vec3 light, vec3 view, vec3 light_color,
+		float shadow, float specular_amount) {
+	float n_dot_l = max(dot(normal, light), 0.0);
+	float n_dot_v = max(dot(normal, view), 0.0001);
+	float l_dot_h = max(dot(light, normalize(light + view)), 0.0);
+	float fresnel = 0.04 + 0.96 * pow(1.0 - l_dot_h, 5.0);
+	return light_color * n_dot_l / PI * fresnel * 0.5 / (n_dot_l + n_dot_v) * shadow * specular_amount;
+}
+
+// Canopy shading. Past the fade above no tree receives a cast shadow, so a stand loses the one
+// thing that makes a forest darker than a single tree: its members shadow each other. The
+// replacement is one multiplier per instance that fades in over the same distances the cast
+// shadow fades out over. It is keyed on the instance origin, which the near and the distant mesh
+// of one tree share, so a tree keeps its shade when its mesh changes.
 uniform float canopy_shade : hint_range(0.0, 2.0) = 1.0;
 
 // Share of the key light a shadowed crown keeps. A crown in a neighbour's shadow still collects
@@ -118,11 +210,49 @@ float canopy_shade_noise(vec2 instance_xz) {
 	return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 
-// Multiplier on reflected and transmitted foliage colour for one instance at one distance.
-float vegetation_canopy_shade(vec2 instance_xz, float distance_m) {
+// Share of its light the base of a trunk keeps past the fade, and the height at unit scale
+// where the trunk zone ends and the crown begins. Crowns shade the space under them from the sun
+// and most of the sky, so a stand seen from the side is bright at the top and dark toward the
+// ground. Without it the whole trunk zone of a far stand was lit like the crown tops, and the
+// stand read as a canopy floating on a band of lit trunks.
+// The term fades in over CANOPY_BASE_FADE_M from canopy_base_begin_m, which is the end of the
+// shipped handover, so the branched tree and its impostor never disagree about it while both are
+// drawn. It has its own uniform rather than following tree_crossfade_end_m, because a probe that
+// moves the handover must still compare the two levels without it.
+uniform float canopy_base_begin_m = 200.0;
+const float CANOPY_BASE_SHADE = 0.30;
+const float CANOPY_BASE_TOP_M = 8.0;
+const float CANOPY_BASE_FADE_M = 100.0;
+
+// How far the base term has faded in at one distance.
+float vegetation_canopy_base_ramp(float distance_m) {
+	return smoothstep(canopy_base_begin_m, canopy_base_begin_m + CANOPY_BASE_FADE_M, distance_m);
+}
+
+// Share of its light a surface `height_m` above the instance origin at unit scale keeps.
+float vegetation_canopy_base(float height_m, float base_ramp) {
+	return mix(1.0, mix(CANOPY_BASE_SHADE, 1.0, smoothstep(0.0, CANOPY_BASE_TOP_M, height_m)),
+		base_ramp);
+}
+
+// Multiplier on reflected and transmitted colour for one instance at one distance, before its
+// base term, and how far that distance has taken the term in. The impostor needs them apart,
+// because its base term varies across one card and must be evaluated per fragment.
+vec2 vegetation_canopy_shade_parts(vec2 instance_xz, float distance_m) {
 	float shade = mix(CANOPY_SHADE_FLOOR, 1.0, canopy_shade_noise(instance_xz));
-	float ramp = smoothstep(canopy_shade_begin_m, canopy_shade_end_m, distance_m) * canopy_shade;
-	// The clamp is what lets `canopy_shade` run past one. A strength above one extrapolates
-	// past the floor, which is how a probe asks for more darkening than the derived default.
-	return clamp(mix(1.0, shade, ramp), 0.0, 1.0);
+	float ramp = smoothstep(tree_receive_begin_m, tree_receive_end_m, distance_m) * canopy_shade;
+	return vec2(shade, ramp);
+}
+
+// The clamp is what lets `canopy_shade` run past one. A strength above one extrapolates past the
+// floor, which is how a probe asks for more darkening than the derived default.
+float vegetation_canopy_combine(vec2 parts, float base) {
+	return clamp(mix(1.0, parts.x * base, parts.y), 0.0, 1.0);
+}
+
+// Multiplier on reflected and transmitted colour for one instance at one distance, for a surface
+// `height_m` above the instance origin at unit scale.
+float vegetation_canopy_shade(vec2 instance_xz, float distance_m, float height_m) {
+	return vegetation_canopy_combine(vegetation_canopy_shade_parts(instance_xz, distance_m),
+		vegetation_canopy_base(height_m, vegetation_canopy_base_ramp(distance_m)));
 }

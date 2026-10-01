@@ -1,0 +1,58 @@
+{
+  "aspen": {
+    "bark_mean": [
+      0.247091,
+      0.303724,
+      0.192043
+    ],
+    "foliage_coverage": 0.3701,
+    "leaf_depth_mean": 0.56914,
+    "leaf_mean": [
+      0.246506,
+      0.31124,
+      0.05552
+    ]
+  },
+  "birch": {
+    "bark_mean": [
+      0.5371,
+      0.519235,
+      0.44579
+    ],
+    "foliage_coverage": 0.3017,
+    "leaf_depth_mean": 0.581992,
+    "leaf_mean": [
+      0.241162,
+      0.358506,
+      0.056608
+    ]
+  },
+  "pine": {
+    "bark_mean": [
+      0.250538,
+      0.181992,
+      0.122045
+    ],
+    "foliage_coverage": 0.3137,
+    "leaf_depth_mean": 0.709413,
+    "leaf_mean": [
+      0.169722,
+      0.269446,
+      0.128716
+    ]
+  },
+  "spruce": {
+    "bark_mean": [
+      0.043861,
+      0.032831,
+      0.021306
+    ],
+    "foliage_coverage": 0.309,
+    "leaf_depth_mean": 0.535021,
+    "leaf_mean": [
+      0.066032,
+      0.118738,
+      0.033468
+    ]
+  }
+}
