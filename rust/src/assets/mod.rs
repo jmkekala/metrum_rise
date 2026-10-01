@@ -12,6 +12,7 @@
 //! Neither file ships binary data. All mesh and texture paths inside these manifests
 //! are relative to the asset's folder within the pack.
 
+pub(crate) mod archive;
 pub mod asset;
 pub(crate) mod authoring;
 pub mod lod_policy;

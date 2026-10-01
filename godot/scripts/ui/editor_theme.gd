@@ -190,6 +190,8 @@ static func _style_line_edit(edit: LineEdit, mode: String) -> void:
 	edit.add_theme_stylebox_override("focus", style_box(mode, "panel_alt", 4, 1))
 	edit.add_theme_stylebox_override("read_only", style_box(mode, "panel_disabled", 4, 1))
 	edit.add_theme_color_override("font_color", color(mode, "text"))
+	# Read-only fields still show content, such as an archive hash, and must stay legible.
+	edit.add_theme_color_override("font_uneditable_color", color(mode, "text"))
 	edit.add_theme_color_override("font_placeholder_color", color(mode, "text_dim"))
 	edit.add_theme_color_override("caret_color", color(mode, "accent"))
 	edit.add_theme_color_override("selection_color", color(mode, "selection"))

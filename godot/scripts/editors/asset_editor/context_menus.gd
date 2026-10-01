@@ -196,6 +196,9 @@ func open_library(mouse: Vector2) -> void:
 	elif target.has("pack"):
 		_item(popup, "New asset…" if target.has("type") else "New asset in this pack…", "library_new")
 		_item(popup, "Show pack folder", "library_pack_folder")
+		if not target.has("type"):
+			_item(popup, "Pack settings…", "library_pack_settings")
+			_item(popup, "Export pack as zip…", "library_pack_export")
 		_item(popup, "Refresh library", "library_refresh")
 	else:
 		_item(popup, "New asset…", "library_new")

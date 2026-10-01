@@ -3,7 +3,10 @@
 //! File-service bridge for asset authoring. Rust owns dependency planning, staging and drafts.
 //! Godot supplies Variant serialization, user:// resolution and texture decoding validation.
 
+use crate::assets::PackManifest;
+use crate::assets::archive;
 use crate::assets::authoring::{colours, files};
+use crate::assets::pack::{PackSettings, bump_version};
 use crate::nodes::sim::asset_export::{ExportParams, validated_tomls};
 use godot::builtin::vdict;
 use godot::classes::{Image, Json, ProjectSettings};
@@ -171,6 +174,110 @@ impl AssetAuthoringFiles {
         .into()
     }
 
+    /// Current editable `pack.toml` metadata of an installed pack.
+    #[func]
+    pub fn pack_settings(mods: GString, pack: GString) -> VarDictionary {
+        let result = files::pack_directory(&native_path(mods), &pack.to_string())
+            .and_then(|root| {
+                std::fs::read_to_string(root.join("pack.toml")).map_err(|e| e.to_string())
+            })
+            .and_then(|text| PackManifest::from_str(&text).map_err(|e| e.to_string()));
+        match result {
+            Ok(manifest) => pack_dictionary(&manifest),
+            Err(error) => vdict! { "error": error },
+        }
+    }
+
+    /// Validate and atomically rewrite pack metadata; `pack_id` cannot change.
+    #[func]
+    pub fn update_pack(mods: GString, pack: GString, settings: VarDictionary) -> GString {
+        let text = |key: &str| {
+            settings
+                .get(key)
+                .and_then(|v| v.try_to::<GString>().ok())
+                .unwrap_or_default()
+                .to_string()
+        };
+        let values = [
+            "display_name",
+            "version",
+            "author",
+            "license",
+            "description",
+        ]
+        .map(text);
+        let [display_name, version, author, license, description] = &values;
+        let settings = PackSettings {
+            display_name,
+            version,
+            author,
+            license,
+            description,
+        };
+        files::update_pack(&native_path(mods), &pack.to_string(), &settings)
+            .err()
+            .unwrap_or_default()
+            .as_str()
+            .into()
+    }
+
+    /// Next semantic version for `patch`, `minor` or `major`; empty when it has none.
+    #[func]
+    pub fn bumped_version(version: GString, part: GString) -> GString {
+        bump_version(&version.to_string(), &part.to_string())
+            .unwrap_or_default()
+            .as_str()
+            .into()
+    }
+
+    /// Validate a pack and summarise its share archive without writing. Takes native paths
+    /// and touches no engine singleton, so it may run on a worker thread.
+    #[func]
+    pub fn inspect_pack(mods: GString, pack: GString) -> VarDictionary {
+        let result = files::pack_directory(Path::new(&mods.to_string()), &pack.to_string())
+            .and_then(|root| archive::inventory(&root));
+        match result {
+            Ok(contents) => {
+                let mut summary = pack_dictionary(&contents.pack);
+                summary.set("assets", contents.assets as i64);
+                // checksums.sha256 is generated into the archive as one more file.
+                summary.set("files", contents.files.len() as i64 + 1);
+                summary.set("bytes", contents.bytes as i64);
+                let excluded: PackedStringArray =
+                    contents.excluded.iter().map(GString::from).collect();
+                summary.set("excluded", excluded);
+                summary
+            }
+            Err(error) => vdict! { "error": error },
+        }
+    }
+
+    /// Write `<pack_id>-<version>.metrum.zip` and its `.sha256` sidecar into `destination`,
+    /// after an optional `patch`/`minor`/`major` bump (empty for none). Native paths only;
+    /// safe on a worker thread.
+    #[func]
+    pub fn export_pack(
+        mods: GString,
+        pack: GString,
+        destination: GString,
+        bump: GString,
+    ) -> VarDictionary {
+        let bump = bump.to_string();
+        match archive::export(
+            Path::new(&mods.to_string()),
+            &pack.to_string(),
+            Path::new(&destination.to_string()),
+            Some(bump.as_str()).filter(|part| !part.is_empty()),
+        ) {
+            Ok(exported) => vdict! {
+                "path": exported.path.to_string_lossy().as_ref(),
+                "sha256": exported.sha256,
+                "version": exported.version,
+            },
+            Err(error) => vdict! { "error": error },
+        }
+    }
+
     /// Validate and publish a document's complete model/dependency set transactionally.
     #[func]
     pub fn publish_document(document: GString, output: GString) -> GString {
@@ -294,6 +401,17 @@ fn colour_dependencies(state: &Value) -> Result<Vec<(String, PathBuf)>, String> 
         }
     }
     Ok(dependencies)
+}
+
+fn pack_dictionary(manifest: &PackManifest) -> VarDictionary {
+    vdict! {
+        "pack_id": manifest.pack_id.as_str(),
+        "display_name": manifest.display_name.as_str(),
+        "version": manifest.version.as_str(),
+        "author": manifest.author.as_str(),
+        "license": manifest.license.as_str(),
+        "description": manifest.description.as_deref().unwrap_or_default(),
+    }
 }
 
 fn native_path(path: GString) -> PathBuf {

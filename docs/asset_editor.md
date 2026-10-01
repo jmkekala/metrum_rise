@@ -246,13 +246,12 @@ Exported asset packs must be easy to share as ordinary files.
 Distribution model:
 
 - Canonical installed form: unpacked folder in `user://mods/`
-- Common share form: `.zip` archive containing exactly one pack root folder
-- Optional nicer share extension later: something like `.mrpack.zip`, but plain `.zip` should work from day one
+- Share form: `<pack_id>-<version>.metrum.zip`, a plain zip containing exactly one pack root folder (see [Share archive format](#share-archive-format--tools-09))
 
 Editor outputs:
 
 - `Export Runtime Pack`: writes the normal unpacked runtime pack folder
-- `Export Share Archive`: writes a zip archive of the runtime pack for distribution
+- `Export pack as zip…`: writes a share archive of an installed pack to a location the creator chooses
 - Default export flow: export the runtime pack folder first, then optionally generate the share archive from that exact folder
 
 Do not make zip the only exported artifact. The unpacked runtime pack should remain the canonical installable form.
@@ -262,10 +261,10 @@ Player workflow:
 1. Creator exports a runtime pack folder from the asset editor.
 2. Creator shares that pack as:
    - the folder itself, or
-   - a `.zip` made from that folder
+   - a `.metrum.zip` exported from that folder
 3. Another player installs it by:
    - dropping the folder into `user://mods/`, or
-   - importing/selecting the `.zip` in the game or asset editor, which then unpacks it into `user://mods/`
+   - importing the `.metrum.zip` in the game, which verifies it and unpacks it into `user://mods/` (`TOOLS-10`)
 4. The game validates `pack.toml`, asset manifests, `checksums.sha256`, and `pack.index.bin` when present.
 5. The player enables or disables the pack from the content/mod manager.
 
@@ -295,12 +294,46 @@ Conflict rules:
   - enabled/disabled state
   - validation warnings
 
-Export contents:
+### Share archive format — `TOOLS-09`
+
+Export and import share one contract so the game can reject anything export would never produce.
+
+Naming:
+
+- Archive: `<pack_id>-<version>.metrum.zip`, e.g. `kuopio-0.1.0.metrum.zip`. The `.zip` ending keeps it openable with ordinary tools; `.metrum` marks it as a Metrum Rise pack. Import identifies an archive by its contents, never by its name.
+- Sidecar: `<archive_filename>.sha256`, one `sha256sum` line (`<hex>  <archive_filename>`), written next to the archive.
+
+Contents — the referenced file set, nothing else:
 
 - `pack.toml`
-- `pack.index.bin`
-- `assets/...`
-- thumbnails and any baked outputs required by the assets
+- every `assets/<asset_id>/asset.toml` that parses and validates
+- every file those manifests reference: LOD models and the files each `.gltf` loads, colour-scheme textures, the thumbnail and `attribution/`
+- `checksums.sha256`, generated into the archive only; the source pack folder is never modified
+- Derived caches such as `pack.index.bin`, editor drafts, `.blend` sources, Godot `.import` files and any other unreferenced file are excluded. The export dialog lists excluded files.
+- One Rust function, `asset_files` in `rust/src/assets/archive.rs`, derives an asset's referenced file set from its manifest. Publication refuses a staged asset whose files differ from it, export packages exactly it, and import will check against it, so they cannot disagree.
+
+Structure, enforced by export and checked by import:
+
+- Exactly one top-level folder, named after the `pack_id` in `<pack_id>/pack.toml`.
+- File entries only: no directory entries, symlinks, duplicate paths, absolute paths, `..` or `\` separators, and no two paths that differ only by letter case.
+- UTF-8 entry names; compression is `stored` (PNG, WebP, JPEG) or `deflate` (everything else).
+- `<pack_id>/checksums.sha256` lists every other entry exactly once, sorted by path, in `sha256sum` format with paths relative to the pack root.
+- Deterministic bytes: entries sorted by path, fixed timestamp (1980-01-01 00:00), fixed `0644` permissions, no extra fields. The same pack exported by the same build produces the same archive hash.
+
+Export refuses, without writing anything, when `pack.toml` or any `asset.toml` fails validation, a referenced file is missing or escapes its asset folder, the pack contains a symbolic link or a non-UTF-8 file name, an `asset.toml` lies outside `assets/<asset_id>/` or in a folder not named after its `asset_id`, or the case-collision rule fails. The runtime scanner loads every `asset.toml` in a pack, so these rules stop an archive from silently dropping an asset the creator's own game loads.
+
+Writing: the archive and then the sidecar are written to temporary files in the destination folder, synced and renamed into place. A failed export removes its temporary files, so no partial archive is left behind and an existing archive of the same name is untouched. If only the final sidecar rename fails, the error reports the archive's SHA-256; any older sidecar then mismatches, which import rejects. Inspection and export run on the `WorkerThreadPool`, and their cost is linear in the pack's file count and bytes; every archived byte is read once, except files sorting after `checksums.sha256` (only `pack.toml`), which are held in memory so their listed hash matches the written bytes.
+
+Export dialog:
+
+- Opened from `Export pack as zip…` in the library pack menu. Shows the pack's name, version, asset count, file count, total size and excluded files before writing, and warns when the open document has unsaved changes for this pack. The archive is built from disk, not from the draft.
+- Writes into a chosen folder (default: the system Documents folder, then the last one used). When the archive name already exists there, the first Export press says so and a second press replaces it.
+- Offers a patch, minor or major version bump (default: none). A bump rewrites `pack.toml` atomically before the archive is built.
+- After export, shows the archive's SHA-256 with a copy action, so the creator can publish it through a separate channel.
+
+Pack settings:
+
+- `Pack settings…` in the library pack menu edits `display_name`, `version`, `author`, `license` and `description`. Values go through `PackManifest` validation, including a semantic-version check on `version`, and `pack.toml` is rewritten atomically. `pack_id` is not editable.
 
 ## Integrity, Corruption, And Authenticity
 
@@ -320,15 +353,15 @@ Hashing design:
 
 - Use normal `.zip` as the default share archive format. It is universal, easy to handle, and good enough for the first shipping version.
 - Every exported share archive must have a sibling SHA-256 sidecar file named `<archive_filename>.sha256`. Example:
-  - archive: `kenney_city_pack-1.0.0.zip`
-  - sidecar: `kenney_city_pack-1.0.0.zip.sha256`
+  - archive: `kenney_city_pack-1.0.0.metrum.zip`
+  - sidecar: `kenney_city_pack-1.0.0.metrum.zip.sha256`
 - Every exported pack folder must contain a per-file checksum manifest named exactly `checksums.sha256`.
 
 Verification flow:
 
-- On archive import:
+- On archive import (`TOOLS-10`; the exact flow is defined with that item, likely including a prompt for the expected SHA-256):
   - compute archive SHA-256
-  - compare against a provided `.sha256` sidecar or trusted catalog entry if present
+  - compare against the expected hash from the sidecar, the player, or a trusted catalog entry
   - unpack into a temporary directory
   - verify the unpacked file set against `checksums.sha256`
   - only then move/install into the real `user://mods/` directory

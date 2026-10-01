@@ -4,11 +4,15 @@
 ## Trash is recoverable and separate from document history; publication is always explicit.
 extends RefCounted
 
+const PackDialogs = preload("res://scripts/editors/asset_editor/pack_dialogs.gd")
+
 var editor: Node
+var packs: RefCounted
 var trash_operation: Callable = OS.move_to_trash
 
 func _init(owner: Node) -> void:
 	editor = owner
+	packs = PackDialogs.new(owner)
 
 func location(id: String) -> Dictionary:
 	return AssetAuthoringFiles.asset_location("user://mods", editor._asset_pack_id(id), editor._asset_local_id(id))
@@ -21,6 +25,8 @@ func execute(action: String, target: Dictionary) -> void:
 		"library_id": DisplayServer.clipboard_set(id)
 		"library_refresh": editor._refresh_asset_browser()
 		"library_pack_create": editor._open_new_pack_dialog()
+		"library_pack_settings": packs.settings_dialog(str(target.get("pack", "")))
+		"library_pack_export": packs.export_dialog(str(target.get("pack", "")))
 		"library_new": editor._session.new_asset_dialog(target.get("pack", ""), target.get("type", ""))
 		"library_folder":
 			var path := location(id)

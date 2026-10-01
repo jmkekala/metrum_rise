@@ -519,6 +519,11 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- `TOOLS-09`: the library pack menu gains `Pack settings…` (validated `pack.toml` edits; versions
+  must now be semantic versions) and `Export pack as zip…`, which writes a deterministic
+  `<pack_id>-<version>.metrum.zip` plus `.sha256` sidecar off the main thread. The archive holds
+  exactly the files the manifests reference, from `assets/archive.rs`, which publication now
+  checks against too. See [the archive format](asset_editor.md#share-archive-format--tools-09).
 - `TOOLS-08`: asset publication now writes a fresh folder containing only the files the document
   references, instead of merging into the previous one; textures, LODs and thumbnails dropped by an
   edit no longer pile up in packs. Published `colours/` names come from the current schemes, not

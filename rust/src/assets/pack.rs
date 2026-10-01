@@ -65,8 +65,119 @@ impl PackManifest {
                 self.pack_id
             )));
         }
+        if !is_valid_semver(&self.version) {
+            return Err(ManifestError::Validation(format!(
+                "pack '{}': version '{}' must be a semantic version such as 1.2.0",
+                self.pack_id, self.version
+            )));
+        }
         Ok(())
     }
+}
+
+/// Editable `pack.toml` metadata; `pack_id` and the schema version are fixed.
+pub(crate) struct PackSettings<'a> {
+    pub(crate) display_name: &'a str,
+    pub(crate) version: &'a str,
+    pub(crate) author: &'a str,
+    pub(crate) license: &'a str,
+    pub(crate) description: &'a str,
+}
+
+impl<'a> PackSettings<'a> {
+    pub(crate) fn of(manifest: &'a PackManifest) -> Self {
+        Self {
+            display_name: &manifest.display_name,
+            version: &manifest.version,
+            author: &manifest.author,
+            license: &manifest.license,
+            description: manifest.description.as_deref().unwrap_or_default(),
+        }
+    }
+}
+
+/// Semantic Versioning 2.0.0: `MAJOR.MINOR.PATCH[-pre.release][+build.metadata]`.
+fn is_valid_semver(version: &str) -> bool {
+    fn identifiers(text: &str, numeric_rules: bool) -> bool {
+        text.split('.').all(|id| {
+            !id.is_empty()
+                && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                && !(numeric_rules
+                    && id.len() > 1
+                    && id.starts_with('0')
+                    && id.bytes().all(|b| b.is_ascii_digit()))
+        })
+    }
+    let (rest, build) = version
+        .split_once('+')
+        .map_or((version, None), |(r, b)| (r, Some(b)));
+    let (core, pre) = rest
+        .split_once('-')
+        .map_or((rest, None), |(c, p)| (c, Some(p)));
+    let numbers: Vec<&str> = core.split('.').collect();
+    numbers.len() == 3
+        && numbers.iter().all(|n| {
+            !n.is_empty()
+                && n.bytes().all(|b| b.is_ascii_digit())
+                && (n.len() == 1 || !n.starts_with('0'))
+        })
+        && pre.is_none_or(|p| identifiers(p, true))
+        && build.is_none_or(|b| identifiers(b, false))
+}
+
+/// Next release for `part` (`patch`, `minor` or `major`), following npm's rules: a
+/// pre-release of the target version is released rather than skipped, and build
+/// metadata is dropped.
+pub(crate) fn bump_version(version: &str, part: &str) -> Result<String, String> {
+    if !is_valid_semver(version) {
+        return Err(format!("'{version}' is not a semantic version"));
+    }
+    let release = version.split(['-', '+']).next().unwrap_or_default();
+    let pre = version.split('+').next().unwrap_or_default().contains('-');
+    let mut numbers = [0u64; 3];
+    for (slot, text) in numbers.iter_mut().zip(release.split('.')) {
+        *slot = text.parse().map_err(|_| "Version number is too large")?;
+    }
+    let [major, minor, patch] = numbers;
+    let next = |n: u64| n.checked_add(1).ok_or("Version number is too large");
+    Ok(match part {
+        "patch" if pre => format!("{major}.{minor}.{patch}"),
+        "patch" => format!("{major}.{minor}.{}", next(patch)?),
+        "minor" if pre && patch == 0 => format!("{major}.{minor}.0"),
+        "minor" => format!("{major}.{}.0", next(minor)?),
+        "major" if pre && minor == 0 && patch == 0 => format!("{major}.0.0"),
+        "major" => format!("{}.0.0", next(major)?),
+        _ => return Err(format!("Unknown version bump '{part}'")),
+    })
+}
+
+/// Rewrite `source` with new settings. Tags and keys this crate does not read are kept,
+/// so an older editor never strips metadata a newer one wrote.
+pub(crate) fn rewrite_manifest(source: &str, settings: &PackSettings) -> Result<String, String> {
+    let original = PackManifest::from_str(source).map_err(|e| e.to_string())?;
+    let mut rest: toml::Table = toml::from_str(source).map_err(|e| e.to_string())?;
+    for key in [
+        "pack_id",
+        "schema_version",
+        "display_name",
+        "version",
+        "author",
+        "license",
+        "description",
+    ] {
+        rest.remove(key);
+    }
+    let mut text = manifest_toml_with(
+        &original.pack_id,
+        settings.display_name,
+        settings.version,
+        settings.author,
+        settings.license,
+        settings.description,
+    );
+    text.push_str(&toml::to_string(&rest).map_err(|e| e.to_string())?);
+    PackManifest::from_str(&text).map_err(|e| e.to_string())?;
+    Ok(text)
 }
 
 /// Shared TOML writer for pack creation and asset publication.
@@ -77,14 +188,26 @@ pub(crate) fn manifest_toml(
     author: &str,
     license: &str,
 ) -> String {
+    manifest_toml_with(id, name, version, author, license, "")
+}
+
+fn manifest_toml_with(
+    id: &str,
+    name: &str,
+    version: &str,
+    author: &str,
+    license: &str,
+    description: &str,
+) -> String {
     format!(
-        "pack_id = {}\nschema_version = {}\ndisplay_name = {}\nversion = {}\nauthor = {}\nlicense = {}\ndescription = \"\"\n",
+        "pack_id = {}\nschema_version = {}\ndisplay_name = {}\nversion = {}\nauthor = {}\nlicense = {}\ndescription = {}\n",
         toml_string(id),
         CURRENT_SCHEMA_VERSION,
         toml_string(name),
         toml_string(version),
         toml_string(author),
-        toml_string(license)
+        toml_string(license),
+        toml_string(description)
     )
 }
 
@@ -168,6 +291,72 @@ license = "MIT"
             PackManifest::from_str(&manifest_toml("../escape", name, "0.1.0", author, "CC0"))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn versions_follow_semver_and_bump_like_npm() {
+        for valid in [
+            "0.1.0",
+            "1.0.0-alpha",
+            "1.0.0-alpha.1-x",
+            "1.0.0+20260101",
+            "2.0.0-rc.1+b-7",
+        ] {
+            assert!(is_valid_semver(valid), "{valid}");
+        }
+        for invalid in [
+            "",
+            "1",
+            "1.0",
+            "01.0.0",
+            "1.0.0-",
+            "1.0.0-01",
+            "1.0.0+",
+            "1.0.0-a..b",
+            "v1.0.0",
+            "1.0.0 ",
+        ] {
+            assert!(!is_valid_semver(invalid), "{invalid}");
+        }
+        let toml = VALID_PACK_TOML.replace("\"1.0.0\"", "\"1.0\"");
+        assert!(PackManifest::from_str(&toml).is_err());
+        for (from, part, to) in [
+            ("1.2.3", "patch", "1.2.4"),
+            ("1.2.3", "minor", "1.3.0"),
+            ("1.2.3+build", "major", "2.0.0"),
+            ("1.2.3-rc.1", "patch", "1.2.3"),
+            ("1.2.0-rc.1", "minor", "1.2.0"),
+            ("1.2.3-rc.1", "minor", "1.3.0"),
+            ("2.0.0-rc.1", "major", "2.0.0"),
+        ] {
+            assert_eq!(bump_version(from, part).unwrap(), to, "{from} {part}");
+        }
+        assert!(bump_version("1.0", "patch").is_err());
+        assert!(bump_version("1.0.0", "build").is_err());
+        assert!(bump_version("1.0.18446744073709551615", "patch").is_err());
+    }
+
+    #[test]
+    fn rewrite_keeps_identity_tags_and_unknown_keys() {
+        let source = format!("{VALID_PACK_TOML}future = {{ kept = true }}\n");
+        let original = PackManifest::from_str(&source).unwrap();
+        let settings = PackSettings {
+            description: "New \"quoted\" text",
+            version: "1.1.0",
+            ..PackSettings::of(&original)
+        };
+        let text = rewrite_manifest(&source, &settings).unwrap();
+        let parsed = PackManifest::from_str(&text).unwrap();
+        assert_eq!(parsed.pack_id, "kenney-city-pack");
+        assert_eq!(parsed.version, "1.1.0");
+        assert_eq!(parsed.description.as_deref(), Some("New \"quoted\" text"));
+        assert_eq!(parsed.tags, original.tags);
+        assert!(text.contains("kept = true"));
+        let bad = PackSettings {
+            version: "next",
+            ..PackSettings::of(&original)
+        };
+        assert!(rewrite_manifest(&source, &bad).is_err());
     }
 
     #[test]
