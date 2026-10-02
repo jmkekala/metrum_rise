@@ -120,64 +120,6 @@ impl SimulationNode {
             funding,
         )
     }
-
-    // ── Economy Editor ──
-
-    /// Loads the canonical authored economy folder and returns a JSON envelope
-    /// containing profiles, controllers, scenarios, and validation messages.
-    #[func]
-    pub fn load_economy_project(&self, dir_path: GString) -> GString {
-        use crate::simulation::economy::definitions::load_project_json;
-        match load_project_json(std::path::Path::new(&dir_path.to_string())) {
-            Ok(json) => GString::from(json.as_str()),
-            Err(err) => {
-                let payload = serde_json::json!({
-                    "ok": false,
-                    "error": err,
-                    "validation": [],
-                });
-                GString::from(payload.to_string().as_str())
-            }
-        }
-    }
-
-    /// Validates the authored economy JSON payload and writes the canonical TOML files.
-    #[func]
-    pub fn export_economy_project(&self, project_json: GString, dir_path: GString) -> GString {
-        use crate::simulation::economy::definitions::export_project_json;
-        match export_project_json(
-            &project_json.to_string(),
-            std::path::Path::new(&dir_path.to_string()),
-        ) {
-            Ok(json) => GString::from(json.as_str()),
-            Err(err) => {
-                let payload = serde_json::json!({
-                    "ok": false,
-                    "error": err,
-                    "validation": [],
-                });
-                GString::from(payload.to_string().as_str())
-            }
-        }
-    }
-
-    /// Runs the small authored-economy sandbox for the selected scenario and
-    /// returns daily series data plus summary bottleneck metrics as JSON.
-    #[func]
-    pub fn run_economy_sandbox(&self, project_json: GString, scenario_id: GString) -> GString {
-        use crate::simulation::economy::definitions::run_sandbox_json;
-        match run_sandbox_json(&project_json.to_string(), &scenario_id.to_string()) {
-            Ok(json) => GString::from(json.as_str()),
-            Err(err) => {
-                let payload = serde_json::json!({
-                    "ok": false,
-                    "error": err,
-                    "validation": [],
-                });
-                GString::from(payload.to_string().as_str())
-            }
-        }
-    }
 }
 
 fn fiscal_policy_dict(

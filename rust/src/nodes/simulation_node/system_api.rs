@@ -257,12 +257,6 @@ impl SimulationNode {
         self.asset_editor_mode
     }
 
-    /// Returns `true` when the node was launched with `--economy-editor`.
-    #[func]
-    pub fn is_economy_editor_mode(&self) -> bool {
-        self.economy_editor_mode
-    }
-
     /// Returns `true` when the node was launched with `--world-editor`.
     #[func]
     pub fn is_world_editor_mode(&self) -> bool {

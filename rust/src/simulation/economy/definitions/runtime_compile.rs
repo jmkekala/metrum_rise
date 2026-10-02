@@ -309,10 +309,16 @@ fn compile_resource_ports(
 mod tests {
     use super::*;
 
+    fn shipped_profiles() -> super::super::schema::ProfilesFile {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../economy")
+            .join(super::super::io::PROFILES_FILE);
+        super::super::io::parse_toml_file(&path).unwrap()
+    }
+
     #[test]
     fn authored_profile_scalars_reject_nonfinite_and_negative_values() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../economy");
-        let project = super::super::io::load_project(&path).unwrap();
+        let project = shipped_profiles();
         let resources: BTreeMap<_, _> = project
             .resources
             .iter()
@@ -349,8 +355,7 @@ mod tests {
 
     #[test]
     fn recipe_ports_reject_duplicates_and_invalid_rates() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../economy");
-        let project = super::super::io::load_project(&path).unwrap();
+        let project = shipped_profiles();
         let profile = project
             .profiles
             .iter()
@@ -413,8 +418,7 @@ mod tests {
     }
     #[test]
     fn shipped_resource_ids_survive_reordering_and_import_only_prices_roundtrip() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../economy");
-        let mut project = super::super::io::load_project(&path).unwrap();
+        let mut project = shipped_profiles();
         project.resources.reverse();
         let catalog = compile_runtime_catalog(
             &project.profiles,
@@ -437,16 +441,6 @@ mod tests {
         }
         assert_eq!(catalog.unit_price_for_resource(8), Some(8.0));
         assert_eq!(catalog.unit_price_for_resource(9), Some(16.0));
-        let encoded = serde_json::to_string(&project).unwrap();
-        let project: super::super::schema::EconomyProject = serde_json::from_str(&encoded).unwrap();
-        assert!(
-            compile_runtime_catalog(
-                &project.profiles,
-                &project.resources,
-                &project.runtime_tuning
-            )
-            .is_ok()
-        );
         let mut duplicate = project.resources.clone();
         duplicate[0].runtime_id = duplicate[1].runtime_id;
         assert!(

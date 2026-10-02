@@ -17,7 +17,6 @@ const BAR_HEIGHT := 28
 
 const SCENE_GAMEPLAY := "gameplay"
 const SCENE_ASSET_EDITOR := "asset_editor"
-const SCENE_ECONOMY_EDITOR := "economy_editor"
 const SCENE_WORLD_EDITOR := "world_editor"
 
 enum ActionId {
@@ -42,14 +41,11 @@ enum ActionId {
 	CITY_ECONOMY = 21,
 	CITY_DEMAND = 22,
 	TOOLS_OPEN_ASSET_EDITOR = 30,
-	TOOLS_OPEN_ECONOMY_EDITOR = 31,
 	HELP_SHORTCUTS = 40,
 	HELP_ABOUT = 41,
 	ASSET_RELOAD_PACKS = 50,
 	ASSET_IMPORT_MESH = 51,
 	ASSET_RESET_LAYOUT = 52,
-	ECONOMY_RELOAD = 60,
-	ECONOMY_RUN_SANDBOX = 61,
 	TOOLS_TIME_OF_DAY_CYCLE = 80,
 	# One id per DayCycleConfig.PRESET_HOURS entry, in table order, so the menu never has to
 	# keep a hand-written enum in step with the hours themselves.
@@ -113,8 +109,6 @@ func _build_menu_bar() -> void:
 			_build_gameplay_menus(_menu_bar)
 		SCENE_ASSET_EDITOR:
 			_build_asset_editor_menus(_menu_bar)
-		SCENE_ECONOMY_EDITOR:
-			_build_economy_editor_menus(_menu_bar)
 		SCENE_WORLD_EDITOR:
 			_build_world_editor_menus(_menu_bar)
 
@@ -196,7 +190,6 @@ func _build_gameplay_menus(menu_bar: MenuBar) -> void:
 	tools_popup.add_submenu_node_item("Time of Day", _time_of_day_popup)
 	tools_popup.add_separator()
 	tools_popup.add_item("Open Asset Editor", ActionId.TOOLS_OPEN_ASSET_EDITOR)
-	tools_popup.add_item("Open Economy Editor", ActionId.TOOLS_OPEN_ECONOMY_EDITOR)
 	tools_popup.id_pressed.connect(_on_tools_menu_pressed)
 	_build_time_of_day_menu(_time_of_day_popup)
 
@@ -236,19 +229,6 @@ func set_asset_document_open(active: bool) -> void:
 				var index: int = popup.get_item_index(id)
 				if index >= 0:
 					popup.set_item_disabled(index, not active)
-
-func _build_economy_editor_menus(menu_bar: MenuBar) -> void:
-	var file_popup := _add_menu_popup(menu_bar, "File")
-	file_popup.add_item("Save [Ctrl+S]", ActionId.FILE_SAVE)
-	file_popup.add_separator()
-	file_popup.add_item("Return To Game", ActionId.FILE_RETURN_TO_GAME)
-	file_popup.add_item("Quit", ActionId.FILE_QUIT)
-	file_popup.id_pressed.connect(_on_file_menu_pressed)
-
-	var economy_popup := _add_menu_popup(menu_bar, "Economy")
-	economy_popup.add_item("Reload Project", ActionId.ECONOMY_RELOAD)
-	economy_popup.add_item("Run Sandbox", ActionId.ECONOMY_RUN_SANDBOX)
-	economy_popup.id_pressed.connect(_on_economy_menu_pressed)
 
 func _build_world_editor_menus(menu_bar: MenuBar) -> void:
 	var file_popup := _add_menu_popup(menu_bar, "File")
@@ -397,9 +377,6 @@ func _on_tools_menu_pressed(id: int) -> void:
 		ActionId.TOOLS_OPEN_ASSET_EDITOR:
 			if _scene_root and _scene_root.has_method("menu_open_asset_editor"):
 				_scene_root.menu_open_asset_editor()
-		ActionId.TOOLS_OPEN_ECONOMY_EDITOR:
-			if _scene_root and _scene_root.has_method("menu_open_economy_editor"):
-				_scene_root.menu_open_economy_editor()
 
 func _on_help_menu_pressed(id: int) -> void:
 	match id:
@@ -473,15 +450,6 @@ func _on_asset_menu_pressed(id: int) -> void:
 		ActionId.ASSET_IMPORT_MESH:
 			if _scene_root and _scene_root.has_method("menu_import_mesh"):
 				_scene_root.menu_import_mesh()
-
-func _on_economy_menu_pressed(id: int) -> void:
-	match id:
-		ActionId.ECONOMY_RELOAD:
-			if _scene_root and _scene_root.has_method("menu_reload_project"):
-				_scene_root.menu_reload_project()
-		ActionId.ECONOMY_RUN_SANDBOX:
-			if _scene_root and _scene_root.has_method("menu_run_sandbox"):
-				_scene_root.menu_run_sandbox()
 
 func _set_overlay_mode(mode: int) -> void:
 	if _scene_root and _scene_root.has_method("menu_set_overlay_mode"):
@@ -566,8 +534,6 @@ func _detect_scene_kind() -> String:
 	if simulation_node:
 		if simulation_node.has_method("is_asset_editor_mode") and simulation_node.is_asset_editor_mode():
 			return SCENE_ASSET_EDITOR
-		if simulation_node.has_method("is_economy_editor_mode") and simulation_node.is_economy_editor_mode():
-			return SCENE_ECONOMY_EDITOR
 		if simulation_node.has_method("is_world_editor_mode") and simulation_node.is_world_editor_mode():
 			return SCENE_WORLD_EDITOR
 	return SCENE_GAMEPLAY

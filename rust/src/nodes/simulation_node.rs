@@ -21,10 +21,6 @@
 //! | | `apply_money_and_max_demand_cheat` | `input_manager.gd` |
 //! | | `get_treasury_balance` | `main_ui.gd` |
 //! | | `get_agent_count` | `main_ui.gd` |
-//! | **Economy Editor** | `is_economy_editor_mode` | `economy_editor.gd` |
-//! | | `load_economy_project` | `economy_editor.gd` |
-//! | | `export_economy_project` | `economy_editor.gd` |
-//! | | `run_economy_sandbox` | `economy_editor.gd` |
 //! | **World Editor** | `is_world_editor_mode` | `world_editor.gd` |
 //! | | `create_blank_world` | `world_editor.gd` |
 //! | | `save_world_definition` | `world_editor.gd` |
@@ -293,9 +289,6 @@ pub struct SimulationNode {
     /// True when launched with `--asset-editor`. Sim thread is not started;
     /// the node runs a 500 m sandbox for preview only.
     pub(crate) asset_editor_mode: bool,
-    /// True when launched with `--economy-editor`. Sim thread is not started;
-    /// the node only serves the authored-economy editor shell.
-    pub(crate) economy_editor_mode: bool,
     /// True when launched with `--world-editor`. The node boots the blank-world
     /// authoring shell and keeps the simulation thread available for terrain /
     /// future water authoring workflows.
@@ -422,7 +415,6 @@ impl INode3D for SimulationNode {
         let mut generate_benchmark = false;
         let mut run_benchmark = false;
         let mut asset_editor_mode = false;
-        let mut economy_editor_mode = false;
         let mut world_editor_mode = false;
         for arg in args.as_slice() {
             match arg.to_string().as_str() {
@@ -438,10 +430,6 @@ impl INode3D for SimulationNode {
                     // can follow export/validation output in the terminal.
                     crate::debug::ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
-                "--economy-editor" => {
-                    economy_editor_mode = true;
-                    crate::debug::ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
-                }
                 "--world-editor" => {
                     world_editor_mode = true;
                 }
@@ -449,7 +437,7 @@ impl INode3D for SimulationNode {
             }
         }
 
-        let config = if asset_editor_mode || economy_editor_mode || world_editor_mode {
+        let config = if asset_editor_mode || world_editor_mode {
             WorldConfig::editor_sandbox()
         } else {
             WorldConfig::gameplay_default()
@@ -575,7 +563,6 @@ impl INode3D for SimulationNode {
             road_preview_request_counter: AtomicU64::new(0),
             benchmark_mode,
             asset_editor_mode,
-            economy_editor_mode,
             world_editor_mode,
             benchmark_tick_count: 0,
             last_logged_day: 0,
@@ -611,13 +598,6 @@ impl INode3D for SimulationNode {
                 WorldConfig::EDITOR_SANDBOX_WIDTH_M
             );
             debug_log!("asset-editor", "sandbox ready");
-            return;
-        }
-        if self.economy_editor_mode {
-            godot_print!(
-                "[economy-editor] shell ready — authoritative economy data only, no simulation thread"
-            );
-            debug_log!("economy-editor", "shell ready");
             return;
         }
         if self.world_editor_mode {

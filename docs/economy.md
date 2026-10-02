@@ -56,17 +56,17 @@ This creates the intended feedback loop:
 - low inventory or household supplies reduce household satisfaction or business throughput
 - congestion becomes an economic problem, not just a traffic problem
 
-### 4. Balancing and validation are visual; persistence is data-driven
+### 4. Economy data is hand-authored text; balance is checked outside the game
 
-Developers should use a tool, not raw text files, to balance production chains, controllers, and developer-authored scenario rules.
-
-Persisted data files still exist for save/load, export, version control, and modding, but they are outputs of the economy tool rather than the primary authoring surface.
+Economy profiles, recipes, prices, wages, and runtime tuning are hand-authored in
+`economy/profiles.toml`. Startup validation and compilation into the runtime catalog reject
+malformed data. The game has no developer economy editor: the former editor, sandbox playback,
+controllers, and scenarios were removed on 2026-10-02 because none of them fed the runtime.
 
 Player-facing fiscal controls such as tax sliders and household transfer levels are a separate
 gameplay policy layer. Baseline income tax, household VAT, business profit tax, daily property
 taxes, unemployment benefit, pension, and child support defaults come from authored runtime tuning,
-then become live `CityFiscalPolicy` state exposed through curated bounded controls rather than
-through the developer economy editor.
+then become live `CityFiscalPolicy` state exposed through curated bounded controls.
 
 ### 5. Runtime cost must scale by building, household, policy scope, and shipment count
 
@@ -488,7 +488,7 @@ Rules:
   child-support buckets
 - the Economy Overview Policy tab is a gameplay UI for taxes and social transfers; clicking one
   bounded control selects it and shows Today/7D/30D revenue or transfer-cost detail for that
-  control's ledger bucket, while the economy editor remains the developer profile-authoring tool
+  control's ledger bucket; economy profiles stay hand-authored in `economy/profiles.toml`
 
 Initial policy controls:
 
@@ -1170,48 +1170,25 @@ Current live note:
 - the remaining later work is no longer inventory generalization itself; it is broader fiscal,
   utility, and content-side expansion on top of the generalized runtime
 
-## Product Shape
+## Authoring Boundaries
 
-The economy editor should be a separate developer tool, built in the same Godot + Rust tool family as the game and asset editor.
+Economy authoring is not part of gameplay. Players do not wire production chains or change
+balancing variables from the live game UI.
 
-Recommended shape:
-
-- `metrum_rise_game`: play and inspect a live city
-- `metrum_rise_asset_editor`: author assets and their economic interfaces
-- `metrum_rise_economy_editor`: internal balancing, validation, and debugging tool for production graphs, controllers, recipes, and scenario overrides
-
-This may exist as a separate executable or as a developer-only launch mode inside one shared application family. The important part is the responsibility split, not the packaging name.
-
-The economy editor is not part of gameplay. Players should not be wiring production graphs or changing balancing variables from the live game UI.
-
-If a future gameplay policy system introduces player-painted areas, that should live in the game UI rather than in the core `v0.1` economy editor workflow.
-
-### Why it should be a separate tool
-
-- The live game is too noisy for serious authoring. Traffic, weather, zoning churn, and population motion make systematic economy editing harder.
-- The asset editor already has a narrow job: import, validate, preview, and package content assets. Economy graph authoring is a cross-asset systems task, not per-asset metadata editing.
-- A dedicated developer tool can provide graph editing, scenario playback, and bottleneck visualization without inheriting the full gameplay shell.
-
-### What still belongs in the game
-
-The runtime game should still expose economy inspection tools:
+The runtime game still exposes read-only economy inspection:
 
 - inventory and shortage overlays
 - route and shipment debugging
-- player policy summary, when a gameplay policy layer exists
+- player policy summary
 - building-level throughput, staffing, and utility-service inspectors
-
-But the live game should remain read-only for developer-side economy tuning. It can expose inspection and diagnostics, and later a separate bounded policy UI, but not graph authoring or raw controller editing.
 
 ### Control boundaries
 
 To keep authoring and gameplay cleanly separated, the economy should use three distinct control layers.
 
-- `Developer authoring layer`: economy profiles, recipes, controller formulas, default coefficients, allowed policy ranges, and scenario overrides used for balancing and validation.
+- `Developer authoring layer`: economy profiles, recipes, default coefficients, and allowed policy ranges in `economy/profiles.toml`.
 - `Simulation-owned outcomes`: wages and labor prices, staffing pressure, production throughput, utility-service availability, household demand, and delivery cost outcomes. These are calculated by the simulation and are not direct player inputs.
-- `Future player policy layer`: curated fiscal or trade levers such as income tax, property tax, real estate tax, `VAT`, tariffs, and subsidies. Players change bounded values or presets in gameplay UI, not raw controller graphs or balancing formulas.
-
-If a future player policy is backed by a controller, the controller is still authored by developers. Gameplay should only expose named policy inputs and allowed ranges, never the full controller graph.
+- `Player policy layer`: curated fiscal or trade levers such as income tax, property tax, real estate tax, `VAT`, tariffs, and subsidies. Players change bounded values or presets in gameplay UI, not balancing formulas.
 
 ## Responsibility Split
 
@@ -1235,54 +1212,37 @@ The shipped game/editor should include a baseline economy profile catalog for as
 
 If an asset references an unavailable `economy_profile`, the asset editor should mark that field as unresolved and surface a validation warning. It must not silently replace the missing reference with another profile name.
 
-### Economy Editor
+### Economy Profiles File
 
-The economy editor is a developer-facing balancing and validation environment. It defines economy profiles and relationships between economic actors, then helps catch systemic design mistakes before those rules ship into the runtime.
+`economy/profiles.toml` defines the reusable economy profiles, resources, and runtime tuning. It is
+edited by hand and loaded once at startup by `load_runtime_economy_catalog`, which validates the
+runtime tuning and compiles the profiles into the runtime catalog. Load fails on invalid data
+instead of falling back to defaults.
 
-Examples:
+Profile rates, wages and stock settings must be finite and nonnegative. Startup treasury must be
+finite, and export-saturation load/recovery settings finite and positive. Resource and profile IDs
+must be unique; resource `runtime_id` values are persisted in saves and are never renumbered.
 
-- which reusable economy profiles exist
-- which producer classes can supply which consumer classes
-- which controller formulas back wages, taxes, subsidies, later tariffs, or household replenishment rules
-- which scenario-specific overrides apply in one test setup but not another
-- which goods are required for household stability versus optional quality-of-life supply
+Renaming or deleting a profile that assets still reference leaves those buildings
+`economy-broken` (see below); nothing remaps them silently.
 
-It is also the main developer surface for validating and debugging shortages, dead chains, impossible recipes, and other balance failures before those rules ship into gameplay. The economy editor is not a prototype player policy screen.
+#### Business Solvency Requirement
 
-If a profile is renamed or deleted while still referenced by assets or authored economy content, the economy editor should show reverse-reference warnings before export. It must not silently remap dependent assets to a different profile.
+A supply chain that circulates goods but leaves businesses structurally bankrupt is a failed
+economy design that causes "zombie businesses" at runtime. Each business profile must be
+profitable at full staffing with `wage_max_currency_per_day`, inferred input prices, and its own
+`unit_price_currency` output price:
 
-The current sandbox is a daily aggregate chain calculation. Its scenario controls are duration,
-household count/size, starting pantry stock and explicit OWA import resources. The former scenario
-target-stock, trigger-stock and pickup-cadence controls had no execution path and are removed;
-live household replenishment remains owned by its runtime profile and operational-clock settings.
-If several demand sinks are authored, validation warns and playback uses only the first authored
-sink, excluding the others from both household consumption and incoming stock allocation.
+```text
+daily_profit = daily_revenue - (worker_capacity * wage_max_currency_per_day + daily_input_cost)
+```
 
-Profile rates, wages and stock settings must be finite and nonnegative. Scenario duration must be
-positive, average household size at least one, and starting stock finite and nonnegative.
-Controller weights lie in `[0, 1]`; multipliers are finite, nonnegative and ordered. Startup
-treasury must be finite, and export-saturation load/recovery settings finite and positive.
-
-#### Business Solvency Validation
-
-The economy editor sandbox must validate financial solvency alongside physical logistics flow. A supply chain that circulates goods perfectly but leaves businesses fundamentally bankrupt is a failed economy design that causes "zombie businesses" at runtime.
-
-During a sandbox playback, the editor must ensure that simulated business nodes are financially viable. 
-
-Deterministic sandbox solvency rule:
-
-1. For each simulation day and each profile node, calculate the `daily_labor_cost`. The sandbox assumes businesses are fully staffed, so `daily_labor_cost = worker_capacity * wage_max_currency_per_day`.
-2. Calculate the `daily_input_cost` based on the actual units of input consumed that day, multiplied by the inferred unit prices of those inputs.
-3. Calculate the `daily_revenue` based on the actual units of output produced that day, multiplied by the profile's `unit_price_currency`.
-4. Calculate net daily profit: `daily_profit = daily_revenue - (daily_labor_cost + daily_input_cost)`.
-5. Track the cumulative profit for each node over the duration of the scenario.
-6. A scenario fails validation with an `insolvent_profile` error if any profile node finishes the sandbox run with a cumulative profit less than zero.
-
-This guarantees that both physical volume bottlenecks and financial deficits are caught in the editor before the tuning values reach the live game.
+The removed editor sandbox enforced this rule during scenario playback. No automated check
+currently enforces it.
 
 ### Runtime Simulation
 
-The runtime consumes exported economy definitions and simulates:
+The runtime consumes the compiled economy definitions and simulates:
 
 - building inventories
 - household supply reserves and replenishment state
@@ -1299,14 +1259,14 @@ The runtime should evaluate authored rules efficiently, not reinterpret a fully 
 The link between content assets and the economy works in three steps:
 
 1. The asset editor defines stable asset identity plus base building metadata such as capacities and stores an `economy_profile` reference.
-2. The economy editor defines the reusable economy profiles that those references point to.
+2. `economy/profiles.toml` defines the reusable economy profiles that those references point to.
 3. The runtime resolves the profile reference and combines the placed asset with the referenced economy profile to create the building's economic behavior.
 
 Example:
 
 - an asset with id `base:building.industrial.food_processor_small` declares base metadata such as `worker_capacity`
 - the same asset stores `economy_profile = "food_processor_basic"`
-- the economy editor defines a profile such as `food_processor_basic`
+- `economy/profiles.toml` defines a profile such as `food_processor_basic`
 - that profile declares inputs, outputs, schedule profile, storage caps, and production rules
 - when the asset is placed as a building, the runtime combines the asset metadata and the referenced profile
 - the placed building then knows both its base capacity and its economic role in the wider supply chain
@@ -1333,7 +1293,7 @@ Rules:
 
 - missing `asset_id` and missing `economy_profile` are different failure cases
 - neither case may silently remap to a different asset or a different economy profile
-- both cases must be visible in the asset editor, economy editor, runtime diagnostics, and save-load warnings
+- both cases must be visible in the asset editor, runtime diagnostics, and save-load warnings
 
 #### Missing asset
 
@@ -1456,7 +1416,7 @@ Rules:
 
 ### 3. Economy Profiles
 
-An economy profile is a reusable template owned by the economy editor and referenced by one or more assets.
+An economy profile is a reusable template authored in `economy/profiles.toml` and referenced by one or more assets.
 
 It defines:
 
@@ -1499,7 +1459,7 @@ Rules:
 
 - households are explicit runtime consumer records, not asset-authored profile owners
 - households do not store an `economy_profile`
-- if household demand must appear in economy-editor graphs, it should be represented as an abstract demand sink or consumer class rather than as a profile-bound asset
+- household demand is represented as an abstract `demand_sink` profile rather than as a profile-bound asset
 
 ### 4. Economy Profile References
 
@@ -1530,36 +1490,15 @@ It holds runtime state such as:
 - shipment reservations
 - current shortage flags
 
-### 6. Controllers
+### 6. Cross-Cutting Rules
 
-Controllers are authored simulation rule objects that modify behavior across many nodes.
-
-Examples:
-
-- wage-response controller
-- tax controller
-- price-response controller
-- subsidy controller
-- household restock cost controller
-
-Controllers are not arbitrary scripts. They are bounded, inspectable systems with defined inputs, outputs, scope, and update cadence.
-
-Some controllers may later expose a small set of bounded parameters to the gameplay policy layer, but players do not edit controller graphs or formulas directly.
-
-`wage-response` and `price-response` are later extensions, not required for the `v0.1` baseline. The first pass can ship with fixed internal prices and fixed wage bands.
-
-`tariff` controllers belong to later trade-policy extensions and are not part of the `v0.1` baseline.
-
-Each controller definition should specify:
-
-- what it reads
-- what it writes
-- whether it is global, future gameplay-area-scoped, profile-scoped, or asset-category-scoped
-- whether it affects authored preferences or runtime state
+Cross-cutting economic rules such as taxes, transfers, and service funding live in runtime tuning
+and live `CityFiscalPolicy` state. Authored "controller" objects were an editor-only concept with
+no runtime consumer and were removed with the economy editor.
 
 ### 7. Connections
 
-A connection is an authored allowed relationship between node classes, resource types, or controller scopes.
+A connection is an authored allowed relationship between node classes and resource types.
 
 In `v0.1`, this section mainly applies to normal shipped economic flows rather than to baseline utilities, which use the separate `Utility Service Layer`.
 
@@ -1573,7 +1512,7 @@ Important: a connection is usually not a literal per-unit hard route. In most ca
 
 The runtime then resolves actual suppliers, deliveries, and routes using those authored rules.
 
-This is the key scalability rule. The tool authors the economic topology; the simulation executes a compact runtime form of it.
+This is the key scalability rule. Authored profiles define the economic topology; the simulation executes a compact runtime form of it.
 
 ## Household Supply Model
 
@@ -1814,7 +1753,6 @@ Production should derive from a bounded formula based on:
 - filled worker count
 - input availability
 - utility service costs and provider revenue settled by the `Utility Service Layer`
-- controller modifiers
 
 Recommended `v0.1` formula:
 
@@ -1822,7 +1760,6 @@ Recommended `v0.1` formula:
 throughput = base_rate
            * staffing_factor
            * input_factor
-           * controller_factor
 ```
 
 Where:
@@ -1842,7 +1779,6 @@ Where:
   not to the full authored daily input for a fully staffed building
 - utility costs are paid through the utility/bankruptcy sequence; there is no `utility_factor` term
   in the current `v0.1` throughput multiplier
-- `controller_factor` is a bounded multiplier from allowed controller effects
 
 This keeps the first pass linear and readable. Hard minimum-staff step functions are not part of the baseline formula; if they are ever added later, they should be explicit profile-side rules rather than hidden default behavior.
 
@@ -2216,148 +2152,29 @@ Rules:
 
 This keeps household behavior believable without turning the freight model into a per-person courier simulator.
 
-## Economy Editor UI
-
-The economy system must be balanced and validated visually. Adjusting key numbers in text files is not acceptable as the primary workflow.
-
-### Main views
-
-The developer tool should have at least two coordinated views.
-
-#### 1. Schema View
-
-A graph canvas for reusable economic definitions.
-
-Use it to author:
-
-- resource chains
-- controller placement
-- allowed producer-to-consumer links
-- default priorities
-- conversion recipes
-
-This is where a node-and-connection UI makes sense.
-
-Example:
-
-- the developer places a `grain_farm` node with output `grain`
-- the developer places a `food_processor` node with input `grain` and output `packaged_food`
-- the developer places a `grocery` node with input `packaged_food` and output `household_supplies`
-- the developer places a `basic_household_demand` node with input `household_supplies`
-- the developer places a household supply or cost controller that affects replenishment pressure
-- the graph then connects `grain_farm -> food_processor -> grocery -> basic_household_demand`, with the controller linked to the household demand sink
-
-At this stage the developer is defining the structure of the economy chain, not yet testing whether the numbers are balanced.
-
-#### 2. Runtime Inspection View
-
-A debug view for scenario playback and diagnosis of the authored balance rules.
-
-Use it to inspect:
-
-- inventory levels
-- blocked supply chains
-- delivery latency
-- unfilled labor demand
-- controller effects
-- shortage propagation
-
-Example:
-
-- the developer runs the `Grocery Bottleneck` test case for 30 simulated days
-- the view shows that household supplies drop below 1.0 days after day 12
-- the diagnostics panel reports that the grocery has enough goods, but shopper-side replenishment demand is arriving in bursts and shop-side queueing is too high
-- the controller panel highlights that household replenishment cadence and grocery throughput are misaligned
-- the developer can immediately see that the problem is not food production, but local shopping balance and store throughput
-
-### UI layout recommendation
-
-Recommended shell:
-
-- center: graph canvas
-- left: resource and asset-category browser
-- right: inspector for ports, variables, formulas, and controller settings
-- bottom: warnings, validation, simulation log, and bottleneck list
-
-### Editing workflow
-
-The tool should allow a developer to:
-
-1. pick an asset class or economic template
-2. place or select a node on the graph
-3. inspect its ports and variables
-4. drag a connection from one output port to another node's input port
-5. assign controller weights, caps, or policy overrides in the inspector
-6. run a small scenario or sandbox playback to verify the chain
-
-### Example developer setup
-
-Example: `Grocery Bottleneck` test case
-
-- Left panel: select the `Grocery Bottleneck` preset from a list of developer test cases.
-- Center graph: show `food_processor -> grocery -> basic_household_demand`, with an optional replenishment-pressure controller connected to the household demand sink.
-- Right inspector: expose values such as household count, household size, shop distance, replenishment cadence, grocery throughput, and supply target.
-- Bottom diagnostics: show supply days, average household cost, replenishment queue pressure, shortage warnings, and whether any recipe or connection is invalid.
-
-In this example the graph, inspector, and diagnostics are enough to test whether local shopping and store throughput give the intended balance result.
-
-### Validation requirements
-
-The tool must validate common design mistakes before export:
-
-- disconnected required inputs
-- impossible recipes
-- circular dependencies with no bootstrap supply
-- scenario overrides that ban all legal suppliers
-- throughput definitions that can never fill household demand
-- assets that reference missing economy profiles
-- profiles that are still referenced by assets or authored content but were renamed or removed
-
 ## Runtime Representation
 
-The runtime should not execute the editor canvas directly. It should compile the authored graph into compact data tables.
+The runtime compiles the authored TOML into compact data tables at startup.
 
-### Rule export format
-
-Economy rules should be exported as open, human-readable text files. They must not be hidden inside opaque editor-only data.
-
-The canonical source of truth should be visible files in the exported pack or economy data folder, following the same philosophy as the asset editor manifests.
-
-Recommended direction:
-
-- use TOML as the canonical exported rule format
-- keep the exported files readable and editable in a normal text editor
-- compile the validated TOML into the shared in-memory runtime catalog at startup
-
-Manual editing is allowed. If a developer or modder wants to tweak the values in a text editor instead of the economy editor UI, that should be supported as long as the files still validate.
-
-### Suggested exported structure
-
-The exported economy structure is:
+The authored files are:
 
 ```text
 economy/
-  profiles.toml        # economy profiles and recipe definitions
-  controllers.toml     # controller definitions and parameters
-  scenarios.toml       # scenario overrides and test setups
+  profiles.toml        # resources, economy profiles, recipes, and runtime tuning
+demand/
+  growth_profiles.toml # demand-owned growth tuning (see demand.md)
 ```
-
-These filenames and this top-level folder layout are the baseline contract for the first implementation.
 
 The important runtime rules are:
 
-- text files are authoritative
-- compiled runtime data is derived from those text files
-- exported economy data remains inspectable and editable outside the tool
+- text files are authoritative and stay readable and editable in a normal text editor
+- compiled runtime data is derived from those text files and never written back
 
 Examples of compiled forms:
 
 - resource IDs
 - asset-type recipe tables
-- controller parameter blocks
 - supplier-consumer compatibility lists
-
-This gives the tool freedom to be expressive while keeping the simulation runtime predictable.
 
 ## Scope Recommendations
 
@@ -2377,7 +2194,6 @@ Recommended v0.1 scope:
 - baseline `Utility Service Layer` with local utility producers/processors and `OWA` external-service fallback
 - truck-based local and border freight delivery with batched reservation-based shipment rules
 - utility-scored work/home decision logic
-- one dedicated economy editor shell with graph view, inspector, and validation
 
 ### v0.1 non-goals
 
@@ -2386,7 +2202,7 @@ Do not make these blockers for the first pass:
 - personal retail trips as a daily need
 - deep commodity markets with dozens of goods
 - full dynamic local market pricing or wage response
-- arbitrary user scripting inside controllers
+- arbitrary user scripting inside economy rules
 - remote or hybrid work simulation
 - full multimodal freight from day one
 - world-scale intercity import simulation
@@ -2405,7 +2221,7 @@ After the first household supply loop is stable, add:
 
 ## Example Chain
 
-A good starter chain for both simulation and developer-tool tuning is:
+A good starter chain for simulation and tuning is:
 
 - `grain_farm`
   - inputs: `labor`
@@ -2423,20 +2239,6 @@ A good starter chain for both simulation and developer-tool tuning is:
 
 In this starter chain, baseline `power`, `water`, and `sewage` behavior comes from the `Utility Service Layer` unless a building is meant to define a documented special-case utility rule explicitly.
 
-Controller layers that may affect this example chain:
-
-These controllers do not add new buildings or shipment steps. They are cross-cutting simulation rules that can modify cost, viability, or effective household access across one or more parts of the chain.
-
-For `v0.1`, the example should stay within the fixed-price and fixed-wage baseline:
-
-- `local subsidy`: reduces cost or improves viability for targeted chain steps
-- `household restock cost`: changes the effective cost or friction households face when restocking supplies
-
-Later extensions may add richer controller effects to the same chain, for example:
-
-- `wage pressure`: changes labor-cost pressure at workplaces in the chain
-- `price response`: applies bounded price-pressure adjustments to relevant chain steps
-
 Replenishment for this chain should happen through the bounded one-shopper household shopping flow
 in `v0.1`. `ADS` is a later extension, not part of the first implementation scope.
 
@@ -2444,7 +2246,7 @@ This example is intentionally broad. It avoids modeling "one loaf of bread per p
 
 ### Seed values for first implementation
 
-The first playable implementation should ship with a small shared seed-balance set so the example chain is runnable before the economy editor is heavily used for tuning.
+The first playable implementation should ship with a small shared seed-balance set so the example chain is runnable.
 
 These are shipped `economy/profiles.toml` values, not Rust defaults:
 
@@ -2565,7 +2367,7 @@ Goal: give labor, deliveries, and later school or service timing one determinist
 ### Phase 3 - Make authored economy profiles drive runtime behavior
 
 - Resolve asset-side `economy_profile` references into compiled runtime tables during load and placement.
-- Keep exported TOML plus the economy editor as the authoritative authoring surface and treat runtime caches as derived data only.
+- Keep the hand-authored TOML as the authoritative authoring surface and treat runtime caches as derived data only.
 - Replace hardcoded starter-loop constants incrementally with profile-backed worker caps, rates, buffers, and fixed `v0.1` price or wage values.
 - Preserve explicit unresolved-profile and broken-economy behavior instead of silent fallback.
 
@@ -3033,18 +2835,14 @@ values. These IDs are persisted by inventories, shipments and freight bookkeepin
 IDs and never reassign existing ones. IDs 1–6 retain the previous resource identities; Machinery,
 Steel and Metals are 7, 8 and 9. File/name ordering no longer assigns identity. Import-only goods
 may specify `import_unit_price_currency` without introducing a fake producer profile. Remove
-that import-only price when an output profile becomes the resource's price owner. The economy
-editor JSON/export round trip preserves the resource definitions. The unused exported compatibility
-cache is removed; runtime compilation reads the canonical TOML. Profile IDs remain append-only by
+that import-only price when an output profile becomes the resource's price owner. Runtime
+compilation reads the canonical TOML. Profile IDs remain append-only by
 authored order. Input and output ports share one compiler:
 each resource appears at most once per direction, with a finite nonnegative rate. A resource may
 appear on both sides for internal upkeep; duplicate entries cannot cause unaccounted consumption.
 
-Sandbox scenarios declare `owa_import_resources` explicitly. The shipped grocery scenario imports
-Machinery; its farms and processor pay the OWA price for actual missing input units while local
-connected inputs retain their graph price. Undeclared disconnected inputs remain validation errors.
-The economy editor exposes the import list on the scenario inspector and accepts fractional port
-rates. This is aggregate editor playback; live freight still uses deliveries and stock batches.
+Live freight imports Machinery through OWA deliveries and stock batches when no local factory
+supplies it.
 
 ### Runtime bounds and verification
 
@@ -3316,8 +3114,6 @@ current tool with `METRUM_AUDIT_INDUSTRY_SCRIPT`; logs: `/tmp/metrum-full-audit-
 Field producers and extractors keep output and storage rates per 10,000 m2. Their integer
 `worker_capacity` applies to `worker_capacity_area_m2` instead, which defaults to 10,000 m2
 and must be positive and finite. Ordinary building profiles still use fixed worker counts.
-The economy editor exposes the staffing area for fields/extractors; its sandbox uses a
-one-hectare site for both output and payroll.
 
 The runtime compiles workers per hectare once, then calculates physical field jobs as
 `max(2, ceil(workers_per_hectare * field_hectares))` for positive areas and worker densities.
@@ -3329,7 +3125,7 @@ This is a game-balance starting point, not a measured real-world agricultural st
 
 Full staffing still produces 290 grain/day/hectare. Partial staffing uses the new physical
 capacity as its denominator; demand equivalents, export reserves, and first-field startup
-payroll use the same density and minimum. The editor sandbox applies this minimum too.
+payroll use the same density and minimum.
 Saved field areas rebuild this scale on load, and the daily wage pass releases surplus workers
 through the existing assignment lifecycle. No save migration
 or new per-agent work is needed. The inspector reports physical field capacity, with active
@@ -3781,8 +3577,8 @@ The current spec replaces these legacy assumptions:
 - free-floating local price response or wage response in `v0.1`
 - abstract external-market or throughput-budget trade models instead of `OWA` plus physical border freight for ordinary goods
 - utilities as trucked goods or free background access instead of the `Utility Service Layer`
-- `district` or gameplay-area-scoped economy-editor workflows in `v0.1`
-- player-facing raw controller editing instead of a separate bounded policy layer
+- `district` or gameplay-area-scoped economy authoring in `v0.1`
+- player-facing raw balancing edits instead of a separate bounded policy layer
 - auto-spawned city-owned facilities instead of explicit player placement for city-owned buildings
 - city-grant startup funding for private businesses instead of private startup float or owner equity
 
@@ -3896,12 +3692,12 @@ Remaining open items for the pioneer phase:
 
 ## Summary
 
-The economy should be balanced and validated through a visual, building-centric developer tool, not through hardcoded numbers and not through gameplay UI controls.
+The economy is authored as hand-edited TOML data, not hardcoded numbers and not gameplay UI controls.
 
 The recommended design is:
 
 - assets define identity, base metadata, and an `economy_profile` reference
-- the economy editor lets developers tune graphs, controllers, and developer-only scenario overrides
+- `economy/profiles.toml` defines profiles, recipes, prices, wages, and runtime tuning
 - runtime simulation executes compiled building-level inventories, labor, and shipment rules
 - `v0.1` uses fixed internal base prices and fixed wage bands rather than a full dynamic local market
 - the city treasury covers simple road, infrastructure, and civic-facility build cost plus daily upkeep in the first pass

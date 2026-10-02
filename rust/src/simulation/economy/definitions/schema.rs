@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Authored TOML and JSON schema for economy profiles, controllers, and scenarios.
+//! Authored TOML schema for economy resources, profiles, and runtime tuning.
 
 use super::runtime::RuntimeEconomyTuning;
-use super::serde_helpers::{
-    default_duration_days, default_one, deserialize_u16_from_number, deserialize_u32_from_number,
-};
+use super::serde_helpers::{deserialize_u16_from_number, deserialize_u32_from_number};
 use crate::simulation::work_area::EXPLICIT_WORK_AREA_BASE_M2;
 use serde::{Deserialize, Serialize};
 
@@ -18,9 +16,6 @@ pub(super) const PROFILE_KIND_DEMAND_SINK: &str = "demand_sink";
 pub(super) const PROFILE_KIND_EXTRACTOR: &str = "extractor";
 pub(super) const PROFILE_KIND_UTILITY_PRODUCER: &str = "utility_producer";
 pub(super) const PROFILE_KIND_UTILITY_PROCESSOR: &str = "utility_processor";
-pub(super) const NODE_REF_KIND_PROFILE: &str = "profile";
-pub(super) const NODE_REF_KIND_CONTROLLER: &str = "controller";
-pub(super) const CONTROLLER_KIND_HOUSEHOLD_RESTOCK_COST: &str = "household_restock_cost";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum AuthoredProfileKind {
@@ -51,19 +46,6 @@ impl AuthoredProfileKind {
             _ => Self::Unsupported,
         }
     }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-pub(super) struct EconomyProject {
-    /// Resource identities persisted by inventories and freight; IDs must never be reassigned.
-    pub(super) resources: Vec<EconomyResource>,
-    #[serde(default)]
-    pub(super) profiles: Vec<EconomyProfile>,
-    pub(super) runtime_tuning: RuntimeEconomyTuning,
-    #[serde(default)]
-    pub(super) controllers: Vec<EconomyController>,
-    #[serde(default)]
-    pub(super) scenarios: Vec<EconomyScenario>,
 }
 
 /// Authored stable resource identity and optional import-only reference price.
@@ -145,87 +127,10 @@ pub(super) struct ResourcePort {
     pub(super) units_per_day: f32,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-pub(super) struct EconomyController {
-    pub(super) id: String,
-    pub(super) display_name: String,
-    #[serde(default)]
-    pub(super) kind: String,
-    #[serde(default)]
-    pub(super) description: String,
-    #[serde(default = "default_one")]
-    pub(super) default_weight: f32,
-    #[serde(default = "default_one")]
-    pub(super) min_multiplier: f32,
-    #[serde(default = "default_one")]
-    pub(super) max_multiplier: f32,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-pub(super) struct EconomyScenario {
-    pub(super) id: String,
-    pub(super) display_name: String,
-    #[serde(default)]
-    pub(super) description: String,
-    /// Explicit OWA fallback goods in this authored sandbox scenario.
-    #[serde(default)]
-    pub(super) owa_import_resources: Vec<String>,
-    #[serde(
-        default = "default_duration_days",
-        deserialize_with = "deserialize_u32_from_number"
-    )]
-    pub(super) duration_days: u32,
-    #[serde(default, deserialize_with = "deserialize_u32_from_number")]
-    pub(super) household_count: u32,
-    #[serde(default = "default_one")]
-    pub(super) average_household_size: f32,
-    #[serde(default)]
-    pub(super) starting_household_stock_days: f32,
-    #[serde(default)]
-    pub(super) nodes: Vec<ScenarioNode>,
-    #[serde(default)]
-    pub(super) edges: Vec<ScenarioEdge>,
-    #[serde(default)]
-    pub(super) controller_links: Vec<ScenarioControllerLink>,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-pub(super) struct ScenarioNode {
-    pub(super) id: String,
-    pub(super) ref_kind: String,
-    pub(super) ref_id: String,
-    pub(super) position: [f32; 2],
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-pub(super) struct ScenarioEdge {
-    pub(super) from: String,
-    pub(super) to: String,
-    pub(super) resource: String,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-pub(super) struct ScenarioControllerLink {
-    pub(super) controller_node_id: String,
-    pub(super) target_node_id: String,
-}
-
 #[derive(Serialize, Deserialize)]
 pub(super) struct ProfilesFile {
     pub(super) resources: Vec<EconomyResource>,
     #[serde(default)]
     pub(super) profiles: Vec<EconomyProfile>,
     pub(super) runtime_tuning: RuntimeEconomyTuning,
-}
-
-#[derive(Serialize, Deserialize)]
-pub(super) struct ControllersFile {
-    #[serde(default)]
-    pub(super) controllers: Vec<EconomyController>,
-}
-
-#[derive(Serialize, Deserialize)]
-pub(super) struct ScenariosFile {
-    #[serde(default)]
-    pub(super) scenarios: Vec<EconomyScenario>,
 }

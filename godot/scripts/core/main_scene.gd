@@ -71,9 +71,6 @@ func menu_set_time_of_day(hour: float) -> void:
 func menu_open_asset_editor() -> void:
 	_spawn_project_instance(["--asset-editor"])
 
-func menu_open_economy_editor() -> void:
-	_spawn_project_instance(["--economy-editor"])
-
 func _spawn_project_instance(arguments: PackedStringArray) -> void:
 	var launch_args := PackedStringArray()
 	if not arguments.is_empty():

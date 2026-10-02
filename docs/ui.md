@@ -5,8 +5,8 @@
 Hybrid: **top menu bar** for global actions and window launchers + **floating windows** for
 information panels and selection-driven properties + **bottom toolbar** for placement tools.
 
-All UI is built procedurally in GDScript. The six `.tscn` files (`MainMenu.tscn`, `Main.tscn`,
-`AssetEditor.tscn`, `EconomyEditor.tscn`, `WorldEditor.tscn`, `Router.tscn`) describe the scene node tree but
+All UI is built procedurally in GDScript. The five `.tscn` files (`MainMenu.tscn`, `Main.tscn`,
+`AssetEditor.tscn`, `WorldEditor.tscn`, `Router.tscn`) describe the scene node tree but
 contain no UI component definitions — all panels, buttons, and windows are constructed at
 runtime in `_ready()`. There are no `.tres` theme resource files; style constants are
 centralised in `UIStyle` (see below) instead. `WorldEditor.tscn` follows the same procedural-UI
@@ -17,22 +17,22 @@ belong here. Rust methods are called through `SimulationNode`.
 
 ### Surface presence per scene
 
-| Surface | MainMenu | Main (gameplay) | AssetEditor | EconomyEditor | WorldEditor |
-|---------|:-:|:-:|:-:|:-:|:-:|
-| Top menu bar | — | ✓ | ✓ | ✓ | ✓ |
-| Bottom toolbar | — | ✓ | — | — | ✓ |
-| Context panel | — | — | — | — | — |
-| Floating windows | ✓ | ✓ | — | — | — |
+| Surface | MainMenu | Main (gameplay) | AssetEditor | WorldEditor |
+|---------|:-:|:-:|:-:|:-:|
+| Top menu bar | — | ✓ | ✓ | ✓ |
+| Bottom toolbar | — | ✓ | — | ✓ |
+| Context panel | — | — | — | — |
+| Floating windows | ✓ | ✓ | — | — |
 
-The top menu bar is shared across gameplay and editor scenes. AssetEditor and EconomyEditor remain
-self-contained editor applications with no bottom toolbar. WorldEditor is the editor-shell
+The top menu bar is shared across gameplay and editor scenes. AssetEditor remains a
+self-contained editor application with no bottom toolbar. WorldEditor is the editor-shell
 exception: it uses a bottom toolbar because terrain and later water authoring tools belong on
 that surface rather than in the top menu.
 
 MainMenu is the startup exception: it is a dedicated front-door surface and does not instantiate
 gameplay UI or a gameplay world.
 
-The top menu in editor scenes carries a reduced item set. AssetEditor and EconomyEditor use
+The top menu in editor scenes carries a reduced item set. AssetEditor uses
 File plus editor-specific menus. WorldEditor uses File plus Help. AssetEditor and WorldEditor have
 no `Return To Game` action and no City / Demand / Economy launchers, which are gameplay concepts.
 
@@ -87,7 +87,7 @@ MainMenu v1 actions:
 | File   | New Game, Save `[Ctrl+S]`, Load `[Ctrl+L]`, —, Options, —, Quit |
 | View   | Overlays submenu (None `[7]`, Pollution `[8]`, Noise `[9]`, Desirability `[0]`, Deposits `[-]`), — , Toggle Zoning Overlay |
 | City   | City Statistics *(window)*, Economy Overview *(window)*, Demand Overview *(window)* |
-| Tools  | Open Asset Editor, Open Economy Editor |
+| Tools  | Time of Day submenu, —, Open Asset Editor |
 | Help   | Keyboard Shortcuts *(window)*, About |
 
 The menu bar owns global save/load/quit actions. These are currently handled as keyboard
@@ -123,8 +123,7 @@ already includes terrain clearance and is restored without another terrain adjus
 57/58 and simulation-only snapshots have no camera state and keep the scene's current view.
 Loading an upward debug view in normal mode clamps its pitch to the normal downward limit.
 
-`top_menu.gd` is attached by each scene root (`Main`, `AssetEditor`, `EconomyEditor`,
-`WorldEditor`).
+`top_menu.gd` is attached by each scene root (`Main`, `AssetEditor`, `WorldEditor`).
 It is not owned by `main_ui.gd`, because the editor scenes do not use the gameplay HUD.
 
 ### Options Window
@@ -650,7 +649,6 @@ godot/
   bin/                            (unchanged)
   scenes/                         (unchanged — .tscn files stay flat)
     AssetEditor.tscn
-    EconomyEditor.tscn
     Main.tscn
     Router.tscn
   scripts/
@@ -675,10 +673,8 @@ godot/
       building_preview.gd
       terrain.gd
       water.gd
-    editors/                      Asset and economy editor screens
+    editors/                      Asset and world editor screens
       asset_editor.gd
-      economy_editor.gd
-      economy_graph_canvas.gd
       analyze_assets.gd
       world_editor.gd
       world_editor_camera_input.gd

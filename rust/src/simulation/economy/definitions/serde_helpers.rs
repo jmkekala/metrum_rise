@@ -4,14 +4,6 @@
 
 use serde::{Deserialize, Deserializer};
 
-pub(super) fn default_duration_days() -> u32 {
-    30
-}
-
-pub(super) fn default_one() -> f32 {
-    1.0
-}
-
 pub(super) fn deserialize_u32_from_number<'de, D>(deserializer: D) -> Result<u32, D::Error>
 where
     D: Deserializer<'de>,

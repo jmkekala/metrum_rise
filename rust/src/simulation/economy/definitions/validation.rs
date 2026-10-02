@@ -1,13 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Validation entry points for authored economy projects and runtime tuning.
+//! Validation entry points for authored economy runtime tuning.
 
 mod common;
-mod messages;
-mod project;
 mod runtime_tuning;
-mod scenario;
 
 pub(super) use common::validate_range;
-pub(super) use project::validate_project;
 pub(super) use runtime_tuning::validate_runtime_tuning;
