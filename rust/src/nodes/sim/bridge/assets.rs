@@ -4,6 +4,7 @@
 
 mod mesh_bounds;
 
+use crate::assets::AssetManifest;
 use crate::assets::asset::ZoneClass;
 use crate::debug_log;
 use crate::nodes::sim::core::SimCore;
@@ -23,9 +24,7 @@ pub fn load_asset_packs(
         scan_pack_dir(Path::new(&dir_path.to_string()))
     };
     let mut bounds_cache = mesh_bounds::MeshBoundsCache::new();
-    // Treat every load as an authoritative registry refresh. Asset editor moves,
-    // pack disables, and deleted folders must remove stale qualified IDs too.
-    core.allocator.registry.clear();
+    let mut entries = Vec::new();
     for pack in result.packs {
         if enabled_pack_ids.is_some_and(|ids| !ids.contains(pack.pack.pack_id.as_str())) {
             continue;
@@ -40,16 +39,10 @@ pub fn load_asset_packs(
                 ));
                 continue;
             }
-            core.allocator
-                .registry
-                .register(&pack.pack.pack_id, asset, asset_dir);
+            entries.push((pack.pack.pack_id.clone(), asset, asset_dir));
         }
     }
-    core.allocator
-        .refresh_building_sites_after_asset_reload(core.zoning.config.zone_cell_m);
-    core.zoning.invalidate_cell_lot_assets();
-    core.rebuild_building_entrances_internal();
-    core.publish_pending_building_site_changes();
+    core.replace_asset_registry(entries);
     let reg = &core.allocator.registry;
     debug_log!(
         "spawn",
@@ -71,6 +64,30 @@ pub fn load_asset_packs(
             .len(),
     );
     GString::from(result.warnings.join("\n").as_str())
+}
+
+impl SimCore {
+    /// Replaces the registry with `(pack_id, manifest, asset_dir)` entries and refreshes every
+    /// building site, cell lot and entrance that depends on the catalog.
+    ///
+    /// Treat every load as an authoritative registry refresh: asset editor moves, pack disables
+    /// and deleted folders must remove stale qualified IDs too.
+    pub(crate) fn replace_asset_registry(
+        &mut self,
+        entries: impl IntoIterator<Item = (String, AssetManifest, String)>,
+    ) {
+        self.allocator.registry.clear();
+        for (pack_id, manifest, asset_dir) in entries {
+            self.allocator
+                .registry
+                .register(&pack_id, manifest, asset_dir);
+        }
+        self.allocator
+            .refresh_building_sites_after_asset_reload(self.zoning.config.zone_cell_m);
+        self.zoning.invalidate_cell_lot_assets();
+        self.rebuild_building_entrances_internal();
+        self.publish_pending_building_site_changes();
+    }
 }
 
 /// Returns the number of renderable building mesh parts for a registered asset.

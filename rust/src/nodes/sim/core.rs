@@ -9,9 +9,12 @@
 //! read of local surface indices; a busy core falls back to supported snapshot poses.
 
 mod budget;
+mod frame;
+mod road_commit;
 mod road_edit_plan;
 mod road_preview;
 mod road_terrain_plan;
+mod scenario;
 mod snapshot;
 mod state;
 mod terrain_payloads;
@@ -22,6 +25,7 @@ pub(crate) use budget::CityServicePolicy;
 pub use budget::CityTreasury;
 pub(crate) use road_edit_plan::RoadEditPlan;
 pub(crate) use road_terrain_plan::RoadTerrainPlan;
+pub use scenario::{GrowthDayRecord, GrowthScenario};
 pub use snapshot::RenderSnapshot;
 pub use state::SimCore;
 pub(crate) use thread::SimCommand;

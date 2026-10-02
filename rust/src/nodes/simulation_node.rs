@@ -114,7 +114,7 @@ use godot::prelude::*;
 use crate::config;
 use crate::nodes::sim::core::{
     CachedRefinedTerrainCdtWindow, CachedRefinedTerrainMeshBuffers, CachedRefinedTerrainPatch,
-    CachedTerrainCdtRoadInput, CityTreasury, DailyBudgetLedgerEntry, ROAD_BUILD_COST_PER_METER,
+    CachedTerrainCdtRoadInput, DailyBudgetLedgerEntry, ROAD_BUILD_COST_PER_METER,
     RefinedTerrainCdtWindowBuildInput, RefinedTerrainCdtWindowKey, RefinedTerrainPatchBuildInput,
     RefinedTerrainPatchCacheKey, RenderSnapshot, RoadPreviewRequest, RoadPreviewSender,
     RoadPreviewSnapshot, RoadPreviewWorkerContext, RoadToolQuerySnapshot,
@@ -128,39 +128,25 @@ use crate::nodes::sim::render::water::{
     CachedWaterPatchMesh, WaterPatchMeshBuildInput, WaterPatchMeshCacheKey,
     water_patch_depth_signature,
 };
-use crate::simulation::agriculture::AgricultureSystem;
 use crate::simulation::buildings::allocator::{
-    BuildingAllocator, BuildingSiteGradingRequest, BuildingSiteTerrainSnapshot,
-    ExplicitServicePlacementRejection,
+    BuildingSiteGradingRequest, BuildingSiteTerrainSnapshot, ExplicitServicePlacementRejection,
 };
 use crate::simulation::core::config::WorldConfig;
-use crate::simulation::core::time::TimeSystem;
-use crate::simulation::economy::agents::AgentSystem;
-use crate::simulation::economy::demand::DemandSystem;
-use crate::simulation::economy::households::HouseholdSystem;
-use crate::simulation::economy::logistics::ShipmentSystem;
-use crate::simulation::extraction::ResourceExtractionSystem;
-use crate::simulation::grid::desirability::DesirabilitySystem;
-use crate::simulation::grid::noise::NoiseSystem;
-use crate::simulation::grid::pollution::PollutionSystem;
-use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::surface::{
     RoadPreviewValidation, RoadSurfaceCompileReason, RoadSurfaceSystem,
 };
-use crate::simulation::resources::ResourceDepositSystem;
 use crate::simulation::terrain::cdt::{
     TerrainCdtError, TerrainCdtInput, TerrainCdtMesh, TerrainCdtPatch,
     TerrainCdtRoadBoundarySource, TerrainCdtRoadLoop, TerrainCdtStats, TerrainCdtVertex,
     build_road_touched_terrain_patch,
 };
 use crate::simulation::terrain::{TerrainPatchSnapshot, TerrainSystem};
-use crate::simulation::vegetation::{VegetationConfig, VegetationGenerator};
-use crate::simulation::water::{WaterPatchSnapshot, WaterSystem};
-use crate::simulation::zoning::ZoningSystem;
+use crate::simulation::vegetation::VegetationConfig;
+use crate::simulation::water::WaterPatchSnapshot;
 
 use crate::debug_log;
 use rayon::prelude::*;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
@@ -445,72 +431,8 @@ impl INode3D for SimulationNode {
 
         let benchmark_mode = run_benchmark || generate_benchmark;
 
-        let mut core = SimCore {
-            time: TimeSystem::new(),
-            heightmap: TerrainSystem::from_world_config(&config),
-            watermap: WaterSystem::from_world_config(&config),
-            region_graph: crate::simulation::network::graph::RegionGraph::new(),
-            transit_network: TransitNetwork::new_for_world(&config),
-            zoning: ZoningSystem::new(&config),
-            pollution: PollutionSystem::new(&config),
-            noise: NoiseSystem::new(&config),
-            desirability: DesirabilitySystem::new(&config),
-            demand: DemandSystem::new(),
-            pending_demand_spawns: VecDeque::new(),
-            allocator: BuildingAllocator::new(),
-            agents: AgentSystem::new(),
-            households: HouseholdSystem::new(),
-            logistics: ShipmentSystem::new(),
-            config,
-            vegetation_edits: Default::default(),
-            vegetation: VegetationGenerator::resolve(VegetationConfig::default(), &config),
-            treasury: CityTreasury::default(),
-            service_policy: Default::default(),
-            fiscal_policy: Default::default(),
-            budget_history: VecDeque::new(),
-            budget_last_lifetime_build_cost: 0.0,
-            debug_household_admissions_since_daily: 0,
-            undo_stack: VecDeque::new(),
-            world_lake_fills: Vec::new(),
-            world_open_water_fills: Vec::new(),
-            resource_deposits: ResourceDepositSystem::from_world_config(&config),
-            resource_extraction: ResourceExtractionSystem::new(),
-            agriculture: AgricultureSystem::new(),
-            world_lake_fill_preview: None,
-            authored_water_patch_fill_debug_cache: HashMap::new(),
-            terrain_stroke_active: false,
-            terrain_stroke_has_changes: false,
-            terrain_dirty: true,
-            water_dirty: true,
-            network_dirty: false,
-            benchmark_mode,
-            last_tick_duration: 0.0,
-            last_agent_tick_us: 0,
-            last_road_timing: String::new(),
-            last_road_edit_metrics: Default::default(),
-            last_surface_debug_edges: Vec::new(),
-            refined_terrain_patch_cache: HashMap::new(),
-            road_locked_terrain_patch_keys: Vec::new(),
-            road_locked_terrain_patch_margins: BTreeMap::new(),
-            building_site_owned_terrain_patch_keys: HashSet::new(),
-            engineered_terrain_patch_keys: Vec::new(),
-            engineered_terrain_patch_margins: BTreeMap::new(),
-            terrain_payload_generation_counter: 1,
-            terrain_payload_global_generation: 1,
-            terrain_payload_patch_generations: HashMap::new(),
-            refined_terrain_assembly_ledgers: HashMap::new(),
-            cached_road_mesh_chunks: BTreeMap::new(),
-            published_road_mesh_chunks: Arc::new(BTreeMap::new()),
-            pending_road_mesh_chunks: Arc::new(BTreeSet::new()),
-            road_mesh_full_replace: true,
-            cached_road_mesh_generation: 0,
-            cached_network_node_positions: Arc::new(Vec::new()),
-            cached_network_node_positions_dirty: true,
-            road_tool_surface_generation: 1,
-            camera_aabb: (0.0, 0.0, 0.0, 0.0), // 0.0 == 0.0 → cull disabled by default
-            cell_overlay_visible: false,
-            vehicle_ground_support: Default::default(),
-        };
+        let mut core = SimCore::new(config);
+        core.benchmark_mode = benchmark_mode;
 
         core.precompute_road_mesh_data();
         let initial_snapshot = core.build_snapshot();

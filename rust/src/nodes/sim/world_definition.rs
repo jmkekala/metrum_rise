@@ -1022,100 +1022,26 @@ mod tests {
     use crate::nodes::sim::core::{
         CityTreasury, SimCore, WorldLakeFillPreviewStatus, WorldWaterFillKind,
     };
-    use crate::simulation::agriculture::AgricultureSystem;
-    use crate::simulation::buildings::allocator::BuildingAllocator;
+
     use crate::simulation::core::config::WorldConfig;
-    use crate::simulation::core::time::TimeSystem;
-    use crate::simulation::economy::agents::AgentSystem;
-    use crate::simulation::economy::demand::DemandSystem;
-    use crate::simulation::economy::households::HouseholdSystem;
-    use crate::simulation::economy::logistics::ShipmentSystem;
-    use crate::simulation::extraction::ResourceExtractionSystem;
-    use crate::simulation::grid::desirability::DesirabilitySystem;
-    use crate::simulation::grid::noise::NoiseSystem;
-    use crate::simulation::grid::pollution::PollutionSystem;
-    use crate::simulation::network::TransitNetwork;
+
     use crate::simulation::resources::ResourceDepositSystem;
     use crate::simulation::terrain::TerrainSystem;
     use crate::simulation::water::WaterSystem;
     use crate::simulation::world_definition::{AuthoredLakeFill, LoadedWorldDefinition};
-    use crate::simulation::zoning::ZoningSystem;
+
     use godot::prelude::Vector2;
-    use std::collections::HashSet;
-    use std::collections::{HashMap, VecDeque};
 
     fn test_core_with_small_world() -> SimCore {
         let config = WorldConfig::new(40.0, 40.0, 40.0, 10.0)
             .with_terrain_resolution(10.0)
             .with_chunking(512.0, 0.0);
         SimCore {
-            time: TimeSystem::new(),
-            heightmap: TerrainSystem::from_world_config(&config),
-            watermap: WaterSystem::from_world_config(&config),
-            region_graph: crate::simulation::network::graph::RegionGraph::new(),
-            transit_network: TransitNetwork::new_for_world(&config),
-            zoning: ZoningSystem::new(&config),
-            pollution: PollutionSystem::new(&config),
-            noise: NoiseSystem::new(&config),
-            desirability: DesirabilitySystem::new(&config),
-            demand: DemandSystem::new(),
-            pending_demand_spawns: VecDeque::new(),
-            allocator: BuildingAllocator::new(),
-            agents: AgentSystem::new(),
-            households: HouseholdSystem::new(),
-            logistics: ShipmentSystem::new(),
-            config,
-            vegetation_edits: Default::default(),
-            vegetation: crate::simulation::vegetation::VegetationGenerator::resolve(
-                crate::simulation::vegetation::VegetationConfig::default(),
-                &config,
-            ),
             treasury: CityTreasury::new(0.0),
-            service_policy: Default::default(),
-            fiscal_policy: Default::default(),
-            budget_history: VecDeque::new(),
-            budget_last_lifetime_build_cost: 0.0,
-            debug_household_admissions_since_daily: 0,
-            undo_stack: VecDeque::new(),
-            world_lake_fills: Vec::new(),
-            world_open_water_fills: Vec::new(),
-            resource_deposits: ResourceDepositSystem::from_world_config(&config),
-            resource_extraction: ResourceExtractionSystem::new(),
-            agriculture: AgricultureSystem::new(),
-            world_lake_fill_preview: None,
-            authored_water_patch_fill_debug_cache: HashMap::new(),
-            terrain_stroke_active: false,
-            terrain_stroke_has_changes: false,
             terrain_dirty: false,
             water_dirty: false,
-            network_dirty: false,
             benchmark_mode: true,
-            last_tick_duration: 0.0,
-            last_agent_tick_us: 0,
-            last_road_timing: String::new(),
-            last_road_edit_metrics: Default::default(),
-            last_surface_debug_edges: Vec::new(),
-            refined_terrain_patch_cache: HashMap::new(),
-            road_locked_terrain_patch_keys: Vec::new(),
-            road_locked_terrain_patch_margins: std::collections::BTreeMap::new(),
-            building_site_owned_terrain_patch_keys: HashSet::new(),
-            engineered_terrain_patch_keys: Vec::new(),
-            engineered_terrain_patch_margins: std::collections::BTreeMap::new(),
-            terrain_payload_generation_counter: 1,
-            terrain_payload_global_generation: 1,
-            terrain_payload_patch_generations: HashMap::new(),
-            refined_terrain_assembly_ledgers: HashMap::new(),
-            cached_road_mesh_chunks: std::collections::BTreeMap::new(),
-            published_road_mesh_chunks: std::sync::Arc::new(std::collections::BTreeMap::new()),
-            pending_road_mesh_chunks: std::sync::Arc::new(std::collections::BTreeSet::new()),
-            road_mesh_full_replace: true,
-            cached_road_mesh_generation: 0,
-            cached_network_node_positions: std::sync::Arc::new(Vec::new()),
-            cached_network_node_positions_dirty: true,
-            road_tool_surface_generation: 1,
-            camera_aabb: (0.0, 0.0, 0.0, 0.0),
-            cell_overlay_visible: false,
-            vehicle_ground_support: Default::default(),
+            ..SimCore::new(config)
         }
     }
 

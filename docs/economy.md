@@ -3716,7 +3716,7 @@ formula are chosen after `ECON-11`–`ECON-13` produce numbers, not before.
 | Order | ID | Deliverable | Acceptance |
 | --- | --- | --- | --- |
 | 1 | `ECON-11` (done) | Pure Rust balance tests on the shipped `economy/profiles.toml`: business solvency (the check lost with `ECON-10`), export margin for basic industries, and jobs per 1,000 residents for the closed chain. | Run in `cargo test` without Godot in milliseconds. Assertions describing the target design start `#[ignore]` with a reason and are enabled by `ECON-14`. |
-| 2 | `ECON-12` | Extract the frame step inlined in `rust/src/nodes/sim/core/thread.rs` into a `SimCore` step callable by the sim thread and by tests. Add a growth-scenario integration test in `rust/tests/` that runs a seeded, zoned map for 365 simulated days and records households, jobs and treasury. | Two runs give identical results; no Godot required; sim-thread behavior unchanged. The step extraction changes ownership in the sim thread, so its design is reviewed before code moves. |
+| 2 | `ECON-12` (done) | Extract the frame step inlined in `rust/src/nodes/sim/core/thread.rs` into a `SimCore` step callable by the sim thread and by tests. Add a growth-scenario integration test in `rust/tests/` that runs a seeded, zoned map for 365 simulated days and records households, jobs and treasury. | Two runs give identical results; no Godot required; sim-thread behavior unchanged. Design reviewed 2026-10-02 before code moved. |
 | 3 | `ECON-13` | Criterion baseline for the hourly and daily economy ticks at 10k, 100k and 1M residents. | Matched, unprofiled release runs; commands, build identity and results recorded in this section. |
 | 4 | `ECON-14` | Export base: basic industries sell to the region at no less than `1.0×` their unit price, and regional demand no longer ends at a fixed household count. | `ECON-11` target tests enabled and passing; the `ECON-12` scenario shows sustained growth; no `ECON-13` regression. |
 | 4 | `DEM-02` | One demand signal per zone type, driven by jobs, residents and exports, replacing the stacked pressure and threshold layers. Owned by [`demand.md`](demand.md). | Same as `ECON-14`; the signal for a zone can be computed by hand from its inputs. |
@@ -3740,6 +3740,60 @@ so passing is necessary for solvency but not sufficient.
 
 Run them with `cargo test --lib economy::definitions::balance_tests`; add `-- --ignored` to see
 the `ECON-14` target fail with the per-profile breakdown.
+
+### `ECON-12` growth scenario
+
+Done 2026-10-02. The sim thread and headless runs now advance the city through the same code:
+
+- `SimCore::step_frame` (`rust/src/nodes/sim/core/frame.rs`) is one ~60 Hz frame. It refreshes
+  pathing, moves agents by `FRAME_DT_S × speed`, then runs every authored minute the clock
+  crosses: queued demand spawns, the operational hour on whole hours, daily settlement at
+  midnight. A paused clock changes nothing. The sim thread keeps command handling, the core
+  lock, cell-chunk preparation, snapshots and perf logging; lock ownership is unchanged.
+- `SimCore::commit_road` (`road_commit.rs`) is the former `SimCommand::AddRoad` body: plan reuse,
+  transactional commit, lane, agent, entrance and routing refresh, road meshes and road-locked
+  terrain.
+- `SimCore::new` replaces five copied `SimCore` literals. `SimCore::replace_asset_registry` is
+  the Godot-free half of pack loading; Godot still imports mesh bounds first.
+
+`GrowthScenario::starter_town` (`rust/src/nodes/sim/core/scenario.rs`) builds a flat 2 km world
+through those player paths. It has:
+
+- an `OWA` border road into a main street, with three cross streets;
+- residential paint on two cross streets, industrial on the third, commercial on the main street;
+- the repository's `godot/bootstrap/mods` pack.
+
+Then it runs at maximum speed (32×), frame by frame, because a household is admitted only once
+its carrier reaches home. `rust/tests/growth_scenario.rs` holds two tests:
+
+| Test | State | Result on 2026-10-02 |
+| --- | --- | --- |
+| `concurrent_runs_record_identical_years` | active | Two 365-day runs, concurrent on one Rayon pool, record identical days. About 10 s in the `test` profile. |
+| `starter_town_keeps_growing_and_solvent_through_year_one` | `#[ignore]` until `ECON-14` | Fails: the town stalls and goes broke (trajectory below). |
+
+| Day | Households | Residents | Employed / jobs | Buildings | Treasury |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 2 | 1 | 1 | 0 / 0 | 5 | 57,329 |
+| 32 | 18 | 28 | 11 / 39 | 29 | 52,102 |
+| 122 | 25 | 40 | 20 / 47 | 61 | 35,985 |
+| 242 | 25 | 40 | 19 / 39 | 88 | 7,741 |
+| 272 | 25 | 40 | 16 / 24 | 95 | 892 |
+| 302 | 24 | 39 | 1 / 6 | 59 | −4,955 |
+| 366 | 18 | 28 | 0 / 0 | 59 | −20,235 |
+
+Households reach 25 by day 107 and stop. Buildings keep being added while the treasury falls
+about 130 per day. Once it is negative, near day 280, jobs fall to zero and households start
+leaving.
+
+Limits:
+
+- Mesh bounds need Godot's importer, so building sites use the meshless support path.
+- The explicit-placement farm, coal mine and power plant are not placed.
+- Results are reproducible for one build and asset pack. Any change to simulation code, tuning
+  or the bootstrap pack can move them, so the test pins determinism, not the trajectory.
+
+Run the determinism test with `cargo test --test growth_scenario`. Add `-- --ignored` to print
+the monthly trajectory from the `ECON-14` target.
 
 ## Future Calibration Targets
 

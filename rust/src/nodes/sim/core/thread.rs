@@ -2,10 +2,14 @@
 
 //! Background simulation command processing and fixed-rate thread loop.
 
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
+use super::frame::{
+    FRAME_DT_S, FrameStepReport, crash_summary_from_core, record_crash_phase_for_core,
+    run_sim_phase,
+};
+use super::road_commit::RoadCommitRequest;
 use super::road_edit_plan::RoadEditPlan;
 use super::road_preview::{
     RoadPreviewWorkerContext, RoadToolQuerySnapshot, road_tool_snapshots_from_core,
@@ -14,26 +18,7 @@ use super::snapshot::RenderSnapshot;
 use super::state::SimCore;
 use super::terrain_payloads::ROAD_LOCKED_TERRAIN_RENDER_STEP_M;
 use crate::debug::{CrashCommand, CrashSimSnapshot};
-use crate::debug_log;
 use crate::nodes::sim::editing::BulldozeTarget;
-use crate::simulation::network::road_edit::FinalizedRoadGeometry;
-use godot::prelude::godot_error;
-
-fn run_sim_phase<T>(phase: &str, run: impl FnOnce() -> T) -> T {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)) {
-        Ok(value) => value,
-        Err(payload) => {
-            let message = payload
-                .downcast_ref::<&str>()
-                .copied()
-                .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
-                .unwrap_or("(non-string payload)");
-            godot_error!("[sim] {} panicked: {}", phase, message);
-            crate::debug::flush_crash_diagnostics(phase);
-            std::panic::resume_unwind(payload);
-        }
-    }
-}
 
 /// Commands sent from the Godot main thread to the sim background thread.
 pub(crate) enum SimCommand {
@@ -103,33 +88,6 @@ fn publish_road_tool_snapshots(
         .expect("road query snapshot lock poisoned") = query_snapshot;
 }
 
-fn crash_summary_from_core(core: &SimCore) -> CrashSimSnapshot {
-    CrashSimSnapshot {
-        day_index: core.time.day_index,
-        minute_of_day: core.time.minute_of_day,
-        speed_multiplier: core.time.speed_multiplier,
-        agent_count: core.agents.len(),
-        pathfind_count: core.agents.pathfind_count.load(Ordering::Relaxed),
-        building_count: core.allocator.buildings.len(),
-        household_count: core.households.households.len(),
-        road_node_count: core.region_graph.node_count(),
-        road_edge_count: core.region_graph.edge_count(),
-        road_generation: core.road_tool_surface_generation,
-        pending_demand_spawns: core.pending_demand_spawns.len(),
-        last_agent_tick_us: core.last_agent_tick_us,
-        last_tick_duration_ms: core.last_tick_duration,
-        terrain_dirty: core.terrain_dirty,
-        water_dirty: core.water_dirty,
-        network_dirty: core.network_dirty,
-    }
-}
-
-fn record_crash_phase_for_core(core: &SimCore, phase: &'static str) {
-    if crate::debug::is_crash_diagnostics_enabled() {
-        crate::debug::record_crash_phase(phase, crash_summary_from_core(core));
-    }
-}
-
 fn record_crash_command_for_core(core: &SimCore, command: CrashCommand) {
     if crate::debug::is_crash_diagnostics_enabled() {
         crate::debug::record_crash_command(command, crash_summary_from_core(core));
@@ -149,7 +107,6 @@ pub(crate) fn run_sim_thread(
     road_query_snapshot: Arc<RwLock<RoadToolQuerySnapshot>>,
     cmd_rx: std::sync::mpsc::Receiver<SimCommand>,
 ) {
-    const TARGET_DT: f64 = 1.0 / 60.0;
     let target = Duration::from_micros(16_667); // ~60 Hz
     let mut recycled_snapshot = RenderSnapshot::default();
     let mut next_tick = Instant::now();
@@ -275,20 +232,11 @@ pub(crate) fn run_sim_thread(
                         crate::nodes::sim::benchmark::road_edit::RoadEditMetrics::default();
                     edit_metrics.queue_wait_ms = enqueued_at.elapsed().as_secs_f64() * 1000.0;
                     let lock_wait_start = Instant::now();
-                    let (
-                        road_snapshots,
-                        road_lock_wait_ms,
-                        add_internal_ms,
-                        finalize_ms,
-                        surface_ms,
-                        mesh_ms,
-                        snapshot_ms,
-                        collect_refined_ms,
-                        invalidated_refined_cache_entries,
-                        commit_result,
-                    ) = {
+                    let road_lock_wait_ms;
+                    let outcome = {
                         let mut c = core.lock().expect("simulation core lock poisoned");
-                        let road_lock_wait_ms = lock_wait_start.elapsed().as_secs_f64() * 1000.0;
+                        road_lock_wait_ms = lock_wait_start.elapsed().as_secs_f64() * 1000.0;
+                        edit_metrics.lock_wait_ms = road_lock_wait_ms;
                         record_crash_command_for_core(
                             &c,
                             CrashCommand::AddRoad {
@@ -298,225 +246,19 @@ pub(crate) fn run_sim_thread(
                                 snap_to_existing_roads,
                             },
                         );
-                        // Bulk-load defers per-edge rebuilds until finalization.
-                        let add_internal_start = Instant::now();
-                        // Complete all geometry before opening the transaction. The worker and
-                        // click rebuild use the same local compiler; neither clones the city here.
-                        let edit_plan = edit_plan.filter(|plan| {
-                            plan.prepared_input_for(
-                                c.road_tool_surface_generation,
-                                c.heightmap.source_generation(),
-                                &points,
+                        c.commit_road(
+                            RoadCommitRequest {
+                                points,
                                 fwd_lanes,
                                 bkw_lanes,
                                 snap_to_existing_roads,
-                            )
-                            .is_some()
-                                && plan.road_status(&c) == "ready"
-                        });
-                        edit_metrics.preview_plan_reused = edit_plan.is_some();
-                        let road_plan = edit_plan.unwrap_or_else(|| {
-                            Arc::new(super::RoadEditPlan::compile_road(
-                                &c,
-                                super::road_preview::RoadPreviewRequest {
-                                    enqueued_at: None,
-                                    include_terrain: false,
-                                    request_id: 0,
-                                    surface_generation: c.road_tool_surface_generation,
-                                    points: points.clone(),
-                                    fwd_lanes,
-                                    bkw_lanes,
-                                    snap_to_existing_roads,
-                                },
-                            ))
-                        });
-                        edit_metrics.road_plan_ms =
-                            add_internal_start.elapsed().as_secs_f64() * 1000.0;
-                        let terrain_start = Instant::now();
-                        let edit_plan = road_plan.complete_for_commit(&c);
-                        edit_metrics.terrain_plan_ms =
-                            terrain_start.elapsed().as_secs_f64() * 1000.0;
-                        c.transit_network.bulk_load = true;
-                        c.transit_network.begin_road_edit();
-                        record_crash_phase_for_core(&c, "add road internal");
-                        let mut road_add = c.add_road_internal_with_snap_and_validation(
-                            points,
-                            fwd_lanes,
-                            bkw_lanes,
-                            snap_to_existing_roads,
-                            Some(&edit_plan),
-                        );
-                        let add_internal_ms = add_internal_start.elapsed().as_secs_f64() * 1000.0;
-                        let finalize_start = Instant::now();
-                        let mut surface_ms = 0.0;
-                        if road_add.committed {
-                            let c = &mut *c;
-                            c.transit_network.bulk_load = false;
-                            record_crash_phase_for_core(c, "add road geometry finalize");
-
-                            let terrain_plan = road_add
-                                .finalized_geometry
-                                .as_ref()
-                                .map(|_| &edit_plan)
-                                .and_then(|plan| plan.terrain());
-
-                            let FinalizedRoadGeometry {
-                                dirty_edges: dirty,
-                                affected_nodes: _affected_nodes,
-                                profile_us: dt_profile_us,
-                                clips_us: dt_clips_us,
-                            } = road_add
-                                .finalized_geometry
-                                .take()
-                                .unwrap_or_else(|| c.finalize_bulk_road_geometry_for_dirty_edges());
-                            let dirty_count = dirty.len();
-                            edit_metrics.dirty_edges = dirty_count;
-                            if crate::debug::category_enabled("road")
-                                && std::env::var("METRUM_DEBUG_ROAD_GEOMETRY_DUMP")
-                                    .map(|value| !value.is_empty() && value != "0")
-                                    .unwrap_or(false)
-                            {
-                                c.last_surface_debug_edges.extend(dirty.iter().copied());
-                                c.last_surface_debug_edges.sort_unstable();
-                                c.last_surface_debug_edges.dedup();
-                            }
-
-                            if let Some(topology_reuse) = road_add.preview_topology_reuse.take() {
-                                c.transit_network
-                                    .road_surface
-                                    .enqueue_preview_topology_reuse(topology_reuse);
-                            }
-                            let surface_start = Instant::now();
-                            record_crash_phase_for_core(c, "add road render validation");
-                            road_add.committed =
-                                c.validate_staged_road_render_with_plan(terrain_plan);
-                            surface_ms = surface_start.elapsed().as_secs_f64() * 1000.0;
-                            if road_add.committed {
-                                let t_inv = Instant::now();
-                                // Invalidate agents BEFORE lane rebuild so old lane IDs are still valid.
-                                record_crash_phase_for_core(c, "add road lane invalidation");
-                                c.agents.invalidate_lane_ids_for_edges(
-                                    &dirty,
-                                    &c.transit_network.lane_system,
-                                    &c.region_graph,
-                                );
-                                let dt_inv_us = t_inv.elapsed().as_micros();
-                                edit_metrics.agent_invalidate_ms = dt_inv_us as f64 / 1000.0;
-
-                                let t_lanes = Instant::now();
-                                record_crash_phase_for_core(c, "add road lane rebuild");
-                                c.transit_network
-                                    .lane_system
-                                    .rebuild_edges_incremental(&mut c.region_graph, &dirty);
-                                c.agents.reattach_invalidated_lanes_for_edges(
-                                    &dirty,
-                                    &c.transit_network.lane_system,
-                                    &c.region_graph,
-                                );
-                                let dt_lanes_us = t_lanes.elapsed().as_micros();
-                                edit_metrics.lanes_and_reattach_ms = dt_lanes_us as f64 / 1000.0;
-                                let buildings_start = Instant::now();
-                                record_crash_phase_for_core(c, "add road entrance rebuild");
-                                c.rebuild_building_entrances_internal();
-                                edit_metrics.buildings_ms =
-                                    buildings_start.elapsed().as_secs_f64() * 1000.0;
-
-                                // Rebuild CCH and run the connectivity check. This is the only
-                                // place the CCH is actually rebuilt for road placements — the
-                                // sim-tick path is gated on speed > 0.0 and would miss paused edits.
-                                record_crash_phase_for_core(c, "add road cch rebuild");
-                                let routing_start = Instant::now();
-                                c.transit_network.rebuild_cch_and_check(&c.region_graph);
-                                c.transit_network.cch_dirty_chunks.clear();
-                                edit_metrics.routing_ms =
-                                    routing_start.elapsed().as_secs_f64() * 1000.0;
-
-                                // Cell-lot preparation consumes queued painted neighborhoods at
-                                // the next hourly demand pass; road placement does not scan cells.
-
-                                let total_us = road_total.elapsed().as_micros();
-                                let msg = format!(
-                                    "TOTAL={}µs  {}  profiles={}µs  clips={}µs  lanes={}µs({}e)  invalidate={}µs",
-                                    total_us,
-                                    c.last_road_timing,
-                                    dt_profile_us,
-                                    dt_clips_us,
-                                    dt_lanes_us,
-                                    dirty_count,
-                                    dt_inv_us
-                                );
-                                debug_log!("road", "{}", msg);
-                                c.last_road_timing = msg;
-                                if !c.benchmark_mode {
-                                    c.treasury.deduct_build_cost(road_add.build_cost);
-                                }
-                            }
-                        } else {
-                            c.transit_network.bulk_load = false;
-                            c.transit_network.accept_road_edit();
-                        }
-                        let finalize_ms =
-                            (finalize_start.elapsed().as_secs_f64() * 1000.0 - surface_ms).max(0.0);
-                        let mesh_start = Instant::now();
-                        record_crash_phase_for_core(&c, "add road mesh precompute");
-                        c.precompute_road_mesh_data();
-                        let mesh_ms = mesh_start.elapsed().as_secs_f64() * 1000.0;
-                        let snapshot_start = Instant::now();
-                        record_crash_phase_for_core(&c, "add road tool snapshot");
-                        let road_snapshots = road_tool_snapshots_from_core(&c);
-                        let snapshot_ms = snapshot_start.elapsed().as_secs_f64() * 1000.0;
-                        let collect_refined_start = Instant::now();
-                        record_crash_phase_for_core(&c, "add road terrain patch state");
-                        let invalidated_refined_cache_entries = c
-                            .refresh_road_locked_terrain_patch_state(
-                                ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
-                            );
-                        let collect_refined_ms =
-                            collect_refined_start.elapsed().as_secs_f64() * 1000.0;
-                        edit_metrics.generation = c.road_tool_surface_generation;
-                        edit_metrics.committed = road_add.committed;
-                        edit_metrics.lock_wait_ms = road_lock_wait_ms;
-                        edit_metrics.core_work_ms =
-                            road_total.elapsed().as_secs_f64() * 1000.0 - road_lock_wait_ms;
-                        edit_metrics.add_ms = add_internal_ms;
-                        edit_metrics.finalize_ms = finalize_ms;
-                        edit_metrics.surface_ms = surface_ms;
-                        edit_metrics.mesh_ms = mesh_ms;
-                        edit_metrics.snapshot_ms = snapshot_ms;
-                        edit_metrics.refined_state_ms = collect_refined_ms;
-                        edit_metrics.rebuilt_surface_chunks = c
-                            .transit_network
-                            .road_surface
-                            .last_rebuilt_surface_chunks
-                            .len();
-                        edit_metrics.rebuilt_terrain_chunks = c
-                            .transit_network
-                            .road_surface
-                            .last_rebuilt_terrain_chunks
-                            .len();
-                        c.last_road_edit_metrics = edit_metrics;
-                        let commit_result = (
-                            road_add.committed,
-                            if road_add.committed {
-                                String::new()
-                            } else {
-                                c.last_road_timing.clone()
+                                edit_plan,
                             },
-                        );
-                        (
-                            road_snapshots,
-                            road_lock_wait_ms,
-                            add_internal_ms,
-                            finalize_ms,
-                            surface_ms,
-                            mesh_ms,
-                            snapshot_ms,
-                            collect_refined_ms,
-                            invalidated_refined_cache_entries,
-                            commit_result,
+                            road_total,
+                            edit_metrics,
                         )
                     };
-                    if let Some((preview_context, query_snapshot)) = road_snapshots {
+                    if let Some((preview_context, query_snapshot)) = outcome.road_snapshots {
                         publish_road_tool_snapshots(
                             &road_preview_context,
                             &road_query_snapshot,
@@ -529,16 +271,16 @@ pub(crate) fn run_sim_thread(
                             "[DEBUG:perf] add_road_command total_ms={:.3} lock_wait_ms={:.3} add_internal_ms={:.3} finalize_ms={:.3} surface_and_terrain_ms={:.3} mesh_ms={:.3} snapshot_ms={:.3} collect_refined_ms={:.3} refined_cache_invalidated={} refined_prebuild=validated_before_accept",
                             road_total.elapsed().as_secs_f64() * 1000.0,
                             road_lock_wait_ms,
-                            add_internal_ms,
-                            finalize_ms,
-                            surface_ms,
-                            mesh_ms,
-                            snapshot_ms,
-                            collect_refined_ms,
-                            invalidated_refined_cache_entries
+                            outcome.add_internal_ms,
+                            outcome.finalize_ms,
+                            outcome.surface_ms,
+                            outcome.mesh_ms,
+                            outcome.snapshot_ms,
+                            outcome.collect_refined_ms,
+                            outcome.invalidated_refined_cache_entries
                         );
                     }
-                    let _ = completion.try_send(commit_result);
+                    let _ = completion.try_send((outcome.committed, outcome.rejection));
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     should_quit = true;
@@ -572,19 +314,10 @@ pub(crate) fn run_sim_thread(
 
         let perf_enabled = crate::debug::is_perf_enabled();
         let lock_wait_ms: f64;
-        let mut pathing_ms = 0.0;
-        let mut agent_ms = 0.0;
-        let mut minute_ms = 0.0;
-        let mut pending_spawn_ms = 0.0;
-        let mut hourly_ms = 0.0;
-        let mut daily_ms = 0.0;
+        let mut step = FrameStepReport::default();
         let snapshot_ms: f64;
         let cell_prepare_ms: f64;
         let lock_held_ms: f64;
-        let mut elapsed_minutes = 0_u16;
-        let mut pending_spawns_executed = 0_usize;
-        let mut hourly_ticks = 0_usize;
-        let mut daily_ticks = 0_usize;
         let agent_count: i32;
         let pathfind_count: u32;
         let crash_frame_summary: Option<CrashSimSnapshot>;
@@ -615,92 +348,11 @@ pub(crate) fn run_sim_thread(
                 core.cell_overlay_visible = visible;
             }
             record_crash_phase_for_core(&core, "sim frame");
-            let speed = core.time.speed_multiplier;
 
             // Publish completed edits immediately, even between movement deadlines. Otherwise
             // network/terrain dirty flags would put the removed queue delay back on the renderer.
-            if tick_due && speed > 0.0 {
-                // Rebuild CCH if dirty, then rebuild any dirty flow fields.
-                let pathing_start = Instant::now();
-                let c = &mut *core;
-                record_crash_phase_for_core(c, "pathing rebuild");
-                c.transit_network
-                    .rebuild_pathing_if_dirty(&mut c.region_graph);
-                {
-                    let alloc = &c.allocator;
-                    let graph = &c.region_graph;
-                    c.transit_network
-                        .flow_fields
-                        .rebuild_dirty(graph, |zone, mode_flags| {
-                            alloc.get_sources_for_zone(zone, graph, mode_flags)
-                        });
-                }
-                pathing_ms = pathing_start.elapsed().as_secs_f64() * 1000.0;
-
-                let dt = (TARGET_DT * speed as f64) as f32;
-                let t_agent = Instant::now();
-
-                record_crash_phase_for_core(&core, "agent tick");
-                run_sim_phase("agent tick", || {
-                    let c = &mut *core;
-                    c.agents.tick(
-                        &c.allocator,
-                        &mut c.transit_network,
-                        &mut c.region_graph,
-                        dt,
-                        &c.time,
-                    );
-                });
-
-                core.last_agent_tick_us = t_agent.elapsed().as_micros() as u64;
-                agent_ms = core.last_agent_tick_us as f64 / 1000.0;
-
-                let minute_start = Instant::now();
-                record_crash_phase_for_core(&core, "time advance");
-                let time_advance = core.time.process_delta(TARGET_DT);
-                elapsed_minutes = time_advance.elapsed_minutes;
-                if time_advance.has_elapsed_minutes() {
-                    for (step_day_index, step_minute_of_day) in time_advance.iter_elapsed_minutes()
-                    {
-                        let pending_spawn_start = Instant::now();
-                        record_crash_phase_for_core(&core, "demand spawn tick");
-                        pending_spawns_executed += run_sim_phase("demand spawn tick", || {
-                            core.execute_pending_demand_spawns_for_minute(
-                                step_day_index,
-                                step_minute_of_day,
-                            )
-                        });
-                        pending_spawn_ms += pending_spawn_start.elapsed().as_secs_f64() * 1000.0;
-                        if step_minute_of_day % 60 == 0 {
-                            let hourly_start = Instant::now();
-                            record_crash_phase_for_core(&core, "operational hour tick");
-                            run_sim_phase("operational hour tick", || {
-                                core.simulate_operational_hour_internal(
-                                    step_day_index,
-                                    step_minute_of_day,
-                                )
-                            });
-                            hourly_ms += hourly_start.elapsed().as_secs_f64() * 1000.0;
-                            hourly_ticks += 1;
-                            if step_minute_of_day != 0 && crate::debug::is_sim_enabled() {
-                                core.print_sim_console_summary(step_day_index, step_minute_of_day);
-                            }
-                        }
-                        if step_minute_of_day == 0 {
-                            let daily_start = Instant::now();
-                            record_crash_phase_for_core(&core, "daily tick");
-                            run_sim_phase("daily tick", || {
-                                core.simulate_tick_internal(step_day_index)
-                            });
-                            daily_ms += daily_start.elapsed().as_secs_f64() * 1000.0;
-                            daily_ticks += 1;
-                            if crate::debug::is_sim_enabled() {
-                                core.print_sim_console_summary(step_day_index, step_minute_of_day);
-                            }
-                        }
-                    }
-                }
-                minute_ms = minute_start.elapsed().as_secs_f64() * 1000.0;
+            if tick_due {
+                step = core.step_frame(FRAME_DT_S);
             }
 
             // Edits and ticks publish with their shown cell chunks already regenerated.
@@ -744,36 +396,36 @@ pub(crate) fn run_sim_thread(
                 lock_held_ms,
                 snapshot_ms,
                 snapshot_write_ms,
-                elapsed_minutes,
-                pending_spawns_executed,
-                hourly_ticks,
-                daily_ticks,
+                step.elapsed_minutes,
+                step.pending_spawns_executed,
+                step.hourly_ticks,
+                step.daily_ticks,
                 commands_processed,
             );
         }
         let unaccounted_ms =
             (active_ms - command_ms - lock_wait_ms - lock_held_ms - snapshot_write_ms).max(0.0);
-        if perf_enabled && (active_ms >= 8.0 || command_ms >= 8.0 || elapsed_minutes > 0) {
+        if perf_enabled && (active_ms >= 8.0 || command_ms >= 8.0 || step.elapsed_minutes > 0) {
             println!(
                 "[DEBUG:perf] sim_frame active_ms={:.3} command_ms={:.3} lock_wait_ms={:.3} lock_held_ms={:.3} pathing_ms={:.3} agent_ms={:.3} minute_ms={:.3} pending_spawn_ms={:.3} hourly_ms={:.3} daily_ms={:.3} cell_prepare_ms={:.3} snapshot_ms={:.3} snapshot_write_ms={:.3} unaccounted_ms={:.3} elapsed_minutes={} pending_spawns={} hourly_ticks={} daily_ticks={} agents={} pathfinds={} commands={} set_speed_cmds={} camera_aabb_cmds={} add_road_cmds={} undo_cmds={} bulldoze_cmds={}",
                 active_ms,
                 command_ms,
                 lock_wait_ms,
                 lock_held_ms,
-                pathing_ms,
-                agent_ms,
-                minute_ms,
-                pending_spawn_ms,
-                hourly_ms,
-                daily_ms,
+                step.pathing_ms,
+                step.agent_ms,
+                step.minute_ms,
+                step.pending_spawn_ms,
+                step.hourly_ms,
+                step.daily_ms,
                 cell_prepare_ms,
                 snapshot_ms,
                 snapshot_write_ms,
                 unaccounted_ms,
-                elapsed_minutes,
-                pending_spawns_executed,
-                hourly_ticks,
-                daily_ticks,
+                step.elapsed_minutes,
+                step.pending_spawns_executed,
+                step.hourly_ticks,
+                step.daily_ticks,
                 agent_count,
                 pathfind_count,
                 commands_processed,

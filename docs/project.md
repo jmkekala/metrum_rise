@@ -277,10 +277,11 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
 
 ## Current Priorities
 
-- **Economy growth redesign (`ECON-11` done; `ECON-12`–`ECON-14`, `DEM-02` open)**: the city stops growing because
+- **Economy growth redesign (`ECON-11`–`ECON-12` done; `ECON-13`–`ECON-14`, `DEM-02` open)**: the city stops growing because
   it has no export base, exports pay `0.60×` unit price, and regional pull ends at 600 households.
-  Balance tests, a headless growth scenario and a Criterion baseline come first, then the export
-  base and a single demand signal. See
+  Balance tests and a headless growth scenario are in place; the scenario's starter town stalls at
+  25 households and runs out of money near day 280. A Criterion baseline comes next, then the
+  export base and a single demand signal. See
   [`economy.md`](economy.md#growth-redesign-econ-11econ-14-dem-02).
 - **Road preview display performance (`ROAD-30`–`ROAD-35`, `ROAD-37`–`ROAD-40` and `ROAD-42` done;
   `ROAD-36`, `ROAD-41` and `ROAD-43` parked)**: prioritize **Road and terrain**. With input-to-display baselines captured, tackle native buffer validation, rendering

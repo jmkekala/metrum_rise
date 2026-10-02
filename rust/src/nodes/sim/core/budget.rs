@@ -297,33 +297,34 @@ enum TaxBucket {
     Property,
 }
 
+/// City-wide household and job counts, read at the daily settlement boundary.
 #[derive(Clone, Copy, Debug, Default)]
-struct DailyCityFlowDiagnostics {
-    active_households: u32,
-    housed_households: u32,
-    unhoused_households: u32,
-    zero_budget_households: u32,
-    supplies_empty_households: u32,
-    supplies_low_households: u32,
-    total_household_slots: u32,
-    vacant_household_slots: u32,
-    resident_agents: u32,
-    child_agents: u32,
-    adult_agents: u32,
-    elder_agents: u32,
-    pending_household_carriers: u32,
-    employed_agents: u32,
-    unemployed_agents: u32,
-    commercial_job_capacity: u32,
-    commercial_filled_jobs: u32,
-    commercial_active_job_capacity: u32,
-    commercial_active_filled_jobs: u32,
-    industrial_job_capacity: u32,
-    industrial_filled_jobs: u32,
-    industrial_active_job_capacity: u32,
-    industrial_active_filled_jobs: u32,
-    service_active_job_capacity: u32,
-    service_active_filled_jobs: u32,
+pub(super) struct DailyCityFlowDiagnostics {
+    pub(super) active_households: u32,
+    pub(super) housed_households: u32,
+    pub(super) unhoused_households: u32,
+    pub(super) zero_budget_households: u32,
+    pub(super) supplies_empty_households: u32,
+    pub(super) supplies_low_households: u32,
+    pub(super) total_household_slots: u32,
+    pub(super) vacant_household_slots: u32,
+    pub(super) resident_agents: u32,
+    pub(super) child_agents: u32,
+    pub(super) adult_agents: u32,
+    pub(super) elder_agents: u32,
+    pub(super) pending_household_carriers: u32,
+    pub(super) employed_agents: u32,
+    pub(super) unemployed_agents: u32,
+    pub(super) commercial_job_capacity: u32,
+    pub(super) commercial_filled_jobs: u32,
+    pub(super) commercial_active_job_capacity: u32,
+    pub(super) commercial_active_filled_jobs: u32,
+    pub(super) industrial_job_capacity: u32,
+    pub(super) industrial_filled_jobs: u32,
+    pub(super) industrial_active_job_capacity: u32,
+    pub(super) industrial_active_filled_jobs: u32,
+    pub(super) service_active_job_capacity: u32,
+    pub(super) service_active_filled_jobs: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -802,7 +803,7 @@ impl SimCore {
         );
     }
 
-    fn daily_city_flow_diagnostics(&self) -> DailyCityFlowDiagnostics {
+    pub(super) fn daily_city_flow_diagnostics(&self) -> DailyCityFlowDiagnostics {
         let mut diagnostics = DailyCityFlowDiagnostics::default();
         let catalog = self.demand.runtime_catalog();
         let commercial_activity_floor_scale = commercial_activity_signal_for_city(

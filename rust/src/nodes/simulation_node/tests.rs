@@ -10,14 +10,13 @@ use super::async_terrain::{
 use super::variant_export::{TerrainCdtSourceExport, TerrainCdtTriangleBufferExport};
 #[cfg(test)]
 use super::*;
-use crate::simulation::agriculture::AgricultureSystem;
-use crate::simulation::extraction::ResourceExtractionSystem;
-use crate::simulation::resources::ResourceDepositSystem;
+use crate::nodes::sim::core::CityTreasury;
 use crate::simulation::terrain::TerrainPatchSnapshot;
 use crate::simulation::terrain::cdt::{
     TerrainCdtEarthworkSupportPolicy, TerrainCdtEdgeClass, TerrainCdtNodePieceKind,
     TerrainCdtRoadBandKind, TerrainCdtRoadLoopSourceEdge, TerrainCdtSpanRegionRole,
 };
+use crate::simulation::water::WaterSystem;
 
 mod async_payload;
 mod cdt;
@@ -165,73 +164,11 @@ fn empty_cdt_stats() -> TerrainCdtStats {
 fn test_core_with_flat_terrain(raw_height: f32) -> SimCore {
     let config = WorldConfig::default();
     let mut core = SimCore {
-        time: TimeSystem::new(),
         heightmap: TerrainSystem::with_chunking(8, 8, 10.0, 4, raw_height),
-        watermap: WaterSystem::from_world_config(&config),
-        vegetation_edits: Default::default(),
-        vegetation: crate::simulation::vegetation::VegetationGenerator::resolve(
-            crate::simulation::vegetation::VegetationConfig::default(),
-            &config,
-        ),
-        region_graph: crate::simulation::network::graph::RegionGraph::new(),
-        transit_network: TransitNetwork::new_for_world(&config),
-        zoning: ZoningSystem::new(&config),
-        pollution: PollutionSystem::new(&config),
-        noise: NoiseSystem::new(&config),
-        desirability: DesirabilitySystem::new(&config),
-        demand: DemandSystem::new(),
-        pending_demand_spawns: std::collections::VecDeque::new(),
-        allocator: BuildingAllocator::new(),
-        agents: AgentSystem::new(),
-        households: HouseholdSystem::new(),
-        logistics: ShipmentSystem::new(),
-        config,
         treasury: CityTreasury::new(0.0),
-        service_policy: Default::default(),
-        fiscal_policy: Default::default(),
-        budget_history: std::collections::VecDeque::new(),
-        budget_last_lifetime_build_cost: 0.0,
-        debug_household_admissions_since_daily: 0,
-        undo_stack: std::collections::VecDeque::new(),
-        world_lake_fills: Vec::new(),
-        world_open_water_fills: Vec::new(),
-        resource_deposits: ResourceDepositSystem::from_world_config(&config),
-        resource_extraction: ResourceExtractionSystem::new(),
-        agriculture: AgricultureSystem::new(),
-        world_lake_fill_preview: None,
-        authored_water_patch_fill_debug_cache: std::collections::HashMap::new(),
-        terrain_stroke_active: false,
-        terrain_stroke_has_changes: false,
         terrain_dirty: false,
         water_dirty: false,
-        network_dirty: false,
-        benchmark_mode: false,
-        last_tick_duration: 0.0,
-        last_agent_tick_us: 0,
-        last_road_timing: String::new(),
-        last_road_edit_metrics: Default::default(),
-        last_surface_debug_edges: Vec::new(),
-        refined_terrain_patch_cache: std::collections::HashMap::new(),
-        road_locked_terrain_patch_keys: Vec::new(),
-        road_locked_terrain_patch_margins: std::collections::BTreeMap::new(),
-        building_site_owned_terrain_patch_keys: std::collections::HashSet::new(),
-        engineered_terrain_patch_keys: Vec::new(),
-        engineered_terrain_patch_margins: std::collections::BTreeMap::new(),
-        terrain_payload_generation_counter: 1,
-        terrain_payload_global_generation: 1,
-        terrain_payload_patch_generations: std::collections::HashMap::new(),
-        refined_terrain_assembly_ledgers: std::collections::HashMap::new(),
-        cached_road_mesh_chunks: std::collections::BTreeMap::new(),
-        published_road_mesh_chunks: std::sync::Arc::new(std::collections::BTreeMap::new()),
-        pending_road_mesh_chunks: std::sync::Arc::new(std::collections::BTreeSet::new()),
-        road_mesh_full_replace: true,
-        cached_road_mesh_generation: 0,
-        cached_network_node_positions: std::sync::Arc::new(Vec::new()),
-        cached_network_node_positions_dirty: true,
-        road_tool_surface_generation: 1,
-        camera_aabb: (0.0, 0.0, 0.0, 0.0),
-        cell_overlay_visible: false,
-        vehicle_ground_support: Default::default(),
+        ..SimCore::new(config)
     };
     core.transit_network
         .road_surface
