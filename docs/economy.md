@@ -1238,7 +1238,8 @@ daily_profit = daily_revenue - (worker_capacity * wage_max_currency_per_day + da
 ```
 
 The removed editor sandbox enforced this rule during scenario playback. No automated check
-currently enforces it.
+currently enforces it; `ECON-11` restores it as a Rust test (see
+[Growth Redesign](#growth-redesign-econ-11econ-14-dem-02)).
 
 ### Runtime Simulation
 
@@ -3679,6 +3680,47 @@ enters `is_deserted`, which is the correct signal for the demand system to consi
 **Observed**: `spawn_limit` for commercial and industrial is `resident_presence.max(pioneer_demand * 0.5)`. At the pioneer baseline of `pioneer_demand = 0.700`, this floor is 0.35 — meaning even with zero residents the system keeps non-residential spawn pressure non-zero.
 
 **Fix**: The pioneer spawn floor and non-residential `spawn_limit` path have been removed. Commercial growth comes from household purchase stability and missing household-facing shop capacity; industrial growth comes from missing local industrial capacity for active business/utility inputs and actual `OWA` input dependency. Household transfers are the bootstrap income source for households.
+
+## Growth Redesign (`ECON-11`–`ECON-14`, `DEM-02`)
+
+Planned 2026-10-02 on branch `economy`, after `ECON-10` removed the economy editor. The city
+stops growing for structural reasons that tuning values alone cannot fix.
+
+### Diagnosis
+
+- **No export base.** Jobs exist only to serve residents. The closed supply chain in
+  `economy/profiles.toml` gives roughly 130 jobs per 1,000 residents (hand estimate,
+  2026-10-02; `ECON-11` replaces it with a test). That is too few jobs to employ the households
+  that growth brings in.
+- **Exporting loses money.** `owa_export_price_multiplier = 0.60` pays 60% of
+  `unit_price_currency`, and export saturation lowers it further to a `0.75` floor factor. A
+  producer that is solvent at the internal price cannot cover its wages and inputs by selling
+  outside the city.
+- **Regional pull ends at 600 households.** The regional growth pull in
+  `rust/src/simulation/economy/demand/snapshot.rs` scales by
+  `1 - households / regional_growth_soft_households`, and `demand/growth_profiles.toml` sets
+  that to `600`. Above 600 households the outside world sends no one.
+- **Stacked damping.** Demand pressure channels, spawn-need thresholds and admission penalties
+  each scale the growth signal down. No single number explains why a zone does not grow, so the
+  system cannot be balanced on paper.
+
+### Decision
+
+Settlement stays aggregate: money and goods flows are computed in aggregate, and agents
+visualize them rather than drive them (decided 2026-10-02).
+
+### Plan
+
+Each step gives the next something to measure against. Prices, target ratios and the new demand
+formula are chosen after `ECON-11`–`ECON-13` produce numbers, not before.
+
+| Order | ID | Deliverable | Acceptance |
+| --- | --- | --- | --- |
+| 1 | `ECON-11` | Pure Rust balance tests on the shipped `economy/profiles.toml`: business solvency (the check lost with `ECON-10`), export margin for basic industries, and jobs per 1,000 residents for the closed chain. | Run in `cargo test` without Godot in milliseconds. Assertions describing the target design start `#[ignore]` with a reason and are enabled by `ECON-14`. |
+| 2 | `ECON-12` | Extract the frame step inlined in `rust/src/nodes/sim/core/thread.rs` into a `SimCore` step callable by the sim thread and by tests. Add a growth-scenario integration test in `rust/tests/` that runs a seeded, zoned map for 365 simulated days and records households, jobs and treasury. | Two runs give identical results; no Godot required; sim-thread behavior unchanged. The step extraction changes ownership in the sim thread, so its design is reviewed before code moves. |
+| 3 | `ECON-13` | Criterion baseline for the hourly and daily economy ticks at 10k, 100k and 1M residents. | Matched, unprofiled release runs; commands, build identity and results recorded in this section. |
+| 4 | `ECON-14` | Export base: basic industries sell to the region at no less than `1.0×` their unit price, and regional demand no longer ends at a fixed household count. | `ECON-11` target tests enabled and passing; the `ECON-12` scenario shows sustained growth; no `ECON-13` regression. |
+| 4 | `DEM-02` | One demand signal per zone type, driven by jobs, residents and exports, replacing the stacked pressure and threshold layers. Owned by [`demand.md`](demand.md). | Same as `ECON-14`; the signal for a zone can be computed by hand from its inputs. |
 
 ## Future Calibration Targets
 

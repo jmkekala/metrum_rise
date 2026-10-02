@@ -2183,6 +2183,13 @@ raw logs and matched summaries are under `/tmp/metrum-full-audit/demand-legacy-*
 
 ## Remaining Follow-Up Limitations
 
+### Growth redesign (`DEM-02`)
+
+The stacked pressure, spawn-need threshold and admission layers damp each other, and regional
+pull falls to zero at `regional_growth_soft_households = 600`. `DEM-02` replaces them with one
+demand signal per zone type. The diagnosis and step order live in
+[`economy.md`](economy.md#growth-redesign-econ-11econ-14-dem-02).
+
 ### Open Spec Gaps
 
 - **Building Desertion** — spec complete and implemented; see `§ Building Desertion` above
