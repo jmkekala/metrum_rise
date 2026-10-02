@@ -277,7 +277,7 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
 
 ## Current Priorities
 
-- **Economy growth redesign (`ECON-11`–`ECON-14`, `DEM-02`, open)**: the city stops growing because
+- **Economy growth redesign (`ECON-11` done; `ECON-12`–`ECON-14`, `DEM-02` open)**: the city stops growing because
   it has no export base, exports pay `0.60×` unit price, and regional pull ends at 600 households.
   Balance tests, a headless growth scenario and a Criterion baseline come first, then the export
   base and a single demand signal. See

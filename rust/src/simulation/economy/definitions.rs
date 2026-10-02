@@ -6,6 +6,8 @@
 //! hand-authored `economy/profiles.toml`, validates it, and compiles the runtime catalog and
 //! tuning used by asset bindings and simulation.
 
+#[cfg(test)]
+mod balance_tests;
 mod io;
 mod runtime;
 mod runtime_compile;

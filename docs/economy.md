@@ -1237,9 +1237,9 @@ profitable at full staffing with `wage_max_currency_per_day`, inferred input pri
 daily_profit = daily_revenue - (worker_capacity * wage_max_currency_per_day + daily_input_cost)
 ```
 
-The removed editor sandbox enforced this rule during scenario playback. No automated check
-currently enforces it; `ECON-11` restores it as a Rust test (see
-[Growth Redesign](#growth-redesign-econ-11econ-14-dem-02)).
+The removed editor sandbox enforced this rule during scenario playback. Since `ECON-11` the
+Rust test `shipped_businesses_are_solvent_at_full_staffing` enforces it on the shipped file (see
+[`ECON-11` balance tests](#econ-11-balance-tests)).
 
 ### Runtime Simulation
 
@@ -3689,9 +3689,8 @@ stops growing for structural reasons that tuning values alone cannot fix.
 ### Diagnosis
 
 - **No export base.** Jobs exist only to serve residents. The closed supply chain in
-  `economy/profiles.toml` gives roughly 130 jobs per 1,000 residents (hand estimate,
-  2026-10-02; `ECON-11` replaces it with a test). That is too few jobs to employ the households
-  that growth brings in.
+  `economy/profiles.toml` gives 130.55 jobs per 1,000 residents (measured by `ECON-11`). That is
+  too few jobs to employ the households that growth brings in.
 - **Exporting loses money.** `owa_export_price_multiplier = 0.60` pays 60% of
   `unit_price_currency`, and export saturation lowers it further to a `0.75` floor factor. A
   producer that is solvent at the internal price cannot cover its wages and inputs by selling
@@ -3716,11 +3715,31 @@ formula are chosen after `ECON-11`–`ECON-13` produce numbers, not before.
 
 | Order | ID | Deliverable | Acceptance |
 | --- | --- | --- | --- |
-| 1 | `ECON-11` | Pure Rust balance tests on the shipped `economy/profiles.toml`: business solvency (the check lost with `ECON-10`), export margin for basic industries, and jobs per 1,000 residents for the closed chain. | Run in `cargo test` without Godot in milliseconds. Assertions describing the target design start `#[ignore]` with a reason and are enabled by `ECON-14`. |
+| 1 | `ECON-11` (done) | Pure Rust balance tests on the shipped `economy/profiles.toml`: business solvency (the check lost with `ECON-10`), export margin for basic industries, and jobs per 1,000 residents for the closed chain. | Run in `cargo test` without Godot in milliseconds. Assertions describing the target design start `#[ignore]` with a reason and are enabled by `ECON-14`. |
 | 2 | `ECON-12` | Extract the frame step inlined in `rust/src/nodes/sim/core/thread.rs` into a `SimCore` step callable by the sim thread and by tests. Add a growth-scenario integration test in `rust/tests/` that runs a seeded, zoned map for 365 simulated days and records households, jobs and treasury. | Two runs give identical results; no Godot required; sim-thread behavior unchanged. The step extraction changes ownership in the sim thread, so its design is reviewed before code moves. |
 | 3 | `ECON-13` | Criterion baseline for the hourly and daily economy ticks at 10k, 100k and 1M residents. | Matched, unprofiled release runs; commands, build identity and results recorded in this section. |
 | 4 | `ECON-14` | Export base: basic industries sell to the region at no less than `1.0×` their unit price, and regional demand no longer ends at a fixed household count. | `ECON-11` target tests enabled and passing; the `ECON-12` scenario shows sustained growth; no `ECON-13` regression. |
 | 4 | `DEM-02` | One demand signal per zone type, driven by jobs, residents and exports, replacing the stacked pressure and threshold layers. Owned by [`demand.md`](demand.md). | Same as `ECON-14`; the signal for a zone can be computed by hand from its inputs. |
+
+### `ECON-11` balance tests
+
+Done 2026-10-02. `rust/src/simulation/economy/definitions/balance_tests.rs` checks the shipped
+`economy/profiles.toml` on paper, without running the simulation. Each business is evaluated at
+full staffing with `wage_max_currency_per_day`, one building or (for field and extraction
+profiles) the smallest area where the field staffing floor stops binding. Outputs sell, and
+locally produced inputs are bought, at the catalog unit price. Import-only inputs pay
+`owa_import_price_multiplier`. Utility bills, taxes, freight and export saturation are left out,
+so passing is necessary for solvency but not sufficient.
+
+| Test | State | Result on 2026-10-02 |
+| --- | --- | --- |
+| `shipped_businesses_are_solvent_at_full_staffing` | active | All producers, processors, stores, service stores and extractors profit at local prices. |
+| `solvency_check_reports_a_profile_whose_wages_exceed_revenue` | active | Guards the check itself: a grocery paying 1,000/day per worker is reported. |
+| `closed_chain_jobs_per_thousand_residents_matches_recorded_baseline` | active | 130.55 jobs per 1,000 residents when everything residents consume is made locally and nothing is exported. City-owned utilities are excluded. Change the recorded constant deliberately when tuning moves it. |
+| `basic_industries_profit_from_exporting_all_output` | `#[ignore]` until `ECON-14` | At `owa_export_price_multiplier = 0.60`: food processor −560/day, coal mine −4/day, machinery factory −200/day. Only the grain farm profits from exporting. |
+
+Run them with `cargo test --lib economy::definitions::balance_tests`; add `-- --ignored` to see
+the `ECON-14` target fail with the per-profile breakdown.
 
 ## Future Calibration Targets
 
