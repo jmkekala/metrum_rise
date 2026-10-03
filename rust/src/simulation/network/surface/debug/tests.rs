@@ -4,8 +4,7 @@
 
 use super::*;
 use crate::simulation::network::surface::{
-    IncidentMouthBand, NodeOwnedRegion, RoadSurfaceTriangleQueryIndex,
-    RoadSurfaceVisualNodePieceKind,
+    IncidentMouthBand, NodeOwnedRegion, RoadSurfaceVisualNodePieceKind,
     backend::{RoadVec2, RoadVec3},
 };
 
@@ -22,7 +21,8 @@ fn empty_node_piece() -> RoadSurfaceVisualNodePiece {
         surface_polygon_order: Default::default(),
         raised_step_face_polygons: Vec::new(),
         raised_step_face_sources: Vec::new(),
-        surface_query: std::sync::Arc::new(RoadSurfaceTriangleQueryIndex::default()),
+        surface_query: Default::default(),
+        surface_query_triangle_bits: 0,
         explicit_vertical_step_segments: Vec::new(),
         node_grade_authorities: Vec::new(),
         node_top_surface_sources: Vec::new(),

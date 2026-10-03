@@ -4016,7 +4016,7 @@ identical. Edit latency next to a cold node is measured against today's reuse pa
 
 ### Remaining retained road memory (`ROAD-45`–`ROAD-49`)
 
-Open, split from `ROAD-44` on 2026-10-03. Sizes are retained heap of the 100k `ECON-13` road
+Done; split from `ROAD-44` on 2026-10-03. Sizes are retained heap of the 100k `ECON-13` road
 layout (roads, buildings and zoning, no households; about 1.6 GB in all), measured with the
 `ROAD-44` probe as glibc `mallinfo2` deltas while dropping each structure. Each item must keep
 committed and preview products identical and must not slow the 10k or 100k benchmark build.
@@ -4184,9 +4184,49 @@ committed and preview products identical and must not slow the 10k or 100k bench
   with two reallocations per push. The 100k lane rebuild took 73 ms instead of 65 ms. The
   shrinking saved only 0.4 MB, because most routes had less spare room than glibc can split off.
   Both were replaced.
-- **`ROAD-49` Node triangle query index (94 MB).** Node pieces still copy every top triangle into
-  their `RoadSurfaceTriangleQueryIndex`. Use the span approach: keep a `SurfaceTriangleGrid` of
-  ids into the owned regions and resolve candidates on read.
+- **`ROAD-49` Node triangle query index (done 2026-10-03).** Each node piece copied every top
+  triangle, with a carriageway flag (80 B), into its own `RoadSurfaceTriangleQueryIndex`, although
+  its owned regions already hold those triangles. Node pieces now keep only a
+  `SurfaceTriangleGrid` whose items are `region_index << bits | triangle_index` into
+  `owned_regions`. `bits` is the fewest that index the region with the most triangles. It is zero
+  in both layouts, because every compiled node top region is a single triangle (556,054 at 100k).
+  Sampling rebuilds each candidate from its region on the stack, through the same
+  `sample_grid_height` that spans and terrain tiles use. The carriageway flag is the region's band
+  kind, the same rule that splits regions into material lists. Terrain tiles are now the only
+  users of `RoadSurfaceTriangleQueryIndex`, which keeps bare triangles (72 B instead of 80 B).
+
+  With the shared 4 m cells, the first version halved node sampling speed. Each candidate now
+  costs two dependent loads, the region and then its points, instead of one contiguous read, and
+  a sample checked about 18 candidates. The 100k probe pass took 2,165 ms instead of 1,106 ms, and
+  the full lane height sync took 14 % longer. Node grids therefore use 1 m cells, with at most
+  four cells per triangle (256 minimum), which leaves about 5 candidates per sample. In the 10k
+  sweep, 0.5 m cells were faster still but kept 5.6 of the 8.7 MB. Two cells per triangle was 3 %
+  slower than `HEAD`.
+
+  Sampling is unchanged. A temporary probe sampled every node piece on a 0.5 m lattice over its
+  bounds plus 0.5 m, through the lane owner query (all owners and carriageway only) and
+  `sample_visible_surface_height`, and hashed the bits. The hash matched `HEAD` at 10k (415,678
+  points) and 100k (3,959,692 points). `derived_surface_products_match_stored_forms` now checks span
+  and node sampling against a scan of every top triangle.
+  `node_surface_query_resolves_every_triangle_of_multi_triangle_regions` covers regions with
+  several triangles, which compiled layouts do not produce.
+
+  Matched alternating release runs, same machine, default workers. Each timing row is one probe
+  pass; the lane sync re-drapes every lane in place:
+
+  | Measure | Before | After |
+  | --- | ---: | ---: |
+  | 10k node triangle queries | 8.7 MB | 2.3 MB |
+  | 100k node triangle queries | 89.4 MB | 22.6 MB |
+  | 100k road layout, retained heap | 1,341.3–1,341.4 MB | 1,274.4, 1,274.5 MB |
+  | 100k node sampling, 0.25 m lattice | 1,106–1,108 ms | 1,060–1,069 ms |
+  | 100k full lane height sync | 1,509–1,514 ms | 1,473–1,484 ms |
+  | 10k node sampling | 111.6–111.7 ms | 107.7–108.3 ms |
+  | 10k full lane height sync | 151.8–152.6 ms | 148.2–149.3 ms |
+
+  `ECON-13` 10k benchmark build, four alternating pairs, two of them with the change run first:
+  17.1–17.6 s before (mean 17.4 s) and 16.2–17.2 s after (mean 16.7 s). City records were
+  identical in every run.
 
 ## Kuopio Terrain Regression Replay (`ROAD-24`)
 

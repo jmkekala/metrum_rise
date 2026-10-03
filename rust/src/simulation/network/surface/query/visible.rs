@@ -3,8 +3,8 @@
 //! Visible-surface sampling, raycast, and section-range queries.
 
 use super::super::{
-    RoadLaneSurfaceQuery, RoadSurfaceIndexedTriangle, RoadSurfaceSection, RoadSurfaceSystem,
-    RoadSurfaceTriangleQueryIndex, RoadSurfaceVisualSpanPiece, SurfaceChunkKey,
+    RoadLaneSurfaceQuery, RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceTriangleQueryIndex,
+    RoadSurfaceVisualNodePiece, RoadSurfaceVisualSpanPiece, SurfaceChunkKey, SurfaceTriangleGrid,
 };
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::surface::backend::{RoadVec2, RoadVec3, godot_vec3_to_road};
@@ -38,17 +38,17 @@ impl RoadSurfaceSystem {
         } else {
             0
         };
-        let mut node_indices = [None; 2];
-        for (target, &node_id) in node_indices.iter_mut().zip(&node_ids[..node_count]) {
+        let mut nodes = [None; 2];
+        for (target, &node_id) in nodes.iter_mut().zip(&node_ids[..node_count]) {
             if self.node_uses_visible_surface(graph, terrain, node_id) {
                 *target = self
                     .compiled_visual_node_pieces
                     .get(&node_id)
-                    .map(|piece| piece.surface_query.as_ref());
+                    .map(Arc::as_ref);
             }
         }
         RoadLaneSurfaceQuery {
-            node_indices,
+            nodes,
             node_count,
             span: edge_id
                 .and_then(|edge_id| self.compiled_visual_span_pieces.get(&edge_id))
@@ -100,7 +100,7 @@ impl RoadSurfaceSystem {
                 continue;
             }
             if let Some(piece) = self.compiled_visual_node_pieces.get(&node_id)
-                && let Some(sample) = piece.surface_query.sample_visible_height(point)
+                && let Some(sample) = piece.sample_visible_height(point)
             {
                 keep_max_height(&mut top_surface, sample);
             }
@@ -373,7 +373,10 @@ impl RoadSurfaceSystem {
 
     // Borrow the indexed triangle through this call boundary instead of copying 72 bytes
     // for every candidate in a height query.
-    fn triangle_height_at_xz(triangle: &[RoadVec3; 3], point: RoadVec2) -> Option<f32> {
+    pub(in crate::simulation::network::surface) fn triangle_height_at_xz(
+        triangle: &[RoadVec3; 3],
+        point: RoadVec2,
+    ) -> Option<f32> {
         let (wa, wb, wc) = road_triangle_barycentric_weights_xz(*triangle, point)?;
         Some((triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc) as f32)
     }
@@ -424,8 +427,8 @@ impl RoadLaneSurfaceQuery<'_> {
     pub(crate) fn sample_height(&self, world_x: f32, world_z: f32) -> Option<f32> {
         let point = RoadVec2::new(f64::from(world_x), f64::from(world_z));
         let mut surface_height_m = None;
-        for index in self.node_indices[..self.node_count].iter().flatten() {
-            if let Some(height_m) = index.sample_height(point, self.carriageway_only) {
+        for node in self.nodes[..self.node_count].iter().flatten() {
+            if let Some(height_m) = node.sample_height(point, self.carriageway_only) {
                 keep_max_height(&mut surface_height_m, height_m);
             }
         }
@@ -441,79 +444,88 @@ impl RoadLaneSurfaceQuery<'_> {
 impl RoadSurfaceTriangleQueryIndex {
     /// Samples compiled ground height in the containing local grid cell.
     pub(crate) fn sample_ground_height(&self, point: RoadVec2) -> Option<f32> {
-        self.sample_height_matching(point, |_| true)
+        sample_grid_height(
+            &self.grid,
+            point,
+            |item| (self.triangles[item as usize], false),
+            |_, _| true,
+        )
     }
+}
 
+impl RoadSurfaceVisualSpanPiece {
     pub(in crate::simulation::network::surface) fn sample_height(
         &self,
         point: RoadVec2,
         carriageway_only: bool,
     ) -> Option<f32> {
-        self.sample_height_matching(point, |triangle| !carriageway_only || triangle.carriageway)
+        sample_grid_height(
+            &self.surface_query,
+            point,
+            |item| self.surface_query_triangle(item),
+            |_, carriageway| !carriageway_only || carriageway,
+        )
     }
 
     pub(in crate::simulation::network::surface) fn sample_visible_height(
         &self,
         point: RoadVec2,
     ) -> Option<f32> {
-        self.sample_height_matching(point, |triangle| {
-            RoadSurfaceSystem::top_surface_triangle_is_renderable_xz(triangle.triangle)
-        })
-    }
-
-    fn sample_height_matching(
-        &self,
-        point: RoadVec2,
-        accepts: impl Fn(&RoadSurfaceIndexedTriangle) -> bool,
-    ) -> Option<f32> {
-        let mut height = None;
-        for &triangle_idx in self.cell_triangle_indices(point) {
-            let indexed = &self.triangles[triangle_idx as usize];
-            if !accepts(indexed) {
-                continue;
-            }
-            if let Some(height_m) =
-                RoadSurfaceSystem::triangle_height_at_xz(&indexed.triangle, point)
-            {
-                keep_max_height(&mut height, height_m);
-            }
-        }
-        height
+        sample_grid_height(
+            &self.surface_query,
+            point,
+            |item| self.surface_query_triangle(item),
+            |triangle, _| RoadSurfaceSystem::top_surface_triangle_is_renderable_xz(triangle),
+        )
     }
 }
 
-impl RoadSurfaceVisualSpanPiece {
-    pub(in crate::simulation::network::surface) fn sample_height(&self, point: RoadVec2, carriageway_only: bool) -> Option<f32> {
-        self.sample_height_matching(point, |_, carriageway| !carriageway_only || carriageway)
+impl RoadSurfaceVisualNodePiece {
+    pub(in crate::simulation::network::surface) fn sample_height(
+        &self,
+        point: RoadVec2,
+        carriageway_only: bool,
+    ) -> Option<f32> {
+        sample_grid_height(
+            &self.surface_query,
+            point,
+            |item| self.surface_query_triangle(item),
+            |_, carriageway| !carriageway_only || carriageway,
+        )
     }
 
     pub(in crate::simulation::network::surface) fn sample_visible_height(
         &self,
         point: RoadVec2,
     ) -> Option<f32> {
-        self.sample_height_matching(point, |triangle, _| {
-            RoadSurfaceSystem::top_surface_triangle_is_renderable_xz(triangle)
-        })
+        sample_grid_height(
+            &self.surface_query,
+            point,
+            |item| self.surface_query_triangle(item),
+            |triangle, _| RoadSurfaceSystem::top_surface_triangle_is_renderable_xz(triangle),
+        )
     }
+}
 
-    // Rebuilds each candidate triangle from the sections on the stack; no allocation.
-    fn sample_height_matching(
-        &self,
-        point: RoadVec2,
-        accepts: impl Fn([RoadVec3; 3], bool) -> bool,
-    ) -> Option<f32> {
-        let mut height = None;
-        for &item in self.surface_query.cell_items(point) {
-            let (triangle, carriageway) = self.surface_query_triangle(item);
-            if !accepts(triangle, carriageway) {
-                continue;
-            }
-            if let Some(height_m) = RoadSurfaceSystem::triangle_height_at_xz(&triangle, point) {
-                keep_max_height(&mut height, height_m);
-            }
+// Highest accepted candidate in the grid cell at `point`. `triangle` resolves an item to its
+// triangle and whether it is carriageway, on the stack; sampling does not allocate.
+fn sample_grid_height(
+    grid: &SurfaceTriangleGrid,
+    point: RoadVec2,
+    triangle: impl Fn(u32) -> ([RoadVec3; 3], bool),
+    accepts: impl Fn([RoadVec3; 3], bool) -> bool,
+) -> Option<f32> {
+    let mut height = None;
+    for &item in grid.cell_items(point) {
+        let (triangle, carriageway) = triangle(item);
+        if !accepts(triangle, carriageway) {
+            continue;
         }
-        height
+        if let Some(height_m) = RoadSurfaceSystem::triangle_height_at_xz(&triangle, point) {
+            keep_max_height(&mut height, height_m);
+        }
     }
+    height
 }
 
 /// Intersects a forward ray with an XZ rectangle; shared by road and engineered-ground queries.
@@ -829,7 +841,6 @@ mod tests {
 
     #[test]
     fn visible_index_keeps_highest_renderable_triangle_and_padded_cells() {
-        use super::super::super::RoadSurfaceVisualPolygon;
         let triangle = [
             RoadVec3::new(0.0, 1.0, 0.0),
             RoadVec3::new(8.0, 1.0, 0.0),
@@ -842,16 +853,24 @@ mod tests {
             RoadVec3::new(100.0, 9.0, 0.0),
             RoadVec3::new(0.0, 9.0, 0.001),
         ];
-        let polygon = RoadSurfaceVisualPolygon::from_parts(Vec::new(), &[triangle, upper, thin]);
-        let index = RoadSurfaceTriangleQueryIndex::from_surface_polygons(&[polygon], &[], &[]);
+        let triangles = [triangle, upper, thin];
+        let grid = SurfaceTriangleGrid::from_triangles(triangles.into_iter(), |index| index as u32);
+        let sample_visible_height = |point| {
+            sample_grid_height(
+                &grid,
+                point,
+                |item| (triangles[item as usize], false),
+                |triangle, _| RoadSurfaceSystem::top_surface_triangle_is_renderable_xz(triangle),
+            )
+        };
         for point in [
             RoadVec2::new(0.0, 0.0),
             RoadVec2::new(4.0, -0.0005),
             RoadVec2::new(4.0, 0.0005),
             RoadVec2::new(4.0, 4.0),
         ] {
-            assert_eq!(index.sample_visible_height(point), Some(3.0));
+            assert_eq!(sample_visible_height(point), Some(3.0));
         }
-        assert_eq!(index.sample_visible_height(RoadVec2::new(40.0, 0.0)), None);
+        assert_eq!(sample_visible_height(RoadVec2::new(40.0, 0.0)), None);
     }
 }

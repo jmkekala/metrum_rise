@@ -3,7 +3,7 @@
 //! Span compilation and span-owned surface regression tests.
 
 use super::*;
-use crate::simulation::network::surface::{RoadVec3, SpanQuad};
+use crate::simulation::network::surface::{RoadVec2, RoadVec3, SpanQuad};
 
 #[test]
 fn span_raised_step_generation_uses_resolved_regions() {
@@ -341,6 +341,50 @@ fn earthwork_face_classification_distinguishes_slopes_from_walls() {
     );
 }
 
+// Samples a 0.37 m lattice over `triangles` and one metre around them; returns the sample count.
+fn assert_samples_like_scan(
+    triangles: &[([RoadVec3; 3], bool)],
+    sample_height: impl Fn(RoadVec2, bool) -> Option<f32>,
+    sample_visible_height: impl Fn(RoadVec2) -> Option<f32>,
+) -> usize {
+    let scan = |point, accepts: &dyn Fn([RoadVec3; 3], bool) -> bool| {
+        triangles
+            .iter()
+            .filter(|&&(triangle, carriageway)| accepts(triangle, carriageway))
+            .filter_map(|(triangle, _)| RoadSurfaceSystem::triangle_height_at_xz(triangle, point))
+            .reduce(f32::max)
+    };
+    let points = triangles.iter().flat_map(|(triangle, _)| triangle);
+    let (min_x, max_x) = points
+        .clone()
+        .fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p.x), b.max(p.x)));
+    let (min_z, max_z) = points.fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p.z), b.max(p.z)));
+    let mut samples = 0;
+    let mut x = min_x - 1.0;
+    while x <= max_x + 1.0 {
+        let mut z = min_z - 1.0;
+        while z <= max_z + 1.0 {
+            let point = RoadVec2::new(x, z);
+            for carriageway_only in [false, true] {
+                assert_eq!(
+                    sample_height(point, carriageway_only),
+                    scan(point, &|_, carriageway| !carriageway_only || carriageway)
+                );
+            }
+            assert_eq!(
+                sample_visible_height(point),
+                scan(point, &|triangle, _| {
+                    RoadSurfaceSystem::top_surface_triangle_is_renderable_xz(triangle)
+                })
+            );
+            samples += 1;
+            z += 0.37;
+        }
+        x += 0.37;
+    }
+    samples
+}
+
 fn assert_quad_matches_strip_polygon(corners: [RoadVec3; 4]) {
     assert_eq!(
         SpanQuad::from_vertical_points(corners).map(|quad| quad.to_polygon()),
@@ -421,35 +465,29 @@ fn derived_surface_products_match_stored_forms() {
     let mut regions = 0;
     let mut samples = 0;
     for piece in network.road_surface.compiled_visual_span_pieces.values() {
-        // The packed-id grid samples exactly like a triangle index over the same polygons.
-        let polygons = |quads: &mut dyn Iterator<Item = SpanQuad>| {
-            quads.map(|quad| quad.to_polygon()).collect::<Vec<_>>()
-        };
-        let index = crate::simulation::network::surface::RoadSurfaceTriangleQueryIndex::from_surface_polygons(
-            &polygons(&mut piece.road_surface_polygons()),
-            &polygons(&mut piece.curb_surface_polygons()),
-            &polygons(&mut piece.sidewalk_surface_polygons()),
-        );
-        let points: Vec<_> = piece.surface_polygons().flat_map(|quad| quad.points().to_vec()).collect();
-        let (min_x, max_x) = points.iter().fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p.x), b.max(p.x)));
-        let (min_z, max_z) = points.iter().fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p.z), b.max(p.z)));
-        let mut x = min_x - 1.0;
-        while x <= max_x + 1.0 {
-            let mut z = min_z - 1.0;
-            while z <= max_z + 1.0 {
-                let point = crate::simulation::network::surface::RoadVec2::new(x, z);
-                for carriageway_only in [false, true] {
-                    assert_eq!(
-                        piece.sample_height(point, carriageway_only),
-                        index.sample_height(point, carriageway_only)
-                    );
-                }
-                assert_eq!(piece.sample_visible_height(point), index.sample_visible_height(point));
-                samples += 1;
-                z += 0.37;
+        // The packed-id grid samples exactly like a scan over the same top triangles.
+        let mut triangles = Vec::new();
+        for (quads, carriageway) in [
+            (
+                &mut piece.road_surface_polygons() as &mut dyn Iterator<Item = SpanQuad>,
+                true,
+            ),
+            (&mut piece.curb_surface_polygons(), false),
+            (&mut piece.sidewalk_surface_polygons(), false),
+        ] {
+            for quad in quads {
+                triangles.extend(
+                    quad.triangles()
+                        .iter()
+                        .map(|&triangle| (triangle, carriageway)),
+                );
             }
-            x += 0.37;
         }
+        samples += assert_samples_like_scan(
+            &triangles,
+            |point, carriageway_only| piece.sample_height(point, carriageway_only),
+            |point| piece.sample_visible_height(point),
+        );
         for region in piece.span_owned_regions.iter().chain(piece.span_earthwork_support_regions.iter()) {
             assert_quad_matches_strip_polygon(region.corners(&piece.sections));
             regions += 1;
@@ -466,6 +504,22 @@ fn derived_surface_products_match_stored_forms() {
         assert_eq!(piece.road_surface_polygons().cloned().collect::<Vec<_>>(), road);
         assert_eq!(piece.curb_surface_polygons().cloned().collect::<Vec<_>>(), curb);
         assert_eq!(piece.sidewalk_surface_polygons().cloned().collect::<Vec<_>>(), sidewalk);
+        // The region-id grid samples exactly like a scan over the same top triangles.
+        let triangles: Vec<_> = [(road, true), (curb, false), (sidewalk, false)]
+            .iter()
+            .flat_map(|(polygons, carriageway)| {
+                polygons.iter().flat_map(move |polygon| {
+                    polygon
+                        .triangles()
+                        .map(move |triangle| (triangle, *carriageway))
+                })
+            })
+            .collect();
+        samples += assert_samples_like_scan(
+            &triangles,
+            |point, carriageway_only| piece.sample_height(point, carriageway_only),
+            |point| piece.sample_visible_height(point),
+        );
         junctions += usize::from(piece.kind == RoadSurfaceVisualNodePieceKind::JunctionN);
         nodes += 1;
     }

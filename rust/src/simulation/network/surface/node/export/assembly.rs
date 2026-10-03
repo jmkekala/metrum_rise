@@ -3,8 +3,6 @@
 //! Final explicit node-piece assembly from exported surface regions.
 
 use super::super::*;
-use crate::simulation::network::surface::RoadSurfaceTriangleQueryIndex;
-use std::sync::Arc;
 
 impl RoadSurfaceSystem {
     pub(in crate::simulation::network::surface::node) fn assemble_explicit_node_piece(
@@ -65,17 +63,6 @@ impl RoadSurfaceSystem {
         if outer_boundary_loops.is_empty() {
             return None;
         }
-        let material_polygons = |material: usize| {
-            surface_polygon_order[material]
-                .iter()
-                .map(|&index| owned_regions[index as usize].polygon.clone())
-                .collect::<Vec<_>>()
-        };
-        let surface_query = Arc::new(RoadSurfaceTriangleQueryIndex::from_surface_polygons(
-            &material_polygons(0),
-            &material_polygons(1),
-            &material_polygons(2),
-        ));
         let (raised_step_face_polygons, raised_step_face_sources) =
             raised_step_faces.into_iter().unzip();
         let mut piece = RoadSurfaceVisualNodePiece {
@@ -86,7 +73,8 @@ impl RoadSurfaceSystem {
             surface_polygon_order,
             raised_step_face_polygons,
             raised_step_face_sources,
-            surface_query,
+            surface_query: Default::default(),
+            surface_query_triangle_bits: 0,
             explicit_vertical_step_segments,
             node_grade_authorities,
             node_top_surface_sources,
@@ -97,6 +85,7 @@ impl RoadSurfaceSystem {
             earthwork_outer_boundary_loops,
             render_earthwork_faces,
         };
+        piece.build_surface_query();
         piece.shrink_retained();
         Some(piece)
     }

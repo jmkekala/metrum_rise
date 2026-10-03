@@ -17,11 +17,20 @@ use super::{
     },
 };
 use crate::simulation::network::{
-    surface::{RoadSurfaceTriangleQueryIndex, band_semantics::ordered_raised_step_kinds},
+    surface::{
+        ROAD_SURFACE_QUERY_GRID_MAX_CELLS, RoadVec3, SurfaceTriangleGrid,
+        band_semantics::ordered_raised_step_kinds,
+    },
     types::EdgeClass,
 };
 use i_overlay::core::overlay_rule::OverlayRule;
 use std::sync::Arc;
+
+// Node top triangles are small and each candidate is rebuilt through its region, so node grids
+// use finer cells than the shared default: about 5 candidates per sample instead of 18, which
+// keeps sampling as fast as stored triangles were (`ROAD-49`).
+const NODE_SURFACE_QUERY_CELL_M: f64 = 1.0;
+const NODE_SURFACE_QUERY_CELLS_PER_TRIANGLE: usize = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RoadSurfaceVerticalFaceSource {
@@ -127,7 +136,10 @@ pub struct RoadSurfaceVisualNodePiece {
     /// Explicit vertical faces at raised owner-pair material contacts.
     pub raised_step_face_polygons: Vec<RoadSurfaceVisualPolygon>,
     pub(crate) raised_step_face_sources: Vec<RoadSurfaceVerticalFaceSource>,
-    pub(in crate::simulation::network::surface) surface_query: Arc<RoadSurfaceTriangleQueryIndex>,
+    // Grid over the top triangles; items are `region_index << surface_query_triangle_bits |
+    // triangle_index`, resolved by `surface_query_triangle`.
+    pub(in crate::simulation::network::surface) surface_query: Arc<SurfaceTriangleGrid>,
+    pub(in crate::simulation::network::surface) surface_query_triangle_bits: u8,
     pub(crate) explicit_vertical_step_segments: Vec<arrangement::NodeExplicitVerticalStepSegment>,
     pub(crate) node_grade_authorities: Vec<NodeGradeVertexAuthority>,
     pub(crate) node_top_surface_sources: Vec<NodeTopSurfacePolygonSource>,
@@ -272,6 +284,52 @@ impl RoadSurfaceVisualNodePiece {
         (0..3).flat_map(move |material| self.material_polygons(material))
     }
 
+    // Grids the top triangles, asphalt then curb then sidewalk in render order, as ids into
+    // `owned_regions`, so no triangle is stored twice. The triangle index takes the low bits,
+    // as many as the region with the most triangles needs.
+    pub(crate) fn build_surface_query(&mut self) {
+        let max_triangles = self
+            .surface_polygons()
+            .map(RoadSurfaceVisualPolygon::triangle_count)
+            .max()
+            .unwrap_or(0);
+        let bits = usize::BITS - max_triangles.saturating_sub(1).leading_zeros();
+        debug_assert!((self.owned_regions.len() as u64) << bits <= 1 << 32);
+        let mut items = Vec::new();
+        for order in &self.surface_polygon_order {
+            for &region_index in order.iter() {
+                let polygon = &self.owned_regions[region_index as usize].polygon;
+                items.extend(
+                    polygon
+                        .triangles()
+                        .enumerate()
+                        .map(|(triangle_index, triangle)| {
+                            (region_index << bits | triangle_index as u32, triangle)
+                        }),
+                );
+            }
+        }
+        self.surface_query = Arc::new(SurfaceTriangleGrid::from_triangles_in_cells(
+            items.iter().map(|item| item.1),
+            |position| items[position].0,
+            NODE_SURFACE_QUERY_CELL_M,
+            (items.len() * NODE_SURFACE_QUERY_CELLS_PER_TRIANGLE)
+                .max(ROAD_SURFACE_QUERY_GRID_MAX_CELLS),
+        ));
+        self.surface_query_triangle_bits = bits as u8;
+    }
+
+    /// Resolves a `surface_query` item to its triangle and whether it is carriageway.
+    pub(crate) fn surface_query_triangle(&self, item: u32) -> ([RoadVec3; 3], bool) {
+        let bits = u32::from(self.surface_query_triangle_bits);
+        let region = &self.owned_regions[(item >> bits) as usize];
+        let triangle_index = item & ((1 << bits) - 1);
+        (
+            region.polygon.triangle(triangle_index as usize),
+            region.kind == RoadSurfaceBandKind::Carriageway,
+        )
+    }
+
     // Retained lists are built by pushing; drop their spare capacity once, at publication size.
     pub(crate) fn shrink_retained(&mut self) {
         self.outer_boundary_loops.shrink_to_fit();
@@ -330,6 +388,7 @@ impl RoadSurfaceVisualNodePiece {
             owner_index: 0,
             polygon,
         });
+        self.build_surface_query();
     }
 
     /// Earthwork side polygons in `visual_polygon_ordering` order; each is a render face's.

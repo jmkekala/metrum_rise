@@ -3,7 +3,6 @@
 //! Core surface cache, input, overlay, and section regression tests.
 
 use super::*;
-use crate::simulation::network::surface::RoadSurfaceTriangleQueryIndex;
 use std::sync::Arc;
 
 #[test]
@@ -1009,6 +1008,54 @@ fn empty_visual_span_piece(edge_idx: usize) -> RoadSurfaceVisualSpanPiece {
     }
 }
 
+#[test]
+fn node_surface_query_resolves_every_triangle_of_multi_triangle_regions() {
+    use backend::{RoadVec2, RoadVec3};
+    // Five fan triangles over a non-planar heptagon need three triangle bits; a wrong triangle
+    // id misses the centroid or gives another plane's height.
+    let heptagon: Vec<_> = (0..7)
+        .map(|i| {
+            let angle = f64::from(i) * std::f64::consts::TAU / 7.0;
+            RoadVec3::new(10.0 * angle.cos(), f64::from(i % 3), 10.0 * angle.sin())
+        })
+        .collect();
+    let fan: Vec<_> = (1..6).map(|i| [0, i, i + 1]).collect();
+    let sidewalk = [
+        RoadVec3::new(20.0, 5.0, 0.0),
+        RoadVec3::new(24.0, 5.0, 0.0),
+        RoadVec3::new(20.0, 5.0, 4.0),
+    ];
+    let mut piece = empty_visual_node_piece(0);
+    piece.push_test_surface_polygon(
+        RoadSurfaceBandKind::Carriageway,
+        RoadSurfaceVisualPolygon::from_indexed_parts(heptagon.clone(), &fan),
+    );
+    piece.push_test_surface_polygon(
+        RoadSurfaceBandKind::Sidewalk,
+        RoadSurfaceVisualPolygon::from_parts(sidewalk.to_vec(), &[sidewalk]),
+    );
+    assert_eq!(piece.surface_query_triangle_bits, 3);
+
+    let centroid = |triangle: [RoadVec3; 3]| {
+        let sum = triangle[0] + triangle[1] + triangle[2];
+        (
+            RoadVec2::new(sum.x / 3.0, sum.z / 3.0),
+            (sum.y / 3.0) as f32,
+        )
+    };
+    for triangle in &fan {
+        let (point, height) = centroid(triangle.map(|index| heptagon[index]));
+        for carriageway_only in [false, true] {
+            let sampled = piece.sample_height(point, carriageway_only).unwrap();
+            assert!((sampled - height).abs() < 1e-5, "{sampled} != {height}");
+        }
+    }
+    let (point, height) = centroid(sidewalk);
+    assert_eq!(piece.sample_height(point, false), Some(height));
+    assert_eq!(piece.sample_visible_height(point), Some(height));
+    assert_eq!(piece.sample_height(point, true), None);
+}
+
 fn empty_visual_node_piece(node_id: u32) -> RoadSurfaceVisualNodePiece {
     RoadSurfaceVisualNodePiece {
         node_id,
@@ -1018,7 +1065,8 @@ fn empty_visual_node_piece(node_id: u32) -> RoadSurfaceVisualNodePiece {
         surface_polygon_order: Default::default(),
         raised_step_face_polygons: Vec::new(),
         raised_step_face_sources: Vec::new(),
-        surface_query: Arc::new(RoadSurfaceTriangleQueryIndex::default()),
+        surface_query: Default::default(),
+        surface_query_triangle_bits: 0,
         explicit_vertical_step_segments: Vec::new(),
         node_grade_authorities: Vec::new(),
         node_top_surface_sources: Vec::new(),

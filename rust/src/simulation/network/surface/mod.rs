@@ -201,22 +201,17 @@ enum PolygonTriangulation {
 const ROAD_SURFACE_QUERY_GRID_BASE_CELL_M: f64 = 4.0;
 const ROAD_SURFACE_QUERY_GRID_MAX_CELLS: usize = 256;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct RoadSurfaceIndexedTriangle {
-    triangle: [RoadVec3; 3],
-    carriageway: bool,
-}
-
 #[derive(Clone, Debug, Default, PartialEq)]
-/// Immutable owner-local triangle grid shared by road carriers and compiled terrain tiles.
+/// Immutable triangle grid owning its triangles, for compiled terrain tiles.
 pub(crate) struct RoadSurfaceTriangleQueryIndex {
     grid: SurfaceTriangleGrid,
-    triangles: Vec<RoadSurfaceIndexedTriangle>,
+    triangles: Vec<[RoadVec3; 3]>,
 }
 
 /// Bounded owner-local XZ grid listing caller-defined triangle ids per cell.
 ///
-/// Owners that can rebuild their triangles keep only this grid; `ROAD-44`.
+/// Road span and node pieces rebuild their triangles from the ids and keep only this grid;
+/// `ROAD-44`, `ROAD-49`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct SurfaceTriangleGrid {
     bounds_xz: [f64; 4],
@@ -245,7 +240,7 @@ struct RoadSurfaceTerrainGradingCache {
 
 /// Prepared owner-local surface lookup reused for every point of one lane.
 pub(crate) struct RoadLaneSurfaceQuery<'a> {
-    node_indices: [Option<&'a RoadSurfaceTriangleQueryIndex>; 2],
+    nodes: [Option<&'a RoadSurfaceVisualNodePiece>; 2],
     node_count: usize,
     span: Option<&'a RoadSurfaceVisualSpanPiece>,
     carriageway_only: bool,
@@ -368,48 +363,13 @@ impl RoadSurfaceTriangleQueryIndex {
     pub(crate) fn from_ground_triangles(
         triangles: impl IntoIterator<Item = [RoadVec3; 3]>,
     ) -> Self {
-        Self::from_indexed_triangles(
-            triangles
-                .into_iter()
-                .map(|triangle| RoadSurfaceIndexedTriangle {
-                    triangle,
-                    carriageway: false,
-                })
-                .collect(),
-        )
-    }
-
-    fn from_surface_polygons(
-        road: &[RoadSurfaceVisualPolygon],
-        curb: &[RoadSurfaceVisualPolygon],
-        sidewalk: &[RoadSurfaceVisualPolygon],
-    ) -> Self {
-        let mut triangles = Vec::new();
-        for (polygons, carriageway) in [(road, true), (curb, false), (sidewalk, false)] {
-            triangles.extend(polygons.iter().flat_map(|polygon| {
-                polygon
-                    .triangles()
-                    .map(move |triangle| RoadSurfaceIndexedTriangle {
-                        triangle,
-                        carriageway,
-                    })
-            }));
-        }
-        Self::from_indexed_triangles(triangles)
-    }
-
-    fn from_indexed_triangles(triangles: Vec<RoadSurfaceIndexedTriangle>) -> Self {
+        let triangles: Vec<_> = triangles.into_iter().collect();
         Self {
-            grid: SurfaceTriangleGrid::from_triangles(
-                triangles.iter().map(|indexed| indexed.triangle),
-                |triangle_idx| triangle_idx as u32,
-            ),
+            grid: SurfaceTriangleGrid::from_triangles(triangles.iter().copied(), |triangle_idx| {
+                triangle_idx as u32
+            }),
             triangles,
         }
-    }
-
-    fn cell_triangle_indices(&self, point: RoadVec2) -> &[u32] {
-        self.grid.cell_items(point)
     }
 }
 
@@ -418,6 +378,21 @@ impl SurfaceTriangleGrid {
     pub(crate) fn from_triangles(
         triangles: impl Iterator<Item = [RoadVec3; 3]> + Clone,
         item_id: impl Fn(usize) -> u32,
+    ) -> Self {
+        Self::from_triangles_in_cells(
+            triangles,
+            item_id,
+            ROAD_SURFACE_QUERY_GRID_BASE_CELL_M,
+            ROAD_SURFACE_QUERY_GRID_MAX_CELLS,
+        )
+    }
+
+    /// `from_triangles` with cells of `base_cell_m`, doubled until at most `max_cells` remain.
+    pub(crate) fn from_triangles_in_cells(
+        triangles: impl Iterator<Item = [RoadVec3; 3]> + Clone,
+        item_id: impl Fn(usize) -> u32,
+        base_cell_m: f64,
+        max_cells: usize,
     ) -> Self {
         let mut bounds_xz = [
             f64::INFINITY,
@@ -439,9 +414,9 @@ impl SurfaceTriangleGrid {
             return Self::default();
         }
 
-        let mut cell_size_m = ROAD_SURFACE_QUERY_GRID_BASE_CELL_M;
+        let mut cell_size_m = base_cell_m;
         let (mut width, mut height) = query_grid_dimensions(bounds_xz, cell_size_m);
-        while width.saturating_mul(height) > ROAD_SURFACE_QUERY_GRID_MAX_CELLS {
+        while width.saturating_mul(height) > max_cells {
             cell_size_m *= 2.0;
             (width, height) = query_grid_dimensions(bounds_xz, cell_size_m);
         }
