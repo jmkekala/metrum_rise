@@ -174,16 +174,16 @@ impl RoadSurfaceSystem {
         T,
     >(
         dump: &mut String,
-        triangles: &[[T; 3]],
+        triangles: impl IntoIterator<Item = [T; 3]>,
     ) where
         T: Copy + DebugVec3Literal,
     {
         dump.push('[');
-        for (index, triangle) in triangles.iter().enumerate() {
+        for (index, triangle) in triangles.into_iter().enumerate() {
             if index > 0 {
                 dump.push_str(", ");
             }
-            Self::append_vector3_triangle_precise_literal(dump, *triangle);
+            Self::append_vector3_triangle_precise_literal(dump, triangle);
         }
         dump.push(']');
     }

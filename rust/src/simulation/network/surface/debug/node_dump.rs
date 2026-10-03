@@ -151,13 +151,13 @@ impl RoadSurfaceSystem {
             }
             let mut y_min = f32::INFINITY;
             let mut y_max = f32::NEG_INFINITY;
-            for point in region.polygon.points_world.iter().copied().chain(
-                region
-                    .polygon
-                    .triangles_world
-                    .iter()
-                    .flat_map(|triangle| triangle.iter().copied()),
-            ) {
+            for point in region
+                .polygon
+                .points_world
+                .iter()
+                .copied()
+                .chain(region.polygon.triangles().flatten())
+            {
                 y_min = y_min.min(point.y as f32);
                 y_max = y_max.max(point.y as f32);
             }
@@ -168,7 +168,7 @@ impl RoadSurfaceSystem {
                 region.kind,
                 region.owner_index,
                 region.polygon.points_world.len(),
-                region.polygon.triangles_world.len(),
+                region.polygon.triangle_count(),
                 y_min,
                 y_max
             );
@@ -313,7 +313,7 @@ impl RoadSurfaceSystem {
                 Self::debug_material_for_band_kind(region.kind),
                 region.owner_index,
                 region.polygon.points_world.len(),
-                region.polygon.triangles_world.len()
+                region.polygon.triangle_count()
             );
             if let Some(source) = source {
                 let _ = write!(
@@ -334,10 +334,7 @@ impl RoadSurfaceSystem {
             dump.push_str(",\"polygon_world\":");
             Self::append_vector3_precise_list_literal(dump, &region.polygon.points_world);
             dump.push_str(",\"triangles_world\":");
-            Self::append_vector3_triangle_list_precise_literal(
-                dump,
-                &region.polygon.triangles_world,
-            );
+            Self::append_vector3_triangle_list_precise_literal(dump, region.polygon.triangles());
             dump.push('}');
         }
         dump.push(']');
@@ -437,7 +434,7 @@ impl RoadSurfaceSystem {
             polygon_count: polygons.len(),
             triangle_count: polygons
                 .iter()
-                .map(|polygon| polygon.triangles_world.len())
+                .map(|polygon| polygon.triangle_count())
                 .sum(),
             raw_area_m2,
             union_area_m2,
@@ -450,7 +447,7 @@ impl RoadSurfaceSystem {
     ) -> Vec<NodeOverlayContour> {
         let mut contours = Vec::new();
         for polygon in polygons {
-            if polygon.triangles_world.is_empty() {
+            if polygon.triangle_count() == 0 {
                 let contour =
                     Self::node_material_partition_contour_from_points(&polygon.points_world);
                 if contour.len() >= 3 {
@@ -458,8 +455,8 @@ impl RoadSurfaceSystem {
                 }
                 continue;
             }
-            for triangle in &polygon.triangles_world {
-                let contour = Self::node_material_partition_contour_from_points(triangle);
+            for triangle in polygon.triangles() {
+                let contour = Self::node_material_partition_contour_from_points(&triangle);
                 if contour.len() >= 3 {
                     contours.push(contour);
                 }
@@ -983,7 +980,7 @@ impl RoadSurfaceSystem {
         let polygon_count = polygons.len();
         let triangle_count: usize = polygons
             .iter()
-            .map(|polygon| polygon.triangles_world.len())
+            .map(|polygon| polygon.triangle_count())
             .sum();
         let vertex_count: usize = polygons
             .iter()
@@ -1015,10 +1012,7 @@ impl RoadSurfaceSystem {
 
         let mut max_triangle_y_delta_m = 0.0_f32;
         let mut max_triangle_slope_ratio = 0.0_f32;
-        for triangle in polygons
-            .iter()
-            .flat_map(|polygon| polygon.triangles_world.iter().copied())
-        {
+        for triangle in polygons.iter().flat_map(|polygon| polygon.triangles()) {
             for edge_index in 0..3 {
                 let start = triangle[edge_index];
                 let end = triangle[(edge_index + 1) % 3];

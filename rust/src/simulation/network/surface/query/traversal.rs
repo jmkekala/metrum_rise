@@ -75,7 +75,10 @@ impl RoadSurfaceSystem {
         F: FnMut([RoadVec3; 3]),
     {
         for region in piece.span_owned_regions.iter() {
-            Self::visit_surface_triangles(piece.region_quad(region).triangles(), visitor);
+            Self::visit_surface_triangles(
+                piece.region_quad(region).triangles().iter().copied(),
+                visitor,
+            );
         }
     }
 
@@ -100,7 +103,10 @@ impl RoadSurfaceSystem {
         F: FnMut([RoadVec3; 3]),
     {
         for region in piece.span_earthwork_support_regions.iter() {
-            Self::visit_surface_triangles(piece.region_quad(region).triangles(), visitor);
+            Self::visit_surface_triangles(
+                piece.region_quad(region).triangles().iter().copied(),
+                visitor,
+            );
         }
     }
 
@@ -215,16 +221,16 @@ impl RoadSurfaceSystem {
     ) where
         F: FnMut([RoadVec3; 3]),
     {
-        Self::visit_surface_triangles(&polygon.triangles_world, visitor);
+        Self::visit_surface_triangles(polygon.triangles(), visitor);
     }
 
     pub(in crate::simulation::network::surface) fn visit_surface_triangles<F>(
-        triangles: &[[RoadVec3; 3]],
+        triangles: impl IntoIterator<Item = [RoadVec3; 3]>,
         visitor: &mut F,
     ) where
         F: FnMut([RoadVec3; 3]),
     {
-        for &triangle in triangles {
+        for triangle in triangles {
             if Self::top_surface_triangle_is_renderable_xz(triangle) {
                 visitor(triangle);
             }

@@ -5,32 +5,32 @@
 use super::*;
 
 impl RoadSurfaceSystem {
-    pub(super) fn triangulate_fan_polygon_xz(
-        points_world: &[RoadVec3],
-    ) -> Option<Vec<[RoadVec3; 3]>> {
+    /// Fan triangles with area, as index triples into `points_world`.
+    pub(super) fn triangulate_fan_polygon_xz(points_world: &[RoadVec3]) -> Option<Vec<[usize; 3]>> {
         if points_world.len() < 3 {
             return None;
         }
-        let anchor = points_world[0];
         let mut triangles = Vec::with_capacity(points_world.len().saturating_sub(2));
         for index in 1..points_world.len() - 1 {
-            let triangle = [anchor, points_world[index], points_world[index + 1]];
-            if Self::triangle_has_area_xz(triangle) {
+            let triangle = [0, index, index + 1];
+            if Self::triangle_has_area_xz(triangle.map(|point| points_world[point])) {
                 triangles.push(triangle);
             }
         }
         (!triangles.is_empty()).then_some(triangles)
     }
 
+    /// Constrained Delaunay triangles inside the polygon, as index triples into `points_world`.
     pub(super) fn triangulate_constrained_polygon_xz(
         points_world: &[RoadVec3],
-    ) -> Option<Vec<[RoadVec3; 3]>> {
+    ) -> Option<Vec<[usize; 3]>> {
         if points_world.len() < 3 {
             return None;
         }
         if points_world.len() == 3 {
-            let triangle = [points_world[0], points_world[1], points_world[2]];
-            return Self::triangle_has_area_xz(triangle).then_some(vec![triangle]);
+            let triangle = [0, 1, 2];
+            return Self::triangle_has_area_xz(triangle.map(|point| points_world[point]))
+                .then_some(vec![triangle]);
         }
 
         let constraints = (0..points_world.len())
@@ -66,7 +66,7 @@ impl RoadSurfaceSystem {
         // Ground must close even sub-centimetre residuals: the road renderer's skinny-triangle
         // rejection is inappropriate for a terrain cutout. CDT constraints make the interior
         // centroid test exact; no boundary-distance halo is used for hole inclusion.
-        Self::triangulate_constrained_region_xz(
+        let triangles = Self::triangulate_constrained_region_xz(
             &points_world,
             constraints,
             |triangle| Self::road_triangle_double_area_xz_m2(triangle) > 0.0,
@@ -76,6 +76,12 @@ impl RoadSurfaceSystem {
                         Self::polygon_contains_point_xz_with_boundary(ring.as_ref(), point, false)
                     })
             },
+        )?;
+        Some(
+            triangles
+                .into_iter()
+                .map(|triangle| triangle.map(|point| points_world[point]))
+                .collect(),
         )
     }
 
@@ -84,7 +90,7 @@ impl RoadSurfaceSystem {
         constraints: Vec<[usize; 2]>,
         accepts: impl Fn([RoadVec3; 3]) -> bool,
         contains: impl Fn(RoadVec2) -> bool,
-    ) -> Option<Vec<[RoadVec3; 3]>> {
+    ) -> Option<Vec<[usize; 3]>> {
         let vertices = points_world
             .iter()
             .map(|point| Point2::new(point.x, point.z))
@@ -100,18 +106,14 @@ impl RoadSurfaceSystem {
 
         let mut triangles = Vec::new();
         for face in cdt.inner_faces() {
-            let [a, b, c] = face.vertices();
-            let triangle = [
-                points_world[a.fix().index()],
-                points_world[b.fix().index()],
-                points_world[c.fix().index()],
-            ];
+            let indices = face.vertices().map(|vertex| vertex.fix().index());
+            let triangle = indices.map(|point| points_world[point]);
             let centroid = RoadVec2::new(
                 (triangle[0].x + triangle[1].x + triangle[2].x) / 3.0,
                 (triangle[0].z + triangle[1].z + triangle[2].z) / 3.0,
             );
             if accepts(triangle) && contains(centroid) {
-                triangles.push(triangle);
+                triangles.push(indices);
             }
         }
 

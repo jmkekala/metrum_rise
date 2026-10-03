@@ -43,14 +43,14 @@ impl RoadSurfaceSystem {
             return None;
         };
         points_world.rotate_left(start_index);
-        let triangles_world = if Self::polygon_is_convex_xz(&points_world) {
+        let triangles = if Self::polygon_is_convex_xz(&points_world) {
             Self::triangulate_fan_polygon_xz(&points_world)?
         } else {
             Self::triangulate_constrained_polygon_xz(&points_world)?
         };
-        Some(RoadSurfaceVisualPolygon::from_parts(
+        Some(RoadSurfaceVisualPolygon::from_indexed_parts(
             points_world,
-            triangles_world,
+            &triangles,
         ))
     }
 
@@ -112,10 +112,7 @@ impl RoadSurfaceSystem {
                 .then(a.y.total_cmp(&b.y))
         })?;
         points_world.rotate_left(start_index);
-        Some(RoadSurfaceVisualPolygon::from_parts(
-            points_world,
-            Vec::new(),
-        ))
+        Some(RoadSurfaceVisualPolygon::from_parts(points_world, &[]))
     }
 
     // Reference for `SpanQuad::from_corners`, which rebuilds span strips without allocating.
@@ -138,10 +135,10 @@ impl RoadSurfaceSystem {
         if Self::polygon_has_strict_edge_crossing_xz(&points_world) {
             return None;
         }
-        let triangles_world = Self::triangulate_fan_polygon_xz(&points_world)?;
-        Some(RoadSurfaceVisualPolygon::from_parts(
+        let triangles = Self::triangulate_fan_polygon_xz(&points_world)?;
+        Some(RoadSurfaceVisualPolygon::from_indexed_parts(
             points_world,
-            triangles_world,
+            &triangles,
         ))
     }
 
@@ -151,7 +148,7 @@ impl RoadSurfaceSystem {
         let (triangles, triangle_count) = Self::vertical_quad_triangles(points_world)?;
         Some(RoadSurfaceVisualPolygon::from_parts(
             points_world.into_iter().collect(),
-            triangles[..triangle_count].to_vec(),
+            &triangles[..triangle_count],
         ))
     }
 

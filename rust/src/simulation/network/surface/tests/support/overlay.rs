@@ -43,10 +43,10 @@ pub(in crate::simulation::network::surface::tests) fn point_inside_visual_polygo
 ) -> bool {
     let point = point.to_road_xz();
     polygons.iter().any(|polygon| {
-        if polygon.triangles_world.is_empty() {
+        if polygon.triangle_count() == 0 {
             RoadSurfaceSystem::polygon_contains_point_xz(&polygon.points_world, point)
         } else {
-            polygon.triangles_world.iter().any(|&triangle| {
+            polygon.triangles().any(|triangle| {
                 RoadSurfaceSystem::triangle_barycentric_weights_xz(triangle, point).is_some()
             })
         }
@@ -101,15 +101,15 @@ pub(in crate::simulation::network::surface::tests) fn overlay_contours_from_top_
 ) -> Vec<super::NodeOverlayContour> {
     let mut contours = Vec::new();
     for polygon in polygons {
-        if polygon.triangles_world.is_empty() {
+        if polygon.triangle_count() == 0 {
             let contour = overlay_contour_from_world_points(&polygon.points_world);
             if contour.len() >= 3 {
                 contours.push(contour);
             }
             continue;
         }
-        for triangle in &polygon.triangles_world {
-            let contour = overlay_contour_from_world_points(triangle);
+        for triangle in polygon.triangles() {
+            let contour = overlay_contour_from_world_points(&triangle);
             if contour.len() >= 3 {
                 contours.push(contour);
             }

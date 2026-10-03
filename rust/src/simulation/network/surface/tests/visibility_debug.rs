@@ -222,7 +222,7 @@ fn visible_surface_height_ignores_non_surface_node_adjacency() {
         .expect("surface node piece should compile from the road adjacency");
     let sample = piece
         .surface_polygons()
-        .flat_map(|polygon| polygon.triangles_world.iter().copied())
+        .flat_map(|polygon| polygon.triangles())
         .map(triangle_centroid_xz)
         .next()
         .expect("compiled node piece should contain visible top-surface triangles");

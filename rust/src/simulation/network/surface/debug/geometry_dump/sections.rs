@@ -257,17 +257,14 @@ impl RoadSurfaceSystem {
                 region.start_s_m,
                 region.end_s_m,
                 polygon.points_world.len(),
-                polygon.triangles_world.len()
+                polygon.triangle_count()
             );
             dump.push_str(",\"source_corners_world\":");
             Self::append_vector3_precise_list_literal(dump, &region.corners(&piece.sections));
             dump.push_str(",\"polygon_world\":");
             Self::append_vector3_precise_list_literal(dump, &polygon.points_world);
             dump.push_str(",\"triangles_world\":");
-            Self::append_vector3_triangle_list_precise_literal(
-                dump,
-                &polygon.triangles_world,
-            );
+            Self::append_vector3_triangle_list_precise_literal(dump, polygon.triangles());
             dump.push('}');
         }
         dump.push(']');

@@ -10,7 +10,7 @@ use crate::simulation::network::surface::{
 };
 
 fn polygon(points_world: Vec<RoadVec3>) -> RoadSurfaceVisualPolygon {
-    RoadSurfaceVisualPolygon::from_parts(points_world, Vec::new())
+    RoadSurfaceVisualPolygon::from_parts(points_world, &[])
 }
 
 fn empty_node_piece() -> RoadSurfaceVisualNodePiece {

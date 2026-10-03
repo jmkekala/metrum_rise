@@ -96,7 +96,7 @@ impl SpanQuad {
 
     /// Allocates the equivalent visual polygon for callers that need an owned one.
     pub fn to_polygon(&self) -> RoadSurfaceVisualPolygon {
-        RoadSurfaceVisualPolygon::from_parts(self.points().to_vec(), self.triangles().to_vec())
+        RoadSurfaceVisualPolygon::from_parts(self.points().to_vec(), self.triangles())
     }
 }
 

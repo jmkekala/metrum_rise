@@ -333,7 +333,7 @@ impl RoadSurfaceSystem {
             }
 
             let height_field_id = source.map(|source| source.height_field_id);
-            if region.polygon.triangles_world.is_empty() {
+            if region.polygon.triangle_count() == 0 {
                 for point in &region.polygon.points_world {
                     smoothness.record_point(*point);
                     plane_points.push(*point);
@@ -341,13 +341,13 @@ impl RoadSurfaceSystem {
                 continue;
             }
 
-            for (triangle_index, triangle) in region.polygon.triangles_world.iter().enumerate() {
+            for (triangle_index, triangle) in region.polygon.triangles().enumerate() {
                 let Some(sample) = NodeTriangleQualitySample::from_triangle(
                     region_index,
                     region.owner_index,
                     triangle_index,
                     height_field_id,
-                    *triangle,
+                    triangle,
                 ) else {
                     continue;
                 };
@@ -764,7 +764,7 @@ mod tests {
         NodeOwnedRegion {
             kind,
             owner_index: 0,
-            polygon: RoadSurfaceVisualPolygon::from_parts(Vec::new(), triangles),
+            polygon: RoadSurfaceVisualPolygon::from_parts(Vec::new(), &triangles),
         }
     }
 

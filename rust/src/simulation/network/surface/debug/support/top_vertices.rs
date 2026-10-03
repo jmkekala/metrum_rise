@@ -21,8 +21,8 @@ impl RoadSurfaceSystem {
                         point,
                     }),
             );
-            vertices.extend(polygon.triangles_world.iter().flat_map(|triangle| {
-                triangle.iter().copied().map(|point| DebugTopVertex {
+            vertices.extend(polygon.triangles().flat_map(|triangle| {
+                triangle.into_iter().map(|point| DebugTopVertex {
                     material: "road",
                     point,
                 })
@@ -39,8 +39,8 @@ impl RoadSurfaceSystem {
                         point,
                     }),
             );
-            vertices.extend(polygon.triangles_world.iter().flat_map(|triangle| {
-                triangle.iter().copied().map(|point| DebugTopVertex {
+            vertices.extend(polygon.triangles().flat_map(|triangle| {
+                triangle.into_iter().map(|point| DebugTopVertex {
                     material: "curb",
                     point,
                 })
@@ -57,8 +57,8 @@ impl RoadSurfaceSystem {
                         point,
                     }),
             );
-            vertices.extend(polygon.triangles_world.iter().flat_map(|triangle| {
-                triangle.iter().copied().map(|point| DebugTopVertex {
+            vertices.extend(polygon.triangles().flat_map(|triangle| {
+                triangle.into_iter().map(|point| DebugTopVertex {
                     material: "sidewalk",
                     point,
                 })
@@ -113,8 +113,8 @@ impl RoadSurfaceSystem {
                     &mut best, point, material, start, end,
                 );
             }
-            for triangle in &polygon.triangles_world {
-                for &candidate in triangle {
+            for triangle in polygon.triangles() {
+                for candidate in triangle {
                     Self::update_closest_debug_top_support(&mut best, point, material, candidate);
                 }
                 for index in 0..3 {

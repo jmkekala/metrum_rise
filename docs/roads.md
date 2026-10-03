@@ -4021,14 +4021,37 @@ layout (roads, buildings and zoning, no households; about 1.6 GB in all), measur
 `ROAD-44` probe as glibc `mallinfo2` deltas while dropping each structure. Each item must keep
 committed and preview products identical and must not slow the 10k or 100k benchmark build.
 
-- **`ROAD-45` Triangle storage as indices (267 MB span earthwork faces, 126 MB node owned
-  regions, 36 MB node raised steps, 55 MB node earthwork faces).** `RoadSurfaceVisualPolygon`
-  stores every triangle as three f64 points (72 B), copies of points the polygon already holds:
-  no triangle vertex in the 10k layout lies outside its own polygon's points. Node owned regions
-  are 55k single triangles; earthwork and raised-step faces are 4-point quads. Store triangles as
-  a canonical form instead (a fan marker when the triangles are exactly the fan of the points,
-  otherwise small index triples), chosen at construction so equal polygons compare equal. About
-  55 `triangles_world` readers move to an accessor.
+- **`ROAD-45` Triangle storage as indices (done 2026-10-03).** `RoadSurfaceVisualPolygon` stored
+  every triangle as three f64 points (72 B), copies of points the polygon already holds. It now
+  keeps a private `PolygonTriangulation` chosen at construction: a fan marker when the triangles
+  are exactly the fan `(0, i, i + 1)` over every point, otherwise `u16` index triples into the
+  points, and explicit triangles only when a vertex is not one of the points bit for bit (or the
+  points overflow `u16`). The triangulators return index triples, so building a polygon does not
+  search for its vertices. Readers use `triangles()` and `triangle_count()`, which rebuild each
+  triangle from the points without allocating. Equality compares the triangles, not the form, so
+  two equal polygons stored differently still compare equal. Single-triangle owned regions are
+  always fans. In the 10k layout no triangle vertex is outside its polygon's points, and what the
+  span earthwork faces still retain is exactly their records and points (53,866 faces × 336 B =
+  18.1 MB), so none of them keeps per-triangle storage.
+
+  Products are unchanged: `visual_polygon_triangles_round_trip_through_every_storage_form`
+  (`surface/tests/preview.rs`) checks every form bit for bit, including a sign-only difference
+  that must stay explicit, and the existing preview-versus-commit tests compare polygons through
+  the same equality. Retained heap, same temporary probe (`mallinfo2` deltas, release, default
+  workers, run against `HEAD` and the change on the same machine):
+
+  | Structure, 100k road layout | Before | After |
+  | --- | ---: | ---: |
+  | Span render earthwork faces | 263.0 MB | 178.3 MB |
+  | Node owned regions | 125.9 MB | 80.7 MB |
+  | Node render earthwork faces | 55.1 MB | 37.1 MB |
+  | Node raised-step faces | 26.8 MB | 13.5 MB |
+  | Whole road layout | 1,744 MB | 1,585 MB |
+
+  The 10k layout fell from 184.2 MB to 168.2 MB. `ECON-13` 10k benchmark build, matched
+  alternating runs: 17.9 s and 17.7 s before, 17.8 s and 17.7 s after, with identical city
+  records. Each span earthwork face still keeps its record (224 B, 120 B of it the face source)
+  and four points; those are not triangle storage and are not part of `ROAD-45`.
 - **`ROAD-46` Span terrain-clip loops (138 MB).** Each span keeps terrain-clip boundary loops
   with per-edge source records, built at compile from its regions and sections. The terrain CDT
   patch and grading paths read them. Rebuild them on read per 64 m run, or store them compactly;

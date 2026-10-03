@@ -23,7 +23,7 @@ impl RoadSurfaceSystem {
     ) -> Vec<NodeOverlayContour> {
         let mut contours = Vec::new();
         for polygon in polygons {
-            if polygon.triangles_world.is_empty() {
+            if polygon.triangle_count() == 0 {
                 if let Some(contour) =
                     Self::debug_overlay_contour_from_world_points(&polygon.points_world)
                 {
@@ -31,8 +31,8 @@ impl RoadSurfaceSystem {
                 }
                 continue;
             }
-            for triangle in &polygon.triangles_world {
-                if let Some(contour) = Self::debug_overlay_contour_from_world_points(triangle) {
+            for triangle in polygon.triangles() {
+                if let Some(contour) = Self::debug_overlay_contour_from_world_points(&triangle) {
                     contours.push(contour);
                 }
             }

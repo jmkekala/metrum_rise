@@ -159,7 +159,7 @@ impl RoadSurfaceSystem {
             triangle_sources,
         };
         Ok(Some((
-            RoadSurfaceVisualPolygon::from_parts(triangle.to_vec(), vec![triangle]),
+            RoadSurfaceVisualPolygon::from_parts(triangle.to_vec(), &[triangle]),
             source,
         )))
     }

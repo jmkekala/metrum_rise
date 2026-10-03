@@ -9,7 +9,7 @@ pub(in crate::simulation::network::surface::tests) fn assert_top_mesh_centroids_
 ) {
     for triangle in piece
         .surface_polygons()
-        .flat_map(|polygon| polygon.triangles_world.iter().copied())
+        .flat_map(|polygon| polygon.triangles())
     {
         let centroid = triangle_centroid_xz(triangle);
         assert!(
@@ -53,7 +53,7 @@ pub(in crate::simulation::network::surface::tests) fn assert_outer_boundary_vert
             let mut sampled_matching_height = false;
             let mut sampled_heights = Vec::new();
             for polygon in &top_polygons {
-                for &triangle in &polygon.triangles_world {
+                for triangle in polygon.triangles() {
                     let Some((wa, wb, wc)) = RoadSurfaceSystem::triangle_barycentric_weights_xz(
                         triangle,
                         RoadVec2::new(boundary_point.x, boundary_point.z),
@@ -124,7 +124,7 @@ pub(in crate::simulation::network::surface::tests) fn assert_outer_boundary_vert
             }
 
             if let Some(height) = top_polygons.iter().find_map(|polygon| {
-                polygon.triangles_world.iter().find_map(|&triangle| {
+                polygon.triangles().find_map(|triangle| {
                     let (wa, wb, wc) = RoadSurfaceSystem::triangle_barycentric_weights_xz(
                         triangle,
                         RoadVec2::new(boundary_point.x, boundary_point.z),
@@ -164,8 +164,8 @@ fn closest_visible_top_boundary_point(
                     let last = *polygon.points_world.last().unwrap();
                     closest_point_on_segment_xz(boundary_point, last, polygon.points_world[0])
                 }))
-                .chain(polygon.triangles_world.iter().flat_map(|triangle| {
-                    (0..3).map(|index| {
+                .chain(polygon.triangles().flat_map(|triangle| {
+                    (0..3).map(move |index| {
                         closest_point_on_segment_xz(
                             boundary_point,
                             triangle[index],
@@ -209,8 +209,8 @@ pub(in crate::simulation::network::surface::tests) fn assert_outer_boundary_vert
                         let last = *polygon.points_world.last().unwrap();
                         closest_point_on_segment_xz(*boundary_point, last, polygon.points_world[0])
                     }))
-                    .chain(polygon.triangles_world.iter().flat_map(|triangle| {
-                        (0..3).map(|index| {
+                    .chain(polygon.triangles().flat_map(|triangle| {
+                        (0..3).map(move |index| {
                             closest_point_on_segment_xz(
                                 *boundary_point,
                                 triangle[index],
@@ -265,12 +265,11 @@ pub(in crate::simulation::network::surface::tests) fn visible_top_vertices(
     piece
         .surface_polygons()
         .flat_map(|polygon| {
-            polygon.points_world.iter().copied().chain(
-                polygon
-                    .triangles_world
-                    .iter()
-                    .flat_map(|triangle| triangle.iter().copied()),
-            )
+            polygon
+                .points_world
+                .iter()
+                .copied()
+                .chain(polygon.triangles().flatten())
         })
         .collect()
 }
@@ -294,11 +293,11 @@ pub(in crate::simulation::network::surface::tests) fn polygon_supports_top_point
 ) -> bool {
     polygon_vertices_support_top_point(&polygon.points_world, point)
         || polygon_edges_support_top_point(&polygon.points_world, point)
-        || polygon.triangles_world.iter().any(|triangle| {
+        || polygon.triangles().any(|triangle| {
             triangle
                 .iter()
                 .any(|&candidate| top_points_match(candidate, point))
-                || triangle_edges_support_top_point(*triangle, point)
+                || triangle_edges_support_top_point(triangle, point)
         })
 }
 

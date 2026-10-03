@@ -296,7 +296,7 @@ fn footprint_top_triangle_supports_from_regions(
 ) -> Vec<FootprintTopTriangleSupport> {
     top_regions
         .iter()
-        .flat_map(|region| region.polygon.triangles_world.iter().copied())
+        .flat_map(|region| region.polygon.triangles())
         .map(FootprintTopTriangleSupport::new)
         .collect()
 }

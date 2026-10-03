@@ -33,16 +33,31 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_surface_mesh(
             continue;
         };
         for quad in piece.curb_surface_polygons() {
-            emit_surface_triangles(mesh, MeshLayer::Curb, quad.triangles(), curb_color());
+            emit_surface_triangles(
+                mesh,
+                MeshLayer::Curb,
+                quad.triangles().iter().copied(),
+                curb_color(),
+            );
         }
         for face in piece.raised_step_face_polygons() {
-            emit_vertical_surface_triangles(mesh, face.triangles(), curb_color());
+            emit_vertical_surface_triangles(mesh, face.triangles().iter().copied(), curb_color());
         }
         for quad in piece.sidewalk_surface_polygons() {
-            emit_surface_triangles(mesh, MeshLayer::Sidewalk, quad.triangles(), sidewalk_color());
+            emit_surface_triangles(
+                mesh,
+                MeshLayer::Sidewalk,
+                quad.triangles().iter().copied(),
+                sidewalk_color(),
+            );
         }
         for quad in piece.road_surface_polygons() {
-            emit_surface_triangles(mesh, MeshLayer::Road, quad.triangles(), road_color());
+            emit_surface_triangles(
+                mesh,
+                MeshLayer::Road,
+                quad.triangles().iter().copied(),
+                road_color(),
+            );
         }
         if edge.class == EdgeClass::Bridge {
             let Some(sections) = road_surface.compiled_sections().get(&edge_idx) else {

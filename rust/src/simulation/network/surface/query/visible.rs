@@ -178,7 +178,7 @@ impl RoadSurfaceSystem {
                 continue;
             };
             for quad in piece.road_surface_polygons() {
-                Self::visit_surface_triangles(quad.triangles(), &mut |triangle| {
+                Self::visit_surface_triangles(quad.triangles().iter().copied(), &mut |triangle| {
                     if let Some(height_m) = Self::triangle_height_at_xz(&triangle, point) {
                         keep_max_height(&mut road_surface_height_m, height_m);
                     }
@@ -842,7 +842,7 @@ mod tests {
             RoadVec3::new(100.0, 9.0, 0.0),
             RoadVec3::new(0.0, 9.0, 0.001),
         ];
-        let polygon = RoadSurfaceVisualPolygon::from_parts(Vec::new(), vec![triangle, upper, thin]);
+        let polygon = RoadSurfaceVisualPolygon::from_parts(Vec::new(), &[triangle, upper, thin]);
         let index = RoadSurfaceTriangleQueryIndex::from_surface_polygons(&[polygon], &[], &[]);
         for point in [
             RoadVec2::new(0.0, 0.0),

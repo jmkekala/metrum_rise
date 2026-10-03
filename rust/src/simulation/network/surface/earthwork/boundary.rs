@@ -300,16 +300,16 @@ mod tests {
 
     #[test]
     fn earthwork_region_keeps_short_edges_between_distinct_boundary_keys() {
-        let polygon = RoadSurfaceVisualPolygon {
-            points_world: vec![
+        let polygon = RoadSurfaceVisualPolygon::from_parts(
+            vec![
                 RoadVec3::new(3.0004, 0.0, 3.0),
                 RoadVec3::new(3.0006, 0.0, 3.0),
                 RoadVec3::new(7.0, 0.0, 3.0),
                 RoadVec3::new(7.0, 0.0, 7.0),
                 RoadVec3::new(3.0004, 0.0, 7.0),
             ],
-            triangles_world: Vec::new(),
-        };
+            &[],
+        );
         let mut segments = Vec::new();
         RoadSurfaceSystem::push_region_polygon_boundary_segments(
             &polygon.points_world,

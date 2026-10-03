@@ -138,7 +138,7 @@ fn test_polygon_top_edge_candidates(
     polygon: &RoadSurfaceVisualPolygon,
 ) -> Vec<(TestRenderEdgeKey, RoadVec3, RoadVec3)> {
     let mut edges = Vec::new();
-    if polygon.triangles_world.is_empty() {
+    if polygon.triangle_count() == 0 {
         let points = &polygon.points_world;
         if points.len() >= 2 {
             for index in 0..points.len() {
@@ -150,7 +150,7 @@ fn test_polygon_top_edge_candidates(
             }
         }
     } else {
-        for triangle in &polygon.triangles_world {
+        for triangle in polygon.triangles() {
             for edge_index in 0..3 {
                 if let Some(key) = TestRenderEdgeKey::normalized(
                     triangle[edge_index],

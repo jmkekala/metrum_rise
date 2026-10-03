@@ -104,29 +104,26 @@ fn borrowed_road_checks_preserve_precise_concavity_contact_and_large_coordinates
                 let owned =
                     PolygonFootprint::from_precise_points(points.into_iter().map(|p| [p.x, p.y]));
                 assert_eq!(owned.overlaps(&reserved), expected);
-                let polygon = RoadSurfaceVisualPolygon {
-                    points_world: points
+                let polygon = RoadSurfaceVisualPolygon::from_parts(
+                    points
                         .into_iter()
                         .map(|p| DVec3::new(p.x, 0.0, p.y))
                         .collect(),
-                    triangles_world: Vec::new(),
-                };
+                    &[],
+                );
                 assert_eq!(zoning.cells_overlap_road_polygon(&polygon), expected);
             }
-            let empty = RoadSurfaceVisualPolygon {
-                points_world: Vec::new(),
-                triangles_world: Vec::new(),
-            };
+            let empty = RoadSurfaceVisualPolygon::from_parts(Vec::new(), &[]);
             assert!(!zoning.cells_overlap_road_polygon(&empty));
             // Global reservations must not cause a distant polygon to enter the exact path.
-            let distant = RoadSurfaceVisualPolygon {
-                points_world: frame
+            let distant = RoadSurfaceVisualPolygon::from_parts(
+                frame
                     .corners(key.x + 1000, key.y + 1000)
                     .into_iter()
                     .map(|p| DVec3::new(p.x, 0.0, p.y))
                     .collect(),
-                triangles_world: Vec::new(),
-            };
+                &[],
+            );
             assert!(!zoning.cells_overlap_road_polygon(&distant));
         }
     }

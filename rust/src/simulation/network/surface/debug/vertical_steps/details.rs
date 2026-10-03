@@ -278,7 +278,7 @@ impl RoadSurfaceSystem {
             "\"face\":{},\"polygon_vertex_count\":{},\"triangle_count\":{}",
             face_index,
             polygon.points_world.len(),
-            polygon.triangles_world.len()
+            polygon.triangle_count()
         );
         dump.push_str(",\"points_world\":");
         Self::append_vector3_precise_list_literal(dump, &polygon.points_world);

@@ -100,14 +100,7 @@ fn footpath_join_claims_only_the_near_sidewalk_side() {
 
     let footpath_centroids = footpath_regions
         .iter()
-        .flat_map(|region| {
-            region
-                .polygon
-                .triangles_world
-                .iter()
-                .copied()
-                .map(triangle_centroid_xz)
-        })
+        .flat_map(|region| region.polygon.triangles().map(triangle_centroid_xz))
         .collect::<Vec<_>>();
     assert!(
         footpath_centroids.iter().any(|centroid| centroid.y > 2.0),

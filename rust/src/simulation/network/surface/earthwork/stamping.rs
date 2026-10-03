@@ -290,10 +290,14 @@ impl<'a> EarthworkChunkStampBuilder<'a> {
     }
 
     fn collect_polygon(&mut self, polygon: &RoadSurfaceVisualPolygon, height_offset_m: f32) {
-        self.collect_triangles(&polygon.triangles_world, height_offset_m);
+        self.collect_triangles(polygon.triangles(), height_offset_m);
     }
 
-    fn collect_triangles(&mut self, triangles: &[[RoadVec3; 3]], height_offset_m: f32) {
+    fn collect_triangles(
+        &mut self,
+        triangles: impl IntoIterator<Item = [RoadVec3; 3]>,
+        height_offset_m: f32,
+    ) {
         self.stats.regions_visited += 1;
         self.stats.regions_stamped += 1;
         RoadSurfaceSystem::visit_surface_triangles(triangles, &mut |triangle| {
@@ -550,7 +554,10 @@ impl RoadSurfaceSystem {
         builder.stats.span_owners += 1;
         let height_offset_m = self.span_piece_integrated_surface_offset_m(piece);
         for region in piece.span_earthwork_support_regions.iter() {
-            builder.collect_triangles(piece.region_quad(region).triangles(), height_offset_m);
+            builder.collect_triangles(
+                piece.region_quad(region).triangles().iter().copied(),
+                height_offset_m,
+            );
         }
     }
 

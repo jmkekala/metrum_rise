@@ -178,12 +178,24 @@ impl RoadSurfaceVisualNodePieceKind {
 }
 
 /// One explicit polygon owned by the visual road carrier.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct RoadSurfaceVisualPolygon {
     /// Ordered world-space polygon points.
     pub points_world: Vec<RoadVec3>,
-    /// Deterministic cached triangles covering the polygon in world space.
-    pub triangles_world: Vec<[RoadVec3; 3]>,
+    // Deterministic triangles covering the polygon, read through `triangles()`.
+    triangulation: PolygonTriangulation,
+}
+
+// Triangles stored by reference to the polygon's own points instead of as copies; `ROAD-45`.
+// Construction picks the first form that reproduces the triangles bit for bit.
+#[derive(Clone, Debug, PartialEq)]
+enum PolygonTriangulation {
+    // Exactly the fan `(0, i, i + 1)` over every point.
+    Fan,
+    // Index triples into the points.
+    Indexed(Box<[[u16; 3]]>),
+    // Some vertex is not one of the points, or the points overflow `u16`.
+    Explicit(Box<[[RoadVec3; 3]]>),
 }
 
 const ROAD_SURFACE_QUERY_GRID_BASE_CELL_M: f64 = 4.0;
@@ -243,11 +255,110 @@ impl RoadSurfaceVisualPolygon {
     /// Builds a polygon from its deterministic boundary and triangulation.
     pub(crate) fn from_parts(
         points_world: Vec<RoadVec3>,
-        triangles_world: Vec<[RoadVec3; 3]>,
+        triangles_world: &[[RoadVec3; 3]],
     ) -> Self {
+        let same_bits = |a: RoadVec3, b: RoadVec3| {
+            a.to_array().map(f64::to_bits) == b.to_array().map(f64::to_bits)
+        };
+        let index_of = |point: RoadVec3| {
+            let index = points_world.iter().position(|&own| same_bits(own, point))?;
+            u16::try_from(index).ok()
+        };
+        let indices: Option<Vec<_>> = triangles_world
+            .iter()
+            .map(|triangle| {
+                Some([
+                    index_of(triangle[0])?,
+                    index_of(triangle[1])?,
+                    index_of(triangle[2])?,
+                ])
+            })
+            .collect();
+        let triangulation = match indices {
+            Some(indices) => PolygonTriangulation::from_indices(points_world.len(), indices),
+            None => PolygonTriangulation::Explicit(triangles_world.into()),
+        };
         Self {
             points_world,
-            triangles_world,
+            triangulation,
+        }
+    }
+
+    /// Builds a polygon whose triangles are index triples into `points_world`.
+    pub(crate) fn from_indexed_parts(
+        points_world: Vec<RoadVec3>,
+        triangles: &[[usize; 3]],
+    ) -> Self {
+        let indices: Option<Vec<_>> = triangles
+            .iter()
+            .map(|triangle| {
+                let [a, b, c] = triangle.map(|index| u16::try_from(index).ok());
+                Some([a?, b?, c?])
+            })
+            .collect();
+        let triangulation = match indices {
+            Some(indices) => PolygonTriangulation::from_indices(points_world.len(), indices),
+            None => PolygonTriangulation::Explicit(
+                triangles
+                    .iter()
+                    .map(|triangle| triangle.map(|index| points_world[index]))
+                    .collect(),
+            ),
+        };
+        Self {
+            points_world,
+            triangulation,
+        }
+    }
+
+    /// Number of triangles covering the polygon.
+    pub fn triangle_count(&self) -> usize {
+        match &self.triangulation {
+            PolygonTriangulation::Fan => self.points_world.len() - 2,
+            PolygonTriangulation::Indexed(indices) => indices.len(),
+            PolygonTriangulation::Explicit(triangles) => triangles.len(),
+        }
+    }
+
+    /// Deterministic triangles covering the polygon in world space, in construction order.
+    pub fn triangles(
+        &self,
+    ) -> impl ExactSizeIterator<Item = [RoadVec3; 3]> + DoubleEndedIterator + Clone + '_ {
+        (0..self.triangle_count()).map(move |index| self.triangle(index))
+    }
+
+    fn triangle(&self, index: usize) -> [RoadVec3; 3] {
+        let points = &self.points_world;
+        match &self.triangulation {
+            PolygonTriangulation::Fan => [points[0], points[index + 1], points[index + 2]],
+            PolygonTriangulation::Indexed(indices) => {
+                indices[index].map(|point| points[usize::from(point)])
+            }
+            PolygonTriangulation::Explicit(triangles) => triangles[index],
+        }
+    }
+}
+
+// Same points and same triangles, whichever form stores them.
+impl PartialEq for RoadSurfaceVisualPolygon {
+    fn eq(&self, other: &Self) -> bool {
+        self.points_world == other.points_world
+            && (self.triangulation == other.triangulation || self.triangles().eq(other.triangles()))
+    }
+}
+
+impl PolygonTriangulation {
+    fn from_indices(point_count: usize, indices: Vec<[u16; 3]>) -> Self {
+        let fan = point_count >= 3
+            && indices.len() == point_count - 2
+            && indices.iter().enumerate().all(|(index, &triangle)| {
+                let next = index as u16 + 1;
+                triangle == [0, next, next + 1]
+            });
+        if fan {
+            Self::Fan
+        } else {
+            Self::Indexed(indices.into_boxed_slice())
         }
     }
 }
@@ -277,9 +388,7 @@ impl RoadSurfaceTriangleQueryIndex {
         for (polygons, carriageway) in [(road, true), (curb, false), (sidewalk, false)] {
             triangles.extend(polygons.iter().flat_map(|polygon| {
                 polygon
-                    .triangles_world
-                    .iter()
-                    .copied()
+                    .triangles()
                     .map(move |triangle| RoadSurfaceIndexedTriangle {
                         triangle,
                         carriageway,

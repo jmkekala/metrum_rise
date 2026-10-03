@@ -169,7 +169,7 @@ fn assert_flat_polygons_stay_at_curb_height(label: &str, polygons: &[RoadSurface
     let expected_y = f64::from(CURB_STEP_HEIGHT_M);
     let off_height_triangles = polygons
         .iter()
-        .flat_map(|polygon| polygon.triangles_world.iter().copied())
+        .flat_map(|polygon| polygon.triangles())
         .filter(|triangle| {
             triangle
                 .iter()

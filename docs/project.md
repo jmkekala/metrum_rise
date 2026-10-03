@@ -287,7 +287,9 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   - Logistics dominates the hour and grows near-quadratically (`ECON-15`).
   - Road-surface memory (`ROAD-44` in progress): junction topologies are capped and span
     products are rebuilt from sections, with identical output. 100k peak RSS fell from 14.8 GB to
-    2.0 GB, projecting about 20 GB at 1M; span earthwork and terrain-clip loops remain.
+    2.0 GB, projecting about 20 GB at 1M. Triangles are now stored as fan or index forms
+    (`ROAD-45`), cutting the 100k road layout from 1.74 to 1.59 GB; span earthwork records and
+    terrain-clip loops remain.
   - The export base and a single demand signal follow. See
     [`economy.md`](economy.md#growth-redesign-econ-11econ-14-dem-02).
 - **Road preview display performance (`ROAD-30`–`ROAD-35`, `ROAD-37`–`ROAD-40` and `ROAD-42` done;

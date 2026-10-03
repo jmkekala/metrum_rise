@@ -284,7 +284,7 @@ fn owned_top_boundary_edges_with_reuse(
 
 impl TopRegionEdgeReuseKey {
     fn from_region(region: &NodeOwnedRegion) -> Self {
-        let geometry = if region.polygon.triangles_world.is_empty() {
+        let geometry = if region.polygon.triangle_count() == 0 {
             let mut loop_vertices = region
                 .polygon
                 .points_world
@@ -297,8 +297,7 @@ impl TopRegionEdgeReuseKey {
         } else {
             let mut triangles = region
                 .polygon
-                .triangles_world
-                .iter()
+                .triangles()
                 .map(|triangle| {
                     canonical_directed_triangle([
                         NodeTopSupportVertexKey::from_world_point(triangle[0]),
@@ -373,11 +372,11 @@ fn final_polygon_boundary_edges(
     NodeTopSupportVertexKey,
 )> {
     let mut edges = Vec::new();
-    if polygon.triangles_world.is_empty() {
+    if polygon.triangle_count() == 0 {
         push_loop_edges(&polygon.points_world, &mut edges);
         return edges;
     }
-    for triangle in &polygon.triangles_world {
+    for triangle in polygon.triangles() {
         for edge_index in 0..3 {
             if let Some(edge) = top_support_edge_from_world_points(
                 triangle[edge_index],
@@ -950,12 +949,7 @@ fn owned_region_centroid_sum(region: &NodeOwnedRegion) -> Option<(RoadVec3, usiz
             count += 1;
         }
     } else {
-        for point in region
-            .polygon
-            .triangles_world
-            .iter()
-            .flat_map(|triangle| triangle.iter())
-        {
+        for point in region.polygon.triangles().flatten() {
             sum += RoadVec3::new(point.x, 0.0, point.z);
             count += 1;
         }
@@ -1488,7 +1482,7 @@ mod tests {
         NodeOwnedRegion {
             kind,
             owner_index,
-            polygon: RoadSurfaceVisualPolygon::from_parts(triangle.to_vec(), vec![triangle]),
+            polygon: RoadSurfaceVisualPolygon::from_parts(triangle.to_vec(), &[triangle]),
         }
     }
 

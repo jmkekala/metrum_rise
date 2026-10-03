@@ -144,8 +144,8 @@ impl RoadSurfaceSystem {
         point_xz: backend::RoadVec2,
     ) {
         for (region_index, region) in piece.owned_regions.iter().enumerate() {
-            for (triangle_index, triangle) in region.polygon.triangles_world.iter().enumerate() {
-                let Some(probe) = DebugProbeTriangleHit::from_top_triangle(*triangle, point_xz)
+            for (triangle_index, triangle) in region.polygon.triangles().enumerate() {
+                let Some(probe) = DebugProbeTriangleHit::from_top_triangle(triangle, point_xz)
                 else {
                     continue;
                 };
@@ -180,8 +180,8 @@ impl RoadSurfaceSystem {
     ) {
         for (face_index, polygon) in piece.raised_step_face_polygons.iter().enumerate() {
             let source = piece.raised_step_face_sources.get(face_index).copied();
-            for (triangle_index, triangle) in polygon.triangles_world.iter().enumerate() {
-                let Some(probe) = DebugProbeTriangleHit::from_near_triangle(*triangle, point_xz)
+            for (triangle_index, triangle) in polygon.triangles().enumerate() {
+                let Some(probe) = DebugProbeTriangleHit::from_near_triangle(triangle, point_xz)
                 else {
                     continue;
                 };
@@ -221,9 +221,9 @@ impl RoadSurfaceSystem {
             {
                 continue;
             }
-            for (triangle_index, triangle) in face.polygon.triangles_world.iter().enumerate() {
-                let Some(probe) = DebugProbeTriangleHit::from_top_triangle(*triangle, point_xz)
-                    .or_else(|| DebugProbeTriangleHit::from_near_triangle(*triangle, point_xz))
+            for (triangle_index, triangle) in face.polygon.triangles().enumerate() {
+                let Some(probe) = DebugProbeTriangleHit::from_top_triangle(triangle, point_xz)
+                    .or_else(|| DebugProbeTriangleHit::from_near_triangle(triangle, point_xz))
                 else {
                     continue;
                 };
@@ -336,9 +336,9 @@ impl RoadSurfaceSystem {
             if !self.span_earthwork_face_uses_visible_earthwork(face) {
                 continue;
             }
-            for (triangle_index, triangle) in face.polygon.triangles_world.iter().enumerate() {
-                let Some(probe) = DebugProbeTriangleHit::from_top_triangle(*triangle, point_xz)
-                    .or_else(|| DebugProbeTriangleHit::from_near_triangle(*triangle, point_xz))
+            for (triangle_index, triangle) in face.polygon.triangles().enumerate() {
+                let Some(probe) = DebugProbeTriangleHit::from_top_triangle(triangle, point_xz)
+                    .or_else(|| DebugProbeTriangleHit::from_near_triangle(triangle, point_xz))
                 else {
                     continue;
                 };

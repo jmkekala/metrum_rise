@@ -111,13 +111,13 @@ pub(in crate::simulation::network::surface::tests) fn assert_material_triangles_
         .iter()
         .filter(|region| region.kind != RoadSurfaceBandKind::Carriageway)
     {
-        for &non_road_triangle in &non_road_region.polygon.triangles_world {
+        for non_road_triangle in non_road_region.polygon.triangles() {
             for road_region in piece
                 .owned_regions
                 .iter()
                 .filter(|region| region.kind == RoadSurfaceBandKind::Carriageway)
             {
-                for &road_triangle in &road_region.polygon.triangles_world {
+                for road_triangle in road_region.polygon.triangles() {
                     let overlap_area_m2 =
                         triangle_overlap_area_m2(non_road_triangle, road_triangle);
                     let area_budget_m2 =
@@ -138,7 +138,7 @@ pub(in crate::simulation::network::surface::tests) fn assert_top_surface_triangl
 ) {
     for triangle in piece
         .surface_polygons()
-        .flat_map(|polygon| polygon.triangles_world.iter().copied())
+        .flat_map(|polygon| polygon.triangles())
     {
         let double_area_xz = (triangle[1].x - triangle[0].x) * (triangle[2].z - triangle[0].z)
             - (triangle[1].z - triangle[0].z) * (triangle[2].x - triangle[0].x);

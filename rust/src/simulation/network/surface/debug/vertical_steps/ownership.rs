@@ -107,7 +107,7 @@ impl RoadSurfaceSystem {
                 DebugRenderEdgeKey,
                 (usize, backend::RoadVec3, backend::RoadVec3),
             > = BTreeMap::new();
-            if region.polygon.triangles_world.is_empty() {
+            if region.polygon.triangle_count() == 0 {
                 let points = &region.polygon.points_world;
                 if points.len() >= 2 {
                     for index in 0..points.len() {
@@ -119,7 +119,7 @@ impl RoadSurfaceSystem {
                     }
                 }
             } else {
-                for triangle in &region.polygon.triangles_world {
+                for triangle in region.polygon.triangles() {
                     for edge_index in 0..3 {
                         Self::record_debug_top_boundary_edge_count(
                             &mut edge_counts,
@@ -310,12 +310,7 @@ impl RoadSurfaceSystem {
         let mut sum = backend::RoadVec3::ZERO;
         let mut count = 0usize;
         if region.polygon.points_world.is_empty() {
-            for point in region
-                .polygon
-                .triangles_world
-                .iter()
-                .flat_map(|triangle| triangle.iter().copied())
-            {
+            for point in region.polygon.triangles().flatten() {
                 sum += point;
                 count += 1;
             }

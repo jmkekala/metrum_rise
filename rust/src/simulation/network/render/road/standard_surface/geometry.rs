@@ -50,13 +50,13 @@ pub(super) fn emit_surface_polygon(
     polygon: &RoadSurfaceVisualPolygon,
     color: Color,
 ) {
-    emit_surface_triangles(mesh, layer, &polygon.triangles_world, color);
+    emit_surface_triangles(mesh, layer, polygon.triangles(), color);
 }
 
 pub(super) fn emit_surface_triangles(
     mesh: &mut NetworkMeshData,
     layer: MeshLayer,
-    triangles: &[[RoadVec3; 3]],
+    triangles: impl IntoIterator<Item = [RoadVec3; 3]>,
     color: Color,
 ) {
     emit_surface_triangles_with_group_normal(mesh, layer, triangles, color, None);
@@ -73,7 +73,7 @@ pub(super) fn emit_node_top_surface_polygons<'a>(
         emit_surface_triangles_with_group_normal(
             mesh,
             layer,
-            &polygon.triangles_world,
+            polygon.triangles(),
             color,
             group_normal,
         );
@@ -83,15 +83,15 @@ pub(super) fn emit_node_top_surface_polygons<'a>(
 fn emit_surface_triangles_with_group_normal(
     mesh: &mut NetworkMeshData,
     layer: MeshLayer,
-    triangles: &[[RoadVec3; 3]],
+    triangles: impl IntoIterator<Item = [RoadVec3; 3]>,
     color: Color,
     group_normal: Option<Vector3>,
 ) {
     for triangle in triangles {
-        if !RoadSurfaceSystem::top_surface_triangle_is_renderable_xz(*triangle) {
+        if !RoadSurfaceSystem::top_surface_triangle_is_renderable_xz(triangle) {
             continue;
         }
-        let triangle = road_triangle_to_render(*triangle);
+        let triangle = road_triangle_to_render(triangle);
         if let Some(normal) = group_normal {
             push_triangle_with_normal(
                 mesh,
@@ -115,11 +115,11 @@ fn emit_surface_triangles_with_group_normal(
 
 pub(super) fn emit_vertical_surface_triangles(
     mesh: &mut NetworkMeshData,
-    triangles: &[[RoadVec3; 3]],
+    triangles: impl IntoIterator<Item = [RoadVec3; 3]>,
     color: Color,
 ) {
     for triangle in triangles {
-        let triangle = road_triangle_to_render(*triangle);
+        let triangle = road_triangle_to_render(triangle);
         if triangle_is_too_small(triangle[0], triangle[1], triangle[2]) {
             continue;
         }
@@ -144,8 +144,8 @@ pub(super) fn emit_vertical_surface_polygon(
     polygon: &RoadSurfaceVisualPolygon,
     color: Color,
 ) {
-    if !polygon.triangles_world.is_empty() {
-        emit_vertical_surface_triangles(mesh, &polygon.triangles_world, color);
+    if polygon.triangle_count() != 0 {
+        emit_vertical_surface_triangles(mesh, polygon.triangles(), color);
         return;
     }
 
@@ -229,11 +229,11 @@ pub(super) fn stable_surface_group_normal<'a>(
 ) -> Option<Vector3> {
     let mut normal = Vector3::ZERO;
     for polygon in polygons {
-        for triangle in &polygon.triangles_world {
-            if !RoadSurfaceSystem::top_surface_triangle_is_renderable_xz(*triangle) {
+        for triangle in polygon.triangles() {
+            if !RoadSurfaceSystem::top_surface_triangle_is_renderable_xz(triangle) {
                 continue;
             }
-            let triangle = road_triangle_to_render(*triangle);
+            let triangle = road_triangle_to_render(triangle);
             let mut triangle_normal = (triangle[1] - triangle[0]).cross(triangle[2] - triangle[0]);
             if triangle_normal.y < 0.0 {
                 triangle_normal = -triangle_normal;

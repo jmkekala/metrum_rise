@@ -20,7 +20,7 @@ fn visual_polygon_builder_preserves_skinny_closure_geometry() {
     .expect("centimetre-scale curb closure polygons must survive the visual polygon builder");
 
     assert!(
-        !polygon.triangles_world.is_empty(),
+        polygon.triangle_count() != 0,
         "curb closure polygons must keep renderable triangles"
     );
 }
@@ -38,7 +38,7 @@ fn visual_polygon_builder_triangulates_convex_quads_as_a_fan() {
 
     assert_eq!(polygon.points_world, points);
     assert_eq!(
-        polygon.triangles_world,
+        polygon.triangles().collect::<Vec<_>>(),
         vec![
             [points[0], points[1], points[2]],
             [points[0], points[2], points[3]],
@@ -57,7 +57,58 @@ fn visual_polygon_builder_keeps_concave_polygon_coverage() {
     ])
     .expect("concave polygons must fall back to constrained triangulation");
 
-    assert_eq!(polygon.triangles_world.len(), 3);
+    assert_eq!(polygon.triangle_count(), 3);
+}
+
+#[test]
+fn visual_polygon_triangles_round_trip_through_every_storage_form() {
+    let point = backend::RoadVec3::new;
+    let bits = |triangles: &[[backend::RoadVec3; 3]]| {
+        triangles
+            .iter()
+            .map(|triangle| triangle.map(|vertex| vertex.to_array().map(f64::to_bits)))
+            .collect::<Vec<_>>()
+    };
+    let points = vec![
+        point(0.0, 0.0, 0.0),
+        point(4.0, 0.5, 0.0),
+        point(4.0, 1.0, 2.0),
+        point(0.0, 0.5, 2.0),
+        point(-1.0, 0.2, 1.0),
+    ];
+    let fan: Vec<_> = (1..4)
+        .map(|index| [points[0], points[index], points[index + 1]])
+        .collect();
+    for triangles in [
+        Vec::new(),
+        fan.clone(),
+        fan[1..].to_vec(),
+        vec![[points[2], points[0], points[4]]],
+        // Not one of the points: kept explicitly, including a sign-only difference.
+        vec![[points[0], points[1], point(1.0, 9.0, 1.0)]],
+        vec![[point(-0.0, 0.0, 0.0), points[1], points[2]]],
+    ] {
+        let polygon = RoadSurfaceVisualPolygon::from_parts(points.clone(), &triangles);
+        assert_eq!(polygon.triangle_count(), triangles.len());
+        assert_eq!(
+            bits(&polygon.triangles().collect::<Vec<_>>()),
+            bits(&triangles)
+        );
+    }
+
+    assert_eq!(
+        RoadSurfaceVisualPolygon::from_indexed_parts(
+            points.clone(),
+            &[[0, 1, 2], [0, 2, 3], [0, 3, 4]]
+        ),
+        RoadSurfaceVisualPolygon::from_parts(points.clone(), &fan)
+    );
+    // Equal triangles stored through different indices of a repeated point still compare equal.
+    let repeated = [points.clone(), vec![points[0]]].concat();
+    assert_eq!(
+        RoadSurfaceVisualPolygon::from_indexed_parts(repeated.clone(), &[[5, 1, 2]]),
+        RoadSurfaceVisualPolygon::from_parts(repeated, &[[points[0], points[1], points[2]]])
+    );
 }
 
 #[test]

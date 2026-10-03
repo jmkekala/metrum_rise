@@ -439,7 +439,7 @@ mod tests {
                     .into_iter()
                     .map(|[x, z]| glam::DVec3::new(x + offset, 0.0, z + offset))
                     .collect(),
-                Vec::new(),
+                &[],
             );
             let prepared = PolygonFootprint::from_road(&polygon.points_world);
             for (x, z, size, expected) in [
