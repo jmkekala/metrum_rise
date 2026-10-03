@@ -12,6 +12,10 @@ use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
+mod sweep;
+
+pub use sweep::CchCostsFrom;
+
 type SearchKey = (u32, usize);
 type SearchRecord = (f32, f32, Option<usize>, SearchKey);
 // Search labels are only looked up by key, so a fixed-seed hasher keeps queries deterministic.
@@ -65,6 +69,8 @@ pub struct CchGraph {
     // Retaining choices avoids both exponential path expansion and first-seen-path pruning.
     shortcut_alternatives: Vec<Vec<(usize, usize)>>,
     customization_order: Vec<usize>,
+    // Nodes by increasing contraction rank; the one-to-all sweep walks it top down.
+    node_order: Vec<u32>,
 }
 
 impl CchGraph {
@@ -77,6 +83,7 @@ impl CchGraph {
             build_generation: 0,
             shortcut_alternatives: Vec::new(),
             customization_order: Vec::new(),
+            node_order: Vec::new(),
         }
     }
 
@@ -99,6 +106,7 @@ impl CchGraph {
         {
             let (node_order, node_rank) = Self::compute_node_order(graph);
             cch.contract(graph, &node_order, &node_rank);
+            cch.node_order = node_order;
         }
         // Topology is fixed until the next build. Return construction growth capacity rather
         // than retaining it for the lifetime of the world; customization only updates entries.

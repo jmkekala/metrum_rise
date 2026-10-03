@@ -9,6 +9,7 @@ use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::lanes::{LaneSystem, LaneType};
 use crate::simulation::network::types::{TransitFlags, TransitType, VehicleFrontageAccess};
+use crate::simulation::pathing::cch::CchCostsFrom;
 use godot::prelude::Vector2;
 
 const INVALID_LANE_ID: usize = usize::MAX;
@@ -212,6 +213,48 @@ impl BuildingAllocator {
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
     ) -> Option<f32> {
+        self.freight_car_eta_from_border(
+            border_node,
+            destination_idx,
+            transit_network,
+            graph,
+            |node| {
+                transit_network
+                    .cch_graph
+                    .find_path(border_node, node, usize::MAX, graph, TransitFlags::CAR)
+                    .map(|(travel_seconds, _, _)| travel_seconds)
+            },
+        )
+    }
+
+    /// `freight_car_eta_from_border_node` with the network leg read from `costs`, the car costs
+    /// from `border_node`: O(1) per call instead of a route query.
+    pub(crate) fn freight_car_eta_from_border_costs(
+        &self,
+        border_node: u32,
+        destination_idx: usize,
+        costs: &CchCostsFrom,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> Option<f32> {
+        self.freight_car_eta_from_border(
+            border_node,
+            destination_idx,
+            transit_network,
+            graph,
+            |node| costs.cost_to(node),
+        )
+    }
+
+    // `network_time_s` gives the car travel time from `border_node` to a node.
+    fn freight_car_eta_from_border(
+        &self,
+        border_node: u32,
+        destination_idx: usize,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+        network_time_s: impl Fn(u32) -> Option<f32>,
+    ) -> Option<f32> {
         if destination_idx >= self.buildings.len() || destination_idx >= self.entrances.len() {
             crate::debug_log!(
                 "spawn",
@@ -263,6 +306,7 @@ impl BuildingAllocator {
                 destination_entrance,
                 transit_network,
                 graph,
+                &network_time_s,
             ) else {
                 continue;
             };
@@ -944,6 +988,7 @@ fn freight_candidate_from_border(
     destination_entrance: &BuildingEntrance,
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
+    network_time_s: &impl Fn(u32) -> Option<f32>,
 ) -> Option<FreightBorderCandidate> {
     if destination_entrance.edge_idx >= graph.edge_count() {
         crate::debug_log!(
@@ -1071,13 +1116,7 @@ fn freight_candidate_from_border(
     let network_path_time_s = if border_node == planned_detach_node {
         0.0
     } else {
-        let Some((travel_seconds, _, _)) = transit_network.cch_graph.find_path(
-            border_node,
-            planned_detach_node,
-            usize::MAX,
-            graph,
-            TransitFlags::CAR,
-        ) else {
+        let Some(travel_seconds) = network_time_s(planned_detach_node) else {
             crate::debug_log!(
                 "spawn",
                 "border admission candidate rejected: border_node={} dest_edge={} rank={} detach_node={} detach_lane={} reason=cch_path_failed",

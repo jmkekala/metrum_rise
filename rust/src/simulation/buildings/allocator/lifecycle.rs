@@ -20,10 +20,12 @@ use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::lanes::LaneSystem;
 use crate::simulation::network::surface::RoadSurfaceSystem;
 use crate::simulation::network::types::{NodeType, TransitFlags, TransitType};
+use crate::simulation::pathing::cch::CchCostsFrom;
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::zoning::ZoneType;
 use crate::simulation::zoning::ZoningSystem;
 use godot::prelude::{Vector2, Vector3};
+use rayon::prelude::*;
 
 const REZONE_GRACE_DAYS: u8 = 3;
 const FRONTAGE_ATTACHMENT_REPAIR_MIN_SEARCH_M: f32 = 50.0;
@@ -71,6 +73,36 @@ pub(crate) struct DemandSpawnPlacementRejectionCounts {
     pub(crate) neighbor_site_height_conflict: usize,
     /// The flat support footprint could not tie into terrain/roads within slope limits.
     pub(crate) site_support_tie_in_invalid: usize,
+}
+
+// Car costs from every car-connected border node, built once per admission batch: one sweep
+// per border instead of one route query per border per household (`ALLOC-04`).
+struct BorderArrivalCosts {
+    // Ascending node ids.
+    borders: Vec<u32>,
+    costs: Vec<CchCostsFrom>,
+}
+
+impl BorderArrivalCosts {
+    // O(nodes) border scan, then `CchGraph::costs_from_each` over the borders.
+    fn new(transit_network: &TransitNetwork, graph: &RegionGraph) -> Self {
+        let borders: Vec<u32> = (0..graph.node_count() as u32)
+            .into_par_iter()
+            .filter(|&node| {
+                graph.node(node).node_type == NodeType::Border
+                    && graph.node_adjacency(node).iter().any(|&edge_idx| {
+                        let edge = graph.edge(edge_idx);
+                        !edge.deleted
+                            && edge.primary_type == TransitType::Road
+                            && (edge.allowed_types & TransitFlags::CAR) != 0
+                    })
+            })
+            .collect();
+        let costs = transit_network
+            .cch_graph
+            .costs_from_each(&borders, graph, TransitFlags::CAR);
+        Self { borders, costs }
+    }
 }
 
 impl DemandBuildingActionExecution {
@@ -293,6 +325,7 @@ impl BuildingAllocator {
             );
         }
         let mut launched = 0;
+        let mut arrival = None;
         for _ in 0..households_to_spawn {
             let Some((home_idx, household_size)) = self
                 .next_household_admission_candidate_for_household(
@@ -308,8 +341,10 @@ impl BuildingAllocator {
                 }
                 break;
             };
+            let arrival =
+                arrival.get_or_insert_with(|| BorderArrivalCosts::new(transit_network, graph));
             let Some(border_node) =
-                self.household_arrival_border_node(home_idx, transit_network, graph)
+                self.household_arrival_border_node(home_idx, arrival, transit_network, graph)
             else {
                 for category in ["economy", "spawn"] {
                     debug_log!(
@@ -345,30 +380,20 @@ impl BuildingAllocator {
         launched
     }
 
+    // The border with the fastest car arrival at the home, ties to the lowest node id. O(borders).
     fn household_arrival_border_node(
         &self,
         home_idx: usize,
+        arrival: &BorderArrivalCosts,
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
     ) -> Option<u32> {
         let mut best: Option<(u32, f32)> = None;
-        for (idx, node) in graph.nodes().iter().enumerate() {
-            if node.node_type != NodeType::Border {
-                continue;
-            }
-            let border_node = idx as u32;
-            let has_car_connection = graph.node_adjacency(border_node).iter().any(|&edge_idx| {
-                let edge = graph.edge(edge_idx);
-                !edge.deleted
-                    && edge.primary_type == TransitType::Road
-                    && (edge.allowed_types & TransitFlags::CAR) != 0
-            });
-            if !has_car_connection {
-                continue;
-            }
-            let Some(eta_s) = self.freight_car_eta_from_border_node(
+        for (&border_node, costs) in arrival.borders.iter().zip(&arrival.costs) {
+            let Some(eta_s) = self.freight_car_eta_from_border_costs(
                 border_node,
                 home_idx,
+                costs,
                 transit_network,
                 graph,
             ) else {

@@ -406,6 +406,74 @@ fn vehicle_whitelists_preserve_pedestrian_routes_and_origin_context() {
     }
 }
 
+fn assert_costs_from_match_queries(cch: &CchGraph, graph: &RegionGraph, mode: u8) {
+    let starts: Vec<u32> = (0..graph.node_count() as u32).collect();
+    for (&start, costs) in starts.iter().zip(cch.costs_from_each(&starts, graph, mode)) {
+        for end in 0..graph.node_count() as u32 {
+            assert_eq!(
+                costs.cost_to(end),
+                cch.find_path(start, end, usize::MAX, graph, mode)
+                    .map(|route| route.0),
+                "{start}->{end}, mode={mode}"
+            );
+        }
+    }
+}
+
+#[test]
+fn costs_from_each_match_point_queries() {
+    // Restricted junctions. Queries meet at the top-ranked node, so a loop there that is the
+    // only legal way through it is taken by some routes.
+    let mut graph = grid(4);
+    for edge in graph.edges_iter_mut() {
+        edge.allowed_types |= TransitFlags::FOOT;
+    }
+    let top = *CchGraph::build(&graph).node_order.last().unwrap();
+    let incoming = graph.node_adjacency(top)[0];
+    let outgoing = *graph.node_adjacency(top).last().unwrap();
+    let mut loop_edge = graph.edge(0).clone();
+    loop_edge.start_node = top;
+    loop_edge.end_node = top;
+    let loop_edge = graph.add_edge(loop_edge);
+    graph.add_lane_connection(top, incoming, 0, loop_edge, 0);
+    graph.add_lane_connection(top, loop_edge, 0, outgoing, 0);
+    for node in [1, 6, 10].into_iter().filter(|&node| node != top) {
+        let incoming = graph.node_adjacency(node)[0];
+        let outgoing = *graph.node_adjacency(node).last().unwrap();
+        graph.add_lane_connection(node, incoming, 0, outgoing, 0);
+    }
+    graph.rebuild_adjacency_list();
+    let cch = CchGraph::build(&graph);
+    assert_costs_from_match_queries(&cch, &graph, TransitFlags::CAR);
+    assert_costs_from_match_queries(&cch, &graph, TransitFlags::FOOT);
+
+    // Mixed modes, one-way and deleted edges, a disconnected node and recustomized metrics.
+    let mut graph = grid(5);
+    graph.add_node(Vector3::new(-1000.0, 0.0, 0.0), NodeType::Junction);
+    for (id, edge) in graph.edges_iter_mut().enumerate() {
+        edge.allowed_types = if id % 3 == 0 {
+            TransitFlags::FOOT
+        } else {
+            TransitFlags::FOOT | TransitFlags::CAR
+        };
+        edge.base_cost = 2.0 + (id % 7) as f32;
+        edge.bkw_lanes = u8::from(id % 4 != 0);
+        edge.deleted = id % 11 == 0;
+    }
+    graph.rebuild_adjacency_list();
+    let mut cch = CchGraph::build(&graph);
+    for phase in 0..3 {
+        if phase > 0 {
+            for (id, edge) in graph.edges_iter_mut().enumerate() {
+                edge.current_congestion = if (id + phase) % 3 == 0 { 8.0 } else { 0.0 };
+            }
+            cch.customize(&graph);
+        }
+        assert_costs_from_match_queries(&cch, &graph, TransitFlags::CAR);
+        assert_costs_from_match_queries(&cch, &graph, TransitFlags::FOOT);
+    }
+}
+
 #[test]
 fn query_heap_has_consistent_cost_and_identity_ordering() {
     let values = [

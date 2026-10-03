@@ -3824,14 +3824,14 @@ runs and are not yet the matched acceptance runs.
 | --- | ---: | ---: | ---: | --- |
 | Roads, zoning paint, lot preparation | 8 s | 86 s | about 15 min | linear |
 | Building spawns | 1.7 s | 175 s | about 5 h | `ALLOC-02`, fixed: 9.7 s at 100k, about 1.6 min at 1M |
-| Household admission | 1.5 s | about 132 s | about 3.5 h | `ALLOC-03`, fixed: 34 s at 100k, route query left (`ALLOC-04`, about 20 min at 1M) |
+| Household admission | 1.5 s | about 132 s | about 3.5 h | `ALLOC-03` and `ALLOC-04`, fixed: border route queries 33.6 s → 0.15 s at 100k |
 | Admission hours (two ticks) | 2.6 s | 48 s | about 10 min | |
 | Warm-up, 48 hours | 1.7 s | 90 s | about 2 h | `ECON-15` |
 | Peak RSS | 434 MB | 1.9 GB | about 20 GB | `ROAD-44` |
 
 The benchmark then ticks 263 more hours (23 hourly samples and 10 settlement days), about 10
 hours at the projected 150 s hour. The 1M tier waits for `ALLOC-02`, `ALLOC-03` and `ECON-15`, fixed in that order before one
-1M run (decided 2026-10-03). `ALLOC-02` and `ALLOC-03` are done; 100k build 505 s → 285 s, records identical.
+1M run (decided 2026-10-03). `ALLOC-02`, `ALLOC-03` and `ALLOC-04` are done; 100k build 505 s → 247 s, records identical.
 
 **Benchmark city.** `PopulatedCity::build(residents)` (`rust/src/nodes/sim/core/populated_city.rs`)
 builds a square city sized for the requested residents (about 2,800 per km², plus 8% headroom):

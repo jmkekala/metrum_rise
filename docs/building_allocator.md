@@ -629,7 +629,7 @@ Exact commands, source identities, two-file diff and logs are in
 ## City-scale spawn and admission cost (`ALLOC-02`, `ALLOC-03`)
 
 Found 2026-10-03 while sizing the 1M `ECON-13` `PopulatedCity` build (`economy.md`); both done the
-same day.
+same day, and the arrival-border follow-up `ALLOC-04` with them.
 Building spawns and household admission each cost time proportional to the whole city, per
 building or per household, so both grow quadratically. Both paths are the game's own: hourly
 demand spawns use the same batch executor, and hourly admission the same candidate pick.
@@ -737,16 +737,39 @@ Release runs, default workers, temporary timers:
 
 The remaining 48 s of the 100k phase are the two admission hours (`ECON-15`).
 
-**`ALLOC-04`: arrival border per household.** Open, found 2026-10-03 while closing `ALLOC-03`; it
-now dominates admission. `household_arrival_border_node` scans every graph node for border nodes,
-then runs a car route query from each border node to the household's home and keeps the fastest
-(ties to the lowest node id). The route queries grow with the city, contrary to the first estimate:
-146 µs per household at 10k, 193 µs at 30k and 604 µs at 100k (33.8 s in total). If they keep
-growing about 4× per 10× city, they project to about 20 minutes at 1M. The node scan is also
-O(nodes) per household but small (about 0.1 s at 100k). A likely fix is one search from each border
-node per admission batch instead of one per household. Exit: the same border chosen as today, so
-city records stay identical at 10k and 100k, and per-household arrival cost that no longer grows
-with the city, measured at 10k and 100k.
+**`ALLOC-04`: arrival border per household.** Found 2026-10-03 while closing `ALLOC-03`, done the
+same day. `household_arrival_border_node` scanned every graph node for border nodes, then ran a car
+route query from each border node to the household's home and kept the fastest (ties to the lowest
+node id). The route queries grew with the city, about 4× per 10× city, which projected to about 20
+minutes at 1M.
+
+Now each admission batch scans for car-connected border nodes once and computes each border's car
+costs to every node with `CchGraph::costs_from_each`: one upward search and one pass down the
+hierarchy per border (see [`entrance_and_exit.md`](entrance_and_exit.md#flow-field-and-cch-precedence)).
+The table is built at the batch's first household, so a batch that admits nobody costs nothing.
+Each household then reads its two detach nodes' network times from the table, O(borders), and adds
+the unchanged frontage and access terms. The comparison and tie rule are unchanged.
+
+The table's costs cover the same hierarchy paths, turn checks and reachability as the old queries,
+but sum in a different order. Two borders whose route times differ only by float rounding could
+therefore swap. The test city has one border, so its records cannot change this way, and they are
+identical.
+
+Verification: matched release runs of the HEAD and changed trees, default workers, with temporary
+timers (since removed) around the arrival step. Records were identical at 10k and 100k, treasury
+included:
+
+| Arrival step | Before | After |
+| --- | ---: | ---: |
+| 10k, 5,618 households | 0.82 s, 146 µs each | 0.005 s, 0.94 µs each |
+| 100k, 56,579 households | 33.6 s, 594 µs each | 0.15 s, 2.7 µs each |
+| One batch's border table, 100k (2,211 nodes, 40,070 arcs) | | about 2 ms |
+| Whole 100k build | 280.8 s | 247.3 s |
+
+The table lookup is about 0.9 µs per household at both sizes. What remains grows with the
+hierarchy arc count, at one table per batch: 4 batches at 10k and about 50 at 100k, most of them
+small warm-up demand ticks. At 1M that projects to tens of milliseconds per batch and a few seconds
+over the build.
 
 ## Known Limitations And Follow-Up
 

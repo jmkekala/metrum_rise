@@ -1448,6 +1448,15 @@ revision. Equal discovered meeting costs use node, incoming-edge and outgoing-ed
 use cost, node and edge IDs with consistent total ordering/equality. Strict predecessor improvement
 and independent frontier stopping remain unchanged.
 
+`CchGraph::costs_from_each` gives the costs from a few start nodes to every node (`ALLOC-04`). For
+each start it runs `find_path`'s forward search to exhaustion, then one pass down the hierarchy in
+decreasing rank. That pass covers the backward query's states, with the same turn checks and the
+same meeting rule (a loop at a node is relaxed to a fixed point). Each cost matches the point
+query except for float summation order, because the pass adds arcs from the start outward.
+Shared setup is O(A log A) over the A downward arcs, plus O(A × node degree) turn checks per start;
+starts run in parallel. A regression compares it with `find_path` for every pair on restricted,
+looped, one-way, mixed-mode and re-customized grids.
+
 Both search directions share one `HashMap::entry` update and retain the already-read expansion
 distance. Both path halves reuse one shortcut stack and output buffer; per-shortcut temporary
 vectors are removed, and the final node vector reserves its exact size. Query heaps/maps and the
