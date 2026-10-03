@@ -92,6 +92,10 @@ var undo_button: Button
 var redo_button: Button
 var catalog_refresh: Button
 var export_summary: Label
+# Outcome of the last export, under its button; cleared by the next document edit.
+var export_result: Label
+# Outcome of the last Revalidate press; cleared by the next document edit.
+var validate_result: Label
 var inspector: PanelContainer
 var welcome: PanelContainer
 var toolbar: HFlowContainer
@@ -157,7 +161,7 @@ func _build_ui() -> void:
 	selection_filter = OptionButton.new()
 	for title in ["Select: all objects", "Select: meshes only", "Select: anchors only", "Select: yards only"]:
 		selection_filter.add_item(title)
-	selection_filter.tooltip_text = "All objects is the default: click a mesh, anchor or yard to open its settings. These optional filters restrict selection only when explicitly chosen.\nClick selects; drag moves; right-click opens actions; R rotates. Alt+click cycles overlaps. Ctrl+click adds/removes; Shift+drag box-selects. Escape cancels an operation."
+	selection_filter.tooltip_text = "All objects is the default: click a mesh, anchor or yard to open its settings. These optional filters restrict selection only when explicitly chosen.\nClick selects; drag moves; right-click opens actions; R rotates. Alt+click cycles overlaps; Alt+drag orbits. Ctrl+click adds/removes; Shift+drag box-selects. Escape cancels an operation."
 	selection_filter.item_selected.connect(_editor._selection.set_filter)
 	preview_bar.add_child(selection_filter)
 	_build_welcome(center)

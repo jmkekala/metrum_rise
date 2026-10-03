@@ -3,27 +3,29 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://bmfaxs0mgewsc"
-path="res://.godot/imported/concrete_layers_02_nor_gl_4k.png-be66f8e0f8077c31a8047d651e3463b9.ctex"
+path.bptc="res://.godot/imported/concrete_layers_02_nor_gl_4k.png-be66f8e0f8077c31a8047d651e3463b9.bptc.ctex"
+path.astc="res://.godot/imported/concrete_layers_02_nor_gl_4k.png-be66f8e0f8077c31a8047d651e3463b9.astc.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 
 [deps]
 
 source_file="res://assets/textures/general/concrete_layers/concrete_layers_02_nor_gl_4k.png"
-dest_files=["res://.godot/imported/concrete_layers_02_nor_gl_4k.png-be66f8e0f8077c31a8047d651e3463b9.ctex"]
+dest_files=["res://.godot/imported/concrete_layers_02_nor_gl_4k.png-be66f8e0f8077c31a8047d651e3463b9.bptc.ctex", "res://.godot/imported/concrete_layers_02_nor_gl_4k.png-be66f8e0f8077c31a8047d651e3463b9.astc.ctex"]
 
 [params]
 
-compress/mode=0
-compress/high_quality=false
+compress/mode=2
+compress/high_quality=true
 compress/lossy_quality=0.7
 compress/uastc_level=0
 compress/rdo_quality_loss=0.0
 compress/hdr_compression=1
-compress/normal_map=0
+compress/normal_map=1
 compress/channel_pack=0
-mipmaps/generate=false
+mipmaps/generate=true
 mipmaps/limit=-1
 roughness/mode=0
 roughness/src_normal=""

@@ -567,7 +567,10 @@ func build_ablation_variants() -> void:
 	# Each entry maps a variant name to the edits applied to the original source.
 	# An edit is [exact_source_fragment, replacement]; every fragment must be unique.
 	var cliff := ["vec3 cliff_masks(vec2 uv) {", "vec3 cliff_masks(vec2 uv) {\n\tif (true) { return vec3(0.0); }"]
-	var relief := ["float sample_local_relief(vec2 uv) {", "float sample_local_relief(vec2 uv) {\n\tif (true) { return 0.0; }"]
+	var relief := [
+		"float local_relief = terrain_mask.r * terrain_mask.r * TERRAIN_MASK_RELIEF_MAX_M;",
+		"float local_relief = 0.0;",
+	]
 	var shore := ["float shoreline_mask(vec2 uv) {", "float shoreline_mask(vec2 uv) {\n\tif (true) { return 0.0; }"]
 	var grass := [
 		"vec3 apply_grass_detail(vec3 color, vec3 world_pos, float grass_mask) {",

@@ -556,7 +556,8 @@ impl SimCore {
         })
     }
 
-    fn bulldoze_building(&mut self, building_idx: usize) -> bool {
+    /// Removes one building with an undo entry, as the bulldoze tool does.
+    pub(crate) fn bulldoze_building(&mut self, building_idx: usize) -> bool {
         self.remove_building_for_edit(building_idx, true)
     }
 
@@ -600,6 +601,7 @@ impl SimCore {
             return false;
         }
         self.publish_pending_production_site_removals();
+        crate::nodes::simulation_node::vegetation_api::publish_yards(self);
         if let Some(bounds) = field_bounds {
             self.invalidate_vegetation_over(bounds);
         }
@@ -2270,6 +2272,9 @@ impl SimCore {
                 &affected_nodes,
             );
             self.transit_network.mark_surface_point_dirty(old_pos);
+            // The moved end changes the road's grid alignment source; a stale one fails to load.
+            self.zoning
+                .mark_cell_lots_for_roads(&self.region_graph, affected_edges.iter().copied());
             let new_pos = self.region_graph.node(node_id as u32).pos;
             debug_log!(
                 "economy",
@@ -3246,6 +3251,59 @@ mod tests {
             Vector3::new(-10.0, 0.0, 0.0)
         );
         assert_eq!(core.zoning.cells.saved_road_alignments(), frames);
+    }
+
+    #[test]
+    fn border_extension_keeps_the_road_grid_alignment_loadable() {
+        let mut core = test_core();
+        let n0 = core
+            .region_graph
+            .add_node(Vector3::new(-10.0, 0.0, 0.0), NodeType::Junction);
+        let n1 = core
+            .region_graph
+            .add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
+        core.region_graph.add_edge(Edge {
+            start_node: n0,
+            end_node: n1,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            class: EdgeClass::Standard,
+            width: 7.0,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            speed_limit: 50.0,
+            base_cost: 120.0,
+            physical_length: 20.0,
+            current_congestion: 0.0,
+            start_clip: 0.0,
+            end_clip: 0.0,
+            geometry: vec![Vector3::new(-10.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
+            physical_geometry: vec![Vector3::new(-10.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
+            deleted: false,
+            no_building_spawn: false,
+            vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        });
+        core.region_graph.rebuild_adjacency_list();
+        core.zoning
+            .mark_cell_lots_for_roads(&core.region_graph, [0]);
+
+        // The border pushes the road's end outward; the saved alignment must describe the
+        // extended road, or the save is rejected on load.
+        core.set_border_connection_internal(n0 as i32);
+        let path = std::env::temp_dir().join(format!(
+            "metrum_border_alignment_{}.sqlite",
+            std::process::id()
+        ));
+        core.save_game_internal(path.to_str().unwrap(), None)
+            .unwrap();
+        let mut loaded = test_core();
+        let result = loaded.load_game_internal(path.to_str().unwrap());
+        std::fs::remove_file(&path).unwrap();
+        result.unwrap();
+        assert_eq!(
+            loaded.zoning.cells.saved_road_alignments(),
+            core.zoning.cells.saved_road_alignments()
+        );
     }
 
     #[test]

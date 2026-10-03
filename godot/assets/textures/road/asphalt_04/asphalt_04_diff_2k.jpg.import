@@ -3,27 +3,29 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://dphui462tbhdk"
-path="res://.godot/imported/asphalt_04_diff_2k.jpg-b7e0d8d7319003f490a81ffae375a9b7.ctex"
+path.bptc="res://.godot/imported/asphalt_04_diff_2k.jpg-b7e0d8d7319003f490a81ffae375a9b7.bptc.ctex"
+path.astc="res://.godot/imported/asphalt_04_diff_2k.jpg-b7e0d8d7319003f490a81ffae375a9b7.astc.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 
 [deps]
 
 source_file="res://assets/textures/road/asphalt_04/asphalt_04_diff_2k.jpg"
-dest_files=["res://.godot/imported/asphalt_04_diff_2k.jpg-b7e0d8d7319003f490a81ffae375a9b7.ctex"]
+dest_files=["res://.godot/imported/asphalt_04_diff_2k.jpg-b7e0d8d7319003f490a81ffae375a9b7.bptc.ctex", "res://.godot/imported/asphalt_04_diff_2k.jpg-b7e0d8d7319003f490a81ffae375a9b7.astc.ctex"]
 
 [params]
 
-compress/mode=0
-compress/high_quality=false
+compress/mode=2
+compress/high_quality=true
 compress/lossy_quality=0.7
 compress/uastc_level=0
 compress/rdo_quality_loss=0.0
 compress/hdr_compression=1
 compress/normal_map=0
 compress/channel_pack=0
-mipmaps/generate=false
+mipmaps/generate=true
 mipmaps/limit=-1
 roughness/mode=0
 roughness/src_normal=""

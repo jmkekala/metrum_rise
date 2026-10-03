@@ -25,6 +25,7 @@ static func run() -> void:
 	AssetAuthoringFiles.sweep_imports(USER_MODS_DIR)
 	GameSettings.seed_default_config_if_missing()
 	GameSettings.apply_display_settings()
+	GameSettings.fit_launch_window()
 	ModPackConfig.seed_default_config_if_missing()
 
 static func _ensure_user_dir(path: String) -> bool:

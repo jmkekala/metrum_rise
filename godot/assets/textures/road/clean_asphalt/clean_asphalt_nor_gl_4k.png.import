@@ -3,27 +3,29 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://bohaidq7s7cp8"
-path="res://.godot/imported/clean_asphalt_nor_gl_4k.png-5da22862e7fd332e54593b80e90ef49d.ctex"
+path.bptc="res://.godot/imported/clean_asphalt_nor_gl_4k.png-5da22862e7fd332e54593b80e90ef49d.bptc.ctex"
+path.astc="res://.godot/imported/clean_asphalt_nor_gl_4k.png-5da22862e7fd332e54593b80e90ef49d.astc.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 
 [deps]
 
 source_file="res://assets/textures/road/clean_asphalt/clean_asphalt_nor_gl_4k.png"
-dest_files=["res://.godot/imported/clean_asphalt_nor_gl_4k.png-5da22862e7fd332e54593b80e90ef49d.ctex"]
+dest_files=["res://.godot/imported/clean_asphalt_nor_gl_4k.png-5da22862e7fd332e54593b80e90ef49d.bptc.ctex", "res://.godot/imported/clean_asphalt_nor_gl_4k.png-5da22862e7fd332e54593b80e90ef49d.astc.ctex"]
 
 [params]
 
-compress/mode=0
-compress/high_quality=false
+compress/mode=2
+compress/high_quality=true
 compress/lossy_quality=0.7
 compress/uastc_level=0
 compress/rdo_quality_loss=0.0
 compress/hdr_compression=1
-compress/normal_map=0
+compress/normal_map=1
 compress/channel_pack=0
-mipmaps/generate=false
+mipmaps/generate=true
 mipmaps/limit=-1
 roughness/mode=0
 roughness/src_normal=""

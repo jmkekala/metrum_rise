@@ -14,6 +14,7 @@ const WorldMaterials = preload("res://scripts/renderers/world_materials.gd")
 const PreviewMaterials = preload("res://scripts/editors/asset_editor/preview_materials.gd")
 const PickGeometry = preload("res://scripts/editors/asset_editor/mesh_pick_geometry.gd")
 const GroundShader = preload("res://scripts/editors/asset_editor/preview_ground.gdshader")
+const TreeSpecies = preload("res://scripts/renderers/tree_species.gd")
 
 # Zone cell size in metres — must match `WorldConfig::editor_sandbox()` (zone_cell_m = 10.0).
 const CELL_M := 10.0
@@ -58,6 +59,12 @@ var _site_anchor_overlay: MeshInstance3D
 var _lot_overlay: MeshInstance3D
 var _frontage_arrow: MeshInstance3D
 var _ground_grid: MeshInstance3D
+# The yard hedge rows a spawned building lays, drawn as the distant hedge boxes.
+# Yard planting kinds, which the editor keeps among the site surfaces, and their fill bucket.
+const PLANTING_KINDS := ["trees", "bushes", "mixed", "flowers"]
+const PLANTING := "planting"
+var _planting_fill: StandardMaterial3D
+var _yard_hedge: MultiMeshInstance3D
 var _scale_reference: MeshInstance3D
 var _scale_reference_pick: RefCounted
 var _scale_reference_placed := false
@@ -119,7 +126,7 @@ func _ready() -> void:
 	ground_mesh.size = Vector2(10000.0, 10000.0)
 	_ground.mesh = ground_mesh
 	_ground.position.y = LOT_PLANE_Y - 0.025
-	_ground.material_override = WorldMaterials.flat_terrain_material()
+	_ground.material_override = WorldMaterials.editor_ground_material()
 	var grid_material := ShaderMaterial.new()
 	grid_material.shader = GroundShader
 	grid_material.set_shader_parameter("cell_m", CELL_M)
@@ -133,6 +140,11 @@ func _ready() -> void:
 	_ground_grid = MeshInstance3D.new()
 	_ground_grid.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(_ground_grid)
+
+	_yard_hedge = MultiMeshInstance3D.new()
+	_yard_hedge.multimesh = MultiMesh.new()
+	_yard_hedge.multimesh.transform_format = MultiMesh.TRANSFORM_3D
+	add_child(_yard_hedge)
 
 	_ghost_root = Node3D.new()
 	add_child(_ghost_root)
@@ -178,6 +190,33 @@ func _ready() -> void:
 # ──────────────────────────────────────────────────────────────────────────────
 # Public API
 # ──────────────────────────────────────────────────────────────────────────────
+
+## Draws the yard hedge rows Rust planned for the document (`[{from: [x, z], to: [x, z]}]` in
+## asset-local metres), as boxes of the given hedge (0 low, 1 medium, 2 tall); none for -1.
+func set_yard_hedge(rows: Array, hedge: int) -> void:
+	var mm := _yard_hedge.multimesh
+	if hedge < 0 or rows.is_empty():
+		mm.instance_count = 0
+		return
+	mm.instance_count = 0
+	mm.mesh = TreeSpecies.hedge_run_mesh(hedge)
+	mm.instance_count = rows.size()
+	var size: Vector2 = TreeSpecies.HEDGE_RUN_SIZES[hedge]
+	var height := size.x
+	for i in rows.size():
+		var from := Vector3(rows[i]["from"][0], 0.0, rows[i]["from"][1])
+		var to := Vector3(rows[i]["to"][0], 0.0, rows[i]["to"][1])
+		var dir := (to - from).normalized() if from.distance_to(to) > 0.001 else Vector3.RIGHT
+		# A lot corner is closed in game by the row that meets it running on by half the
+		# hedge's width; both rows run on here, which overlaps unseen inside the corner.
+		if bool(rows[i].get("join_from", false)):
+			from -= dir * size.y * 0.5
+		if bool(rows[i].get("join_to", false)):
+			to += dir * size.y * 0.5
+		var along := to - from
+		mm.set_instance_transform(i, Transform3D(
+			Basis(along if along.length() > 0.001 else Vector3.RIGHT, Vector3.UP, dir.cross(Vector3.UP)),
+			(from + to) * 0.5 + Vector3.UP * (LOT_PLANE_Y + height * 0.5)))
 
 ## Temporarily hide editor-only visuals; fixed helper roots avoid walking every anchor/mesh.
 func begin_thumbnail_capture() -> Dictionary:
@@ -792,7 +831,20 @@ func _loading_color() -> Color:
 func _selected_anchor_color() -> Color:
 	return Color(0.68, 0.40, 0.06) if _is_light_theme() else Color(1.0, 0.84, 0.40)
 
+# A planting area is lawn, not paving: a translucent green wash over the preview ground.
+func _planting_fill_material() -> StandardMaterial3D:
+	if _planting_fill == null:
+		_planting_fill = StandardMaterial3D.new()
+		_planting_fill.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		_planting_fill.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		# Authored outlines may wind either way, so their triangles may face down.
+		_planting_fill.cull_mode = BaseMaterial3D.CULL_DISABLED
+		_planting_fill.albedo_color = Color(0.45, 0.8, 0.3, 0.35)
+	return _planting_fill
+
 func _site_surface_color(material: String) -> Color:
+	if material in PLANTING_KINDS:
+		return Color(0.18, 0.42, 0.14) if _is_light_theme() else Color(0.55, 0.85, 0.45)
 	match material:
 		"asphalt":
 			return Color(0.38, 0.45, 0.49) if _is_light_theme() else Color(0.63, 0.70, 0.75)
@@ -858,8 +910,8 @@ func _build_lot_plane() -> void:
 	arrays[Mesh.ARRAY_NORMAL] = normals
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	# Unpainted lot areas match the surrounding terrain; authored yards render above it.
-	mesh.surface_set_material(0, WorldMaterials.flat_terrain_material())
+	# Unpainted lot areas match the surrounding ground; authored yards render above it.
+	mesh.surface_set_material(0, WorldMaterials.editor_ground_material())
 	_lot_plane.mesh = mesh
 
 func _build_ground_grid() -> void:
@@ -1012,11 +1064,14 @@ func _build_site_surface_fill() -> void:
 	var triangles_by_material := {
 		WorldMaterials.MATERIAL_ASPHALT: PackedVector3Array(),
 		WorldMaterials.MATERIAL_CONCRETE: PackedVector3Array(),
+		PLANTING: PackedVector3Array(),
 	}
 
 	for surface in _site_surfaces:
 		var material := str(surface.get("material", WorldMaterials.MATERIAL_ASPHALT))
-		if not triangles_by_material.has(material):
+		if material in PLANTING_KINDS:
+			material = PLANTING
+		elif not triangles_by_material.has(material):
 			material = WorldMaterials.MATERIAL_ASPHALT
 		var vertices := _site_surface_vertices(surface, SITE_SURFACE_FILL_Y)
 		if vertices.size() < 3:
@@ -1026,7 +1081,7 @@ func _build_site_surface_fill() -> void:
 		triangles_by_material[material] = material_triangles
 
 	var mesh := ArrayMesh.new()
-	for material in [WorldMaterials.MATERIAL_ASPHALT, WorldMaterials.MATERIAL_CONCRETE]:
+	for material in [WorldMaterials.MATERIAL_ASPHALT, WorldMaterials.MATERIAL_CONCRETE, PLANTING]:
 		var vertices: PackedVector3Array = triangles_by_material[material]
 		if vertices.is_empty():
 			continue
@@ -1039,7 +1094,7 @@ func _build_site_surface_fill() -> void:
 		arrays[Mesh.ARRAY_VERTEX] = vertices
 		arrays[Mesh.ARRAY_NORMAL] = normals
 		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-		mesh.surface_set_material(mesh.get_surface_count() - 1, WorldMaterials.site_surface_material(material))
+		mesh.surface_set_material(mesh.get_surface_count() - 1, _planting_fill_material() if material == PLANTING else WorldMaterials.site_surface_material(material))
 
 	_site_surface_fill.mesh = mesh if mesh.get_surface_count() > 0 else null
 
@@ -1075,6 +1130,8 @@ func _site_surface_label(surface: Dictionary, material_index: int) -> String:
 	return "%s %d" % [material, material_index]
 
 func _site_surface_label_prefix(material: String) -> String:
+	if material in PLANTING_KINDS:
+		return "Planting: " + material
 	match material:
 		"asphalt":
 			return "Asphalt"

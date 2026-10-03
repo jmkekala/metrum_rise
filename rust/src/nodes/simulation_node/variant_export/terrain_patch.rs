@@ -5,13 +5,30 @@
 use super::super::*;
 
 impl SimulationNode {
-    /// Exports one native height buffer shared by preview and refined render uploads.
+    /// Exports one native height buffer shared by preview and refined render uploads, with its
+    /// shading masks. `mask_bytes` is the worker's bake when there is one; otherwise, as for a
+    /// synchronous road preview, the masks are baked here.
     pub(in crate::nodes::simulation_node) fn terrain_patch_dict(
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
+        mask_bytes: &[u8],
     ) -> VarDictionary {
         let mut dict = Self::terrain_patch_metadata_dict(patch);
         dict.set("height_bytes", Self::packed_f32_bytes(&patch.height_data));
+        Self::set_mask_bytes(&mut dict, patch, mask_bytes);
         dict
+    }
+
+    fn set_mask_bytes(
+        dict: &mut VarDictionary,
+        patch: &crate::simulation::terrain::TerrainPatchSnapshot,
+        mask_bytes: &[u8],
+    ) {
+        let bytes = if mask_bytes.is_empty() {
+            PackedByteArray::from(patch.shading_mask_bytes().as_slice())
+        } else {
+            PackedByteArray::from(mask_bytes)
+        };
+        dict.set("mask_bytes", bytes);
     }
 
     pub(in crate::nodes::simulation_node) fn terrain_patch_metadata_dict(
@@ -79,8 +96,9 @@ impl SimulationNode {
     pub(in crate::nodes::simulation_node) fn cached_refined_terrain_patch_dict(
         cached: &CachedRefinedTerrainPatch,
         include_debug: bool,
+        mask_bytes: &[u8],
     ) -> VarDictionary {
-        let mut dict = Self::terrain_patch_dict(&cached.patch);
+        let mut dict = Self::terrain_patch_dict(&cached.patch, mask_bytes);
         let road_clip_query = RoadClipLoopQuery {
             cdt_road_loops: Vec::new(),
             source_count: cached.clip_source_count,
@@ -137,10 +155,11 @@ impl SimulationNode {
                     "height_bytes",
                     PackedByteArray::from(height_bytes.as_slice()),
                 );
+                Self::set_mask_bytes(&mut dict, patch, &payload.mask_bytes);
                 dict
             }
             TerrainPatchPayloadData::Refined { patch } => {
-                Self::cached_refined_terrain_patch_dict(patch, false)
+                Self::cached_refined_terrain_patch_dict(patch, false, &payload.mask_bytes)
             }
             TerrainPatchPayloadData::RefinedFailure { patch, error_label } => {
                 Self::failed_refined_terrain_patch_dict(patch, error_label)

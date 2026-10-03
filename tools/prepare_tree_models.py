@@ -4,6 +4,7 @@
 
 Usage: python3 tools/prepare_tree_models.py imgs/tree_models/out
        python3 tools/prepare_tree_models.py --landscape imgs/landscape_models/out
+       python3 tools/prepare_tree_models.py --flowers <tools/model_flowers.py output>
 
 Writes godot/assets/models/vegetation/trees/ (or landscape/, and rocks/ for --landscape):
   <form>_<n>.glb      meshes with image, texture and sampler references removed; the game
@@ -15,7 +16,8 @@ Writes godot/assets/models/vegetation/trees/ (or landscape/, and rocks/ for --la
   trees.json          per form, the mean linear colour of the opaque foliage texels and of the
                       bark, and the mean depth term the card shader reads from mip 4.
                       landscape.json for the yard plants, which have one model and no reduced
-                      level each.
+                      level each. The flowers share landscape/ and its landscape.json; each of
+                      --landscape and --flowers replaces only its own forms' entries.
   rocks/rock_<n>.glb  stripped like the rest, beside the shared rock_albedo.png and
                       rock_normal.png tiles, which the game's rock material samples.
 
@@ -38,9 +40,11 @@ from bake_foliage_atlas import correct, coverage, write_dds
 ROOT = Path(__file__).resolve().parents[1]
 MODELS = ROOT / "godot/assets/models/vegetation"
 FORMS = ("spruce", "pine", "birch", "aspen")
-# Yard plants in the game's bush variant order; see LANDSCAPE_FORMS in tree_species.gd.
+# Yard plants in the game's bush variant order; see LANDSCAPE_FORMS in tree_species.gd. The
+# flowers from tools/model_flowers.py follow the hedges there.
 LANDSCAPE_FORMS = ("lilac", "spirea", "rose", "cotoneaster", "mugo", "juniper",
                    "hedge_low", "hedge_mid", "hedge_tall")
+FLOWER_FORMS = ("peony", "lupine", "phlox", "hydrangea", "rhododendron", "summer_flowers")
 ROCKS = 6
 SIZE = 512
 THRESHOLD = 0.4
@@ -186,19 +190,26 @@ def main():
     parser.add_argument("source", type=Path)
     parser.add_argument("--landscape", action="store_true",
                         help="yard plants and rocks from tools/model_landscape.py")
+    parser.add_argument("--flowers", action="store_true",
+                        help="yard flowers from tools/model_flowers.py")
     args = parser.parse_args()
-    if args.landscape:
+    if args.landscape or args.flowers:
         # The game draws a yard plant at one level; the reduced models are not shipped.
         output = MODELS / "landscape"
-        metadata = prepare_forms(args.source, output, LANDSCAPE_FORMS, 1, ("",))
-        (output / "landscape.json").write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
+        forms = LANDSCAPE_FORMS if args.landscape else FLOWER_FORMS
+        metadata = prepare_forms(args.source, output, forms, 1, ("",))
+        info = output / "landscape.json"
+        merged = json.loads(info.read_text()) if info.exists() else {}
+        merged.update(metadata)
+        info.write_text(json.dumps(merged, indent=2, sort_keys=True) + "\n")
+    if args.landscape:
         rocks = MODELS / "rocks"
         rocks.mkdir(parents=True, exist_ok=True)
         for n in range(ROCKS):
             strip_glb(args.source / f"rock_{n}.glb", rocks / f"rock_{n}.glb")
         for tile in ("rock_albedo.png", "rock_normal.png"):
             shutil.copyfile(args.source / tile, rocks / tile)
-    else:
+    elif not args.flowers:
         output = MODELS / "trees"
         metadata = prepare_forms(args.source, output, FORMS, 3, ("", "_lod1"))
         (output / "trees.json").write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")

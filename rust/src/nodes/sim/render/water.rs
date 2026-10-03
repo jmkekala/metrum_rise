@@ -10,7 +10,6 @@ use rayon::prelude::*;
 use std::collections::{BTreeMap, HashMap};
 
 const WATER_MIN_VISIBLE_DEPTH_M: f32 = 0.001;
-const WATER_POINT_EPSILON: f32 = 0.000001;
 const WATER_SEGMENT_EPSILON: f32 = 0.00001;
 
 /// Cache key for one static water mesh variant.
@@ -294,51 +293,33 @@ impl WaterMeshBuilder {
                     x_interval_count,
                     z_interval_count,
                 );
-                let wet_corner_count = wet_corner_count(corner_depths);
-                let mut wet_polygons = Vec::new();
-                if wet_corner_count == 4 {
-                    self.stats.full_cells += 1;
-                    wet_polygons.push(cell.to_vec());
-                } else if wet_corner_count > 0 {
-                    self.stats.partial_cells += 1;
-                    wet_polygons.extend(wet_water_cell_polygons(
-                        cell,
-                        corner_depths,
-                        wet_corner_count,
-                    ));
-                } else if self.water_cell_has_visible_depth(
-                    x_index,
-                    z_index,
-                    x_interval_count,
-                    z_interval_count,
-                ) {
-                    self.stats.conservative_cells += 1;
-                    wet_polygons.push(cell.to_vec());
-                } else {
-                    self.stats.dry_cells += 1;
-                    continue;
-                }
-
-                if wet_polygons.is_empty() {
-                    self.stats.dry_cells += 1;
-                    continue;
+                // Any cell touching water is drawn whole. Its vertices sit at the water level and
+                // the terrain hides the part above the shoreline, so the visible edge is the
+                // per-pixel terrain intersection rather than a polygon cut across the cell.
+                match wet_corner_count(corner_depths) {
+                    4 => self.stats.full_cells += 1,
+                    0 if self.water_cell_has_visible_depth(
+                        x_index,
+                        z_index,
+                        x_interval_count,
+                        z_interval_count,
+                    ) =>
+                    {
+                        self.stats.conservative_cells += 1
+                    }
+                    0 => {
+                        self.stats.dry_cells += 1;
+                        continue;
+                    }
+                    _ => self.stats.partial_cells += 1,
                 }
 
                 let bin_index = z_index * x_interval_count + x_index;
                 let cell_clip_groups = clip_bins.get(&bin_index).map(Vec::as_slice).unwrap_or(&[]);
-                for wet_polygon in wet_polygons {
-                    if wet_polygon.len() < 3 {
-                        continue;
-                    }
-                    let emitted = self.emit_clipped_water_cell(
-                        &wet_polygon,
-                        cell_clip_groups,
-                        center_x,
-                        center_z,
-                    );
-                    if emitted == 0 && !cell_clip_groups.is_empty() {
-                        self.stats.road_clipped_cells += 1;
-                    }
+                let emitted =
+                    self.emit_clipped_water_cell(&cell, cell_clip_groups, center_x, center_z);
+                if emitted == 0 && !cell_clip_groups.is_empty() {
+                    self.stats.road_clipped_cells += 1;
                 }
             }
         }
@@ -620,103 +601,6 @@ fn wet_corner_count(corner_depths: [f32; 4]) -> usize {
         .iter()
         .filter(|depth| **depth > WATER_MIN_VISIBLE_DEPTH_M)
         .count()
-}
-
-fn wet_water_cell_polygons(
-    cell: [Vector2; 4],
-    corner_depths: [f32; 4],
-    wet_corner_count: usize,
-) -> Vec<Vec<Vector2>> {
-    let mut polygons = Vec::new();
-    if wet_corner_count == 2 && has_opposite_wet_corners(corner_depths) {
-        for index in 0..4 {
-            if corner_depths[index] <= WATER_MIN_VISIBLE_DEPTH_M {
-                continue;
-            }
-            let previous_index = (index + 3) % 4;
-            let next_index = (index + 1) % 4;
-            let polygon = dedupe_adjacent_polygon_points(vec![
-                cell[index],
-                water_depth_edge_crossing(cell, corner_depths, index, next_index),
-                water_depth_edge_crossing(cell, corner_depths, previous_index, index),
-            ]);
-            if polygon.len() >= 3 {
-                polygons.push(polygon);
-            }
-        }
-        return polygons;
-    }
-    let polygon = wet_water_cell_polygon(cell, corner_depths);
-    if polygon.len() >= 3 {
-        polygons.push(polygon);
-    }
-    polygons
-}
-
-fn has_opposite_wet_corners(corner_depths: [f32; 4]) -> bool {
-    (corner_depths[0] > WATER_MIN_VISIBLE_DEPTH_M && corner_depths[2] > WATER_MIN_VISIBLE_DEPTH_M)
-        || (corner_depths[1] > WATER_MIN_VISIBLE_DEPTH_M
-            && corner_depths[3] > WATER_MIN_VISIBLE_DEPTH_M)
-}
-
-fn wet_water_cell_polygon(cell: [Vector2; 4], corner_depths: [f32; 4]) -> Vec<Vector2> {
-    let mut polygon = Vec::with_capacity(6);
-    for index in 0..4 {
-        let next_index = (index + 1) % 4;
-        let depth_a = corner_depths[index];
-        let depth_b = corner_depths[next_index];
-        let a_is_wet = depth_a > WATER_MIN_VISIBLE_DEPTH_M;
-        let b_is_wet = depth_b > WATER_MIN_VISIBLE_DEPTH_M;
-        if a_is_wet {
-            polygon.push(cell[index]);
-        }
-        if a_is_wet != b_is_wet {
-            polygon.push(water_depth_edge_crossing(
-                cell,
-                corner_depths,
-                index,
-                next_index,
-            ));
-        }
-    }
-    dedupe_adjacent_polygon_points(polygon)
-}
-
-fn water_depth_edge_crossing(
-    cell: [Vector2; 4],
-    corner_depths: [f32; 4],
-    from_index: usize,
-    to_index: usize,
-) -> Vector2 {
-    let depth_a = corner_depths[from_index];
-    let depth_b = corner_depths[to_index];
-    let denom = depth_b - depth_a;
-    let mut t = 0.5;
-    if denom.abs() > 0.000001 {
-        t = ((WATER_MIN_VISIBLE_DEPTH_M - depth_a) / denom).clamp(0.0, 1.0);
-    }
-    cell[from_index].lerp(cell[to_index], t)
-}
-
-fn dedupe_adjacent_polygon_points(polygon: Vec<Vector2>) -> Vec<Vector2> {
-    if polygon.len() <= 1 {
-        return polygon;
-    }
-    let mut deduped = Vec::with_capacity(polygon.len());
-    for point in polygon {
-        if deduped
-            .last()
-            .is_none_or(|last: &Vector2| last.distance_squared_to(point) > WATER_POINT_EPSILON)
-        {
-            deduped.push(point);
-        }
-    }
-    if deduped.len() > 1
-        && deduped[0].distance_squared_to(*deduped.last().unwrap()) <= WATER_POINT_EPSILON
-    {
-        deduped.pop();
-    }
-    deduped
 }
 
 fn clip_groups_from_road_loops(road_clip_loops: Vec<TerrainCdtRoadLoop>) -> Vec<ClipGroup> {
@@ -1019,6 +903,30 @@ mod tests {
         assert_eq!(mesh.stats.full_cells, 4);
         assert_eq!(mesh.stats.emitted_vertices, 9);
         assert_eq!(mesh.stats.emitted_triangles, 8);
+    }
+
+    #[test]
+    fn shoreline_cells_are_emitted_whole() {
+        // One wet sample in the middle of a 3x3 patch: each of the four cells has one wet corner.
+        let mut depth = vec![0.0; 25];
+        depth[2 * 5 + 2] = 1.0;
+        let patch = test_patch(depth, 1);
+        let key = test_key(water_patch_depth_signature(&patch));
+        let [mesh] =
+            SimCore::build_water_patch_mesh_cache_entries(vec![WaterPatchMeshBuildInput {
+                key,
+                patch,
+                road_clip_loops: Vec::new(),
+                clip_failed: false,
+            }])
+            .try_into()
+            .expect("one shoreline water patch mesh should be built");
+
+        assert_eq!(mesh.stats.partial_cells, 4);
+        assert_eq!(mesh.stats.emitted_triangles, 8);
+        let max_x = mesh.vertices.iter().map(|v| v.x).fold(f32::MIN, f32::max);
+        let min_x = mesh.vertices.iter().map(|v| v.x).fold(f32::MAX, f32::min);
+        assert_eq!((min_x, max_x), (-10.0, 10.0));
     }
 
     #[test]

@@ -6,6 +6,8 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
+Building assets can now line their yards with clipped hedges that a spawned house lays itself: rows cut at driveways and the entrance, corners closed and adjoining yards sharing one hedge, editable with the brushes and removed with the house unless the player changed them ([VEG-15](asset_editor.md#yard-hedges)). Assets can also mark lawn planting areas that each spawned house fills with its own trees, shrubs or flowers, where players can plant trees too ([VEG-17](asset_editor.md#yard-planting)); six Finnish yard flowers can also be planted with the brush ([VEG-20](terrain.md#authored-trees-silhouette-shadows-yard-plants-and-rocks-2026-09-27)), and grow a back yard without moving the street side ([TOOLS-12](asset_editor.md#back-yards)). Hedge rows drawn with the brush now join at corners and snap to hedges already standing ([VEG-13](roadmap.md)), and hedges stay drawn out to the trees' far range as one box per straight run ([VEG-14](terrain.md)).
+
 Trees, yard shrubs, clipped hedges and rocks are now Blender models; every tree casts its own baked silhouette in place of the old per-species lathe blob, and hedges are laid as rows with a line tool ([VEG-09 and VEG-10 details](terrain.md#authored-trees-silhouette-shadows-yard-plants-and-rocks-2026-09-27)). The brush now thickens gradually: each click or held tenth of a second adds 10 trees/ha until the preset's density ([VEG-11](terrain.md#gradual-brush--veg-11-2026-09-27)). From a distance, lone trees no longer sit on blurred forest-floor blots, far crowns grow up to 1.6x past the shadow range, and the far ground stand-in matches the authored trees' colour and crown-to-crown texture ([details](terrain.md#forest-from-a-distance-2026-09-28)). A far tree now renders within 12% of its near level at every tested pose: small pine crowns no longer vanish from its baked mips, and it catches the near crown's sun sheen ([VEG-12](terrain.md#impostor-refit-to-the-authored-trees--veg-12-2026-09-29)). Each impostor quad is now cropped to what its baked views draw, which takes a dense painted stand from `39.9` to `28.8 ms` of GPU at eye level ([details](terrain.md#impostor-quads-cropped-to-their-views-2026-09-30)).
 
 Vegetation painting now uses live, clumped darts with separate tree, ground-cover and rock spacing, repeat-stamp stability, and single-plant bulldozing ([VEG-05 details and verification](terrain.md#natural-brush-proposals-and-independent-occupancy--veg-05-2026-09-26)).
@@ -41,6 +43,19 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   The forest floor now loses the sky its crowns hide, so a stand's floor in shade is no longer
   lighter than the meadow; see
   [the floor sky](terrain.md#the-forest-floor-loses-the-sky-its-crowns-hide-2026-09-26).
+  Past the shadow range the floor now keeps the sun the open crowns pass and takes its shade
+  down the sun ray, so a stand edge no longer turns black at `420 m`; see
+  [the far floor](terrain.md#the-far-forest-floor-matches-the-shadows-it-replaces-2026-10-01).
+  Pine, birch and aspen leaves are calibrated against forest photos, so a stand from the air
+  is no longer nearly as bright as the meadow; see
+  [the leaf albedo](terrain.md#leaf-albedo-of-pine-birch-and-aspen--calibrated-against-photos-2026-10-01).
+  Crowns inside a stand now lose sun to their neighbours by a per-tree stand closure, which
+  brings a stand from the air to the photographs' range and leaves lone trees unchanged; see
+  [the stand sun](terrain.md#crowns-in-a-stand-lose-sun-to-their-neighbours-2026-10-01).
+  Leaves no longer take a sun highlight, so crowns facing the sun stay green instead of turning
+  white and flat; see [the leaf highlight](terrain.md#leaves-take-no-sun-highlight-2026-10-02).
+  The pine is rebuilt to the Scots pine photo set, with longer crowns and real pine bark; see
+  [the pine rebuild](terrain.md#pine-rebuilt-to-the-photo-set--veg-18-2026-10-03).
   Past the handover a tree's trunk zone is shaded, so a far stand no longer floats on lit
   trunks; see [the far stand](terrain.md#a-far-stand-is-dark-under-its-crowns-2026-09-26).
   Terrain residency now covers the cull distance in every direction, so a quick turn no longer
@@ -519,6 +534,50 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- Idle frames against upstream `7e471302`, whole branch (M2 Pro, 1080p, idle p50): Kuopio
+  overview `16.0 -> 11.6 ms`, close `13.3 -> 9.5 ms`, forest `13.3 -> 9.7 ms`, cliff
+  `12.5 -> 8.8 ms`. Upstream skips the Kuopio pack's hedged houses, so town poses and load
+  times do not compare. See [branch acceptance](terrain.md).
+
+- `UI-05`: the Building Inspector shows one building at a time; clicking another building
+  replaces the open window instead of stacking a new one. See [`ui.md`](ui.md).
+
+- `WATER-03`: water reflects the shore and trees, the lake bed fades with the water the view ray
+  crosses, and wind ripples move the surface. The lake had been lit as a downward-facing surface
+  (flipped back-face normal), which pinned Fresnel at its maximum; it now uses water's physical
+  Fresnel, so it is darker looking down. About `+0.5-0.9 ms` at water-filled 1080p views on the
+  M2 Pro. See [`terrain.md`](terrain.md).
+
+- `WATER-02`: lake seam slivers, hairline seam cracks and water tilting up steep banks were
+  rendering faults, not the Kuopio DEM import: the water shader read terrain height with the
+  watermap's layout, water borders repeated edge depth instead of the neighbour's, and shoreline
+  vertices took dry terrain height. Water now stays flat at its level and terrain forms the
+  shoreline. See [`terrain.md`](terrain.md).
+
+- Options → Graphics gains V-Sync, Show FPS (top-right readout), Max FPS, Render scale (FSR 2),
+  Shadows and View distance, applied live and persisted in `user://settings.cfg`. They replace
+  the `METRUM_GFX` preset environment variable and its F8-F11 hotkeys. Low shadows, reduced view
+  distance and 67% render scale together take the Kuopio overview from `11.8` to `8.8 ms` on an
+  M2 Pro. See [`ui.md`](ui.md).
+
+- `TERRAIN-06`: Rust bakes per-patch relief and cliff-reach masks on the payload worker; the
+  terrain shader reads them from one shared texture array and runs the cliff test only near cliffs.
+  Image unchanged, idle p50 `-0.13-0.28 ms` on M2 Pro. New `cliff` / `cliff_low` benchmark poses.
+  See [`terrain.md`](terrain.md).
+
+- Idle-frame matrix: `forest` / `forest_low` poses and `METRUM_IDLE_BENCH_CANOPY_DENSITY` measure
+  denser canopy; at the `121.9/ha` ceiling vegetation costs up to `7.35 ms`, mostly tree vertex
+  work. Benchmark runs no longer pick up the saved fullscreen state, building detail or HiDPI UI
+  scale. See [`terrain.md`](terrain.md).
+
+- `TERRAIN-03` / `TERRAIN-04`: idle frames and startup. Eleven road/site textures now import
+  VRAM-compressed with mipmaps (startup `3.7 -> 1.9 s`), and the terrain shader reads four
+  position-only noise fields from a texture baked once per world (`terrain_world_noise.gd`)
+  instead of evaluating them per pixel. Idle p50 on an M2 Pro: overview `15.91 -> 15.01 ms`,
+  town `11.17 -> 10.43 ms`, visually unchanged. A new idle-frame benchmark matrix
+  (`METRUM_GAMEPLAY_BENCHMARK_MATRIX=idle`) and `tools/xctrace_report.py` support the work. See
+  [`terrain.md`](terrain.md).
+
 - `TOOLS-11`: pack rows in Options → Mods gain `Verify` (imported packs, against the kept
   `checksums.sha256`), `Show folder` and `Remove…` (to Trash; drops the enabled entry; refused for
   bundled packs and packs a running city uses). See
@@ -892,10 +951,9 @@ reopening requires a current reproduction, not an assumption that the old geomet
   qualified by reported desktop switching; see [`terrain.md`](terrain.md).
   Water uses a dark Baltic-blue depth palette with
   less terrain bleed and restrained
-  downward-view sky reflection through a tuned Fresnel/foam/normal material path. Grazing views
-  receive a smooth sky response that does not expose procedural normal cells, and the sun
-  reflection uses a conservative softened shoulder around its bright core; fine ripple detail is
-  deferred until it can use a seamless mipmapped normal texture. Scene lighting / shadow policy is
+  physical Fresnel from the level surface: dark looking down, reflective at grazing angles. It
+  reflects the shore and trees through a screen-space march, the engine reflects the sky and
+  sun, and analytic wind ripples, faded by pixel footprint, move the surface (`WATER-03`). Scene lighting / shadow policy is
   centralized through the Godot rendering bridge. Gameplay and WorldEditor now
   share a continuous procedural hemisphere sky with no literal horizon seam and a sun driven by
   that same directional light. A static 2K equirectangular cloud source is reduced to a restrained

@@ -247,6 +247,7 @@ impl BuildingAllocator {
 
                 self.field_clearance.remove_and_remap(i, last_idx);
                 self.record_production_site_removal(i, last_idx);
+                self.queue_yard_removal(i);
                 self.buildings.swap_remove(i);
                 self.remove_building_site_client(i);
                 if let Some(bounds) = removed_site_bounds {
@@ -1121,6 +1122,7 @@ impl BuildingAllocator {
         self.field_clearance
             .remove_and_remap(building_idx, last_idx);
         self.record_production_site_removal(building_idx, last_idx);
+        self.queue_yard_removal(building_idx);
         self.buildings.swap_remove(building_idx);
         self.remove_building_site_client(building_idx);
         self.bump_building_ref_revision();

@@ -5,7 +5,9 @@
 //! JSON metadata is validated and round-tripped through [`AssetManifest`]. Filesystem
 //! publication belongs exclusively to `assets::authoring::files`; this module only reads packs.
 
-use crate::assets::asset::{AnchorType, PlacementMode, SiteSurfaceMaterial};
+use crate::assets::asset::{
+    AnchorType, LotEdge, PlacementMode, SiteSurfaceMaterial, YardHedgeKind, YardPlantKind,
+};
 use crate::assets::pack::toml_string;
 use crate::assets::{AssetManifest, PackManifest};
 use crate::debug_log;
@@ -59,7 +61,9 @@ pub struct AnchorParams {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SiteSurfaceParams {
-    /// Surface material key such as `"asphalt"` or `"concrete"`.
+    /// Surface material key such as `"asphalt"` or `"concrete"`, or a plant kind (`"trees"`,
+    /// `"bushes"`, `"mixed"`, `"flowers"`) for a yard planting area, which the editor keeps
+    /// among the surfaces and export writes as `[[building.yard_planting]]` instead.
     pub material: String,
     /// Optional editor label for this surface.
     #[serde(default)]
@@ -187,6 +191,14 @@ pub struct ExportParams {
     /// Optional field area mode. Version one supports `"player_polygon"`.
     #[serde(default)]
     pub field_area_mode: Option<String>,
+    /// Hedge a spawned building lines its yard with: `"low"`, `"medium"` or `"tall"`. Absent or
+    /// `"none"` exports no yard hedge.
+    #[serde(default)]
+    pub yard_hedge: Option<String>,
+    /// Lot edges the yard hedge lines (`"front"`, `"back"`, `"left"`, `"right"`); all four when
+    /// absent.
+    #[serde(default)]
+    pub yard_hedge_edges: Option<Vec<String>>,
 
     /// Building mesh parts. Each part owns its own LOD entries.
     #[serde(default)]
@@ -341,6 +353,29 @@ fn build_asset_toml(p: &ExportParams) -> Result<String, String> {
                 out.push_str(&format!("resource = {}\n", toml_string(resource)));
                 out.push_str(&format!("area_mode = {}\n", toml_string(area_mode)));
             }
+            if let Some(hedge) = p.yard_hedge.as_deref().and_then(YardHedgeKind::from_name) {
+                out.push_str("\n[building.yard_hedge]\n");
+                out.push_str(&format!("hedge = {}\n", toml_string(hedge.name())));
+                if let Some(edges) = &p.yard_hedge_edges {
+                    let edges: Vec<_> = LotEdge::ALL
+                        .into_iter()
+                        .filter(|edge| edges.iter().any(|name| name == edge.name()))
+                        .map(|edge| toml_string(edge.name()))
+                        .collect();
+                    out.push_str(&format!("edges = [{}]\n", edges.join(", ")));
+                }
+            }
+            for area in &p.site_surfaces {
+                let Some(plants) = YardPlantKind::from_name(&area.material) else {
+                    continue;
+                };
+                out.push_str("\n[[building.yard_planting]]\n");
+                out.push_str(&format!("plants = {}\n", toml_string(plants.name())));
+                if !area.name.is_empty() {
+                    out.push_str(&format!("name = {}\n", toml_string(&area.name)));
+                }
+                out.push_str(&format!("vertices = {}\n", toml_polygon(&area.vertices)));
+            }
         }
         other => {
             // Future: prop, vehicle. Return an error-shaped string that the caller detects.
@@ -393,20 +428,16 @@ fn build_asset_toml(p: &ExportParams) -> Result<String, String> {
     }
 
     for surface in &p.site_surfaces {
+        if YardPlantKind::from_name(&surface.material).is_some() {
+            continue;
+        }
         out.push_str("\n[[site_surfaces]]\n");
         out.push_str(&format!("material = {}\n", toml_string(&surface.material)));
         if !surface.name.is_empty() {
             out.push_str(&format!("name = {}\n", toml_string(&surface.name)));
         }
         out.push_str(&format!("y_m = {}\n", surface.y_m));
-        out.push_str("vertices = [");
-        for (index, [x, z]) in surface.vertices.iter().copied().enumerate() {
-            if index > 0 {
-                out.push_str(", ");
-            }
-            out.push_str(&format!("[{x}, {z}]"));
-        }
-        out.push_str("]\n");
+        out.push_str(&format!("vertices = {}\n", toml_polygon(&surface.vertices)));
     }
 
     if let Some(appearance) = &p.appearance {
@@ -917,9 +948,37 @@ pub fn get_asset_manifest_json_internal(
             serde_json::json!(b.field.as_ref().map(|field| field.resource.as_str()));
         obj["field_area_mode"] =
             serde_json::json!(b.field.as_ref().map(|field| field.area_mode.as_str()));
+        obj["yard_hedge"] = serde_json::json!(
+            b.yard_hedge
+                .as_ref()
+                .map_or("none", |yard| yard.hedge.name())
+        );
+        // Planting areas go back among the surfaces, as the editor keeps them.
+        if let Some(surfaces) = obj["site_surfaces"].as_array_mut() {
+            surfaces.extend(b.yard_planting.iter().map(|area| {
+                serde_json::json!({
+                    "material": area.plants.name(),
+                    "name": area.name,
+                    "y_m": 0.0,
+                    "vertices": area.vertices,
+                })
+            }));
+        }
+        obj["yard_hedge_edges"] = serde_json::json!(
+            b.yard_hedge.as_ref().map_or_else(
+                || LotEdge::ALL.iter().map(|edge| edge.name()).collect::<Vec<_>>(),
+                |yard| yard.edges.iter().map(|edge| edge.name()).collect()
+            )
+        );
     }
 
     serde_json::to_string(&obj).unwrap_or_default()
+}
+
+// A `[[x, z], ...]` TOML array.
+fn toml_polygon(vertices: &[[f32; 2]]) -> String {
+    let points: Vec<_> = vertices.iter().map(|[x, z]| format!("[{x}, {z}]")).collect();
+    format!("[{}]", points.join(", "))
 }
 
 /// Reads `<pack_dir>/pack.toml` and returns a JSON object with pack metadata,
@@ -1203,6 +1262,48 @@ mod tests {
             .0;
         assert!(asset_toml.contains("frontage_forward = [1, 0, 0]"));
         assert!(asset_toml.contains("forward = [0, 0, -1]"));
+    }
+
+    #[test]
+    fn a_yard_hedge_exports_and_reads_back_with_its_edges() {
+        let mut data: serde_json::Value =
+            serde_json::from_str(&minimal_building_json("building.residential.hedged")).unwrap();
+        data["yard_hedge"] = serde_json::json!("medium");
+        data["yard_hedge_edges"] = serde_json::json!(["left", "front"]);
+        let params: ExportParams = serde_json::from_value(data.clone()).unwrap();
+        let manifest = AssetManifest::from_str(&build_asset_toml(&params).unwrap()).unwrap();
+        let yard = manifest.building.as_ref().unwrap().yard_hedge.clone().unwrap();
+        assert_eq!(yard.hedge, YardHedgeKind::Medium);
+        // Written in manifest order, whatever order the editor listed them in.
+        assert_eq!(yard.edges, vec![LotEdge::Front, LotEdge::Left]);
+        // "none" exports no hedge at all.
+        data["yard_hedge"] = serde_json::json!("none");
+        let params: ExportParams = serde_json::from_value(data).unwrap();
+        let manifest = AssetManifest::from_str(&build_asset_toml(&params).unwrap()).unwrap();
+        assert!(manifest.building.unwrap().yard_hedge.is_none());
+    }
+
+    #[test]
+    fn yard_planting_areas_export_validate_and_read_back() {
+        let mut data: serde_json::Value =
+            serde_json::from_str(&minimal_building_json("building.residential.planted")).unwrap();
+        // The editor keeps planting areas among the surfaces under their plant kind.
+        data["site_surfaces"] = serde_json::json!([
+            {"material": "trees", "name": "back", "vertices": [[-8.0, -9.0], [8.0, -9.0], [8.0, -4.0]]},
+            {"material": "asphalt", "vertices": [[0.0, 0.0], [2.0, 0.0], [2.0, 2.0]]},
+        ]);
+        let params: ExportParams = serde_json::from_value(data.clone()).unwrap();
+        let manifest = AssetManifest::from_str(&build_asset_toml(&params).unwrap()).unwrap();
+        let areas = &manifest.building.as_ref().unwrap().yard_planting;
+        assert_eq!(areas.len(), 1);
+        assert_eq!(areas[0].plants, YardPlantKind::Trees);
+        assert_eq!(areas[0].vertices, vec![[-8.0, -9.0], [8.0, -9.0], [8.0, -4.0]]);
+        assert_eq!(manifest.site_surfaces.len(), 1, "a planting area is not paving");
+        assert!(validate_asset_params_internal(&data.to_string()).is_empty());
+        // An area outside the lot fails validation as a surface would.
+        data["site_surfaces"] =
+            serde_json::json!([{"material": "bushes", "vertices": [[0.0, 0.0], [30.0, 0.0], [0.0, 3.0]]}]);
+        assert!(!validate_asset_params_internal(&data.to_string()).is_empty());
     }
 
     #[test]

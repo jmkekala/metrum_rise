@@ -145,6 +145,11 @@ func _run() -> void:
 	var row := tool.apply_line(Vector2(-150.0, 150.0), Vector2(-138.0, 150.0), 41)
 	_expect(row == 12, "a 12 m hedge must lay twelve modules, got %d" % row)
 	_expect(tool.apply_line(Vector2(-150.0, 150.0), Vector2(-138.0, 150.0), 42) == 0, "a redrawn hedge must not stack")
+	# An end drawn just off the row's end lands on it, and the hedge brush has no size to step.
+	_expect(simulation.snap_vegetation_line_end(Vector2(-137.6, 150.5)) == Vector2(-138.0, 150.0), "a hedge end must join the row it is drawn onto")
+	var held_radius := tool.radius
+	tool.step_radius(1)
+	_expect(tool.radius == held_radius, "a hedge brush must not change size")
 	tool.option_index = 0
 	# An open species dropdown is an embedded subwindow holding the input grab, and the click
 	# that dismisses it also reaches the tool. That click must dismiss and nothing else, or
