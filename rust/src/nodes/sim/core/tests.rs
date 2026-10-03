@@ -4,6 +4,7 @@
 
 mod building_lod_fixture;
 mod building_site_terrain;
+mod cold_node_edit_latency;
 mod commute_bounds;
 pub(super) mod fields;
 mod road_plan_scaling;

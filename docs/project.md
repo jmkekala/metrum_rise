@@ -292,6 +292,10 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
     records (`ROAD-47`), lanes as 96 B records (`ROAD-48`) and node triangle queries as ids into
     their regions (`ROAD-49`). Together these cut the 100k road layout from 1.74 to 1.27 GB. Span
     earthwork records remain.
+  - The 1M city now fits in memory (about 20 GB projected) but its build projects to 10+ hours:
+    the hourly tick is near-quadratic (`ECON-15`). Batch building spawns (`ALLOC-02`) no longer
+    scan every building and household admission (`ALLOC-03`) no longer scans every vacancy:
+    100k build 505 s → 285 s, records identical. The 1M run waits for `ECON-15`.
   - The export base and a single demand signal follow. See
     [`economy.md`](economy.md#growth-redesign-econ-11econ-14-dem-02).
 - **Road preview display performance (`ROAD-30`–`ROAD-35`, `ROAD-37`–`ROAD-40` and `ROAD-42` done;
@@ -508,7 +512,6 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 - `QA-01`: revalidate and root-cause the old long-run sim-thread panic.
 - `WATER-01`: harden baseline-water rendering and remove remaining dense compatibility boundaries.
 - `MOB-01`: ship bicycle support as the next transport mode.
-- `ALLOC-01`: harden building allocator ownership and spec limits.
 - `DOC-01`: finish replacing old numbered backlog references in live docs.
 
 `QA-01` is now parked in [`roadmap.md`](roadmap.md): the old long-run sim-thread panic has not reproduced recently, including at least one overnight run, so it is no longer treated as an active blocker.

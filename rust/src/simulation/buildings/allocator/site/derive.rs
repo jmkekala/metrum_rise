@@ -72,6 +72,8 @@ impl BuildingAllocator {
         }
         self.bump_building_ref_revision();
         self.entrances_dirty = true;
+        // Capacities and flat sizes come from the catalog; the vacancy list itself is unchanged.
+        self.rebuild_admission_order();
     }
 
     pub(crate) fn rebuild_building_site_clients(&mut self, zone_cell_m: f32) {

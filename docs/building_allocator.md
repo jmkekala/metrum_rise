@@ -626,6 +626,128 @@ Matched runs use `RAYON_NUM_THREADS=8`, `METRUM_DEBUG=0`, CPU affinity
 Exact commands, source identities, two-file diff and logs are in
 `/tmp/metrum-full-audit/site-dependencies-*`.
 
+## City-scale spawn and admission cost (`ALLOC-02`, `ALLOC-03`)
+
+Found 2026-10-03 while sizing the 1M `ECON-13` `PopulatedCity` build (`economy.md`); both done the
+same day.
+Building spawns and household admission each cost time proportional to the whole city, per
+building or per household, so both grow quadratically. Both paths are the game's own: hourly
+demand spawns use the same batch executor, and hourly admission the same candidate pick.
+
+Measurement: temporary timers (not committed) around each phase of `PopulatedCity::build` and each
+sub-step of a spawn and an admission, release build, default Rayon workers, one run per size. Per
+call means total time divided by calls:
+
+| Step | 10k | 30k | 100k (phase total) | Per call, 10k → 30k |
+| --- | ---: | ---: | ---: | --- |
+| Spawn batch (`execute_demand_building_actions`) | 1.7 s | 8.6 s | 175 s | |
+| — `resolve_slot` overlap check | 0.42 s | 3.15 s | | 57 → 154 µs, linear |
+| — `validate_neighbor_site_height` | 0.42 s | 3.15 s | | 57 → 154 µs, linear |
+| — support height solve | 0.74 s | 2.03 s | | 100 → 99 µs, constant |
+| Admission (`admit_households_from_demand`) | 1.5 s | 8.2 s | ~132 s | |
+| — candidate pick | 0.71 s | 5.23 s | | 140 → 349 µs, linear |
+| — border-to-home route query | 0.82 s | 2.95 s | | 146 → 193 µs, mild |
+
+At 1M (about 740,000 buildings and 500,000 households) this projects to about 5 hours of spawning
+and 3.5 hours of admission.
+
+**`ALLOC-02`: batch spawns scan every building.** Placing a building sets `dirty_index`. While it
+is set, `lot_candidate_indices_for_bounds` returns every building site instead of the 512 m
+chunk candidates. So after the first spawn of a batch, every later spawn's overlap and neighbour
+height checks visit all N sites. `execute_single_demand_spawn_action` already keeps the index
+clean with `index_appended_building` (O(1) per building); `execute_demand_building_actions` does
+not, and rebuilds the index once after the batch. Fix: append each placed building to the index
+inside the batch loop, falling back to the rebuild only when the batch also despawned or changed
+levels. The appended `vacancy_index` order must equal the rebuild order, because admission picks
+homes by that order. Exit: identical city records at 10k and 100k, and spawn cost per building
+independent of city size. Expected 1M spawn time: about 1.5 minutes.
+
+Done 2026-10-03. Each successful batch spawn calls `index_appended_building`. Before a spawn, a
+stale index (left by despawns or level changes earlier in the batch) is rebuilt once, so no spawn
+falls back to the full scan. The rebuild after the batch stays, even when appends kept the index
+clean: claims since the last rebuild swap-remove vacancies out of building order, and admission
+breaks ties by vacancy position (`ALLOC-03`), so dropping it would change which homes households
+get. It costs one O(N) pass per batch, not per spawn. Verification: `PopulatedCity::build` records
+identical with and without the fix at 10k and 100k, treasury included. Matched release runs,
+default workers, temporary timers:
+
+| 100k build | Before | After |
+| --- | ---: | ---: |
+| Spawn batch (`fill.execute`) | 129.2 s | 9.7 s |
+| — `resolve_slot` overlap check, per building | | 5.3 µs |
+| — `validate_neighbor_site_height`, per building | | 4.7 µs |
+| — support height solve, per building | | 106 µs |
+| Whole build | 505.5 s | 382.9 s |
+
+The spawn batch is now about 128 µs per building, mostly the height solve, which does not grow
+with the city: about 1.6 minutes at 1M. The unfixed 175 s in the table above came from an
+earlier, slower run of the same code.
+
+**`ALLOC-03`: admission scans every vacancy per household.**
+`next_household_admission_candidate_for_household` walks the whole residential `vacancy_index`
+for each household and takes the smallest `(worker_rank, household_size, vacancy_index
+position)`. An index that reproduces this exactly is awkward for two reasons:
+
+- the position changes whenever `claim_vacancy` swap-removes a full building;
+- with `prefer_worker_capable`, the worker rank hashes the incoming household's id, so the order
+  between buildings changes for every household.
+
+Decision (2026-10-03): keep the current rule and find the same home through an ordered index
+kept in step with every `vacancy_index` swap-remove, so admission results and city records stay
+identical. Changing the rule to an order that indexes directly (for example building index) was
+rejected because it would change every recorded city. If the worker-rank case cannot be indexed
+exactly, it may keep a narrower scan, with its bound stated here.
+
+Exit: candidate pick cost independent of the vacancy count, with identical city records at 10k
+and 100k.
+
+Done 2026-10-03. `AdmissionOrder` (`allocator/admission_order.rs`) groups residential vacancy
+positions by the household size admission offers there, each group a `BTreeSet` ordered by
+position. One helper, `admission_size`, defines the offered size for both the index and the old
+scan. The index changes with every residential vacancy push, swap-remove and occupancy change
+(O(log V) each), is rebuilt with `rebuild_zone_index` and after an asset-registry reload
+(O(V log V)), and is cleared with the allocator. While `dirty_index` is set, the vacancy list may
+name moved buildings, so the pick falls back to the scan. Admission runs after the spawn batch and
+`maintain` have rebuilt the index, so the hourly path does not hit the fallback.
+
+Pick cost:
+
+- Without the worker preference, the pick is the first entry of the smallest non-empty group:
+  O(log V).
+- With the worker preference, every household of two or more has an adult, so a group's first
+  position is always rank 0. A single is a lone elder one time in five, so the size-1 group is
+  walked from its start: 1.25 checks on average, and k checks with probability 5^-(k-1). It walks
+  the whole group only when every single there hashes to an elder for that household id.
+
+Verification:
+
+- `test_admission_order_matches_vacancy_scan` compares the pick with the scan after each of 2,000
+  mixed operations (claims, releases, desertions, appends, rebuilds), in both preference modes.
+  The test fails if the claim hook is removed.
+- `PopulatedCity::build` records are identical at 10k and 100k, treasury included.
+
+Release runs, default workers, temporary timers:
+
+| Admission | Before | After |
+| --- | ---: | ---: |
+| Candidate pick, 10k (5,618 households) | 0.71 s | < 0.01 s |
+| Candidate pick, 100k (56,483 households) | about 98 s (132 s admission minus route query) | < 0.01 s |
+| `admit_households` phase, 100k | 182.7 s | 81.8 s |
+| Whole 100k build (with `ALLOC-02`) | 505.5 s | 285.3 s |
+
+The remaining 48 s of the 100k phase are the two admission hours (`ECON-15`).
+
+**`ALLOC-04`: arrival border per household.** Open, found 2026-10-03 while closing `ALLOC-03`; it
+now dominates admission. `household_arrival_border_node` scans every graph node for border nodes,
+then runs a car route query from each border node to the household's home and keeps the fastest
+(ties to the lowest node id). The route queries grow with the city, contrary to the first estimate:
+146 µs per household at 10k, 193 µs at 30k and 604 µs at 100k (33.8 s in total). If they keep
+growing about 4× per 10× city, they project to about 20 minutes at 1M. The node scan is also
+O(nodes) per household but small (about 0.1 s at 100k). A likely fix is one search from each border
+node per admission batch instead of one per household. Exit: the same border chosen as today, so
+city records stay identical at 10k and 100k, and per-household arrival cost that no longer grows
+with the city, measured at 10k and 100k.
+
 ## Known Limitations And Follow-Up
 
 The current allocator foundation is usable and directionally correct for a road-frontage city

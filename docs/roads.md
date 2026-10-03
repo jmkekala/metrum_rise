@@ -4008,6 +4008,24 @@ cannot be rebuilt like span quads), span terrain-clip loops (14 MB), span region
 (9 MB), node top-source records without their arrays (7.5 MB) and sections (7 MB). The largest
 are tracked as `ROAD-45`–`ROAD-49` (below).
 
+Remaining exit checks, 2026-10-03:
+
+- **1M build.** Not attempted yet. `ROAD-45`–`ROAD-49` bring the 100k build to 1.9 GB peak RSS
+  (10k: 434 MB), which projects to about 20 GB at 1M. Time is the blocker, not memory. Phase timers
+  on the 10k, 30k and 100k builds show building spawns (1.7 s → 175 s, `ALLOC-02`, since fixed) and household
+  admission (1.5 s → about 132 s, `ALLOC-03`, since fixed) growing quadratically, and the 48 warm-up hours
+  (1.7 s → 90 s) following the near-quadratic hourly tick (`ECON-15`). The 1M build projects to
+  10+ hours, so it waits for those three (`ALLOC-02` and `ALLOC-03` done 2026-10-03); see
+  [`building_allocator.md`](building_allocator.md#city-scale-spawn-and-admission-cost-alloc-02-alloc-03)
+  and `economy.md`.
+- **Cold-node edit latency.** The ignored test `cold_node_edit_latency`
+  (`nodes/sim/core/tests/cold_node_edit_latency.rs`) builds the 10k `PopulatedCity` layout and
+  previews then commits three edits on its east edge: a row-end T becoming a four-way, the corner
+  bend becoming a T, and a new T 25 m from two T junctions. Each runs 15 times with the nearby
+  topologies evicted and 15 times with them retained (the pre-`ROAD-44` state), alternating,
+  undone between runs, and checks the committed local products are identical. Written, not yet
+  run.
+
 Exit: retained road-surface memory stays bounded per node and per span. Candidates include
 keeping only what a local edit needs and rebuilding the rest on demand, or evicting caches for
 nodes away from recent edits; the choice is open. Committed and preview products stay

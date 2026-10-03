@@ -7,6 +7,7 @@
 //!
 //! Household admission and building growth execute separately from demand-owned hourly plans.
 
+mod admission_order;
 mod entrance;
 mod geometry;
 mod index;
@@ -320,6 +321,8 @@ pub struct BuildingAllocator {
     pub vacancy_index: [Vec<usize>; 3],
     /// Position of each building in its respective `vacancy_index` list for O(1) removal.
     pub vacancy_pos: Vec<usize>,
+    /// Residential vacancies ordered for household admission, rebuilt with `vacancy_index`.
+    pub(crate) admission_order: admission_order::AdmissionOrder,
     /// Coarse 512 m chunk index of all building centers for bounded rendering/site/economy queries.
     pub building_chunks: HashMap<(i32, i32), Vec<usize>>,
     /// Inclusive occupied chunk bounds, maintained with the existing center index.
@@ -610,6 +613,7 @@ impl BuildingAllocator {
             zone_index: [const { Vec::new() }; 3],
             vacancy_index: [const { Vec::new() }; 3],
             vacancy_pos: Vec::new(),
+            admission_order: Default::default(),
             building_chunks: HashMap::new(),
             building_chunk_bounds: None,
             max_building_support_m: f32::NEG_INFINITY,
@@ -768,6 +772,7 @@ impl BuildingAllocator {
             list.clear();
         }
         self.vacancy_pos.clear();
+        self.clear_admission_order();
         self.building_chunks.clear();
         self.building_chunk_bounds = None;
         self.max_building_support_m = f32::NEG_INFINITY;

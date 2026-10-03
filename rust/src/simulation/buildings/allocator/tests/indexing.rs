@@ -318,3 +318,71 @@ fn test_construction_completion_enables_capacity_and_vacancy_indexing() {
         1
     );
 }
+
+#[test]
+fn test_admission_order_matches_vacancy_scan() {
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "base",
+        "b.res.admission",
+        ZoneClass::Residential,
+    );
+    for i in 0..40 {
+        let mut building =
+            indexed_test_building(residential_asset.clone(), ZoneType::Residential, i);
+        building.parcel_id = 0;
+        allocator.buildings.push(building);
+    }
+    allocator.rebuild_zone_index();
+
+    let residential = zone_bucket(ZoneType::Residential);
+    let mut seed = 0x9E37_79B9_u64;
+    for step in 0..2_000usize {
+        seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        let roll = (seed >> 33) as usize;
+        let building_idx = roll / 8 % allocator.buildings.len();
+        match roll % 8 {
+            0..=3 => allocator.claim_vacancy(building_idx),
+            4 | 5 => allocator.release_vacancy(building_idx),
+            6 if step % 50 == 0 => allocator.mark_building_deserted(building_idx),
+            6 => {
+                let idx = allocator.buildings.len();
+                let mut building = indexed_test_building(
+                    residential_asset.clone(),
+                    ZoneType::Residential,
+                    idx as i32,
+                );
+                building.parcel_id = 0;
+                allocator.buildings.push(building);
+                assert!(allocator.index_appended_building(idx));
+            }
+            _ if step % 200 == 0 => allocator.rebuild_zone_index(),
+            _ => {}
+        }
+        assert!(!allocator.dirty_index);
+        assert!(
+            allocator
+                .admission_order
+                .covers(allocator.vacancy_index[residential].len())
+        );
+        for household_id in [step, step * 7 + 3] {
+            for prefer_worker_capable in [false, true] {
+                assert_eq!(
+                    allocator.next_household_admission_candidate_for_household(
+                        household_id,
+                        prefer_worker_capable,
+                    ),
+                    allocator.scan_household_admission_candidate(
+                        &allocator.vacancy_index[residential],
+                        household_id,
+                        prefer_worker_capable,
+                    ),
+                    "step {step}, household {household_id}, worker {prefer_worker_capable}"
+                );
+            }
+        }
+    }
+}

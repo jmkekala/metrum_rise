@@ -87,6 +87,7 @@ impl BuildingAllocator {
                 }
             }
         }
+        self.rebuild_admission_order();
         self.dirty_index = false;
     }
 
@@ -121,6 +122,7 @@ impl BuildingAllocator {
                     let v_idx = self.vacancy_index[zi].len();
                     self.vacancy_index[zi].push(building_idx);
                     self.vacancy_pos[building_idx] = v_idx;
+                    self.admission_vacancy_pushed(zi, building_idx);
                 }
             }
         }
@@ -128,7 +130,8 @@ impl BuildingAllocator {
         true
     }
 
-    /// Increments occupancy for a building and updates vacancy index if it becomes full. O(1).
+    /// Increments occupancy for a building and updates vacancy index if it becomes full.
+    /// O(log V) for the admission order.
     pub fn claim_vacancy(&mut self, building_idx: usize) {
         if building_idx >= self.buildings.len() {
             return;
@@ -143,6 +146,8 @@ impl BuildingAllocator {
         // If it was in the vacancy list and is now full, remove it
         if b.occupancy >= cap {
             self.remove_housing_vacancy(building_idx);
+        } else {
+            self.admission_occupancy_changed(building_idx);
         }
     }
 
@@ -162,6 +167,7 @@ impl BuildingAllocator {
             self.vacancy_pos[moved] = position;
         }
         self.vacancy_pos[building_idx] = usize::MAX;
+        self.admission_vacancy_removed(zi, position);
     }
 
     /// Latches abandonment and immediately withdraws the home from admission and rehousing. O(1).
@@ -218,7 +224,8 @@ impl BuildingAllocator {
         result
     }
 
-    /// Decrements occupancy for a building and updates vacancy index if it gained space. O(1).
+    /// Decrements occupancy for a building and updates vacancy index if it gained space.
+    /// O(log V) for the admission order.
     pub fn release_vacancy(&mut self, building_idx: usize) {
         if building_idx >= self.buildings.len() {
             return;
@@ -240,12 +247,15 @@ impl BuildingAllocator {
                 let v_idx = self.vacancy_index[zi].len();
                 self.vacancy_index[zi].push(building_idx);
                 self.vacancy_pos[building_idx] = v_idx;
+                self.admission_vacancy_pushed(zi, building_idx);
+                return;
             }
         }
+        self.admission_occupancy_changed(building_idx);
     }
 
     // Farms share the residential vacancy list without entering residential zoning/growth indices.
-    fn housing_vacancy_slot(&self, building_idx: usize) -> Option<usize> {
+    pub(super) fn housing_vacancy_slot(&self, building_idx: usize) -> Option<usize> {
         let building = &self.buildings[building_idx];
         baseline_private_zone_slot(building.zone_type).or_else(|| {
             self.registry

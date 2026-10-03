@@ -3817,6 +3817,22 @@ The 1M tier has not run yet: before `ROAD-44` it projected to about 110 GB, and 
 2026-10-03 progress to about 20 GB peak. The numbers below come from single
 runs and are not yet the matched acceptance runs.
 
+1M runtime, 2026-10-03. Memory now fits, but time does not. Phase timers on the 10k, 30k and
+100k builds (temporary, not committed; release, default workers):
+
+| Build phase | 10k | 100k | 1M projected | Owner |
+| --- | ---: | ---: | ---: | --- |
+| Roads, zoning paint, lot preparation | 8 s | 86 s | about 15 min | linear |
+| Building spawns | 1.7 s | 175 s | about 5 h | `ALLOC-02`, fixed: 9.7 s at 100k, about 1.6 min at 1M |
+| Household admission | 1.5 s | about 132 s | about 3.5 h | `ALLOC-03`, fixed: 34 s at 100k, route query left (`ALLOC-04`, about 20 min at 1M) |
+| Admission hours (two ticks) | 2.6 s | 48 s | about 10 min | |
+| Warm-up, 48 hours | 1.7 s | 90 s | about 2 h | `ECON-15` |
+| Peak RSS | 434 MB | 1.9 GB | about 20 GB | `ROAD-44` |
+
+The benchmark then ticks 263 more hours (23 hourly samples and 10 settlement days), about 10
+hours at the projected 150 s hour. The 1M tier waits for `ALLOC-02`, `ALLOC-03` and `ECON-15`, fixed in that order before one
+1M run (decided 2026-10-03). `ALLOC-02` and `ALLOC-03` are done; 100k build 505 s → 285 s, records identical.
+
 **Benchmark city.** `PopulatedCity::build(residents)` (`rust/src/nodes/sim/core/populated_city.rs`)
 builds a square city sized for the requested residents (about 2,800 per km², plus 8% headroom):
 
@@ -3892,7 +3908,8 @@ Open. `ShipmentSystem::hourly_tick` is about 97% of the operational hour at 30k 
 (87 of 90 ms), and the hour grows from 19 ms at 10k to 1.6 s at 100k. Supplier search is meant to
 stay bounded (see [Bounded supplier search](#bounded-supplier-search)), so some step in the hour
 scales with the whole city. Next: profile the 100k `PopulatedCity` hour to find which step does,
-then bound it.
+then bound it. The 100k warm-up hours run at 1.5 s each (2026-10-03), so at 1M the hour projects
+to about 150 s; this blocks the 1M tier (see the 1M runtime table under `ECON-13`).
 
 ## Future Calibration Targets
 

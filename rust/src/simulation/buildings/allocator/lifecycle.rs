@@ -13,9 +13,7 @@ use crate::simulation::economy::definitions::{RuntimeEconomyCatalog, RuntimeEcon
 use crate::simulation::economy::demand::{
     DemandBuildingActionKey, DemandBuildingActionPlan, DemandLevelChangeAction, DemandSpawnAction,
 };
-use crate::simulation::economy::households::{
-    HouseholdSystem, candidate_immigrant_household_size_for_vacancy,
-};
+use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
@@ -452,6 +450,11 @@ impl BuildingAllocator {
 
             for action in &use_plan.spawns {
                 execution.use_mut(zone_type).spawn_attempted += 1;
+                // A stale index makes every site check scan all buildings; despawns and level
+                // changes above cost one rebuild here, spawns below keep it clean by appending.
+                if self.dirty_index || self.vacancy_pos.len() != self.buildings.len() {
+                    self.rebuild_zone_index();
+                }
                 match self.execute_demand_spawn_action(
                     action,
                     zoning,
@@ -461,9 +464,11 @@ impl BuildingAllocator {
                     catalog,
                     tuning,
                 ) {
-                    Ok(_) => {
+                    Ok(building_idx) => {
                         execution.use_mut(zone_type).spawn_executed += 1;
                         mutated_any = true;
+                        // On failure the index stays dirty and the next spawn rebuilds it.
+                        self.index_appended_building(building_idx);
                     }
                     Err(reason) => {
                         execution.use_mut(zone_type).spawn_rejections.record(reason);
@@ -473,9 +478,10 @@ impl BuildingAllocator {
         }
 
         if mutated_any {
-            if self.dirty_index {
-                self.rebuild_zone_index();
-            }
+            // Rebuilt even when appends kept it clean: claims since the last rebuild have
+            // swap-removed vacancies out of building order, and admission breaks ties by
+            // vacancy position (`ALLOC-03`). One O(N) pass per batch, not per spawn.
+            self.rebuild_zone_index();
             self.rebuild_entrance_cache(graph, lanes);
         }
         execution
@@ -919,33 +925,42 @@ impl BuildingAllocator {
     }
 
     /// Returns the next demand-owned household target for a specific future household id.
+    ///
+    /// Picks the smallest `(worker rank, offered size, vacancy position)` through the admission
+    /// order (`ALLOC-03`). A stale index may list moved buildings, so it is scanned as before.
     pub(crate) fn next_household_admission_candidate_for_household(
         &self,
         next_household_id: usize,
         prefer_worker_capable: bool,
     ) -> Option<(usize, u16)> {
         let residential_slot = baseline_private_zone_slot(ZoneType::Residential)?;
+        let vacancies = &self.vacancy_index[residential_slot];
+        if self.dirty_index || !self.admission_order.covers(vacancies.len()) {
+            return self.scan_household_admission_candidate(
+                vacancies,
+                next_household_id,
+                prefer_worker_capable,
+            );
+        }
+        self.admission_order
+            .pick(vacancies, next_household_id, prefer_worker_capable)
+            .map(|(position, size)| (vacancies[position], size))
+    }
+
+    // The admission rule as a walk over every vacancy. O(V).
+    pub(super) fn scan_household_admission_candidate(
+        &self,
+        vacancies: &[usize],
+        next_household_id: usize,
+        prefer_worker_capable: bool,
+    ) -> Option<(usize, u16)> {
         let mut selected_home_idx = usize::MAX;
         let mut selected_size = u16::MAX;
         let mut selected_order = usize::MAX;
         let mut selected_worker_rank = u8::MAX;
 
-        for (order, &building_idx) in self.vacancy_index[residential_slot].iter().enumerate() {
-            let Some(building) = self.buildings.get(building_idx) else {
-                continue;
-            };
-            let free_slots = self
-                .household_capacity(building_idx)
-                .saturating_sub(building.occupancy);
-            if free_slots == 0 {
-                continue;
-            }
-
-            let Some(candidate_size) = candidate_immigrant_household_size_for_vacancy(
-                self.flat_size_m2(building_idx),
-                building_idx,
-                building.occupancy,
-            ) else {
+        for (order, &building_idx) in vacancies.iter().enumerate() {
+            let Some(candidate_size) = self.admission_size(building_idx) else {
                 continue;
             };
 
