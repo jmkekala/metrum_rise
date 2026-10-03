@@ -6,6 +6,16 @@
 ## Each filled slot keeps its Rust display revision; an `unchanged` payload reuses that slot.
 extends RefCounted
 
+# Uniforms each staged payload sets for its own heightmap; never mirrored from the resident patch.
+const PAYLOAD_UNIFORMS := [
+	"heightmap",
+	"height_is_baked",
+	"heightmap_texture_size",
+	"inner_sample_offset_texels",
+	"inner_sample_size_texels",
+	"patch_world_size_m",
+]
+
 var metrics: Dictionary = {}
 var request_id: int = 0
 # Set when an `unchanged` payload names a revision no slot still holds. The caller must fetch
@@ -130,6 +140,7 @@ func stage(terrain: Node3D, payloads: Variant, generation: int) -> Array:
 			slot["texture_size"] = size
 			material.set_shader_parameter("heightmap", slot["texture"])
 		material.set_shader_parameter("height_is_baked", terrain._terrain_patch_mesh_is_baked(data))
+		_apply_heightmap_layout(material, data, size)
 		var walls: MeshInstance3D = slot["walls"]
 		walls.mesh = terrain._retaining_wall_patch_mesh(data)
 		# The filled content now reproduces this revision at this resident level of detail.
@@ -291,6 +302,24 @@ func _mirror_resident(terrain: Node3D, slot: Dictionary, patch: Dictionary) -> v
 	if _sync_material(slot["material"], patch["material"]) and slot.get("texture") != null:
 		slot["material"].set_shader_parameter("heightmap", slot["texture"])
 
+# The preview heightmap's own layout. A road preview patch is refined, so its texture usually
+# differs in size and inner sampling window from the resident patch it replaces; copying the
+# resident values would sample it with the wrong texel layout and skew the whole patch's normals.
+func _apply_heightmap_layout(material: ShaderMaterial, data: Dictionary, size: Vector2i) -> void:
+	material.set_shader_parameter("heightmap_texture_size", Vector2(size))
+	material.set_shader_parameter(
+		"inner_sample_offset_texels",
+		Vector2(float(data["inner_offset_x"]), float(data["inner_offset_z"]))
+	)
+	material.set_shader_parameter(
+		"inner_sample_size_texels",
+		Vector2(int(data["sample_width"]), int(data["sample_height"]))
+	)
+	material.set_shader_parameter(
+		"patch_world_size_m",
+		Vector2(float(data["world_size_x"]), float(data["world_size_z"]))
+	)
+
 # O(shader uniforms) reads; writes only changed values so reused materials stay clean.
 # Returns true when the shader changed and the heightmap must be assigned again.
 func _sync_material(target: ShaderMaterial, source: ShaderMaterial) -> bool:
@@ -302,7 +331,7 @@ func _sync_material(target: ShaderMaterial, source: ShaderMaterial) -> bool:
 		_uniform_names.clear()
 		if _uniform_shader != null:
 			for uniform in _uniform_shader.get_shader_uniform_list():
-				if uniform["name"] != "heightmap" and uniform["name"] != "height_is_baked":
+				if not PAYLOAD_UNIFORMS.has(uniform["name"]):
 					_uniform_names.append(StringName(uniform["name"]))
 	for name in _uniform_names:
 		var value = source.get_shader_parameter(name)

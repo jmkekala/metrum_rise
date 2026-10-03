@@ -88,7 +88,6 @@ uniform vec2 watermap_inner_sample_offset_texels = vec2(0.0, 0.0);
 uniform vec2 watermap_inner_sample_size_texels = vec2(2.0, 2.0);
 uniform vec2 patch_world_size_m = vec2(256.0, 256.0);
 uniform float terrain_cell_m = 10.0;
-uniform float terrain_baked_readability_strength = 0.12;
 uniform float terrain_coal_detail_scale = 0.22;
 uniform float terrain_coal_pit_strength = 0.72;
 uniform vec3 terrain_coal_lift_color : source_color = vec3(0.18, 0.16, 0.13);
@@ -440,26 +439,6 @@ vec3 terrain_visual_debug_color(
 	return mix(debug_color, vec3(1.0), border);
 }
 
-vec3 apply_baked_terrain_readability(
-	vec3 color,
-	float hillshade,
-	float slope,
-	float local_relief,
-	float cliff_face,
-	float shore_mask
-) {
-	if (!height_is_baked) {
-		return color;
-	}
-	float slope_mask = smoothstep(0.004, 0.055, slope);
-	float relief_mask = smoothstep(0.25, 3.50, local_relief);
-	float feature_mask = max(slope_mask, relief_mask * 0.55);
-	feature_mask *= clamp(1.0 - cliff_face * 0.80 - shore_mask * 0.35, 0.0, 1.0);
-	float signed_shade = hillshade * 2.0 - 1.0;
-	float shade = 1.0 + signed_shade * clamp(terrain_baked_readability_strength, 0.0, 0.30) * feature_mask;
-	return color * clamp(shade, 0.86, 1.12);
-}
-
 float contour_mask(float world_elevation, float interval_m, float thickness) {
 	float safe_interval = max(interval_m, 0.001);
 	float scaled = world_elevation / safe_interval;
@@ -761,14 +740,6 @@ void fragment() {
 				color = mix(color, grain_albedo, field_mask * terrain_field_strength);
 			}
 			float hillshade = hillshade_mask(normal);
-			color = apply_baked_terrain_readability(
-				color,
-				hillshade,
-				slope,
-				local_relief,
-				cliff_face,
-				shore_mask * shore_flatness
-			);
 			color = mix(color, cliff_face_color, cliff_face * cliff_face_strength);
 			vec3 hillshade_tint = mix(hillshade_shadow_tint, hillshade_light_tint, hillshade);
 			color *= mix(vec3(1.0), hillshade_tint, hillshade_strength);

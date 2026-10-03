@@ -29,7 +29,6 @@ const WorldMaterials := preload("res://scripts/renderers/world_materials.gd")
 const TERRAIN_COAL_ALBEDO_PATH := "res://assets/textures/general/coal/dark_rock_diff_2k.jpg"
 const TERRAIN_GRAIN_ALBEDO_PATH := "res://assets/textures/general/grain/withered_grass_diff_2k.jpg"
 const HEIGHT_SCALE := 20.0
-const TERRAIN_BAKED_READABILITY_STRENGTH := 0.12
 const TERRAIN_ROCK_SLOPE_START := 0.15
 const TERRAIN_ROCK_SLOPE_END := 0.34
 const TERRAIN_RELIEF_SAMPLE_RADIUS_TEXELS := 3.0
@@ -1006,10 +1005,6 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 	material.set_shader_parameter("watermap_inner_sample_size_texels", Vector2(2, 2))
 	material.set_shader_parameter("patch_world_size_m", Vector2(world_size_x, world_size_z))
 	material.set_shader_parameter("terrain_cell_m", terrain_cell_m)
-	material.set_shader_parameter(
-		"terrain_baked_readability_strength",
-		TERRAIN_BAKED_READABILITY_STRENGTH
-	)
 	material.set_shader_parameter("terrain_grain_detail_scale", 1.0 / FIELD_OVERLAY_TEXTURE_TILE_M)
 	material.set_shader_parameter("terrain_field_strength", FIELD_OVERLAY_STRENGTH)
 	material.set_shader_parameter("terrain_grain_tint", FIELD_OVERLAY_GRAIN_TINT)
