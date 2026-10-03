@@ -52,7 +52,7 @@ impl PlannedRoadSurfaceQuery {
 
     fn any_road_polygon(
         &self,
-        overlaps: impl Fn(&super::super::RoadSurfaceVisualPolygon) -> bool,
+        overlaps: impl Fn(&[super::super::backend::RoadVec3]) -> bool,
     ) -> bool {
         self.surface.any_road_polygon(overlaps)
     }
@@ -114,10 +114,14 @@ impl PlannedRoadSurfaceQuery {
                         .get(&local)
                         .cloned()
                         .unwrap_or_default(),
-                    std::sync::Arc::clone(&self.surface.compiled_visual_node_topologies[&local]),
+                    self.surface
+                        .compiled_visual_node_topologies
+                        .get(&local)
+                        .cloned(),
                     false,
                 );
-                if surface.compiled_visual_node_pieces.get(&live) != Some(&expected.piece) {
+                let expected = surface.published_node_piece(expected.piece);
+                if surface.compiled_visual_node_pieces.get(&live) != Some(&expected) {
                     return false;
                 }
             }
@@ -236,27 +240,21 @@ impl RoadSurfaceSystem {
         zoning: &crate::simulation::zoning::ZoningSystem,
     ) -> bool {
         zoning.cells.has_reservations()
-            && self.any_road_polygon(|polygon| zoning.cells_overlap_road_polygon(polygon))
+            && self.any_road_polygon(|points| zoning.cells_overlap_road_points_world(points))
     }
 
     fn any_road_polygon(
         &self,
-        overlaps: impl Fn(&super::super::RoadSurfaceVisualPolygon) -> bool,
+        overlaps: impl Fn(&[super::super::backend::RoadVec3]) -> bool,
     ) -> bool {
         self.compiled_visual_span_pieces.values().any(|piece| {
             piece
-                .road_surface_polygons
-                .iter()
-                .chain(&piece.curb_surface_polygons)
-                .chain(&piece.sidewalk_surface_polygons)
-                .any(&overlaps)
+                .surface_polygons()
+                .any(|quad| overlaps(quad.points()))
         }) || self.compiled_visual_node_pieces.values().any(|piece| {
             piece
-                .road_surface_polygons
-                .iter()
-                .chain(&piece.curb_surface_polygons)
-                .chain(&piece.sidewalk_surface_polygons)
-                .any(&overlaps)
+                .surface_polygons()
+                .any(|polygon| overlaps(&polygon.points_world))
         })
     }
 }

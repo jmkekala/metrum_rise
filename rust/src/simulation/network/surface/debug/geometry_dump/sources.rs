@@ -10,7 +10,7 @@ impl RoadSurfaceSystem {
         piece: &RoadSurfaceVisualSpanPiece,
     ) {
         dump.push('[');
-        for (source_index, source) in piece.span_raised_step_sources.iter().copied().enumerate() {
+        for (source_index, source) in piece.span_raised_step_sources().enumerate() {
             if source_index > 0 {
                 dump.push_str(", ");
             }

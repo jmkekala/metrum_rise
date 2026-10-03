@@ -151,15 +151,15 @@ pub(in crate::simulation::network::surface::tests::junction) fn generated_node_c
             ),
             generated_material_coverage(
                 "road",
-                overlay_contours_from_top_polygons(&piece.road_surface_polygons),
+                overlay_contours_from_top_polygons(piece.road_surface_polygons()),
             ),
             generated_material_coverage(
                 "curb",
-                overlay_contours_from_top_polygons(&piece.curb_surface_polygons),
+                overlay_contours_from_top_polygons(piece.curb_surface_polygons()),
             ),
             generated_material_coverage(
                 "sidewalk",
-                overlay_contours_from_top_polygons(&piece.sidewalk_surface_polygons),
+                overlay_contours_from_top_polygons(piece.sidewalk_surface_polygons()),
             ),
         ],
     }

@@ -2,20 +2,50 @@
 
 //! Span raised-step constraint extraction and vertical face generation.
 
-use super::super::{
-    RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M,
-    backend::RoadVec3,
-};
+use super::super::{RoadSurfaceSection, RoadSurfaceSystem, SAMPLE_EPSILON_M, backend::RoadVec3};
 use super::{
-    RoadSurfaceSpanBandOwner, RoadSurfaceSpanRaisedStepSource, SpanRaisedStepConstraint,
-    SpanRaisedStepSample, SpanResolvedRaisedStepSample,
+    RoadSurfaceSpanBandOwner, RoadSurfaceSpanRaisedStepSource, RoadSurfaceVisualSpanPiece,
+    SpanQuad, SpanRaisedStep, SpanRaisedStepConstraint, SpanRaisedStepSample,
+    SpanResolvedRaisedStepSample,
 };
+
+impl RoadSurfaceVisualSpanPiece {
+    /// Raised-step faces and their sources in render order, rebuilt from the sections.
+    pub(crate) fn raised_step_faces(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (SpanQuad, RoadSurfaceSpanRaisedStepSource)> + '_ {
+        self.raised_steps.iter().map(|step| {
+            let start = step.start_section_index as usize;
+            let constraint = RoadSurfaceSystem::span_raised_step_constraint(
+                &self.sections[start..=start + 1],
+                start,
+                start + 1,
+                step.boundary_index as usize,
+            )
+            .expect("span raised steps are only kept for resolved constraints");
+            RoadSurfaceSystem::span_raised_step_face_from_constraint(&constraint)
+                .expect("span raised steps are only kept for valid vertical quads")
+        })
+    }
+
+    /// Vertical faces at raised owner-pair material contacts, in render order.
+    pub fn raised_step_face_polygons(&self) -> impl ExactSizeIterator<Item = SpanQuad> + '_ {
+        self.raised_step_faces().map(|(face, _)| face)
+    }
+
+    /// Owner-pair and section provenance of each raised-step face, in render order.
+    pub(crate) fn span_raised_step_sources(
+        &self,
+    ) -> impl ExactSizeIterator<Item = RoadSurfaceSpanRaisedStepSource> + '_ {
+        self.raised_step_faces().map(|(_, source)| source)
+    }
+}
 
 impl RoadSurfaceSystem {
     pub(super) fn sort_span_raised_step_faces(
-        faces: &mut [(RoadSurfaceVisualPolygon, RoadSurfaceSpanRaisedStepSource)],
+        faces: &mut [(SpanQuad, RoadSurfaceSpanRaisedStepSource, SpanRaisedStep)],
     ) {
-        faces.sort_by(|(polygon_a, source_a), (polygon_b, source_b)| {
+        faces.sort_by(|(polygon_a, source_a, _), (polygon_b, source_b, _)| {
             source_a
                 .lower_owner
                 .sort_key()
@@ -34,7 +64,7 @@ impl RoadSurfaceSystem {
                 .then(source_a.end_section_index.cmp(&source_b.end_section_index))
                 .then(source_a.start_s_m.total_cmp(&source_b.start_s_m))
                 .then(source_a.end_s_m.total_cmp(&source_b.end_s_m))
-                .then_with(|| Self::visual_polygon_ordering(polygon_a, polygon_b))
+                .then_with(|| Self::visual_points_ordering(polygon_a.points(), polygon_b.points()))
         });
     }
 
@@ -52,29 +82,42 @@ impl RoadSurfaceSystem {
             "span region resolution rejects mismatched section profiles before raised-step extraction"
         );
 
-        let mut constraints = Vec::new();
-        for boundary_index in 0..pair[0].bands.len().saturating_sub(1) {
-            let Some(start) = Self::span_raised_step_sample(&pair[0], boundary_index) else {
-                continue;
-            };
-            let Some(end) = Self::span_raised_step_sample(&pair[1], boundary_index) else {
-                continue;
-            };
-            if start.lower_owner != end.lower_owner || start.raised_owner != end.raised_owner {
-                continue;
-            }
-            constraints.push(SpanRaisedStepConstraint {
-                lower_owner: start.lower_owner,
-                raised_owner: start.raised_owner,
-                start_section_index,
-                end_section_index,
-                start_s_m: pair[0].s_m,
-                end_s_m: pair[1].s_m,
-                start: start.sample,
-                end: end.sample,
-            });
+        (0..pair[0].bands.len().saturating_sub(1))
+            .filter_map(|boundary_index| {
+                Self::span_raised_step_constraint(
+                    pair,
+                    start_section_index,
+                    end_section_index,
+                    boundary_index,
+                )
+            })
+            .collect()
+    }
+
+    // The raised step between bands `boundary_index` and `boundary_index + 1` of one section
+    // pair, if both sections step the same way there.
+    pub(super) fn span_raised_step_constraint(
+        pair: &[RoadSurfaceSection],
+        start_section_index: usize,
+        end_section_index: usize,
+        boundary_index: usize,
+    ) -> Option<SpanRaisedStepConstraint> {
+        let start = Self::span_raised_step_sample(&pair[0], boundary_index)?;
+        let end = Self::span_raised_step_sample(&pair[1], boundary_index)?;
+        if start.lower_owner != end.lower_owner || start.raised_owner != end.raised_owner {
+            return None;
         }
-        constraints
+        Some(SpanRaisedStepConstraint {
+            lower_owner: start.lower_owner,
+            raised_owner: start.raised_owner,
+            start_section_index,
+            end_section_index,
+            boundary_index,
+            start_s_m: pair[0].s_m,
+            end_s_m: pair[1].s_m,
+            start: start.sample,
+            end: end.sample,
+        })
     }
 
     fn span_raised_step_sample(
@@ -149,16 +192,26 @@ impl RoadSurfaceSystem {
 
     pub(super) fn span_raised_step_faces_from_constraints(
         constraints: &[SpanRaisedStepConstraint],
-    ) -> Vec<(RoadSurfaceVisualPolygon, RoadSurfaceSpanRaisedStepSource)> {
+    ) -> Vec<(SpanQuad, RoadSurfaceSpanRaisedStepSource, SpanRaisedStep)> {
         constraints
             .iter()
-            .filter_map(Self::span_raised_step_face_from_constraint)
+            .filter_map(|constraint| {
+                let (face, source) = Self::span_raised_step_face_from_constraint(constraint)?;
+                Some((
+                    face,
+                    source,
+                    SpanRaisedStep {
+                        start_section_index: constraint.start_section_index as u32,
+                        boundary_index: constraint.boundary_index as u32,
+                    },
+                ))
+            })
             .collect()
     }
 
-    fn span_raised_step_face_from_constraint(
+    pub(super) fn span_raised_step_face_from_constraint(
         constraint: &SpanRaisedStepConstraint,
-    ) -> Option<(RoadSurfaceVisualPolygon, RoadSurfaceSpanRaisedStepSource)> {
+    ) -> Option<(SpanQuad, RoadSurfaceSpanRaisedStepSource)> {
         let mut points = [
             constraint.start.raised_world,
             constraint.start.lower_world,
@@ -171,7 +224,7 @@ impl RoadSurfaceSystem {
             points = [points[3], points[2], points[1], points[0]];
         }
 
-        let polygon = Self::make_vertical_quad_polygon(points)?;
+        let polygon = SpanQuad::from_vertical_points(points)?;
         let source = RoadSurfaceSpanRaisedStepSource {
             lower_owner: constraint.lower_owner,
             raised_owner: constraint.raised_owner,

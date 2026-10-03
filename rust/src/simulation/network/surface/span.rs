@@ -4,13 +4,17 @@
 
 mod boundaries;
 mod mouth_profile;
+mod quads;
 mod raised_steps;
 mod regions;
 
+pub use quads::SpanQuad;
+
 use super::{
     IncidentEdgeSide, IncidentMouthProfile, RoadSurfaceBandKind, RoadSurfaceEarthworkFaceSource,
-    RoadSurfaceEarthworkRenderFace, RoadSurfaceEarthworkSupportPolicy, RoadSurfaceSystem,
-    RoadSurfaceTerrainClipLoop, RoadSurfaceTriangleQueryIndex, RoadSurfaceVisualPolygon,
+    RoadSurfaceEarthworkRenderFace, RoadSurfaceEarthworkSupportPolicy, RoadSurfaceSection,
+    RoadSurfaceSystem,
+    RoadSurfaceTerrainClipLoop, RoadSurfaceVisualPolygon, SurfaceTriangleGrid,
     backend::RoadVec3, band_semantics::band_kind_sort_key,
 };
 use crate::simulation::network::graph::RegionGraph;
@@ -50,8 +54,6 @@ pub(crate) struct RoadSurfaceSpanOwnedRegion {
     pub(crate) end_section_index: usize,
     pub(crate) start_s_m: f32,
     pub(crate) end_s_m: f32,
-    pub(crate) source_corners_world: [RoadVec3; 4],
-    pub(crate) polygon: RoadSurfaceVisualPolygon,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -76,16 +78,14 @@ pub struct RoadSurfaceVisualSpanPiece {
     /// Outer piece-owned boundaries used for debug, surface chunk bounds, and terrain clipping.
     pub outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
     pub(crate) terrain_clip_boundary_loops: Vec<RoadSurfaceTerrainClipLoop>,
-    /// Explicit asphalt-owned polygons for the span piece.
-    pub road_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
-    /// Explicit curb / shoulder-owned polygons for the span piece.
-    pub curb_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
-    /// Explicit vertical faces at raised owner-pair material contacts.
-    pub raised_step_face_polygons: Vec<RoadSurfaceVisualPolygon>,
-    pub(crate) span_raised_step_sources: Vec<RoadSurfaceSpanRaisedStepSource>,
-    /// Explicit sidewalk-owned polygons for the span piece.
-    pub sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
-    pub(in crate::simulation::network::surface) surface_query: Arc<RoadSurfaceTriangleQueryIndex>,
+    // Sections the regions were resolved from; region quads are rebuilt from them on read.
+    pub(crate) sections: Arc<Vec<RoadSurfaceSection>>,
+    // Indices into `span_owned_regions` of the asphalt, curb and sidewalk quads in render order.
+    pub(in crate::simulation::network::surface) surface_polygon_order: [Box<[u32]>; 3],
+    // Raised-step faces in render order; each is rebuilt from its section pair.
+    pub(in crate::simulation::network::surface) raised_steps: Box<[SpanRaisedStep]>,
+    // Top-triangle grid; items are `region_index << 1 | triangle_index` into the owned regions.
+    pub(in crate::simulation::network::surface) surface_query: Arc<SurfaceTriangleGrid>,
     pub(crate) span_owned_regions: Arc<Vec<RoadSurfaceSpanOwnedRegion>>,
     pub(crate) edge_class: EdgeClass,
     pub(crate) start_mouth_profile: Option<IncidentMouthProfile>,
@@ -95,7 +95,8 @@ pub struct RoadSurfaceVisualSpanPiece {
     /// Whether the end node footprint belongs to a grounded bridge abutment cutout.
     pub(crate) end_terrain_clip_node: bool,
     pub(crate) span_earthwork_support_regions: Arc<Vec<RoadSurfaceSpanOwnedRegion>>,
-    pub(crate) earthwork_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
+    // `render_earthwork_faces` indices in earthwork surface polygon order.
+    pub(in crate::simulation::network::surface) earthwork_surface_order: Box<[u32]>,
     pub(crate) earthwork_outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
     pub(crate) render_earthwork_faces: Vec<RoadSurfaceEarthworkRenderFace>,
 }
@@ -138,6 +139,7 @@ impl RoadSurfaceVisualSpanPiece {
         for face in &mut self.render_earthwork_faces {
             face.source = face.source.with_span_identity(edge_idx);
         }
+        self.sections = sections_with_edge_identity(self.sections, edge_idx);
         self.edge_idx = edge_idx;
         self
     }
@@ -180,11 +182,9 @@ impl RoadSurfaceVisualSpanPiece {
             edge_idx,
             outer_boundary_loops: self.outer_boundary_loops.clone(),
             terrain_clip_boundary_loops,
-            road_surface_polygons: self.road_surface_polygons.clone(),
-            curb_surface_polygons: self.curb_surface_polygons.clone(),
-            raised_step_face_polygons: self.raised_step_face_polygons.clone(),
-            span_raised_step_sources: self.span_raised_step_sources.clone(),
-            sidewalk_surface_polygons: self.sidewalk_surface_polygons.clone(),
+            sections: sections_with_edge_identity(Arc::clone(&self.sections), edge_idx),
+            surface_polygon_order: self.surface_polygon_order.clone(),
+            raised_steps: self.raised_steps.clone(),
             surface_query: Arc::clone(&self.surface_query),
             span_owned_regions,
             edge_class: self.edge_class,
@@ -193,7 +193,7 @@ impl RoadSurfaceVisualSpanPiece {
             start_terrain_clip_node: self.start_terrain_clip_node,
             end_terrain_clip_node: self.end_terrain_clip_node,
             span_earthwork_support_regions,
-            earthwork_surface_polygons: self.earthwork_surface_polygons.clone(),
+            earthwork_surface_order: self.earthwork_surface_order.clone(),
             earthwork_outer_boundary_loops: self.earthwork_outer_boundary_loops.clone(),
             render_earthwork_faces,
         }
@@ -208,23 +208,25 @@ struct SpanResolvedRegionSet {
     terrain_clip_boundary_loops: Vec<RoadSurfaceTerrainClipLoop>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
-struct SpanRenderRegionBuckets {
-    road_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
-    curb_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
-    sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct SpanRaisedStepConstraint {
     lower_owner: RoadSurfaceSpanBandOwner,
     raised_owner: RoadSurfaceSpanBandOwner,
     start_section_index: usize,
     end_section_index: usize,
+    boundary_index: usize,
     start_s_m: f32,
     end_s_m: f32,
     start: SpanRaisedStepSample,
     end: SpanRaisedStepSample,
+}
+
+/// One span raised-step face: the step at band boundary `boundary_index` between sections
+/// `start_section_index` and the next.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SpanRaisedStep {
+    start_section_index: u32,
+    boundary_index: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -321,18 +323,55 @@ impl RoadSurfaceSpanOwnedRegion {
     }
 }
 
-impl SpanRenderRegionBuckets {
-    fn is_empty(&self) -> bool {
-        self.road_surface_polygons.is_empty()
-            && self.curb_surface_polygons.is_empty()
-            && self.sidewalk_surface_polygons.is_empty()
+impl RoadSurfaceVisualSpanPiece {
+    // Retained lists are built by pushing; drop their spare capacity once, at publication size.
+    fn shrink_retained(&mut self) {
+        self.outer_boundary_loops.shrink_to_fit();
+        shrink_terrain_clip_loops(&mut self.terrain_clip_boundary_loops);
+        for regions in [&mut self.span_owned_regions, &mut self.span_earthwork_support_regions] {
+            if let Some(regions) = Arc::get_mut(regions) {
+                regions.shrink_to_fit();
+            }
+        }
+        self.earthwork_outer_boundary_loops.shrink_to_fit();
+        self.render_earthwork_faces.shrink_to_fit();
     }
 
-    fn sort(&mut self) {
-        RoadSurfaceSystem::sort_visual_polygons(&mut self.road_surface_polygons);
-        RoadSurfaceSystem::sort_visual_polygons(&mut self.curb_surface_polygons);
-        RoadSurfaceSystem::sort_visual_polygons(&mut self.sidewalk_surface_polygons);
+    /// Earthwork side polygons in `visual_polygon_ordering` order; each is a render face's.
+    pub(crate) fn earthwork_surface_polygons(
+        &self,
+    ) -> impl ExactSizeIterator<Item = &RoadSurfaceVisualPolygon> + '_ {
+        self.earthwork_surface_order
+            .iter()
+            .map(|&index| &self.render_earthwork_faces[index as usize].polygon)
     }
+}
+
+/// Drops spare capacity from retained terrain-clip loops and their source edges.
+pub(in crate::simulation::network::surface) fn shrink_terrain_clip_loops(
+    loops: &mut Vec<RoadSurfaceTerrainClipLoop>,
+) {
+    loops.shrink_to_fit();
+    for clip_loop in loops {
+        clip_loop.points_world.shrink_to_fit();
+        clip_loop.source_edges.shrink_to_fit();
+    }
+}
+
+// Remapped pieces carry their sections under the new edge id, so equality with a piece
+// compiled under that id holds. Copies the sections only when the id actually changes.
+fn sections_with_edge_identity(
+    sections: Arc<Vec<RoadSurfaceSection>>,
+    edge_idx: usize,
+) -> Arc<Vec<RoadSurfaceSection>> {
+    if sections.iter().all(|section| section.edge_idx == edge_idx) {
+        return sections;
+    }
+    let mut sections = Arc::unwrap_or_clone(sections);
+    for section in &mut sections {
+        section.edge_idx = edge_idx;
+    }
+    Arc::new(sections)
 }
 
 impl RoadSurfaceSystem {
@@ -348,30 +387,29 @@ impl RoadSurfaceSystem {
             return None;
         }
         let edge = graph.edge(edge_idx);
-        let sections = self.compiled_sections.get(&edge_idx)?;
+        let sections = Arc::clone(self.compiled_sections.get(&edge_idx)?);
         let visible_ranges_start = road_debug.then(Instant::now);
         let visible_ranges =
-            self.visible_section_ranges_for_edge(graph, terrain, edge_idx, sections);
+            self.visible_section_ranges_for_edge(graph, terrain, edge_idx, &sections);
         let visible_ranges_ms = elapsed_ms(visible_ranges_start);
         let visible_geometry_start = road_debug.then(Instant::now);
         let mut visible_regions =
-            self.resolve_span_regions_for_ranges(sections, &visible_ranges, edge.class)?;
-        Self::sort_span_owned_regions(&mut visible_regions.regions);
-        let mut render_buckets =
-            Self::span_render_region_buckets_from_owned_regions(&visible_regions.regions);
+            self.resolve_span_regions_for_ranges(&sections, &visible_ranges, edge.class)?;
+        Self::sort_span_owned_regions(&sections, &mut visible_regions.regions);
+        let surface_polygon_order =
+            Self::span_surface_polygon_order(&sections, &visible_regions.regions);
         let mut raised_step_faces =
             Self::span_raised_step_faces_from_constraints(&visible_regions.raised_step_constraints);
         Self::sort_span_raised_step_faces(&mut raised_step_faces);
-        let (raised_step_face_polygons, span_raised_step_sources): (
-            Vec<RoadSurfaceVisualPolygon>,
-            Vec<RoadSurfaceSpanRaisedStepSource>,
-        ) = raised_step_faces.into_iter().unzip();
+        let raised_steps = raised_step_faces
+            .into_iter()
+            .map(|(_, _, step)| step)
+            .collect();
 
-        if render_buckets.is_empty() {
+        if surface_polygon_order.iter().all(|order| order.is_empty()) {
             return None;
         }
 
-        render_buckets.sort();
         let outer_boundary_loops = std::mem::take(&mut visible_regions.outer_boundary_loops);
         if outer_boundary_loops.is_empty() {
             return None;
@@ -383,7 +421,7 @@ impl RoadSurfaceSystem {
 
         let earthwork_regions_start = road_debug.then(Instant::now);
         let earthwork_ranges =
-            self.earthwork_section_ranges_for_edge(graph, edge_idx, edge, sections, terrain);
+            self.earthwork_section_ranges_for_edge(graph, edge_idx, edge, &sections, terrain);
         let reuse_visible_regions_for_earthwork =
             edge.class == EdgeClass::Standard && earthwork_ranges == visible_ranges;
         let (terrain_clip_boundary_loops, span_earthwork_support_regions, bridge_outer_loops) =
@@ -394,9 +432,12 @@ impl RoadSurfaceSystem {
                     Vec::new(),
                 )
             } else {
-                let mut clearance_regions =
-                    self.resolve_span_regions_for_ranges(sections, &earthwork_ranges, edge.class)?;
-                Self::sort_span_owned_regions(&mut clearance_regions.regions);
+                let mut clearance_regions = self.resolve_span_regions_for_ranges(
+                    &sections,
+                    &earthwork_ranges,
+                    edge.class,
+                )?;
+                Self::sort_span_owned_regions(&sections, &mut clearance_regions.regions);
                 let terrain_clip_boundary_loops = match edge.class {
                     EdgeClass::Standard => visible_terrain_clip_boundary_loops,
                     EdgeClass::Bridge => {
@@ -412,12 +453,13 @@ impl RoadSurfaceSystem {
             };
         let earthwork_regions_ms = elapsed_ms(earthwork_regions_start);
         let earthwork_geometry_start = road_debug.then(Instant::now);
-        let (earthwork_surface_polygons, earthwork_outer_boundary_loops, render_earthwork_faces) =
+        let (earthwork_outer_boundary_loops, render_earthwork_faces) =
             if edge.class == EdgeClass::Bridge {
-                (Vec::new(), bridge_outer_loops, Vec::new())
+                (bridge_outer_loops, Vec::new())
             } else {
                 let earthwork_boundary_segments =
                     Self::span_earthwork_boundary_segment_loops_from_support_regions(
+                        &sections,
                         &span_earthwork_support_regions,
                         edge.class,
                     )
@@ -449,9 +491,9 @@ impl RoadSurfaceSystem {
 
         let finalize_start = road_debug.then(Instant::now);
         let start_mouth_profile =
-            Self::section_range_mouth_profile(sections, &visible_ranges, IncidentEdgeSide::Start);
+            Self::section_range_mouth_profile(&sections, &visible_ranges, IncidentEdgeSide::Start);
         let end_mouth_profile =
-            Self::section_range_mouth_profile(sections, &visible_ranges, IncidentEdgeSide::End);
+            Self::section_range_mouth_profile(&sections, &visible_ranges, IncidentEdgeSide::End);
         let start_terrain_clip_node = edge.class == EdgeClass::Bridge
             && sections
                 .first()
@@ -482,21 +524,14 @@ impl RoadSurfaceSystem {
             );
         }
 
-        let surface_query = Arc::new(RoadSurfaceTriangleQueryIndex::from_surface_polygons(
-            &render_buckets.road_surface_polygons,
-            &render_buckets.curb_surface_polygons,
-            &render_buckets.sidewalk_surface_polygons,
-        ));
-        Some(RoadSurfaceVisualSpanPiece {
+        let mut piece = RoadSurfaceVisualSpanPiece {
             edge_idx,
             outer_boundary_loops,
             terrain_clip_boundary_loops,
-            road_surface_polygons: render_buckets.road_surface_polygons,
-            curb_surface_polygons: render_buckets.curb_surface_polygons,
-            raised_step_face_polygons,
-            span_raised_step_sources,
-            sidewalk_surface_polygons: render_buckets.sidewalk_surface_polygons,
-            surface_query,
+            sections,
+            surface_polygon_order,
+            raised_steps,
+            surface_query: Arc::default(),
             span_owned_regions,
             edge_class: edge.class,
             start_mouth_profile,
@@ -504,9 +539,12 @@ impl RoadSurfaceSystem {
             start_terrain_clip_node,
             end_terrain_clip_node,
             span_earthwork_support_regions,
-            earthwork_surface_polygons,
+            earthwork_surface_order: Self::earthwork_surface_order(&render_earthwork_faces),
             earthwork_outer_boundary_loops,
             render_earthwork_faces,
-        })
+        };
+        piece.surface_query = Arc::new(piece.surface_triangle_grid());
+        piece.shrink_retained();
+        Some(piece)
     }
 }

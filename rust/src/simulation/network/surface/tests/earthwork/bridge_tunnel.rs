@@ -83,7 +83,7 @@ fn bridge_earthworks_do_not_stamp_terrain() {
         .expect("bridge span should compile");
     assert_structural_terminals_are_span_owned(&surface, start, end);
     assert!(span_piece.span_earthwork_support_regions.is_empty());
-    assert!(span_piece.earthwork_surface_polygons.is_empty());
+    assert_eq!(span_piece.earthwork_surface_polygons().len(), 0);
     assert!(span_piece.render_earthwork_faces.is_empty());
 
     let span_center = terrain.sample_visual_height_world(0.0, 0.0) * crate::config::HEIGHT_SCALE;

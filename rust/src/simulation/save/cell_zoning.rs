@@ -235,21 +235,15 @@ pub(super) fn validate_reservations(
         .par_iter()
         .any(|(_, piece)| {
             piece
-                .road_surface_polygons
-                .iter()
-                .chain(&piece.curb_surface_polygons)
-                .chain(&piece.sidewalk_surface_polygons)
-                .any(overlaps)
+                .surface_polygons()
+                .any(|quad| zoning.cells_overlap_road_points_world(quad.points()))
         })
         || roads
             .compiled_visual_node_pieces
             .par_iter()
             .any(|(_, piece)| {
                 piece
-                    .road_surface_polygons
-                    .iter()
-                    .chain(&piece.curb_surface_polygons)
-                    .chain(&piece.sidewalk_surface_polygons)
+                    .surface_polygons()
                     .any(overlaps)
             })
     {

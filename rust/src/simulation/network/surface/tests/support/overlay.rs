@@ -30,6 +30,13 @@ pub(in crate::simulation::network::surface::tests) fn triangle_centroid_xz(
     )
 }
 
+/// Owned polygons for span quads, for helpers that take polygon slices.
+pub(in crate::simulation::network::surface::tests) fn span_polygons(
+    quads: impl Iterator<Item = crate::simulation::network::surface::SpanQuad>,
+) -> Vec<RoadSurfaceVisualPolygon> {
+    quads.map(|quad| quad.to_polygon()).collect()
+}
+
 pub(in crate::simulation::network::surface::tests) fn point_inside_visual_polygons(
     polygons: &[RoadSurfaceVisualPolygon],
     point: impl TestPointXz,
@@ -134,10 +141,7 @@ pub(in crate::simulation::network::surface::tests) fn node_top_coverage_details_
         .expect("node footprint overlay union should succeed");
     let top_contours = overlay_contours_from_top_polygons(
         piece
-            .road_surface_polygons
-            .iter()
-            .chain(piece.curb_surface_polygons.iter())
-            .chain(piece.sidewalk_surface_polygons.iter()),
+            .surface_polygons()
     );
     let top_shapes = RoadSurfaceSystem::overlay_union_contours(&top_contours)
         .expect("node top overlay union should succeed");

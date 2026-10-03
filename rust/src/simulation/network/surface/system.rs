@@ -2,7 +2,7 @@
 
 //! Road-surface system state, dirty rebuild orchestration, and shared ordering helpers.
 
-use super::backend::godot_vec3_to_road;
+use super::backend::{RoadVec3, godot_vec3_to_road};
 use super::cache::{ChunkOwnerIndex, OwnerChunkIndex};
 use super::keys::SurfaceXzKey;
 use super::{
@@ -18,9 +18,41 @@ use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::types::{EdgeClass, TransitType};
 use crate::simulation::terrain::TerrainSystem;
 use rayon::prelude::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+
+// A node topology only speeds up a later compile of that node; compiling without one gives
+// identical products. Committed surfaces keep the topologies of the most recently compiled nodes,
+// a few local edits' worth, so retained memory does not grow with the network (`ROAD-44`).
+pub(in crate::simulation::network::surface) const RETAINED_NODE_TOPOLOGY_LIMIT: usize = 64;
+
+// Drops what the compiling surface will not keep as soon as a node is compiled, so a bulk
+// compile never holds a topology or compile provenance for every node at once.
+fn with_retained_parts(
+    result: Option<NodeVisualCompileResult>,
+    retain_topology: bool,
+    retain_provenance: bool,
+) -> Option<NodeVisualCompileResult> {
+    result.map(|mut result| {
+        if !retain_topology {
+            result.topology_cache = None;
+        }
+        if !retain_provenance && result.piece.has_compile_provenance() {
+            Arc::make_mut(&mut result.piece).strip_compile_provenance();
+        }
+        result
+    })
+}
+
+// Sections are retained for the life of the edge; drop the spare capacity they were built with.
+fn shrunk_sections(mut sections: Vec<RoadSurfaceSection>) -> Vec<RoadSurfaceSection> {
+    sections.shrink_to_fit();
+    for section in &mut sections {
+        section.bands.shrink_to_fit();
+    }
+    sections
+}
 
 fn elapsed_ms(start: Option<Instant>) -> f64 {
     start
@@ -47,6 +79,9 @@ pub struct RoadSurfaceSystem {
     pub(crate) dirty_query_chunks: HashSet<SurfaceChunkKey>,
     pub(crate) node_validation_logging_enabled: bool,
     pub(in crate::simulation::network::surface) retain_complete_node_topology_for_replay: bool,
+    // Published node pieces keep compile provenance (grade authorities, per-vertex top sources)
+    // only for road debugging and tests; nothing else reads it after publication (`ROAD-44`).
+    pub(in crate::simulation::network::surface) retain_node_provenance: bool,
     /// Keeps successful pieces from a transient bounded validation compile for required-set checks.
     pub(in crate::simulation::network::surface) retain_partial_validation_artifacts: bool,
     pub(crate) compiled_sections: HashMap<usize, Arc<Vec<RoadSurfaceSection>>>,
@@ -58,6 +93,8 @@ pub struct RoadSurfaceSystem {
     pub(crate) compiled_visual_node_earthwork_boundaries:
         HashMap<u32, Arc<Vec<Vec<RoadSurfaceEarthworkBoundarySegment>>>>,
     pub(crate) compiled_visual_node_topologies: HashMap<u32, Arc<NodeCanonicalTopologyCache>>,
+    // Nodes given a topology, least recently compiled first; may hold ids removed since.
+    pub(in crate::simulation::network::surface) node_topology_recency: VecDeque<u32>,
     // One bounded previous-cursor certificate. Immutable city snapshots share this scratch
     // cache; exact input checks and pinned terrain/source revisions gate all consumers.
     preview_cursor_cache: Arc<Mutex<Option<PreviewCursorCache>>>,
@@ -139,7 +176,8 @@ struct RoadPreviewNodeTopologyReuse {
     input: Arc<RoadSurfaceVisualNodeCompileInput>,
     piece: Arc<RoadSurfaceVisualNodePiece>,
     earthwork_boundaries: Arc<Vec<Vec<RoadSurfaceEarthworkBoundarySegment>>>,
-    topology: Arc<NodeCanonicalTopologyCache>,
+    // Absent once the committed surface evicted it; exact replay does not need it.
+    topology: Option<Arc<NodeCanonicalTopologyCache>>,
 }
 
 impl std::fmt::Debug for RoadPreviewTopologyReuse {
@@ -371,6 +409,7 @@ impl RoadSurfaceSystem {
             dirty_query_chunks: HashSet::new(),
             node_validation_logging_enabled: true,
             retain_complete_node_topology_for_replay: false,
+            retain_node_provenance: cfg!(test) || crate::debug::category_enabled("road"),
             retain_partial_validation_artifacts: false,
             compiled_sections: HashMap::new(),
             compiled_visual_span_pieces: HashMap::new(),
@@ -378,6 +417,7 @@ impl RoadSurfaceSystem {
             compiled_visual_node_inputs: imbl::HashMap::new(),
             compiled_visual_node_earthwork_boundaries: HashMap::new(),
             compiled_visual_node_topologies: HashMap::new(),
+            node_topology_recency: VecDeque::new(),
             preview_cursor_cache: Arc::new(Mutex::new(None)),
             pending_preview_topology_reuse: None,
             pending_planned_earthworks: None,
@@ -524,7 +564,6 @@ impl RoadSurfaceSystem {
                 let node_id = graph.get_valid_node(node_id);
                 let input = self.compiled_visual_node_inputs.get(&node_id)?;
                 let piece = self.compiled_visual_node_pieces.get(&node_id)?;
-                let topology = self.compiled_visual_node_topologies.get(&node_id)?;
                 Some(RoadPreviewNodeTopologyReuse {
                     node_id,
                     position_xz: SurfaceXzKey::from_world_xz(godot_vec3_to_road(
@@ -537,7 +576,7 @@ impl RoadSurfaceSystem {
                         .get(&node_id)
                         .cloned()
                         .unwrap_or_else(|| Arc::new(Vec::new())),
-                    topology: Arc::clone(topology),
+                    topology: self.compiled_visual_node_topologies.get(&node_id).cloned(),
                 })
             })
             .collect()
@@ -749,11 +788,12 @@ impl RoadSurfaceSystem {
         staging.node_validation_logging_enabled = self.node_validation_logging_enabled;
         staging.retain_complete_node_topology_for_replay =
             self.retain_complete_node_topology_for_replay;
+        staging.retain_node_provenance = self.retain_node_provenance;
         for (edge_idx, sections) in section_results {
             if let Some(sections) = sections {
                 staging
                     .compiled_sections
-                    .insert(edge_idx, Arc::new(sections));
+                    .insert(edge_idx, Arc::new(shrunk_sections(sections)));
             }
         }
         let sections_ms = elapsed_ms(sections_start);
@@ -902,6 +942,8 @@ impl RoadSurfaceSystem {
             node_candidates.push((node_id, input, false));
         }
         let node_candidate_count = node_candidates.len();
+        let retain_topologies = self.retains_node_topologies(node_candidate_count);
+        let retain_provenance = self.retain_node_provenance;
         let node_candidates = node_candidates
             .into_iter()
             .map(|(node_id, input, refresh_earthwork)| {
@@ -1000,7 +1042,7 @@ impl RoadSurfaceSystem {
                 (
                     node_id.0,
                     node_id.1,
-                    result,
+                    with_retained_parts(result, retain_topologies, retain_provenance),
                     topology_reused,
                     earthwork_refresh_ms,
                 )
@@ -1273,6 +1315,7 @@ impl RoadSurfaceSystem {
         staging.node_validation_logging_enabled = self.node_validation_logging_enabled;
         staging.retain_complete_node_topology_for_replay =
             self.retain_complete_node_topology_for_replay;
+        staging.retain_node_provenance = self.retain_node_provenance;
         staging.retain_partial_validation_artifacts = self.retain_partial_validation_artifacts;
         let staging_ms = elapsed_ms(staging_start);
 
@@ -1284,7 +1327,7 @@ impl RoadSurfaceSystem {
         for (edge_idx, sections) in section_results {
             staging
                 .compiled_sections
-                .insert(edge_idx, Arc::new(sections));
+                .insert(edge_idx, Arc::new(shrunk_sections(sections)));
         }
         let sections_ms = elapsed_ms(sections_start);
 
@@ -1354,6 +1397,8 @@ impl RoadSurfaceSystem {
             }
             node_candidates.push((node_id, input));
         }
+        let retain_topologies = self.retains_node_topologies(node_candidates.len());
+        let retain_provenance = self.retain_node_provenance;
         let node_results: Vec<(
             u32,
             RoadSurfaceVisualNodeCompileInput,
@@ -1365,8 +1410,12 @@ impl RoadSurfaceSystem {
                 (
                     node_id.0,
                     node_id.1.clone(),
-                    staging.compile_visual_node_piece_with_earthwork_boundaries(
-                        graph, terrain, node_id.0, &node_id.1, None,
+                    with_retained_parts(
+                        staging.compile_visual_node_piece_with_earthwork_boundaries(
+                            graph, terrain, node_id.0, &node_id.1, None,
+                        ),
+                        retain_topologies,
+                        retain_provenance,
                     ),
                 )
             },
@@ -1538,9 +1587,9 @@ impl RoadSurfaceSystem {
     ) {
         self.remove_node_piece_coverage(node_id);
         if let Some(visual_piece) = visual_piece {
-            self.insert_node_piece_coverage(&visual_piece.piece);
-            self.compiled_visual_node_pieces
-                .insert(node_id, visual_piece.piece);
+            let piece = self.published_node_piece(visual_piece.piece);
+            self.insert_node_piece_coverage(&piece);
+            self.compiled_visual_node_pieces.insert(node_id, piece);
             self.compiled_visual_node_inputs
                 .insert(node_id, Arc::new(input));
             if visual_piece.earthwork_boundaries.is_empty() {
@@ -1551,8 +1600,7 @@ impl RoadSurfaceSystem {
                     .insert(node_id, visual_piece.earthwork_boundaries);
             }
             if let Some(topology) = visual_piece.topology_cache {
-                self.compiled_visual_node_topologies
-                    .insert(node_id, topology);
+                self.retain_node_topology(node_id, topology);
             } else {
                 self.compiled_visual_node_topologies.remove(&node_id);
             }
@@ -1562,6 +1610,52 @@ impl RoadSurfaceSystem {
             self.compiled_visual_node_earthwork_boundaries
                 .remove(&node_id);
             self.compiled_visual_node_topologies.remove(&node_id);
+        }
+    }
+
+    /// The node piece as this surface publishes it: without compile provenance unless retained.
+    pub(in crate::simulation::network::surface) fn published_node_piece(
+        &self,
+        piece: Arc<RoadSurfaceVisualNodePiece>,
+    ) -> Arc<RoadSurfaceVisualNodePiece> {
+        if self.retain_node_provenance || !piece.has_compile_provenance() {
+            return piece;
+        }
+        let mut piece = Arc::unwrap_or_clone(piece);
+        piece.strip_compile_provenance();
+        Arc::new(piece)
+    }
+
+    // Whether a compile of `node_count` nodes keeps their topologies. Replay compilers hand all
+    // of theirs to the matching commit; a committed compile above the limit drops each as it is
+    // compiled, so bulk loads never hold one per node.
+    fn retains_node_topologies(&self, node_count: usize) -> bool {
+        self.retain_complete_node_topology_for_replay || node_count <= RETAINED_NODE_TOPOLOGY_LIMIT
+    }
+
+    /// Stores a node topology, evicting the least recently compiled beyond the retention limit.
+    pub(in crate::simulation::network::surface) fn retain_node_topology(
+        &mut self,
+        node_id: u32,
+        topology: Arc<NodeCanonicalTopologyCache>,
+    ) {
+        self.compiled_visual_node_topologies
+            .insert(node_id, topology);
+        if self.retain_complete_node_topology_for_replay {
+            return;
+        }
+        // O(limit) per compiled node.
+        self.node_topology_recency.retain(|&id| id != node_id);
+        self.node_topology_recency.push_back(node_id);
+        if self.node_topology_recency.len() > RETAINED_NODE_TOPOLOGY_LIMIT {
+            let topologies = &self.compiled_visual_node_topologies;
+            self.node_topology_recency
+                .retain(|id| topologies.contains_key(id));
+            while self.node_topology_recency.len() > RETAINED_NODE_TOPOLOGY_LIMIT {
+                if let Some(evicted) = self.node_topology_recency.pop_front() {
+                    self.compiled_visual_node_topologies.remove(&evicted);
+                }
+            }
         }
     }
 
@@ -1627,7 +1721,11 @@ impl RoadSurfaceSystem {
         a: &RoadSurfaceVisualPolygon,
         b: &RoadSurfaceVisualPolygon,
     ) -> std::cmp::Ordering {
-        match (a.points_world.first(), b.points_world.first()) {
+        Self::visual_points_ordering(&a.points_world, &b.points_world)
+    }
+
+    pub(crate) fn visual_points_ordering(a: &[RoadVec3], b: &[RoadVec3]) -> std::cmp::Ordering {
+        match (a.first(), b.first()) {
             (Some(point_a), Some(point_b)) => point_a
                 .x
                 .total_cmp(&point_b.x)
@@ -1637,11 +1735,10 @@ impl RoadSurfaceSystem {
             (Some(_), None) => std::cmp::Ordering::Greater,
             (None, None) => std::cmp::Ordering::Equal,
         }
-        .then(a.points_world.len().cmp(&b.points_world.len()))
+        .then(a.len().cmp(&b.len()))
         .then_with(|| {
-            a.points_world
-                .iter()
-                .zip(&b.points_world)
+            a.iter()
+                .zip(b)
                 .find_map(|(point_a, point_b)| {
                     let ordering = point_a
                         .x

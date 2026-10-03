@@ -19,11 +19,9 @@ fn empty_node_piece() -> RoadSurfaceVisualNodePiece {
         kind: RoadSurfaceVisualNodePieceKind::Terminal,
         outer_boundary_loops: Vec::new(),
         terrain_clip_boundary_loops: Vec::new(),
-        road_surface_polygons: Vec::new(),
-        curb_surface_polygons: Vec::new(),
+        surface_polygon_order: Default::default(),
         raised_step_face_polygons: Vec::new(),
         raised_step_face_sources: Vec::new(),
-        sidewalk_surface_polygons: Vec::new(),
         surface_query: std::sync::Arc::new(RoadSurfaceTriangleQueryIndex::default()),
         explicit_vertical_step_segments: Vec::new(),
         node_grade_authorities: Vec::new(),
@@ -31,7 +29,7 @@ fn empty_node_piece() -> RoadSurfaceVisualNodePiece {
         owned_regions: Vec::new(),
         boolean_debug: None,
         earthwork_owner_sources: Vec::new(),
-        earthwork_surface_polygons: Vec::new(),
+        earthwork_surface_order: Default::default(),
         earthwork_outer_boundary_loops: Vec::new(),
         render_earthwork_faces: Vec::new(),
     }
@@ -63,12 +61,12 @@ fn mouth_seam_debug_matches_vertical_step_anchors_by_material() {
     };
 
     let mut piece = empty_node_piece();
-    piece.road_surface_polygons.push(polygon(vec![
+    piece.push_test_surface_polygon(RoadSurfaceBandKind::Carriageway, polygon(vec![
         RoadVec3::new(0.0, 0.0, 0.0),
         RoadVec3::new(1.0, 0.0, 0.0),
         RoadVec3::new(0.0, 0.0, -1.0),
     ]));
-    piece.curb_surface_polygons.push(polygon(vec![
+    piece.push_test_surface_polygon(RoadSurfaceBandKind::CurbOrShoulder, polygon(vec![
         RoadVec3::new(-1.0, 0.12, -1.0),
         RoadVec3::new(1.0, 0.12, 1.0),
         RoadVec3::new(-1.0, 0.12, 1.0),

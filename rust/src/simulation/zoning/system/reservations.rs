@@ -4,7 +4,7 @@
 
 use super::ZoningSystem;
 use crate::simulation::agriculture::PolygonFootprint;
-use crate::simulation::network::surface::RoadSurfaceVisualPolygon;
+use crate::simulation::network::surface::{RoadSurfaceVisualPolygon, RoadVec3};
 use crate::simulation::zoning::cells::{CellBounds, road_contact_interior};
 use glam::DVec2;
 use godot::prelude::Vector3;
@@ -47,7 +47,15 @@ impl ZoningSystem {
         if !self.cells.has_reservations() {
             return false;
         }
-        self.cells_overlap_road_points(polygon.points_world.iter().map(|p| [p.x, p.z]))
+        self.cells_overlap_road_points_world(&polygon.points_world)
+    }
+
+    /// Whether a road surface polygon given by its world points overlaps reserved cells.
+    pub(crate) fn cells_overlap_road_points_world(&self, points: &[RoadVec3]) -> bool {
+        if !self.cells.has_reservations() {
+            return false;
+        }
+        self.cells_overlap_road_points(points.iter().map(|p| [p.x, p.z]))
     }
 
     fn cells_overlap_road_points(&self, points: impl Iterator<Item = [f64; 2]> + Clone) -> bool {

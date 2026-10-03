@@ -19,7 +19,10 @@ use crate::simulation::economy::accessibility::{
     BuildingModeComponents, ModeComponentIndex, ReachableBucketIndex, ReachableBucketScanEvent,
     chunk_for_point, lower_bound_travel_seconds, max_speed_for_modes,
 };
-use crate::simulation::economy::agents::tick::estimate_building_origin_trip_seconds;
+use crate::simulation::economy::agents::tick::{
+    BuildingTripEnds, TripEstimate, estimate_building_origin_trip_seconds,
+    estimate_trip_seconds_between,
+};
 use crate::simulation::economy::agents::{AgentSystem, TRANSIT_IN_BUILDING, age_group_can_work};
 use crate::simulation::economy::definitions::{
     EconomyProfileRuntime, EconomyProfileRuntimeKind, RuntimeEconomyCatalog, RuntimeEconomyTuning,
@@ -114,12 +117,16 @@ struct JobSupplyEntry {
     chunk: (i32, i32),
     foot_components: BuildingModeComponents,
     car_components: BuildingModeComponents,
+    // Arrival ends shared by every home's commute estimate to this workplace.
+    trip_ends: BuildingTripEnds,
 }
 
 struct JobSupplySnapshot {
     entries: Vec<JobSupplyEntry>,
     foot_buckets: ReachableBucketIndex,
     car_buckets: ReachableBucketIndex,
+    // Farthest network node any workplace's trips use, measured from its bucketed centre.
+    node_slack_m: f32,
 }
 
 struct WagePaymentPlan {
@@ -273,6 +280,7 @@ impl HouseholdSystem {
         phase_start = Instant::now();
         let job_supply = JobSupplySnapshot::build(
             allocator,
+            transit_network,
             graph,
             &catalog,
             &foot_components,
@@ -1063,6 +1071,7 @@ fn has_potential_job_supply(
 impl JobSupplySnapshot {
     fn build(
         allocator: &BuildingAllocator,
+        transit_network: &TransitNetwork,
         graph: &RegionGraph,
         catalog: &RuntimeEconomyCatalog,
         foot_components: &ModeComponentIndex,
@@ -1116,9 +1125,24 @@ impl JobSupplySnapshot {
                     chunk: chunk_for_point(building.center_x, building.center_y),
                     foot_components,
                     car_components,
+                    trip_ends: BuildingTripEnds::destination(
+                        idx,
+                        allocator,
+                        transit_network,
+                        graph,
+                    ),
                 })
             })
             .collect();
+        let node_slack_m = entries
+            .iter()
+            .map(|entry| {
+                let building = &allocator.buildings[entry.building_idx];
+                entry
+                    .trip_ends
+                    .max_node_distance(building.center_x, building.center_y)
+            })
+            .fold(0.0, f32::max);
 
         let mut foot_bucket_entries = Vec::with_capacity(entries.len());
         let mut car_bucket_entries = Vec::with_capacity(entries.len());
@@ -1138,6 +1162,7 @@ impl JobSupplySnapshot {
         Self {
             entries,
             foot_buckets: ReachableBucketIndex::from_entries(foot_bucket_entries),
+            node_slack_m,
             car_buckets: ReachableBucketIndex::from_entries(car_bucket_entries),
         }
     }
@@ -1353,14 +1378,16 @@ fn build_home_job_options_for_key(
         );
     }
 
+    let home_trip_ends =
+        BuildingTripEnds::origin(key.home_idx, allocator, transit_network, graph);
     let home_foot_components =
         foot_components.building_components(allocator, graph, key.home_idx, TransitFlags::FOOT);
     scan_home_job_bucket(
         &job_supply.foot_buckets,
         home_foot_components,
         key,
+        &home_trip_ends,
         job_supply,
-        allocator,
         transit_network,
         graph,
         route_cache,
@@ -1383,8 +1410,8 @@ fn build_home_job_options_for_key(
             &job_supply.car_buckets,
             home_car_components,
             key,
+            &home_trip_ends,
             job_supply,
-            allocator,
             transit_network,
             graph,
             route_cache,
@@ -1410,8 +1437,8 @@ fn scan_home_job_bucket(
     bucket_index: &ReachableBucketIndex,
     components: BuildingModeComponents,
     key: HomeJobOptionsKey,
+    home_trip_ends: &BuildingTripEnds,
     job_supply: &JobSupplySnapshot,
-    allocator: &BuildingAllocator,
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
     route_cache: &HashMap<WorkplaceRouteCacheKey, Option<u16>>,
@@ -1434,16 +1461,19 @@ fn scan_home_job_bucket(
             let Some(entry) = job_supply.entries.get(item_idx) else {
                 return true;
             };
-            let Some(commute_seconds) = cached_commute_seconds(
+            let Some(commute_seconds) = cached_commute_seconds_within(
                 key.home_idx,
                 entry.building_idx,
                 key.has_car,
-                allocator,
+                home_trip_ends,
+                &entry.trip_ends,
                 transit_network,
                 graph,
                 route_cache,
                 pathfind_count,
                 exact_entrance_cache_available,
+                max_commute_speed,
+                commute_budget_seconds(options, *option_count),
                 new_route_entries,
                 new_route_entry_count,
             ) else {
@@ -1464,28 +1494,66 @@ fn scan_home_job_bucket(
         }
         ReachableBucketScanEvent::RingComplete {
             next_min_distance_sq,
-        } => !home_job_search_can_stop(
+        } => !home_job_search_can_stop_after(
             options,
             *option_count,
-            next_min_distance_sq,
-            max_commute_speed,
+            home_trip_ends
+                .lower_bound_seconds_to_distance(
+                    key.has_car,
+                    origin_x,
+                    origin_y,
+                    next_min_distance_sq.sqrt(),
+                    job_supply.node_slack_m,
+                    max_commute_speed,
+                )
+                .max(lower_bound_travel_seconds(
+                    next_min_distance_sq,
+                    max_commute_speed,
+                )),
         ),
     });
 }
 
+#[cfg(test)]
 fn home_job_search_can_stop(
     options: &HomeJobOptions,
     option_count: usize,
     next_min_distance_sq: f32,
     max_commute_speed: f32,
 ) -> bool {
+    home_job_search_can_stop_after(
+        options,
+        option_count,
+        lower_bound_travel_seconds(next_min_distance_sq, max_commute_speed),
+    )
+}
+
+// Stops once every unscanned job takes at least `lower_bound_s` and so cannot displace the ranked
+// options.
+fn home_job_search_can_stop_after(
+    options: &HomeJobOptions,
+    option_count: usize,
+    lower_bound_s: f32,
+) -> bool {
     if option_count < JOB_SEARCH_CANDIDATES {
         return false;
     }
-    let lower_bound = lower_bound_travel_seconds(next_min_distance_sq, max_commute_speed);
     // Equal capped penalties can still be beaten by wage, capacity, or building ID.
-    normalized_commute_penalty_seconds(lower_bound)
+    normalized_commute_penalty_seconds(lower_bound_s)
         > options.options[option_count - 1].commute_penalty
+}
+
+// Longest commute that could still displace the last ranked option, with one second of slack for
+// rounding; unbounded until the options are full or once their penalty is capped.
+fn commute_budget_seconds(options: &HomeJobOptions, option_count: usize) -> f32 {
+    if option_count < JOB_SEARCH_CANDIDATES {
+        return f32::INFINITY;
+    }
+    let last_penalty = options.options[option_count - 1].commute_penalty;
+    if last_penalty >= 1.0 {
+        return f32::INFINITY;
+    }
+    last_penalty * COMMUTE_PENALTY_MAX_SECONDS + 1.0
 }
 
 fn empty_home_job_options() -> HomeJobOptions {
@@ -1579,6 +1647,53 @@ fn home_job_option_order(left: HomeJobOption, right: HomeJobOption) -> CmpOrderi
         .then_with(|| right.effective_capacity.cmp(&left.effective_capacity))
         .then_with(|| right.open_slots.cmp(&left.open_slots))
         .then_with(|| left.building_idx.cmp(&right.building_idx))
+}
+
+// A commute over `budget_s` cannot enter the ranked options; it is neither returned nor cached.
+#[allow(clippy::too_many_arguments)]
+fn cached_commute_seconds_within(
+    home_idx: usize,
+    work_idx: usize,
+    has_car: bool,
+    home_trip_ends: &BuildingTripEnds,
+    work_trip_ends: &BuildingTripEnds,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    route_cache: &HashMap<WorkplaceRouteCacheKey, Option<u16>>,
+    pathfind_count: &AtomicU32,
+    exact_entrance_cache_available: bool,
+    network_speed_bound_ms: f32,
+    budget_s: f32,
+    new_route_entries: &mut [WorkplaceRouteCacheEntry; JOB_ROUTE_SCAN_CANDIDATES],
+    new_route_entry_count: &mut usize,
+) -> Option<u16> {
+    if home_idx == work_idx {
+        return Some(0);
+    }
+    let key = (home_idx, work_idx, has_car);
+    if let Some(result) = route_cache.get(&key) {
+        return *result;
+    }
+    if !exact_entrance_cache_available {
+        return None;
+    }
+    let TripEstimate::Seconds(result) = estimate_trip_seconds_between(
+        home_trip_ends,
+        work_trip_ends,
+        has_car,
+        transit_network,
+        graph,
+        pathfind_count,
+        network_speed_bound_ms,
+        budget_s,
+    ) else {
+        return None;
+    };
+    if *new_route_entry_count < JOB_ROUTE_SCAN_CANDIDATES {
+        new_route_entries[*new_route_entry_count] = (key, result);
+        *new_route_entry_count += 1;
+    }
+    result
 }
 
 #[allow(clippy::too_many_arguments)]

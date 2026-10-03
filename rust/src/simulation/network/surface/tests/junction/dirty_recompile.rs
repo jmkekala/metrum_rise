@@ -4,6 +4,8 @@
 
 use super::*;
 use crate::simulation::network::RoadSurfaceCompileReason;
+use crate::simulation::network::surface::system::RETAINED_NODE_TOPOLOGY_LIMIT;
+use std::sync::Arc;
 
 fn flat_four_way_junction() -> (RegionGraph, u32, Vec<u32>, Vec<usize>) {
     let mut graph = RegionGraph::new();
@@ -295,15 +297,10 @@ fn terrain_only_junction_recompile_reuses_canonical_topology_and_refreshes_earth
         .expect("terrain refresh must preserve the compiled junction");
     assert_eq!(after.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
     assert_eq!(after.outer_boundary_loops, before.outer_boundary_loops);
-    assert_eq!(after.road_surface_polygons, before.road_surface_polygons);
-    assert_eq!(after.curb_surface_polygons, before.curb_surface_polygons);
+    assert_eq!(after.surface_polygon_order, before.surface_polygon_order);
     assert_eq!(
         after.raised_step_face_polygons,
         before.raised_step_face_polygons
-    );
-    assert_eq!(
-        after.sidewalk_surface_polygons,
-        before.sidewalk_surface_polygons
     );
     assert_eq!(after.owned_regions, before.owned_regions);
     assert_ne!(
@@ -1543,4 +1540,139 @@ fn dirty_recompile_removes_node_from_previous_chunks_after_topology_shrink() {
             );
         }
     }
+}
+
+#[test]
+fn committed_node_topologies_stay_bounded_and_evicted_nodes_compile_cold_products() {
+    const GRID: usize = 9;
+    const SPACING_M: f32 = 60.0;
+    let terrain = flat_terrain(256, 256);
+    let mut graph = RegionGraph::new();
+    let origin = -SPACING_M * (GRID - 1) as f32 * 0.5;
+    let nodes: Vec<Vec<u32>> = (0..GRID)
+        .map(|row| {
+            (0..GRID)
+                .map(|col| {
+                    let pos = Vector3::new(
+                        origin + col as f32 * SPACING_M,
+                        0.0,
+                        origin + row as f32 * SPACING_M,
+                    );
+                    graph.add_node(pos, NodeType::Junction)
+                })
+                .collect()
+        })
+        .collect();
+    let connect = |graph: &mut RegionGraph, start: u32, end: u32| {
+        let points = vec![graph.node(start).pos, graph.node(end).pos];
+        graph.add_edge(test_edge(
+            start,
+            end,
+            points,
+            7.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ))
+    };
+    for row in 0..GRID {
+        for col in 0..GRID {
+            if col + 1 < GRID {
+                connect(&mut graph, nodes[row][col], nodes[row][col + 1]);
+            }
+            if row + 1 < GRID {
+                connect(&mut graph, nodes[row][col], nodes[row + 1][col]);
+            }
+        }
+    }
+    graph.rebuild_adjacency_list();
+    graph.rebuild_intersection_clips();
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    assert!(surface.compile_dirty(&graph, &terrain));
+    assert_eq!(surface.compiled_visual_node_pieces.len(), GRID * GRID);
+    assert!(
+        surface.compiled_visual_node_topologies.is_empty(),
+        "a bulk compile above the retention limit must not retain topologies"
+    );
+
+    // Extending the corner bend makes it a junction next to nodes without topologies.
+    let corner = nodes[0][0];
+    let corner_pos = graph.node(corner).pos;
+    let outside = graph.add_node(
+        corner_pos - Vector3::new(SPACING_M, 0.0, 0.0),
+        NodeType::Junction,
+    );
+    let extension = connect(&mut graph, outside, corner);
+    graph.rebuild_adjacency_list();
+    graph.rebuild_intersection_clips();
+    surface.mark_edge_dirty(&graph, extension);
+    surface.mark_node_dirty(&graph, corner);
+    assert!(surface.compile_dirty(&graph, &terrain));
+    let topology = Arc::clone(
+        surface
+            .compiled_visual_node_topologies
+            .get(&corner)
+            .expect("a local edit retains the topology of the node it compiled"),
+    );
+
+    let mut cold = surface.clone();
+    cold.clear();
+    assert!(cold.compile_dirty(&graph, &terrain));
+    assert_eq!(
+        surface.compiled_visual_span_pieces,
+        cold.compiled_visual_span_pieces
+    );
+    assert_eq!(
+        surface.compiled_visual_node_pieces,
+        cold.compiled_visual_node_pieces
+    );
+
+    // Recency eviction keeps the newest topologies within the limit.
+    let first_id = GRID as u32 * GRID as u32 + 1;
+    for node_id in first_id..first_id + 2 * RETAINED_NODE_TOPOLOGY_LIMIT as u32 {
+        surface.retain_node_topology(node_id, Arc::clone(&topology));
+    }
+    let topologies = &surface.compiled_visual_node_topologies;
+    assert_eq!(topologies.len(), RETAINED_NODE_TOPOLOGY_LIMIT);
+    assert!(!topologies.contains_key(&corner));
+    assert!(topologies.contains_key(&(first_id + 2 * RETAINED_NODE_TOPOLOGY_LIMIT as u32 - 1)));
+}
+
+#[test]
+fn published_node_pieces_without_provenance_match_retained_products() {
+    let (graph, center, _, _) = flat_four_way_junction();
+    let terrain = sloped_terrain(128, 128);
+    let mut retained = RoadSurfaceSystem::new(16.0);
+    let mut stripped = RoadSurfaceSystem::new(16.0);
+    stripped.retain_node_provenance = false;
+    let assert_matching = |retained: &RoadSurfaceSystem, stripped: &RoadSurfaceSystem| {
+        assert_eq!(
+            retained.compiled_visual_node_pieces.len(),
+            stripped.compiled_visual_node_pieces.len()
+        );
+        for (node_id, piece) in &retained.compiled_visual_node_pieces {
+            let published = &stripped.compiled_visual_node_pieces[node_id];
+            assert!(!published.has_compile_provenance(), "node {node_id}");
+            let mut expected = piece.as_ref().clone();
+            expected.strip_compile_provenance();
+            assert_eq!(published.as_ref(), &expected, "node {node_id}");
+        }
+        assert_eq!(
+            retained.compiled_visual_span_pieces,
+            stripped.compiled_visual_span_pieces
+        );
+    };
+
+    for surface in [&mut retained, &mut stripped] {
+        assert!(surface.compile_dirty(&graph, &terrain));
+    }
+    assert!(retained.compiled_visual_node_pieces[&center].has_compile_provenance());
+    assert_matching(&retained, &stripped);
+
+    // A terrain-only invalidation refreshes earthwork from the cached, now stripped, top.
+    for surface in [&mut retained, &mut stripped] {
+        surface.mark_terrain_edit_dirty(&graph, Vector2::new(0.0, 0.0), 24.0);
+        assert!(surface.compile_dirty(&graph, &terrain));
+    }
+    assert_matching(&retained, &stripped);
 }

@@ -129,7 +129,7 @@ impl RoadSurfaceSystem {
                 .chain(node_regions.curb_surface_polygons.iter())
                 .chain(node_regions.sidewalk_surface_polygons.iter()),
         );
-        let (earthwork_surface_polygons, earthwork_outer_boundary_loops, render_earthwork_faces) =
+        let (earthwork_outer_boundary_loops, render_earthwork_faces) =
             self.build_closed_earthwork_geometry_from_boundary_segments(
                 &node_regions.earthwork_boundary_segments,
                 terrain,
@@ -148,17 +148,13 @@ impl RoadSurfaceSystem {
             input.kind,
             node_regions.outer_boundary_loops,
             node_regions.terrain_clip_boundary_loops,
-            node_regions.road_surface_polygons,
-            node_regions.curb_surface_polygons,
             node_regions.raised_step_faces,
-            node_regions.sidewalk_surface_polygons,
             node_regions.explicit_vertical_step_segments,
             node_regions.node_grade_authorities,
             node_regions.node_top_surface_sources,
             node_regions.owned_regions,
             node_regions.boolean_debug,
             earthwork_owner_sources,
-            earthwork_surface_polygons,
             earthwork_outer_boundary_loops,
             render_earthwork_faces,
         )?;
@@ -181,23 +177,25 @@ impl RoadSurfaceSystem {
         input: &RoadSurfaceVisualNodeCompileInput,
         preview_piece: Arc<RoadSurfaceVisualNodePiece>,
         preview_earthwork_boundaries: Arc<Vec<Vec<RoadSurfaceEarthworkBoundarySegment>>>,
-        preview_topology: Arc<NodeCanonicalTopologyCache>,
+        preview_topology: Option<Arc<NodeCanonicalTopologyCache>>,
         exact_identity: bool,
     ) -> NodeVisualCompileResult {
         if exact_identity && preview_piece.boolean_debug.is_none() {
-            let topology_cache = if input.kind == RoadSurfaceVisualNodePieceKind::JunctionN {
-                preview_topology
-            } else {
-                Arc::new(
-                    Arc::try_unwrap(preview_topology)
-                        .unwrap_or_else(|topology| topology.as_ref().clone())
-                        .into_for_committed_node(input.kind),
-                )
-            };
+            let topology_cache = preview_topology.map(|topology| {
+                if input.kind == RoadSurfaceVisualNodePieceKind::JunctionN {
+                    topology
+                } else {
+                    Arc::new(
+                        Arc::try_unwrap(topology)
+                            .unwrap_or_else(|topology| topology.as_ref().clone())
+                            .into_for_committed_node(input.kind),
+                    )
+                }
+            });
             return NodeVisualCompileResult {
                 piece: preview_piece,
                 earthwork_boundaries: preview_earthwork_boundaries,
-                topology_cache: Some(topology_cache),
+                topology_cache,
                 rail_topology_reused: true,
                 ownership_reused: true,
                 preview_artifact_zero_copy: true,
@@ -236,14 +234,16 @@ impl RoadSurfaceSystem {
         for segment in earthwork_boundaries.iter_mut().flatten() {
             segment.source = segment.source.with_node_identity(node_id, input.kind);
         }
-        let (topology, topology_zero_copy) = match Arc::try_unwrap(preview_topology) {
-            Ok(topology) => (topology, true),
-            Err(topology) => (topology.as_ref().clone(), false),
+        let (topology, topology_zero_copy) = match preview_topology.map(Arc::try_unwrap) {
+            Some(Ok(topology)) => (Some(topology), true),
+            Some(Err(topology)) => (Some(topology.as_ref().clone()), false),
+            None => (None, true),
         };
         NodeVisualCompileResult {
             piece: Arc::new(piece),
             earthwork_boundaries: Arc::new(earthwork_boundaries),
-            topology_cache: Some(Arc::new(topology.into_for_committed_node(input.kind))),
+            topology_cache: topology
+                .map(|topology| Arc::new(topology.into_for_committed_node(input.kind))),
             rail_topology_reused: true,
             ownership_reused: true,
             preview_artifact_zero_copy: piece_zero_copy
@@ -268,13 +268,9 @@ impl RoadSurfaceSystem {
         }
         let top_surface_shapes = Self::top_surface_overlay_shapes(
             cached_piece
-                .road_surface_polygons
-                .iter()
-                .chain(&cached_piece.curb_surface_polygons)
-                .chain(&cached_piece.sidewalk_surface_polygons),
+                .surface_polygons()
         );
         let (
-            mut earthwork_surface_polygons,
             mut earthwork_outer_boundary_loops,
             mut render_earthwork_faces,
         ) = self
@@ -284,7 +280,6 @@ impl RoadSurfaceSystem {
                 top_surface_shapes.as_ref(),
             )
             .ok()?;
-        Self::sort_visual_polygons(&mut earthwork_surface_polygons);
         Self::sort_visual_polygons(&mut earthwork_outer_boundary_loops);
         Self::sort_earthwork_render_faces(&mut render_earthwork_faces);
 
@@ -295,9 +290,10 @@ impl RoadSurfaceSystem {
             &piece.owned_regions,
             &piece.node_top_surface_sources,
         );
-        piece.earthwork_surface_polygons = earthwork_surface_polygons;
+        piece.earthwork_surface_order = Self::earthwork_surface_order(&render_earthwork_faces);
         piece.earthwork_outer_boundary_loops = earthwork_outer_boundary_loops;
         piece.render_earthwork_faces = render_earthwork_faces;
+        piece.shrink_retained();
         Some(piece)
     }
 

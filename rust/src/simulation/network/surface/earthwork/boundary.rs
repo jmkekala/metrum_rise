@@ -3,8 +3,8 @@
 //! Earthwork boundary segment extraction, loop assembly, and winding orientation.
 
 use super::super::{
-    RoadSurfaceSpanOwnedRegion, RoadSurfaceSystem, RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M,
-    backend::RoadVec2,
+    RoadSurfaceSection, RoadSurfaceSpanOwnedRegion, RoadSurfaceSystem, SAMPLE_EPSILON_M,
+    backend::{RoadVec2, RoadVec3},
 };
 use super::model::{
     EarthworkBoundaryEdgeKey, EarthworkBoundaryPointKey, IndexedEarthworkBoundarySegment,
@@ -17,6 +17,7 @@ use crate::simulation::network::types::EdgeClass;
 
 impl RoadSurfaceSystem {
     pub(in crate::simulation::network::surface) fn span_earthwork_boundary_segment_loops_from_support_regions(
+        sections: &[RoadSurfaceSection],
         regions: &[RoadSurfaceSpanOwnedRegion],
         edge_class: EdgeClass,
     ) -> Result<Vec<Vec<RoadSurfaceEarthworkBoundarySegment>>, RoadSurfaceEarthworkGeometryError>
@@ -25,7 +26,7 @@ impl RoadSurfaceSystem {
         for region in regions {
             let source = region.support_boundary_source(edge_class);
             Self::push_region_polygon_boundary_segments(
-                &region.polygon,
+                region.quad(sections).points(),
                 source,
                 &mut candidate_segments,
             );
@@ -34,11 +35,10 @@ impl RoadSurfaceSystem {
     }
 
     fn push_region_polygon_boundary_segments(
-        polygon: &RoadSurfaceVisualPolygon,
+        points: &[RoadVec3],
         source: RoadSurfaceEarthworkFaceSource,
         segments: &mut Vec<RoadSurfaceEarthworkBoundarySegment>,
     ) {
-        let points = &polygon.points_world;
         if points.len() < 3 {
             return;
         }
@@ -264,6 +264,7 @@ impl RoadSurfaceSystem {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::simulation::network::surface::RoadSurfaceVisualPolygon;
     use crate::simulation::network::surface::{RoadSurfaceEarthworkSupportPolicy, RoadVec3};
     use crate::simulation::terrain::TerrainSystem;
 
@@ -311,7 +312,7 @@ mod tests {
         };
         let mut segments = Vec::new();
         RoadSurfaceSystem::push_region_polygon_boundary_segments(
-            &polygon,
+            &polygon.points_world,
             test_earthwork_source(),
             &mut segments,
         );

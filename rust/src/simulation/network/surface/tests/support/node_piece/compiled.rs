@@ -32,10 +32,10 @@ pub(in crate::simulation::network::surface::tests) fn assert_compiled_bend_piece
         !piece.render_earthwork_faces.is_empty(),
         "bend piece must emit terrain skirt faces from its canonical outer boundary"
     );
-    assert!(!piece.road_surface_polygons.is_empty());
-    assert!(!piece.curb_surface_polygons.is_empty());
+    assert!(piece.road_surface_polygons().len() != 0);
+    assert!(piece.curb_surface_polygons().len() != 0);
     assert!(!piece.raised_step_face_polygons.is_empty());
-    assert!(!piece.sidewalk_surface_polygons.is_empty());
+    assert!(piece.sidewalk_surface_polygons().len() != 0);
     assert_top_mesh_centroids_inside_outer_boundary(piece);
     assert_top_surface_triangles_face_up(piece);
     assert_raised_step_faces_have_top_support(piece);
@@ -72,10 +72,10 @@ pub(in crate::simulation::network::surface::tests) fn assert_compiled_junction_p
         !piece.render_earthwork_faces.is_empty(),
         "junction piece must emit terrain skirt faces from its canonical outer boundary"
     );
-    assert!(!piece.road_surface_polygons.is_empty());
-    assert!(!piece.curb_surface_polygons.is_empty());
+    assert!(piece.road_surface_polygons().len() != 0);
+    assert!(piece.curb_surface_polygons().len() != 0);
     assert!(!piece.raised_step_face_polygons.is_empty());
-    assert!(!piece.sidewalk_surface_polygons.is_empty());
+    assert!(piece.sidewalk_surface_polygons().len() != 0);
     assert_top_mesh_centroids_inside_outer_boundary(piece);
     assert_top_surface_triangles_face_up(piece);
     assert_raised_step_faces_have_top_support(piece);

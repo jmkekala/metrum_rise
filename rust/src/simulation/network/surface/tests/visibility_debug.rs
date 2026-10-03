@@ -221,10 +221,7 @@ fn visible_surface_height_ignores_non_surface_node_adjacency() {
         .get(&center)
         .expect("surface node piece should compile from the road adjacency");
     let sample = piece
-        .road_surface_polygons
-        .iter()
-        .chain(&piece.curb_surface_polygons)
-        .chain(&piece.sidewalk_surface_polygons)
+        .surface_polygons()
         .flat_map(|polygon| polygon.triangles_world.iter().copied())
         .map(triangle_centroid_xz)
         .next()

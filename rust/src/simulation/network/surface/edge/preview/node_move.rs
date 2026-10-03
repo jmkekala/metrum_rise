@@ -67,11 +67,8 @@ impl RoadSurfaceSystem {
             surface.compiled_sections.insert(edge, Arc::new(sections));
             let piece = surface.compile_visual_span_piece(&graph, terrain, edge)?;
             let overlaps = piece
-                .road_surface_polygons
-                .iter()
-                .chain(&piece.curb_surface_polygons)
-                .chain(&piece.sidewalk_surface_polygons)
-                .any(|polygon| zoning.cells_overlap_road_polygon(polygon));
+                .surface_polygons()
+                .any(|quad| zoning.cells_overlap_road_points_world(quad.points()));
             surface
                 .compiled_visual_span_pieces
                 .insert(edge, Arc::new(piece));

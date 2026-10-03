@@ -30,7 +30,29 @@ impl RoadSurfaceSystem {
         Ok(())
     }
 
-    pub(super) fn top_polygons_from_owned_regions_by_material(
+    // `top_polygons_from_owned_regions_by_material` as sorted indices into `owned_regions`:
+    // asphalt, curb, then sidewalk, each stably by `visual_polygon_ordering`.
+    pub(super) fn top_polygon_order_by_material(owned_regions: &[NodeOwnedRegion]) -> [Box<[u32]>; 3] {
+        let material = |kind| match kind {
+            RoadSurfaceBandKind::Carriageway => 0,
+            RoadSurfaceBandKind::CurbOrShoulder => 1,
+            _ => 2,
+        };
+        [0, 1, 2].map(|bucket| {
+            let mut order: Vec<u32> = (0..owned_regions.len() as u32)
+                .filter(|&index| material(owned_regions[index as usize].kind) == bucket)
+                .collect();
+            order.sort_by(|&a, &b| {
+                Self::visual_polygon_ordering(
+                    &owned_regions[a as usize].polygon,
+                    &owned_regions[b as usize].polygon,
+                )
+            });
+            order.into_boxed_slice()
+        })
+    }
+
+    pub(in crate::simulation::network::surface) fn top_polygons_from_owned_regions_by_material(
         owned_regions: &[NodeOwnedRegion],
     ) -> (
         Vec<RoadSurfaceVisualPolygon>,

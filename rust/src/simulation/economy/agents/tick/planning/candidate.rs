@@ -21,7 +21,7 @@ use std::collections::{BinaryHeap, HashMap};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 pub(super) const NODE_RANKS: [u8; 2] = [0, 1];
-const NODE_RANK_PAIRS: [(u8, u8); 4] = [(0, 0), (0, 1), (1, 0), (1, 1)];
+pub(super) const NODE_RANK_PAIRS: [(u8, u8); 4] = [(0, 0), (0, 1), (1, 0), (1, 1)];
 const CAR_MODE_CHOICE_OVERHEAD_S: f32 = 180.0;
 const WALK_CONNECTOR_COST_SPEED_MS: f32 = 1.4;
 
@@ -107,176 +107,288 @@ pub(super) fn candidate_lane_id(
     }
 }
 
-fn evaluate_planned_trip_candidate(
+/// One end of a building trip for one mode and node rank: every access term that does not depend
+/// on the other end.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TripEnd {
+    edge_idx: usize,
+    node: u32,
+    node_x: f32,
+    node_z: f32,
+    lane_id: usize,
+    lane_d: f32,
+    // Door to lane for an origin, lane to door for a destination.
+    local_time_s: f32,
+    // Lane point to the terminal node for an origin, origin node to the lane point for a
+    // destination; needed only when the trip leaves the shared frontage.
+    frontage_time_s: Option<f32>,
+}
+
+impl TripEnd {
+    /// Builds the origin (`origin`) or destination end of a trip at `entrance`.
+    pub(super) fn new(
+        mode: u8,
+        rank: u8,
+        entrance: &BuildingEntrance,
+        origin: bool,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> Option<Self> {
+        if entrance.edge_idx >= graph.edge_count() {
+            return None;
+        }
+        let edge = graph.edge(entrance.edge_idx);
+        if edge.deleted {
+            return None;
+        }
+        let node = if rank == 0 {
+            edge.start_node
+        } else {
+            edge.end_node
+        };
+        let lane_id = candidate_lane_id(mode, entrance, rank == 0, origin);
+        if lane_id == usize::MAX {
+            return None;
+        }
+        let lane_node = if origin {
+            lane_terminal_node(lane_id, transit_network, graph)?
+        } else {
+            lane_origin_node(lane_id, transit_network, graph)?
+        };
+        if lane_node != node {
+            return None;
+        }
+        let lane_d =
+            projected_lane_distance_for_entrance(entrance, lane_id, transit_network, graph)?;
+        let local_time_s = local_access_time_s(
+            local_access_distance(mode, entrance, lane_id, lane_d, transit_network, graph)?,
+            mode,
+        );
+        let pos = graph.node(node).pos;
+        Some(Self {
+            edge_idx: entrance.edge_idx,
+            node,
+            node_x: pos.x,
+            node_z: pos.z,
+            lane_id,
+            lane_d,
+            local_time_s,
+            frontage_time_s: frontage_time_s(
+                mode,
+                lane_id,
+                lane_d,
+                origin,
+                transit_network,
+                graph,
+            ),
+        })
+    }
+
+    /// Exact time an origin end spends before a network trip leaves its node; `None` when no
+    /// network trip can leave from it.
+    pub(super) fn network_departure_s(&self) -> Option<f32> {
+        Some(self.local_time_s + self.frontage_time_s?)
+    }
+
+    /// Network node this end attaches to or detaches from.
+    pub(super) fn node_pos(&self) -> (f32, f32) {
+        (self.node_x, self.node_z)
+    }
+}
+
+/// A trip between two ends, priced when that needs no network query.
+pub(super) enum TripLeg {
+    /// The trip is fully priced: shared frontage, a shared node, or infeasible.
+    Priced(Option<PlannedTripCandidate>),
+    /// The trip needs a network path; `lower_bound_s` bounds its total cost from below.
+    Network { lower_bound_s: f32 },
+}
+
+/// Prices a trip between two ends when that needs no network query, otherwise bounds its cost
+/// from below with straight-line travel at `network_speed_bound_ms` between the two nodes.
+///
+/// `network_speed_bound_ms` must not be below any speed the route cost uses, or the bound is not
+/// a bound.
+pub(super) fn price_trip_without_network(
     mode: u8,
     origin_rank: u8,
     destination_rank: u8,
-    origin_entrance: &BuildingEntrance,
-    destination_entrance: &BuildingEntrance,
+    origin: &TripEnd,
+    destination: &TripEnd,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    network_speed_bound_ms: f32,
+) -> TripLeg {
+    if shares_direct_frontage(origin, destination) {
+        return TripLeg::Priced(direct_frontage_candidate(
+            mode,
+            origin_rank,
+            destination_rank,
+            origin,
+            destination,
+            transit_network,
+            graph,
+        ));
+    }
+    let (Some(origin_frontage_time_s), Some(destination_frontage_time_s)) =
+        (origin.frontage_time_s, destination.frontage_time_s)
+    else {
+        return TripLeg::Priced(None);
+    };
+    if origin.node == destination.node {
+        return TripLeg::Priced(combine_trip_ends(
+            mode,
+            origin_rank,
+            destination_rank,
+            origin,
+            destination,
+            transit_network,
+            graph,
+            &AtomicU32::new(0),
+        ));
+    }
+    let network_distance_m =
+        (origin.node_x - destination.node_x).hypot(origin.node_z - destination.node_z);
+    TripLeg::Network {
+        lower_bound_s: origin.local_time_s
+            + origin_frontage_time_s
+            + network_distance_m / network_speed_bound_ms
+            + destination_frontage_time_s
+            + destination.local_time_s,
+    }
+}
+
+fn shares_direct_frontage(origin: &TripEnd, destination: &TripEnd) -> bool {
+    origin.edge_idx == destination.edge_idx
+        && origin.lane_id == destination.lane_id
+        && origin.lane_d <= destination.lane_d + 1e-6
+}
+
+fn direct_frontage_candidate(
+    mode: u8,
+    origin_rank: u8,
+    destination_rank: u8,
+    origin: &TripEnd,
+    destination: &TripEnd,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+) -> Option<PlannedTripCandidate> {
+    let direct_frontage_time_s = direct_frontage_segment_time_s(
+        mode,
+        origin.lane_id,
+        origin.lane_d,
+        destination.lane_d,
+        transit_network,
+        graph,
+    )?;
+    finish_candidate(
+        mode,
+        origin_rank,
+        destination_rank,
+        origin,
+        destination,
+        origin.local_time_s + direct_frontage_time_s + destination.local_time_s,
+        None,
+    )
+}
+
+/// Prices one trip between two prepared ends, querying the network when the ends do not share a
+/// frontage or a node.
+pub(super) fn combine_trip_ends(
+    mode: u8,
+    origin_rank: u8,
+    destination_rank: u8,
+    origin: &TripEnd,
+    destination: &TripEnd,
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
     pathfind_count: &AtomicU32,
 ) -> Option<PlannedTripCandidate> {
-    if origin_entrance.edge_idx >= graph.edge_count()
-        || destination_entrance.edge_idx >= graph.edge_count()
-    {
-        return None;
-    }
-    let origin_edge = graph.edge(origin_entrance.edge_idx);
-    let destination_edge = graph.edge(destination_entrance.edge_idx);
-    if origin_edge.deleted || destination_edge.deleted {
-        return None;
-    }
-
-    let planned_attach_node = if origin_rank == 0 {
-        origin_edge.start_node
-    } else {
-        origin_edge.end_node
-    };
-    let planned_detach_node = if destination_rank == 0 {
-        destination_edge.start_node
-    } else {
-        destination_edge.end_node
-    };
-
-    let planned_attach_lane_id = candidate_lane_id(mode, origin_entrance, origin_rank == 0, true);
-    let planned_detach_lane_id =
-        candidate_lane_id(mode, destination_entrance, destination_rank == 0, false);
-    if planned_attach_lane_id == usize::MAX || planned_detach_lane_id == usize::MAX {
-        return None;
-    }
-    if lane_terminal_node(planned_attach_lane_id, transit_network, graph)? != planned_attach_node {
-        return None;
-    }
-    if lane_origin_node(planned_detach_lane_id, transit_network, graph)? != planned_detach_node {
-        return None;
-    }
-
-    let planned_attach_lane_d = projected_lane_distance_for_entrance(
-        origin_entrance,
-        planned_attach_lane_id,
-        transit_network,
-        graph,
-    )?;
-    let planned_detach_lane_d = projected_lane_distance_for_entrance(
-        destination_entrance,
-        planned_detach_lane_id,
-        transit_network,
-        graph,
-    )?;
-
-    let egress_local_time_s = local_access_time_s(
-        local_access_distance(
+    if shares_direct_frontage(origin, destination) {
+        return direct_frontage_candidate(
             mode,
-            origin_entrance,
-            planned_attach_lane_id,
-            planned_attach_lane_d,
+            origin_rank,
+            destination_rank,
+            origin,
+            destination,
             transit_network,
             graph,
-        )?,
-        mode,
-    );
-    let ingress_local_time_s = local_access_time_s(
-        local_access_distance(
-            mode,
-            destination_entrance,
-            planned_detach_lane_id,
-            planned_detach_lane_d,
-            transit_network,
-            graph,
-        )?,
-        mode,
-    );
-    let same_lane_direct_frontage = origin_entrance.edge_idx == destination_entrance.edge_idx
-        && planned_attach_lane_id == planned_detach_lane_id
-        && planned_attach_lane_d <= planned_detach_lane_d + 1e-6;
+        );
+    }
+    let origin_frontage_time_s = origin.frontage_time_s?;
+    let destination_frontage_time_s = destination.frontage_time_s?;
 
     let mut network_path = None;
-    let total_cost_s = if same_lane_direct_frontage {
-        let direct_frontage_time_s = direct_frontage_segment_time_s(
-            mode,
-            planned_attach_lane_id,
-            planned_attach_lane_d,
-            planned_detach_lane_d,
-            transit_network,
-            graph,
-        )?;
-        egress_local_time_s + direct_frontage_time_s + ingress_local_time_s
-    } else {
-        let origin_frontage_time_s = frontage_time_s(
-            mode,
-            planned_attach_lane_id,
-            planned_attach_lane_d,
-            true,
-            transit_network,
-            graph,
-        )?;
-        let destination_frontage_time_s = frontage_time_s(
-            mode,
-            planned_detach_lane_id,
-            planned_detach_lane_d,
-            false,
-            transit_network,
-            graph,
-        )?;
-
-        let network_path_time_s = if planned_attach_node == planned_detach_node {
-            if mode == MODE_CAR
-                || same_lane_direct_frontage
-                || connector_to_lane_exists(
-                    planned_attach_lane_id,
-                    planned_detach_lane_id,
-                    transit_network,
-                )
-            {
-                0.0
-            } else {
-                return None;
-            }
+    let network_path_time_s = if origin.node == destination.node {
+        if mode == MODE_CAR
+            || connector_to_lane_exists(origin.lane_id, destination.lane_id, transit_network)
+        {
+            0.0
         } else {
-            pathfind_count.fetch_add(1, Ordering::Relaxed);
-            let planned_attach_edge = transit_network
-                .lane_system
-                .lanes
-                .get(planned_attach_lane_id)?
-                .edge_id;
-            let (mut travel_seconds, _, mut path) = transit_network.cch_graph.find_path(
-                planned_attach_node,
-                planned_detach_node,
-                planned_attach_edge,
+            return None;
+        }
+    } else {
+        pathfind_count.fetch_add(1, Ordering::Relaxed);
+        let planned_attach_edge = transit_network
+            .lane_system
+            .lanes
+            .get(origin.lane_id)?
+            .edge_id;
+        let (mut travel_seconds, _, mut path) = transit_network.cch_graph.find_path(
+            origin.node,
+            destination.node,
+            planned_attach_edge,
+            graph,
+            transit_flags_for_mode(mode),
+        )?;
+        if mode != MODE_CAR
+            && !pedestrian_path_has_lane_connectors(
+                &path,
+                origin.lane_id,
+                destination.lane_id,
+                transit_network,
                 graph,
-                transit_flags_for_mode(mode),
+            )
+        {
+            let fallback = pedestrian_lane_connector_path(
+                origin.node,
+                destination.node,
+                origin.lane_id,
+                destination.lane_id,
+                transit_network,
+                graph,
             )?;
-            if mode != MODE_CAR
-                && !pedestrian_path_has_lane_connectors(
-                    &path,
-                    planned_attach_lane_id,
-                    planned_detach_lane_id,
-                    transit_network,
-                    graph,
-                )
-            {
-                let fallback = pedestrian_lane_connector_path(
-                    planned_attach_node,
-                    planned_detach_node,
-                    planned_attach_lane_id,
-                    planned_detach_lane_id,
-                    transit_network,
-                    graph,
-                )?;
-                travel_seconds = fallback.0;
-                path = fallback.1;
-            }
-            network_path = Some(path);
-            travel_seconds
-        };
+            travel_seconds = fallback.0;
+            path = fallback.1;
+        }
+        network_path = Some(path);
+        travel_seconds
+    };
 
-        egress_local_time_s
+    finish_candidate(
+        mode,
+        origin_rank,
+        destination_rank,
+        origin,
+        destination,
+        origin.local_time_s
             + origin_frontage_time_s
             + network_path_time_s
             + destination_frontage_time_s
-            + ingress_local_time_s
-    };
+            + destination.local_time_s,
+        network_path,
+    )
+}
+
+fn finish_candidate(
+    mode: u8,
+    origin_rank: u8,
+    destination_rank: u8,
+    origin: &TripEnd,
+    destination: &TripEnd,
+    total_cost_s: f32,
+    network_path: Option<Vec<u32>>,
+) -> Option<PlannedTripCandidate> {
     if !total_cost_s.is_finite() {
         return None;
     }
@@ -287,14 +399,58 @@ fn evaluate_planned_trip_candidate(
         origin_rank,
         destination_rank,
         mode,
-        planned_attach_node,
-        planned_detach_node,
-        planned_attach_lane_id,
-        planned_detach_lane_id,
-        planned_attach_lane_d,
-        planned_detach_lane_d,
+        planned_attach_node: origin.node,
+        planned_detach_node: destination.node,
+        planned_attach_lane_id: origin.lane_id,
+        planned_detach_lane_id: destination.lane_id,
+        planned_attach_lane_d: origin.lane_d,
+        planned_detach_lane_d: destination.lane_d,
         network_path,
     })
+}
+
+fn evaluate_planned_trip_candidate(
+    mode: u8,
+    origin_rank: u8,
+    destination_rank: u8,
+    origin_entrance: &BuildingEntrance,
+    destination_entrance: &BuildingEntrance,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    pathfind_count: &AtomicU32,
+) -> Option<PlannedTripCandidate> {
+    // Both entrances must sit on live edges before either end is priced.
+    for entrance in [origin_entrance, destination_entrance] {
+        if entrance.edge_idx >= graph.edge_count() || graph.edge(entrance.edge_idx).deleted {
+            return None;
+        }
+    }
+    let origin = TripEnd::new(
+        mode,
+        origin_rank,
+        origin_entrance,
+        true,
+        transit_network,
+        graph,
+    )?;
+    let destination = TripEnd::new(
+        mode,
+        destination_rank,
+        destination_entrance,
+        false,
+        transit_network,
+        graph,
+    )?;
+    combine_trip_ends(
+        mode,
+        origin_rank,
+        destination_rank,
+        &origin,
+        &destination,
+        transit_network,
+        graph,
+        pathfind_count,
+    )
 }
 
 pub(super) fn build_exact_path_for_candidate(

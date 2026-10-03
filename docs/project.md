@@ -277,12 +277,19 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
 
 ## Current Priorities
 
-- **Economy growth redesign (`ECON-11`–`ECON-12` done; `ECON-13`–`ECON-14`, `DEM-02` open)**: the city stops growing because
+- **Economy growth redesign (`ECON-11`–`ECON-12` done; `ECON-13` in progress; `ECON-14`, `ECON-15`, `DEM-02` open)**: the city stops growing because
   it has no export base, exports pay `0.60×` unit price, and regional pull ends at 600 households.
   Balance tests and a headless growth scenario are in place; the scenario's starter town stalls at
-  25 households and runs out of money near day 280. A Criterion baseline comes next, then the
-  export base and a single demand signal. See
-  [`economy.md`](economy.md#growth-redesign-econ-11econ-14-dem-02).
+  25 households and runs out of money near day 280.
+  - The `ECON-13` tick benchmark runs at 10k residents (hour 19 ms) and 100k (hour 1.6 s).
+    Building it exposed and fixed a job search that routed every home to every workplace, with
+    identical results.
+  - Logistics dominates the hour and grows near-quadratically (`ECON-15`).
+  - Road-surface memory (`ROAD-44` in progress): junction topologies are capped and span
+    products are rebuilt from sections, with identical output. 100k peak RSS fell from 14.8 GB to
+    2.0 GB, projecting about 20 GB at 1M; span earthwork and terrain-clip loops remain.
+  - The export base and a single demand signal follow. See
+    [`economy.md`](economy.md#growth-redesign-econ-11econ-14-dem-02).
 - **Road preview display performance (`ROAD-30`–`ROAD-35`, `ROAD-37`–`ROAD-40` and `ROAD-42` done;
   `ROAD-36`, `ROAD-41` and `ROAD-43` parked)**: prioritize **Road and terrain**. With input-to-display baselines captured, tackle native buffer validation, rendering
   resource reuse, retained geometry locality, packed payload deltas, worker scheduling and

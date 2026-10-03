@@ -161,8 +161,8 @@ fn assert_flat_junction_raised_geometry_invariants(piece: &RoadSurfaceVisualNode
 fn assert_flat_junction_raised_top_triangles_stay_at_curb_height(
     piece: &RoadSurfaceVisualNodePiece,
 ) {
-    assert_flat_polygons_stay_at_curb_height("curb", &piece.curb_surface_polygons);
-    assert_flat_polygons_stay_at_curb_height("sidewalk", &piece.sidewalk_surface_polygons);
+    assert_flat_polygons_stay_at_curb_height("curb", &piece.curb_surface_polygons().cloned().collect::<Vec<_>>());
+    assert_flat_polygons_stay_at_curb_height("sidewalk", &piece.sidewalk_surface_polygons().cloned().collect::<Vec<_>>());
 }
 
 fn assert_flat_polygons_stay_at_curb_height(label: &str, polygons: &[RoadSurfaceVisualPolygon]) {

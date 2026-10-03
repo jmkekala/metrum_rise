@@ -35,6 +35,9 @@ const CROSS_STREET_X_M: [f32; 3] = [-200.0, 0.0, 200.0];
 const CROSS_STREET_HALF_LENGTH_M: f32 = 250.0;
 // Covers both frontage rows of a two-lane street without reaching the next street.
 const ZONE_BRUSH_RADIUS_M: f64 = 40.0;
+const ZONE_BRUSH: CellSelectionShape = CellSelectionShape::Brush {
+    radius_m: ZONE_BRUSH_RADIUS_M,
+};
 // Keeps paint clear of junction corners, where frontage cells do not form.
 const JUNCTION_CLEARANCE_M: f64 = 30.0;
 
@@ -98,6 +101,7 @@ impl GrowthScenario {
             paint(
                 &mut core,
                 ZoneType::Commercial,
+                ZONE_BRUSH,
                 &[DVec2::new(start, 0.0), DVec2::new(end, 0.0)],
             );
         }
@@ -138,7 +142,7 @@ impl GrowthScenario {
     }
 }
 
-fn install_bootstrap_assets(core: &mut SimCore) {
+pub(super) fn install_bootstrap_assets(core: &mut SimCore) {
     let mods = Path::new(env!("CARGO_MANIFEST_DIR")).join("../godot/bootstrap/mods");
     let scan = scan_pack_dir(&mods);
     assert!(
@@ -155,7 +159,7 @@ fn install_bootstrap_assets(core: &mut SimCore) {
     }));
 }
 
-fn commit_road(core: &mut SimCore, (x0, z0): (f32, f32), (x1, z1): (f32, f32)) {
+pub(super) fn commit_road(core: &mut SimCore, (x0, z0): (f32, f32), (x1, z1): (f32, f32)) {
     let outcome = core.commit_road(
         RoadCommitRequest {
             points: vec![Vector3::new(x0, 0.0, z0), Vector3::new(x1, 0.0, z1)],
@@ -180,19 +184,26 @@ fn paint_cross_street(core: &mut SimCore, x: f64, zone_type: ZoneType) {
         (-reach, -JUNCTION_CLEARANCE_M),
         (JUNCTION_CLEARANCE_M, reach),
     ] {
-        paint(core, zone_type, &[DVec2::new(x, start), DVec2::new(x, end)]);
+        paint(
+            core,
+            zone_type,
+            ZONE_BRUSH,
+            &[DVec2::new(x, start), DVec2::new(x, end)],
+        );
     }
 }
 
-fn paint(core: &mut SimCore, zone_type: ZoneType, path: &[DVec2]) {
+pub(super) fn paint(
+    core: &mut SimCore,
+    zone_type: ZoneType,
+    shape: CellSelectionShape,
+    path: &[DVec2],
+) {
     let profile = core
         .zoning
         .profiles
         .runtime_id_for_zone_density(zone_type, ZoneDensity::Low)
         .expect("baseline zoning profile");
-    let shape = CellSelectionShape::Brush {
-        radius_m: ZONE_BRUSH_RADIUS_M,
-    };
     let preview = core.preview_cell_selection_internal(shape, path);
     assert!(
         core.apply_cell_selection_internal(&preview, profile),

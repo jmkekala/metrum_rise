@@ -121,15 +121,12 @@ pub struct RoadSurfaceVisualNodePiece {
     /// Outer piece-owned boundaries used for debug, surface chunk bounds, and terrain clipping.
     pub outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
     pub(crate) terrain_clip_boundary_loops: Vec<RoadSurfaceTerrainClipLoop>,
-    /// Explicit asphalt-owned polygons for the node piece.
-    pub road_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
-    /// Explicit curb / shoulder-owned polygons for the node piece.
-    pub curb_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
+    // Indices into `owned_regions` of the asphalt, curb and sidewalk polygons in render order;
+    // every top polygon is an owned region's.
+    pub(crate) surface_polygon_order: [Box<[u32]>; 3],
     /// Explicit vertical faces at raised owner-pair material contacts.
     pub raised_step_face_polygons: Vec<RoadSurfaceVisualPolygon>,
     pub(crate) raised_step_face_sources: Vec<RoadSurfaceVerticalFaceSource>,
-    /// Explicit sidewalk-owned polygons for the node piece.
-    pub sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     pub(in crate::simulation::network::surface) surface_query: Arc<RoadSurfaceTriangleQueryIndex>,
     pub(crate) explicit_vertical_step_segments: Vec<arrangement::NodeExplicitVerticalStepSegment>,
     pub(crate) node_grade_authorities: Vec<NodeGradeVertexAuthority>,
@@ -137,7 +134,8 @@ pub struct RoadSurfaceVisualNodePiece {
     pub(crate) owned_regions: Vec<NodeOwnedRegion>,
     pub(crate) boolean_debug: Option<NodeBooleanDebugSnapshot>,
     pub(crate) earthwork_owner_sources: Vec<NodeEarthworkOwnerSource>,
-    pub(crate) earthwork_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
+    // `render_earthwork_faces` indices in earthwork surface polygon order.
+    pub(crate) earthwork_surface_order: Box<[u32]>,
     pub(crate) earthwork_outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
     pub(crate) render_earthwork_faces: Vec<RoadSurfaceEarthworkRenderFace>,
 }
@@ -236,6 +234,112 @@ pub(crate) struct NodeCornerTrimSideJoinIntersectionDebug {
     pub(crate) contributes_to_asphalt: bool,
     pub(crate) contributes_to_non_road_band: bool,
     pub(crate) area_m2: f32,
+}
+
+impl RoadSurfaceVisualNodePiece {
+    fn material_polygons(
+        &self,
+        material: usize,
+    ) -> impl ExactSizeIterator<Item = &RoadSurfaceVisualPolygon> + Clone + '_ {
+        self.surface_polygon_order[material]
+            .iter()
+            .map(|&index| &self.owned_regions[index as usize].polygon)
+    }
+
+    /// Asphalt-owned top polygons in render order.
+    pub fn road_surface_polygons(
+        &self,
+    ) -> impl ExactSizeIterator<Item = &RoadSurfaceVisualPolygon> + Clone + '_ {
+        self.material_polygons(0)
+    }
+
+    /// Curb or shoulder-owned top polygons in render order.
+    pub fn curb_surface_polygons(
+        &self,
+    ) -> impl ExactSizeIterator<Item = &RoadSurfaceVisualPolygon> + Clone + '_ {
+        self.material_polygons(1)
+    }
+
+    /// Sidewalk-owned top polygons in render order.
+    pub fn sidewalk_surface_polygons(
+        &self,
+    ) -> impl ExactSizeIterator<Item = &RoadSurfaceVisualPolygon> + Clone + '_ {
+        self.material_polygons(2)
+    }
+
+    /// Asphalt, then curb, then sidewalk top polygons.
+    pub fn surface_polygons(&self) -> impl Iterator<Item = &RoadSurfaceVisualPolygon> + Clone + '_ {
+        (0..3).flat_map(move |material| self.material_polygons(material))
+    }
+
+    // Retained lists are built by pushing; drop their spare capacity once, at publication size.
+    pub(crate) fn shrink_retained(&mut self) {
+        self.outer_boundary_loops.shrink_to_fit();
+        super::super::span::shrink_terrain_clip_loops(&mut self.terrain_clip_boundary_loops);
+        self.raised_step_face_polygons.shrink_to_fit();
+        self.raised_step_face_sources.shrink_to_fit();
+        self.explicit_vertical_step_segments.shrink_to_fit();
+        self.node_grade_authorities.shrink_to_fit();
+        self.node_top_surface_sources.shrink_to_fit();
+        self.owned_regions.shrink_to_fit();
+        self.earthwork_owner_sources.shrink_to_fit();
+        self.earthwork_outer_boundary_loops.shrink_to_fit();
+        self.render_earthwork_faces.shrink_to_fit();
+    }
+
+    pub(crate) fn has_compile_provenance(&self) -> bool {
+        !self.node_grade_authorities.is_empty()
+            || self.node_top_surface_sources.iter().any(|source| {
+                !source.vertex_keys.is_empty()
+                    || !source.vertex_height_mm.is_empty()
+                    || !source.vertex_sources.is_empty()
+                    || !source.triangle_sources.is_empty()
+            })
+    }
+
+    // Drops what only compile-time validation, tests and road debug read: grade authorities and
+    // per-vertex top provenance. Each region's height field, which earthwork owner sources are
+    // rebuilt from, stays.
+    pub(crate) fn strip_compile_provenance(&mut self) {
+        self.node_grade_authorities = Vec::new();
+        for source in &mut self.node_top_surface_sources {
+            source.vertex_keys = Vec::new();
+            source.vertex_height_mm = Vec::new();
+            source.vertex_sources = Vec::new();
+            source.triangle_sources = Vec::new();
+        }
+    }
+
+    // Appends a synthetic top polygon as an owned region of `kind`, for hand-built test pieces.
+    #[cfg(test)]
+    pub(crate) fn push_test_surface_polygon(
+        &mut self,
+        kind: RoadSurfaceBandKind,
+        polygon: RoadSurfaceVisualPolygon,
+    ) {
+        let material = match kind {
+            RoadSurfaceBandKind::Carriageway => 0,
+            RoadSurfaceBandKind::CurbOrShoulder => 1,
+            _ => 2,
+        };
+        let mut order = self.surface_polygon_order[material].to_vec();
+        order.push(self.owned_regions.len() as u32);
+        self.surface_polygon_order[material] = order.into_boxed_slice();
+        self.owned_regions.push(NodeOwnedRegion {
+            kind,
+            owner_index: 0,
+            polygon,
+        });
+    }
+
+    /// Earthwork side polygons in `visual_polygon_ordering` order; each is a render face's.
+    pub(crate) fn earthwork_surface_polygons(
+        &self,
+    ) -> impl ExactSizeIterator<Item = &RoadSurfaceVisualPolygon> + '_ {
+        self.earthwork_surface_order
+            .iter()
+            .map(|&index| &self.render_earthwork_faces[index as usize].polygon)
+    }
 }
 
 impl NodeBooleanDebugSnapshot {

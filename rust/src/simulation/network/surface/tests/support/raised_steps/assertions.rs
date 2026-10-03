@@ -206,14 +206,14 @@ pub(in crate::simulation::network::surface::tests) fn assert_surface_no_unfaced_
             top_edges.extend(test_polygon_top_boundary_edges(
                 region.owner.kind,
                 region.owner.source_band_index,
-                &region.polygon,
+                &span_piece.region_quad(region).to_polygon(),
             ));
         }
         face_lower_edges.extend(
             span_piece
-                .raised_step_face_polygons
-                .iter()
-                .filter_map(vertical_face_lower_edge_for_test),
+                .raised_step_face_polygons()
+                .map(|face| face.to_polygon())
+                .filter_map(|face| vertical_face_lower_edge_for_test(&face)),
         );
     }
     for node_piece in surface.compiled_visual_node_pieces().values() {

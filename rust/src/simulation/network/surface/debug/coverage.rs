@@ -20,10 +20,7 @@ impl RoadSurfaceSystem {
 
         let top_contours = Self::debug_overlay_contours_from_top_polygons(
             piece
-                .road_surface_polygons
-                .iter()
-                .chain(piece.curb_surface_polygons.iter())
-                .chain(piece.sidewalk_surface_polygons.iter()),
+                .surface_polygons()
         );
         let Some(mut top_shapes) = Self::overlay_union_contours(&top_contours) else {
             dump.push_str("{\"status\":\"overlay_failed\"}");

@@ -76,10 +76,7 @@ pub(in crate::simulation::network::surface::tests) fn assert_earthwork_faces_sta
 ) {
     let top_contours = overlay_contours_from_top_polygons(
         piece
-            .road_surface_polygons
-            .iter()
-            .chain(piece.curb_surface_polygons.iter())
-            .chain(piece.sidewalk_surface_polygons.iter()),
+            .surface_polygons()
     );
     let top_shapes = RoadSurfaceSystem::overlay_union_contours(&top_contours)
         .expect("node top overlay union should succeed");

@@ -137,10 +137,7 @@ pub(in crate::simulation::network::surface::tests) fn assert_top_surface_triangl
     piece: &RoadSurfaceVisualNodePiece,
 ) {
     for triangle in piece
-        .road_surface_polygons
-        .iter()
-        .chain(piece.curb_surface_polygons.iter())
-        .chain(piece.sidewalk_surface_polygons.iter())
+        .surface_polygons()
         .flat_map(|polygon| polygon.triangles_world.iter().copied())
     {
         let double_area_xz = (triangle[1].x - triangle[0].x) * (triangle[2].z - triangle[0].z)
@@ -180,17 +177,17 @@ pub(in crate::simulation::network::surface::tests) fn assert_node_piece_uses_ban
         .count();
     assert_eq!(
         carriageway_count,
-        piece.road_surface_polygons.len(),
+        piece.road_surface_polygons().len(),
         "asphalt polygons must be derived from carriageway-owned node regions"
     );
     assert_eq!(
         curb_count,
-        piece.curb_surface_polygons.len(),
+        piece.curb_surface_polygons().len(),
         "curb polygons must be derived from curb/shoulder-owned node regions"
     );
     assert_eq!(
         non_road_count,
-        piece.sidewalk_surface_polygons.len(),
+        piece.sidewalk_surface_polygons().len(),
         "sidewalk polygons must be derived from sidewalk-owned node regions"
     );
     let degenerate_owned_regions = piece

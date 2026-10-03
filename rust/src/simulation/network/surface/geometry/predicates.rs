@@ -75,7 +75,7 @@ impl RoadSurfaceSystem {
         (double_area * 0.5) as f32
     }
 
-    pub(super) fn polygon_has_strict_edge_crossing_xz(points: &[RoadVec3]) -> bool {
+    pub(in crate::simulation::network::surface) fn polygon_has_strict_edge_crossing_xz(points: &[RoadVec3]) -> bool {
         if points.len() < 4 {
             return false;
         }

@@ -4,13 +4,14 @@
 
 use super::super::{
     RoadLaneSurfaceQuery, RoadSurfaceIndexedTriangle, RoadSurfaceSection, RoadSurfaceSystem,
-    RoadSurfaceTriangleQueryIndex, SurfaceChunkKey,
+    RoadSurfaceTriangleQueryIndex, RoadSurfaceVisualSpanPiece, SurfaceChunkKey,
 };
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::surface::backend::{RoadVec2, RoadVec3, godot_vec3_to_road};
 use crate::simulation::network::types::EdgeClass;
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
+use std::sync::Arc;
 
 const SAMPLE_EPSILON_M: f64 = 0.001;
 
@@ -49,9 +50,9 @@ impl RoadSurfaceSystem {
         RoadLaneSurfaceQuery {
             node_indices,
             node_count,
-            span_index: edge_id
+            span: edge_id
                 .and_then(|edge_id| self.compiled_visual_span_pieces.get(&edge_id))
-                .map(|piece| piece.surface_query.as_ref()),
+                .map(Arc::as_ref),
             carriageway_only,
         }
     }
@@ -109,7 +110,7 @@ impl RoadSurfaceSystem {
                 continue;
             }
             if let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx)
-                && let Some(sample) = piece.surface_query.sample_visible_height(point)
+                && let Some(sample) = piece.sample_visible_height(point)
             {
                 keep_max_height(&mut top_surface, sample);
             }
@@ -163,7 +164,7 @@ impl RoadSurfaceSystem {
             if !self.node_uses_visible_surface(graph, terrain, node_id) {
                 continue;
             }
-            for polygon in &piece.road_surface_polygons {
+            for polygon in piece.road_surface_polygons() {
                 Self::visit_visual_polygon_triangles(polygon, &mut |triangle| {
                     if let Some(height_m) = Self::triangle_height_at_xz(&triangle, point) {
                         keep_max_height(&mut road_surface_height_m, height_m);
@@ -176,8 +177,8 @@ impl RoadSurfaceSystem {
             let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
                 continue;
             };
-            for polygon in &piece.road_surface_polygons {
-                Self::visit_visual_polygon_triangles(polygon, &mut |triangle| {
+            for quad in piece.road_surface_polygons() {
+                Self::visit_surface_triangles(quad.triangles(), &mut |triangle| {
                     if let Some(height_m) = Self::triangle_height_at_xz(&triangle, point) {
                         keep_max_height(&mut road_surface_height_m, height_m);
                     }
@@ -217,10 +218,7 @@ impl RoadSurfaceSystem {
                 self.node_piece_integrated_surface_offset_m(graph, node_id, terrain);
 
             for polygon in piece
-                .road_surface_polygons
-                .iter()
-                .chain(&piece.curb_surface_polygons)
-                .chain(&piece.sidewalk_surface_polygons)
+                .surface_polygons()
             {
                 Self::visit_visual_polygon_triangles(polygon, &mut |triangle| {
                     if let Some(height_m) = Self::triangle_height_at_xz(&triangle, point) {
@@ -431,8 +429,8 @@ impl RoadLaneSurfaceQuery<'_> {
                 keep_max_height(&mut surface_height_m, height_m);
             }
         }
-        if let Some(index) = self.span_index
-            && let Some(height_m) = index.sample_height(point, self.carriageway_only)
+        if let Some(span) = self.span
+            && let Some(height_m) = span.sample_height(point, self.carriageway_only)
         {
             keep_max_height(&mut surface_height_m, height_m);
         }
@@ -446,11 +444,18 @@ impl RoadSurfaceTriangleQueryIndex {
         self.sample_height_matching(point, |_| true)
     }
 
-    fn sample_height(&self, point: RoadVec2, carriageway_only: bool) -> Option<f32> {
+    pub(in crate::simulation::network::surface) fn sample_height(
+        &self,
+        point: RoadVec2,
+        carriageway_only: bool,
+    ) -> Option<f32> {
         self.sample_height_matching(point, |triangle| !carriageway_only || triangle.carriageway)
     }
 
-    fn sample_visible_height(&self, point: RoadVec2) -> Option<f32> {
+    pub(in crate::simulation::network::surface) fn sample_visible_height(
+        &self,
+        point: RoadVec2,
+    ) -> Option<f32> {
         self.sample_height_matching(point, |triangle| {
             RoadSurfaceSystem::top_surface_triangle_is_renderable_xz(triangle.triangle)
         })
@@ -470,6 +475,40 @@ impl RoadSurfaceTriangleQueryIndex {
             if let Some(height_m) =
                 RoadSurfaceSystem::triangle_height_at_xz(&indexed.triangle, point)
             {
+                keep_max_height(&mut height, height_m);
+            }
+        }
+        height
+    }
+}
+
+impl RoadSurfaceVisualSpanPiece {
+    pub(in crate::simulation::network::surface) fn sample_height(&self, point: RoadVec2, carriageway_only: bool) -> Option<f32> {
+        self.sample_height_matching(point, |_, carriageway| !carriageway_only || carriageway)
+    }
+
+    pub(in crate::simulation::network::surface) fn sample_visible_height(
+        &self,
+        point: RoadVec2,
+    ) -> Option<f32> {
+        self.sample_height_matching(point, |triangle, _| {
+            RoadSurfaceSystem::top_surface_triangle_is_renderable_xz(triangle)
+        })
+    }
+
+    // Rebuilds each candidate triangle from the sections on the stack; no allocation.
+    fn sample_height_matching(
+        &self,
+        point: RoadVec2,
+        accepts: impl Fn([RoadVec3; 3], bool) -> bool,
+    ) -> Option<f32> {
+        let mut height = None;
+        for &item in self.surface_query.cell_items(point) {
+            let (triangle, carriageway) = self.surface_query_triangle(item);
+            if !accepts(triangle, carriageway) {
+                continue;
+            }
+            if let Some(height_m) = RoadSurfaceSystem::triangle_height_at_xz(&triangle, point) {
                 keep_max_height(&mut height, height_m);
             }
         }

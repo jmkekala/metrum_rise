@@ -1724,9 +1724,24 @@ Where:
 Job candidate pruning uses the same capped commute penalty as candidate ranking. A strictly
 larger penalty lower bound can stop the chunk scan; equal penalties must keep searching because
 wage, capacity, vacancy count and building ID can still decide the order. At the 30-minute physical
-travel cap, farther candidates therefore remain eligible. This preserves the existing O(J)
-worst-case search bound over reachable jobs; saturated searches may inspect more jobs than the
-incorrect early-stop path. This bound correction is covered by a regression, not a route-timing claim.
+travel cap, farther candidates therefore remain eligible. The worst case is still O(J) over
+reachable jobs, but two exact lower bounds keep ordinary searches local (`ECON-13`, 2026-10-02):
+
+- **Ring stop.** The bound for the next 512 m chunk ring adds the home's own door-to-network time
+  (local access plus frontage, per mode and node) to straight-line travel at the network's top
+  speed. The straight-line part is shortened by the home's node offset and by the largest
+  workplace-centre-to-node offset in the job snapshot, and is zero within reach of a shared node
+  or frontage.
+- **Per-pair pruning.** Once 24 options are held, a workplace is routed only if one of its
+  candidates can finish within the 24th option's commute. Each candidate's bound is its exact
+  access and frontage terms plus straight-line travel between its two network nodes. Candidates
+  are routed in bound order and skipped once their bound loses to the best mode-choice cost found.
+
+Both bounds hold because route cost is never below length ÷ max(speed limit,
+`MIN_ROUTE_SPEED_MS`), and no penalty factor is below one. The ranked options, and the commute
+seconds of every routed pair, are therefore identical to an exhaustive search.
+`commute_bounds.rs` checks this on more than 10,000 home-job pairs. Workplace access terms are
+computed once per job snapshot, and home terms once per home.
 
 Recommended seed weights for the first implementation:
 
@@ -3717,7 +3732,7 @@ formula are chosen after `ECON-11`–`ECON-13` produce numbers, not before.
 | --- | --- | --- | --- |
 | 1 | `ECON-11` (done) | Pure Rust balance tests on the shipped `economy/profiles.toml`: business solvency (the check lost with `ECON-10`), export margin for basic industries, and jobs per 1,000 residents for the closed chain. | Run in `cargo test` without Godot in milliseconds. Assertions describing the target design start `#[ignore]` with a reason and are enabled by `ECON-14`. |
 | 2 | `ECON-12` (done) | Extract the frame step inlined in `rust/src/nodes/sim/core/thread.rs` into a `SimCore` step callable by the sim thread and by tests. Add a growth-scenario integration test in `rust/tests/` that runs a seeded, zoned map for 365 simulated days and records households, jobs and treasury. | Two runs give identical results; no Godot required; sim-thread behavior unchanged. Design reviewed 2026-10-02 before code moved. |
-| 3 | `ECON-13` | Criterion baseline for the hourly and daily economy ticks at 10k, 100k and 1M residents. | Matched, unprofiled release runs; commands, build identity and results recorded in this section. |
+| 3 | `ECON-13` (in progress) | Criterion baseline for the hourly and daily economy ticks at 10k, 100k and 1M residents. | Matched, unprofiled release runs; commands, build identity and results recorded in [`ECON-13` economy tick baseline](#econ-13-economy-tick-baseline). |
 | 4 | `ECON-14` | Export base: basic industries sell to the region at no less than `1.0×` their unit price, and regional demand no longer ends at a fixed household count. | `ECON-11` target tests enabled and passing; the `ECON-12` scenario shows sustained growth; no `ECON-13` regression. |
 | 4 | `DEM-02` | One demand signal per zone type, driven by jobs, residents and exports, replacing the stacked pressure and threshold layers. Owned by [`demand.md`](demand.md). | Same as `ECON-14`; the signal for a zone can be computed by hand from its inputs. |
 
@@ -3794,6 +3809,90 @@ Limits:
 
 Run the determinism test with `cargo test --test growth_scenario`. Add `-- --ignored` to print
 the monthly trajectory from the `ECON-14` target.
+
+### `ECON-13` economy tick baseline
+
+In progress, 2026-10-02. The benchmark and its city are in place, and the 10k and 100k tiers run.
+The 1M tier has not run yet: before `ROAD-44` it projected to about 110 GB, and with the
+2026-10-03 progress to about 20 GB peak. The numbers below come from single
+runs and are not yet the matched acceptance runs.
+
+**Benchmark city.** `PopulatedCity::build(residents)` (`rust/src/nodes/sim/core/populated_city.rs`)
+builds a square city sized for the requested residents (about 2,800 per km², plus 8% headroom):
+
+- Streets run every 50 m, with back-to-back lots between them, and cross streets every 400 m.
+  Roads are added through the bulk path of the in-game benchmark city.
+- An `OWA` trunk runs from the world edge along the middle street.
+- Streets are zoned with the player's brush in a repeating pattern of eight rows: six
+  residential, one commercial and one industrial.
+- Every lot is built through the demand spawn executor with the `godot/bootstrap/mods` pack, and
+  construction is completed.
+- Households are admitted through demand admission until the resident count is reached. Their
+  carriers are placed at home instead of driving in. This is the only step that bypasses the
+  game.
+- The treasury is effectively unlimited, so city services stay funded in every tier.
+- Two simulated days run before timing starts.
+
+The economy then runs on its real hourly cadence without agent movement, so trips the economy
+starts never finish.
+
+**Benchmark.** `rust/benches/economy_tick_benchmark.rs` builds each tier once, outside the timed
+region, and keeps advancing the city hour by hour. Only the tick under test is timed, and every
+sample is one tick:
+
+- `operational_hour`: each of the 23 demand-pass hours of one day.
+- `daily_settlement`: ten consecutive days.
+
+The city cannot drift far during a run. At both tiers, households, residents, employed, jobs and
+buildings were the same after the runs as before. Run it with
+`cd rust && cargo bench --bench economy_tick_benchmark -- /10k` (or `/100k`, `/1m`). Criterion
+warns that the target time is too short; that is intended.
+
+Build: branch `economy` at `522aae16` plus uncommitted `ECON-13` changes, `bench` profile, 24
+logical CPUs, 64 GB RAM, default Rayon workers.
+
+| Tier | Residents / employed / jobs | Buildings | Build | Peak RSS | `operational_hour` | `daily_settlement` |
+| --- | --- | ---: | ---: | ---: | --- | --- |
+| 10k | 11,143 / 7,634 / 14,009 | 7,428 | 17.4 s | about 1.5 GB | 17.5 / 19.2 / 21.2 ms | 16.8 ms / 327 ms / 771 ms |
+| 100k | 110,867 / 76,628 / 141,573 | 75,965 | 518 s | 14.8 GB | 1.60 / 1.62 / 1.63 s | 212 ms / 5.04 s / 12.0 s |
+| 1M | — | — | — | — | blocked by `ROAD-44` | blocked by `ROAD-44` |
+
+Times are Criterion's lower bound, estimate and upper bound. The daily range is very wide: some
+days settle in tens of milliseconds and others take seconds. Why some days are slow has not been
+diagnosed yet.
+
+Findings so far:
+
+- **Job search routed every home to every workplace (fixed).** An hour that founded 5,000
+  households at 10k ran 50.5 million network queries, about 10,700 per home: every home routed
+  every workplace in the city, with up to eight queries per pair. The hour took 232.6–234.7 s.
+  - Two changes fixed it. The network query's search labels now use a fixed-seed `foldhash`
+    hasher instead of SipHash (`rust/src/simulation/pathing/cch.rs`), which took the hour to
+    112 s. The exact pruning bounds described under [Agents supply labor](#agents-supply-labor)
+    took it to 1.7 s and 2.29 million queries.
+  - The resulting city is identical: 5,617 households, 11,143 residents, 7,634 employed and
+    14,009 jobs, both before and after. Building the 10k city fell from about 290 s to 17.4 s.
+  - These are single release runs of the same workload, not matched acceptance runs.
+- **Logistics dominates the hourly tick and grows faster than the city (`ECON-15`).** At 30k
+  residents the hour took about 90 ms, of which `logistics.hourly_tick` was 87 ms. The hour is
+  19 ms at 10k and 1.6 s at 100k, close to quadratic.
+- **Road-surface caches set the memory ceiling (`ROAD-44`).** At 10k, 1.32 GB of the city's
+  1.34 GB of live heap is retained road-surface visual output. The rest of the city takes about
+  30 MB, buildings, households and zoning included. At the 1M layout that projected to about
+  110 GB. `ROAD-44` progress (2026-10-03) cut 100k peak RSS to 2.0 GB (from 14.8 GB), with identical
+  city records and tick times.
+
+Exit: `ROAD-44` lets the 1M tier build within 64 GB, and matched runs for all three tiers are
+recorded here. `ECON-15` and the slow daily ticks are tracked separately; this baseline records
+them as they are.
+
+### `ECON-15` logistics hourly scaling
+
+Open. `ShipmentSystem::hourly_tick` is about 97% of the operational hour at 30k residents
+(87 of 90 ms), and the hour grows from 19 ms at 10k to 1.6 s at 100k. Supplier search is meant to
+stay bounded (see [Bounded supplier search](#bounded-supplier-search)), so some step in the hour
+scales with the whole city. Next: profile the 100k `PopulatedCity` hour to find which step does,
+then bound it.
 
 ## Future Calibration Targets
 

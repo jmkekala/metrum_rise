@@ -107,8 +107,7 @@ impl RoadSurfaceSystem {
                     .insert(node.node_id, boundaries);
             }
             if let Some(topology) = node.topology {
-                self.compiled_visual_node_topologies
-                    .insert(node.node_id, topology);
+                self.retain_node_topology(node.node_id, topology);
             }
         }
 

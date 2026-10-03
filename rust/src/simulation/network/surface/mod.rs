@@ -35,7 +35,7 @@ pub(crate) use edge::RoadPreviewVisualMesh;
 pub use edge::{PreviewRoadSurfaceResult, RoadPreviewValidation};
 pub use node::RoadSurfaceVisualNodePiece;
 pub(crate) use query::{ray_xz_interval_for_bounds, road_ray_triangle_intersection_t};
-pub use span::RoadSurfaceVisualSpanPiece;
+pub use span::{RoadSurfaceVisualSpanPiece, SpanQuad};
 pub use system::RoadSurfaceSystem;
 
 pub(crate) use cache::ChunkCacheKind;
@@ -198,13 +198,21 @@ struct RoadSurfaceIndexedTriangle {
 #[derive(Clone, Debug, Default, PartialEq)]
 /// Immutable owner-local triangle grid shared by road carriers and compiled terrain tiles.
 pub(crate) struct RoadSurfaceTriangleQueryIndex {
+    grid: SurfaceTriangleGrid,
+    triangles: Vec<RoadSurfaceIndexedTriangle>,
+}
+
+/// Bounded owner-local XZ grid listing caller-defined triangle ids per cell.
+///
+/// Owners that can rebuild their triangles keep only this grid; `ROAD-44`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct SurfaceTriangleGrid {
     bounds_xz: [f64; 4],
     cell_size_m: f64,
     width: usize,
     height: usize,
-    triangles: Vec<RoadSurfaceIndexedTriangle>,
     cell_offsets: Vec<u32>,
-    cell_triangle_indices: Vec<u32>,
+    cell_items: Vec<u32>,
 }
 
 #[derive(Clone)]
@@ -227,7 +235,7 @@ struct RoadSurfaceTerrainGradingCache {
 pub(crate) struct RoadLaneSurfaceQuery<'a> {
     node_indices: [Option<&'a RoadSurfaceTriangleQueryIndex>; 2],
     node_count: usize,
-    span_index: Option<&'a RoadSurfaceTriangleQueryIndex>,
+    span: Option<&'a RoadSurfaceVisualSpanPiece>,
     carriageway_only: bool,
 }
 
@@ -282,23 +290,44 @@ impl RoadSurfaceTriangleQueryIndex {
     }
 
     fn from_indexed_triangles(triangles: Vec<RoadSurfaceIndexedTriangle>) -> Self {
-        if triangles.is_empty() {
-            return Self::default();
+        Self {
+            grid: SurfaceTriangleGrid::from_triangles(
+                triangles.iter().map(|indexed| indexed.triangle),
+                |triangle_idx| triangle_idx as u32,
+            ),
+            triangles,
         }
+    }
 
+    fn cell_triangle_indices(&self, point: RoadVec2) -> &[u32] {
+        self.grid.cell_items(point)
+    }
+}
+
+impl SurfaceTriangleGrid {
+    /// Grids `triangles` in order; `item_id` names the triangle at each position in its cells.
+    pub(crate) fn from_triangles(
+        triangles: impl Iterator<Item = [RoadVec3; 3]> + Clone,
+        item_id: impl Fn(usize) -> u32,
+    ) -> Self {
         let mut bounds_xz = [
             f64::INFINITY,
             f64::INFINITY,
             f64::NEG_INFINITY,
             f64::NEG_INFINITY,
         ];
-        for indexed in &triangles {
-            for point in indexed.triangle {
+        let mut empty = true;
+        for triangle in triangles.clone() {
+            empty = false;
+            for point in triangle {
                 bounds_xz[0] = bounds_xz[0].min(point.x);
                 bounds_xz[1] = bounds_xz[1].min(point.z);
                 bounds_xz[2] = bounds_xz[2].max(point.x);
                 bounds_xz[3] = bounds_xz[3].max(point.z);
             }
+        }
+        if empty {
+            return Self::default();
         }
 
         let mut cell_size_m = ROAD_SURFACE_QUERY_GRID_BASE_CELL_M;
@@ -309,14 +338,9 @@ impl RoadSurfaceTriangleQueryIndex {
         }
         let cell_count = width.saturating_mul(height);
         let mut counts = vec![0_u32; cell_count];
-        for indexed in &triangles {
-            let (min_x, min_z, max_x, max_z) = query_grid_triangle_cell_bounds(
-                indexed.triangle,
-                bounds_xz,
-                cell_size_m,
-                width,
-                height,
-            );
+        for triangle in triangles.clone() {
+            let (min_x, min_z, max_x, max_z) =
+                query_grid_triangle_cell_bounds(triangle, bounds_xz, cell_size_m, width, height);
             for z in min_z..=max_z {
                 for x in min_x..=max_x {
                     counts[z * width + x] += 1;
@@ -329,22 +353,17 @@ impl RoadSurfaceTriangleQueryIndex {
         for count in counts {
             cell_offsets.push(cell_offsets.last().copied().unwrap_or(0) + count);
         }
-        let mut cell_triangle_indices =
-            vec![0_u32; cell_offsets.last().copied().unwrap_or(0) as usize];
+        let mut cell_items = vec![0_u32; cell_offsets.last().copied().unwrap_or(0) as usize];
         let mut cursors = cell_offsets[..cell_count].to_vec();
-        for (triangle_idx, indexed) in triangles.iter().enumerate() {
-            let (min_x, min_z, max_x, max_z) = query_grid_triangle_cell_bounds(
-                indexed.triangle,
-                bounds_xz,
-                cell_size_m,
-                width,
-                height,
-            );
+        for (triangle_idx, triangle) in triangles.enumerate() {
+            let (min_x, min_z, max_x, max_z) =
+                query_grid_triangle_cell_bounds(triangle, bounds_xz, cell_size_m, width, height);
+            let item = item_id(triangle_idx);
             for z in min_z..=max_z {
                 for x in min_x..=max_x {
                     let cell_idx = z * width + x;
                     let cursor = &mut cursors[cell_idx];
-                    cell_triangle_indices[*cursor as usize] = triangle_idx as u32;
+                    cell_items[*cursor as usize] = item;
                     *cursor += 1;
                 }
             }
@@ -355,13 +374,13 @@ impl RoadSurfaceTriangleQueryIndex {
             cell_size_m,
             width,
             height,
-            triangles,
             cell_offsets,
-            cell_triangle_indices,
+            cell_items,
         }
     }
 
-    fn cell_triangle_indices(&self, point: RoadVec2) -> &[u32] {
+    /// Triangle ids listed in the cell containing `point`; empty outside the grid.
+    pub(crate) fn cell_items(&self, point: RoadVec2) -> &[u32] {
         if self.width == 0
             || self.height == 0
             || point.x < self.bounds_xz[0] - f64::from(SAMPLE_EPSILON_M)
@@ -378,7 +397,7 @@ impl RoadSurfaceTriangleQueryIndex {
         let cell_idx = z * self.width + x;
         let start = self.cell_offsets[cell_idx] as usize;
         let end = self.cell_offsets[cell_idx + 1] as usize;
-        &self.cell_triangle_indices[start..end]
+        &self.cell_items[start..end]
     }
 }
 

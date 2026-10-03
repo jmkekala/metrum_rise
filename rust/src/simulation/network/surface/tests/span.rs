@@ -3,6 +3,7 @@
 //! Span compilation and span-owned surface regression tests.
 
 use super::*;
+use crate::simulation::network::surface::{RoadVec3, SpanQuad};
 
 #[test]
 fn span_raised_step_generation_uses_resolved_regions() {
@@ -79,13 +80,13 @@ fn span_vertical_steps_include_carriageway_sidewalk_boundaries_when_profile_has_
     let span_piece = surface
         .compile_visual_span_piece(&graph, &flat_terrain(32, 32), edge_idx)
         .expect("direct carriageway-sidewalk span should compile");
-    assert!(!span_piece.raised_step_face_polygons.is_empty());
+    assert_ne!(span_piece.raised_step_face_polygons().len(), 0);
     assert!(
-        span_piece.raised_step_face_polygons.iter().any(|face| {
-            face.points_world.iter().any(|point| {
+        span_piece.raised_step_face_polygons().any(|face| {
+            face.points().iter().any(|point| {
                 (point.y - f64::from(CURB_STEP_HEIGHT_M)).abs() <= f64::from(SAMPLE_EPSILON_M)
             }) && face
-                .points_world
+                .points()
                 .iter()
                 .any(|point| point.y.abs() <= f64::from(SAMPLE_EPSILON_M))
         }),
@@ -154,10 +155,10 @@ fn span_vertical_steps_include_generic_non_road_owner_pairs() {
         .compile_visual_span_piece(&graph, &flat_terrain(32, 32), edge_idx)
         .expect("curb-sidewalk stepped span should compile");
     assert!(
-        span_piece.raised_step_face_polygons.iter().any(|face| {
-            face.points_world.iter().any(|point| {
+        span_piece.raised_step_face_polygons().any(|face| {
+            face.points().iter().any(|point| {
                 (point.y - f64::from(sidewalk_height_m)).abs() <= f64::from(SAMPLE_EPSILON_M)
-            }) && face.points_world.iter().any(|point| {
+            }) && face.points().iter().any(|point| {
                 (point.y - f64::from(CURB_STEP_HEIGHT_M)).abs() <= f64::from(SAMPLE_EPSILON_M)
             })
         }),
@@ -338,4 +339,137 @@ fn earthwork_face_classification_distinguishes_slopes_from_walls() {
         ),
         RoadSurfaceEarthworkFaceKind::RetainingWall
     );
+}
+
+fn assert_quad_matches_strip_polygon(corners: [RoadVec3; 4]) {
+    assert_eq!(
+        SpanQuad::from_vertical_points(corners).map(|quad| quad.to_polygon()),
+        RoadSurfaceSystem::make_vertical_quad_polygon(corners),
+        "vertical corners {corners:?}"
+    );
+    assert_eq!(
+        SpanQuad::from_corners(corners).map(|quad| quad.to_polygon()),
+        RoadSurfaceSystem::make_visual_strip_polygon(corners.to_vec()),
+        "corners {corners:?}"
+    );
+}
+
+#[test]
+fn derived_surface_products_match_stored_forms() {
+    let strip = [
+        RoadVec3::new(0.0, 0.0, 0.0),
+        RoadVec3::new(0.0, 0.1, 8.0),
+        RoadVec3::new(3.5, 0.1, 8.0),
+        RoadVec3::new(3.5, 0.0, 0.0),
+    ];
+    let mut cases = vec![strip];
+    // Collapsed tapers, numeric-dust duplicates on either side of the dedup distance, and
+    // closing duplicates.
+    for moved in 0..4 {
+        for onto in 0..4 {
+            for offset_m in [0.0, 5.0e-5, 9.9e-5, 1.01e-4, 1.0e-3] {
+                let mut corners = strip;
+                corners[moved] = strip[onto] + RoadVec3::new(offset_m, 0.0, 0.0);
+                cases.push(corners);
+            }
+        }
+    }
+    // Self-crossing and collinear strips.
+    cases.push([strip[0], strip[2], strip[1], strip[3]]);
+    cases.push([0.0, 1.0, 2.0, 3.0].map(|t| RoadVec3::new(t, 0.0, 2.0 * t)));
+    // Arbitrary small quads from a fixed linear congruential sequence.
+    let mut state = 0x2545_f491_4f6c_dd1d_u64;
+    let mut next = || {
+        state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        ((state >> 33) as f64 / f64::from(u32::MAX >> 1)) * 2.0 - 1.0
+    };
+    for _ in 0..20_000 {
+        cases.push(std::array::from_fn(|_| {
+            RoadVec3::new(next() * 2.0, next() * 0.1, next() * 2.0)
+        }));
+    }
+    for corners in cases {
+        assert_quad_matches_strip_polygon(corners);
+    }
+
+    // Every region of a compiled sloped double-T network.
+    let terrain = sloped_terrain(192, 192);
+    let mut graph = RegionGraph::new();
+    let mut network = TransitNetwork::new_with_surface_chunk_span(32.0);
+    let mut zoning = crate::simulation::zoning::ZoningSystem::new(
+        &crate::simulation::core::config::WorldConfig::default(),
+    );
+    let mut allocator = crate::simulation::buildings::allocator::BuildingAllocator::new();
+    let ground = |x: f32, z: f32| {
+        Vector3::new(
+            x,
+            terrain.sample_height_world(x, z) * crate::config::HEIGHT_SCALE,
+            z,
+        )
+    };
+    for stroke in [
+        vec![ground(-60.0, 0.0), ground(-20.0, 10.0), ground(60.0, 0.0)],
+        vec![ground(-16.0, 48.0), ground(-16.0, 4.0)],
+        vec![ground(16.0, -48.0), ground(16.0, -4.0)],
+    ] {
+        network.bulk_load = true;
+        network.add_road(&mut graph, stroke, 1, 1, EdgeClass::Standard, &mut zoning, &mut allocator);
+        network.bulk_load = false;
+    }
+    network.finalize_road_geometry(&mut graph);
+    assert!(network.road_surface.compile_dirty(&graph, &terrain));
+    let mut regions = 0;
+    let mut samples = 0;
+    for piece in network.road_surface.compiled_visual_span_pieces.values() {
+        // The packed-id grid samples exactly like a triangle index over the same polygons.
+        let polygons = |quads: &mut dyn Iterator<Item = SpanQuad>| {
+            quads.map(|quad| quad.to_polygon()).collect::<Vec<_>>()
+        };
+        let index = crate::simulation::network::surface::RoadSurfaceTriangleQueryIndex::from_surface_polygons(
+            &polygons(&mut piece.road_surface_polygons()),
+            &polygons(&mut piece.curb_surface_polygons()),
+            &polygons(&mut piece.sidewalk_surface_polygons()),
+        );
+        let points: Vec<_> = piece.surface_polygons().flat_map(|quad| quad.points().to_vec()).collect();
+        let (min_x, max_x) = points.iter().fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p.x), b.max(p.x)));
+        let (min_z, max_z) = points.iter().fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p.z), b.max(p.z)));
+        let mut x = min_x - 1.0;
+        while x <= max_x + 1.0 {
+            let mut z = min_z - 1.0;
+            while z <= max_z + 1.0 {
+                let point = crate::simulation::network::surface::RoadVec2::new(x, z);
+                for carriageway_only in [false, true] {
+                    assert_eq!(
+                        piece.sample_height(point, carriageway_only),
+                        index.sample_height(point, carriageway_only)
+                    );
+                }
+                assert_eq!(piece.sample_visible_height(point), index.sample_visible_height(point));
+                samples += 1;
+                z += 0.37;
+            }
+            x += 0.37;
+        }
+        for region in piece.span_owned_regions.iter().chain(piece.span_earthwork_support_regions.iter()) {
+            assert_quad_matches_strip_polygon(region.corners(&piece.sections));
+            regions += 1;
+        }
+    }
+    let (mut junctions, mut nodes) = (0, 0);
+    for piece in network.road_surface.compiled_visual_node_pieces.values() {
+        // Node top polygons are the owned regions partitioned by material and sorted.
+        let (mut road, mut curb, mut sidewalk) =
+            RoadSurfaceSystem::top_polygons_from_owned_regions_by_material(&piece.owned_regions);
+        for polygons in [&mut road, &mut curb, &mut sidewalk] {
+            RoadSurfaceSystem::sort_visual_polygons(polygons);
+        }
+        assert_eq!(piece.road_surface_polygons().cloned().collect::<Vec<_>>(), road);
+        assert_eq!(piece.curb_surface_polygons().cloned().collect::<Vec<_>>(), curb);
+        assert_eq!(piece.sidewalk_surface_polygons().cloned().collect::<Vec<_>>(), sidewalk);
+        junctions += usize::from(piece.kind == RoadSurfaceVisualNodePieceKind::JunctionN);
+        nodes += 1;
+    }
+    assert!(junctions >= 1 && nodes >= 4, "{junctions} junctions of {nodes} nodes checked");
+    assert!(regions > 100, "only {regions} compiled regions checked");
+    assert!(samples > 10_000, "only {samples} surface samples checked");
 }

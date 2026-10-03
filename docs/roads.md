@@ -3882,6 +3882,166 @@ deterministic latest-result publication and the last complete visible generation
 Do not reopen shipped `ROAD-01` geometry hardcuts for editor responsiveness unless the fix changes
 the roadbed ownership contract itself.
 
+### Retained road-surface memory (`ROAD-44`)
+
+In progress, found 2026-10-02 while building the `ECON-13` benchmark cities. Compiled road
+surfaces kept their visual products and junction topology caches for every road in the city, with
+no bound. They were most of the simulation's memory. Node topologies are now bounded and span
+products are rebuilt from their sections (below); node pieces and span earthwork still keep full
+geometry.
+
+Measurement: the 10k-resident `PopulatedCity` layout (`economy.md`, `ECON-13`): 94.5 km of road,
+446 spans, 247 nodes, 7,428 buildings, fully zoned and built. A temporary probe test, since
+removed, dropped each structure in turn between unique-size marker allocations under glibc
+`memusage` (`--no-timer`, `RAYON_NUM_THREADS=1`, release). The released bytes were read from the
+trace, the same marker method as `benchmarks/zoning_memory.py`. Live heap after the build was
+1.34 GB, with a peak of 1.41 GB.
+
+| Structure | Released heap | Per item |
+| --- | ---: | ---: |
+| `RoadSurfaceSystem::compiled_visual_node_topologies` | 961.7 MB | 3.9 MB per node |
+| `RoadSurfaceSystem::compiled_visual_span_pieces` | 255.1 MB | 570 KB per span |
+| `RoadSurfaceSystem::compiled_visual_node_pieces` | 81.9 MB | 330 KB per node |
+| `compiled_sections`, node inputs, earthwork boundaries, chunk caches and indices, rest of `RoadSurfaceSystem` | 16.4 MB | |
+| `LaneSystem` | 11.1 MB | |
+| `BuildingAllocator`, `ZoningSystem`, `RegionGraph`, CCH and the rest of `SimCore` | 14.1 MB | |
+
+Each `NodeCanonicalTopologyCache` holds the node's rail topology, boolean ownership,
+arrangement, explicit vertical steps, and the ownership and export incremental caches. It is kept
+so that a later edit next to that node can reuse it (see the retained `JunctionN` caches under
+[Performance Contract](#performance-contract)). `into_for_committed_node` already drops the
+ownership, arrangement and step parts for nodes that are not `JunctionN`, but the incremental
+caches stay. Every node pays this cost, including the large majority that are never edited
+again.
+
+Scale: the 1M-resident layout has about 21,000 nodes and 42,000 spans. At the measured sizes that
+is about 90 GB of node topologies and pieces, plus about 24 GB of span pieces. That is beyond a
+64 GB machine before any other state, and a real city with similar road length would hit the
+same limit.
+
+Node topologies, fixed 2026-10-02. A topology only speeds up a later compile of its node; a
+compile without one publishes identical products, which the existing cold-versus-seeded preview
+tests already require. The committed surface now keeps the topologies of the 64 most recently
+compiled nodes (`RETAINED_NODE_TOPOLOGY_LIMIT`), evicting the least recent. A committed compile of
+more than 64 nodes, such as a bulk load or a game load, drops each topology as soon as its node is
+compiled, so it never holds one per node even briefly. Preview validation surfaces still keep
+every topology of their bounded excerpt, because they hand them to the matching commit. Preview
+reuse candidates carry the topology as optional, so an unchanged neighbour with an evicted
+topology is still replayed exactly instead of recompiled. Evicted cost is edit latency only: the
+first preview next to a cold junction compiles it from scratch on the preview worker (about
+30–38 ms for a four-way `JunctionN`, see above), and the commit then replays the preview's
+products. Prewarming junctions near the cursor before the first preview stays open until that
+latency is measured as a problem.
+
+Test: `committed_node_topologies_stay_bounded_and_evicted_nodes_compile_cold_products` in
+`surface/tests/junction/dirty_recompile.rs` builds an 81-node grid (no topology retained), extends
+a corner next to evicted nodes, checks the edit retained the corner's topology, compares span and
+node pieces with a cold full compile, and checks recency eviction at the limit.
+
+Derived span and node products, 2026-10-03. A span region is the strip of one band between two
+consecutive sections, so its top polygon is a pure function of those sections. Span pieces now
+keep an `Arc` of the sections they were compiled from (shared with `compiled_sections`) and
+compact descriptors; everything else that was a copy is rebuilt on read, on the stack:
+
+- Region polygons and corners: `SpanQuad` (`surface/span/quads.rs`) rebuilds a region's quad from
+  its two sections without allocating, mirroring `make_visual_strip_polygon` for four corners.
+- Asphalt, curb and sidewalk lists were copies of region polygons; they are now render-order
+  indices into the regions (`road_surface_polygons()` and siblings).
+- The span query index stored a copy of every top triangle; `SurfaceTriangleGrid` keeps the same
+  bounded grid of packed `region << 1 | triangle` ids, and sampling rebuilds candidates.
+- Raised-step faces and their sources are rebuilt from `(start_section_index, boundary_index)`
+  through the same constraint code the compile uses.
+- Earthwork surface polygons were clones of render-face polygons, in spans and nodes; pieces keep
+  a sort order over the render faces instead.
+- Node asphalt, curb and sidewalk lists were copies of owned-region polygons; they are now
+  render-order indices into `owned_regions`.
+- Published node pieces drop compile provenance: `node_grade_authorities` and the per-vertex
+  arrays of `node_top_surface_sources`. Only each region's height field stays, which earthwork
+  owner sources are rebuilt from on replay and earthwork refresh. The surface keeps provenance
+  while the `road` debug category is enabled (and in test builds), so road debug dumps still
+  carry it. A surface that does not keep it strips each node right after it compiles, so a bulk
+  compile never holds provenance for every node. `published_node_pieces_without_provenance_match_retained_products`
+  (`surface/tests/junction/dirty_recompile.rs`) compiles a junction both ways, then a
+  terrain-dirty refresh, and checks the published pieces equal the retained ones with provenance
+  removed.
+
+Products are unchanged. `derived_surface_products_match_stored_forms` (`surface/tests/span.rs`)
+checks `SpanQuad` against `make_visual_strip_polygon` and `make_vertical_quad_polygon` on 20,000+
+synthetic corner sets (collapsed tapers, dust duplicates on both sides of the dedup distance,
+closing duplicates, crossings, random quads) and on every region of a sloped double-T network,
+compares packed-grid sampling with a triangle index over the same polygons at 10,000+ points in
+each mode, and compares node band lists with the old partition of owned regions. Order-sensitive
+consumers read the same sequences as before. Reads that scan many quads (agriculture clearance)
+reject on the raw corners first, with a 1 m margin over the f32 bounds the exact test uses.
+
+Retained heap of the 10k road layout (same probe method as above, single thread):
+
+| Stage | Retained heap |
+| --- | ---: |
+| Before `ROAD-44` | 1,340 MB |
+| Node topologies capped | about 379 MB |
+| Span regions and band lists derived | 265 MB |
+| Span query grid of packed ids | 226 MB |
+| Raised-step faces derived | 198 MB |
+| Earthwork surface polygons as order | 180 MB |
+| Node band lists as order | 168 MB |
+| Node compile provenance dropped | about 145 MB |
+| Retained lists shrunk to size at publication | about 141 MB |
+
+`ECON-13` benchmark (`cargo bench --bench economy_tick_benchmark -- operational_hour/100k`),
+peak RSS sampled with `ps`, release bench profile, default workers, nothing else running. City
+records were identical in every run:
+
+| City | Before | Topologies capped | Now (2026-10-03) |
+| --- | ---: | ---: | ---: |
+| 10k residents (94.5 km of road), build time | 17.4 s | 17.6 s | 17.8 s |
+| 100k residents, peak RSS | 14,806 MB | 5,421 MB | 2,028 MB |
+| 100k residents, build time | 518 s | 518 s | 493 s |
+
+At 100k, in-use heap after the build is about 2.1 GB against 2.3 GB RSS (glibc `mallinfo2`,
+all arenas), so the peak is retained data, not allocator overhead. Of it, the road layout alone
+(roads, buildings and zoning, no households) is about 1.6 GB and scales linearly from 10k.
+Scaling 100k linearly puts the 1M city at about 20 GB peak. What remains at 10k, largest first:
+span render earthwork faces (25 MB; non-convex faces use a constrained triangulation, so they
+cannot be rebuilt like span quads), span terrain-clip loops (14 MB), span region descriptors
+(13.5 MB), node owned regions (11.4 MB), `LaneSystem` (11 MB), the node triangle query index
+(9 MB), node top-source records without their arrays (7.5 MB) and sections (7 MB). The largest
+are tracked as `ROAD-45`–`ROAD-49` (below).
+
+Exit: retained road-surface memory stays bounded per node and per span. Candidates include
+keeping only what a local edit needs and rebuilding the rest on demand, or evicting caches for
+nodes away from recent edits; the choice is open. Committed and preview products stay
+identical. Edit latency next to a cold node is measured against today's reuse path, and the 1M
+`PopulatedCity` builds within 64 GB.
+
+### Remaining retained road memory (`ROAD-45`–`ROAD-49`)
+
+Open, split from `ROAD-44` on 2026-10-03. Sizes are retained heap of the 100k `ECON-13` road
+layout (roads, buildings and zoning, no households; about 1.6 GB in all), measured with the
+`ROAD-44` probe as glibc `mallinfo2` deltas while dropping each structure. Each item must keep
+committed and preview products identical and must not slow the 10k or 100k benchmark build.
+
+- **`ROAD-45` Triangle storage as indices (267 MB span earthwork faces, 126 MB node owned
+  regions, 36 MB node raised steps, 55 MB node earthwork faces).** `RoadSurfaceVisualPolygon`
+  stores every triangle as three f64 points (72 B), copies of points the polygon already holds:
+  no triangle vertex in the 10k layout lies outside its own polygon's points. Node owned regions
+  are 55k single triangles; earthwork and raised-step faces are 4-point quads. Store triangles as
+  a canonical form instead (a fan marker when the triangles are exactly the fan of the points,
+  otherwise small index triples), chosen at construction so equal polygons compare equal. About
+  55 `triangles_world` readers move to an accessor.
+- **`ROAD-46` Span terrain-clip loops (138 MB).** Each span keeps terrain-clip boundary loops
+  with per-edge source records, built at compile from its regions and sections. The terrain CDT
+  patch and grading paths read them. Rebuild them on read per 64 m run, or store them compactly;
+  terrain mesh output must stay identical and chunk rebuild cost must stay local.
+- **`ROAD-47` Span region records (135 MB).** `RoadSurfaceSpanOwnedRegion` is 56 B: the edge id is
+  the piece's, the end section is always start + 1, and the stations are the sections'. A record
+  of band index, kind, role and start section fits in about 8–16 B.
+- **`ROAD-48` Lane data (112 MB).** `LaneSystem` has not been examined yet; measure what it keeps
+  per lane and per connector before choosing a fix.
+- **`ROAD-49` Node triangle query index (94 MB).** Node pieces still copy every top triangle into
+  their `RoadSurfaceTriangleQueryIndex`. Use the span approach: keep a `SurfaceTriangleGrid` of
+  ids into the owned regions and resolve candidates on read.
+
 ## Kuopio Terrain Regression Replay (`ROAD-24`)
 
 Current status: the planning/adoption contract and captured geometry/performance acceptance are

@@ -6,7 +6,7 @@
 //! Agriculture owns the saved polygons and updates the cache on commit, load, removal and undo.
 
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::surface::{RoadSurfaceSystem, RoadSurfaceVisualPolygon};
+use crate::simulation::network::surface::{RoadSurfaceSystem, RoadVec3};
 use godot::prelude::{Vector2, Vector3};
 use i_overlay::core::{fill_rule::FillRule, overlay_rule::OverlayRule};
 use i_overlay::float::single::SingleFloatOverlay;
@@ -50,6 +50,24 @@ impl PolygonFootprint {
         self.overlaps_points(points, min, max)
     }
 
+    // Conservative f64 prefilter for a road quad's corners: the margin dwarfs the f32 rounding
+    // of `precise_bounds`, so it never rejects a quad `overlaps_road_polygon` would accept.
+    fn may_overlap_corners(&self, corners: &[RoadVec3; 4]) -> bool {
+        const MARGIN_M: f64 = 1.0;
+        let (mut min_x, mut min_z) = (f64::INFINITY, f64::INFINITY);
+        let (mut max_x, mut max_z) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+        for corner in corners {
+            min_x = min_x.min(corner.x);
+            max_x = max_x.max(corner.x);
+            min_z = min_z.min(corner.z);
+            max_z = max_z.max(corner.z);
+        }
+        f64::from(self.min.x) < max_x + MARGIN_M
+            && f64::from(self.max.x) > min_x - MARGIN_M
+            && f64::from(self.min.y) < max_z + MARGIN_M
+            && f64::from(self.max.y) > min_z - MARGIN_M
+    }
+
     fn bounds_overlap(&self, min: Vector2, max: Vector2) -> bool {
         self.min.x < max.x && self.max.x > min.x && self.min.y < max.y && self.max.y > min.y
     }
@@ -90,12 +108,12 @@ impl PolygonFootprint {
         inside
     }
 
-    fn from_road(polygon: &RoadSurfaceVisualPolygon) -> Self {
-        Self::from_precise_points(polygon.points_world.iter().map(|p| [p.x, p.z]))
+    fn from_road(points: &[RoadVec3]) -> Self {
+        Self::from_precise_points(points.iter().map(|p| [p.x, p.z]))
     }
 
-    fn overlaps_road_polygon(&self, polygon: &RoadSurfaceVisualPolygon) -> bool {
-        let points = polygon.points_world.iter().map(|p| [p.x, p.z]);
+    fn overlaps_road_polygon(&self, points: &[RoadVec3]) -> bool {
+        let points = points.iter().map(|p| [p.x, p.z]);
         let (min, max) = precise_bounds(points.clone());
         if !self.bounds_overlap(min, max) {
             return false;
@@ -123,11 +141,8 @@ impl PolygonFootprint {
                         }
                         if let Some(piece) = roads.compiled_visual_span_pieces.get(id)
                             && piece
-                                .road_surface_polygons
-                                .iter()
-                                .chain(&piece.curb_surface_polygons)
-                                .chain(&piece.sidewalk_surface_polygons)
-                                .any(|polygon| self.overlaps_road_polygon(polygon))
+                                .surface_polygons_where(|corners| self.may_overlap_corners(corners))
+                                .any(|quad| self.overlaps_road_polygon(quad.points()))
                         {
                             return true;
                         }
@@ -140,11 +155,8 @@ impl PolygonFootprint {
                         }
                         if let Some(piece) = roads.compiled_visual_node_pieces.get(id)
                             && piece
-                                .road_surface_polygons
-                                .iter()
-                                .chain(&piece.curb_surface_polygons)
-                                .chain(&piece.sidewalk_surface_polygons)
-                                .any(|polygon| self.overlaps_road_polygon(polygon))
+                                .surface_polygons()
+                                .any(|polygon| self.overlaps_road_polygon(&polygon.points_world))
                         {
                             return true;
                         }
@@ -285,9 +297,9 @@ impl FieldClearanceIndex {
             })
     }
 
-    /// Tests one compiled road polygon using its actual carrier geometry.
-    pub(crate) fn overlaps_road_polygon(&self, polygon: &RoadSurfaceVisualPolygon) -> bool {
-        !self.footprints.is_empty() && self.overlaps(&PolygonFootprint::from_road(polygon), None)
+    /// Tests one compiled road polygon, given by its world points, using its actual carrier geometry.
+    pub(crate) fn overlaps_road_polygon(&self, points: &[RoadVec3]) -> bool {
+        !self.footprints.is_empty() && self.overlaps(&PolygonFootprint::from_road(points), None)
     }
 
     /// Queries only field references in touched chunks; `ignore` permits replacing one's own field.
@@ -345,6 +357,7 @@ impl FieldClearanceIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::simulation::network::surface::RoadSurfaceVisualPolygon;
 
     fn rectangle(x: f32, z: f32, width: f32, depth: f32) -> [Vector2; 4] {
         [
@@ -428,7 +441,7 @@ mod tests {
                     .collect(),
                 Vec::new(),
             );
-            let prepared = PolygonFootprint::from_road(&polygon);
+            let prepared = PolygonFootprint::from_road(&polygon.points_world);
             for (x, z, size, expected) in [
                 (1.0, 1.0, 2.0, true),
                 (-1.0, -1.0, 40.0, true),
@@ -445,7 +458,7 @@ mod tests {
                 );
                 assert_eq!(footprint.overlaps(&prepared), expected);
                 assert_eq!(
-                    footprint.overlaps_road_polygon(&polygon),
+                    footprint.overlaps_road_polygon(&polygon.points_world),
                     expected,
                     "offset={offset} x={x} z={z} size={size}"
                 );

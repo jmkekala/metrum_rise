@@ -44,8 +44,7 @@ impl RoadSurfaceSystem {
                 }
                 if !saw_point {
                     for point in piece
-                        .earthwork_surface_polygons
-                        .iter()
+                        .earthwork_surface_polygons()
                         .flat_map(|polygon| polygon.points_world.iter())
                     {
                         min_x = min_x.min(f64::from(point.x));
@@ -103,8 +102,7 @@ impl RoadSurfaceSystem {
                 }
                 if !saw_point {
                     for point in piece
-                        .earthwork_surface_polygons
-                        .iter()
+                        .earthwork_surface_polygons()
                         .flat_map(|polygon| polygon.points_world.iter())
                     {
                         min_x = min_x.min(f64::from(point.x));

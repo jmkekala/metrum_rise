@@ -20,13 +20,13 @@ pub(in crate::simulation::network::surface::tests) fn assert_terminal_mouth_hand
         (start.z + end.z) * 0.5 - inward.y * 0.1,
     );
     let polygons = match material {
-        RoadSurfaceBandKind::CurbOrShoulder => &piece.curb_surface_polygons,
-        RoadSurfaceBandKind::Sidewalk => &piece.sidewalk_surface_polygons,
-        RoadSurfaceBandKind::Carriageway => &piece.road_surface_polygons,
-        _ => &piece.sidewalk_surface_polygons,
+        RoadSurfaceBandKind::CurbOrShoulder => piece.curb_surface_polygons().cloned().collect::<Vec<_>>(),
+        RoadSurfaceBandKind::Sidewalk => piece.sidewalk_surface_polygons().cloned().collect::<Vec<_>>(),
+        RoadSurfaceBandKind::Carriageway => piece.road_surface_polygons().cloned().collect::<Vec<_>>(),
+        _ => piece.sidewalk_surface_polygons().cloned().collect::<Vec<_>>(),
     };
     assert!(
-        point_inside_visual_polygons(polygons, sample),
+        point_inside_visual_polygons(&polygons, sample),
         "terminal handoff surface must be owned by {material:?}; label={label} sample={sample:?}"
     );
 }
@@ -41,10 +41,10 @@ pub(in crate::simulation::network::surface::tests) fn assert_terminal_band_inter
     label: &str,
 ) {
     let polygons = match material {
-        RoadSurfaceBandKind::CurbOrShoulder => &piece.curb_surface_polygons,
-        RoadSurfaceBandKind::Sidewalk => &piece.sidewalk_surface_polygons,
-        RoadSurfaceBandKind::Carriageway => &piece.road_surface_polygons,
-        _ => &piece.sidewalk_surface_polygons,
+        RoadSurfaceBandKind::CurbOrShoulder => piece.curb_surface_polygons().cloned().collect::<Vec<_>>(),
+        RoadSurfaceBandKind::Sidewalk => piece.sidewalk_surface_polygons().cloned().collect::<Vec<_>>(),
+        RoadSurfaceBandKind::Carriageway => piece.road_surface_polygons().cloned().collect::<Vec<_>>(),
+        _ => piece.sidewalk_surface_polygons().cloned().collect::<Vec<_>>(),
     };
     for longitudinal_t in [0.1_f64, 0.5, 0.9, 0.98] {
         for lateral_t in [0.05_f64, 0.5, 0.95] {
@@ -57,7 +57,7 @@ pub(in crate::simulation::network::surface::tests) fn assert_terminal_band_inter
             let sample_world = endpoint_sample.lerp(mouth_sample, longitudinal_t);
             let sample = RoadVec2::new(sample_world.x, sample_world.z);
             assert!(
-                point_inside_visual_polygons(polygons, sample),
+                point_inside_visual_polygons(&polygons, sample),
                 "terminal band interval must be owned by {material:?}; label={label} longitudinal_t={longitudinal_t} lateral_t={lateral_t} sample={sample:?}"
             );
         }
@@ -83,9 +83,9 @@ pub(in crate::simulation::network::surface::tests) fn assert_terminal_band_inter
             let sample_world = endpoint_sample.lerp(mouth_sample, longitudinal_t);
             let sample = RoadVec2::new(sample_world.x, sample_world.z);
             let duplicated =
-                point_inside_visual_polygons(&span_piece.road_surface_polygons, sample)
-                    || point_inside_visual_polygons(&span_piece.curb_surface_polygons, sample)
-                    || point_inside_visual_polygons(&span_piece.sidewalk_surface_polygons, sample);
+                point_inside_visual_polygons(&span_polygons(span_piece.road_surface_polygons()), sample)
+                    || point_inside_visual_polygons(&span_polygons(span_piece.curb_surface_polygons()), sample)
+                    || point_inside_visual_polygons(&span_polygons(span_piece.sidewalk_surface_polygons()), sample);
             assert!(
                 !duplicated,
                 "terminal band interval must not be duplicated by span top surfaces; label={label} longitudinal_t={longitudinal_t} lateral_t={lateral_t} sample={sample:?}"

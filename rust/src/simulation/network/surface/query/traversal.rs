@@ -75,7 +75,7 @@ impl RoadSurfaceSystem {
         F: FnMut([RoadVec3; 3]),
     {
         for region in piece.span_owned_regions.iter() {
-            Self::visit_visual_polygon_triangles(&region.polygon, visitor);
+            Self::visit_surface_triangles(piece.region_quad(region).triangles(), visitor);
         }
     }
 
@@ -86,7 +86,7 @@ impl RoadSurfaceSystem {
     ) where
         F: FnMut([RoadVec3; 3]),
     {
-        for polygon in &piece.earthwork_surface_polygons {
+        for polygon in piece.earthwork_surface_polygons() {
             Self::visit_visual_polygon_triangles(polygon, visitor);
         }
     }
@@ -100,7 +100,7 @@ impl RoadSurfaceSystem {
         F: FnMut([RoadVec3; 3]),
     {
         for region in piece.span_earthwork_support_regions.iter() {
-            Self::visit_visual_polygon_triangles(&region.polygon, visitor);
+            Self::visit_surface_triangles(piece.region_quad(region).triangles(), visitor);
         }
     }
 
@@ -119,10 +119,7 @@ impl RoadSurfaceSystem {
         }
 
         for polygon in piece
-            .road_surface_polygons
-            .iter()
-            .chain(&piece.curb_surface_polygons)
-            .chain(&piece.sidewalk_surface_polygons)
+            .surface_polygons()
         {
             Self::visit_visual_polygon_triangles(polygon, visitor);
         }
@@ -218,7 +215,16 @@ impl RoadSurfaceSystem {
     ) where
         F: FnMut([RoadVec3; 3]),
     {
-        for &triangle in &polygon.triangles_world {
+        Self::visit_surface_triangles(&polygon.triangles_world, visitor);
+    }
+
+    pub(in crate::simulation::network::surface) fn visit_surface_triangles<F>(
+        triangles: &[[RoadVec3; 3]],
+        visitor: &mut F,
+    ) where
+        F: FnMut([RoadVec3; 3]),
+    {
+        for &triangle in triangles {
             if Self::top_surface_triangle_is_renderable_xz(triangle) {
                 visitor(triangle);
             }

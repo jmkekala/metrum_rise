@@ -5,7 +5,7 @@
 use super::super::{RoadSurfaceSection, RoadSurfaceSystem};
 use super::{
     RoadSurfaceSpanBandOwner, RoadSurfaceSpanOwnedRegion, RoadSurfaceSpanRegionRole,
-    SPAN_REGION_MIN_BAND_WIDTH_M, SpanRenderRegionBuckets, SpanResolvedRegionSet,
+    SPAN_REGION_MIN_BAND_WIDTH_M, SpanQuad, SpanResolvedRegionSet,
 };
 use crate::simulation::network::types::EdgeClass;
 
@@ -42,35 +42,7 @@ impl RoadSurfaceSystem {
                         continue;
                     }
 
-                    let source_corners_world = [
-                        self.section_boundary_world_point(
-                            &pair[0],
-                            band_a.lateral_start_m,
-                            band_a.height_start_m,
-                        ),
-                        self.section_boundary_world_point(
-                            &pair[1],
-                            band_b.lateral_start_m,
-                            band_b.height_start_m,
-                        ),
-                        self.section_boundary_world_point(
-                            &pair[1],
-                            band_b.lateral_end_m,
-                            band_b.height_end_m,
-                        ),
-                        self.section_boundary_world_point(
-                            &pair[0],
-                            band_a.lateral_end_m,
-                            band_a.height_end_m,
-                        ),
-                    ];
-                    let Some(polygon) =
-                        Self::make_visual_strip_polygon(source_corners_world.into_iter().collect())
-                    else {
-                        continue;
-                    };
-
-                    resolved.regions.push(RoadSurfaceSpanOwnedRegion {
+                    let region = RoadSurfaceSpanOwnedRegion {
                         edge_idx: pair[0].edge_idx,
                         owner: RoadSurfaceSpanBandOwner {
                             source_band_index: band_index,
@@ -81,9 +53,11 @@ impl RoadSurfaceSystem {
                         end_section_index,
                         start_s_m: pair[0].s_m,
                         end_s_m: pair[1].s_m,
-                        source_corners_world,
-                        polygon,
-                    });
+                    };
+                    // Regions keep only their section span; the quad is rebuilt on read.
+                    if SpanQuad::from_corners(region.corners(sections)).is_some() {
+                        resolved.regions.push(region);
+                    }
                 }
                 resolved.raised_step_constraints.extend(
                     Self::span_raised_step_constraints_for_resolved_segment(
@@ -96,7 +70,7 @@ impl RoadSurfaceSystem {
         }
 
         let (outer_boundary_loops, terrain_clip_boundary_loops) =
-            Self::build_span_boundary_loops_from_regions(&resolved.regions, edge_class)
+            Self::build_span_boundary_loops_from_regions(sections, &resolved.regions, edge_class)
                 .map_err(|error| {
                     crate::debug_log!(
                         "road",
@@ -111,31 +85,10 @@ impl RoadSurfaceSystem {
         Some(resolved)
     }
 
-    pub(super) fn span_render_region_buckets_from_owned_regions(
-        regions: &[RoadSurfaceSpanOwnedRegion],
-    ) -> SpanRenderRegionBuckets {
-        let mut buckets = SpanRenderRegionBuckets::default();
-
-        for region in regions {
-            match region.role {
-                RoadSurfaceSpanRegionRole::Asphalt => {
-                    buckets.road_surface_polygons.push(region.polygon.clone());
-                }
-                RoadSurfaceSpanRegionRole::CurbOrShoulder => {
-                    buckets.curb_surface_polygons.push(region.polygon.clone());
-                }
-                RoadSurfaceSpanRegionRole::NonRoad => {
-                    buckets
-                        .sidewalk_surface_polygons
-                        .push(region.polygon.clone());
-                }
-            }
-        }
-
-        buckets
-    }
-
-    pub(super) fn sort_span_owned_regions(regions: &mut [RoadSurfaceSpanOwnedRegion]) {
+    pub(super) fn sort_span_owned_regions(
+        sections: &[RoadSurfaceSection],
+        regions: &mut [RoadSurfaceSpanOwnedRegion],
+    ) {
         regions.sort_by(|a, b| {
             a.edge_idx
                 .cmp(&b.edge_idx)
@@ -145,7 +98,12 @@ impl RoadSurfaceSystem {
                 .then(a.end_s_m.total_cmp(&b.end_s_m))
                 .then(a.role.sort_key().cmp(&b.role.sort_key()))
                 .then(a.owner.sort_key().cmp(&b.owner.sort_key()))
-                .then_with(|| Self::visual_polygon_ordering(&a.polygon, &b.polygon))
+                .then_with(|| {
+                    Self::visual_points_ordering(
+                        a.quad(sections).points(),
+                        b.quad(sections).points(),
+                    )
+                })
         });
     }
 }

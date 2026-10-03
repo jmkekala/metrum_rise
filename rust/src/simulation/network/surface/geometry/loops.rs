@@ -118,6 +118,8 @@ impl RoadSurfaceSystem {
         ))
     }
 
+    // Reference for `SpanQuad::from_corners`, which rebuilds span strips without allocating.
+    #[cfg(test)]
     pub(in crate::simulation::network::surface) fn make_visual_strip_polygon(
         mut points_world: Vec<RoadVec3>,
     ) -> Option<RoadSurfaceVisualPolygon> {
@@ -146,6 +148,18 @@ impl RoadSurfaceSystem {
     pub(in crate::simulation::network::surface) fn make_vertical_quad_polygon(
         points_world: [RoadVec3; 4],
     ) -> Option<RoadSurfaceVisualPolygon> {
+        let (triangles, triangle_count) = Self::vertical_quad_triangles(points_world)?;
+        Some(RoadSurfaceVisualPolygon::from_parts(
+            points_world.into_iter().collect(),
+            triangles[..triangle_count].to_vec(),
+        ))
+    }
+
+    /// Front triangles of a vertical quad with real area, without allocating; `None` when
+    /// the quad is degenerate.
+    pub(in crate::simulation::network::surface) fn vertical_quad_triangles(
+        points_world: [RoadVec3; 4],
+    ) -> Option<([[RoadVec3; 3]; 2], usize)> {
         let front = [
             [points_world[0], points_world[1], points_world[2]],
             [points_world[0], points_world[2], points_world[3]],
@@ -159,22 +173,19 @@ impl RoadSurfaceSystem {
             return None;
         }
 
-        let triangles_world = front
-            .into_iter()
-            .filter(|triangle| {
-                (triangle[1] - triangle[0])
-                    .cross(triangle[2] - triangle[0])
-                    .length()
-                    * 0.5
-                    > f64::from(NODE_OVERLAY_MIN_AREA_M2)
-            })
-            .collect::<Vec<_>>();
-        if triangles_world.is_empty() {
-            return None;
+        let mut triangles = front;
+        let mut triangle_count = 0;
+        for triangle in front {
+            if (triangle[1] - triangle[0])
+                .cross(triangle[2] - triangle[0])
+                .length()
+                * 0.5
+                > f64::from(NODE_OVERLAY_MIN_AREA_M2)
+            {
+                triangles[triangle_count] = triangle;
+                triangle_count += 1;
+            }
         }
-        Some(RoadSurfaceVisualPolygon::from_parts(
-            points_world.into_iter().collect(),
-            triangles_world,
-        ))
+        (triangle_count > 0).then_some((triangles, triangle_count))
     }
 }

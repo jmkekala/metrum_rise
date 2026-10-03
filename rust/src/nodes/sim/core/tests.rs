@@ -4,6 +4,8 @@
 
 mod building_lod_fixture;
 mod building_site_terrain;
+mod commute_bounds;
+mod surface_memory_probe;
 pub(super) mod fields;
 mod road_plan_scaling;
 mod road_terrain_plan;

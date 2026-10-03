@@ -13,7 +13,7 @@ use super::{
     NodeOverlayShapes, NodeTopSurfacePolygonSource, RoadSurfaceBandKind,
     RoadSurfaceEarthworkFaceKind, RoadSurfaceEarthworkFaceSource, RoadSurfaceEarthworkRenderFace,
     RoadSurfaceEarthworkSupportPolicy, RoadSurfaceSection, RoadSurfaceSpanBandOwner,
-    RoadSurfaceSpanOwnedRegion, RoadSurfaceSpanRegionRole, RoadSurfaceSystem,
+    RoadSurfaceSpanRegionRole, RoadSurfaceSystem,
     RoadSurfaceVerticalFaceSource, RoadSurfaceVisualNodePiece, RoadSurfaceVisualPolygon,
     RoadSurfaceVisualSpanPiece, SAMPLE_EPSILON_M, SurfaceChunkKey,
     arrangement::{NodeArrangementKey, NodeBandOwner, NodeExplicitVerticalStepSegment},

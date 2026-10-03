@@ -27,10 +27,10 @@ fn span_visual_pieces_compile_explicit_band_polygons() {
         .get(&edge_idx)
         .unwrap();
     assert!(!span_piece.outer_boundary_loops.is_empty());
-    assert!(!span_piece.road_surface_polygons.is_empty());
-    assert!(!span_piece.curb_surface_polygons.is_empty());
-    assert!(!span_piece.raised_step_face_polygons.is_empty());
-    assert!(!span_piece.sidewalk_surface_polygons.is_empty());
+    assert_ne!(span_piece.road_surface_polygons().len(), 0);
+    assert_ne!(span_piece.curb_surface_polygons().len(), 0);
+    assert_ne!(span_piece.raised_step_face_polygons().len(), 0);
+    assert_ne!(span_piece.sidewalk_surface_polygons().len(), 0);
     assert!(!span_piece.span_owned_regions.is_empty());
     assert_eq!(
         span_piece
@@ -38,7 +38,7 @@ fn span_visual_pieces_compile_explicit_band_polygons() {
             .iter()
             .filter(|region| region.role == RoadSurfaceSpanRegionRole::Asphalt)
             .count(),
-        span_piece.road_surface_polygons.len()
+        span_piece.road_surface_polygons().len()
     );
     assert_eq!(
         span_piece
@@ -46,7 +46,7 @@ fn span_visual_pieces_compile_explicit_band_polygons() {
             .iter()
             .filter(|region| region.role == RoadSurfaceSpanRegionRole::CurbOrShoulder)
             .count(),
-        span_piece.curb_surface_polygons.len()
+        span_piece.curb_surface_polygons().len()
     );
     assert_eq!(
         span_piece
@@ -54,7 +54,7 @@ fn span_visual_pieces_compile_explicit_band_polygons() {
             .iter()
             .filter(|region| region.role == RoadSurfaceSpanRegionRole::NonRoad)
             .count(),
-        span_piece.sidewalk_surface_polygons.len()
+        span_piece.sidewalk_surface_polygons().len()
     );
     assert!(
         span_piece.span_owned_regions.iter().all(|region| {
@@ -98,16 +98,16 @@ fn span_visual_pieces_compile_explicit_band_polygons() {
                 region.edge_idx == edge_idx
                     && region.end_section_index == region.start_section_index + 1
                     && region.end_s_m > region.start_s_m
-                    && RoadSurfaceSystem::polygon_has_area_xz(&region.polygon.points_world)
+                    && RoadSurfaceSystem::polygon_has_area_xz(span_piece.region_quad(region).points())
             }),
         "span earthwork support regions must preserve edge, section interval, source band, and top-surface geometry"
     );
     assert_eq!(
-        span_piece.span_raised_step_sources.len(),
-        span_piece.raised_step_face_polygons.len()
+        span_piece.span_raised_step_sources().len(),
+        span_piece.raised_step_face_polygons().len()
     );
     assert!(
-        span_piece.span_raised_step_sources.iter().all(|source| {
+        span_piece.span_raised_step_sources().all(|source| {
             source.lower_owner.kind != source.raised_owner.kind
                 && source.end_section_index == source.start_section_index + 1
                 && source.end_s_m > source.start_s_m
@@ -118,19 +118,17 @@ fn span_visual_pieces_compile_explicit_band_polygons() {
     );
     assert!(
         span_piece
-            .road_surface_polygons
-            .iter()
-            .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world))
+            .road_surface_polygons()
+            .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points()))
     );
     assert!(
         span_piece
-            .curb_surface_polygons
-            .iter()
-            .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world))
+            .curb_surface_polygons()
+            .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(polygon.points()))
     );
     assert!(
-        span_piece.curb_surface_polygons.iter().all(|polygon| {
-            polygon.triangles_world.iter().all(|triangle| {
+        span_piece.curb_surface_polygons().all(|polygon| {
+            polygon.triangles().iter().all(|triangle| {
                 let min_y = triangle[0].y.min(triangle[1].y).min(triangle[2].y);
                 let max_y = triangle[0].y.max(triangle[1].y).max(triangle[2].y);
                 max_y - min_y <= 0.001
@@ -140,24 +138,21 @@ fn span_visual_pieces_compile_explicit_band_polygons() {
     );
     assert!(
         span_piece
-            .raised_step_face_polygons
-            .iter()
-            .all(|polygon| !RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world))
+            .raised_step_face_polygons()
+            .all(|polygon| !RoadSurfaceSystem::polygon_has_area_xz(polygon.points()))
     );
     assert!(
         span_piece
-            .sidewalk_surface_polygons
-            .iter()
-            .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world))
+            .sidewalk_surface_polygons()
+            .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(polygon.points()))
     );
-    assert!(!span_piece.earthwork_surface_polygons.is_empty());
+    assert_ne!(span_piece.earthwork_surface_polygons().len(), 0);
     assert!(!span_piece.earthwork_outer_boundary_loops.is_empty());
     assert!(!span_piece.render_earthwork_faces.is_empty());
     assert_span_earthwork_faces_have_support_provenance(span_piece, edge_idx, EdgeClass::Standard);
     assert!(
         span_piece
-            .earthwork_surface_polygons
-            .iter()
+            .earthwork_surface_polygons()
             .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world))
     );
     assert!(

@@ -13,30 +13,17 @@ impl RoadSurfaceSystem {
         kind: RoadSurfaceVisualNodePieceKind,
         outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
         mut terrain_clip_boundary_loops: Vec<RoadSurfaceTerrainClipLoop>,
-        mut road_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
-        mut curb_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
         mut raised_step_faces: Vec<(RoadSurfaceVisualPolygon, RoadSurfaceVerticalFaceSource)>,
-        mut sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
         explicit_vertical_step_segments: Vec<NodeExplicitVerticalStepSegment>,
         node_grade_authorities: Vec<height::NodeGradeVertexAuthority>,
         mut node_top_surface_sources: Vec<NodeTopSurfacePolygonSource>,
         mut owned_regions: Vec<NodeOwnedRegion>,
         boolean_debug: Option<NodeBooleanDebugSnapshot>,
         mut earthwork_owner_sources: Vec<NodeEarthworkOwnerSource>,
-        mut earthwork_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
         mut earthwork_outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
         mut render_earthwork_faces: Vec<RoadSurfaceEarthworkRenderFace>,
     ) -> Option<RoadSurfaceVisualNodePiece> {
-        if road_surface_polygons.is_empty()
-            && curb_surface_polygons.is_empty()
-            && sidewalk_surface_polygons.is_empty()
-        {
-            return None;
-        }
-        Self::sort_visual_polygons(&mut road_surface_polygons);
-        Self::sort_visual_polygons(&mut curb_surface_polygons);
         Self::sort_raised_step_faces(&mut raised_step_faces);
-        Self::sort_visual_polygons(&mut sidewalk_surface_polygons);
         if node_top_surface_sources.len() != owned_regions.len() {
             return None;
         }
@@ -45,6 +32,10 @@ impl RoadSurfaceSystem {
             &mut node_top_surface_sources,
         )
         .ok()?;
+        let surface_polygon_order = Self::top_polygon_order_by_material(&owned_regions);
+        if surface_polygon_order.iter().all(|order| order.is_empty()) {
+            return None;
+        }
         for source_edge in terrain_clip_boundary_loops
             .iter_mut()
             .flat_map(|boundary_loop| &mut boundary_loop.source_edges)
@@ -55,7 +46,6 @@ impl RoadSurfaceSystem {
             face.source = face.source.with_node_identity(node_id, kind);
         }
         Self::sort_terrain_clip_loops(&mut terrain_clip_boundary_loops);
-        Self::sort_visual_polygons(&mut earthwork_surface_polygons);
         Self::sort_visual_polygons(&mut earthwork_outer_boundary_loops);
         Self::sort_earthwork_render_faces(&mut render_earthwork_faces);
         earthwork_owner_sources.sort_by(|a, b| {
@@ -75,23 +65,27 @@ impl RoadSurfaceSystem {
         if outer_boundary_loops.is_empty() {
             return None;
         }
+        let material_polygons = |material: usize| {
+            surface_polygon_order[material]
+                .iter()
+                .map(|&index| owned_regions[index as usize].polygon.clone())
+                .collect::<Vec<_>>()
+        };
         let surface_query = Arc::new(RoadSurfaceTriangleQueryIndex::from_surface_polygons(
-            &road_surface_polygons,
-            &curb_surface_polygons,
-            &sidewalk_surface_polygons,
+            &material_polygons(0),
+            &material_polygons(1),
+            &material_polygons(2),
         ));
         let (raised_step_face_polygons, raised_step_face_sources) =
             raised_step_faces.into_iter().unzip();
-        Some(RoadSurfaceVisualNodePiece {
+        let mut piece = RoadSurfaceVisualNodePiece {
             node_id,
             kind,
             outer_boundary_loops,
             terrain_clip_boundary_loops,
-            road_surface_polygons,
-            curb_surface_polygons,
+            surface_polygon_order,
             raised_step_face_polygons,
             raised_step_face_sources,
-            sidewalk_surface_polygons,
             surface_query,
             explicit_vertical_step_segments,
             node_grade_authorities,
@@ -99,9 +93,11 @@ impl RoadSurfaceSystem {
             owned_regions,
             boolean_debug,
             earthwork_owner_sources,
-            earthwork_surface_polygons,
+            earthwork_surface_order: Self::earthwork_surface_order(&render_earthwork_faces),
             earthwork_outer_boundary_loops,
             render_earthwork_faces,
-        })
+        };
+        piece.shrink_retained();
+        Some(piece)
     }
 }

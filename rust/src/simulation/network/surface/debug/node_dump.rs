@@ -75,10 +75,18 @@ impl RoadSurfaceSystem {
         self.append_node_seam_constraints_debug_literal(dump, graph, node_id);
         dump.push_str(",\n");
         dump.push_str("      \"road_topology\": ");
-        Self::append_polygon_collection_debug_literal(dump, terrain, &piece.road_surface_polygons);
+        Self::append_polygon_collection_debug_literal(
+            dump,
+            terrain,
+            &piece.road_surface_polygons().cloned().collect::<Vec<_>>(),
+        );
         dump.push_str(",\n");
         dump.push_str("      \"curb_topology\": ");
-        Self::append_polygon_collection_debug_literal(dump, terrain, &piece.curb_surface_polygons);
+        Self::append_polygon_collection_debug_literal(
+            dump,
+            terrain,
+            &piece.curb_surface_polygons().cloned().collect::<Vec<_>>(),
+        );
         dump.push_str(",\n");
         dump.push_str("      \"raised_step_face_topology\": ");
         Self::append_polygon_collection_debug_literal(
@@ -94,7 +102,7 @@ impl RoadSurfaceSystem {
         Self::append_polygon_collection_debug_literal(
             dump,
             terrain,
-            &piece.sidewalk_surface_polygons,
+            &piece.sidewalk_surface_polygons().cloned().collect::<Vec<_>>(),
         );
         dump.push_str(",\n");
         dump.push_str("      \"material_footprint_coverage\": ");
@@ -339,9 +347,15 @@ impl RoadSurfaceSystem {
         dump: &mut String,
         piece: &RoadSurfaceVisualNodePiece,
     ) {
-        let road = Self::node_material_partition_shapes(&piece.road_surface_polygons);
-        let curb = Self::node_material_partition_shapes(&piece.curb_surface_polygons);
-        let sidewalk = Self::node_material_partition_shapes(&piece.sidewalk_surface_polygons);
+        let road = Self::node_material_partition_shapes(
+            &piece.road_surface_polygons().cloned().collect::<Vec<_>>(),
+        );
+        let curb = Self::node_material_partition_shapes(
+            &piece.curb_surface_polygons().cloned().collect::<Vec<_>>(),
+        );
+        let sidewalk = Self::node_material_partition_shapes(
+            &piece.sidewalk_surface_polygons().cloned().collect::<Vec<_>>(),
+        );
 
         dump.push('{');
         dump.push_str("\"materials\":[");

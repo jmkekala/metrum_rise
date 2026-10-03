@@ -10,7 +10,7 @@ impl RoadSurfaceSystem {
         piece: &RoadSurfaceVisualNodePiece,
     ) -> Vec<DebugTopVertex> {
         let mut vertices = Vec::new();
-        for polygon in &piece.road_surface_polygons {
+        for polygon in piece.road_surface_polygons() {
             vertices.extend(
                 polygon
                     .points_world
@@ -28,7 +28,7 @@ impl RoadSurfaceSystem {
                 })
             }));
         }
-        for polygon in &piece.curb_surface_polygons {
+        for polygon in piece.curb_surface_polygons() {
             vertices.extend(
                 polygon
                     .points_world
@@ -46,7 +46,7 @@ impl RoadSurfaceSystem {
                 })
             }));
         }
-        for polygon in &piece.sidewalk_surface_polygons {
+        for polygon in piece.sidewalk_surface_polygons() {
             vertices.extend(
                 polygon
                     .points_world
@@ -96,10 +96,10 @@ impl RoadSurfaceSystem {
         material: &'static str,
         piece: &RoadSurfaceVisualNodePiece,
     ) -> Option<DebugClosestTopVertex> {
-        let polygons = match material {
-            "road" => &piece.road_surface_polygons,
-            "curb" => &piece.curb_surface_polygons,
-            _ => &piece.sidewalk_surface_polygons,
+        let polygons: Vec<_> = match material {
+            "road" => piece.road_surface_polygons().collect(),
+            "curb" => piece.curb_surface_polygons().collect(),
+            _ => piece.sidewalk_surface_polygons().collect(),
         };
         let mut best = None;
         for polygon in polygons {

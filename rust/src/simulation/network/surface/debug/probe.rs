@@ -251,7 +251,8 @@ impl RoadSurfaceSystem {
         point_xz: backend::RoadVec2,
     ) {
         for (region_index, region) in piece.span_owned_regions.iter().enumerate() {
-            for (triangle_index, triangle) in region.polygon.triangles_world.iter().enumerate() {
+            let quad = piece.region_quad(region);
+            for (triangle_index, triangle) in quad.triangles().iter().enumerate() {
                 let Some(probe) = DebugProbeTriangleHit::from_top_triangle(*triangle, point_xz)
                 else {
                     continue;
@@ -288,9 +289,9 @@ impl RoadSurfaceSystem {
         piece: &RoadSurfaceVisualSpanPiece,
         point_xz: backend::RoadVec2,
     ) {
-        for (face_index, polygon) in piece.raised_step_face_polygons.iter().enumerate() {
-            let source = piece.span_raised_step_sources.get(face_index).copied();
-            for (triangle_index, triangle) in polygon.triangles_world.iter().enumerate() {
+        for (face_index, (polygon, source)) in piece.raised_step_faces().enumerate() {
+            let source = Some(source);
+            for (triangle_index, triangle) in polygon.triangles().iter().enumerate() {
                 let Some(probe) = DebugProbeTriangleHit::from_near_triangle(*triangle, point_xz)
                 else {
                     continue;

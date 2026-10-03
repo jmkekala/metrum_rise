@@ -50,33 +50,44 @@ pub(super) fn emit_surface_polygon(
     polygon: &RoadSurfaceVisualPolygon,
     color: Color,
 ) {
-    emit_surface_polygon_with_group_normal(mesh, layer, polygon, color, None);
+    emit_surface_triangles(mesh, layer, &polygon.triangles_world, color);
 }
 
-pub(super) fn emit_node_top_surface_polygons(
+pub(super) fn emit_surface_triangles(
     mesh: &mut NetworkMeshData,
     layer: MeshLayer,
-    polygons: &[RoadSurfaceVisualPolygon],
+    triangles: &[[RoadVec3; 3]],
     color: Color,
 ) {
-    let group_normal = stable_surface_group_normal(polygons);
+    emit_surface_triangles_with_group_normal(mesh, layer, triangles, color, None);
+}
+
+pub(super) fn emit_node_top_surface_polygons<'a>(
+    mesh: &mut NetworkMeshData,
+    layer: MeshLayer,
+    polygons: impl Iterator<Item = &'a RoadSurfaceVisualPolygon> + Clone,
+    color: Color,
+) {
+    let group_normal = stable_surface_group_normal(polygons.clone());
     for polygon in polygons {
-        emit_surface_polygon_with_group_normal(mesh, layer, polygon, color, group_normal);
+        emit_surface_triangles_with_group_normal(
+            mesh,
+            layer,
+            &polygon.triangles_world,
+            color,
+            group_normal,
+        );
     }
 }
 
-fn emit_surface_polygon_with_group_normal(
+fn emit_surface_triangles_with_group_normal(
     mesh: &mut NetworkMeshData,
     layer: MeshLayer,
-    polygon: &RoadSurfaceVisualPolygon,
+    triangles: &[[RoadVec3; 3]],
     color: Color,
     group_normal: Option<Vector3>,
 ) {
-    if polygon.triangles_world.is_empty() {
-        return;
-    }
-
-    for triangle in &polygon.triangles_world {
+    for triangle in triangles {
         if !RoadSurfaceSystem::top_surface_triangle_is_renderable_xz(*triangle) {
             continue;
         }
@@ -102,31 +113,39 @@ fn emit_surface_polygon_with_group_normal(
     }
 }
 
+pub(super) fn emit_vertical_surface_triangles(
+    mesh: &mut NetworkMeshData,
+    triangles: &[[RoadVec3; 3]],
+    color: Color,
+) {
+    for triangle in triangles {
+        let triangle = road_triangle_to_render(*triangle);
+        if triangle_is_too_small(triangle[0], triangle[1], triangle[2]) {
+            continue;
+        }
+        let normal = vertical_surface_visible_normal(triangle);
+        push_triangle_preserving_winding_with_exact_normal(
+            mesh,
+            MeshLayer::RaisedStep,
+            triangle,
+            [
+                Vector2::ZERO,
+                Vector2::new(1.0, 0.0),
+                Vector2::new(1.0, 1.0),
+            ],
+            color,
+            normal,
+        );
+    }
+}
+
 pub(super) fn emit_vertical_surface_polygon(
     mesh: &mut NetworkMeshData,
     polygon: &RoadSurfaceVisualPolygon,
     color: Color,
 ) {
     if !polygon.triangles_world.is_empty() {
-        for triangle in &polygon.triangles_world {
-            let triangle = road_triangle_to_render(*triangle);
-            if triangle_is_too_small(triangle[0], triangle[1], triangle[2]) {
-                continue;
-            }
-            let normal = vertical_surface_visible_normal(triangle);
-            push_triangle_preserving_winding_with_exact_normal(
-                mesh,
-                MeshLayer::RaisedStep,
-                triangle,
-                [
-                    Vector2::ZERO,
-                    Vector2::new(1.0, 0.0),
-                    Vector2::new(1.0, 1.0),
-                ],
-                color,
-                normal,
-            );
-        }
+        emit_vertical_surface_triangles(mesh, &polygon.triangles_world, color);
         return;
     }
 
@@ -205,8 +224,8 @@ pub(super) fn triangle_is_too_small(a: Vector3, b: Vector3, c: Vector3) -> bool 
     double_area_squared <= MIN_RENDER_TRIANGLE_DOUBLE_AREA_M2 * MIN_RENDER_TRIANGLE_DOUBLE_AREA_M2
 }
 
-pub(super) fn stable_surface_group_normal(
-    polygons: &[RoadSurfaceVisualPolygon],
+pub(super) fn stable_surface_group_normal<'a>(
+    polygons: impl IntoIterator<Item = &'a RoadSurfaceVisualPolygon>,
 ) -> Option<Vector3> {
     let mut normal = Vector3::ZERO;
     for polygon in polygons {

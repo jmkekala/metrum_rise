@@ -732,8 +732,8 @@ fn logged_loop_bend_does_not_assign_sidewalk_join_outside_height_field() {
 
 fn assert_bend_material_partition_keeps_sidewalk_visible(piece: &RoadSurfaceVisualNodePiece) {
     let footprint_area_m2 = visual_polygon_union_area_m2(&piece.outer_boundary_loops);
-    let asphalt_area_m2 = visual_polygon_union_area_m2(&piece.road_surface_polygons);
-    let sidewalk_area_m2 = visual_polygon_union_area_m2(&piece.sidewalk_surface_polygons);
+    let asphalt_area_m2 = visual_polygon_union_area_m2(&piece.road_surface_polygons().cloned().collect::<Vec<_>>());
+    let sidewalk_area_m2 = visual_polygon_union_area_m2(&piece.sidewalk_surface_polygons().cloned().collect::<Vec<_>>());
     let asphalt_ratio = asphalt_area_m2 / footprint_area_m2;
     let sidewalk_ratio = sidewalk_area_m2 / footprint_area_m2;
 
@@ -744,7 +744,7 @@ fn assert_bend_material_partition_keeps_sidewalk_visible(piece: &RoadSurfaceVisu
 }
 
 fn assert_bend_asphalt_has_no_detached_islands(piece: &RoadSurfaceVisualNodePiece) {
-    let contours = overlay_contours_from_top_polygons(&piece.road_surface_polygons);
+    let contours = overlay_contours_from_top_polygons(piece.road_surface_polygons());
     let mut shape_areas_m2 = RoadSurfaceSystem::overlay_union_contours(&contours)
         .unwrap_or_default()
         .iter()

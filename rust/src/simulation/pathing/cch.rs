@@ -14,7 +14,8 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 
 type SearchKey = (u32, usize);
 type SearchRecord = (f32, f32, Option<usize>, SearchKey);
-type SearchData = HashMap<SearchKey, SearchRecord>;
+// Search labels are only looked up by key, so a fixed-seed hasher keeps queries deterministic.
+type SearchData = HashMap<SearchKey, SearchRecord, foldhash::fast::FixedState>;
 
 /// A shortcut edge in the contracted graph.
 ///
@@ -545,8 +546,8 @@ impl CchGraph {
         let mut fwd_heap = BinaryHeap::new();
         let mut bwd_heap = BinaryHeap::new();
 
-        let mut fwd_data = SearchData::new();
-        let mut bwd_data = SearchData::new();
+        let mut fwd_data = SearchData::default();
+        let mut bwd_data = SearchData::default();
 
         fwd_data.insert(
             (start, start_edge),

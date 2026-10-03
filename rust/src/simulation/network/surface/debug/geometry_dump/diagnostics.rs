@@ -10,22 +10,31 @@ impl RoadSurfaceSystem {
         piece: &RoadSurfaceVisualSpanPiece,
     ) {
         let road_projection_matches = Self::span_region_projection_matches_from_regions(
-            &piece.span_owned_regions,
+            piece,
             RoadSurfaceSpanRegionRole::Asphalt,
-            &piece.road_surface_polygons,
+            &piece
+                .road_surface_polygons()
+                .map(|quad| quad.to_polygon())
+                .collect::<Vec<_>>(),
         );
         let curb_projection_matches = Self::span_region_projection_matches_from_regions(
-            &piece.span_owned_regions,
+            piece,
             RoadSurfaceSpanRegionRole::CurbOrShoulder,
-            &piece.curb_surface_polygons,
+            &piece
+                .curb_surface_polygons()
+                .map(|quad| quad.to_polygon())
+                .collect::<Vec<_>>(),
         );
         let sidewalk_projection_matches = Self::span_region_projection_matches_from_regions(
-            &piece.span_owned_regions,
+            piece,
             RoadSurfaceSpanRegionRole::NonRoad,
-            &piece.sidewalk_surface_polygons,
+            &piece
+                .sidewalk_surface_polygons()
+                .map(|quad| quad.to_polygon())
+                .collect::<Vec<_>>(),
         );
         let raised_step_source_count_matches =
-            piece.raised_step_face_polygons.len() == piece.span_raised_step_sources.len();
+            piece.raised_step_face_polygons().len() == piece.span_raised_step_sources().len();
         let sourced_earthwork_face_count = piece.render_earthwork_faces.len();
         let _ = write!(
             dump,

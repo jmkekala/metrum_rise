@@ -33,7 +33,8 @@ const TRAFFIC_DEBUG_STATIONARY_AFTER_S: f32 = 3.0;
 const TRAFFIC_DEBUG_STATIONARY_LOG_INTERVAL_S: f32 = 5.0;
 
 pub(crate) use planning::{
-    BuiltTripPlan, building_origin_trip_is_feasible, estimate_building_origin_trip_seconds,
+    BuildingTripEnds, BuiltTripPlan, TripEstimate, building_origin_trip_is_feasible,
+    estimate_building_origin_trip_seconds, estimate_trip_seconds_between,
     plan_building_origin_trip, plan_building_to_border_trip, plan_immigration_trip,
 };
 

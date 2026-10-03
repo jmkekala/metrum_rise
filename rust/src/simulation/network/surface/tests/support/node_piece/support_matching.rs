@@ -8,10 +8,7 @@ pub(in crate::simulation::network::surface::tests) fn assert_top_mesh_centroids_
     piece: &RoadSurfaceVisualNodePiece,
 ) {
     for triangle in piece
-        .road_surface_polygons
-        .iter()
-        .chain(piece.curb_surface_polygons.iter())
-        .chain(piece.sidewalk_surface_polygons.iter())
+        .surface_polygons()
         .flat_map(|polygon| polygon.triangles_world.iter().copied())
     {
         let centroid = triangle_centroid_xz(triangle);
@@ -28,10 +25,7 @@ pub(in crate::simulation::network::surface::tests) fn assert_outer_boundary_vert
     let (missing_area_m2, extra_area_m2, budget_m2, missing_shapes, extra_shapes) =
         node_top_coverage_details_m2(piece);
     let top_polygons = piece
-        .road_surface_polygons
-        .iter()
-        .chain(piece.curb_surface_polygons.iter())
-        .chain(piece.sidewalk_surface_polygons.iter())
+        .surface_polygons()
         .collect::<Vec<_>>();
     let top_vertices = visible_top_vertices(piece);
     assert!(
@@ -195,10 +189,7 @@ pub(in crate::simulation::network::surface::tests) fn assert_outer_boundary_vert
     piece: &RoadSurfaceVisualNodePiece,
 ) {
     let top_polygons = piece
-        .road_surface_polygons
-        .iter()
-        .chain(piece.curb_surface_polygons.iter())
-        .chain(piece.sidewalk_surface_polygons.iter())
+        .surface_polygons()
         .collect::<Vec<_>>();
     for boundary_point in piece
         .outer_boundary_loops
@@ -272,10 +263,7 @@ pub(in crate::simulation::network::surface::tests) fn visible_top_vertices(
     piece: &RoadSurfaceVisualNodePiece,
 ) -> Vec<RoadVec3> {
     piece
-        .road_surface_polygons
-        .iter()
-        .chain(piece.curb_surface_polygons.iter())
-        .chain(piece.sidewalk_surface_polygons.iter())
+        .surface_polygons()
         .flat_map(|polygon| {
             polygon.points_world.iter().copied().chain(
                 polygon

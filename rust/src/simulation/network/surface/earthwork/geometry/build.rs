@@ -13,17 +13,15 @@ impl RoadSurfaceSystem {
     ) -> Result<
         (
             Vec<RoadSurfaceVisualPolygon>,
-            Vec<RoadSurfaceVisualPolygon>,
             Vec<RoadSurfaceEarthworkRenderFace>,
         ),
         RoadSurfaceEarthworkGeometryError,
     > {
-        let mut earthwork_surface_polygons = Vec::new();
         let mut earthwork_outer_boundary_loops = Vec::new();
         let mut render_earthwork_faces = Vec::new();
 
         for boundary_segments in boundary_segment_loops {
-            let Some((outer_loop, side_polygons, render_faces)) = self
+            let Some((outer_loop, render_faces)) = self
                 .build_closed_earthwork_loop_geometry(
                     boundary_segments,
                     terrain,
@@ -35,18 +33,24 @@ impl RoadSurfaceSystem {
             if let Some(outer_loop) = outer_loop {
                 earthwork_outer_boundary_loops.push(outer_loop);
             }
-            earthwork_surface_polygons.extend(side_polygons);
             render_earthwork_faces.extend(render_faces);
         }
 
-        Self::sort_visual_polygons(&mut earthwork_surface_polygons);
         Self::sort_visual_polygons(&mut earthwork_outer_boundary_loops);
         Self::sort_earthwork_render_faces(&mut render_earthwork_faces);
-        Ok((
-            earthwork_surface_polygons,
-            earthwork_outer_boundary_loops,
-            render_earthwork_faces,
-        ))
+        Ok((earthwork_outer_boundary_loops, render_earthwork_faces))
+    }
+
+    /// Render-face indices in `visual_polygon_ordering` order. Every earthwork side polygon
+    /// is a render face's polygon, so pieces keep this order instead of a second copy.
+    pub(in crate::simulation::network::surface) fn earthwork_surface_order(
+        faces: &[RoadSurfaceEarthworkRenderFace],
+    ) -> Box<[u32]> {
+        let mut order: Vec<u32> = (0..faces.len() as u32).collect();
+        order.sort_by(|&a, &b| {
+            Self::visual_polygon_ordering(&faces[a as usize].polygon, &faces[b as usize].polygon)
+        });
+        order.into_boxed_slice()
     }
 
     pub(in crate::simulation::network::surface::earthwork) fn build_closed_earthwork_loop_geometry(
@@ -57,7 +61,6 @@ impl RoadSurfaceSystem {
     ) -> Result<
         Option<(
             Option<RoadSurfaceVisualPolygon>,
-            Vec<RoadSurfaceVisualPolygon>,
             Vec<RoadSurfaceEarthworkRenderFace>,
         )>,
         RoadSurfaceEarthworkGeometryError,
@@ -96,7 +99,6 @@ impl RoadSurfaceSystem {
         } else {
             None
         };
-        let mut side_polygons = Vec::new();
         let mut render_faces = Vec::new();
         for segment in boundary_segments {
             let current = segment.inner_start;
@@ -138,14 +140,13 @@ impl RoadSurfaceSystem {
                 source: segment.source,
                 inner_start: current,
                 inner_end: next,
-                polygon: polygon.clone(),
+                polygon,
             });
-            side_polygons.push(polygon);
         }
 
-        if outer_loop.is_none() && side_polygons.is_empty() {
+        if outer_loop.is_none() && render_faces.is_empty() {
             return Ok(None);
         }
-        Ok(Some((outer_loop, side_polygons, render_faces)))
+        Ok(Some((outer_loop, render_faces)))
     }
 }

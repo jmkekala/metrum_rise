@@ -3,7 +3,8 @@
 //! Span boundary and terrain-clip source construction from resolved owned regions.
 
 use super::super::{
-    RoadSurfaceEarthworkBoundarySegment, RoadSurfaceEarthworkFaceSource, RoadSurfaceSystem,
+    RoadSurfaceEarthworkBoundarySegment, RoadSurfaceEarthworkFaceSource, RoadSurfaceSection,
+    RoadSurfaceSystem,
     RoadSurfaceTerrainClipEdgeKind, RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge,
     RoadSurfaceVisualPolygon,
     backend::RoadVec3,
@@ -20,6 +21,7 @@ const TERRAIN_CLIP_RUN_M: f32 = 64.0;
 
 impl RoadSurfaceSystem {
     pub(super) fn build_span_boundary_loops_from_regions(
+        sections: &[RoadSurfaceSection],
         regions: &[RoadSurfaceSpanOwnedRegion],
         edge_class: EdgeClass,
     ) -> Result<
@@ -30,7 +32,7 @@ impl RoadSurfaceSystem {
         RoadSurfaceEarthworkGeometryError,
     > {
         let (outer_boundary_loops, mut terrain_clip_boundary_loops) =
-            Self::build_span_boundary_run(regions, edge_class)?;
+            Self::build_span_boundary_run(sections, regions, edge_class)?;
         let run_key = |region: &RoadSurfaceSpanOwnedRegion| {
             (region.start_s_m / TERRAIN_CLIP_RUN_M).floor() as i64
         };
@@ -45,7 +47,7 @@ impl RoadSurfaceSystem {
             terrain_clip_boundary_loops.clear();
             for run in std::iter::once(first).chain(runs) {
                 terrain_clip_boundary_loops
-                    .extend(Self::build_span_boundary_run(run, edge_class)?.1);
+                    .extend(Self::build_span_boundary_run(sections, run, edge_class)?.1);
             }
             Self::sort_terrain_clip_loops(&mut terrain_clip_boundary_loops);
         }
@@ -53,6 +55,7 @@ impl RoadSurfaceSystem {
     }
 
     fn build_span_boundary_run(
+        sections: &[RoadSurfaceSection],
         regions: &[RoadSurfaceSpanOwnedRegion],
         edge_class: EdgeClass,
     ) -> Result<
@@ -63,7 +66,7 @@ impl RoadSurfaceSystem {
         RoadSurfaceEarthworkGeometryError,
     > {
         let candidate_segments =
-            Self::span_boundary_candidate_segments_from_regions(regions, edge_class);
+            Self::span_boundary_candidate_segments_from_regions(sections, regions, edge_class);
         let boundary_segment_loops = Self::owned_region_boundary_segment_loops(candidate_segments)?;
         let mut outer_boundary_loops = Vec::with_capacity(boundary_segment_loops.len());
         let mut terrain_clip_boundary_loops = Vec::with_capacity(boundary_segment_loops.len());
@@ -105,12 +108,15 @@ impl RoadSurfaceSystem {
     }
 
     fn span_boundary_candidate_segments_from_regions(
+        sections: &[RoadSurfaceSection],
         regions: &[RoadSurfaceSpanOwnedRegion],
         edge_class: EdgeClass,
     ) -> Vec<RoadSurfaceEarthworkBoundarySegment> {
         let mut segments = Vec::new();
         for region in regions {
-            let points = &region.polygon.points_world;
+            let corners = region.corners(sections);
+            let quad = region.quad(sections);
+            let points = quad.points();
             if points.len() < 3 {
                 continue;
             }
@@ -122,6 +128,7 @@ impl RoadSurfaceSystem {
                     inner_end,
                     source: Self::span_boundary_segment_source(
                         region,
+                        corners,
                         edge_class,
                         inner_start,
                         inner_end,
@@ -134,11 +141,12 @@ impl RoadSurfaceSystem {
 
     fn span_boundary_segment_source(
         region: &RoadSurfaceSpanOwnedRegion,
+        corners: [RoadVec3; 4],
         edge_class: EdgeClass,
         start: RoadVec3,
         end: RoadVec3,
     ) -> RoadSurfaceEarthworkFaceSource {
-        let [start_left, end_left, end_right, start_right] = region.source_corners_world;
+        let [start_left, end_left, end_right, start_right] = corners;
         if Self::span_boundary_segment_matches_source_edge(start, end, end_left, end_right) {
             return region.handoff_boundary_source(
                 edge_class,

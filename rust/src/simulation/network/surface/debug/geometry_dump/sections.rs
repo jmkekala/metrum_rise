@@ -132,6 +132,7 @@ impl RoadSurfaceSystem {
         }
         dump.push_str(",\"regions\":[");
         for (region_index, region) in piece.span_owned_regions.iter().enumerate() {
+            let polygon = piece.region_quad(region).to_polygon();
             if region_index > 0 {
                 dump.push_str(", ");
             }
@@ -146,16 +147,16 @@ impl RoadSurfaceSystem {
                 region.end_section_index,
                 region.start_s_m,
                 region.end_s_m,
-                region.polygon.points_world.len(),
+                polygon.points_world.len(),
             );
             Self::append_optional_f32_precise_literal(
                 dump,
-                Self::debug_polygon_height_range(&region.polygon).map(|(min_y, _)| min_y),
+                Self::debug_polygon_height_range(&polygon).map(|(min_y, _)| min_y),
             );
             dump.push_str(",\"height_max_m\":");
             Self::append_optional_f32_precise_literal(
                 dump,
-                Self::debug_polygon_height_range(&region.polygon).map(|(_, max_y)| max_y),
+                Self::debug_polygon_height_range(&polygon).map(|(_, max_y)| max_y),
             );
             dump.push('}');
         }
@@ -201,6 +202,7 @@ impl RoadSurfaceSystem {
         }
         dump.push_str(",\"regions\":[");
         for (region_index, region) in piece.span_earthwork_support_regions.iter().enumerate() {
+            let polygon = piece.region_quad(region).to_polygon();
             if region_index > 0 {
                 dump.push_str(", ");
             }
@@ -215,16 +217,16 @@ impl RoadSurfaceSystem {
                 region.end_section_index,
                 region.start_s_m,
                 region.end_s_m,
-                region.polygon.points_world.len(),
+                polygon.points_world.len(),
             );
             Self::append_optional_f32_precise_literal(
                 dump,
-                Self::debug_polygon_height_range(&region.polygon).map(|(min_y, _)| min_y),
+                Self::debug_polygon_height_range(&polygon).map(|(min_y, _)| min_y),
             );
             dump.push_str(",\"height_max_m\":");
             Self::append_optional_f32_precise_literal(
                 dump,
-                Self::debug_polygon_height_range(&region.polygon).map(|(_, max_y)| max_y),
+                Self::debug_polygon_height_range(&polygon).map(|(_, max_y)| max_y),
             );
             dump.push('}');
         }
@@ -237,6 +239,7 @@ impl RoadSurfaceSystem {
     ) {
         dump.push('[');
         for (region_index, region) in piece.span_owned_regions.iter().enumerate() {
+            let polygon = piece.region_quad(region).to_polygon();
             if region_index > 0 {
                 dump.push_str(", ");
             }
@@ -253,17 +256,17 @@ impl RoadSurfaceSystem {
                 region.end_section_index,
                 region.start_s_m,
                 region.end_s_m,
-                region.polygon.points_world.len(),
-                region.polygon.triangles_world.len()
+                polygon.points_world.len(),
+                polygon.triangles_world.len()
             );
             dump.push_str(",\"source_corners_world\":");
-            Self::append_vector3_precise_list_literal(dump, &region.source_corners_world);
+            Self::append_vector3_precise_list_literal(dump, &region.corners(&piece.sections));
             dump.push_str(",\"polygon_world\":");
-            Self::append_vector3_precise_list_literal(dump, &region.polygon.points_world);
+            Self::append_vector3_precise_list_literal(dump, &polygon.points_world);
             dump.push_str(",\"triangles_world\":");
             Self::append_vector3_triangle_list_precise_literal(
                 dump,
-                &region.polygon.triangles_world,
+                &polygon.triangles_world,
             );
             dump.push('}');
         }
@@ -282,14 +285,15 @@ impl RoadSurfaceSystem {
     }
 
     pub(in crate::simulation::network::surface::debug) fn span_region_projection_matches_from_regions(
-        regions: &[RoadSurfaceSpanOwnedRegion],
+        piece: &RoadSurfaceVisualSpanPiece,
         role: RoadSurfaceSpanRegionRole,
         projected: &[RoadSurfaceVisualPolygon],
     ) -> bool {
-        let mut expected: Vec<RoadSurfaceVisualPolygon> = regions
+        let mut expected: Vec<RoadSurfaceVisualPolygon> = piece
+            .span_owned_regions
             .iter()
             .filter(|region| region.role == role)
-            .map(|region| region.polygon.clone())
+            .map(|region| piece.region_quad(region).to_polygon())
             .collect();
         let mut actual = projected.to_vec();
         Self::sort_visual_polygons(&mut expected);

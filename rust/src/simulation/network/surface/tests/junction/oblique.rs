@@ -377,7 +377,7 @@ fn logged_current_bend_upgraded_to_junctionn_preserves_exterior_non_road_without
     let expected_outer_bend_fill = logged_current_bend_upgrade_outer_asphalt_fill_point();
 
     assert!(
-        !point_inside_visual_polygons(&piece.road_surface_polygons, expected_outer_bend_fill),
+        !point_inside_visual_polygons(&piece.road_surface_polygons().cloned().collect::<Vec<_>>(), expected_outer_bend_fill),
         "upgraded JunctionN must not fill the reflex exterior lobe with asphalt; point={expected_outer_bend_fill:?}"
     );
     assert!(
@@ -597,7 +597,7 @@ fn logged_current_bent_t_junction_trims_exterior_asphalt_islands() {
     ];
     for point in bad_islands {
         assert!(
-            !point_inside_visual_polygons(&piece.road_surface_polygons, point),
+            !point_inside_visual_polygons(&piece.road_surface_polygons().cloned().collect::<Vec<_>>(), point),
             "exterior trim must remove logged asphalt island from road surface; point={point:?}"
         );
         assert!(
@@ -608,7 +608,7 @@ fn logged_current_bent_t_junction_trims_exterior_asphalt_islands() {
 
     let curved_sidewalk = Vector2::new(20.873661, 37.576516);
     assert!(
-        point_inside_visual_polygons(&piece.sidewalk_surface_polygons, curved_sidewalk),
+        point_inside_visual_polygons(&piece.sidewalk_surface_polygons().cloned().collect::<Vec<_>>(), curved_sidewalk),
         "exterior trim must preserve the curved sidewalk band; point={curved_sidewalk:?}"
     );
     assert!(
@@ -616,7 +616,7 @@ fn logged_current_bent_t_junction_trims_exterior_asphalt_islands() {
         "exterior trim must preserve footprint over the curved sidewalk band; point={curved_sidewalk:?}"
     );
     assert!(
-        !point_inside_visual_polygons(&piece.road_surface_polygons, curved_sidewalk),
+        !point_inside_visual_polygons(&piece.road_surface_polygons().cloned().collect::<Vec<_>>(), curved_sidewalk),
         "curved sidewalk sample must not become asphalt; point={curved_sidewalk:?}"
     );
 }
