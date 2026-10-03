@@ -23,6 +23,13 @@ const VegetationTool = preload("res://scripts/tools/vegetation_tool.gd")
 @onready var simulation_node = $"../SimulationNode"
 
 var bottom_panel: Control
+# The bottom row's three independently anchored layers, kept so the toolbar can be laid out
+# clear of the side strips (_layout_bottom_toolbar).
+var _left_bottom_strip: Control
+var _right_bottom_strip: Control
+var _toolbar_margin: MarginContainer
+var _toolbar_shell: Control
+var _toolbar_layout_pending := false
 var main_toolbar: HBoxContainer
 
 var road_main_btn: Button
@@ -550,7 +557,8 @@ func _build_ui():
 	hbox_main_center.add_child(main_toolbar)
 
 	vbox.add_child(_create_bottom_strip_shell(hbox_main_center, 0.0, UIStyle.hud_clear_style()))
-	toolbar_center.add_child(_create_bottom_group_shell(main_vbox))
+	_toolbar_shell = _create_bottom_group_shell(main_vbox)
+	toolbar_center.add_child(_toolbar_shell)
 
 	# --- Bottom-left Strip ---
 	clock_panel = _create_bottom_strip_shell(_build_clock_content(), CLOCK_PANEL_WIDTH)
@@ -593,6 +601,44 @@ func _build_ui():
 	bulldoze_style.set_corner_radius_all(8)
 	bulldoze_btn.add_theme_stylebox_override("normal", bulldoze_style)
 	right_bottom_strip.add_child(_create_bottom_strip_shell(bulldoze_btn, 82.0))
+
+	_left_bottom_strip = left_bottom_strip
+	_right_bottom_strip = right_bottom_strip
+	_toolbar_margin = toolbar_margin
+	for control in [bottom_panel, left_bottom_strip, right_bottom_strip, _toolbar_shell]:
+		control.resized.connect(_queue_bottom_toolbar_layout)
+	_queue_bottom_toolbar_layout()
+
+func _queue_bottom_toolbar_layout() -> void:
+	if not _toolbar_layout_pending:
+		_toolbar_layout_pending = true
+		call_deferred("_layout_bottom_toolbar")
+
+# The toolbar stays centred on the screen while that clears both side strips. When it would
+# overlap one, it shifts just far enough sideways; when the gap between the strips is too
+# narrow for it, it rises above them instead.
+func _layout_bottom_toolbar() -> void:
+	_toolbar_layout_pending = false
+	var width := bottom_panel.size.x
+	var gap := UIStyle.HUD_PANEL_GAP
+	var left_edge := UIStyle.HUD_LEFT_MARGIN + _left_bottom_strip.get_combined_minimum_size().x + gap
+	var right_edge := width - UIStyle.HUD_LEFT_MARGIN - _right_bottom_strip.get_combined_minimum_size().x - gap
+	var toolbar_width := _toolbar_shell.get_combined_minimum_size().x
+	var start := (width - toolbar_width) * 0.5
+	var shift := 0.0
+	var rise := 0.0
+	if toolbar_width > right_edge - left_edge:
+		rise = maxf(_left_bottom_strip.get_combined_minimum_size().y,
+			_right_bottom_strip.get_combined_minimum_size().y) + gap
+	elif start < left_edge:
+		shift = left_edge - start
+	elif start + toolbar_width > right_edge:
+		shift = right_edge - (start + toolbar_width)
+	# The CenterContainer centres within the margins, so a margin of twice the shift moves the
+	# toolbar's centre by the shift.
+	_toolbar_margin.add_theme_constant_override("margin_left", int(maxf(0.0, 2.0 * shift)))
+	_toolbar_margin.add_theme_constant_override("margin_right", int(maxf(0.0, -2.0 * shift)))
+	_toolbar_margin.add_theme_constant_override("margin_bottom", int(UIStyle.HUD_BOTTOM_MARGIN + rise))
 
 func _build_auxiliary_windows() -> void:
 	road_properties_panel = RoadPropertiesWindow.new()

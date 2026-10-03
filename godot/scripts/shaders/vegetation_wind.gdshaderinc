@@ -148,6 +148,27 @@ float vegetation_shadow(float attenuation, bool directional, float shadow_keep) 
 	return directional ? mix(1.0, attenuation, shadow_keep) : attenuation;
 }
 
+global uniform vec3 scene_sun_direction;
+// Sun a crown surface keeps inside a stand, from its neighbours' crowns. A sun ray from a surface
+// `d` below the canopy top crosses the crown layer over `d * cot(elevation)` of ground, and in a
+// stand of closure `c` it meets crowns at STAND_SUN_DENSITY * c per metre, so the share that
+// passes falls as exp(-density * c * path). It falls to STAND_SUN_FLOOR, not zero: that is the
+// share of sun the open crowns of a closed stand pass to its floor, CANOPY_FLOOR_SUN_VISIBILITY
+// in scene_lighting.gd, which a ray at the floor has crossed the whole layer to reach. A lone
+// tree has closure zero and keeps its sun. The cast shadows inside their range already hold
+// neighbours' crowns, so the two combine as the darker of them, not as a product.
+// STAND_SUN_DENSITY is fitted: a painted mixed stand at 13:00 goes from 0.62 and 0.53 of the
+// meadow beside it, from 180 m and 140 m up, to 0.44 and 0.37, inside the 0.30-0.44 the
+// forest-edge photographs measure over green ground.
+const float STAND_CROWN_TOP_M = 20.0;
+const float STAND_SUN_FLOOR = 0.24;
+const float STAND_SUN_DENSITY = 0.3;
+float vegetation_stand_sun(float height_m, float closure) {
+	vec3 sun = scene_sun_direction;
+	float path = max(STAND_CROWN_TOP_M - height_m, 0.0) * length(sun.xz) / max(sun.y, 0.02);
+	return mix(STAND_SUN_FLOOR, 1.0, exp(-STAND_SUN_DENSITY * closure * path));
+}
+
 // Diffuse light on a tree: the engine's Lambert, wrap and backlight terms, restated so that the
 // shadow can fade out. `wrap` zero is plain Lambert.
 vec3 vegetation_diffuse_light(vec3 normal, vec3 light, vec3 light_color, float shadow,

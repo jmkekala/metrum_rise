@@ -1773,6 +1773,7 @@ impl BuildingAllocator {
         });
         let building_idx = self.buildings.len() - 1;
         self.push_building_site_client(building_idx, zone_cell_m);
+        self.queue_yard(building_idx, zone_cell_m);
         // Site publication belongs to placement, not to demand/service/industry callers.
         self.accumulate_pending_site_dirty_bounds(self.site_world_bounds(building_idx));
         self.bump_building_ref_revision();
@@ -2243,6 +2244,8 @@ mod tests {
             .building_sites
             .push(super::super::site::BuildingSiteClient {
                 foundation_mesh: Default::default(),
+                structure_world: Vec::new(),
+                planting_world: Vec::new(),
                 footprint_world: square_footprint(0.0, 0.0, 10.0, 10.0),
                 lot_footprint_world: [
                     Vector2::new(0.0, 0.0),

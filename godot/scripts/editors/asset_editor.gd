@@ -37,6 +37,11 @@ const SITE_ANCHOR_DEFAULT_WIDTH_M := {
 const SITE_SURFACE_MATERIALS := [
 	{"id": "asphalt", "label": "Asphalt"},
 	{"id": "concrete", "label": "Concrete"},
+	# Yard planting areas ride along as surfaces; export writes them as [[building.yard_planting]].
+	{"id": "trees", "label": "Planting: trees"},
+	{"id": "bushes", "label": "Planting: bushes"},
+	{"id": "mixed", "label": "Planting: mixed"},
+	{"id": "flowers", "label": "Planting: flowers"},
 ]
 
 var _view := EditorView.new()
@@ -193,6 +198,8 @@ func _build_preview_node() -> void:
 	_cam_input = Node.new()
 	_cam_input.set_script(cam_script)
 	_cam_input.right_mouse_pan_enabled = false
+	# Alt+drag orbits on a touchpad, so an Alt+click arrives from the camera once it proves no drag.
+	_cam_input.alt_click = func(mouse: Vector2) -> void: _selection.cycle(mouse)
 	add_child(_cam_input)
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -854,13 +861,10 @@ func _set_selected_mesh_parts(indices: Array, primary_index: int = -1) -> void:
 		_session.selection_changed()
 
 func _site_surface_material_label(material: String) -> String:
-	match material:
-		"asphalt":
-			return "Asphalt"
-		"concrete":
-			return "Concrete"
-		_:
-			return material.capitalize()
+	for entry: Dictionary in SITE_SURFACE_MATERIALS:
+		if entry.id == material:
+			return entry.label
+	return material.capitalize()
 
 func _refresh_site_surface_list() -> void:
 	if not _view._site_surface_list:
@@ -923,6 +927,8 @@ func _update_site_surface_controls() -> void:
 	_view._site_surface_name_edit.editable = has_surface
 	_view._site_surface_material_btn.disabled = not has_surface
 	_view._site_surface_y_spin.editable = has_surface
+	# A planting area is lawn: it has no paving height.
+	_view.rows["_surface_y"].visible = str(surface.get("material", "")) not in ["trees", "bushes", "mixed", "flowers"]
 	_updating_site_surface_controls = false
 	if _session != null:
 		_session.selection_changed()

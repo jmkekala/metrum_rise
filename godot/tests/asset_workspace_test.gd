@@ -359,6 +359,11 @@ func _test_model_and_publication(editor: Node) -> void:
 		editor._menus.actions.create_from_controls("entrance")
 		editor._menus.actions.confirm()
 		session.capture_geometry("Add entrance")
+		if kind == "residential":
+			editor._menus.actions.create_from_controls("trees")
+			editor._menus.actions.confirm()
+			session.capture_geometry("Plant trees")
+			_expect(session.params["site_surfaces"].any(func(surface): return surface["material"] == "trees"), "a planting area is created like a yard surface")
 		var profile: String = {"commercial": "grocery_basic", "industrial": "machinery_factory_basic", "extractor": "coal_mine_basic", "farm": "grain_farm_basic", "service": "power_plant_basic"}.get(kind, "")
 		if not profile.is_empty():
 			session.set_field("economy_profile", profile)
@@ -368,19 +373,40 @@ func _test_model_and_publication(editor: Node) -> void:
 			session.set_field(field, "")
 			_expect(session.descriptor["kind"] == kind and editor._view.rows[field].visible, "resource editing retains type and controls")
 			session.set_field(field, resource)
+		session.revalidate()
+		_expect(editor._view.validate_result.visible and editor._view.validate_result.text.contains("no issues"), "revalidate reports its result for " + kind)
 		session.publish()
 		_expect(session._issues.is_empty(), "runtime publication for %s: %s" % [kind, JSON.stringify(session._issues)])
+		_expect(editor._view.export_result.visible and editor._view.export_result.text.begins_with("Exported to "), "export confirms itself under its button for " + kind)
 		var id: String = session.params["asset_id"]
 		var loaded = JSON.parse_string(editor.sim.get_asset_manifest_json(pack["pack_id"] + ":" + id))
 		_expect(loaded is Dictionary, "published manifest is loadable for " + kind)
 		if loaded is Dictionary:
 			session.load_manifest(loaded)
 			_expect(session.descriptor["kind"] == kind and editor._parts.size() == 1, "runtime roundtrip retains type and mesh for " + kind)
+			if kind == "residential":
+				_expect(session.params["site_surfaces"].any(func(surface): return surface["material"] == "trees"), "a planting area survives export and reopening")
 	var state: Dictionary = session.document.snapshot()
 	state["params"]["mesh_parts"][0]["position"] = [0.1234, 0.2345, 0.3456]
 	state["params"]["mesh_parts"][0]["rotation_degrees"] = [0, 12.3456, 0]
 	state["params"]["anchors"][0]["width_m"] = 8.7654
 	session.document.apply(state, "Loaded precise metadata")
+	_expect(not editor._view.export_result.visible and not editor._view.validate_result.visible, "the next edit clears the export and revalidate results")
+	var before_yard: Dictionary = session.document.snapshot()
+	var front: Array = session.params.get("frontage_forward", [0, 0, 1])
+	var deep_key := "lot_width_cells" if absf(float(front[0])) > absf(float(front[2])) else "lot_depth_cells"
+	var deep_axis := 0 if deep_key == "lot_width_cells" else 2
+	var street_sign := signf(float(front[deep_axis])) if absf(float(front[deep_axis])) > 0.0 else 1.0
+	var depth := int(session.params[deep_key])
+	var part_at := float(session.params["mesh_parts"][0]["position"][deep_axis])
+	var anchor_at := float(session.params["anchors"][0]["position"][deep_axis])
+	session.extend_lot_at_back(1)
+	_expect(int(session.params[deep_key]) == depth + 1, "the back yard adds one cell to the lot's street-to-back dimension")
+	_expect(is_equal_approx(float(session.params["mesh_parts"][0]["position"][deep_axis]), part_at + 5.0 * street_sign)
+		and is_equal_approx(float(session.params["anchors"][0]["position"][deep_axis]), anchor_at + 5.0 * street_sign),
+		"the house and its anchors keep their distance to the street")
+	session.undo()
+	_expect(session.document.snapshot() == before_yard, "extending the back yard is one undo step")
 	editor._select_site_anchor(0)
 	editor._view._site_anchor_y_spin.value = 2
 	_expect(session.params["anchors"][0]["width_m"] == 8.7654, "entrance coordinate edits preserve dormant width metadata")

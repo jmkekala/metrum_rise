@@ -55,10 +55,17 @@ const DETAIL_REDUCED := 1
 const DETAIL_BLEND := 2
 const TREE_FAR_M := TreeSpecies.TREE_FAR_M
 const BUSH_RANGE_M := 420.0
+# Level of a patch's distant hedge runs. A hedge is part of a yard, so it stays as long as the
+# trees do: modules in the near band, one box per straight run beyond it.
+const HEDGE_RUN_LOD := 3
 const ROCK_RANGE_M := 420.0
 # Half the diagonal of a square patch, per metre of span. A patch is one instance, so every
 # conservative range test measures from the patch centre out to its farthest corner.
 const PATCH_HALF_DIAGONAL := 0.7071067811865476
+# Coverage over 40 m at which a tree's stand is still open, and at which it is closed. The
+# same values as CANOPY_FLOOR_OPEN_COVER and CANOPY_FLOOR_CLOSED_COVER in terrain.gdshader.
+const STAND_OPEN_COVER := 0.35
+const STAND_CLOSED_COVER := 0.7
 
 # How far inside its range one understory variant may stop, as a share of that range. Bush
 # and rock carry a single level, so a variant that stops early drops nothing into a gap: the
@@ -172,6 +179,8 @@ func _ready() -> void:
 ## carries no near band, and then the impostor must begin at zero: it is the only thing in the
 ## patch, and the rebuild that adds the near band can lag a fast approach.
 func lod_range(species: int, lod: int, variant: int, near_band: bool, reach_m: float) -> Vector2:
+	if TreeSpecies.is_hedge(species, variant):
+		return Vector2(0.0, canopy_far_m())
 	if species == TreeSpecies.BUSH:
 		return Vector2(0.0, BUSH_RANGE_M * _understory_stagger(variant))
 	if species == TreeSpecies.ROCK:
@@ -646,6 +655,16 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 		int(previous.get_meta("shadow_caster")) if previous != null else ShadowCaster.NONE)
 	var origin :=Vector2(key.x, key.y) * span - world * 0.5
 	var data: PackedFloat32Array = simulation.get_decorative_tree_patch(origin, span, understory)
+	# Crown coverage around the patch, averaged over 40 m, which each canopy tree samples once
+	# for its stand closure.
+	var cover: Dictionary = simulation.get_vegetation_stand_cover(origin, span)
+	var cover_bytes: PackedByteArray = cover.get("bytes", PackedByteArray())
+	var cover_size := Vector2i(int(cover.get("width", 0)), int(cover.get("height", 0)))
+	var cover_bounds: Vector4 = cover.get("world_bounds", Vector4.ZERO)
+	# Texel coordinates of the patch origin, and texels per metre, so a tree's texel is one
+	# multiply-add from its patch-local position.
+	var cover_scale := Vector2(cover_size) / Vector2(maxf(cover_bounds.z, 1.0), maxf(cover_bounds.w, 1.0))
+	var cover_origin := (origin - Vector2(cover_bounds.x, cover_bounds.y)) * cover_scale - Vector2(0.5, 0.5)
 	var patch := Node3D.new()
 	patch.position = Vector3(origin.x, 0.0, origin.y)
 	add_child(patch)
@@ -691,7 +710,7 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 					continue
 				var seed := _appearance_seed(data, i)
 				var variant := _variant_index(species, seed, packed >> SPECIES_BITS)
-				if variant >= TreeSpecies.HEDGE_FIRST_VARIANT and species == TreeSpecies.BUSH:
+				if TreeSpecies.is_hedge(species, variant):
 					# A hedge row closes only if every module keeps its authored size, stands
 					# upright and shares one colour; any per-module spread shows each metre.
 					# Lane four is the ground's rise along the module, which shears its length
@@ -735,10 +754,16 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 				near_mm.use_colors = true
 				# The canopy's level is chosen below, once the patch knows where its trees stand.
 				near_mm.mesh = meshes[species][variant][DETAIL_FULL]
+				var canopy := levels.size() > 1
+				near_mm.use_custom_data = canopy
 				near_mm.instance_count = near_transforms.size()
 				for i in range(near_transforms.size()):
 					near_mm.set_instance_transform(i, near_transforms[i])
 					near_mm.set_instance_color(i, near_tints[i])
+					if canopy:
+						near_mm.set_instance_custom_data(i, Color(
+							_stand_closure(cover_bytes, cover_size,
+							cover_origin + Vector2(near_transforms[i].origin.x, near_transforms[i].origin.z) * cover_scale), 0.0, 0.0, 0.0))
 				_add_instance(patch, near_mm, species, 0, variant, caster)
 		# One buffer assignment per species, with transform rows followed by custom RGBA.
 		# Near buckets already encode the variant; far-only placements supply their own.
@@ -778,8 +803,11 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 				var far_tints: Array[Color] = variant_tints[variant] if near_band else flat_tints
 				for i in range(far_transforms.size()):
 					var placed := far_transforms[i]
+					# The layer lane carries the stand closure below one half; see impostor shaders.
 					_write_impostor(buffer, slot * 16, placed,
-						float(variant) if near_band else flat_layers[i], far_tints[i])
+						(float(variant) if near_band else flat_layers[i])
+						+ 0.5 * _stand_closure(cover_bytes, cover_size,
+						cover_origin + Vector2(placed.origin.x, placed.origin.z) * cover_scale), far_tints[i])
 					low = low.min(placed.origin)
 					high = high.max(placed.origin)
 					scale_squared = maxf(scale_squared,
@@ -802,6 +830,8 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 				proxy.buffer = buffer
 				proxy.custom_aabb = bounds
 				_add_instance(patch, proxy, species, 2, 0, caster, true)
+	if not near_band:
+		count += _add_hedge_runs(patch, origin, span, caster)
 	_share_patch_bounds(patch, near_band, caster, origins)
 	patch.set_meta("tree_count", count)
 	patch.set_meta("surface_generation", generation)
@@ -831,6 +861,22 @@ func _upload_patch(key: Vector3i, span: float) -> void:
 # Godot's 3D MultiMesh buffer stores three ROWS, each ending with one origin component.
 # Packed arrays are passed by reference; this writes the preallocated buffer without a copy.
 # The custom lane is the texture layer, which is the near variant, then the near tint.
+## Share of a closed stand around a tree at texel coordinate `at`, from the crown coverage
+## averaged over 40 m. Bilinear, and gated as the forest floor is: a lone crown or a small clump
+## stays open, the inside of a stand reaches one. O(1).
+func _stand_closure(bytes: PackedByteArray, size: Vector2i, at: Vector2) -> float:
+	if bytes.is_empty():
+		return 0.0
+	var x0 := clampi(floori(at.x), 0, size.x - 1)
+	var z0 := clampi(floori(at.y), 0, size.y - 1)
+	var x1 := mini(x0 + 1, size.x - 1)
+	var z1 := mini(z0 + 1, size.y - 1)
+	var fx := clampf(at.x - floorf(at.x), 0.0, 1.0)
+	var fz := clampf(at.y - floorf(at.y), 0.0, 1.0)
+	var c := lerpf(lerpf(bytes[z0 * size.x + x0], bytes[z0 * size.x + x1], fx),
+		lerpf(bytes[z1 * size.x + x0], bytes[z1 * size.x + x1], fx), fz) / 255.0
+	return c * smoothstep(STAND_OPEN_COVER, STAND_CLOSED_COVER, c)
+
 func _write_impostor(buffer: PackedFloat32Array, offset: int, placed: Transform3D, layer: float,
 	tint: Color) -> void:
 	buffer[offset] = placed.basis.x.x
@@ -901,6 +947,36 @@ func _share_patch_bounds(patch: Node3D, near_band: bool, caster: int, origins: D
 		# its shaders instead, and these ranges only bound the patches that take part.
 		instance.visibility_range_begin = range_m.x
 		instance.visibility_range_end = range_m.y
+
+## Draws the patch's hedges as straight boxes, one per run Rust merged from the modules, so a
+## yard keeps its hedge out to the trees' far range for a dozen triangles a run. Returns the
+## number of runs. O(runs) here; the merge is Rust's.
+func _add_hedge_runs(patch: Node3D, origin: Vector2, span: float, caster: int) -> int:
+	var runs: PackedFloat32Array = simulation.get_vegetation_hedge_runs(origin, span)
+	var per_hedge: Array = [[], [], []]
+	for i in range(0, runs.size(), 7):
+		var yaw := runs[i + 3]
+		var length := runs[i + 4]
+		var size: Vector2 = TreeSpecies.HEDGE_RUN_SIZES[int(runs[i + 6])]
+		# Stretched along the run, sheared up its slope with the sides kept vertical, and sunk
+		# into the lawn like a module.
+		(per_hedge[int(runs[i + 6])] as Array).append(Transform3D(
+			Basis(Vector3(cos(yaw) * length, runs[i + 5], -sin(yaw) * length), Vector3.UP,
+				Vector3(sin(yaw), 0.0, cos(yaw))),
+			Vector3(runs[i] - origin.x, runs[i + 1] - 0.05 + size.x * 0.5, runs[i + 2] - origin.y)))
+	for hedge in per_hedge.size():
+		var placed: Array = per_hedge[hedge]
+		if placed.is_empty():
+			continue
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.mesh = TreeSpecies.hedge_run_mesh(hedge)
+		mm.instance_count = placed.size()
+		for i in placed.size():
+			mm.set_instance_transform(i, placed[i])
+		_add_instance(patch, mm, TreeSpecies.BUSH, HEDGE_RUN_LOD,
+			TreeSpecies.HEDGE_FIRST_VARIANT + hedge, caster)
+	return runs.size() / 7
 
 func _add_instance(
 	patch: Node3D, mm: MultiMesh, species: int, lod: int, variant: int,

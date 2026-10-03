@@ -94,6 +94,7 @@ fn completed_terrain_waits_for_cache_publication_without_losing_payloads() {
             request_id: patch.surface_generation,
             surface_generation: patch.surface_generation,
             data: TerrainPatchPayloadData::Refined { patch },
+            mask_bytes: Vec::new(),
         });
     }
     let jobs = Mutex::new(jobs);
@@ -130,6 +131,7 @@ fn terrain_patch_payload_async_clear_drops_stale_world_payloads() {
             patch: test_patch(),
             height_bytes: Vec::new(),
         },
+        mask_bytes: Vec::new(),
     };
     state.completed.push(payload);
     let completed = std::mem::take(&mut state.completed);
@@ -165,6 +167,7 @@ fn terrain_patch_payload_async_generation_change_requeues_key() {
             patch: test_patch(),
             height_bytes: Vec::new(),
         },
+        mask_bytes: Vec::new(),
     };
     state.ingest_completed(vec![old_payload]);
     assert!(state.has_current_request(key, 1));
@@ -227,6 +230,7 @@ fn terrain_patch_payload_async_stale_completion_never_becomes_ready() {
             patch: test_patch(),
             height_bytes: Vec::new(),
         },
+        mask_bytes: Vec::new(),
     }]);
 
     assert!(!state.has_in_flight(key));

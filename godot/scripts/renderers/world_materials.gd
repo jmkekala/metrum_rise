@@ -37,6 +37,7 @@ const CONCRETE_SHADER := "res://assets/materials/concrete.gdshader"
 const SITE_SURFACE_SHADER := "res://scripts/shaders/site_surface.gdshader"
 const SITE_GROUND_SHADER := "res://scripts/shaders/site_ground.gdshader"
 const TERRAIN_SHADER := "res://assets/materials/terrain.gdshader"
+const EDITOR_GROUND_SHADER := "res://scripts/shaders/editor_ground.gdshader"
 const FIELD_OVERLAY_SHADER := "res://scripts/shaders/field_overlay.gdshader"
 
 static var _texture_cache = {}
@@ -47,6 +48,7 @@ static var _road_sidewalk_face_material: ShaderMaterial
 static var _road_concrete_material: ShaderMaterial
 static var _site_ground_material: ShaderMaterial
 static var _flat_terrain_material: ShaderMaterial
+static var _editor_ground_material: ShaderMaterial
 static var _site_asphalt_material: ShaderMaterial
 static var _site_concrete_material: ShaderMaterial
 
@@ -148,6 +150,18 @@ static func flat_terrain_material() -> ShaderMaterial:
 		_flat_terrain_material.set_shader_parameter("terrain_grass_height", load_texture(GRASS_HEIGHT))
 		SceneLightingConfig.apply_ground_shadow_parameters(_flat_terrain_material)
 	return _flat_terrain_material
+
+## Lawn for the asset editor's preview ground: the terrain's grass palette from two texture
+## reads, because the full terrain shader on a screen-filling plane cost the editor more than
+## everything else it draws.
+static func editor_ground_material() -> ShaderMaterial:
+	if _editor_ground_material == null:
+		_editor_ground_material = ShaderMaterial.new()
+		_editor_ground_material.resource_name = "editor_ground_grass"
+		_editor_ground_material.shader = _load_shader(EDITOR_GROUND_SHADER)
+		_editor_ground_material.set_shader_parameter("terrain_grass_albedo", load_texture(GRASS_ALBEDO))
+		SceneLightingConfig.apply_ground_shadow_parameters(_editor_ground_material)
+	return _editor_ground_material
 
 static func site_ground_material() -> ShaderMaterial:
 	if _site_ground_material == null:

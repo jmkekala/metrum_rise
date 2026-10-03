@@ -3,9 +3,10 @@
 ## Building inspector window manager backed by Godot's built-in Window chrome.
 ##
 ## Call try_inspect() with a world position to populate and show a per-building
-## window. Multiple inspector windows may be open at the same time. Open windows
-## refresh only when the in-game hour changes, so the steady-state cost is O(1)
-## per frame and O(open_windows) on each hour boundary.
+## window. Only one inspector is open at a time: inspecting another building
+## replaces it, and inspecting the same building again closes it. The open window
+## refreshes only when the in-game hour changes, so the steady-state cost is O(1)
+## per frame.
 extends Node
 
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
@@ -42,6 +43,7 @@ func try_inspect(world_pos: Vector3, screen_pos: Vector2 = Vector2.ZERO) -> bool
 		_close_entry(key)
 		return true
 
+	close_window()
 	entry = _create_window_entry(key)
 	_open_windows[key] = entry
 

@@ -285,8 +285,8 @@ cannot measure a distance on one grid and a range on another.
 which is where the branched crown and its cards stop reading as a tree and the lathe cone can
 take over unnoticed. The grid no longer sets it.
 
-Canopy trees, yard plants and rocks are Blender models: `tools/model_trees.py` and
-`tools/model_landscape.py` author them, and `tools/prepare_tree_models.py` converts them into
+Canopy trees, yard plants and rocks are Blender models: `tools/model_trees.py`,
+`tools/model_landscape.py` and `tools/model_flowers.py` author them, and `tools/prepare_tree_models.py` converts them into
 `godot/assets/models/vegetation/`. Generated ground cover (blueberry, lingonberry, grass, fern,
 prostrate juniper and a spruce sapling) is still procedural: crossed cards and thin lathes built
 at catalogue construction, linear in emitted vertices. Triangles are emitted clockwise from the
@@ -837,6 +837,174 @@ needs the sweep made incremental, so that crossing a cell costs the difference b
 residency sets instead of a fresh construction of the whole one. That is real work and it is
 not a constant change.
 
+### Pine rebuilt to the photo set — VEG-18 (2026-10-03)
+
+The authored pine read more like a broadleaf tree: crowns as short tufts on tall poles, an
+evenly bright orange upper stem and a pale grey column below it. Codex (GPT-6 Astra) rebuilt
+the pine in `tools/model_trees.py` over two rounds against the Scots pine set in
+`imgs/reference/vegetation/pine/` (`imgs/tree_models/BRIEF4.md`, `BRIEF5.md`, report in
+`imgs/tree_models/out/REPORT.md`). Only the pine changed; spruce, birch and aspen rebuild
+byte-identical, and two Mac builds give byte-identical files.
+
+| Variant | Crown ratio before | After | Sky through the crown before | After | Triangles full / reduced |
+|---|---:|---:|---:|---:|---:|
+| `pine_0` | `0.322` | `0.404` | `56%` | `60%` | `3852 / 680` |
+| `pine_1` | `0.279` | `0.399` | `52%` | `61%` | `3852 / 680` |
+| `pine_2` (young) | `0.929` | `0.934` | `67%` | `60%` | `3964 / 530` |
+
+The bark is dark grey-brown and fissured at the base, a muted red-brown higher up, with a
+mottled band between them. The new atlas's leaf mean is darker (`Y 0.162` against `0.238`), so
+`LEAF_ALBEDO_SCALE` for pine moves from `0.596` to `0.874`, which keeps pine at `1.4` times
+spruce as before. A stand from `140 m` and `180 m` at `13:00` renders within `1.5%` of the
+round-4 pine against the meadow. The pine impostors are re-baked. Their sparser crowns drew the
+conifer impostor at `0.858` of the near level with a low sun ahead, so the conifer response is
+refitted: `IMPOSTOR_VOLUME` `(0.75, 0.0, 1.25)` and `IMPOSTOR_RADIANCE_MATCH` `1.100`.
+`vegetation_level_match_test` passes all 108 poses within `0.103`.
+
+Still wrong, per the report: the bark repeats and has little relief close up, and the needle
+cards and the young pine's whorls are regular.
+
+### Leaves take no sun highlight (2026-10-02)
+
+In play, crowns facing the sun turned pale, nearly white and flat
+(`imgs/reference/game/2-10-midday-bright.png`, `2-10-blown-out.png`). The photos and the reference
+games show no such sheet. An open stand painted on meadow (preset 8, three brush passes, seen
+from `10 m` up at `13:00`) reproduces it, and switching the leaf terms off one at a time names
+the cause. Facing the sun, the share of crown pixels that are pale and bright falls from `11.3%`
+to `0.2%` without the sun highlight, and stays at `10.8%` without the backlight. Crown saturation
+rises from `0.23` to `0.35`, and to `0.59` if the sky reflection goes too. The reference photos
+in `typical/` and `pine/` put the median saturation of foliage at about `0.30-0.50`, so the sky
+reflection stays.
+
+A card stands for a cluster of leaves under one normal, so the engine's highlight lit a whole
+cluster at once. In a real crown the leaves around a leaf hide most of its grazing glint. The
+card shader now adds no sun highlight, and the impostor drops the sheen it carried to match it,
+along with `IMPOSTOR_SHEEN`. The impostor then drew the conifer up to `1.122` of the near level
+with the sun ahead, so its response is refitted with `zz_level_fit.gd` (scratch) over 27 lift,
+floor and wrap candidates: `IMPOSTOR_VOLUME` becomes `(0.75, 0.0, 1.0)` for both species and
+`IMPOSTOR_RADIANCE_MATCH` `(1.013, 1.060)`. `vegetation_level_match_test` passes all 108 poses
+within `0.096`, against `0.101` before.
+
+| View, `13:00` | With highlight | Without |
+|---|---:|---:|
+| Stand from `180 m` up, canopy over meadow | `0.442` | `0.380` |
+| Stand from `140 m` up, canopy over meadow | `0.368` | `0.328` |
+| Lone trees, all crowns over meadow | `0.642` | `0.529` |
+| Open stand facing the sun, pale share of crown pixels | `11.3%` | `0.2%` |
+
+The stands stay inside the photo range of `0.30-0.44`. With the sun ahead some conifers now read
+slightly blue-green: that is the sky reflection, which the photos support at this strength.
+
+### Crowns in a stand lose sun to their neighbours (2026-10-01)
+
+After the leaf albedo pass a painted mixed stand at 13:00 still measured `0.53` of the meadow
+beside it from `140 m` up and `0.62` from `180 m`, against `0.30-0.44` in the forest-edge
+photographs. The cast shadows do part of the work: switching vegetation casting off brightens
+the stand by `27%` inside the shadow range and `11%` in a view that is mostly past it. The rest
+is sun the crowns of a closed stand take from each other and the renderer did not.
+
+Each canopy tree now carries a stand closure. `get_vegetation_stand_cover(origin, span)` builds
+the crown coverage of `land_cover.rs` over the patch and `16 m` around it, averages it over the
+`40 m` square around each `8 m` texel, and the renderer samples that once per tree at upload,
+gated as the forest floor is (`0.35-0.7`). Averaging over `40 m` is what keeps a lone tree out:
+a large crown fills `0.78` of its own `8 m` texel and passed the gate, which darkened a lone
+pine to `0.34` of the meadow, while over the square it fills about `0.03`. The near levels read
+the closure from instance custom data. The impostor reads it from the fraction of its layer
+lane, below one half, because its varyings are packed against the Metal limit.
+
+The shaders keep `mix(0.24, 1, exp(-0.3 * closure * depth * cot(sun elevation)))` of the sun,
+where depth is how far below a `20 m` canopy top the surface sits: the top of a crown keeps its
+sun, and a ray deep in the stand keeps what the floor keeps (`CANOPY_FLOOR_SUN_VISIBILITY`).
+Inside the shadow range it combines with the cast shadow as the darker of the two, because that
+shadow already holds the neighbours' crowns. The density `0.3` is fitted. Measured at 13:00:
+
+| View | Before | After |
+|---|---:|---:|
+| Stand from `180 m` up, canopy over meadow | `0.615` | `0.442` |
+| Stand from `140 m` up, canopy over meadow | `0.527` | `0.368` |
+| Lone pine and birch pair, crown over meadow | `0.878` | `0.876` |
+| Lone pine near the camera | `0.568` | `0.567` |
+| Lone spruce | `0.395` | `0.394` |
+
+**Cost.** Release build, 405 resident patches holding 98,541 trees around the painted stand,
+three re-uploads each (`zz_upload_probe.gd`, scratch): `2.03 ms` per patch upload before,
+`3.10 ms` after. The Rust coverage build is `0.61 ms` of that and the per-tree sampling about
+`0.44 ms` (about `1.8 us` a tree). Uploads run under the existing `2 ms` and `6 ms` frame
+budgets, so frame time does not change; a newly visible area fills about a third slower. The
+coverage build evaluates the canopy candidates that the patch fetch has just evaluated; folding
+the closure into `get_decorative_tree_patch` would remove both halves. No GPU cost was measured:
+the shader adds one `exp` per lit fragment.
+
+**The far stand-in, refitted.** Past `4 km` the ground stands in for the trees with one crown
+albedo, `CANOPY_FAR_ALBEDO`, which was fitted before the leaf and stand changes. It is refitted
+the same way as before: the stand `5.2 km` away, seen from `450 m` and `1500 m` up, rendered as
+trees drawn to `12 km` and as ground at two albedos, solved per channel over `8 px` tiles where
+the stand-in carries the most weight. The renders are linear in albedo to `0.1%`. At `13:00` and
+at `09:00` the solutions agree, at `(0.160-0.164, 0.219-0.224, 0.061-0.065)`. The leaves are
+darker, but the far trees did not darken: from that distance the camera sees mostly the crown
+tops, which keep their sun. The old `(0.135, 0.18, 0.06)` drew those tiles `1.8%` and `2.5%`
+darker than the trees, and `0.6%` over all tiles past the range. The new `(0.162, 0.222,
+0.063)` measures `+0.1%` and `-0.0%` on the dense tiles and `0.0%` over all of them. Green over
+red matches within `2%` with either value.
+
+### The far forest floor matches the shadows it replaces (2026-10-01)
+
+Past the shadow range (`420 m`, fading from `327.6 m`) the terrain shader darkens the floor of
+a stand in place of the tree shadows that are no longer drawn. Two errors in that term made a
+dark step at the cascade edge: a camera that moved back past it saw the stand edge turn from
+brown to near black, and the outline stayed visible from kilometres away. Turning only this
+term off removed the band; the crown terms barely changed it.
+
+- **Opaque crowns.** The term kept `GROUND_SHADOW_MIN_VISIBILITY` (`0.02`) of the sun under
+  crown cover, as if every crown were solid. The authored crowns are open and their cascade
+  shadow is dappled. With the trees drawn as shadow only, a painted pine stand seen straight
+  down measured a floor of `0.031` linear Y from `300 m` (cascades) against `0.016` from
+  `600 m` (this term), at 7, 10, 13 and 16 o'clock alike. `CANOPY_FLOOR_SUN_VISIBILITY`
+  (`0.24`) is the share of sun the crowns now pass; it is fitted, because the tone map makes
+  the response nonlinear (`0.20` gave `0.85-0.95`, `0.40` gave `1.42-1.53`). Far over near is
+  now `0.947`, `0.980` and `1.058` at 7, 10 and 16 o'clock.
+- **Shadow under the crown, not down the sun ray.** The term darkened the ground below the
+  cover. The cascades put the shadow where the sun ray through the crowns meets the ground,
+  so the sunward floor of an edge is lit and the meadow beyond the far edge is shaded. The
+  term now reads the cover once more at the point the sun ray crosses `CANOPY_SHADOW_HEIGHT_M`
+  (`15 m`, the middle of the foliage of a `20-25 m` authored tree from its impostor bounds),
+  capped at `120 m` of offset for a low sun. One extra fetch, past the cascades only.
+
+`terrain_overlay_shader_test` now also checks that, past the cascades, a stand toward the sun
+shades open ground (`0.400` against `0.558`) and a stand away from it does not.
+
+### Leaf albedo of pine, birch and aspen — calibrated against photos (2026-10-01)
+
+Every earlier tree calibration matched one tree level against another, never against a real
+forest. Measured against the forest-edge photographs in `imgs/reference/vegetation/`, as
+canopy mean Y over the open green ground in the same image, so exposure cancels: Vantaa
+`0.30-0.31`, Tali `0.44`, and `0.17` over Sipoo's hay field, which is too bright to use. A
+painted mixed stand in the game at 13:00 measured `0.78` from `140 m` up and `0.87` from
+`180 m`.
+
+A render with the key light hidden split the cause. Sky light alone gives the stand `0.27-0.34`
+of the meadow, inside the photo range. The sun then added `1.38` times as much light to the
+canopy as to the meadow, and a lone pine or birch took `2.0` times the meadow's sun and
+rendered brighter than the grass under it (`1.17`). Spruce sat at `0.35`. The stored leaf
+means explain it: pine `0.238`, birch `0.312` and aspen `0.279` Y against spruce `0.101`,
+taken from bright photo foliage. Real green-band leaf reflectance puts pine at about `1.4`,
+birch `1.8` and aspen `1.7` times spruce (literature values, not measured here).
+
+`LEAF_ALBEDO_SCALE` in `tree_species.gd` scales the leaves through the `leaf_albedo_scale`
+uniform of each form's card material and, per layer, of the baked impostor. It is a uniform and
+not the vertex colour, so the mesh the impostor bake reads, and the source digest
+`vegetation_appearance_test` checks it against, keep the unscaled leaves: pine `0.596`, birch
+`0.585`, aspen `0.618`, spruce unchanged. After: the stand measures `0.52` from `140 m` and
+`0.60` from `180 m`, the lone pair `0.83`, the spruce `0.34`. The sun sheen does not scale with
+albedo, so its share of a backlit crown rose and the impostor fell to `0.853` of the near level
+with a low sun ahead; `IMPOSTOR_SHEEN` moved from `0.5` to `0.7`, which keeps all 108 poses of
+`vegetation_level_match_test` within `0.101`, the margin before the change.
+
+The stand is still above the photo range. What remains is sun the crowns of a dense stand
+should take from each other and do not; see the stand section above, which also refits
+`CANOPY_FAR_ALBEDO`. A Codex (GPT-6 Astra) read-only study of the
+lighting path and the photos informed this pass.
+
 ### Authored trees, silhouette shadows, yard plants and rocks (2026-09-27)
 
 **Trees.** The canopy is 24 Blender trees (`tools/model_trees.py`, run on the owner's M2 Pro
@@ -871,13 +1039,45 @@ bush variants 6 to 14 and brush presets 11 to 19. Their occupancy class `Landsca
 them `0.5 m` apart and clears only a `0.3 m` disc around the stem, because a yard shrub or a
 hedge stands beside a kerb or a wall by design; ground cover keeps its `2.5 m` clearance. They
 are sunk `5 cm` rather than a tree's `25 cm`. `plant_vegetation_line` lays a hedge: one module
-per metre from one end to the other, never more than one module length apart, each facing along
-the row at full size, skipping a module that would stand on a surface or on the same hedge. It
-is O(row length), bounded at `256 m`, and is one undo step. The renderer draws a hedge module
+per metre from one end to the other, the end modules flush with the row's ends and the rest
+never more than one module length apart, each facing along the row at full size, skipping a
+module that would stand on a surface or on a module of the same hedge facing the same way. An end
+drawn within `1.25 m` of a hedge already standing moves onto that hedge's free end, or else onto its
+side; where the rows meet at an angle the new row runs on by half the old hedge's width, which
+closes the corner a square end would leave open (`VEG-13`). An end is free when it lies outside
+every other module's body, so a row's inner faces and an end already buried in a joint are not.
+`snap_vegetation_line_end` gives the tool the same landing point for its preview, and the hedge
+cursor is a fixed marker rather than a brush radius. It
+is O(row length) plus two joint searches over the few modules within a couple of metres, bounded at `256 m`, and is one undo step. The renderer draws a hedge module
 upright, untinted and unscaled, because any per-module spread shows each metre. A module is
 never scaled, so its scale lane carries the ground's rise across its metre instead, sampled
 when the patch is fetched, and the renderer shears the module along its row to that rise with
 its sides kept vertical. Level modules climbed a slope in visible steps.
+
+**Yard flowers** (`VEG-20`). Peony, garden lupine, garden phlox, smooth hydrangea
+('Annabelle'), rhododendron and a clump of summer bedding plants (marigold and petunia), 0.3 to
+1.45 m across and 0.6k to 1.5k triangles, authored by `tools/model_flowers.py` with the shrubs'
+card and wood machinery and export checks; `prepare_tree_models.py --flowers` converts them into
+`landscape/` beside the shrubs. Two of each atlas's four cells carry leaves and two a whole flower
+head (a double bloom, a pea-flower spike, a floret ball, a panicle or a truss), so a bloom card
+shows the flower and its colour comes from the atlas through the card shader unchanged. Heads
+are crossed card pairs except the peony's and the bedding plants', which face the sky. They are
+bush variants 15 to 20 and brush presets 20 to 25, after the hedges so no stored pin moves; the
+hedges are therefore the range 12 to 14 (`hedge_index` in `brush.rs`, `TreeSpecies.is_hedge`),
+not every variant from 12. They are `Landscape` plants in every other respect.
+
+A hedge is part of a yard, so it stays drawn as long as the trees are, to `canopy_far_m()`
+(`4500 m`), instead of ending with the bushes (`VEG-14`). Bushes are only built for patches in
+the trees' near band, about `200 m` plus half a patch diagonal, so every hedge vanished there,
+well before the houses it surrounds. Within the near band a hedge draws its modules; beyond it,
+`get_vegetation_hedge_runs` merges each row's modules into straight runs of at most `16 m` (a run
+is cut there so a box sheared between its two end heights stays on the ground), and the patch
+draws one box per run (12 triangles, untextured, `TreeSpecies.HEDGE_RUN_COLORS`). The merge
+sorts the patch's modules by hedge, yaw, offset across the row and position along it, so it is
+O(m log m) in the patch's hedge modules and costs an unedited patch a few block tests. The box
+colours were fitted against the modules at the same view: at `h150` on `test-game-2.sqlite` the
+modules' differing pixels average RGB `100/116/62` and the boxes' `85/103/57`. No benchmark was
+run: worlds without hedges draw nothing new, and each far patch upload makes one more Rust call.
 
 **Rocks.** Six granite boulders from `0.4` to `2.7 m`, 320 triangles each, on one tiled albedo
 and normal map with lichen and moss in vertex colour. The generator still decides where rocks
@@ -3516,6 +3716,36 @@ Current deterministic rules:
   so Godot image uploads do not convert `PackedFloat32Array` data on the render path
 - the terrain shader keeps separate terrain-height and water-depth UV layouts because terrain and
   water patch textures may use different border widths
+- the water shader reads the terrain patch's height texture through that texture's own layout
+  (derived from its size), never the watermap UV; reusing the watermap UV shifted terrain height
+  outward near patch edges and opened lake-bed slivers along seams (`WATER-02`)
+- water patch border texels hold the neighbouring patch's real depth samples, like terrain
+  borders; the surface smoothing pairs the two, and clamped borders gave the two sides of a seam
+  different heights (`WATER-02`)
+- every water vertex sits at the smoothed water level, including dry shoreline vertices, and any
+  mesh cell touching water is drawn whole; the terrain hides the surface above the shoreline, and
+  the fragment shore fade uses surface height minus terrain height per pixel, capped at the
+  interpolated depth texture. Lifting dry vertices to the terrain tilted the surface up steep
+  banks. The cap matters where a dry sample lies below the water level, in a hollow the lake fill
+  does not reach: the cells holding a wet corner drew water over the hollow and the cells without
+  one did not, which left a dark cross of water on dry land; the interpolated depth is zero on
+  every cell edge between dry samples (`WATER-02`)
+- water opacity also follows the metres of water the view ray crosses, from the opaque depth
+  buffer, so the bed and the shadows cast onto it fade with that path rather than with the
+  straight-down depth alone; opacity stays below the depth prepass's `0.99` cut-off so the
+  water never writes the depth it reads back (`WATER-03`)
+- the water reflects the opaque scene by marching the reflected view ray through the depth
+  buffer in 12 growing steps. A step that ends behind a drawn surface is bisected (6 steps) to
+  the crossing, which is a hit only if the ray there lies within a few refined brackets behind
+  that surface; a ray that only passed behind a nearer object keeps marching. Accepting a step
+  only when it landed within a fixed depth of the surface lost every ray whose step overshot a
+  hillside, which cut reflected slopes into horizontal bands and left a sky-coloured gap
+  following each near trunk. The hit is read from the screen mip whose texel spans the blur of
+  the ray's length at the hit's distance; sizing the blur in metres alone read a far island's
+  thin reflection from a mip that is mostly sky, so it showed pale white. Rays that meet nothing
+  keep the engine's own specular sky reflection, so the sky never comes from the screen edge
+  (streaks) or a fallback colour (a frame at the edge of the on-screen sky). Godot's SSR skips
+  transparent materials (`WATER-03`)
 - terrain and water now keep patch identity stable while choosing a deterministic mesh-detail tier
   per resident patch from camera distance, so zoomed-out views do not pay near-field vertex
   density for every resident patch
@@ -3585,11 +3815,28 @@ Current deterministic rules:
   and procedural wave normals remain presentation only; the wave field uses rotated aperiodic
   noise octaves with analytic gradients so high camera views do not expose periodic sine bands or
   an axis-aligned sampling grid
-- water reflection remains dark in downward views but uses a restrained grazing-angle Fresnel
-  response derived from the smooth base surface so procedural normal gradients cannot imprint
-  their source cells into the reflected sky; the sun response uses a softened glitter shoulder
-  around its bright core, while fine ripple detail remains deferred until a seamless mipmapped
-  normal texture is available
+- water reflection uses Schlick Fresnel with water's `0.02` reflectance from the level surface's
+  world-up normal: dark in downward views, near-mirror at grazing angles. Patch triangles face
+  away from a camera above them and the material disables culling, so Godot's flipped `NORMAL`
+  had lit the lake as a downward-facing surface with Fresnel pinned at its maximum; the shader
+  no longer derives lighting from the mesh normal. The engine's specular (`SPECULAR = 0.25`)
+  reflects the sky and draws the sun glint; the custom glitter is a faint broadening only
+- five analytic deep-water ripples (`0.9-7.3 m`, around one wind direction, each at its own
+  phase speed) tilt the normal, gated into gusts by slow noise and faded once a wavelength nears
+  the pixel footprint so distant water does not shimmer; half their slope bends the reflection
+  ray (`WATER-03`)
+- `WATER-03` acceptance, M2 Pro, 1920x1080 windowed, release dylib, idle-frame harness with the
+  saved camera kept (`METRUM_IDLE_BENCH_SAVE_PATH`, 300 frames, two alternating runs per side),
+  Kuopio saves: frame p50 `bd60c509` -> final was `9.50 -> 10.10 ms` (`issue-1`),
+  `9.92 -> 10.62 ms` (`issue-2`), `9.82 -> 10.71 ms` (lake view across Kallavesi) and
+  `9.08 -> 9.59 ms` (island shore view). The reflection march is the cost; with it disabled the
+  shader is within `0.1 ms` of the base. Views without water are unaffected
+- `WATER-03` reflection fixes (crossing test, footprint blur), same harness and protocol plus the
+  `p1`, `layers-1` and `white-distance-1` saves: frame p50 `39ccf90c` -> fix was
+  `10.25/10.26 -> 10.33/10.23 ms` (`issue-1`), `10.83/10.81 -> 10.92/10.87 ms` (lake view),
+  `9.64/9.63 -> 9.72/9.66 ms` (island shore; a `10.81 ms` baseline outlier was rerun), `8.57/8.56 -> 8.68/8.70 ms` (`p1`),
+  `8.74/8.72 -> 8.79/8.81 ms` (`layers-1`) and `8.96/8.90 -> 8.99/8.99 ms`
+  (`white-distance-1`): at most `+0.1 ms`
 - scene lighting is centralized through `scene_lighting.gd` so terrain, water, roads, yards,
   buildings, cars, and debug/editor helpers use one deterministic sun/sky/shadow policy
 - the visible background uses one continuous procedural hemisphere gradient; its upper and lower
@@ -3668,6 +3915,209 @@ unprofiled run still records a `40.742 ms` maximum CPU callback interval, so des
 does not explain all longer intervals. This repeat has no zero-mip baseline and does not settle
 the exact speedup or the interval cause. See `roads.md` and
 `benchmark-results/stationary-mipmaps-LZ6tB3/results.txt` for the full run conditions and results.
+
+Runtime road/site texture imports (`TERRAIN-03`, 2026-10-02): the eleven remaining runtime
+textures sampled by the terrain and site shaders (`asphalt_04`, `clean_asphalt`,
+`concrete_layers_02`, `dark_rock`, `withered_grass`) imported lossless with no mipmaps, the
+same defect `TERRAIN-02` fixed for grass. They now import VRAM-compressed (high quality:
+BPTC/ASTC), with mipmaps and the normal-map flag on the `nor_gl` maps. Startup before world
+load falls `3.7 -> 1.9 s`, because WebP decode was half of it; road-heavy views gain
+`0.2-0.7 ms`. The HDRI sky stays lossless.
+
+Baked world noise (`TERRAIN-04`, 2026-10-02): the terrain fragment shader was the largest idle
+GPU cost (about `8 ms` of a `15.9 ms` overview frame on an M2 Pro), and most of it was value
+noise. Four fields depend only on world XZ: macro variation, land-variation broad and mid, and
+the meadow broad term. `terrain_world_noise.gd` renders them once per world load into one
+RGBA texture at `16 m` per texel, published through the `grass_world_noise` and
+`grass_world_noise_bounds` shader globals. The bake shader calls the include's own `*_live`
+functions, so texel centres equal the per-pixel values; their lattices are `167 m` or
+coarser, so bilinear reconstruction is not visible. `terrain.gdshader` opts in with
+`GRASS_BAKED_WORLD_NOISE`; the site-ground shader keeps the live functions. This replaces 13
+noise evaluations per terrain pixel with one fetch. Rejected in the same pass: skipping grass
+texture reads by distance (no gain, the layers stay visible at nearly every on-screen range)
+and deduplicating meadow calls (the compiler already merges them). The next candidate is a
+per-patch bake of the heightmap-derived cliff, relief and shore masks (about `1.5 ms` more);
+it shipped as `TERRAIN-06` below.
+
+Measured with the idle-frame matrix (`METRUM_GAMEPLAY_BENCHMARK_MATRIX=idle`, script
+`scripts/benchmarks/idle_frame_benchmark.gd`): simulation paused, V-Sync off, 1920x1080, 120
+warm-up and 300 measured frames per pose, Godot 4.7.2 Forward+ on Metal, M2 Pro, release
+extension. Kuopio poses are `overview`, `close` and `ground`; `city` and `city_low` load a
+small saved town with time of day pinned to 10:00. Frame p50, upstream `7e471302` -> both
+changes:
+
+| Pose | Before | After |
+| --- | --- | --- |
+| overview | `15.91 ms` | `15.01 ms` |
+| close | `13.28 ms` | `12.56 ms` |
+| ground | `11.41 ms` | `10.78 ms` |
+| city | `11.17 ms` | `10.43 ms` |
+| city_low | `12.73 ms` | `11.60 ms` |
+
+Repeat runs of one build differ by at most `0.05 ms`. With tree wind frozen
+(`METRUM_IDLE_BENCH_SCREENSHOT_DIR`), screenshots are pixel-identical run to run; against
+upstream the mean difference is `0.06/255` on Kuopio poses and `0.25-0.75/255` in the town,
+with `0.2-0.5%` of pixels above `12/255`, all on road and yard surfaces from the new mipmaps.
+The Mac numbers locate costs; acceptance on the owner's GTX 1060 is still to be measured.
+Results and before/after grids are kept in `benchmark-results/idle/suite/`.
+
+Patch streaming cost (`TERRAIN-05`, 2026-10-02): of the `2.73 s` Kuopio load, the Rust load call
+is `0.38 s`; the rest is streaming 1,296 terrain and 768 water patches through per-frame caps
+while the world is already drawn. Rust payloads are ready far ahead of installation. During the
+fill the main thread was about 80% GDScript: terrain residency `~10 ms` per frame (half of it
+re-sorting every pending key with a GDScript comparator), vegetation `~4.7 ms`, water `~2 ms`,
+against `~4 ms` of actual patch installs. `sort_patch_keys_by_distance` in `terrain.gd` now
+packs (distance, z, x) into one int and uses the native sort for terrain and water; order is
+identical (200 randomized checks) and a 1,296-key sort falls `2.4 -> 0.2 ms`. Load `2.73 ->
+2.33 s` (idle matrix `overview`, two runs). Lifting the terrain install cap alone does not help:
+the payload-request cap and the water install cap then bound the fill.
+
+A moving camera does not cost frame time on the M2 Pro: camera paths (`METRUM_IDLE_BENCH_PATHS`,
+600 frames) hold p99 at or under `18 ms` with no frame over `33 ms`. The cost was latency. Terrain applied
+one patch LOD change per frame (`PATCH_MESH_LOD_REFRESH_MAX_CHANGES_PER_FRAME`) although each
+change costs about `0.2 ms` inside a `1 ms` budget, so after `pan_high` stopped the terrain took
+`1.78 s` to reach its LODs. Allowing 8 per frame, as water already does, cuts that to `0.075 s`
+with unchanged frame times (two runs each).
+
+Frame pacing (2026-10-02): the camera stutter while orbiting is display cadence, not slow frames.
+The `orbit_high` and `orbit_low` paths (one full turn at 400 m and 120 m) hold p99 under `18 ms`
+with vsync off. With vsync on (`METRUM_IDLE_BENCH_VSYNC=1`) on the 120 Hz built-in display, a
+Metal System Trace of the presented drawables (`ca-client-presented-handler`) shows frames of
+`9-12 ms` landing on 120 Hz vsyncs as 680 single and 747 double refreshes, changing cadence on 79%
+of frames. With `METRUM_GAMEPLAY_BENCHMARK_MAX_FPS=60`, 1,340 of 1,360 frames last exactly two
+refreshes (3% cadence changes). The paths report `jitter_ms`, the change between consecutive frame
+times (p50 `1.4-2.7 ms` at 120 Hz, `0.3-0.6 ms` capped at 60), and keep the per-frame series. The
+`50-90 ms` hitches every 5 s in these traces come from the trace itself: the same paths unprofiled
+never exceed `25 ms`.
+
+Cliff mask early-out (2026-10-02): the heightmap-derived masks (cliff face/top/toe, local relief,
+shoreline) cost about 80 texture taps per terrain pixel. Replacing all four with one fetch bounds
+what a bake could save at `1.35 ms` on `overview` (`15.01 -> 13.66 ms`), `1.1 ms` of it in
+`cliff_masks`. Both cliff edges are `clamp(face - neighbours)` and vanish when the face does, and
+the face needs only the centre and two lateral candidates, so the six neighbour candidates (36
+taps) now run only where the face is non-zero. Exact: Kuopio screenshots are pixel-identical,
+and the town differs by under 12 pixels against 3-28 for two runs of one build. Idle p50:
+overview `14.98 -> 14.42 ms`, close `12.51 -> 12.00 ms`, ground `10.77 -> 10.30 ms`; the flat
+town is unchanged.
+
+Idle frame budget and shadow filtering (`RENDER-15`, 2026-10-02): removing each feature from the
+`overview` frame (`14.45 ms`) saves: terrain `9.6 ms` (shading `5.3`, the rest per-pixel lighting
+and geometry), SSIL plus glow `2.3 ms`, sun shadows `1.9 ms`, vegetation `1.0 ms`, water nothing.
+A Metal System Trace puts terrain vertex work at about `1.4 ms` in total; shadow map rendering
+costs about `0.2 ms`, and the shadow cost is the filtered lookup in the opaque pass (`9.97 ->
+8.23 ms` without shadows). The directional soft-shadow filter goes from Soft Medium (3) to Soft
+Low (2): idle p50 overview `14.45 -> 13.76`, close `12.05 -> 11.40`, ground `10.35 -> 9.72`,
+town `10.45 -> 9.51`, `city_low` `11.62 -> 10.67 ms`, mean image difference `0.2/255` at shadow
+edges. Measured and not adopted pending a look decision: no PCSS (`light_angular_distance` 0, up
+to `-1.27 ms` in the town, fixed-width penumbrae) and no cascade blending (up to `-0.84 ms`).
+Grids: `benchmark-results/idle/suite/grid-shadow-*.png`.
+
+SSIL and glow (`RENDER-15`): by day, SSIL off changed the image by `0.02-0.54/255` mean and saved
+`1.5-1.95 ms`; at night with lit windows (`test-game-1`, 22:00) it removes the window light
+spill. Glow off saved `0.5 ms` with an exactly identical image in every pose, day and night.
+`scene_lighting.gd` now enables SSIL only while the sun is below `8.35` degrees, the highest
+window threshold (`window_lighting.rs`, 1-8 degrees) plus its fade. At 22:00 the image and frame
+time are unchanged; by day idle p50 (new asset pack installed, matched baseline): overview
+`13.73 -> 11.79`, close `11.38 -> 9.69`, ground `9.69 -> 8.09`, town `9.52 -> 8.06`, `city_low`
+`10.65 -> 9.16 ms`. The benchmark's SSIL variants go through `SceneLighting.ssil_allowed`,
+because the day cycle rewrites `ssil_enabled` every frame.
+
+Frame budget after these changes, and canopy density (2026-10-03, `RENDER-04`): the idle matrix
+gains `forest` and `forest_low` poses (150 m and 30 m over one of Kuopio's densest canopy cells,
+about 510 trees per 400 m cell) and `METRUM_IDLE_BENCH_CANOPY_DENSITY`, which starts a new game
+on the pinned world at that many stems per hectare. Started at the default `30.47` it matches a
+plain load within `0.05 ms`. Benchmark runs now ignore the saved fullscreen state, building
+detail and the HiDPI UI scale: a fullscreen config had rendered the matrix at the display's
+`3456x2168` and measured overview at `30 ms`. Idle p50, vegetation off in brackets:
+
+| Pose | Default `30.5/ha` | Ceiling `121.9/ha` |
+| --- | --- | --- |
+| overview | `11.79 (10.96) ms` | `13.19 (11.10) ms` |
+| close | `9.69 (8.78) ms` | `11.76 (8.83) ms` |
+| ground | `8.11 (7.58) ms` | `9.23 (7.62) ms` |
+| forest | `9.84 (8.62) ms` | `11.71 (8.69) ms` |
+| forest_low | `10.08 (7.37) ms` | `14.75 (7.40) ms`, `4.6 M` primitives |
+
+A Metal System Trace (600 frames, profiled p50 within `0.07 ms` of the unprofiled runs) splits
+the GPU frame by pass. On `overview` the opaque pass fragment work is `9.06` of `12.2 ms` GPU
+time, vertex work `1.35 ms`, the depth prepass `0.76 ms` and shadow maps about `0.1 ms`: terrain
+shading still owns the frame; the per-patch mask bake below was the next terrain target. On
+`forest_low` at the ceiling, vertex work rises to `6.64 ms` (depth prepass `2.22`, opaque pass
+`4.06`) while opaque fragment work falls to `6.00 ms` as crowns cover the ground, and the four
+shadow cascades take `0.72 ms`. Denser forest is bound by tree vertex throughput in the
+prepass and opaque pass, not by draw calls (`1,715`) or fill. Results:
+`benchmark-results/idle/suite/16-forest/`.
+
+Per-patch shading masks (`TERRAIN-06`, 2026-10-03): `patch_masks.rs` bakes two masks per terrain
+payload on the payload worker, on the heightmap's texel grid including the border ring: local
+relief (R, stored as `sqrt(relief / 32 m)`, about 2 cm of precision at the `0.1 m` contour
+threshold) and cliff reach (G), the cliff face test's maximum over a 2x-finer grid within a texel
+of each texel. The terrain shader reads both with one fetch and runs the per-pixel `cliff_masks`
+only where the reach is nonzero, so cliff faces and their top and toe bands are computed exactly as
+before. The Rust side mirrors the shader's sampling (UVs clamped to the patch, bilinear,
+clamp-to-edge) and the `CLIFF_*` thresholds in `terrain.gd`, which must change together. Two
+designs were measured and dropped on the way:
+
+- Baking the face and both edges at texel resolution was `0.1-0.15 ms` faster, but the edge bands
+  are narrower than a 10 m texel and came out stair-stepped (`cliff_low`: mean `0.54/255`, `1.7%`
+  of pixels over `12/255`).
+- One mask texture per patch material gave irregular `9-13 ms` frames on about 10% of frames (p95
+  `+0.5-4 ms`) while a Metal System Trace showed the opaque pass steady to `0.3 ms`; binding one
+  shared texture instead removed them. The masks therefore live in a `Texture2DArray` with a layer
+  per patch slot (pages of 1,024 layers, `9.3 MB` on Kuopio), written at install and at the staged
+  heightmap swap so the masks never lead the heights.
+
+The bake costs about `0.35 ms` per patch on ordinary ground and up to `3.8 ms` on a patch that is
+cliff throughout. A per-texel bound skips the face test wherever the largest step between adjacent
+texels within reach cannot produce a slope above `CLIFF_SLOPE_START`; a test checks the skipped
+points against the full test. The shoreline mask (bound `0.24 ms`) stays per pixel because it reads
+the water renderer's own texture. Road previews export their changed patches synchronously, so
+their masks are baked on the main thread at export (`0.35 ms` per patch on ordinary ground) into a
+one-layer array per preview slot; copying the resident patch's masks would describe the terrain
+the preview replaces.
+
+The idle matrix gains `cliff` and `cliff_low` poses (150 m and 40 m over some of Kuopio's steepest
+ground). Against the per-pixel shader, with vegetation off, no pixel differs by more than `12/255`
+in any of the seven Kuopio poses (largest `10/255`, mean at most `0.021/255`, from relief
+quantization). Matched A/B, same release extension, two interleaved runs each, idle p50:
+
+| Pose | Before | After |
+| --- | --- | --- |
+| overview | `11.77-11.81 ms` | `11.50-11.52 ms` |
+| close | `9.67-9.73 ms` | `9.46 ms` |
+| ground | `8.10-8.15 ms` | `7.92-7.94 ms` |
+| forest | `9.84-9.87 ms` | `9.66 ms` |
+| cliff | `8.95-8.99 ms` | `8.73-8.74 ms` |
+| cliff_low | `7.58-7.64 ms` | `7.47-7.48 ms` |
+
+p95 falls by about the same amount, and the settled load stays at `3.91-3.95 s`. Results and grids:
+`benchmark-results/idle/suite/19-mask-array/` and `grid-mask-bake-cliff.png` (the texel-grid
+design).
+
+Branch acceptance against upstream (2026-10-03): upstream `7e471302` against HEAD `c9ee5ce2`,
+which includes the frame work above plus the water, tree recalibration, pine, hedge, yard
+planting and flower changes. Same release build settings, idle matrix, `full` variant, 300
+frames, two interleaved runs per side; upstream ran in a worktree carrying only the benchmark
+harness and the benchmark-only fullscreen and building-detail overrides. Runs repeat within
+`0.12 ms`. Idle p50:
+
+| Pose | Upstream | HEAD |
+| --- | --- | --- |
+| overview | `16.00-16.02 ms` | `11.60-11.61 ms` |
+| close | `13.33-13.35 ms` | `9.54-9.55 ms` |
+| ground | `11.46-11.58 ms` | `8.02 ms` |
+| forest | `13.25 ms` | `9.74-9.75 ms` |
+| forest_low | `13.75-13.78 ms` | `10.13-10.15 ms` |
+| cliff | `12.49-12.50 ms` | `8.83-8.84 ms` |
+| cliff_low | `10.83 ms` | `7.56 ms` |
+
+Every pose is about `0.1 ms` slower than at the mask bake above, which is the later water and
+vegetation look work. The saved-town poses are not comparable: upstream cannot parse
+`[building.yard_hedge]`, so it skips the five Kuopio-pack houses that HEAD loads. The same
+cause explains the longer load at HEAD (town `0.85 -> 1.75 s`, Kuopio `3.4 -> 4.1 s`): a Time
+Profiler trace shows runtime glTF parsing of those houses' embedded PNG textures rising from
+`1.15 s` to `2.86 s` on the main thread, with no change to the loaders. Results:
+`benchmark-results/idle/suite/20-pr-*`.
 
 Rendering non-repair rule:
 

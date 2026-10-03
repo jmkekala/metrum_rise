@@ -47,6 +47,9 @@ func initialize() -> void:
 				control.value_changed.connect(func(value): set_field(key, value))
 			elif control is OptionButton:
 				control.item_selected.connect(func(index): set_field(key, control.get_item_metadata(index)))
+			elif key == "yard_hedge_edges":
+				for check: CheckBox in control.get_children():
+					check.toggled.connect(func(_on): set_field(key, _checked_edges(control)))
 		var focus_control: Control = control.get_line_edit() if control is SpinBox else control
 		if focus_control is LineEdit:
 			focus_control.focus_entered.connect(func(): document.begin_transaction("Edit " + key.trim_prefix("_")))
@@ -78,6 +81,8 @@ func _document_changed() -> void:
 	if not ready:
 		return
 	rendering = true
+	_editor._view.export_result.visible = false
+	_editor._view.validate_result.visible = false
 	var state := document.snapshot()
 	params = state.get("params", {})
 	has_document = not state.is_empty()
@@ -109,6 +114,10 @@ func _document_changed() -> void:
 			_update_choices(key, control, value)
 		elif control is Label and key == "service_class":
 			control.text = str(value if value != null else "")
+		elif key == "yard_hedge_edges":
+			# An asset without the list lines all four edges, as the manifest does.
+			for check: CheckBox in control.get_children():
+				check.button_pressed = not (value is Array) or (value as Array).has(str(check.name))
 		control.set_block_signals(false)
 		if key not in ["asset_id", "display_name", "tags"]:
 			view.rows[key].visible = descriptor.get("fields", []).has(key)
@@ -140,6 +149,7 @@ func _document_changed() -> void:
 		thumbnails.load_image(thumbnail_source)
 	if not _capturing:
 		_adapter.render(state)
+	_preview_yard_hedge()
 	colours.refresh(state)
 	selection_changed()
 	view.undo_button.disabled = not document.can_undo()
@@ -157,6 +167,11 @@ func _update_choices(key: String, control: OptionButton, value: Variant) -> void
 	if key == "density":
 		for density in _editor._density_types_by_zone.get(str(params.get("zone_type", "")), []):
 			choices.append({"id": density, "label": str(density).capitalize()})
+	elif key == "yard_hedge":
+		for hedge in ["none", "low", "medium", "tall"]:
+			choices.append({"id": hedge, "label": hedge.capitalize()})
+		if selected.is_empty():
+			selected = "none"
 	elif key == "economy_profile":
 		choices.append({"id": "", "label": "Unassigned"})
 		for profile: Dictionary in descriptor.get("profiles", []):
@@ -174,6 +189,13 @@ func _update_choices(key: String, control: OptionButton, value: Variant) -> void
 		control.set_item_metadata(control.item_count - 1, selected)
 		control.set_item_disabled(control.item_count - 1, true)
 		control.select(control.item_count - 1)
+
+func _checked_edges(edges: Control) -> Array:
+	var checked: Array = []
+	for check: CheckBox in edges.get_children():
+		if check.button_pressed:
+			checked.append(str(check.name))
+	return checked
 
 func capture_geometry(label: String = "Edit geometry") -> void:
 	if not ready or not has_document or rendering or _editor._updating_site_anchor_controls or _editor._updating_site_surface_controls or _editor._suppress_part_transform_changed:
@@ -454,6 +476,61 @@ func load_draft(path: String) -> void:
 	thumbnails.load_image(str(result["document"].get("thumbnail_source", "")))
 	_editor._view.show_task("model")
 
+## Grows (or, with a negative count, shrinks) the lot by `cells` 10 m cells at the back only:
+## the lot is centred on the asset's origin, so the dimension running away from the street
+## changes and everything placed on the lot moves half the change towards the street, which
+## keeps the street side, driveway and house where they were and opens a back yard behind.
+func extend_lot_at_back(cells: int) -> void:
+	if not ready or not has_document:
+		return
+	document.commit_transaction()
+	capture_geometry("Finish geometry edit")
+	var state := document.snapshot()
+	var p: Dictionary = state["params"]
+	var front := Vector2(0.0, 1.0)
+	if p.get("frontage_forward") is Array:
+		front = Vector2(float(p["frontage_forward"][0]), float(p["frontage_forward"][2]))
+	# The lot axis the frontage is snapped to, as the yard hedge plan snaps it.
+	var across_x := absf(front.x) > absf(front.y)
+	var key := "lot_width_cells" if across_x else "lot_depth_cells"
+	var size := int(PreviewGeometry.number(p, key, 2)) + cells
+	if size < 1:
+		return
+	var toward_street := Vector2(signf(front.x), 0.0) if across_x else Vector2(0.0, -1.0 if front.y < 0.0 else 1.0)
+	var shift := toward_street * float(cells) * 5.0
+	p[key] = size
+	for item: Dictionary in p.get("mesh_parts", []) + p.get("anchors", []):
+		item["position"][0] = float(item["position"][0]) + shift.x
+		item["position"][2] = float(item["position"][2]) + shift.y
+	for surface: Dictionary in p.get("site_surfaces", []):
+		for vertex: Array in surface.get("vertices", []):
+			vertex[0] = float(vertex[0]) + shift.x
+			vertex[1] = float(vertex[1]) + shift.y
+	document.apply(state, "Extend lot at back" if cells > 0 else "Trim lot at back")
+
+# After rendering, so the rows keep off the walls of the meshes now shown, as the game's do.
+func _preview_yard_hedge() -> void:
+	var walls := PackedFloat32Array()
+	for index in _editor._parts.size():
+		var rect: Rect2 = _editor._mesh_part_footprint_bounds(index, _editor._parts[index].position)
+		if rect.has_area():
+			walls.append_array([rect.position.x, rect.position.y, rect.end.x, rect.end.y])
+	var rows = JSON.parse_string(policy.yard_hedge_rows_json(JSON.stringify(params), walls))
+	_editor._preview.set_yard_hedge(rows if rows is Array else [],
+		["low", "medium", "tall"].find(str(params.get("yard_hedge", ""))))
+
+## Revalidate button: validates and says what it found, since an unchanged issue list otherwise
+## looks as if nothing happened.
+func revalidate() -> void:
+	if not ready or not has_document:
+		return
+	validate()
+	var time := Time.get_time_string_from_system()
+	if _issues.is_empty():
+		_show_result(_editor._view.validate_result, "Checked at %s: no issues, ready to export." % time, true)
+	else:
+		_show_result(_editor._view.validate_result, "Checked at %s: %d issue(s), listed below." % [time, _issues.size()], false)
+
 func validate() -> void:
 	if not ready or not has_document:
 		return
@@ -513,11 +590,13 @@ func publish(move_original: bool = false) -> void:
 	validate()
 	if not _issues.is_empty():
 		_editor._view.show_task("validate")
+		_show_result(_editor._view.export_result, "Not exported: resolve the issues above first.", false)
 		return
 	var state := document.snapshot()
 	var output := ProjectSettings.globalize_path("user://mods/" + str(params["pack_id"]))
 	var error := AssetAuthoringFiles.publish_document(JSON.stringify(state), output)
 	if not error.is_empty():
+		_show_result(_editor._view.export_result, "Export failed: " + error, false)
 		message("Export failed: " + error)
 		return
 	var origin: Dictionary = state.get("origin", {})
@@ -537,6 +616,15 @@ func publish(move_original: bool = false) -> void:
 	_editor._refresh_asset_browser()
 	_editor._view.status.text = "Runtime asset exported. No unsaved changes."
 	_editor._log("Runtime asset exported: " + str(params["asset_id"]))
+	_show_result(_editor._view.export_result, "Exported to %s:%s at %s." % [
+		params["pack_id"], params["asset_id"], Time.get_time_string_from_system()], true)
+
+# A button's outcome line. Publishing re-renders the document before export reports, so the
+# line survives until the next edit clears it.
+func _show_result(label: Label, text: String, ok: bool) -> void:
+	label.text = text
+	label.add_theme_color_override("font_color", Color(0.45, 0.85, 0.5) if ok else Color(0.95, 0.45, 0.4))
+	label.visible = true
 
 ## Show the capture frame so the shot can be composed before it is taken.
 func begin_thumbnail_framing() -> void:

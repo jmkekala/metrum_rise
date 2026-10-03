@@ -484,9 +484,9 @@ impl SimulationNode {
                     let mut data = if unchanged {
                         Self::terrain_patch_metadata_dict(&patch.patch)
                     } else if patch.input_road_loops == 0 {
-                        Self::terrain_patch_dict(&patch.patch)
+                        Self::terrain_patch_dict(&patch.patch, &[])
                     } else {
-                        Self::cached_refined_terrain_patch_dict(&patch, false)
+                        Self::cached_refined_terrain_patch_dict(&patch, false, &[])
                     };
                     data.set("terrain_revision", revision);
                     data.set("unchanged", unchanged);

@@ -253,6 +253,7 @@ Editor outputs:
 - `Export Runtime Pack`: writes the normal unpacked runtime pack folder
 - `Export pack as zip…`: writes a share archive of an installed pack to a location the creator chooses
 - Default export flow: export the runtime pack folder first, then optionally generate the share archive from that exact folder
+- Runtime export and Revalidate each report their outcome under their button: the pack, asset and time of an export or why it did not happen, and the check time and issue count of a revalidation. The next edit clears both (`UI-04`).
 
 Do not make zip the only exported artifact. The unpacked runtime pack should remain the canonical installable form.
 
@@ -609,6 +610,91 @@ Rules:
   while preserving the minimum three-vertex polygon.
 - Painted decals, curbs, markings, and per-material texture selection are later extensions.
 
+### Yard Hedges
+
+A building asset may line its yard with a clipped hedge (`VEG-15`):
+
+```toml
+[building.yard_hedge]
+hedge = "medium"                          # low | medium | tall
+edges = ["front", "back", "left", "right"] # optional; all four when omitted
+```
+
+Left and right are as seen from the street. The editor offers it for zoned assets under
+Site → Footprint & frontage (`Yard hedge`, `Hedge edges`) and previews the planned rows on the lot
+as hedge-coloured boxes. Rust plans them (`plan_yard_hedge` in `assets/asset/yard_hedge.rs`) from
+lot geometry alone, so the preview and a spawned building lay the same rows:
+
+- Side and back rows run on the lot line, where an adjoining lot's hedge stands too; the front row
+  stands `0.75 m` inside the lot, clear of the sidewalk.
+- A row is cut where it would pass within `0.6 m` of a yard surface (driveway, walkway) or of a
+  mesh part's footprint (its imported bounds, axis-aligned in the lot frame), and the front row is
+  also cut `0.8 m` either side of the main entrance. Pieces under `1 m` are dropped. The game reads
+  the footprints from imported bounds and the editor from the meshes it shows
+  (`yard_hedge_rows_json`), so a house whose eaves reach the back lot line gets a back row with a
+  gap behind it in both (`VEG-16`).
+- Planning samples each row every `0.25 m`: O(row length / 0.25 x surface vertices), on document
+  changes only.
+
+When a zoned building is placed, the allocator queues its rows in world space; SimCore lays them
+with the same row code as the hedge brush (`plan_row`), row by row, so corners close and a row end
+near a neighbour's hedge joins it. A module is skipped where any hedge facing the same way already
+stands within `2.5 m` across its row, so two adjoining yards share the hedge between them instead of
+planting two. The laid modules are ordinary authored vegetation, edited and removed by the brushes
+like any other, and recorded under the building's parcel id and build generation (save version
+`68`, table `yard_hedge_modules`). When the building is removed, its recorded modules go only if
+every one still stands as laid; if the player cut or rebuilt any of them the rest stays. Hedges the
+player drew are never recorded, so a hedge joined to a yard stays when the building goes.
+Authored plants, the yard's hedge among them, keep off a building's walls and paving only, not its
+whole flat support: wild vegetation still keeps the support clear, but a lawn inside it takes
+hedges, shrubs and trees (`VEG-16`). Undoing a
+bulldoze lays the yard's hedge again. Buildings placed before an asset gained a yard hedge, and
+buildings in saves older than version `68`, have none recorded.
+
+### Yard Planting
+
+A building asset may mark lawn areas its yard grows trees, shrubs or flowers in (`VEG-17`,
+`VEG-20`):
+
+```toml
+[[building.yard_planting]]
+plants = "trees"                                     # trees | bushes | mixed | flowers
+name = "back yard"                                   # optional editor label
+vertices = [[-9, -14], [9, -14], [9, -6.5], [-9, -6.5]]
+```
+
+The editor keeps planting areas among the yard surfaces (Site → Surfaces, `Plant trees`, `Plant
+bushes`, `Plant mixed`, `Plant flowers`, or Create → Yard planting), as a surface whose material is the plant kind,
+so they are drawn, dragged and edited like paving and preview as a green wash. Export writes them as
+`[[building.yard_planting]]`, never as paving, and reading an asset puts them back among the
+surfaces. They are validated like surfaces: inside the lot, three or more vertices, non-zero area,
+no self-intersection. They do not cut the yard hedge.
+
+When a zoned building is placed, each area is filled on a jittered grid in the lot's frame: trees
+(the brush's scattered broadleaf-led mix) about one per 50 m², shrubs (the six yard shrubs) about one
+per 14 m², mixed as a few trees among fewer shrubs and a few drifts of flowers, and flowers as a
+bed: a perennial (peony, lupine, phlox or summer bedding) about every 1.6 m² in drifts of one kind
+two to three metres across, with a hydrangea or rhododendron about every 35 m². Each plant keeps
+its own room (`1.5 m` for a tree, `0.7 m` for a shrub, `0.35 m` for a perennial) to what the area
+planted before it, so a perennial never grows inside a shrub. The grid is salted by the building's parcel
+id and build generation, so two copies of one asset grow different yards, a reload grows the same
+one, and a rebuilt parcel grows anew. Every plant passes the brush's clearance and spacing tests. A
+tree inside a planting area needs only `1.5 m` off walls, paving and roads instead of a wild tree's
+`6 m`, which also lets players plant trees there with the brush. The plants are ordinary authored
+vegetation, recorded per yard (save version `69`, table `yard_planting_plants`); each one still
+standing goes with its building, and undoing a bulldoze plants the same set again. Plants the
+player added are never recorded. Planting costs O(area / spacing²) bounded clearance tests per
+area, each with a scan of the few dozen plants that area already planted, once per spawn.
+
+### Back Yards
+
+A back yard is a deeper lot, not a hedge offset: the land stays the building's own, so zoning
+reserves it and nothing else is built there. The lot is centred on the asset's origin, so the
+footprint's `Back yard` buttons (`+10 m`, `−10 m`) change the lot dimension running away from the
+street by one cell and move every mesh part, anchor and surface half a cell towards the street, in
+one undo step. The street side, driveway and house stay where they were and the yard opens behind
+(`TOOLS-12`).
+
 ### Flat-Site Authoring
 
 The building authoring view is WYSIWYG for the local flat lot:
@@ -616,7 +702,7 @@ The building authoring view is WYSIWYG for the local flat lot:
 - The editor preview shows a flat lot plane with the authored `lot_width_cells` and
   `lot_depth_cells`, not an abstract infinite grid as the main authoring reference.
 - The lot boundary is the runtime site footprint.
-- Unpainted preview lot areas use the same grass terrain material as the surrounding ground,
+- Unpainted preview lot areas use the same grass material as the surrounding ground,
   independent of UI theme. Authored yard surfaces cover only their polygons.
 - Mesh parts, anchors, and `[[site_surfaces]]` share the same local coordinate system.
 - Authored site-surface materials preview on the flat lot as the runtime site client will render
@@ -1492,6 +1578,8 @@ Road authoring remains outside the first importer milestone.
 
 One on-demand context menu serves the preview, mesh/access/yard lists and library. Right-click
 only opens menus; middle-drag/wheel retain camera navigation and Alt+left-click cycles overlaps.
+On a touchpad, Alt (Option) with a left drag of more than 4 px orbits instead, and a two-finger
+scroll or pinch zooms (`UI-03`); an Alt press released in place still cycles overlaps.
 The depth-aware picker excludes occluded targets. Right-clicking an unselected object selects it
 and opens its inspector; clicking a selected object preserves the complete mixed selection.
 Empty-space menus preserve selection but offer creation/view actions, never unrelated deletion.
@@ -1631,9 +1719,13 @@ Current preview (`TOOLS-04`):
 - Flat, shadow-receiving terrain beneath the preview with a 10 m × 10 m grid aligned
   to the lot cells, a selectable 1.8 m scale reference and explicit asset comparison ghost.
   The terrain is preview-only, below the lot surface, and never enters exported assets.
-  `WorldMaterials.flat_terrain_material()` reuses the game's terrain shader and cached grass
-  albedo/height textures with a constant zero heightmap and no water. World-space grass detail
-  and day/night shading come from that shader; the grid is a transparent overlay.
+  `WorldMaterials.editor_ground_material()` (`editor_ground.gdshader`) draws the game's grass
+  palette and site-ground lighting from two plain grass texture reads, with a fixed tint fitted to
+  the terrain shader's mean lawn colour in place of its meadow noise. The full terrain shader on
+  this screen-filling plane cost more than the rest of the editor view: at 1.5x render scale on
+  the M2 Pro (3456x1928 window, rintamamiestalo house, vsync off) a frame took `46.5 ms` with it
+  and `19.4 ms` with the editor ground, where hiding the ground entirely reaches the `16.7 ms`
+  display cap. The grid is a transparent overlay.
   One static two-triangle plane uses two material passes: O(1) geometry/storage,
   no per-frame CPU updates or allocations, and constant work per visible fragment.
   Enable Scale reference, then click its figure or 10-logical-pixel circular handle and left-drag.
@@ -3291,6 +3383,10 @@ Complexity: O(render pixels × fixed quality sample count) GPU work and O(render
 history buffers, independent of total city population. No simulation iteration, instance
 buffer expansion or clock-driven uploads are introduced. Current upstream defaults use
 half-size SSIL and quality 2. The effect also operates during daylight.
+Since `RENDER-15` (2026-10-02) gameplay enables SSIL only while the sun is below
+`8.35` degrees, the highest window threshold plus its fade, so no lit window ever lacks spill.
+By day SSIL changed measured frames by under `0.3/255` mean and cost `1.5-1.9 ms` (M2 Pro).
+`scene_lighting.gd` owns the switch; the asset editor and tests keep the resource default.
 
 Fresh verification (2026-09-26): `window_spill_test.gd` passes on Forward+, checking a
 scheduled MultiMesh emitter against both production ground shaders and a neighbouring

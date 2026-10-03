@@ -7,7 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 // Independent of the saved candidate spacing. One world-aligned 1 m sample per bit produces
 // the area fraction of a crown-disc union in an 8 m texel; bilinear filtering joins texels.
-const TEXEL_M: f32 = 8.0;
+/// Edge of one coverage texel in metres.
+pub(super) const TEXEL_M: f32 = 8.0;
 const SAMPLES: usize = 8;
 // Species-level crown radii, scaled by the accepted stem's saved/generated size. These are
 // substrate footprints, independent of cosmetic mesh variant, wind and distance level.
@@ -111,11 +112,55 @@ impl Coverage {
 
     /// Converts the completed patch to the existing dictionary/packed-array bridge format.
     pub(super) fn payload(&self, generations: [i64; 18]) -> VarDictionary {
+        let mut data = self.grid();
+        data.set(
+            "generations",
+            PackedInt64Array::from(generations.as_slice()),
+        );
+        data
+    }
+
+    /// Dimensions, bytes and world bounds alone, for a reader that tracks no revisions.
+    pub(super) fn grid(&self) -> VarDictionary {
         let mut bytes = PackedByteArray::new();
         bytes.resize(self.samples.len());
         for (i, byte) in bytes.as_mut_slice().iter_mut().enumerate() {
             *byte = self.byte(i);
         }
+        self.dictionary(bytes)
+    }
+
+    /// Coverage averaged over the `(2 * radius + 1)` texel square around each texel, in the
+    /// bridge format. See `stand_bytes`.
+    pub(super) fn stand_grid(&self, radius: usize) -> VarDictionary {
+        self.dictionary(PackedByteArray::from(self.stand_bytes(radius).as_slice()))
+    }
+
+    /// Coverage averaged over the `(2 * radius + 1)` texel square around each texel, clamped at
+    /// the grid edge. A lone crown fills most of one texel and little of the square; a closed
+    /// stand fills both. O(texels * (2 * radius + 1)^2).
+    fn stand_bytes(&self, radius: usize) -> Vec<u8> {
+        let fill: Vec<u32> = self
+            .samples
+            .iter()
+            .map(|sample| sample.load(Ordering::Relaxed).count_ones())
+            .collect();
+        (0..fill.len())
+            .map(|i| {
+                let (x, z) = (i % self.width, i / self.width);
+                let xs = x.saturating_sub(radius)..(x + radius + 1).min(self.width);
+                let zs = z.saturating_sub(radius)..(z + radius + 1).min(self.height);
+                let texels = (xs.len() * zs.len()) as u32;
+                let filled: u32 = zs
+                    .flat_map(|zz| xs.clone().map(move |xx| zz * self.width + xx))
+                    .map(|j| fill[j])
+                    .sum();
+                ((filled * 255 + texels * 32) / (texels * 64)) as u8
+            })
+            .collect()
+    }
+
+    fn dictionary(&self, bytes: PackedByteArray) -> VarDictionary {
         let mut data = VarDictionary::new();
         data.set("width", self.width as i32);
         data.set("height", self.height as i32);
@@ -128,10 +173,6 @@ impl Coverage {
                 self.width as f32 * TEXEL_M,
                 self.height as f32 * TEXEL_M,
             ),
-        );
-        data.set(
-            "generations",
-            PackedInt64Array::from(generations.as_slice()),
         );
         data
     }
@@ -154,6 +195,30 @@ pub(super) fn generations(core: &SimCore, key: Vector2i) -> [i64; 18] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn grid_with(width: usize, height: usize, full: &[usize]) -> Coverage {
+        let coverage = Coverage {
+            origin: Vector2::ZERO,
+            width,
+            height,
+            samples: (0..width * height).map(|_| AtomicU64::new(0)).collect(),
+        };
+        for &i in full {
+            coverage.samples[i].store(u64::MAX, Ordering::Relaxed);
+        }
+        coverage
+    }
+
+    #[test]
+    fn stand_cover_keeps_a_lone_crown_open_and_a_stand_closed() {
+        // One full texel: the lone crown fills its own texel and 1/25 of the square around it.
+        let lone = grid_with(9, 9, &[4 * 9 + 4]);
+        assert_eq!(lone.byte(4 * 9 + 4), 255);
+        assert_eq!(lone.stand_bytes(2)[4 * 9 + 4], 10);
+        // Every texel full: the inside of a stand stays full, and so does its clamped edge.
+        let stand = grid_with(9, 9, &(0..81).collect::<Vec<_>>());
+        assert!(stand.stand_bytes(2).iter().all(|&byte| byte == 255));
+    }
 
     // Independent oracle: query the renderer's packed products over both patches and their
     // border, then count covered sample points per texel. Never call evaluate_cell or splat.

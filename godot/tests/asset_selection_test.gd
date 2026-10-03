@@ -95,6 +95,7 @@ func _run() -> void:
 	_reset()
 	_test_guide_geometry()
 	_test_filters_and_overlap()
+	_test_alt_orbit()
 	_test_guide_occlusion()
 	await _test_list_selection()
 	await _test_access_point_input()
@@ -612,6 +613,41 @@ func _capture_access_selection() -> void:
 			editor.set_process(true)
 		camera.transform = camera_transform
 
+# Option with a touchpad click stands in for the middle button: a drag orbits and must not cycle
+# the selection, while a press and release in place still cycles overlaps.
+func _test_alt_orbit() -> void:
+	_reset()
+	var mouse := _screen(Vector3.ZERO)
+	editor._cam_input.set_process_input(true)
+	var before := camera.global_transform
+	# Count Alt+clicks rather than read the hover, which follows the pointer whenever a frame runs.
+	var cycle: Callable = editor._cam_input.alt_click
+	var alt_clicks := [0]
+	editor._cam_input.alt_click = func(_mouse: Vector2) -> void: alt_clicks[0] += 1
+	_alt_button(mouse, true)
+	_mouse_motion(mouse + Vector2(40.0, 0.0), Vector2(40.0, 0.0))
+	_alt_button(mouse + Vector2(40.0, 0.0), false)
+	editor._cam_input.alt_click = cycle
+	expect(not camera.global_transform.is_equal_approx(before), "Alt+drag orbits the asset editor camera")
+	expect(alt_clicks[0] == 0 and editor._selected_part_indices.is_empty(), "an Alt+drag neither cycles nor selects")
+	camera.global_transform = before
+	_top_camera()
+	mouse = _screen(Vector3.ZERO)
+	_alt_button(mouse, true)
+	_alt_button(mouse, false)
+	expect(not selection.hovered.is_empty(), "an Alt+click without a drag still cycles overlaps")
+	editor._cam_input.set_process_input(false)
+	_reset()
+
+func _alt_button(mouse: Vector2, down: bool) -> void:
+	var event := InputEventMouseButton.new()
+	event.alt_pressed = true
+	event.position = mouse
+	event.global_position = mouse
+	event.button_index = MOUSE_BUTTON_LEFT
+	event.pressed = down
+	root.push_input(event, true)
+
 func _click(mouse: Vector2, additive: bool = false) -> void:
 	for down in [true, false]:
 		_mouse_button(mouse, down, additive)
@@ -625,10 +661,11 @@ func _mouse_button(mouse: Vector2, down: bool, additive: bool = false) -> void:
 	event.pressed = down
 	root.push_input(event, true)
 
-func _mouse_motion(mouse: Vector2) -> void:
+func _mouse_motion(mouse: Vector2, relative := Vector2.ZERO) -> void:
 	var event := InputEventMouseMotion.new()
 	event.position = mouse
 	event.global_position = mouse
+	event.relative = relative
 	event.button_mask = MOUSE_BUTTON_MASK_LEFT
 	root.push_input(event, true)
 

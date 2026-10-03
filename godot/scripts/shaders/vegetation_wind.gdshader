@@ -5,6 +5,9 @@ render_mode world_vertex_coords;
 
 varying float canopy_light;
 varying float shadow_keep;
+varying float crown_height;
+// Stand closure of a canopy tree, from its instance data; understory has none.
+varying flat float stand_closure;
 // One for canopy trees, which have impostors to hand over to. Understory shares these materials
 // and keeps its own ranges, so it stays at zero. Set per instance by vegetation.gd.
 instance uniform float hands_over = 0.0;
@@ -20,6 +23,8 @@ void vertex() {
 	VERTEX += vegetation_wind_offset(MODEL_MATRIX[3].xz, COLOR.a, TIME,
 		vegetation_wind_visibility(view_distance_m, VIEWPORT_SIZE));
 	// Understory is ground cover rather than a trunk under a crown, so it takes no base shade.
+	crown_height = (VERTEX.y - MODEL_MATRIX[3].y) / length(MODEL_MATRIX[1].xyz);
+	stand_closure = hands_over > 0.5 ? INSTANCE_CUSTOM.x : 0.0;
 	canopy_light = vegetation_canopy_shade(MODEL_MATRIX[3].xz, view_distance_m, hands_over > 0.5
 		? (VERTEX.y - MODEL_MATRIX[3].y) / length(MODEL_MATRIX[1].xyz) : CANOPY_BASE_TOP_M);
 	shadow_keep = vegetation_shadow_keep(view_distance_m);
@@ -48,6 +53,9 @@ void fragment() {
 
 void light() {
 	float shadow = vegetation_shadow(ATTENUATION, LIGHT_IS_DIRECTIONAL, shadow_keep);
+	if (LIGHT_IS_DIRECTIONAL) {
+		shadow = min(shadow, vegetation_stand_sun(crown_height, stand_closure));
+	}
 	DIFFUSE_LIGHT += vegetation_diffuse_light(NORMAL, LIGHT, LIGHT_COLOR, shadow, BACKLIGHT, 0.0);
 	SPECULAR_LIGHT += vegetation_specular_light(NORMAL, LIGHT, VIEW, LIGHT_COLOR, shadow,
 		SPECULAR_AMOUNT);

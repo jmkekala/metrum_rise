@@ -470,8 +470,11 @@ func _test_preview_resource_reuse(tool: Node3D, terrain: Node3D, points: PackedV
 		var source: ShaderMaterial = terrain.patches[key]["material"]
 		_expect(slot.node.get_parent() == terrain.patches[key]["node"] and terrain.patches[key]["node"].mesh == null, "the resident patch draws only the preview replacement")
 		_expect(slot.material.get_shader_parameter("heightmap") == slot.texture and slot.texture != terrain.patches[key]["height_texture"], "preview heights use a preview-owned texture")
+		_expect(slot.has("masks") and slot.material.get_shader_parameter("terrain_masks") == slot.masks
+			and slot.material.get_shader_parameter("terrain_mask_layer") == 0.0,
+			"preview shading masks come from the preview's own heights")
 		for uniform in source.shader.get_shader_uniform_list():
-			if uniform.name != "heightmap" and uniform.name != "height_is_baked":
+			if not uniform.name in tool._terrain_preview.SLOT_OWNED_UNIFORMS:
 				_expect(slot.material.get_shader_parameter(uniform.name) == source.get_shader_parameter(uniform.name), "reused material must mirror %s" % uniform.name)
 	# A road batch that fails after terrain staged returns both halves' spares untouched by display.
 	var broken: Dictionary = full.duplicate(true)

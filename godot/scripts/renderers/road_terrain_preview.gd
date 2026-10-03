@@ -12,7 +12,11 @@ var request_id: int = 0
 # the same result again with `revisions()`, which then yields complete payloads.
 var missing_revision := false
 var _patches: Dictionary = {}
-# Detached slots {node, walls, material, image, texture, texture_size, key, revision, lod}.
+# Uniforms each slot sets from its own heights instead of copying from the resident material.
+const SLOT_OWNED_UNIFORMS := [
+	"heightmap", "height_is_baked", "terrain_masks", "terrain_mask_layer", "terrain_mask_uv_scale",
+]
+# Detached slots {node, walls, material, image, texture, texture_size, masks, key, revision, lod}.
 # Staging writes only these, never the displayed slots, so a failed batch leaves the previous
 # display intact. Trimmed to the displayed count on commit: one staging set, not cursor history.
 var _spares: Array[Dictionary] = []
@@ -130,6 +134,7 @@ func stage(terrain: Node3D, payloads: Variant, generation: int) -> Array:
 			slot["texture_size"] = size
 			material.set_shader_parameter("heightmap", slot["texture"])
 		material.set_shader_parameter("height_is_baked", terrain._terrain_patch_mesh_is_baked(data))
+		_fill_slot_masks(slot, terrain._terrain_patch_mask_image(data), size)
 		var walls: MeshInstance3D = slot["walls"]
 		walls.mesh = terrain._retaining_wall_patch_mesh(data)
 		# The filled content now reproduces this revision at this resident level of detail.
@@ -290,6 +295,33 @@ func _mirror_resident(terrain: Node3D, slot: Dictionary, patch: Dictionary) -> v
 	walls.extra_cull_margin = original.extra_cull_margin
 	if _sync_material(slot["material"], patch["material"]) and slot.get("texture") != null:
 		slot["material"].set_shader_parameter("heightmap", slot["texture"])
+		_bind_slot_masks(slot)
+
+# The preview's own relief and cliff-reach masks, baked from its heights: the resident patch's
+# describe the terrain it replaces. A one-layer array per slot, updated in place while the size
+# holds; a preview shows a handful of patches, so these few textures cost nothing measurable.
+func _fill_slot_masks(slot: Dictionary, image: Image, texture_size: Vector2i) -> void:
+	slot["mask_uv_scale"] = Vector2.ONE
+	if image == null:
+		slot.erase("masks")
+	else:
+		var masks: Texture2DArray = slot.get("masks", null)
+		if masks != null and Vector2i(masks.get_width(), masks.get_height()) == image.get_size():
+			masks.update_layer(image, 0)
+		else:
+			masks = Texture2DArray.new()
+			var layers: Array[Image] = [image]
+			masks.create_from_images(layers)
+			slot["masks"] = masks
+		slot["mask_uv_scale"] = Vector2(texture_size) / Vector2(image.get_size())
+	_bind_slot_masks(slot)
+
+func _bind_slot_masks(slot: Dictionary) -> void:
+	var material: ShaderMaterial = slot["material"]
+	var masks: Texture2DArray = slot.get("masks", null)
+	material.set_shader_parameter("terrain_masks", masks)
+	material.set_shader_parameter("terrain_mask_layer", 0.0 if masks != null else -1.0)
+	material.set_shader_parameter("terrain_mask_uv_scale", slot.get("mask_uv_scale", Vector2.ONE))
 
 # O(shader uniforms) reads; writes only changed values so reused materials stay clean.
 # Returns true when the shader changed and the heightmap must be assigned again.
@@ -302,7 +334,7 @@ func _sync_material(target: ShaderMaterial, source: ShaderMaterial) -> bool:
 		_uniform_names.clear()
 		if _uniform_shader != null:
 			for uniform in _uniform_shader.get_shader_uniform_list():
-				if uniform["name"] != "heightmap" and uniform["name"] != "height_is_baked":
+				if not uniform["name"] in SLOT_OWNED_UNIFORMS:
 					_uniform_names.append(StringName(uniform["name"]))
 	for name in _uniform_names:
 		var value = source.get_shader_parameter(name)
