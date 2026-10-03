@@ -44,7 +44,7 @@ impl RoadSurfaceSystem {
     ) {
         dump.push('[');
         let mut first_edge = true;
-        for (loop_index, boundary_loop) in piece.terrain_clip_boundary_loops.iter().enumerate() {
+        for (loop_index, boundary_loop) in piece.terrain_clip_boundary_loops().iter().enumerate() {
             for (edge_index, edge) in boundary_loop.source_edges.iter().enumerate() {
                 if !first_edge {
                     dump.push_str(", ");

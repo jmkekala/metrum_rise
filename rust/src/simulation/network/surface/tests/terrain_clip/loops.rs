@@ -82,7 +82,7 @@ fn terrain_clip_loops_include_standard_grounded_footprints() {
     let expected_terrain_clip_source_loop_count: usize = surface
         .compiled_visual_span_pieces()
         .values()
-        .map(|piece| piece.terrain_clip_boundary_loops.len())
+        .map(|piece| piece.terrain_clip_boundary_loops().len())
         .sum::<usize>()
         + surface
             .compiled_visual_node_pieces()
@@ -117,4 +117,74 @@ fn terrain_clip_loops_include_standard_grounded_footprints() {
             )),
         "expected source-preserving CDT export to expose final owned terrain boundary provenance"
     );
+}
+
+#[test]
+fn compiled_span_clip_loops_store_keyed_edges_and_remap_sources() {
+    // A curved hillside road and a bridge with grounded abutments: every compiled span loop
+    // must take the keyed form, and a remapped piece must rebuild the remapped sources.
+    let terrain = coarse_hillside_world_terrain(201, 201, 4.0);
+    let ground = |x: f32, z: f32, lift_m: f32| {
+        Vector3::new(
+            x,
+            terrain.sample_height_world(x, z) * crate::config::HEIGHT_SCALE + lift_m,
+            z,
+        )
+    };
+    let curve = (0..=24)
+        .map(|index| {
+            let x = -300.0 + index as f32 * 25.0;
+            ground(x, -150.0 + 60.0 * (x / 140.0).sin(), 0.0)
+        })
+        .collect::<Vec<_>>();
+    let bridge = (0..=20)
+        .map(|index| {
+            let x = -300.0 + index as f32 * 15.0;
+            ground(x, 200.0, ((x + 120.0) * 0.08).max(0.0))
+        })
+        .collect::<Vec<_>>();
+    let mut graph = RegionGraph::new();
+    for (points, class) in [(curve, EdgeClass::Standard), (bridge, EdgeClass::Bridge)] {
+        let start = graph.add_node(points[0], NodeType::Junction);
+        let end = graph.add_node(*points.last().unwrap(), NodeType::Junction);
+        graph.add_edge(test_edge(
+            start,
+            end,
+            points,
+            10.0,
+            class,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+    }
+    graph.rebuild_adjacency_list();
+    graph.rebuild_intersection_clips();
+    let mut surface = RoadSurfaceSystem::new(64.0);
+    assert!(surface.compile_dirty(&graph, &terrain));
+
+    let mut classes = Vec::new();
+    for (&edge_idx, piece) in surface.compiled_visual_span_pieces() {
+        assert!(!piece.terrain_clip_loops.is_empty(), "edge {edge_idx}");
+        assert!(
+            piece
+                .terrain_clip_loops
+                .iter()
+                .all(|clip_loop| clip_loop.is_keyed()),
+            "edge {edge_idx} clip loops must not fall back to explicit sources"
+        );
+        classes.push(piece.edge_class);
+
+        let mut expected = piece.terrain_clip_boundary_loops();
+        for edge in expected
+            .iter_mut()
+            .flat_map(|clip_loop| &mut clip_loop.source_edges)
+        {
+            edge.source = edge.source.with_span_identity(edge_idx + 40);
+        }
+        let remapped = piece.clone_with_edge_identity(edge_idx + 40);
+        assert_eq!(remapped.terrain_clip_boundary_loops(), expected);
+        let moved = (**piece).clone().into_with_edge_identity(edge_idx + 40);
+        assert_eq!(moved.terrain_clip_boundary_loops(), expected);
+    }
+    assert!(classes.contains(&EdgeClass::Standard) && classes.contains(&EdgeClass::Bridge));
 }

@@ -4,6 +4,7 @@
 
 use super::stable_ids::terrain_cdt_usize_to_u32;
 use super::*;
+use std::borrow::Cow;
 
 impl RoadSurfaceSystem {
     pub(crate) fn terrain_cdt_road_loops_for_world_bounds(
@@ -20,10 +21,14 @@ impl RoadSurfaceSystem {
     }
 
     pub(in crate::simulation::network::surface) fn terrain_cdt_road_loops_from_boundaries(
-        boundary_loops: &[&RoadSurfaceTerrainClipLoop],
+        boundary_loops: &[Cow<'_, RoadSurfaceTerrainClipLoop>],
     ) -> Result<(Vec<TerrainCdtRoadLoop>, usize), RoadSurfaceTerrainClipExportError> {
         let source_count = boundary_loops.len();
-        let export = Self::union_terrain_clip_boundary_refs_export(boundary_loops)?;
+        let boundary_loops = boundary_loops
+            .iter()
+            .map(|boundary| &**boundary)
+            .collect::<Vec<_>>();
+        let export = Self::union_terrain_clip_boundary_refs_export(&boundary_loops)?;
         let footprint_group_ids =
             Self::terrain_cdt_stable_footprint_group_ids_for_terrain_clip_export(&export);
         let road_loops = export

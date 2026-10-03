@@ -4052,10 +4052,43 @@ committed and preview products identical and must not slow the 10k or 100k bench
   alternating runs: 17.9 s and 17.7 s before, 17.8 s and 17.7 s after, with identical city
   records. Each span earthwork face still keeps its record (224 B, 120 B of it the face source)
   and four points; those are not triangle storage and are not part of `ROAD-45`.
-- **`ROAD-46` Span terrain-clip loops (138 MB).** Each span keeps terrain-clip boundary loops
-  with per-edge source records, built at compile from its regions and sections. The terrain CDT
-  patch and grading paths read them. Rebuild them on read per 64 m run, or store them compactly;
-  terrain mesh output must stay identical and chunk rebuild cost must stay local.
+- **`ROAD-46` Span terrain-clip loops (done 2026-10-03).** Each span kept its terrain-clip loops
+  as points plus one 176 B source edge per point: two copied endpoints, the edge kind and a full
+  `SpanSupportBoundary` source, almost all of it derivable from the span. Spans now keep
+  `SpanTerrainClipLoop` (`surface/span/clip_loops.rs`): the loop points and, per edge, a 16 B key
+  of two endpoint indices, band index, band kind and section pair. The edge id, class, support
+  policy, role, stations and edge kind are rebuilt from the piece and its sections. Endpoints
+  that are not loop points bit for bit are kept in a short per-loop extra list; these are the
+  curb-step corners of handoff edges, which the loop polygon merges. Compile keeps the keyed
+  form only when every edge rebuilds bit for bit, otherwise the loop keeps explicit edges.
+  Keyed edges take the edge id from the piece, so remapping an edge id no longer rewrites them.
+  Readers rebuild only the loops that overlap their query. Terrain grading checks its cache
+  against the stored points and rebuilds a loop only when it must grade it.
+
+  Rebuilding loops from regions on every read was tried first and rejected. It saved all
+  138 MB, but every read reran the boundary build, about 36 µs per loop. The 10k patch clip
+  queries went from 101 to 193 ms and grading from 1.6 to 62 ms.
+
+  Products are unchanged. `span_clip_loops_rebuild_every_storage_form_bit_for_bit`
+  (`surface/span/clip_loops.rs`) covers the keyed, extra-point and explicit forms and edge-id
+  remapping. `compiled_span_clip_loops_store_keyed_edges_and_remap_sources`
+  (`surface/tests/terrain_clip/loops.rs`) compiles a curved hillside road and a bridge with
+  grounded abutments, checks every loop is keyed, and checks that both remap paths rebuild
+  remapped sources. A temporary probe hashed every span loop, every terrain patch's CDT road
+  loops (patch bounds plus query margin) and the grading margins of every patch. The hashes
+  were identical to `HEAD` at 10k and 100k. Matched release runs, same machine, default workers:
+
+  | Layout | Before | After |
+  | --- | ---: | ---: |
+  | 10k road layout, retained heap | 168.0 MB | 157.3 MB |
+  | 100k road layout, retained heap | 1,584.6 MB | 1,478.3 MB |
+  | 10k patch clip queries, 36 patches | 101–103 ms | 103 ms |
+  | 100k patch clip queries, 225 patches | 1,032 ms | 1,050 ms |
+  | 100k grading margins, 183 patches, warm cache | 24.7 ms | 26.6 ms |
+
+  At 100k the span loops hold 17,798 loops and 679,818 points. They now retain about 32 MB
+  instead of 138 MB, mostly the points themselves. `ECON-13` 10k benchmark build, alternating
+  runs: 17.7 s and 17.4 s before, 17.3 s and 16.8 s after, with identical city records.
 - **`ROAD-47` Span region records (135 MB).** `RoadSurfaceSpanOwnedRegion` is 56 B: the edge id is
   the piece's, the end section is always start + 1, and the stations are the sections'. A record
   of band index, kind, role and start section fits in about 8–16 B.

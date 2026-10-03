@@ -3,11 +3,13 @@
 //! Explicit visual span-piece compilation and span mouth profile construction.
 
 mod boundaries;
+mod clip_loops;
 mod mouth_profile;
 mod quads;
 mod raised_steps;
 mod regions;
 
+pub(crate) use clip_loops::SpanTerrainClipLoop;
 pub use quads::SpanQuad;
 
 use super::{
@@ -77,7 +79,8 @@ pub struct RoadSurfaceVisualSpanPiece {
     pub edge_idx: usize,
     /// Outer piece-owned boundaries used for debug, surface chunk bounds, and terrain clipping.
     pub outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
-    pub(crate) terrain_clip_boundary_loops: Vec<RoadSurfaceTerrainClipLoop>,
+    // Terrain-clip loops in compiled order, edges keyed into the sections below.
+    pub(in crate::simulation::network::surface) terrain_clip_loops: Box<[SpanTerrainClipLoop]>,
     // Sections the regions were resolved from; region quads are rebuilt from them on read.
     pub(crate) sections: Arc<Vec<RoadSurfaceSection>>,
     // Indices into `span_owned_regions` of the asphalt, curb and sidewalk quads in render order.
@@ -131,10 +134,8 @@ impl RoadSurfaceVisualSpanPiece {
             }
             self.span_earthwork_support_regions = Arc::new(support_regions);
         }
-        for boundary_loop in &mut self.terrain_clip_boundary_loops {
-            for source_edge in &mut boundary_loop.source_edges {
-                source_edge.source = source_edge.source.with_span_identity(edge_idx);
-            }
+        for clip_loop in &mut self.terrain_clip_loops {
+            clip_loop.set_span_identity(edge_idx);
         }
         for face in &mut self.render_earthwork_faces {
             face.source = face.source.with_span_identity(edge_idx);
@@ -167,11 +168,9 @@ impl RoadSurfaceVisualSpanPiece {
         } else {
             Arc::new(remap_regions(&self.span_earthwork_support_regions))
         };
-        let mut terrain_clip_boundary_loops = self.terrain_clip_boundary_loops.clone();
-        for boundary_loop in &mut terrain_clip_boundary_loops {
-            for source_edge in &mut boundary_loop.source_edges {
-                source_edge.source = source_edge.source.with_span_identity(edge_idx);
-            }
+        let mut terrain_clip_loops = self.terrain_clip_loops.clone();
+        for clip_loop in &mut terrain_clip_loops {
+            clip_loop.set_span_identity(edge_idx);
         }
         let mut render_earthwork_faces = self.render_earthwork_faces.clone();
         for face in &mut render_earthwork_faces {
@@ -181,7 +180,7 @@ impl RoadSurfaceVisualSpanPiece {
         Self {
             edge_idx,
             outer_boundary_loops: self.outer_boundary_loops.clone(),
-            terrain_clip_boundary_loops,
+            terrain_clip_loops,
             sections: sections_with_edge_identity(Arc::clone(&self.sections), edge_idx),
             surface_polygon_order: self.surface_polygon_order.clone(),
             raised_steps: self.raised_steps.clone(),
@@ -327,7 +326,6 @@ impl RoadSurfaceVisualSpanPiece {
     // Retained lists are built by pushing; drop their spare capacity once, at publication size.
     fn shrink_retained(&mut self) {
         self.outer_boundary_loops.shrink_to_fit();
-        shrink_terrain_clip_loops(&mut self.terrain_clip_boundary_loops);
         for regions in [&mut self.span_owned_regions, &mut self.span_earthwork_support_regions] {
             if let Some(regions) = Arc::get_mut(regions) {
                 regions.shrink_to_fit();
@@ -524,10 +522,14 @@ impl RoadSurfaceSystem {
             );
         }
 
+        let terrain_clip_loops = terrain_clip_boundary_loops
+            .into_iter()
+            .map(|clip_loop| SpanTerrainClipLoop::new(clip_loop, edge_idx, edge.class, &sections))
+            .collect();
         let mut piece = RoadSurfaceVisualSpanPiece {
             edge_idx,
             outer_boundary_loops,
-            terrain_clip_boundary_loops,
+            terrain_clip_loops,
             sections,
             surface_polygon_order,
             raised_steps,

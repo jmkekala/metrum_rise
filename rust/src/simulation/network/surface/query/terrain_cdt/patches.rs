@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::simulation::terrain::TerrainVisualSource;
+use std::borrow::Cow;
 
 const TERRAIN_CDT_MIN_PATCH_OVERLAP_M: f32 = 0.001;
 
@@ -22,12 +23,9 @@ impl RoadSurfaceSystem {
         let mut span_pieces = self.compiled_visual_span_pieces.iter().collect::<Vec<_>>();
         span_pieces.sort_by_key(|(edge_idx, _)| **edge_idx);
         for (_, piece) in span_pieces {
-            if piece.terrain_clip_boundary_loops.is_empty() {
-                continue;
-            }
-            for boundary_loop in &piece.terrain_clip_boundary_loops {
+            for boundary_loop in &piece.terrain_clip_boundary_loops() {
                 let Some((min_x, min_z, max_x, max_z)) =
-                    Self::terrain_clip_boundary_loop_bounds_xz(boundary_loop)
+                    Self::terrain_clip_points_bounds_xz(&boundary_loop.points_world)
                 else {
                     continue;
                 };
@@ -50,7 +48,7 @@ impl RoadSurfaceSystem {
             }
             for boundary_loop in &piece.terrain_clip_boundary_loops {
                 let Some((min_x, min_z, max_x, max_z)) =
-                    Self::terrain_clip_boundary_loop_bounds_xz(boundary_loop)
+                    Self::terrain_clip_points_bounds_xz(&boundary_loop.points_world)
                 else {
                     continue;
                 };
@@ -84,10 +82,7 @@ impl RoadSurfaceSystem {
         let mut span_pieces = self.compiled_visual_span_pieces.iter().collect::<Vec<_>>();
         span_pieces.sort_by_key(|(edge_idx, _)| **edge_idx);
         for (_, piece) in span_pieces {
-            if piece.terrain_clip_boundary_loops.is_empty() {
-                continue;
-            }
-            for boundary_loop in &piece.terrain_clip_boundary_loops {
+            for boundary_loop in &piece.terrain_clip_boundary_loops() {
                 let _ = Self::insert_terrain_patch_grading_margins_for_loop(
                     terrain,
                     boundary_loop,
@@ -202,14 +197,14 @@ impl RoadSurfaceSystem {
             let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
                 continue;
             };
-            for (loop_index, boundary_loop) in piece.terrain_clip_boundary_loops.iter().enumerate()
-            {
+            for (loop_index, clip_loop) in piece.terrain_clip_loops.iter().enumerate() {
                 if let Some(cached) = Self::insert_cached_terrain_patch_grading_margins_for_targets(
                     &mut grading_cache.span_loops,
                     edge_idx,
                     loop_index,
                     terrain,
-                    boundary_loop,
+                    clip_loop.points(),
+                    || Cow::Owned(piece.terrain_clip_boundary_loop(clip_loop)),
                     render_step_m,
                     base_margin_m,
                     query_margin_m,
@@ -235,7 +230,8 @@ impl RoadSurfaceSystem {
                     node_id,
                     loop_index,
                     terrain,
-                    boundary_loop,
+                    &boundary_loop.points_world,
+                    || Cow::Borrowed(boundary_loop),
                     render_step_m,
                     base_margin_m,
                     query_margin_m,
@@ -263,14 +259,18 @@ impl RoadSurfaceSystem {
         patch_margins
     }
 
+    // The cache is checked against the loop points; `boundary_loop` builds the full loop only
+    // when the loop must be graded, so cache hits never rebuild a compact span loop.
     fn insert_cached_terrain_patch_grading_margins_for_targets<
+        'a,
         Owner: Eq + std::hash::Hash + Copy,
     >(
         owner_cache: &mut HashMap<Owner, Vec<Option<RoadSurfaceTerrainLoopGradingCacheEntry>>>,
         owner: Owner,
         loop_index: usize,
         terrain: &impl TerrainVisualSource,
-        boundary_loop: &RoadSurfaceTerrainClipLoop,
+        points_world: &[RoadVec3],
+        boundary_loop: impl FnOnce() -> Cow<'a, RoadSurfaceTerrainClipLoop>,
         render_step_m: f32,
         base_margin_m: f32,
         query_margin_m: f32,
@@ -278,7 +278,7 @@ impl RoadSurfaceSystem {
         patch_margins: &mut BTreeMap<(usize, usize), f32>,
     ) -> Option<bool> {
         let Some((loop_min_x, loop_min_z, loop_max_x, loop_max_z)) =
-            Self::terrain_clip_boundary_loop_bounds_xz(boundary_loop)
+            Self::terrain_clip_points_bounds_xz(points_world)
         else {
             return None;
         };
@@ -301,13 +301,13 @@ impl RoadSurfaceSystem {
             cached.terrain_source_generation == terrain.terrain().source_generation()
                 && Some(cached.terrain_visual_generation) == terrain.visual_cache_generation()
                 && cached.render_step_bits == render_step_m.to_bits()
-                && cached.points_world.as_slice() == boundary_loop.points_world
+                && cached.points_world.as_slice() == points_world
         });
         if !cache_matches {
             let mut loop_margins = BTreeMap::new();
             let (influence_bounds, _) = Self::insert_terrain_patch_grading_margins_for_loop(
                 terrain,
-                boundary_loop,
+                &boundary_loop(),
                 render_step_m,
                 base_margin_m,
                 &mut loop_margins,
@@ -317,7 +317,7 @@ impl RoadSurfaceSystem {
                 terrain_source_generation: terrain.terrain().source_generation(),
                 terrain_visual_generation: terrain.visual_cache_generation().unwrap_or_default(),
                 render_step_bits: render_step_m.to_bits(),
-                points_world: Arc::new(boundary_loop.points_world.clone()),
+                points_world: Arc::new(points_world.to_vec()),
                 influence_bounds,
                 patch_margins: Arc::new(loop_margins),
             });
@@ -386,7 +386,7 @@ impl RoadSurfaceSystem {
         min_z: f32,
         max_x: f32,
         max_z: f32,
-    ) -> Vec<&'a RoadSurfaceTerrainClipLoop> {
+    ) -> Vec<Cow<'a, RoadSurfaceTerrainClipLoop>> {
         let mut boundary_loops = Vec::new();
         let (edge_indices, node_ids) = self.collect_spatial_query_contributors_for_bounds(
             f64::from(min_x),
@@ -399,17 +399,18 @@ impl RoadSurfaceSystem {
             let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
                 continue;
             };
-            if piece.terrain_clip_boundary_loops.is_empty() {
-                continue;
+            // Span loops are stored compactly; rebuild only those overlapping the query.
+            for clip_loop in &piece.terrain_clip_loops {
+                if Self::visual_points_overlap_bounds_xz(
+                    clip_loop.points().iter().copied(),
+                    min_x,
+                    min_z,
+                    max_x,
+                    max_z,
+                ) {
+                    boundary_loops.push(Cow::Owned(piece.terrain_clip_boundary_loop(clip_loop)));
+                }
             }
-            Self::collect_terrain_clip_boundary_loops_from_piece(
-                &piece.terrain_clip_boundary_loops,
-                min_x,
-                min_z,
-                max_x,
-                max_z,
-                &mut boundary_loops,
-            );
         }
 
         for node_id in node_ids {
@@ -438,7 +439,7 @@ impl RoadSurfaceSystem {
         min_z: f32,
         max_x: f32,
         max_z: f32,
-        out: &mut Vec<&'a RoadSurfaceTerrainClipLoop>,
+        out: &mut Vec<Cow<'a, RoadSurfaceTerrainClipLoop>>,
     ) {
         for boundary_loop in source {
             if Self::visual_points_overlap_bounds_xz(
@@ -448,7 +449,7 @@ impl RoadSurfaceSystem {
                 max_x,
                 max_z,
             ) {
-                out.push(boundary_loop);
+                out.push(Cow::Borrowed(boundary_loop));
             }
         }
     }
@@ -762,14 +763,12 @@ impl RoadSurfaceSystem {
         target_inserted
     }
 
-    fn terrain_clip_boundary_loop_bounds_xz(
-        boundary_loop: &RoadSurfaceTerrainClipLoop,
-    ) -> Option<(f64, f64, f64, f64)> {
+    fn terrain_clip_points_bounds_xz(points_world: &[RoadVec3]) -> Option<(f64, f64, f64, f64)> {
         let mut min_x = f64::INFINITY;
         let mut min_z = f64::INFINITY;
         let mut max_x = f64::NEG_INFINITY;
         let mut max_z = f64::NEG_INFINITY;
-        for point in &boundary_loop.points_world {
+        for point in points_world {
             min_x = min_x.min(point.x);
             min_z = min_z.min(point.z);
             max_x = max_x.max(point.x);

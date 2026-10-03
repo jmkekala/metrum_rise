@@ -991,7 +991,7 @@ fn empty_visual_span_piece(edge_idx: usize) -> RoadSurfaceVisualSpanPiece {
     RoadSurfaceVisualSpanPiece {
         edge_idx,
         outer_boundary_loops: Vec::new(),
-        terrain_clip_boundary_loops: Vec::new(),
+        terrain_clip_loops: Box::default(),
         sections: Arc::new(Vec::new()),
         surface_polygon_order: Default::default(),
         raised_steps: Default::default(),

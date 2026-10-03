@@ -11,6 +11,7 @@ use super::stamping::{
 use super::*;
 use crate::simulation::terrain::cdt::TerrainCdtRoadLoop;
 use crate::simulation::terrain::{TerrainPatchSnapshot, TerrainVisualOverlay};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// Local road-only clipping input; building contributors must still be checked at commit.
@@ -276,7 +277,7 @@ impl PlannedRoadSurfaceQuery {
                 let mapped = surface.terrain_clip_boundary_loops_for_world_bounds(
                     graph, bounds.0, bounds.1, bounds.2, bounds.3,
                 ).into_iter().map(|boundary| {
-                    let mut boundary = boundary.clone();
+                    let mut boundary = boundary.into_owned();
                     for edge in &mut boundary.source_edges {
                         edge.source = match edge.source {
                             RoadSurfaceEarthworkFaceSource::SpanSupportBoundary { edge_idx, .. } => edge.source.with_span_identity(edge_ids[edge_idx]),
@@ -284,9 +285,9 @@ impl PlannedRoadSurfaceQuery {
                             | RoadSurfaceEarthworkFaceSource::NodeSameMaterialBoundaryHandoff { node_id, kind, .. } => edge.source.with_node_identity(node_ids[node_id as usize], kind),
                         };
                     }
-                    boundary
-                }).collect::<Vec<_>>();
-                old.extend(mapped.iter());
+                    Cow::Owned(boundary)
+                });
+                old.extend(mapped);
                 // Union only after removing superseded owners, and in live owner order.
                 old.sort_by_key(|boundary| clip_owner_key(boundary));
                 let loops = RoadSurfaceSystem::terrain_cdt_road_loops_from_boundaries(&old);

@@ -187,7 +187,7 @@ impl RoadSurfaceSystem {
         }
     }
 
-    fn span_terrain_clip_edge_kind_for_source(
+    pub(super) fn span_terrain_clip_edge_kind_for_source(
         source: RoadSurfaceEarthworkFaceSource,
     ) -> RoadSurfaceTerrainClipEdgeKind {
         match source {

@@ -344,14 +344,14 @@ fn road_locked_grading_pad_is_preserved_in_clip_query_margin() {
     let probe_east_extent_m = probe_surface
         .compiled_visual_span_pieces()
         .values()
-        .flat_map(|piece| &piece.terrain_clip_boundary_loops)
+        .flat_map(|piece| piece.terrain_clip_boundary_loops())
         .chain(
             probe_surface
                 .compiled_visual_node_pieces()
                 .values()
-                .flat_map(|piece| &piece.terrain_clip_boundary_loops),
+                .flat_map(|piece| piece.terrain_clip_boundary_loops.iter().cloned()),
         )
-        .flat_map(|boundary_loop| &boundary_loop.points_world)
+        .flat_map(|boundary_loop| boundary_loop.points_world)
         .map(|point| point.x)
         .fold(f64::NEG_INFINITY, f64::max) as f32;
     assert!(probe_east_extent_m.is_finite());
@@ -554,14 +554,14 @@ fn terrain_clip_loops_include_grounded_bridge_abutments_only() {
         .expect("bridge ramp must compile");
 
     assert!(
-        !bridge_piece.terrain_clip_boundary_loops.is_empty(),
+        !bridge_piece.terrain_clip_boundary_loops().is_empty(),
         "the grounded bridge ramp end must own a terrain cutout"
     );
     assert!(bridge_piece.start_terrain_clip_node);
     assert!(!bridge_piece.end_terrain_clip_node);
     assert!(
         bridge_piece
-            .terrain_clip_boundary_loops
+            .terrain_clip_boundary_loops()
             .iter()
             .flat_map(|boundary_loop| &boundary_loop.source_edges)
             .all(|source_edge| matches!(

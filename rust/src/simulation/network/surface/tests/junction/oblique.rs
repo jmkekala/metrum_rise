@@ -104,7 +104,7 @@ fn editor_sized_60_degree_t_junction_width_7_compiles_side_join_ownership() {
     let raw_clip_sources = surface
         .compiled_visual_span_pieces()
         .values()
-        .flat_map(|piece| piece.terrain_clip_boundary_loops.iter().cloned())
+        .flat_map(|piece| piece.terrain_clip_boundary_loops())
         .chain(
             surface
                 .compiled_visual_node_pieces()

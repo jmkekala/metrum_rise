@@ -36,6 +36,7 @@ impl RoadSurfaceSystem {
         let raised_step_source_count_matches =
             piece.raised_step_face_polygons().len() == piece.span_raised_step_sources().len();
         let sourced_earthwork_face_count = piece.render_earthwork_faces.len();
+        let terrain_clip_loops = piece.terrain_clip_boundary_loops();
         let _ = write!(
             dump,
             "{{\"span_piece_compiled\":true,\"road_projection_matches\":{},\"curb_projection_matches\":{},\"sidewalk_projection_matches\":{},\"raised_step_source_count_matches\":{},\"terrain_clip_loop_count\":{},\"terrain_clip_source_edge_count\":{},\"earthwork_support_region_count\":{},\"sourced_earthwork_face_count\":{},\"missing_earthwork_face_source_count\":0}}",
@@ -43,9 +44,8 @@ impl RoadSurfaceSystem {
             curb_projection_matches,
             sidewalk_projection_matches,
             raised_step_source_count_matches,
-            piece.terrain_clip_boundary_loops.len(),
-            piece
-                .terrain_clip_boundary_loops
+            terrain_clip_loops.len(),
+            terrain_clip_loops
                 .iter()
                 .map(|boundary_loop| boundary_loop.source_edges.len())
                 .sum::<usize>(),

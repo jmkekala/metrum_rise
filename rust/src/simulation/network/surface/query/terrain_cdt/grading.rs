@@ -44,10 +44,7 @@ impl RoadSurfaceSystem {
         let mut margin_m = base_margin_m;
 
         for (_, piece) in self.compiled_visual_span_pieces.iter() {
-            if piece.terrain_clip_boundary_loops.is_empty() {
-                continue;
-            }
-            for boundary_loop in &piece.terrain_clip_boundary_loops {
+            for boundary_loop in &piece.terrain_clip_boundary_loops() {
                 margin_m = margin_m.max(Self::terrain_cdt_required_grading_margin_for_clip_loop(
                     terrain,
                     boundary_loop,
