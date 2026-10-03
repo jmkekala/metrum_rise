@@ -30,6 +30,11 @@ fn benchmark_supplier_index() {
     let catalog = load_runtime_economy_catalog().unwrap();
     let resource = catalog.resource_runtime_id_for_id("packaged_food").unwrap();
     let components = ModeComponentIndex::build(&graph, TransitFlags::CAR);
+    let reservations = ShipmentSystem::new().build_reservation_views(catalog.resource_count());
+    let truck_load_units = load_runtime_economy_tuning()
+        .unwrap()
+        .logistics
+        .truck_load_units;
     for count in [1_024, 8_192, 65_536] {
         let mut allocator = BuildingAllocator::new();
         let asset = register_test_asset(
@@ -60,8 +65,14 @@ fn benchmark_supplier_index() {
         let mut samples = [0.0; 11];
         for sample in &mut samples {
             let start = Instant::now();
-            let index =
-                SupplierCandidateIndex::build(black_box(&allocator), &graph, &catalog, &components);
+            let index = SupplierCandidateIndex::build(
+                black_box(&allocator),
+                &graph,
+                &catalog,
+                &components,
+                &reservations,
+                truck_load_units,
+            );
             *sample = start.elapsed().as_secs_f64() * 1_000.0;
             let mut found = 0;
             index.buckets_for_resource(resource).unwrap().scan_nearest(
@@ -1448,6 +1459,85 @@ fn local_supplier_reservations_prevent_same_pass_overpromise() {
             .count(),
         2
     );
+}
+
+#[test]
+fn supplier_index_lists_only_suppliers_with_an_unreserved_truckload() {
+    use crate::simulation::economy::accessibility::ReachableBucketScanEvent;
+    let (graph, network, industrial_edge, commercial_edge, _) = simple_graph_with_border();
+    let mut allocator = BuildingAllocator::new();
+    let industrial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "index_industrial",
+        ZoneClass::Industrial,
+    );
+    let commercial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "index_commercial",
+        ZoneClass::Commercial,
+    );
+    // A full stock, one unit short of a truckload, and a full stock mostly reserved.
+    for (x, stock) in [(-50.0, 300.0), (-40.0, 39.0), (-30.0, 300.0)] {
+        allocator.buildings.push(make_building(
+            &allocator,
+            x,
+            ZoneType::Industrial,
+            industrial_edge,
+            &industrial_asset,
+            stock,
+            0.0,
+        ));
+    }
+    allocator.buildings.push(make_building(
+        &allocator,
+        40.0,
+        ZoneType::Commercial,
+        commercial_edge,
+        &commercial_asset,
+        0.0,
+        20_000.0,
+    ));
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    allocator.rebuild_zone_index();
+
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let packaged_food = catalog
+        .resource_runtime_id_for_id("packaged_food")
+        .expect("packaged food resource");
+    let mut shipments = ShipmentSystem::new();
+    shipments.shipments.push(Shipment {
+        id: 1,
+        resource_runtime_id: packaged_food,
+        amount: 280.0,
+        source: ShipmentEndpoint::Building(2),
+        destination: ShipmentEndpoint::Building(3),
+        carrier_class: CarrierClass::Truck,
+        status: ShipmentStatus::Queued,
+        carrier_agent_id: usize::MAX,
+        total_cost: 0.0,
+        eta_hours: 1,
+        queued_hours: 0,
+    });
+    let planning =
+        super::planning::FreightPlanningContext::build(&mut shipments, &allocator, &graph);
+    let buyer =
+        planning
+            .freight_components
+            .building_components(&allocator, &graph, 3, TransitFlags::CAR);
+    let mut listed = Vec::new();
+    planning
+        .supplier_index
+        .buckets_for_resource(packaged_food)
+        .expect("stocked supplier indexed")
+        .scan_nearest(buyer, 40.0, 10.0, |event| {
+            if let ReachableBucketScanEvent::Item { item_idx } = event {
+                listed.push(item_idx);
+            }
+            true
+        });
+    assert_eq!(listed, [0]);
 }
 
 #[test]

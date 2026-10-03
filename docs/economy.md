@@ -3826,12 +3826,17 @@ runs and are not yet the matched acceptance runs.
 | Building spawns | 1.7 s | 175 s | about 5 h | `ALLOC-02`, fixed: 9.7 s at 100k, about 1.6 min at 1M |
 | Household admission | 1.5 s | about 132 s | about 3.5 h | `ALLOC-03` and `ALLOC-04`, fixed: border route queries 33.6 s → 0.15 s at 100k |
 | Admission hours (two ticks) | 2.6 s | 48 s | about 10 min | |
-| Warm-up, 48 hours | 1.7 s | 90 s | about 2 h | `ECON-15` |
+| Warm-up, 48 hours | 1.7 s | 90 s | about 2 h | `ECON-15`, fixed: 100k hour 1.47 s → 29 ms, about 15 s at 1M |
 | Peak RSS | 434 MB | 1.9 GB | about 20 GB | `ROAD-44` |
 
-The benchmark then ticks 263 more hours (23 hourly samples and 10 settlement days), about 10
-hours at the projected 150 s hour. The 1M tier waits for `ALLOC-02`, `ALLOC-03` and `ECON-15`, fixed in that order before one
-1M run (decided 2026-10-03). `ALLOC-02`, `ALLOC-03` and `ALLOC-04` are done; 100k build 505 s → 247 s, records identical.
+The benchmark then ticks 263 more hours (23 hourly samples and 10 settlement days), which
+projected to about 10 hours at the old 150 s hour. The 1M tier waited for `ALLOC-02`, `ALLOC-03`
+and `ECON-15`, fixed in that order before one 1M run (decided 2026-10-03). All of these are done,
+along with `ALLOC-04`:
+
+- The 100k build fell from 505 s to 177 s, with identical records.
+- The 1M hour projects to about 0.3 s.
+- The 1M run is next.
 
 **Benchmark city.** `PopulatedCity::build(residents)` (`rust/src/nodes/sim/core/populated_city.rs`)
 builds a square city sized for the requested residents (about 2,800 per km², plus 8% headroom):
@@ -3889,9 +3894,11 @@ Findings so far:
   - The resulting city is identical: 5,617 households, 11,143 residents, 7,634 employed and
     14,009 jobs, both before and after. Building the 10k city fell from about 290 s to 17.4 s.
   - These are single release runs of the same workload, not matched acceptance runs.
-- **Logistics dominates the hourly tick and grows faster than the city (`ECON-15`).** At 30k
-  residents the hour took about 90 ms, of which `logistics.hourly_tick` was 87 ms. The hour is
-  19 ms at 10k and 1.6 s at 100k, close to quadratic.
+- **Logistics dominated the hourly tick and grew faster than the city (`ECON-15`, fixed).** At
+  30k residents the hour took about 90 ms, of which `logistics.hourly_tick` was 87 ms. The hour
+  was 19 ms at 10k and 1.6 s at 100k, close to quadratic.
+  - Supplier searches that found nothing scanned every supplier.
+  - With the fix, the hour is 9.5 ms at 10k and 29 ms at 100k, with identical records.
 - **Road-surface caches set the memory ceiling (`ROAD-44`).** At 10k, 1.32 GB of the city's
   1.34 GB of live heap is retained road-surface visual output. The rest of the city takes about
   30 MB, buildings, households and zoning included. At the 1M layout that projected to about
@@ -3899,17 +3906,73 @@ Findings so far:
   city records and tick times.
 
 Exit: `ROAD-44` lets the 1M tier build within 64 GB, and matched runs for all three tiers are
-recorded here. `ECON-15` and the slow daily ticks are tracked separately; this baseline records
-them as they are.
+recorded here. The slow daily ticks are tracked separately; this baseline records them as they
+are.
 
 ### `ECON-15` logistics hourly scaling
 
-Open. `ShipmentSystem::hourly_tick` is about 97% of the operational hour at 30k residents
-(87 of 90 ms), and the hour grows from 19 ms at 10k to 1.6 s at 100k. Supplier search is meant to
-stay bounded (see [Bounded supplier search](#bounded-supplier-search)), so some step in the hour
-scales with the whole city. Next: profile the 100k `PopulatedCity` hour to find which step does,
-then bound it. The 100k warm-up hours run at 1.5 s each (2026-10-03), so at 1M the hour projects
-to about 150 s; this blocks the 1M tier (see the 1M runtime table under `ECON-13`).
+Done, 2026-10-03. At 30k residents, `ShipmentSystem::hourly_tick` was 87 of the 90 ms
+operational hour. The hour grew from 19 ms at 10k to 1.6 s at 100k, which projected to about 150 s
+per hour at 1M.
+
+**Cause.** Local supplier searches that never found a supplier walked the whole supplier set.
+`find_local_supplier` scans supplier chunks outward from the buyer, and the scan stops at a ring
+only once it holds a choice whose travel time beats the next ring's lower bound. When no
+supplier of the resource could ship, the scan never held a choice, so it visited every supplier
+of that resource in the buyer's freight component. Temporary counters in the 10k city found
+1,209 searches per hour scanning 547,677 suppliers, none with stock. The exports hold pass
+(`reserve_reachable_local_input_holds`) then repeated the same searches. Requests and suppliers
+both grow with the city, so the hour grew with their product.
+
+**Fix.** `SupplierCandidateIndex::build` (`logistics/supplier_index.rs`), rebuilt once per hour
+in the planning context, lists a supplier under a resource only while its unreserved saleable
+stock fills one truckload (`fills_one_load` in `logistics/quantization.rs`). A smaller stock
+quantizes to nothing for every request, so the search would skip that supplier anyway.
+
+**Why results are unchanged.** Planning only adds reservations and never adds stock. The index
+built at the start of the pass therefore still lists every supplier that can ship, and the scan
+visits them in the same order. The search returns the same choice, and an empty search now ends
+at once. A search that does find stock is still bounded by its nearest qualifying supplier, as
+before.
+
+Verification, fresh on 2026-10-03:
+
+- Matched runs: release `bench` profile, 24 logical CPUs, default Rayon workers.
+- Before: `c2410028` in a detached worktree. After: the same commit plus this change.
+- Command: `cargo bench --bench economy_tick_benchmark -- /10k`, then the same with `/100k`.
+- Peak RSS is the bench process's `VmHWM`.
+
+| Measure | 10k before | 10k after | 100k before | 100k after |
+| --- | ---: | ---: | ---: | ---: |
+| `operational_hour` (estimate) | 16.5 ms | 9.5 ms | 1.467 s | 29.2 ms |
+| `operational_hour` bounds | 15.8–17.3 ms | 8.7–10.3 ms | 1.460–1.474 s | 26.3–32.4 ms |
+| `daily_settlement` (estimate) | 324 ms | 324 ms | 4.81 s | 4.98 s |
+| City build | 15.3 s | 14.7 s | 247.2 s | 176.7 s |
+| Peak RSS | | | 3.05 GB | 3.07 GB |
+
+City records:
+
+- Identical before and after, both after the build and after the 263 benchmark hours.
+- 10k: 5,617 households, 11,143 residents, 7,634 employed, 14,009 jobs, 7,428 buildings.
+- 100k: 56,481 / 110,867 / 76,628 / 141,573 / 75,965.
+- Treasuries also match: 1000000001165726.6 at 10k and 1000000012048676.4 at 100k.
+- The year-one trajectory of the ignored growth scenario is also identical.
+
+From 10k to 100k the hour now grows 3.1× for a 10× city, which meets the exit criterion of no
+faster than linear. Logistics is about 2 ms of the 10k hour and about 8 ms of the 100k hour; the
+rest is outside logistics.
+
+Projected to 1M at linear growth from 100k (not measured):
+
+- Hour: about 0.3 s.
+- The build's 48 warm-up hours: about 15 s.
+- The benchmark's 263 hours: about 80 s.
+
+Daily settlement grows faster than the city: 324 ms → 4.98 s from 10k to 100k. Its slow days are
+tracked under `ECON-13`.
+
+Coverage: `supplier_index_lists_only_suppliers_with_an_unreserved_truckload` in
+`logistics/tests.rs`.
 
 ## Future Calibration Targets
 

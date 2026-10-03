@@ -4011,11 +4011,12 @@ are tracked as `ROAD-45`–`ROAD-49` (below).
 Remaining exit checks, 2026-10-03:
 
 - **1M build.** Not attempted yet. `ROAD-45`–`ROAD-49` bring the 100k build to 1.9 GB peak RSS
-  (10k: 434 MB), which projects to about 20 GB at 1M. Time is the blocker, not memory. Phase timers
+  (10k: 434 MB), which projects to about 20 GB at 1M. Time was the blocker, not memory. Phase timers
   on the 10k, 30k and 100k builds show building spawns (1.7 s → 175 s, `ALLOC-02`, since fixed) and household
   admission (1.5 s → about 132 s, `ALLOC-03`, since fixed) growing quadratically, and the 48 warm-up hours
-  (1.7 s → 90 s) following the near-quadratic hourly tick (`ECON-15`). The 1M build projects to
-  10+ hours, so it waits for those three (`ALLOC-02` and `ALLOC-03` done 2026-10-03); see
+  (1.7 s → 90 s) following the near-quadratic hourly tick (`ECON-15`). The 1M build projected to
+  10+ hours, so it waited for those three. All were done 2026-10-03, with `ALLOC-04`; the 100k
+  build fell from 505 s to 177 s and the 100k hour from 1.47 s to 29 ms. See
   [`building_allocator.md`](building_allocator.md#city-scale-spawn-and-admission-cost-alloc-02-alloc-03)
   and `economy.md`.
 - **Cold-node edit latency.** The ignored test `cold_node_edit_latency`

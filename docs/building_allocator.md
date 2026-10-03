@@ -735,7 +735,7 @@ Release runs, default workers, temporary timers:
 | `admit_households` phase, 100k | 182.7 s | 81.8 s |
 | Whole 100k build (with `ALLOC-02`) | 505.5 s | 285.3 s |
 
-The remaining 48 s of the 100k phase are the two admission hours (`ECON-15`).
+The remaining 48 s of the 100k phase were the two admission hours (`ECON-15`, since fixed).
 
 **`ALLOC-04`: arrival border per household.** Found 2026-10-03 while closing `ALLOC-03`, done the
 same day. `household_arrival_border_node` scanned every graph node for border nodes, then ran a car

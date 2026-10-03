@@ -57,8 +57,14 @@ impl FreightPlanningContext {
         let border_nodes = connected_border_nodes(graph);
         let freight_components = ModeComponentIndex::build(graph, TransitFlags::CAR);
         let max_freight_speed = max_speed_for_modes(graph, TransitFlags::CAR).max(1.0);
-        let supplier_index =
-            SupplierCandidateIndex::build(allocator, graph, &catalog, &freight_components);
+        let supplier_index = SupplierCandidateIndex::build(
+            allocator,
+            graph,
+            &catalog,
+            &freight_components,
+            &reservations,
+            tuning.logistics.truck_load_units,
+        );
         let route_cache = std::mem::take(&mut shipments.freight_route_cache);
 
         Self {

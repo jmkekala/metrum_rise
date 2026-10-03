@@ -34,6 +34,11 @@ pub(super) fn quantize_export_amount(
     )
 }
 
+/// Whether `amount` quantizes to at least one truckload, as every shipped amount must.
+pub(super) fn fills_one_load(amount: f32, truck_load_units: f32) -> bool {
+    quantize_capped_amount(amount, 0.0, true, truck_load_units).is_some()
+}
+
 fn quantize_capped_amount(
     max_amount: f32,
     min_shipment_units: f32,

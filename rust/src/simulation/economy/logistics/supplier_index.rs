@@ -9,10 +9,13 @@ use crate::simulation::economy::accessibility::{
     ModeComponentIndex, ReachableBucketEntry, ReachableBucketIndex, chunk_for_point,
 };
 use crate::simulation::economy::definitions::{ResourceRuntimeId, RuntimeEconomyCatalog};
+use crate::simulation::economy::households::saleable_output_stock;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::TransitFlags;
 use rayon::prelude::*;
 
+use super::quantization::fills_one_load;
+use super::reservations::ReservationViews;
 use super::resource::building_outputs_can_supply_local_inputs;
 
 /// Resource-compatible supplier candidates grouped by freight-reachable component.
@@ -22,11 +25,19 @@ pub(super) struct SupplierCandidateIndex {
 
 impl SupplierCandidateIndex {
     /// Builds a resource-keyed supplier index over freight-reachable component chunks.
+    ///
+    /// Lists a supplier under a resource only while its unreserved saleable stock fills one
+    /// truckload: a smaller stock quantizes to nothing for every request. Planning only adds
+    /// reservations and never adds stock, so an index built at the start of the pass stays a
+    /// superset of the shippable suppliers and the scan sees them in the same order. Without
+    /// the filter a request no supplier can fill scans every supplier of the resource.
     pub(super) fn build(
         allocator: &BuildingAllocator,
         graph: &RegionGraph,
         catalog: &RuntimeEconomyCatalog,
         freight_components: &ModeComponentIndex,
+        reservations: &ReservationViews,
+        truck_load_units: f32,
     ) -> Self {
         let entries: Vec<(ResourceRuntimeId, ReachableBucketEntry)> = allocator
             .buildings
@@ -62,20 +73,31 @@ impl SupplierCandidateIndex {
                     idx,
                     chunk_for_point(building.center_x, building.center_y),
                     components,
-                    profile.outputs.as_slice(),
+                    building,
+                    profile,
                 ))
             })
-            .flat_map_iter(|(idx, chunk, components, outputs)| {
+            .flat_map_iter(|(idx, chunk, components, building, profile)| {
                 let (component_values, component_count) = components.raw_parts();
-                outputs.iter().flat_map(move |output| {
-                    (0..component_count).map(move |component_idx| {
-                        let component = component_values[component_idx];
-                        (
-                            output.resource_runtime_id,
-                            ReachableBucketEntry::new(component, chunk, idx),
-                        )
+                let shippable = move |resource| {
+                    let available = (saleable_output_stock(catalog, building, profile, resource)
+                        - reservations.reserved_outbound_amount(idx, resource))
+                    .max(0.0);
+                    fills_one_load(available, truck_load_units)
+                };
+                profile
+                    .outputs
+                    .iter()
+                    .filter(move |output| shippable(output.resource_runtime_id))
+                    .flat_map(move |output| {
+                        (0..component_count).map(move |component_idx| {
+                            let component = component_values[component_idx];
+                            (
+                                output.resource_runtime_id,
+                                ReachableBucketEntry::new(component, chunk, idx),
+                            )
+                        })
                     })
-                })
             })
             .collect();
         let mut grouped = BTreeMap::new();

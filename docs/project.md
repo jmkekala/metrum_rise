@@ -277,14 +277,16 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
 
 ## Current Priorities
 
-- **Economy growth redesign (`ECON-11`–`ECON-12` done; `ECON-13` in progress; `ECON-14`, `ECON-15`, `DEM-02` open)**: the city stops growing because
+- **Economy growth redesign (`ECON-11`–`ECON-12` done; `ECON-13` in progress; `ECON-15` done; `ECON-14`, `DEM-02` open)**: the city stops growing because
   it has no export base, exports pay `0.60×` unit price, and regional pull ends at 600 households.
   Balance tests and a headless growth scenario are in place; the scenario's starter town stalls at
   25 households and runs out of money near day 280.
-  - The `ECON-13` tick benchmark runs at 10k residents (hour 19 ms) and 100k (hour 1.6 s).
+  - The `ECON-13` tick benchmark runs at 10k residents (hour 9.5 ms) and 100k (hour 29 ms).
     Building it exposed and fixed a job search that routed every home to every workplace, with
     identical results.
-  - Logistics dominates the hour and grows near-quadratically (`ECON-15`).
+  - The logistics hour no longer grows near-quadratically (`ECON-15`). Supplier searches that
+    found no stock scanned every supplier; the hourly supplier index now lists only suppliers
+    that can ship, with identical results.
   - Road-surface memory (`ROAD-44` in progress): junction topologies are capped and span
     products are rebuilt from sections, with identical output. 100k peak RSS fell from 14.8 GB to
     2.0 GB, projecting about 20 GB at 1M. Triangles are now stored as fan or index forms
@@ -292,11 +294,13 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
     records (`ROAD-47`), lanes as 96 B records (`ROAD-48`) and node triangle queries as ids into
     their regions (`ROAD-49`). Together these cut the 100k road layout from 1.74 to 1.27 GB. Span
     earthwork records remain.
-  - The 1M city now fits in memory (about 20 GB projected) but its build projects to 10+ hours:
-    the hourly tick is near-quadratic (`ECON-15`). Batch building spawns (`ALLOC-02`) no longer
-    scan every building, and household admission no longer scans every vacancy (`ALLOC-03`) or
-    routes from every border per household (`ALLOC-04`). 100k build 505 s → 247 s, records
-    identical. The 1M run waits for `ECON-15`.
+  - The 1M city now fits in memory (about 20 GB projected), and the steps that made its build
+    project to 10+ hours are fixed:
+    - Batch building spawns (`ALLOC-02`) no longer scan every building.
+    - Household admission no longer scans every vacancy (`ALLOC-03`) or routes from every border
+      per household (`ALLOC-04`).
+    - The hourly tick is no longer near-quadratic (`ECON-15`).
+  - 100k build 505 s → 177 s, records identical. The 1M run is next.
   - The export base and a single demand signal follow. See
     [`economy.md`](economy.md#growth-redesign-econ-11econ-14-dem-02).
 - **Road preview display performance (`ROAD-30`–`ROAD-35`, `ROAD-37`–`ROAD-40` and `ROAD-42` done;
