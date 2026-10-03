@@ -296,15 +296,15 @@ fn pedestrian_junction_routes_cross_only_at_rendered_crosswalks() {
     let junction_lanes = &lanes.node_lanes[&(center as usize)];
     let pedestrian_connections = junction_lanes
         .iter()
-        .map(|lane_id| &lanes.lanes[*lane_id])
-        .filter(|lane| lane.lane_type == LaneType::Foot)
+        .copied()
+        .filter(|&lane_id| lanes.lanes[lane_id].lane_type == LaneType::Foot)
         .collect::<Vec<_>>();
 
     for &edge_id in &edge_ids {
         let crossings = pedestrian_connections
             .iter()
             .copied()
-            .filter(|lane| lane.crosswalk_edge_id == Some(edge_id))
+            .filter(|&lane_id| lanes.crosswalk(lane_id).map(|c| c.edge_id) == Some(edge_id))
             .collect::<Vec<_>>();
         assert_eq!(
             crossings.len(),
@@ -313,17 +313,17 @@ fn pedestrian_junction_routes_cross_only_at_rendered_crosswalks() {
         );
         let marking = crossings
             .iter()
-            .find_map(|lane| lane.crosswalk_marking)
+            .find_map(|&lane_id| lanes.crosswalk_marking(lane_id))
             .expect("crossing must own one visible zebra segment");
         assert_eq!(
             crossings
                 .iter()
-                .filter(|lane| lane.crosswalk_marking.is_some())
+                .filter(|&&lane_id| lanes.crosswalk_marking(lane_id).is_some())
                 .count(),
             1,
             "the two directions must share one visual marking"
         );
-        for lane in crossings {
+        for lane in crossings.into_iter().map(|lane_id| &lanes.lanes[lane_id]) {
             assert!(
                 lane.geometry.windows(2).any(|pair| {
                     (points_approximately_equal(pair[0], marking.start)
@@ -373,7 +373,9 @@ fn pedestrian_junction_routes_cross_only_at_rendered_crosswalks() {
     for lane in pedestrian_connections
         .iter()
         .copied()
-        .filter(|lane| lane.crosswalk_edge_id.is_none() && lane.length > 0.001)
+        .filter(|&lane_id| lanes.crosswalk(lane_id).is_none())
+        .map(|lane_id| &lanes.lanes[lane_id])
+        .filter(|lane| lane.length > 0.001)
     {
         assert!(
             lane.geometry.len() >= 9,
@@ -398,12 +400,9 @@ fn acute_pedestrian_corner_falls_back_outside_junction_core() {
     ]);
     let non_crossing_routes = lanes.node_lanes[&(center as usize)]
         .iter()
+        .filter(|&&lane_id| lanes.crosswalk(lane_id).is_none())
         .map(|lane_id| &lanes.lanes[*lane_id])
-        .filter(|lane| {
-            lane.lane_type == LaneType::Foot
-                && lane.crosswalk_edge_id.is_none()
-                && lane.length > 0.001
-        })
+        .filter(|lane| lane.lane_type == LaneType::Foot && lane.length > 0.001)
         .collect::<Vec<_>>();
 
     assert!(!non_crossing_routes.is_empty());
@@ -540,7 +539,8 @@ fn test_crosswalk_counts() {
         for &lid in &inbound_lane_ids {
             for &next_id in &lanes.lanes[lid].next_lanes {
                 let next_l = &lanes.lanes[next_id];
-                if next_l.crosswalk_marking.is_some() && next_l.lane_type == LaneType::Foot {
+                if lanes.crosswalk_marking(next_id).is_some() && next_l.lane_type == LaneType::Foot
+                {
                     if !crosswalk_lanes.contains(&next_id) {
                         crosswalk_lanes.push(next_id);
                     }
@@ -1065,8 +1065,26 @@ fn incremental_rebuild_repairs_connectors_at_expanded_edge_far_end() {
         .expect("preserved edge must have an outbound sidewalk lane");
     let remote_connections = lanes.lanes[preserved_outbound].next_lanes.clone();
     assert!(!remote_connections.is_empty());
+    let center = graph.edge(changed_edge).start_node as usize;
+    let old_center_connectors = lanes.node_lanes[&center].clone();
+    assert!(
+        old_center_connectors
+            .iter()
+            .any(|&lane_id| lanes.crosswalk(lane_id).is_some())
+    );
 
     lanes.rebuild_edges_incremental(&mut graph, &HashSet::from([changed_edge]));
+
+    for lane_id in old_center_connectors {
+        let lane = &lanes.lanes[lane_id];
+        assert!(
+            lane.geometry.capacity() == 0
+                && lane.cum_dist.capacity() == 0
+                && lane.next_lanes.is_empty()
+                && lanes.crosswalk(lane_id).is_none(),
+            "a tombstoned connector must free its buffers and drop its crossing"
+        );
+    }
 
     assert_eq!(
         lanes.lanes[preserved_outbound].next_lanes, remote_connections,

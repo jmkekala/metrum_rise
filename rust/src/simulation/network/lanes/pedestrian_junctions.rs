@@ -6,7 +6,7 @@ use super::super::graph::RegionGraph;
 use super::super::surface::{RoadVec2, rounded_sidewalk_corner_path_xz};
 use super::super::types::{TransitFlags, TransitType};
 use super::geometry::{build_cum_dist, road_half_width};
-use super::{CrosswalkMarking, Lane, LaneType};
+use super::{CrosswalkMarking, Lane, LaneCrosswalk, LaneSuccessors, LaneType};
 use crate::config;
 use godot::prelude::*;
 use std::collections::{BTreeMap, HashMap};
@@ -54,8 +54,7 @@ struct PedestrianStep {
     end_mouth: usize,
     geometry: Vec<Vector3>,
     length: f32,
-    crosswalk_edge_id: Option<usize>,
-    crosswalk_marking: Option<CrosswalkMarking>,
+    crosswalk: Option<LaneCrosswalk>,
 }
 
 fn push_distinct_point(points: &mut Vec<Vector3>, point: Vector3) {
@@ -216,12 +215,12 @@ fn append_pedestrian_connection(
     lanes: &mut Vec<Lane>,
     graph: &mut RegionGraph,
     node_lanes: &mut HashMap<usize, Vec<usize>>,
+    crosswalks: &mut HashMap<usize, LaneCrosswalk>,
     node_id: usize,
     start: &SidewalkMouth,
     end: &SidewalkMouth,
     geometry: Vec<Vector3>,
-    crosswalk_edge_id: Option<usize>,
-    crosswalk_marking: Option<CrosswalkMarking>,
+    crosswalk: Option<LaneCrosswalk>,
 ) {
     if geometry.len() < 2 {
         return;
@@ -241,11 +240,12 @@ fn append_pedestrian_connection(
         length,
         frontage_delay_penalty_s: 0.0,
         lane_type: LaneType::Foot,
-        crosswalk_edge_id,
-        crosswalk_marking,
-        next_lanes: vec![end.out_id],
+        next_lanes: LaneSuccessors::one(end.out_id),
         node_id,
     });
+    if let Some(crosswalk) = crosswalk {
+        crosswalks.insert(connection_id, crosswalk);
+    }
     node_lanes.entry(node_id).or_default().push(connection_id);
     lanes[start.in_id].next_lanes.push(connection_id);
     graph.nodes[node_id]
@@ -261,8 +261,7 @@ fn append_pedestrian_step(
     start_mouth: usize,
     end_mouth: usize,
     geometry: Vec<Vector3>,
-    crosswalk_edge_id: Option<usize>,
-    crosswalk_marking: Option<CrosswalkMarking>,
+    crosswalk: Option<LaneCrosswalk>,
 ) {
     if geometry.len() < 2 {
         return;
@@ -278,8 +277,7 @@ fn append_pedestrian_step(
         end_mouth,
         geometry,
         length,
-        crosswalk_edge_id,
-        crosswalk_marking,
+        crosswalk,
     });
     outgoing_steps[start_mouth].push(step_id);
 }
@@ -378,9 +376,7 @@ fn append_stationary_pedestrian_connection(
         frontage_delay_penalty_s: 0.0,
         cum_dist: vec![0.0, 0.0],
         lane_type: LaneType::Foot,
-        crosswalk_edge_id: None,
-        crosswalk_marking: None,
-        next_lanes: vec![mouth.out_id],
+        next_lanes: LaneSuccessors::one(mouth.out_id),
         node_id,
     });
     node_lanes.entry(node_id).or_default().push(connection_id);
@@ -399,6 +395,7 @@ pub fn build_pedestrian_connections_at_node(
     graph: &mut RegionGraph,
     node_id: usize,
     node_lanes: &mut HashMap<usize, Vec<usize>>,
+    crosswalks: &mut HashMap<usize, LaneCrosswalk>,
 ) {
     let node_pos = graph.node(node_id as u32).pos;
     let adj: Vec<usize> = graph.node_adjacency(node_id as u32).to_vec();
@@ -601,8 +598,10 @@ pub fn build_pedestrian_connections_at_node(
             start_index,
             end_index,
             route.clone(),
-            Some(edge_idx),
-            Some(marking),
+            Some(LaneCrosswalk {
+                edge_id: edge_idx,
+                marking: Some(marking),
+            }),
         );
         append_pedestrian_step(
             &mut steps,
@@ -610,8 +609,10 @@ pub fn build_pedestrian_connections_at_node(
             end_index,
             start_index,
             route.into_iter().rev().collect(),
-            Some(edge_idx),
-            None,
+            Some(LaneCrosswalk {
+                edge_id: edge_idx,
+                marking: None,
+            }),
         );
         crosswalks_added += 1;
     }
@@ -636,7 +637,6 @@ pub fn build_pedestrian_connections_at_node(
             end_index,
             route.clone(),
             None,
-            None,
         );
         append_pedestrian_step(
             &mut steps,
@@ -644,7 +644,6 @@ pub fn build_pedestrian_connections_at_node(
             end_index,
             start_index,
             route.into_iter().rev().collect(),
-            None,
             None,
         );
     }
@@ -672,22 +671,20 @@ pub fn build_pedestrian_connections_at_node(
                 continue;
             };
             debug_assert_eq!(steps[last_step_id].end_mouth, target_mouth);
-            let (crosswalk_edge_id, crosswalk_marking) = if route.len() == 1 {
-                let step = &steps[route[0]];
-                (step.crosswalk_edge_id, step.crosswalk_marking)
-            } else {
-                (None, None)
+            let crosswalk = match route.as_slice() {
+                &[step_id] => steps[step_id].crosswalk,
+                _ => None,
             };
             append_pedestrian_connection(
                 lanes,
                 graph,
                 node_lanes,
+                crosswalks,
                 node_id,
                 &mouths[source_mouth],
                 &mouths[target_mouth],
                 pedestrian_route_geometry(&route, &steps),
-                crosswalk_edge_id,
-                crosswalk_marking,
+                crosswalk,
             );
         }
 

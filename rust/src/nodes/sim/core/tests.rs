@@ -1418,7 +1418,6 @@ fn pedestrian_lane_surface_height_matches_lane_semantics() {
 
     let crosswalk = Lane {
         edge_id: usize::MAX,
-        crosswalk_edge_id: Some(7),
         lane_type: LaneType::Foot,
         ..Lane::default()
     };

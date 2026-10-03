@@ -4120,8 +4120,70 @@ committed and preview products identical and must not slow the 10k or 100k bench
   with equal ranges share one list. Regions now retain about 20 MB instead of 135 MB. `ECON-13` 10k
   benchmark build, alternating runs: 15.4 s and 15.4 s before, 16.0 s and 15.2 s after, with
   identical city records.
-- **`ROAD-48` Lane data (112 MB).** `LaneSystem` has not been examined yet; measure what it keeps
-  per lane and per connector before choosing a fix.
+- **`ROAD-48` Lane data (done 2026-10-03).** Measured first with the same probe, dropping each
+  part. At 100k, `LaneSystem` held 183,687 lanes in 160 B records: 41.9 MB, because the vector's
+  capacity is 262,144. Their 3.33M points took 44.0 MB of geometry and 16.2 MB of cumulative
+  distances. Successor lists took 6.9 MB and the edge and node id lists 2.9 MB. Most lanes are
+  pedestrian junction connectors: 133,272 lanes holding 1.84M points. Each incoming sidewalk
+  mouth gets one stored route to every reachable outgoing mouth, built from the node's crosswalk
+  and corner steps. Vehicle connectors add 24,771 lanes, and road lanes 25,644. The excess:
+
+  - `crosswalk_edge_id` and `crosswalk_marking` took 56 B in every record. They are set only on
+    connectors that are a single crosswalk, and only the crosswalk renderers and the crosswalk
+    query read them. They now live in a private `LaneSystem` table keyed by lane id, read
+    through `crosswalk` and `crosswalk_marking`.
+  - Every connector has exactly one successor, and each one sat in its own 32 B heap chunk.
+    `next_lanes` is now `LaneSuccessors` (`lanes/successors.rs`, 16 B). It keeps one id inline
+    and stores longer lists as exact-length boxed slices, and reads go through `[usize]`.
+  - Edge and node id lists keep only their ids after build, and edge-lane successor lists are
+    exact.
+  - Tombstoned connectors left by incremental rebuilds kept their geometry, distance and
+    successor buffers. They now free them and drop their crossings. Lane ids are never reused,
+    so the tombstone records stay.
+
+  A record is now 96 B. What remains is product data or growth:
+
+  - Points and cumulative distances are what agent movement reads, the distances for its binary
+    search.
+  - Pedestrian routes hold 1.84M points, about 29 MB at 100k with their distances. Each route
+    copies the steps it is built from. Sharing the steps would change how movement reads lanes,
+    so it is not part of `ROAD-48`.
+  - Of the 25.2 MB of records, 7.5 MB is spare capacity from vector doubling. Shrinking after a
+    full rebuild would be undone by the next edit. Reserving exactly would copy every record on
+    every edit.
+  - Physical lanes retired by incremental rebuilds still keep their buffers. Nobody has checked
+    whether anything reads them after agents are reattached, so they were left as they are.
+
+  Products are unchanged. A temporary probe hashed every lane's fields bit for bit: edge,
+  direction, index, points, length, frontage penalty, distances, type, crossing edge and
+  marking, successors and node. It also hashed the edge and node id lists. The hashes were
+  identical to `HEAD` at 10k (18,255 lanes) and 100k (183,687 lanes).
+  `successors_keep_one_id_inline_and_longer_lists_exact` covers the successor forms, and
+  `incremental_rebuild_repairs_connectors_at_expanded_edge_far_end` checks that tombstoned
+  connectors free their buffers and crossings. The crosswalk tests read the table.
+
+  Matched release runs, same machine, default workers:
+
+  | Measure | Before | After |
+  | --- | ---: | ---: |
+  | 10k road layout, retained heap | 145.6–145.7 MB | 143.2 MB |
+  | 100k road layout, retained heap | 1,362.1–1,362.5 MB | 1,341.4, 1,341.5 MB |
+  | 100k `LaneSystem` | 111.9 MB | 91.0 MB |
+  | 100k lane records | 41.9 MB | 25.2 MB |
+  | 100k successor lists | 6.9 MB | 1.6 MB |
+  | 100k full lane rebuild, warm | 63.6–65.2 ms | 62.1–66.0 ms |
+  | `AgentSystem::tick/on_road`, 100k agents | 4.77, 4.72 ms | 4.68, 4.35 ms |
+  | `AgentSystem::tick/on_road`, 1M agents | 22.37, 22.26 ms | 22.30, 22.53 ms |
+
+  The 91.0 MB includes the crossing table, 1.9 MB at 100k. `ECON-13` 10k benchmark build, five
+  alternating pairs, three of them with the change run first: 16.8–17.1 s before (mean 16.9 s)
+  and 16.5–17.9 s after (mean 17.2 s), with identical city records. The lane rebuild inside the
+  build is unchanged (5.6–6.1 ms at 10k), so the gap is within the spread of the runs.
+
+  A first version also shrank each pedestrian route's geometry to fit and grew successor lists
+  with two reallocations per push. The 100k lane rebuild took 73 ms instead of 65 ms. The
+  shrinking saved only 0.4 MB, because most routes had less spare room than glibc can split off.
+  Both were replaced.
 - **`ROAD-49` Node triangle query index (94 MB).** Node pieces still copy every top triangle into
   their `RoadSurfaceTriangleQueryIndex`. Use the span approach: keep a `SurfaceTriangleGrid` of
   ids into the owned regions and resolve candidates on read.

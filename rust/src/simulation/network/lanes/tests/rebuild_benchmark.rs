@@ -17,13 +17,16 @@ fn lane_role(lane: &Lane) -> (usize, bool, i8, bool) {
     )
 }
 
-fn hash_lane_shape(lane: &Lane, hash: &mut DefaultHasher) {
+fn hash_lane_shape(lanes: &LaneSystem, lane_id: usize, hash: &mut DefaultHasher) {
+    let lane = &lanes.lanes[lane_id];
+    let crosswalk = lanes.crosswalk(lane_id);
     lane_role(lane).hash(hash);
     lane.node_id.hash(hash);
     lane.length.to_bits().hash(hash);
     lane.frontage_delay_penalty_s.to_bits().hash(hash);
-    lane.crosswalk_edge_id.hash(hash);
-    lane.crosswalk_marking
+    crosswalk.map(|crosswalk| crosswalk.edge_id).hash(hash);
+    crosswalk
+        .and_then(|crosswalk| crosswalk.marking)
         .map(|marking| {
             (
                 marking.edge_id,
@@ -55,11 +58,11 @@ fn local_products(lanes: &LaneSystem, edges: [usize; 3]) -> u64 {
     for edge in edges {
         for &lane_id in &lanes.edge_lanes[&edge] {
             let lane = &lanes.lanes[lane_id];
-            hash_lane_shape(lane, &mut hash);
+            hash_lane_shape(lanes, lane_id, &mut hash);
             lane.next_lanes.len().hash(&mut hash);
             for &next_id in &lane.next_lanes {
                 let next = &lanes.lanes[next_id];
-                hash_lane_shape(next, &mut hash);
+                hash_lane_shape(lanes, next_id, &mut hash);
                 if next.edge_id == usize::MAX {
                     // Compare connector destinations by physical role, since appended lane IDs
                     // depend on the size of the deliberately unrelated background fixture.

@@ -17,12 +17,10 @@ impl SimCore {
             .node_lanes
             .get(&(valid_id as usize))
             .is_some_and(|lane_ids| {
-                lane_ids.iter().any(|lane_id| {
+                lane_ids.iter().any(|&lane_id| {
                     self.transit_network
                         .lane_system
-                        .lanes
-                        .get(*lane_id)
-                        .and_then(|lane| lane.crosswalk_marking)
+                        .crosswalk_marking(lane_id)
                         .is_some_and(|crosswalk| crosswalk.edge_id == edge_id as usize)
                 })
             })

@@ -4,7 +4,7 @@
 
 use super::super::graph::Edge;
 use super::super::types::TransitType;
-use super::{Lane, LaneType};
+use super::{Lane, LaneSuccessors, LaneType};
 use crate::config;
 use godot::prelude::*;
 use std::collections::HashMap;
@@ -146,9 +146,7 @@ pub fn build_one_lane(
         frontage_delay_penalty_s: 0.0,
         cum_dist,
         lane_type,
-        crosswalk_edge_id: None,
-        crosswalk_marking: None,
-        next_lanes: Vec::new(),
+        next_lanes: LaneSuccessors::default(),
         node_id: usize::MAX,
     });
     lane_map.insert((edge_idx, is_fwd, lane_idx), new_lane_id);

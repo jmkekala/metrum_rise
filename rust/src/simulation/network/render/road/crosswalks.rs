@@ -24,7 +24,7 @@ pub(super) fn emit_crosswalk_markings(
             };
             if lane.edge_id == usize::MAX
                 && lane.lane_type == LaneType::Foot
-                && let Some(marking) = lane.crosswalk_marking
+                && let Some(marking) = lane_system.crosswalk_marking(lane_id)
             {
                 let surface_query = road_surface.lane_owner_surface_query(
                     graph,

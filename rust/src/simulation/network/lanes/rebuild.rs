@@ -50,7 +50,12 @@ impl LaneSystem {
             graph,
             node_id,
             &mut self.node_lanes,
+            &mut self.crosswalks,
         );
+        // Connectors are pushed one at a time; keep only the ids.
+        if let Some(ids) = self.node_lanes.get_mut(&node_id) {
+            ids.shrink_to_fit();
+        }
     }
 
     fn append_edge_lanes(
@@ -117,6 +122,7 @@ impl LaneSystem {
             }
         }
 
+        edge_lane_indices.shrink_to_fit();
         self.edge_lanes.insert(edge_idx, edge_lane_indices);
     }
 
@@ -227,14 +233,15 @@ impl LaneSystem {
         // Rebuild connections in stable node order.
         for &node_id in &affected_nodes {
             if node_id < graph.node_count() {
-                // Tombstone old connection lanes at this node so the renderer skips them.
+                // Tombstone old connection lanes at this node so the renderer skips them, and
+                // free their buffers: ids are never reused, so tombstones stay in `lanes`.
                 if let Some(old_ids) = self.node_lanes.remove(&node_id) {
                     for lid in old_ids {
-                        if lid < self.lanes.len() {
-                            self.lanes[lid].crosswalk_edge_id = None;
-                            self.lanes[lid].crosswalk_marking = None;
-                            self.lanes[lid].geometry.clear();
-                            self.lanes[lid].next_lanes.clear();
+                        if let Some(lane) = self.lanes.get_mut(lid) {
+                            self.crosswalks.remove(&lid);
+                            lane.geometry = Vec::new();
+                            lane.cum_dist = Vec::new();
+                            lane.next_lanes.clear();
                         }
                     }
                 }

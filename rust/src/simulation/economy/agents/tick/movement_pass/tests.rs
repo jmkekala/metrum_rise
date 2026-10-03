@@ -6,7 +6,7 @@ use super::*;
 use crate::simulation::economy::agents::{
     MODE_CAR, MODE_WALK, TRANSIT_INTERSECTION, TRANSIT_NETWORK,
 };
-use crate::simulation::network::lanes::{Lane, LaneType};
+use crate::simulation::network::lanes::{Lane, LaneSuccessors, LaneType};
 use godot::prelude::Vector3;
 
 // Isolate the movement boundary: two connectors merge into each independent exit lane.
@@ -34,9 +34,9 @@ fn connector_exit_fixture(count: usize, blocked: bool, mode: u8) -> (AgentSystem
                     LaneType::Foot
                 },
                 next_lanes: if connector {
-                    vec![base + 2]
+                    LaneSuccessors::one(base + 2)
                 } else {
-                    Vec::new()
+                    LaneSuccessors::default()
                 },
                 ..Default::default()
             });

@@ -19,8 +19,11 @@ pub mod geometry;
 pub mod pedestrian_junctions;
 /// Full and incremental lane system rebuild orchestration.
 pub mod rebuild;
+mod successors;
 /// High-level logic for vehicle connections at junctions.
 pub mod vehicle_junctions;
+
+pub use successors::LaneSuccessors;
 
 /// Types of travel lanes supported by the network.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -40,6 +43,15 @@ pub struct CrosswalkMarking {
     pub start: Vector3,
     /// Opposite asphalt-edge endpoint of the stripe corridor.
     pub end: Vector3,
+}
+
+/// Street crossing walked by a pedestrian junction connector that is a single crosswalk.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LaneCrosswalk {
+    /// Road edge crossed, in either travel direction.
+    pub edge_id: usize,
+    /// Visible zebra; only one of the two directions of a crossing owns it.
+    pub marking: Option<CrosswalkMarking>,
 }
 
 /// A single travel lane through a road or intersection.
@@ -62,12 +74,8 @@ pub struct Lane {
     pub cum_dist: Vec<f32>,
     /// The travel type of this lane.
     pub lane_type: LaneType,
-    /// Road edge crossed by this pedestrian connection in either travel direction.
-    pub crosswalk_edge_id: Option<usize>,
-    /// Exact asphalt-only segment used to render this crossing, when owned by this lane.
-    pub crosswalk_marking: Option<CrosswalkMarking>,
     /// Reachable lanes from the end of this lane.
-    pub next_lanes: Vec<usize>,
+    pub next_lanes: LaneSuccessors,
     /// The junction node this connection lane belongs to. `usize::MAX` for road lanes.
     pub node_id: usize,
 }
@@ -83,9 +91,7 @@ impl Default for Lane {
             frontage_delay_penalty_s: 0.0,
             cum_dist: Vec::new(),
             lane_type: LaneType::Vehicle,
-            crosswalk_edge_id: None,
-            crosswalk_marking: None,
-            next_lanes: Vec::new(),
+            next_lanes: LaneSuccessors::default(),
             node_id: usize::MAX,
         }
     }
@@ -99,6 +105,8 @@ pub struct LaneSystem {
     pub edge_lanes: HashMap<usize, Vec<usize>>,
     /// Mapping of node IDs to their connection lane indices (crosswalks and vehicle turns).
     pub node_lanes: HashMap<usize, Vec<usize>>,
+    // Crossings by connector lane id. Few lanes cross a street, so they are kept out of `Lane`.
+    crosswalks: HashMap<usize, LaneCrosswalk>,
 }
 
 impl LaneSystem {
@@ -108,6 +116,7 @@ impl LaneSystem {
             lanes: Vec::new(),
             edge_lanes: HashMap::new(),
             node_lanes: HashMap::new(),
+            crosswalks: HashMap::new(),
         }
     }
 
@@ -116,6 +125,17 @@ impl LaneSystem {
         self.lanes.clear();
         self.edge_lanes.clear();
         self.node_lanes.clear();
+        self.crosswalks.clear();
+    }
+
+    /// Street crossing walked by connector `lane_id`, when the connector is a single crosswalk.
+    pub fn crosswalk(&self, lane_id: usize) -> Option<LaneCrosswalk> {
+        self.crosswalks.get(&lane_id).copied()
+    }
+
+    /// Visible zebra owned by connector `lane_id`, if any.
+    pub fn crosswalk_marking(&self, lane_id: usize) -> Option<CrosswalkMarking> {
+        self.crosswalk(lane_id)?.marking
     }
 
     pub(crate) fn sync_heights_to_visible_surface(

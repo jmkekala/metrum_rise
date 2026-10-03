@@ -197,7 +197,7 @@ fn lane_marking_crosswalk_endpoint_flags_by_edge(
             let Some(lane) = lane_system.lanes.get(lane_id) else {
                 continue;
             };
-            let Some(crosswalk) = lane.crosswalk_marking else {
+            let Some(crosswalk) = lane_system.crosswalk_marking(lane_id) else {
                 continue;
             };
             if lane.edge_id != usize::MAX

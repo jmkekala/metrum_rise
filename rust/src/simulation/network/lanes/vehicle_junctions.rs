@@ -3,7 +3,7 @@
 use super::super::graph::RegionGraph;
 use super::super::types::TransitFlags;
 use super::geometry::build_cum_dist;
-use super::{Lane, LaneType};
+use super::{Lane, LaneSuccessors, LaneType};
 use crate::config;
 use godot::prelude::*;
 use std::collections::HashMap;
@@ -186,9 +186,7 @@ pub fn build_vehicle_connections_at_node(
                 frontage_delay_penalty_s: 0.0,
                 cum_dist: conn_cum,
                 lane_type: LaneType::Vehicle,
-                crosswalk_edge_id: None,
-                crosswalk_marking: None,
-                next_lanes: vec![out_lid],
+                next_lanes: LaneSuccessors::one(out_lid),
                 node_id,
             });
             node_lanes.entry(node_id).or_default().push(conn_id);
