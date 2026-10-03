@@ -4089,9 +4089,37 @@ committed and preview products identical and must not slow the 10k or 100k bench
   At 100k the span loops hold 17,798 loops and 679,818 points. They now retain about 32 MB
   instead of 138 MB, mostly the points themselves. `ECON-13` 10k benchmark build, alternating
   runs: 17.7 s and 17.4 s before, 17.3 s and 16.8 s after, with identical city records.
-- **`ROAD-47` Span region records (135 MB).** `RoadSurfaceSpanOwnedRegion` is 56 B: the edge id is
-  the piece's, the end section is always start + 1, and the stations are the sections'. A record
-  of band index, kind, role and start section fits in about 8–16 B.
+- **`ROAD-47` Span region records (done 2026-10-03).** `RoadSurfaceSpanOwnedRegion` was 56 B: an
+  edge id, band owner, role, two section indices and two stations. The edge id was the
+  sections', the end section always start + 1, and the stations the sections'. Regions are only
+  resolved between sections whose band kinds match, so the role follows from the kind. A record
+  is now 8 B: `u32` start section, `u16` band index and band kind. The edge id, end section,
+  stations and role are read from the piece's sections, and support and handoff sources are
+  built from them. Remapping an edge id no longer copies or rewrites region lists; remapped
+  pieces share them. The sort keys that followed from the start section are dropped, so the
+  order is unchanged.
+
+  Products are unchanged. `compiled_span_regions_derive_sources_from_sections`
+  (`surface/tests/terrain_clip/loops.rs`) checks the 8 B size, the derived source fields
+  against the sections for visible and bridge support regions, and that both remap paths share
+  the region lists and rebuild remapped sources. A temporary probe hashed, per span, every
+  region's expanded fields (edge id, owner, role, sections, station bits), the top quads,
+  surface-query triangles, raised steps, outer and earthwork boundary loops and earthwork faces
+  with their sources, plus the `ROAD-46` span-loop, patch CDT loop and grading hashes. All were
+  identical to `HEAD` at 10k and 100k. Matched release runs, same machine, default workers:
+
+  | Layout | Before | After |
+  | --- | ---: | ---: |
+  | 10k road layout, retained heap | 157.3, 157.1 MB | 145.8, 145.8 MB |
+  | 100k road layout, retained heap | 1,477.8 MB | 1,362.4 MB |
+  | 100k span pieces | 411.5 MB | 295.7 MB |
+  | 100k patch clip queries, 225 patches, warm rounds | 1,048–1,049 ms | 1,060–1,062 ms |
+  | 100k grading margins, 183 patches, warm cache | 27.9 ms | 27.7 ms |
+
+  The 100k layout holds 1,398,726 visible regions and as many support regions; standard spans
+  with equal ranges share one list. Regions now retain about 20 MB instead of 135 MB. `ECON-13` 10k
+  benchmark build, alternating runs: 15.4 s and 15.4 s before, 16.0 s and 15.2 s after, with
+  identical city records.
 - **`ROAD-48` Lane data (112 MB).** `LaneSystem` has not been examined yet; measure what it keeps
   per lane and per connector before choosing a fix.
 - **`ROAD-49` Node triangle query index (94 MB).** Node pieces still copy every top triangle into

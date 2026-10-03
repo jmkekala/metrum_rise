@@ -288,8 +288,9 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   - Road-surface memory (`ROAD-44` in progress): junction topologies are capped and span
     products are rebuilt from sections, with identical output. 100k peak RSS fell from 14.8 GB to
     2.0 GB, projecting about 20 GB at 1M. Triangles are now stored as fan or index forms
-    (`ROAD-45`) and span terrain-clip edges as compact keys (`ROAD-46`), cutting the 100k road
-    layout from 1.74 to 1.48 GB; span earthwork and region records remain.
+    (`ROAD-45`), span terrain-clip edges as compact keys (`ROAD-46`) and span regions as 8 B
+    records (`ROAD-47`), cutting the 100k road layout from 1.74 to 1.36 GB; span earthwork
+    records remain.
   - The export base and a single demand signal follow. See
     [`economy.md`](economy.md#growth-redesign-econ-11econ-14-dem-02).
 - **Road preview display performance (`ROAD-30`–`ROAD-35`, `ROAD-37`–`ROAD-40` and `ROAD-42` done;

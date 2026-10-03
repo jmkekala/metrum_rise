@@ -212,13 +212,13 @@ pub(in crate::simulation::network::surface::tests) fn assert_span_earthwork_face
         assert_eq!(support_policy, expected_policy);
         assert!(
             piece.span_earthwork_support_regions.iter().any(|region| {
-                region.edge_idx == source_edge_idx
-                    && region.owner == owner
-                    && region.role == role
-                    && region.start_section_index == start_section_index
-                    && region.end_section_index == end_section_index
-                    && (region.start_s_m - start_s_m).abs() <= SAMPLE_EPSILON_M
-                    && (region.end_s_m - end_s_m).abs() <= SAMPLE_EPSILON_M
+                piece.sections[region.start_section_index()].edge_idx == source_edge_idx
+                    && region.owner() == owner
+                    && region.role() == role
+                    && region.start_section_index() == start_section_index
+                    && region.end_section_index() == end_section_index
+                    && (region.start_s_m(&piece.sections) - start_s_m).abs() <= SAMPLE_EPSILON_M
+                    && (region.end_s_m(&piece.sections) - end_s_m).abs() <= SAMPLE_EPSILON_M
             }),
             "span earthwork face source must refer to a stored support region"
         );

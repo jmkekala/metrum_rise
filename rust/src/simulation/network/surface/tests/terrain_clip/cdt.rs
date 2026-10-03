@@ -622,7 +622,10 @@ fn surface_terrain_cdt_skips_bridge_and_tunnel_midspan_support() {
                 span_piece
                     .span_earthwork_support_regions
                     .iter()
-                    .all(|region| !(region.start_s_m < 24.0 && region.end_s_m > 24.0)),
+                    .all(|region| {
+                        let sections = &span_piece.sections;
+                        !(region.start_s_m(sections) < 24.0 && region.end_s_m(sections) > 24.0)
+                    }),
                 "{case_name}: support regions must stay out of the midspan"
             );
         }

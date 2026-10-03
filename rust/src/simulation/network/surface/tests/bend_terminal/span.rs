@@ -36,7 +36,7 @@ fn span_visual_pieces_compile_explicit_band_polygons() {
         span_piece
             .span_owned_regions
             .iter()
-            .filter(|region| region.role == RoadSurfaceSpanRegionRole::Asphalt)
+            .filter(|region| region.role() == RoadSurfaceSpanRegionRole::Asphalt)
             .count(),
         span_piece.road_surface_polygons().len()
     );
@@ -44,7 +44,7 @@ fn span_visual_pieces_compile_explicit_band_polygons() {
         span_piece
             .span_owned_regions
             .iter()
-            .filter(|region| region.role == RoadSurfaceSpanRegionRole::CurbOrShoulder)
+            .filter(|region| region.role() == RoadSurfaceSpanRegionRole::CurbOrShoulder)
             .count(),
         span_piece.curb_surface_polygons().len()
     );
@@ -52,15 +52,14 @@ fn span_visual_pieces_compile_explicit_band_polygons() {
         span_piece
             .span_owned_regions
             .iter()
-            .filter(|region| region.role == RoadSurfaceSpanRegionRole::NonRoad)
+            .filter(|region| region.role() == RoadSurfaceSpanRegionRole::NonRoad)
             .count(),
         span_piece.sidewalk_surface_polygons().len()
     );
     assert!(
         span_piece.span_owned_regions.iter().all(|region| {
-            region.edge_idx == edge_idx
-                && region.end_section_index == region.start_section_index + 1
-                && region.end_s_m > region.start_s_m
+            span_piece.sections[region.start_section_index()].edge_idx == edge_idx
+                && region.end_s_m(&span_piece.sections) > region.start_s_m(&span_piece.sections)
         }),
         "span owned regions must preserve edge, section interval, and solved section authority"
     );
@@ -86,7 +85,7 @@ fn span_visual_pieces_compile_explicit_band_polygons() {
             span_piece
                 .span_earthwork_support_regions
                 .iter()
-                .any(|region| region.role == role),
+                .any(|region| region.role() == role),
             "span earthwork support regions must retain role/material provenance for {role:?}"
         );
     }
@@ -95,10 +94,11 @@ fn span_visual_pieces_compile_explicit_band_polygons() {
             .span_earthwork_support_regions
             .iter()
             .all(|region| {
-                region.edge_idx == edge_idx
-                    && region.end_section_index == region.start_section_index + 1
-                    && region.end_s_m > region.start_s_m
-                    && RoadSurfaceSystem::polygon_has_area_xz(span_piece.region_quad(region).points())
+                span_piece.sections[region.start_section_index()].edge_idx == edge_idx
+                    && region.end_s_m(&span_piece.sections) > region.start_s_m(&span_piece.sections)
+                    && RoadSurfaceSystem::polygon_has_area_xz(
+                        span_piece.region_quad(region).points(),
+                    )
             }),
         "span earthwork support regions must preserve edge, section interval, source band, and top-surface geometry"
     );

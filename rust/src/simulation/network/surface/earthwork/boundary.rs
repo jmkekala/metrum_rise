@@ -24,7 +24,7 @@ impl RoadSurfaceSystem {
     {
         let mut candidate_segments = Vec::new();
         for region in regions {
-            let source = region.support_boundary_source(edge_class);
+            let source = region.support_boundary_source(sections, edge_class);
             Self::push_region_polygon_boundary_segments(
                 region.quad(sections).points(),
                 source,

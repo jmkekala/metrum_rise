@@ -204,8 +204,8 @@ pub(in crate::simulation::network::surface::tests) fn assert_surface_no_unfaced_
     for span_piece in surface.compiled_visual_span_pieces().values() {
         for region in span_piece.span_owned_regions.iter() {
             top_edges.extend(test_polygon_top_boundary_edges(
-                region.owner.kind,
-                region.owner.source_band_index,
+                region.owner().kind,
+                region.owner().source_band_index,
                 &span_piece.region_quad(region).to_polygon(),
             ));
         }

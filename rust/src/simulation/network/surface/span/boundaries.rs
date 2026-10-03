@@ -34,7 +34,7 @@ impl RoadSurfaceSystem {
         let (outer_boundary_loops, mut terrain_clip_boundary_loops) =
             Self::build_span_boundary_run(sections, regions, edge_class)?;
         let run_key = |region: &RoadSurfaceSpanOwnedRegion| {
-            (region.start_s_m / TERRAIN_CLIP_RUN_M).floor() as i64
+            (region.start_s_m(sections) / TERRAIN_CLIP_RUN_M).floor() as i64
         };
         let mut runs = regions.chunk_by(|a, b| run_key(a) == run_key(b));
         let Some(first) = runs.next() else {
@@ -127,7 +127,8 @@ impl RoadSurfaceSystem {
                     inner_start,
                     inner_end,
                     source: Self::span_boundary_segment_source(
-                        region,
+                        sections,
+                        *region,
                         corners,
                         edge_class,
                         inner_start,
@@ -140,7 +141,8 @@ impl RoadSurfaceSystem {
     }
 
     fn span_boundary_segment_source(
-        region: &RoadSurfaceSpanOwnedRegion,
+        sections: &[RoadSurfaceSection],
+        region: RoadSurfaceSpanOwnedRegion,
         corners: [RoadVec3; 4],
         edge_class: EdgeClass,
         start: RoadVec3,
@@ -149,19 +151,19 @@ impl RoadSurfaceSystem {
         let [start_left, end_left, end_right, start_right] = corners;
         if Self::span_boundary_segment_matches_source_edge(start, end, end_left, end_right) {
             return region.handoff_boundary_source(
+                sections,
                 edge_class,
-                region.end_section_index,
-                region.end_s_m,
+                region.end_section_index(),
             );
         }
         if Self::span_boundary_segment_matches_source_edge(start, end, start_right, start_left) {
             return region.handoff_boundary_source(
+                sections,
                 edge_class,
-                region.start_section_index,
-                region.start_s_m,
+                region.start_section_index(),
             );
         }
-        region.support_boundary_source(edge_class)
+        region.support_boundary_source(sections, edge_class)
     }
 
     fn span_boundary_segment_matches_source_edge(

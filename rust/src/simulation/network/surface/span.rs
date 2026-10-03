@@ -47,15 +47,13 @@ pub(crate) struct RoadSurfaceSpanBandOwner {
     pub(crate) kind: RoadSurfaceBandKind,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+// One band strip between section `start_section_index` and the next. The edge id, end section
+// and stations are read from the piece's sections; the role follows from the band kind.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct RoadSurfaceSpanOwnedRegion {
-    pub(crate) edge_idx: usize,
-    pub(crate) owner: RoadSurfaceSpanBandOwner,
-    pub(crate) role: RoadSurfaceSpanRegionRole,
-    pub(crate) start_section_index: usize,
-    pub(crate) end_section_index: usize,
-    pub(crate) start_s_m: f32,
-    pub(crate) end_s_m: f32,
+    start_section_index: u32,
+    source_band_index: u16,
+    kind: RoadSurfaceBandKind,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -109,31 +107,7 @@ impl RoadSurfaceVisualSpanPiece {
         mut self,
         edge_idx: usize,
     ) -> Self {
-        let shared_regions = Arc::ptr_eq(
-            &self.span_owned_regions,
-            &self.span_earthwork_support_regions,
-        );
-        if shared_regions {
-            drop(self.span_earthwork_support_regions);
-            let mut regions = Arc::unwrap_or_clone(self.span_owned_regions);
-            for region in &mut regions {
-                region.edge_idx = edge_idx;
-            }
-            self.span_owned_regions = Arc::new(regions);
-            self.span_earthwork_support_regions = Arc::clone(&self.span_owned_regions);
-        } else {
-            let mut owned_regions = Arc::unwrap_or_clone(self.span_owned_regions);
-            for region in &mut owned_regions {
-                region.edge_idx = edge_idx;
-            }
-            self.span_owned_regions = Arc::new(owned_regions);
-
-            let mut support_regions = Arc::unwrap_or_clone(self.span_earthwork_support_regions);
-            for region in &mut support_regions {
-                region.edge_idx = edge_idx;
-            }
-            self.span_earthwork_support_regions = Arc::new(support_regions);
-        }
+        // Regions take their edge id from the sections, remapped below.
         for clip_loop in &mut self.terrain_clip_loops {
             clip_loop.set_span_identity(edge_idx);
         }
@@ -149,25 +123,6 @@ impl RoadSurfaceVisualSpanPiece {
         &self,
         edge_idx: usize,
     ) -> Self {
-        let remap_regions = |regions: &[RoadSurfaceSpanOwnedRegion]| {
-            regions
-                .iter()
-                .cloned()
-                .map(|mut region| {
-                    region.edge_idx = edge_idx;
-                    region
-                })
-                .collect::<Vec<_>>()
-        };
-        let span_owned_regions = Arc::new(remap_regions(&self.span_owned_regions));
-        let span_earthwork_support_regions = if Arc::ptr_eq(
-            &self.span_owned_regions,
-            &self.span_earthwork_support_regions,
-        ) {
-            Arc::clone(&span_owned_regions)
-        } else {
-            Arc::new(remap_regions(&self.span_earthwork_support_regions))
-        };
         let mut terrain_clip_loops = self.terrain_clip_loops.clone();
         for clip_loop in &mut terrain_clip_loops {
             clip_loop.set_span_identity(edge_idx);
@@ -185,13 +140,13 @@ impl RoadSurfaceVisualSpanPiece {
             surface_polygon_order: self.surface_polygon_order.clone(),
             raised_steps: self.raised_steps.clone(),
             surface_query: Arc::clone(&self.surface_query),
-            span_owned_regions,
+            span_owned_regions: Arc::clone(&self.span_owned_regions),
             edge_class: self.edge_class,
             start_mouth_profile: self.start_mouth_profile.clone(),
             end_mouth_profile: self.end_mouth_profile.clone(),
             start_terrain_clip_node: self.start_terrain_clip_node,
             end_terrain_clip_node: self.end_terrain_clip_node,
-            span_earthwork_support_regions,
+            span_earthwork_support_regions: Arc::clone(&self.span_earthwork_support_regions),
             earthwork_surface_order: self.earthwork_surface_order.clone(),
             earthwork_outer_boundary_loops: self.earthwork_outer_boundary_loops.clone(),
             render_earthwork_faces,
@@ -269,55 +224,82 @@ impl RoadSurfaceSpanBandOwner {
 }
 
 impl RoadSurfaceSpanOwnedRegion {
+    pub(crate) fn new(start_section_index: usize, owner: RoadSurfaceSpanBandOwner) -> Self {
+        Self {
+            start_section_index: start_section_index as u32,
+            source_band_index: owner.source_band_index as u16,
+            kind: owner.kind,
+        }
+    }
+
+    pub(crate) fn owner(self) -> RoadSurfaceSpanBandOwner {
+        RoadSurfaceSpanBandOwner {
+            source_band_index: usize::from(self.source_band_index),
+            kind: self.kind,
+        }
+    }
+
+    // Regions are only resolved between sections whose band kinds match.
+    pub(crate) fn role(self) -> RoadSurfaceSpanRegionRole {
+        RoadSurfaceSpanRegionRole::from_band_pair(self.kind, self.kind)
+    }
+
+    pub(crate) fn start_section_index(self) -> usize {
+        self.start_section_index as usize
+    }
+
+    pub(crate) fn end_section_index(self) -> usize {
+        self.start_section_index() + 1
+    }
+
+    pub(crate) fn start_s_m(self, sections: &[RoadSurfaceSection]) -> f32 {
+        sections[self.start_section_index()].s_m
+    }
+
+    pub(crate) fn end_s_m(self, sections: &[RoadSurfaceSection]) -> f32 {
+        sections[self.end_section_index()].s_m
+    }
+
     pub(crate) fn support_boundary_source(
-        &self,
+        self,
+        sections: &[RoadSurfaceSection],
         edge_class: EdgeClass,
     ) -> RoadSurfaceEarthworkFaceSource {
         self.support_boundary_source_for(
+            sections,
             edge_class,
-            self.role,
-            self.start_section_index,
-            self.end_section_index,
-            self.start_s_m,
-            self.end_s_m,
+            self.start_section_index(),
+            self.end_section_index(),
         )
     }
 
+    // Zero-length source across the region at `section_index`, its start or end section.
     pub(crate) fn handoff_boundary_source(
-        &self,
+        self,
+        sections: &[RoadSurfaceSection],
         edge_class: EdgeClass,
         section_index: usize,
-        s_m: f32,
     ) -> RoadSurfaceEarthworkFaceSource {
-        self.support_boundary_source_for(
-            edge_class,
-            RoadSurfaceSpanRegionRole::from_band_pair(self.owner.kind, self.owner.kind),
-            section_index,
-            section_index,
-            s_m,
-            s_m,
-        )
+        self.support_boundary_source_for(sections, edge_class, section_index, section_index)
     }
 
     fn support_boundary_source_for(
-        &self,
+        self,
+        sections: &[RoadSurfaceSection],
         edge_class: EdgeClass,
-        role: RoadSurfaceSpanRegionRole,
         start_section_index: usize,
         end_section_index: usize,
-        start_s_m: f32,
-        end_s_m: f32,
     ) -> RoadSurfaceEarthworkFaceSource {
         RoadSurfaceEarthworkFaceSource::SpanSupportBoundary {
-            edge_idx: self.edge_idx,
+            edge_idx: sections[self.start_section_index()].edge_idx,
             edge_class,
             support_policy: RoadSurfaceEarthworkSupportPolicy::from_edge_class(edge_class),
-            owner: self.owner,
-            role,
+            owner: self.owner(),
+            role: self.role(),
             start_section_index,
             end_section_index,
-            start_s_m,
-            end_s_m,
+            start_s_m: sections[start_section_index].s_m,
+            end_s_m: sections[end_section_index].s_m,
         }
     }
 }

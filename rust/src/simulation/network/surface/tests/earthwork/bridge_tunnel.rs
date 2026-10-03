@@ -172,7 +172,10 @@ fn tunnel_earthworks_only_stamp_portals() {
         span_piece
             .span_earthwork_support_regions
             .iter()
-            .all(|region| !(region.start_s_m < 24.0 && region.end_s_m > 24.0)),
+            .all(|region| {
+                let sections = &span_piece.sections;
+                !(region.start_s_m(sections) < 24.0 && region.end_s_m(sections) > 24.0)
+            }),
         "tunnel support regions must stay at visible portals instead of owning buried midspan terrain"
     );
     assert!(

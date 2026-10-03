@@ -4,8 +4,8 @@
 
 use super::super::{RoadSurfaceSection, RoadSurfaceSystem};
 use super::{
-    RoadSurfaceSpanBandOwner, RoadSurfaceSpanOwnedRegion, RoadSurfaceSpanRegionRole,
-    SPAN_REGION_MIN_BAND_WIDTH_M, SpanQuad, SpanResolvedRegionSet,
+    RoadSurfaceSpanBandOwner, RoadSurfaceSpanOwnedRegion, SPAN_REGION_MIN_BAND_WIDTH_M, SpanQuad,
+    SpanResolvedRegionSet,
 };
 use crate::simulation::network::types::EdgeClass;
 
@@ -42,18 +42,13 @@ impl RoadSurfaceSystem {
                         continue;
                     }
 
-                    let region = RoadSurfaceSpanOwnedRegion {
-                        edge_idx: pair[0].edge_idx,
-                        owner: RoadSurfaceSpanBandOwner {
+                    let region = RoadSurfaceSpanOwnedRegion::new(
+                        start_section_index,
+                        RoadSurfaceSpanBandOwner {
                             source_band_index: band_index,
                             kind: band_a.kind,
                         },
-                        role: RoadSurfaceSpanRegionRole::from_band_pair(band_a.kind, band_b.kind),
-                        start_section_index,
-                        end_section_index,
-                        start_s_m: pair[0].s_m,
-                        end_s_m: pair[1].s_m,
-                    };
+                    );
                     // Regions keep only their section span; the quad is rebuilt on read.
                     if SpanQuad::from_corners(region.corners(sections)).is_some() {
                         resolved.regions.push(region);
@@ -89,15 +84,13 @@ impl RoadSurfaceSystem {
         sections: &[RoadSurfaceSection],
         regions: &mut [RoadSurfaceSpanOwnedRegion],
     ) {
+        // One piece's regions share the edge id, and the end section and stations follow
+        // from the start section.
         regions.sort_by(|a, b| {
-            a.edge_idx
-                .cmp(&b.edge_idx)
-                .then(a.start_section_index.cmp(&b.start_section_index))
-                .then(a.end_section_index.cmp(&b.end_section_index))
-                .then(a.start_s_m.total_cmp(&b.start_s_m))
-                .then(a.end_s_m.total_cmp(&b.end_s_m))
-                .then(a.role.sort_key().cmp(&b.role.sort_key()))
-                .then(a.owner.sort_key().cmp(&b.owner.sort_key()))
+            a.start_section_index()
+                .cmp(&b.start_section_index())
+                .then(a.role().sort_key().cmp(&b.role().sort_key()))
+                .then(a.owner().sort_key().cmp(&b.owner().sort_key()))
                 .then_with(|| {
                     Self::visual_points_ordering(
                         a.quad(sections).points(),

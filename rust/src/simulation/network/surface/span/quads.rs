@@ -103,10 +103,11 @@ impl SpanQuad {
 impl RoadSurfaceSpanOwnedRegion {
     /// Start-left, end-left, end-right and start-right band corners from `sections`.
     pub(crate) fn corners(&self, sections: &[RoadSurfaceSection]) -> [RoadVec3; 4] {
-        let start = &sections[self.start_section_index];
-        let end = &sections[self.end_section_index];
-        let band_start = &start.bands[self.owner.source_band_index];
-        let band_end = &end.bands[self.owner.source_band_index];
+        let start = &sections[self.start_section_index()];
+        let end = &sections[self.end_section_index()];
+        let band_index = self.owner().source_band_index;
+        let band_start = &start.bands[band_index];
+        let band_end = &end.bands[band_index];
         let point = RoadSurfaceSystem::section_boundary_world_point_static;
         [
             point(start, band_start.lateral_start_m, band_start.height_start_m),
@@ -177,7 +178,7 @@ impl RoadSurfaceVisualSpanPiece {
         let region = &self.span_owned_regions[(item >> 1) as usize];
         (
             self.region_quad(region).triangles()[(item & 1) as usize],
-            region.role == RoadSurfaceSpanRegionRole::Asphalt,
+            region.role() == RoadSurfaceSpanRegionRole::Asphalt,
         )
     }
 
@@ -225,7 +226,7 @@ impl RoadSurfaceSystem {
         ]
         .map(|role| {
             let mut order: Vec<u32> = (0..regions.len() as u32)
-                .filter(|&index| regions[index as usize].role == role)
+                .filter(|&index| regions[index as usize].role() == role)
                 .collect();
             order.sort_by(|&a, &b| {
                 Self::visual_points_ordering(

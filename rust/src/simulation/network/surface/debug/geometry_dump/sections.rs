@@ -113,7 +113,7 @@ impl RoadSurfaceSystem {
             let count = piece
                 .span_owned_regions
                 .iter()
-                .filter(|region| region.role == role)
+                .filter(|region| region.role() == role)
                 .count();
             let _ = write!(
                 dump,
@@ -126,7 +126,7 @@ impl RoadSurfaceSystem {
             let count = piece
                 .span_owned_regions
                 .iter()
-                .filter(|region| region.owner.kind == kind)
+                .filter(|region| region.owner().kind == kind)
                 .count();
             let _ = write!(dump, ",\"band_{:?}\":{}", kind, count);
         }
@@ -139,14 +139,14 @@ impl RoadSurfaceSystem {
             let _ = write!(
                 dump,
                 "{{\"edge_idx\":{},\"role\":\"{}\",\"source_band_index\":{},\"band_kind\":\"{:?}\",\"start_section_index\":{},\"end_section_index\":{},\"start_s_m\":{:.3},\"end_s_m\":{:.3},\"point_count\":{},\"height_min_m\":",
-                region.edge_idx,
-                Self::span_region_role_debug_name(region.role),
-                region.owner.source_band_index,
-                region.owner.kind,
-                region.start_section_index,
-                region.end_section_index,
-                region.start_s_m,
-                region.end_s_m,
+                piece.edge_idx,
+                Self::span_region_role_debug_name(region.role()),
+                region.owner().source_band_index,
+                region.owner().kind,
+                region.start_section_index(),
+                region.end_section_index(),
+                region.start_s_m(&piece.sections),
+                region.end_s_m(&piece.sections),
                 polygon.points_world.len(),
             );
             Self::append_optional_f32_precise_literal(
@@ -183,7 +183,7 @@ impl RoadSurfaceSystem {
             let count = piece
                 .span_earthwork_support_regions
                 .iter()
-                .filter(|region| region.role == role)
+                .filter(|region| region.role() == role)
                 .count();
             let _ = write!(
                 dump,
@@ -196,7 +196,7 @@ impl RoadSurfaceSystem {
             let count = piece
                 .span_earthwork_support_regions
                 .iter()
-                .filter(|region| region.owner.kind == kind)
+                .filter(|region| region.owner().kind == kind)
                 .count();
             let _ = write!(dump, ",\"band_{:?}\":{}", kind, count);
         }
@@ -209,14 +209,14 @@ impl RoadSurfaceSystem {
             let _ = write!(
                 dump,
                 "{{\"edge_idx\":{},\"role\":\"{}\",\"source_band_index\":{},\"band_kind\":\"{:?}\",\"start_section_index\":{},\"end_section_index\":{},\"start_s_m\":{:.3},\"end_s_m\":{:.3},\"point_count\":{},\"height_min_m\":",
-                region.edge_idx,
-                Self::span_region_role_debug_name(region.role),
-                region.owner.source_band_index,
-                region.owner.kind,
-                region.start_section_index,
-                region.end_section_index,
-                region.start_s_m,
-                region.end_s_m,
+                piece.edge_idx,
+                Self::span_region_role_debug_name(region.role()),
+                region.owner().source_band_index,
+                region.owner().kind,
+                region.start_section_index(),
+                region.end_section_index(),
+                region.start_s_m(&piece.sections),
+                region.end_s_m(&piece.sections),
                 polygon.points_world.len(),
             );
             Self::append_optional_f32_precise_literal(
@@ -247,15 +247,15 @@ impl RoadSurfaceSystem {
                 dump,
                 "{{\"region\":{},\"edge_idx\":{},\"role\":\"{}\",\"source_band_index\":{},\"band_kind\":\"{:?}\",\"material\":\"{}\",\"start_section_index\":{},\"end_section_index\":{},\"start_s_m\":{:.3},\"end_s_m\":{:.3},\"polygon_vertex_count\":{},\"triangle_count\":{}",
                 region_index,
-                region.edge_idx,
-                Self::span_region_role_debug_name(region.role),
-                region.owner.source_band_index,
-                region.owner.kind,
-                Self::debug_material_for_span_region_role(region.role),
-                region.start_section_index,
-                region.end_section_index,
-                region.start_s_m,
-                region.end_s_m,
+                piece.edge_idx,
+                Self::span_region_role_debug_name(region.role()),
+                region.owner().source_band_index,
+                region.owner().kind,
+                Self::debug_material_for_span_region_role(region.role()),
+                region.start_section_index(),
+                region.end_section_index(),
+                region.start_s_m(&piece.sections),
+                region.end_s_m(&piece.sections),
                 polygon.points_world.len(),
                 polygon.triangle_count()
             );
@@ -289,7 +289,7 @@ impl RoadSurfaceSystem {
         let mut expected: Vec<RoadSurfaceVisualPolygon> = piece
             .span_owned_regions
             .iter()
-            .filter(|region| region.role == role)
+            .filter(|region| region.role() == role)
             .map(|region| piece.region_quad(region).to_polygon())
             .collect();
         let mut actual = projected.to_vec();

@@ -266,14 +266,14 @@ impl RoadSurfaceSystem {
                     "{{\"source_kind\":\"span_top\",\"edge_idx\":{},\"region\":{},\"role\":\"{}\",\"source_band_index\":{},\"band_kind\":\"{:?}\",\"material\":\"{}\",\"start_section_index\":{},\"end_section_index\":{},\"start_s_m\":{:.3},\"end_s_m\":{:.3},\"triangle_index\":{}",
                     piece.edge_idx,
                     region_index,
-                    Self::span_region_role_debug_name(region.role),
-                    region.owner.source_band_index,
-                    region.owner.kind,
-                    Self::debug_material_for_span_region_role(region.role),
-                    region.start_section_index,
-                    region.end_section_index,
-                    region.start_s_m,
-                    region.end_s_m,
+                    Self::span_region_role_debug_name(region.role()),
+                    region.owner().source_band_index,
+                    region.owner().kind,
+                    Self::debug_material_for_span_region_role(region.role()),
+                    region.start_section_index(),
+                    region.end_section_index(),
+                    region.start_s_m(&piece.sections),
+                    region.end_s_m(&piece.sections),
                     triangle_index
                 );
                 Self::append_probe_hit_fields(dump, probe);
