@@ -4305,6 +4305,48 @@ committed and preview products identical and must not slow the 10k or 100k bench
   17.1–17.6 s before (mean 17.4 s) and 16.2–17.2 s after (mean 16.7 s). City records were
   identical in every run.
 
+### Street grid build scaling (`ROAD-52`)
+
+Done 2026-10-04. The `ROAD-44` 1M build spent 1,032 s on the `ECON-13` street grid, against
+711 s projected from 300k. The growth exponent rose with size: 1.2 from 30k to 100k, 1.3 from
+100k to 300k, 1.65 from 300k to 1M. A temporary probe timed every road add, and frame-pointer
+profiles of the 30k and 300k grids found three costs:
+
+- **Long remainders.** Cross streets were added whole, then every row split each one. The split
+  leaves the remaining run north of the row as one edge, up to the city side long, and the
+  commit validator recompiles that span. Total span work grew with rows × crosses × side: span
+  compile was 15 % of the 30k grid and 37 % of the 300k grid. `PopulatedCity` now adds cross
+  streets one block at a time, so a row meets existing junctions and recompiles only 50 m spans.
+  The topology and junction clips are the same. Knot spacing along cross streets changes, from
+  5.99 m with knots as close as 1.8 m to a junction to an even 5.56 m per block, so the city
+  changes: 10k buildings 7,428 → 7,396, households 5,617 → 5,597.
+- **Bulk lot marking.** A bulk load keeps every edge it has dirtied until `finalize_bulk_load`, and
+  each unplanned `add_road_internal` passed that whole set to `mark_cell_lots_for_roads`. Each
+  add then cost time in proportion to the load so far: block-by-block 50 m adds took 4.4 ms at
+  30k and 11.6 ms at 300k. The add now marks only its own edges and merges them back into the
+  set. Alignment refresh already widens to edges at the touched nodes, as in-game commits do.
+  Records are identical.
+- **Self-crossing test.** `polygon_has_strict_edge_crossing_xz` tested all segment pairs; span
+  earthwork outlines have points in proportion to their length. Loops over 64 points now sort
+  segments along the loop's longer axis and test only pairs whose bounds overlap. A strict
+  crossing needs both endpoints on opposite sides by a margin far above f64 rounding, so crossing
+  segments always share bounds and the answer is the same.
+  `swept_strict_crossing_matches_all_pairs_on_long_loops` compares both on long outlines, random
+  loops and stars. Records are identical.
+
+Street grid phase of `populated_city_scaling`, release, single runs, default Rayon workers. Before
+is `a4635166` through the probe; after is the 30k–300k scaling run:
+
+| Tier | Before | After |
+| --- | ---: | ---: |
+| 30k | 7.9 s | 6.6 s |
+| 100k | 32.9 s | 22.6 s |
+| 300k | 142 s | 66.5 s |
+| 1M | 1,032 s measured | about 220 s projected (exponent 0.98) |
+
+Splitting a long road still recompiles its whole remaining span: an edit's cost follows the length
+of the edges it splits, not only the neighbourhood around the split.
+
 ## Kuopio Terrain Regression Replay (`ROAD-24`)
 
 Current status: the planning/adoption contract and captured geometry/performance acceptance are

@@ -263,9 +263,14 @@ pub(super) fn street_grid(side_m: f32) -> (SimCore, Vec<f32>, f32) {
     let border_x = 1.0 - core.heightmap.half_world_extents().0;
     // The bulk road path of the in-game benchmark city: lanes are rebuilt once at the end.
     core.transit_network.bulk_load = true;
+    // Cross streets go in one block at a time, so a row meets existing junctions instead of
+    // splitting a street that runs the whole city: every split recompiles the longer remainder's
+    // span, which made the grid grow with rows × crosses × city side (`ROAD-52`).
     for i in 0..crosses {
         let x = i as f32 * CROSS_SPACING_M - half_x;
-        add_road(&mut core, (x, -half_z), (x, half_z));
+        for block in row_z.windows(2) {
+            add_road(&mut core, (x, block[0]), (x, block[1]));
+        }
     }
     for &z in &row_z {
         let start = if z == trunk_z { border_x } else { -half_x };

@@ -4,6 +4,9 @@
 
 use super::*;
 
+// Short loops (node regions, span quads) keep the allocation-free all-pairs test.
+const STRICT_CROSSING_ALL_PAIRS_MAX_POINTS: usize = 64;
+
 impl RoadSurfaceSystem {
     pub(in crate::simulation::network::surface) fn polygon_contains_point_xz(
         points_world: &[RoadVec3],
@@ -79,7 +82,13 @@ impl RoadSurfaceSystem {
         if points.len() < 4 {
             return false;
         }
+        if points.len() > STRICT_CROSSING_ALL_PAIRS_MAX_POINTS {
+            return Self::polygon_has_strict_edge_crossing_xz_swept(points);
+        }
+        Self::polygon_has_strict_edge_crossing_xz_all_pairs(points)
+    }
 
+    pub(super) fn polygon_has_strict_edge_crossing_xz_all_pairs(points: &[RoadVec3]) -> bool {
         for edge_a in 0..points.len() {
             let edge_a_next = (edge_a + 1) % points.len();
             for edge_b in edge_a + 1..points.len() {
@@ -102,6 +111,69 @@ impl RoadSurfaceSystem {
             }
         }
 
+        false
+    }
+
+    // Same answer as the all-pairs loop for long loops such as a span's earthwork outline, whose
+    // point count grows with the span's length (`ROAD-52`). A strict crossing needs each segment's
+    // endpoints on opposite sides of the other by a margin far above f64 rounding, so crossing
+    // segments share their closed XZ bounds; only pairs whose bounds overlap along the loop's
+    // longer axis are tested. O(n log n + n·k) for k segments active at once along that axis.
+    pub(super) fn polygon_has_strict_edge_crossing_xz_swept(points: &[RoadVec3]) -> bool {
+        let count = points.len();
+        let (mut min, mut max) = (points[0], points[0]);
+        for point in points {
+            min = min.min(*point);
+            max = max.max(*point);
+        }
+        let along_x = max.x - min.x >= max.z - min.z;
+        // Segment `index` runs from `points[index]` to the next point, with its bounds as
+        // (min along, max along, min across, max across).
+        let mut segments: Vec<(f64, f64, f64, f64, usize)> = (0..count)
+            .map(|index| {
+                let (a, b) = (points[index], points[(index + 1) % count]);
+                let (a_along, b_along, a_across, b_across) = if along_x {
+                    (a.x, b.x, a.z, b.z)
+                } else {
+                    (a.z, b.z, a.x, b.x)
+                };
+                (
+                    a_along.min(b_along),
+                    a_along.max(b_along),
+                    a_across.min(b_across),
+                    a_across.max(b_across),
+                    index,
+                )
+            })
+            .collect();
+        segments.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.4.cmp(&b.4)));
+        let mut active: Vec<usize> = Vec::new();
+        for (position, &(min_along, _, min_across, max_across, edge_b)) in
+            segments.iter().enumerate()
+        {
+            active.retain(|&earlier| segments[earlier].1 >= min_along);
+            let edge_b_next = (edge_b + 1) % count;
+            for &earlier in &active {
+                let (_, _, earlier_min_across, earlier_max_across, edge_a) = segments[earlier];
+                let edge_a_next = (edge_a + 1) % count;
+                if earlier_max_across < min_across
+                    || earlier_min_across > max_across
+                    || edge_a == edge_b_next
+                    || edge_a_next == edge_b
+                {
+                    continue;
+                }
+                if Self::segments_strictly_intersect_xz(
+                    points[edge_a],
+                    points[edge_a_next],
+                    points[edge_b],
+                    points[edge_b_next],
+                ) {
+                    return true;
+                }
+            }
+            active.push(position);
+        }
         false
     }
 

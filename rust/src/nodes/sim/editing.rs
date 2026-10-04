@@ -1302,6 +1302,14 @@ impl SimCore {
             .sum();
 
         let t_topo = Instant::now();
+        // A bulk load keeps every edge it has dirtied until `finalize_bulk_load`; hold those
+        // aside so this road's cell lots are marked from its own edges, not the whole load
+        // (`ROAD-52`). An adopted plan clears the set itself.
+        let earlier_bulk_dirty_edges = if topology_plan.is_none() {
+            std::mem::take(&mut self.transit_network.bulk_dirty_edges)
+        } else {
+            HashSet::new()
+        };
         let finalized_geometry = if let Some(plan) = topology_plan {
             Some(
                 self.transit_network
@@ -1343,6 +1351,13 @@ impl SimCore {
             .unwrap_or(&self.transit_network.bulk_dirty_edges);
         self.zoning
             .mark_cell_lots_for_roads(&self.region_graph, dirty.iter().copied());
+        let road_dirty_edges = std::mem::replace(
+            &mut self.transit_network.bulk_dirty_edges,
+            earlier_bulk_dirty_edges,
+        );
+        self.transit_network
+            .bulk_dirty_edges
+            .extend(road_dirty_edges);
 
         self.mark_local_network_render_dirty();
 

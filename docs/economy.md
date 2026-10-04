@@ -3831,9 +3831,25 @@ workers, single run. The projection comes from the 30k–300k `populated_city_sc
 | Peak RSS | 16.5 GB (11.5 GB after build) | about 10 GB after build |
 
 Result: 1,104,604 residents, 553,789 households, 753,750 employed, 1,436,219 jobs and 742,165
-buildings. The street grid runs mostly on one thread and grows faster than the 1.34 exponent
-fitted at 300k. The transient peak during admission is about 5 GB above the post-build RSS,
-which the scaling test does not sample.
+buildings. The street grid grew faster than the 1.34 exponent fitted at 300k (`ROAD-52`). The
+admission peak was about 5 GB above the post-build RSS, which the scaling test did not sample
+then (`ECON-16`).
+
+Scaling after `ROAD-52` and `ECON-16`, 2026-10-04. `POPULATED_CITY_TIERS=30000,100000,300000
+cargo test --release --test populated_city_scaling -- --ignored --nocapture`; release, default
+Rayon workers, single run. Each tier now records its build peak (`VmHWM` after resetting it). The
+cross-street order changed the city, so these records are not comparable with earlier rows:
+
+| Tier | Build | Street grid | Peak RSS | RSS after build | Buildings |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 30k | 30.5 s | 6.6 s | 684 MB | 526 MB | 20,368 |
+| 100k | 123 s | 22.6 s | 1,915 MB | 1,333 MB | 76,133 |
+| 300k | 393 s | 66.5 s | 4,750 MB | 3,386 MB | 221,095 |
+| 1M projected | about 24 min | about 220 s | about 12.9 GB | about 9.4 GB | |
+
+The street grid, zoning and lots now grow linearly (exponent 0.98). Admission (1.26) and the
+daily settlement (1.21) still grow faster than the city. The projected 1M peak is below the
+16.5 GB measured on the old city, so the 300k fit still underestimates memory at 1M.
 
 1M runtime, 2026-10-03. Memory now fits, but time does not. Phase timers on the 10k, 30k and
 100k builds (temporary, not committed; release, default workers):
@@ -3860,7 +3876,8 @@ along with `ALLOC-04`:
 builds a square city sized for the requested residents (about 2,800 per km², plus 8% headroom):
 
 - Streets run every 50 m, with back-to-back lots between them, and cross streets every 400 m.
-  Roads are added through the bulk path of the in-game benchmark city.
+  Roads are added through the bulk path of the in-game benchmark city; cross streets go in one
+  block at a time so rows never split a city-length road (`ROAD-52`).
 - An `OWA` trunk runs from the world edge along the middle street.
 - Streets are zoned with the player's brush in a repeating pattern of eight rows: six
   residential, one commercial and one industrial.

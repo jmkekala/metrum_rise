@@ -294,6 +294,10 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
     records (`ROAD-47`), lanes as 96 B records (`ROAD-48`) and node triangle queries as ids into
     their regions (`ROAD-49`). Together these cut the 100k road layout from 1.74 to 1.27 GB. Span
     earthwork records remain.
+  - The street grid now builds in linear time (`ROAD-52`): bulk road adds mark only their own
+    cell lots, long self-crossing checks use a sweep, and the benchmark city adds cross streets a
+    block at a time. 300k street grid 142 s → 66.5 s; 1M projects to about 220 s instead of
+    1,032 s. The scaling test now records each tier's build peak RSS (`ECON-16`).
   - The 1M city now fits in memory (about 20 GB projected), and the steps that made its build
     project to 10+ hours are fixed:
     - Batch building spawns (`ALLOC-02`) no longer scan every building.

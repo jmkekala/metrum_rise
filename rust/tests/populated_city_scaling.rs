@@ -27,6 +27,7 @@ struct Tier {
     settlement_s: f64,
     bench_ticks_s: f64,
     rss_mb: f64,
+    peak_rss_mb: f64,
 }
 
 #[test]
@@ -72,6 +73,13 @@ fn populated_city_scaling() {
         small,
         large,
     );
+    project(
+        "peak RSS (MB)",
+        small.peak_rss_mb,
+        large.peak_rss_mb,
+        small,
+        large,
+    );
     println!(
         "  build {:.0} min, benchmark ticks {:.0} min, total {:.1} h",
         build_total / 60.0,
@@ -92,10 +100,13 @@ const PHASES: [Phase; 5] = [
 
 // Builds one tier, then runs the benchmark's tick sequence, timing only the ticks as it does.
 fn measure(residents: u32) -> Tier {
+    reset_peak_rss();
     let started = Instant::now();
     let (mut city, build) = PopulatedCity::build_timed(residents);
     let build_s = started.elapsed().as_secs_f64();
-    let rss_mb = rss_mb();
+    let rss_mb = status_mb("VmRSS:");
+    // Admission peaks well above the RSS left after the build (`ECON-16`).
+    let peak_rss_mb = status_mb("VmHWM:");
     let (mut hours, mut hour_s, mut settlements, mut settlement_s) = (0, 0.0, 0, 0.0);
     for _ in 0..BENCH_HOURS {
         let times = city.advance_hour();
@@ -114,11 +125,12 @@ fn measure(residents: u32) -> Tier {
         settlement_s: settlement_s / f64::from(settlements.max(1)),
         bench_ticks_s: hour_s + settlement_s,
         rss_mb,
+        peak_rss_mb,
     };
     println!(
         "POPULATED_CITY_TIER residents={} build_s={:.1} street_grid_s={:.1} zoning_s={:.1} \
          lots_s={:.1} admission_s={:.1} warm_up_s={:.1} hour_ms={:.1} settlement_ms={:.0} \
-         bench_ticks_s={:.1} rss_mb={:.0} {:?}",
+         bench_ticks_s={:.1} rss_mb={:.0} peak_rss_mb={:.0} {:?}",
         tier.residents,
         tier.build_s,
         build.street_grid.as_secs_f64(),
@@ -130,6 +142,7 @@ fn measure(residents: u32) -> Tier {
         tier.settlement_s * 1000.0,
         tier.bench_ticks_s,
         tier.rss_mb,
+        tier.peak_rss_mb,
         city.record()
     );
     tier
@@ -145,13 +158,20 @@ fn project(name: &str, small: f64, large: f64, small_tier: &Tier, large_tier: &T
     projected
 }
 
-fn rss_mb() -> f64 {
+// Starts a new peak for `VmHWM`, so each tier reports its own build peak rather than the largest
+// earlier one. Linux only; elsewhere the peak stays process-wide.
+fn reset_peak_rss() {
+    let _ = std::fs::write("/proc/self/clear_refs", "5");
+}
+
+// A `kB` field of `/proc/self/status` in MB, or 0 where it is unavailable.
+fn status_mb(field: &str) -> f64 {
     std::fs::read_to_string("/proc/self/status")
         .ok()
         .and_then(|status| {
             status
                 .lines()
-                .find_map(|line| line.strip_prefix("VmRSS:"))
+                .find_map(|line| line.strip_prefix(field))
                 .and_then(|kb| kb.trim().trim_end_matches("kB").trim().parse::<f64>().ok())
         })
         .map_or(0.0, |kb| kb / 1024.0)
