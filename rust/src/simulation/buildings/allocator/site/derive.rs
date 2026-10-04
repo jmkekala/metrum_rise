@@ -195,12 +195,50 @@ impl BuildingAllocator {
             })
             .unwrap_or_default();
 
+        // The same wall rectangles the yard hedge plan keeps off, placed in the world.
+        let structure_world = self
+            .registry
+            .get(&building.asset_id)
+            .map(|entry| {
+                entry
+                    .manifest
+                    .mesh_parts
+                    .iter()
+                    .filter_map(crate::assets::asset::structure_footprint)
+                    .map(|[a, b]| {
+                        [[a[0], a[1]], [a[0], b[1]], [b[0], b[1]], [b[0], a[1]]].map(|[x, z]| {
+                            building_local_xz_pos(building, [x, 0.0, z], frontage_forward)
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let planting_world = self
+            .registry
+            .get(&building.asset_id)
+            .and_then(|entry| entry.manifest.building.as_ref())
+            .map(|data| {
+                data.yard_planting
+                    .iter()
+                    .map(|area| {
+                        area.vertices
+                            .iter()
+                            .map(|&[x, z]| building_local_xz_pos(building, [x, 0.0, z], frontage_forward))
+                            .collect()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
         BuildingSiteClient {
             foundation_mesh: Default::default(),
             footprint_world,
             lot_footprint_world,
             support_height_m: building.support_height_m,
             surfaces,
+            structure_world,
+            planting_world,
         }
     }
 

@@ -2,7 +2,7 @@
 
 //! Sparse player edits over the generator's cell identities, with independent patch revisions.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Grid owning a cell; coordinates are meaningful only together with their layer's spacing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -56,7 +56,7 @@ pub const VARIANT_FROM_SEED: u8 = 0;
 /// themselves. Bush variants past the sixth are named landscape plants that only a brush pin
 /// selects. The simulation needs the counts only to bound a pin, and the bridge test
 /// `vegetation_variant_test.gd` fails if the two ever drift apart.
-pub const VARIANT_COUNTS: [u8; 4] = [12, 12, 15, 6];
+pub const VARIANT_COUNTS: [u8; 4] = [12, 12, 21, 6];
 
 /// Whether a biased variant pin names a mesh the renderer models for that species.
 pub fn variant_in_range(species: u8, variant: u8) -> bool {
@@ -100,6 +100,11 @@ pub struct VegetationEdits {
     blocks: HashSet<(VegetationLayer, i32, i32)>,
     // Advances with every patch generation, so one comparison says whether any moved.
     epoch: u64,
+    // The hedge modules each building's yard laid, by the building's parcel and build
+    // generation, so demolition removes exactly those and nothing a player drew.
+    yard_hedges: BTreeMap<(u64, u32), Vec<(VegetationCell, AuthoredPlant)>>,
+    // The plants each building's yard planting areas planted, keyed as `yard_hedges`.
+    yard_planting: BTreeMap<(u64, u32), Vec<(VegetationCell, AuthoredPlant)>>,
 }
 
 impl VegetationEdits {
@@ -223,6 +228,58 @@ impl VegetationEdits {
                 self.cells.remove(&cell);
             }
         }
+    }
+
+    /// Records the hedge modules a building's yard laid, under its parcel and build generation.
+    pub(crate) fn record_yard_hedge(
+        &mut self,
+        key: (u64, u32),
+        modules: Vec<(VegetationCell, AuthoredPlant)>,
+    ) {
+        if !modules.is_empty() {
+            self.yard_hedges.entry(key).or_default().extend(modules);
+        }
+    }
+
+    /// Forgets a yard's record and returns the modules it laid. O(log Y) in recorded yards.
+    pub(crate) fn take_yard_hedge(
+        &mut self,
+        key: (u64, u32),
+    ) -> Option<Vec<(VegetationCell, AuthoredPlant)>> {
+        self.yard_hedges.remove(&key)
+    }
+
+    /// Every yard record in key order, for saving.
+    pub(crate) fn yard_hedges(
+        &self,
+    ) -> impl Iterator<Item = (&(u64, u32), &Vec<(VegetationCell, AuthoredPlant)>)> {
+        self.yard_hedges.iter()
+    }
+
+    /// Records the plants a building's yard planting areas planted, keyed as its hedge.
+    pub(crate) fn record_yard_planting(
+        &mut self,
+        key: (u64, u32),
+        plants: Vec<(VegetationCell, AuthoredPlant)>,
+    ) {
+        if !plants.is_empty() {
+            self.yard_planting.entry(key).or_default().extend(plants);
+        }
+    }
+
+    /// Forgets a yard's planting record and returns what it planted. O(log Y) in recorded yards.
+    pub(crate) fn take_yard_planting(
+        &mut self,
+        key: (u64, u32),
+    ) -> Option<Vec<(VegetationCell, AuthoredPlant)>> {
+        self.yard_planting.remove(&key)
+    }
+
+    /// Every yard planting record in key order, for saving.
+    pub(crate) fn yard_planting(
+        &self,
+    ) -> impl Iterator<Item = (&(u64, u32), &Vec<(VegetationCell, AuthoredPlant)>)> {
+        self.yard_planting.iter()
     }
 
     // Sorting is confined to save time; query and edit paths never scan the whole store.

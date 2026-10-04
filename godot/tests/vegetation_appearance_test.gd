@@ -24,6 +24,10 @@ class Simulation extends Node:
 	func get_vegetation_patch_generation(_key): return 0
 	func get_terrain_world_size(): return Vector2(1020, 1020)
 	# Rust packs world positions; the fixture is authored relative to the patch it is fetched for.
+	# No crown coverage, so every tree keeps an open stand.
+	func get_vegetation_stand_cover(_origin, _span): return {}
+	# No yard hedges in the fixture.
+	func get_vegetation_hedge_runs(_origin, _span): return PackedFloat32Array()
 	func get_decorative_tree_patch(origin, _span, _understory):
 		var world := data.duplicate()
 		for i in range(0, world.size(), 6):
@@ -164,7 +168,9 @@ func run():
 				if casts else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF))
 			# Only the near band carries instance colours; see the renderer's distant level.
 			assert(mm.use_colors == (lod == 0))
-			assert(mm.use_custom_data == (lod == 2))
+			# The distant level carries form and tint, and a near canopy tree its stand closure.
+			assert(mm.use_custom_data == (lod == 2 or (lod == 0
+				and (species == Species.CONIFER or species == Species.BROADLEAF))))
 			resident += mm.instance_count
 			var near_band: bool = patch.get_meta("near_band")
 			var variant: int = instance.get_meta("variant")

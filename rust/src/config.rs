@@ -5,12 +5,6 @@
 //! Import with `use crate::config;` or individual constants as needed.
 //! All physical distances are in **metres**. All speeds are in **m/s**.
 
-// Rendering Limits
-
-/// Target render frame rate cap. The Godot engine's `max_fps` is set to this value at startup.
-/// Set to 0 to uncap (not recommended; causes unnecessary GPU load).
-pub const TARGET_FPS: u32 = 60;
-
 // Map and Global Simulation Limits
 
 /// Vertical exaggeration applied to the terrain heightmap for rendering. Raw height values are multiplied by this.

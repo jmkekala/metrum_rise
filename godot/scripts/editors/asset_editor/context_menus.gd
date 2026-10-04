@@ -131,7 +131,7 @@ func _objects(hit: Dictionary) -> void:
 		_item(popup, "Reset to frontage", "entrance_reset")
 	elif hit.kind in ["surface", "vertex"]:
 		var materials := _submenu(popup, "Surface material")
-		for material in ["asphalt", "concrete"]: _item(materials, material.capitalize(), "material", {"material": material})
+		for entry: Dictionary in editor.SITE_SURFACE_MATERIALS: _item(materials, entry.label, "material", {"material": entry.id})
 		if hit.kind == "vertex":
 			context.vertex = hit.vertex
 			var points: Array = editor._site_surface_vertices(editor._site_surfaces_data[hit.index])
@@ -158,6 +158,8 @@ func _create_menu(ground: Variant) -> void:
 		_item(menu, entry[0], "create", {"kind": entry[1]}, valid, reason)
 	var yards := _submenu(menu, "Yard surface")
 	for material in ["asphalt", "concrete"]: _item(yards, material.capitalize(), "create", {"kind": material}, valid, reason)
+	var planting := _submenu(menu, "Yard planting")
+	for plants in ["trees", "bushes", "mixed", "flowers"]: _item(planting, plants.capitalize(), "create", {"kind": plants}, valid, reason)
 
 func _reset() -> void:
 	popup.hide()

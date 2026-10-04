@@ -83,12 +83,6 @@ impl SimulationNode {
         crate::config::AGENT_CULL_PADDING_M
     }
 
-    /// Target render FPS cap. Applied to `Engine.max_fps` at startup.
-    #[func]
-    pub fn get_target_fps() -> u32 {
-        crate::config::TARGET_FPS
-    }
-
     /// Returns the current simulation day count.
     #[func]
     pub fn get_current_day(&self) -> u32 {

@@ -300,6 +300,7 @@ impl SimulationNode {
                     patch,
                     height_bytes,
                 },
+                mask_bytes: Vec::new(),
             }));
         }
         if !core
@@ -333,6 +334,7 @@ impl SimulationNode {
                     data: TerrainPatchPayloadData::Refined {
                         patch: cached.clone(),
                     },
+                    mask_bytes: Vec::new(),
                 }));
             }
         }
@@ -651,6 +653,7 @@ impl SimulationNode {
                 request_id: request.request_id,
                 surface_generation: request.surface_generation,
                 data,
+                mask_bytes: Vec::new(),
             });
         }
     }

@@ -89,9 +89,24 @@ func _site() -> void:
 	var footprint: Control = v.site_sections[0]
 	v._width_spin = v.number_field(footprint, "lot_width_cells", "Lot width (10 m cells) · authored", 65535)
 	v._depth_spin = v.number_field(footprint, "lot_depth_cells", "Lot depth (10 m cells) · authored", 65535)
+	var back_yard := HFlowContainer.new()
+	for step in [1, -1]:
+		var change := Button.new()
+		change.text = "+10 m" if step > 0 else "−10 m"
+		change.pressed.connect(e._session.extend_lot_at_back.bind(step))
+		back_yard.add_child(change)
+	v.field_row(footprint, "_back_yard", "Back yard · grows or trims the lot behind the house; the street side stays put", back_yard)
 	v._frontage_lbl = _label(footprint, "Frontage")
 	v.geometry_button(footprint, "Set frontage from view", e._on_set_front_from_view)
 	v.geometry_button(footprint, "Move main entrance to frontage", e._on_reset_main_entrance_pressed)
+	v.choice_field(footprint, "yard_hedge", "Yard hedge · laid when the building spawns")
+	var edges := HFlowContainer.new()
+	for edge in ["front", "back", "left", "right"]:
+		var check := CheckBox.new()
+		check.name = edge
+		check.text = edge.capitalize()
+		edges.add_child(check)
+	v.field_row(footprint, "yard_hedge_edges", "Hedge edges · left and right as seen from the street", edges)
 	var advanced: Control = v.advanced(footprint, "footprint")
 	v.number_field(advanced, "min_zone_width_cells", "Minimum zoned width (cells)", 65535)
 	v.number_field(advanced, "min_zone_depth_cells", "Minimum zoned depth (cells)", 65535)
@@ -132,6 +147,9 @@ func _surfaces(box: Control) -> void:
 	box.add_child(actions)
 	for material in ["asphalt", "concrete"]:
 		v.button(actions, "Add " + material, func(): e._menus.actions.create_from_controls(material))
+	# Planting areas: lawn a spawned house fills with its own trees, shrubs or flowers.
+	for plants in ["trees", "bushes", "mixed", "flowers"]:
+		v.button(actions, "Plant " + plants, func(): e._menus.actions.create_from_controls(plants))
 	v._site_surface_list = ItemList.new()
 	v._site_surface_list.custom_minimum_size.y = 125
 	v._site_surface_list.item_selected.connect(e._on_site_surface_selected)
@@ -143,11 +161,14 @@ func _surfaces(box: Control) -> void:
 	v._site_surface_name_edit = v.text_field(body, "_surface_name", "Name · authored")
 	v._site_surface_name_edit.text_changed.connect(e._on_site_surface_text_changed)
 	v._site_surface_name_edit.text_changed.connect(func(_value): e._session.capture_geometry("Rename surface"))
-	v._site_surface_material_btn = v.choice_field(body, "_surface_material", "Material", ["asphalt", "concrete"])
+	v._site_surface_material_btn = v.choice_field(body, "_surface_material", "Material", e.SITE_SURFACE_MATERIALS.map(func(m): return m.id))
+	for index in v._site_surface_material_btn.item_count:
+		v._site_surface_material_btn.set_item_text(index, e._site_surface_material_label(v._site_surface_material_btn.get_item_metadata(index)))
 	v._site_surface_material_btn.item_selected.connect(e._on_site_surface_material_selected)
 	v._site_surface_material_btn.item_selected.connect(func(_value): e._session.capture_geometry("Change surface material"))
 	v._site_surface_y_spin = _geometry_number(body, "_surface_y", "Height (m)", -50, 50, 0.01, e._on_site_surface_spin_changed)
 	_label(body, "Drag vertices in the viewport. Right-click an edge to add a vertex, or a vertex to remove it.")
+	_label(body, "Planting areas are lawn: each spawned house fills them with its own trees or shrubs, and players can plant trees there too.")
 	v.surface_properties.visible = false
 
 func _gameplay() -> void:
@@ -174,10 +195,14 @@ func _validate() -> void:
 	var box: Control = v.tasks["validate"]
 	_label(box, "Drafts can be incomplete. Runtime export requires all errors to be resolved.")
 	v.export_summary = _label(box, "")
-	v.button(box, "Revalidate", e._session.validate)
+	v.button(box, "Revalidate", e._session.revalidate)
+	v.validate_result = _label(box, "")
+	v.validate_result.visible = false
 	v.issues_box = VBoxContainer.new()
 	box.add_child(v.issues_box)
 	v.button(box, "Export runtime asset…", e._on_export_pressed)
+	v.export_result = _label(box, "")
+	v.export_result.visible = false
 
 func _label_detached(text: String) -> Label:
 	var label := Label.new()

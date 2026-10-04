@@ -139,16 +139,28 @@ last active category plus size and position. The same settings file also stores 
 `layout/<id>` sections for player-adjusted floating-window sizes, positions where appropriate,
 and split-panel offsets such as Economy Overview's budget/service/policy panes. `Accessibility`
 owns the runtime-safe `UI Scale`
-setting, currently bounded to `80%..150%` in `5%` increments and applied immediately to
+setting, bounded to `80%..200%` in `5%` increments and applied immediately to
 scale-aware procedural UI labels/buttons, including gameplay HUD, Options, Building Inspector,
 and Economy Overview detail surfaces. Scale-aware floating windows also declare base/default
 sizes through `UIStyle`, so window defaults and minimums grow with Accessibility scale and
 gently grow on high-resolution viewports while preserving user-resized larger windows and restored
-layout values. `Graphics` owns Apply-based `Fullscreen` and `Building detail`
-(Performance/Balanced/Quality; default Balanced), persisted through `user://settings.cfg`.
-Applying building detail updates live building renderers without reimporting assets; Cancel
-discards pending edits and Reset proposes defaults. Detail uses the shared screen-size LOD
-policy, not asset-authored distance bands; it changes neither simulation nor visibility.
+layout values. They also refit whenever the viewport they open on is resized (`UI-02`): leaving
+fullscreen shrinks the game window, and a window sized for the fullscreen viewport would otherwise
+hang off its edges with its footer out of reach. The refit keeps the player's size where it fits,
+holds it to 92% of the viewport and moves it back inside. `Graphics` owns Apply-based `Fullscreen`, `V-Sync` (default on), `Show FPS`
+(a top-right frame rate and frame time readout, `scripts/core/fps_overlay.gd`), `Max FPS`
+(Unlimited/30/60/120/144; the main menu always holds `120` or the lower player cap, and nothing else sets the cap outside benchmarks: a world starting up once reset it to 60, `UI-06`), `Render scale` (Native, or 77/67/50% upscaled with FSR 2, which
+also turns off the screen-space AA pass), `Shadows` (High, or Low: plain PCF, two cascades, no
+cascade blending), `View distance` (Full, or Reduced: the far plane floors at 3 km instead of
+9 km) and `Building detail` (Performance/Balanced/Quality; default Balanced), persisted in the
+`graphics` section of `user://settings.cfg`. Apply takes effect live: frame settings through
+`GameSettings.apply_display_settings()`, shadows and view distance through the
+`graphics_settings` group (`SceneLighting`, `InputManager`), building detail through the
+building renderers without reimporting assets. Cancel discards pending edits and Reset
+proposes defaults. Detail uses the shared screen-size LOD policy, not asset-authored distance
+bands; it changes neither simulation nor visibility. Gameplay benchmarks
+(`--gameplay-road-benchmark`) ignore the player's render settings and measure the defaults.
+These replace the former `METRUM_GFX` preset and its F8-F11 hotkeys.
 `Gameplay` owns `Road construction preview`: `Road only (faster)` (default) or `Road and
 terrain`. It persists `gameplay/road_preview_mode`; Apply updates active road tools immediately,
 Cancel discards pending edits and Reset proposes Road only. Full mode previews ground changes
@@ -192,7 +204,10 @@ Deterministic rule:
 gameplay HUD is an `HBoxContainer` of fixed-height `PanelContainer` shells. The right-side
 tool menu uses a unified outer group `PanelContainer` plus an inner fixed-height toolbar-row
 shell so the submenu stack can read as one cluster while the actual toolbar row still matches
-the clock / city-status / RCI strip height.
+the clock / city-status / RCI strip height. The three layers are anchored independently, so
+`_layout_bottom_toolbar()` keeps the toolbar centred only while that clears the side strips: on
+overlap it shifts sideways just enough, and when the gap between the strips is narrower than
+the toolbar (large UI scale, small window, a wide submenu) it rises above them.
 **Script:** `scripts/ui/main_ui.gd` (current — stays here).
 
 The toolbar is the primary tool-selection surface. It is always visible during gameplay.
@@ -352,6 +367,10 @@ Current WorldEditor shortcuts:
 | Two-finger scroll (touchpad) | Zoom camera, in fractions of a step |
 | Pinch (touchpad) | Zoom camera by the pinch factor |
 
+W / A / S / D pan only while no embedded window, such as the save dialog or an open menu, is
+exclusive or holds focus; that window's own text fields are invisible to the game window's focus
+owner, so typing a save name also panned the camera (`UI-01`).
+
 Godot 4.7.1 dispatches each touchpad gesture twice, so `input_manager.gd` consumes the repeated
 copy before any handler sees it. The vegetation brush takes Ctrl (radius) and Shift (option) with
 the wheel or a two-finger scroll. macOS turns Shift with a vertical scroll into a horizontal one,
@@ -415,17 +434,17 @@ behavior, and close button, can be open simultaneously, and are dismissed via th
 button or programmatically.
 
 Most windows are instantiated on first open and hidden (not freed) on close so state is
-preserved within a session. The Building Inspector is the exception: it creates one window
-per inspected building so multiple inspectors can stay open at once, and each is freed when
-its close button is used.
+preserved within a session. The Building Inspector is the exception: it creates a fresh window
+for each inspected building and frees it on close. Only one inspector is open at a time, so
+inspecting another building closes the previous window.
 
 | Window | Launcher | Script / status | Content |
 |--------|----------|-----------------|---------|
 | Options | MainMenu `Options` or gameplay `File -> Options...` | `scripts/ui/options_window.gd` *(implemented)* | Shared options shell with category rail, content pane, footer-level apply/reset/cancel actions, and persisted window state through `user://settings.cfg`. |
 | Gameplay | Options → Gameplay | `scripts/ui/gameplay_options.gd` *(implemented)* | Persistent road-only or road-and-terrain construction previews, applied live through the shared footer. |
-| Graphics | Options → Graphics | `scripts/ui/graphics_options.gd` *(implemented)* | Fullscreen/windowed and building-detail presets, persisted through `user://settings.cfg` and applied through the Options footer. |
+| Graphics | Options → Graphics | `scripts/ui/graphics_options.gd` *(implemented)* | Fullscreen, V-Sync, Show FPS, Max FPS, render scale (FSR 2), shadows, view distance and building detail, persisted through `user://settings.cfg` and applied through the Options footer. |
 | Accessibility | Options → Accessibility | `scripts/ui/accessibility_options.gd` *(implemented)* | Embedded UI Scale control, persisted through `user://settings.cfg` and applied immediately to scale-aware procedural UI fonts and eligible floating-window sizes. |
-| Building Inspector | Click building with no active tool or while `SelectTool` is active | `scripts/ui/building_inspector.gd` *(implemented)* | Per-building stats: type, level, occupancy, budget, revenue, inventory, extraction-pit reserve/depletion, alerts. Multiple building windows may be open simultaneously; clicking the same building again closes that building's inspector, and visible inspector windows refresh on each in-game hour boundary. Uses Godot's built-in draggable `Window` chrome. |
+| Building Inspector | Click building with no active tool or while `SelectTool` is active | `scripts/ui/building_inspector.gd` *(implemented)* | Per-building stats: type, level, occupancy, budget, revenue, inventory, extraction-pit reserve/depletion, alerts. One inspector is open at a time: clicking another building replaces it, clicking the same building again closes it, and the open window refreshes on each in-game hour boundary. Uses Godot's built-in draggable `Window` chrome. |
 | Road Properties | Select one or more road edges with `SelectTool` | `scripts/ui/road_properties_window.gd` *(implemented)* | Edge class (Standard / Bridge / Tunnel), No Buildings flag, and slope warnings for the current selection. Uses Godot's built-in draggable `Window` chrome. |
 | Mods | Options → Mods | `scripts/ui/pack_manager.gd` *(implemented)* | Embedded content-pack browser / manager panel. |
 | City Statistics | City → City Statistics | inline placeholder in `scripts/ui/top_menu.gd` | Placeholder window for future population, housed/unhoused counts, budget summary, and utility status. |
@@ -434,8 +453,8 @@ its close button is used.
 | Keyboard Shortcuts | Help → Keyboard Shortcuts | inline in `scripts/ui/top_menu.gd` *(implemented)* | Read-only shortcut reference. |
 
 Windows that display live simulation data call `SimulationNode` methods each time they are
-opened. They do not hold Rust-side state. The Building Inspector additionally refreshes any
-visible inspector windows on each in-game hour boundary; other live windows should stay
+opened. They do not hold Rust-side state. The Building Inspector additionally refreshes its
+open window on each in-game hour boundary; other live windows should stay
 snapshot-on-open unless there is a clear need for an explicit low-frequency refresh path.
 
 Farm inspectors provide **Edit Field** for committed polygons. `field_edit_tool.gd` displays
@@ -460,7 +479,14 @@ the resident family, excluding commuting workers, and refresh with the existing 
 update. Farm housing is independent of the number of jobs (`ECON-08`).
 
 Settings recovery and scaling (`AUDIT-01-F8`) use the default UI scale for NaN/infinite input.
-Finite values retain the 0.8–1.5 clamp and 0.05 steps. Failed config reads discard the whole
+Finite values retain the 0.8–2.0 clamp and 0.05 steps. On top of this setting, the root
+window's `content_scale_factor` follows the screen's backing scale
+(`GameSettings.apply_display_scale()`, re-applied on `dpi_changed`), so 100% is the size the
+OS draws its own interface: 2x on a Retina Mac, 1x where the OS reports no scale. The 3D view
+keeps rendering at the window's full pixel size, and `Camera3D.unproject_position` and mouse
+positions both use the scaled coordinates. A windowed launch is sized the same way
+(`GameSettings.fit_launch_window()`): the project's 1920x1080 grows by the backing scale and is
+held to 90% of the usable screen, centred. Benchmark runs keep the fixed project size. Failed config reads discard the whole
 partially parsed state before defaults are installed; valid reads preserve unrelated layout values.
 A font/window refresh reads the scale once and passes it through the existing tree traversal and
 size helpers. Later operations still read current settings; there is no persistent settings cache.

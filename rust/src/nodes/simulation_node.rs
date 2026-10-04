@@ -494,8 +494,6 @@ impl INode3D for SimulationNode {
     }
 
     fn ready(&mut self) {
-        godot::classes::Engine::singleton().set_max_fps(crate::config::TARGET_FPS as i32);
-
         let args = godot::classes::Os::singleton().get_cmdline_user_args();
         let generate = args
             .as_slice()

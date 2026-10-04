@@ -32,7 +32,7 @@ func _run() -> void:
 	else:
 		for invalid in [NAN, INF, -INF]:
 			_expect(Settings.normalized_ui_scale(invalid) == Settings.DEFAULT_UI_SCALE, "Non-finite scale must use the default")
-		for pair in [[-1.0, 0.8], [0.8, 0.8], [1.24, 1.25], [1.5, 1.5], [2.0, 1.5]]:
+		for pair in [[-1.0, 0.8], [0.8, 0.8], [1.24, 1.25], [1.5, 1.5], [2.0, 2.0], [2.5, 2.0]]:
 			_expect(is_equal_approx(Settings.normalized_ui_scale(pair[0]), pair[1]), "Finite scale retains clamping and 0.05 steps")
 		# ConfigFile keeps values parsed before an error; recovery must reset the whole object.
 		Settings._write_defaults(cfg)
@@ -41,6 +41,7 @@ func _run() -> void:
 		_expect(Settings.save_ui_scale(NAN) == OK and Settings.get_ui_scale() == Settings.DEFAULT_UI_SCALE, "Saving an invalid scale must never persist NaN")
 		_test_refresh(style)
 		_test_building_quality()
+		_test_frame_settings()
 		_test_road_preview_mode()
 	if had_config:
 		var file := FileAccess.open(Settings.CFG_PATH, FileAccess.WRITE)
@@ -67,6 +68,38 @@ func _test_building_quality() -> void:
 	_expect(panel.has_pending_changes() and panel._lod_quality.selected == 1, "Reset proposes Balanced without applying it")
 	panel.free()
 
+func _test_frame_settings() -> void:
+	for pair in [[75, 0], [60, 60], [0, 0]]:
+		Settings.set_value(Settings.SECTION_GRAPHICS, Settings.KEY_MAX_FPS, pair[0])
+		_expect(Settings.get_max_fps() == pair[1], "Max FPS outside the choices falls back to Unlimited")
+	for pair in [[0.9, 1.0], [0.67, 0.67]]:
+		Settings.set_value(Settings.SECTION_GRAPHICS, Settings.KEY_RENDER_SCALE, pair[0])
+		_expect(is_equal_approx(Settings.get_render_scale(), pair[1]), "Render scale outside the choices falls back to native")
+	Settings.set_menu_frame_cap(true)
+	_expect(Engine.max_fps == Settings.MENU_MAX_FPS, "The main menu caps an unlimited frame rate")
+	Settings.set_value(Settings.SECTION_GRAPHICS, Settings.KEY_MAX_FPS, 60)
+	Settings.apply_max_fps()
+	_expect(Engine.max_fps == 60, "The main menu keeps a lower player cap")
+	Settings.set_value(Settings.SECTION_GRAPHICS, Settings.KEY_MAX_FPS, 0)
+	Settings.set_menu_frame_cap(false)
+	_expect(Engine.max_fps == 0, "Leaving the main menu restores the player's cap")
+	# A world starting up must not replace the player's cap with one of its own.
+	Settings.set_value(Settings.SECTION_GRAPHICS, Settings.KEY_MAX_FPS, 30)
+	Settings.apply_max_fps()
+	var simulation := SimulationNode.new()
+	root.add_child(simulation)
+	_expect(Engine.max_fps == 30, "Starting a world keeps the player's cap")
+	simulation.free()
+	Settings.set_value(Settings.SECTION_GRAPHICS, Settings.KEY_MAX_FPS, 0)
+	var panel := preload("res://scripts/ui/graphics_options.gd").new()
+	root.add_child(panel)
+	panel._max_fps.item_selected.emit(2)
+	_expect(panel.has_pending_changes() and Settings.get_max_fps() == 0, "Pending max FPS must not change persisted settings")
+	_expect(panel.apply_changes() == OK and Settings.get_max_fps() == 60 and Engine.max_fps == 60, "Apply persists and applies max FPS")
+	panel.reset_defaults()
+	_expect(panel.apply_changes() == OK and Engine.max_fps == 0 and is_equal_approx(root.scaling_3d_scale, 1.0), "Reset restores the uncapped native frame")
+	panel.free()
+
 func _test_refresh(style: Script) -> void:
 	var viewport := SubViewport.new()
 	viewport.size = Vector2i(1920, 1080)
@@ -91,6 +124,10 @@ func _test_refresh(style: Script) -> void:
 	_expect(Settings.save_ui_scale(0.8) == OK, "A smaller scale must save")
 	style.refresh_scaled_font_sizes(viewport)
 	_expect(label.get_theme_font_size("font_size") == 10 and window.size == Vector2i(600, 450), "Smaller text retains the player's larger window")
+	# Leaving fullscreen shrinks the surface the window opens on; the window must shrink with it.
+	window.position = Vector2i(1300, 600)
+	viewport.size = Vector2i(500, 400)
+	_expect(window.size == Vector2i(460, 368) and window.position == Vector2i(40, 32), "A shrinking viewport refits the window inside it")
 	viewport.free()
 
 func _benchmark(style: Script) -> void:

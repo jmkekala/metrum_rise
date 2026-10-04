@@ -13,9 +13,14 @@ const float LEAF_SHADE_MEAN = 0.6;
 // by the mean keeps vertex colour the mean albedo, which the distant levels read.
 uniform vec3 leaf_mean = vec3(0.6);
 uniform float leaf_depth_mean = 0.675;
+// Leaf albedo share of this form; see LEAF_ALBEDO_SCALE in tree_species.gd.
+uniform float leaf_albedo_scale = 1.0;
 
 varying float canopy_light;
 varying float shadow_keep;
+varying float crown_height;
+// Stand closure of a canopy tree, from its instance data; understory has none.
+varying flat float stand_closure;
 varying flat float crossfade;
 // Dither thresholds this level keeps, as [x, y); see vegetation_level_keeps.
 varying flat vec2 dither;
@@ -30,6 +35,8 @@ void vertex() {
 	VERTEX += vegetation_wind_offset(MODEL_MATRIX[3].xz, COLOR.a, TIME,
 		vegetation_wind_visibility(view_distance_m, VIEWPORT_SIZE));
 	// Understory is ground cover rather than a trunk under a crown, so it takes no base shade.
+	crown_height = (VERTEX.y - MODEL_MATRIX[3].y) / length(MODEL_MATRIX[1].xyz);
+	stand_closure = hands_over > 0.5 ? INSTANCE_CUSTOM.x : 0.0;
 	canopy_light = vegetation_canopy_shade(MODEL_MATRIX[3].xz, view_distance_m, hands_over > 0.5
 		? (VERTEX.y - MODEL_MATRIX[3].y) / length(MODEL_MATRIX[1].xyz) : CANOPY_BASE_TOP_M);
 	shadow_keep = vegetation_shadow_keep(view_distance_m);
@@ -56,9 +63,10 @@ void fragment() {
 	float depth = textureLod(foliage_mask, UV, 4.0).a;
 	vec4 leaf = texture(foliage_mask, UV);
 	// Dividing the atlas colour by its mean varies the colour inside a cluster without moving it.
-	ALBEDO = COLOR.rgb * canopy_light * (1.0 + 0.55 * (leaf_depth_mean - depth)) * leaf.rgb / leaf_mean;
+	vec3 leaf_colour = COLOR.rgb * leaf_albedo_scale;
+	ALBEDO = leaf_colour * canopy_light * (1.0 + 0.55 * (leaf_depth_mean - depth)) * leaf.rgb / leaf_mean;
 	ROUGHNESS = 1.0;
-	BACKLIGHT = vegetation_backlight(COLOR.rgb) * canopy_light;
+	BACKLIGHT = vegetation_backlight(leaf_colour) * canopy_light;
 	float threshold = vegetation_dither_threshold(FRAGCOORD.xy);
 	ALPHA = threshold >= dither.x && threshold < dither.y ? leaf.a : 0.0;
 	ALPHA_SCISSOR_THRESHOLD = 0.4;
@@ -66,7 +74,11 @@ void fragment() {
 
 void light() {
 	float shadow = vegetation_shadow(ATTENUATION, LIGHT_IS_DIRECTIONAL, shadow_keep);
+	if (LIGHT_IS_DIRECTIONAL) {
+		shadow = min(shadow, vegetation_stand_sun(crown_height, stand_closure));
+	}
+	// No sun highlight. A card stands for a cluster of leaves under one normal, so the highlight
+	// lit a whole cluster at once and turned crowns facing the sun white. In a real crown the
+	// leaves around a leaf hide most of its grazing glint. The sky reflection stays.
 	DIFFUSE_LIGHT += vegetation_diffuse_light(NORMAL, LIGHT, LIGHT_COLOR, shadow, BACKLIGHT, 0.0);
-	SPECULAR_LIGHT += vegetation_specular_light(NORMAL, LIGHT, VIEW, LIGHT_COLOR, shadow,
-		SPECULAR_AMOUNT);
 }
