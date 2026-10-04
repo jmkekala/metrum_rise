@@ -129,6 +129,21 @@ pub(in crate::nodes::simulation_node) struct TerrainPatchPayload {
     pub(in crate::nodes::simulation_node) request_id: u64,
     pub(in crate::nodes::simulation_node) surface_generation: u64,
     pub(in crate::nodes::simulation_node) data: TerrainPatchPayloadData,
+    /// Baked shading masks for the payload's height samples, filled on the payload worker.
+    /// Empty until then, or for a failure payload with nothing to draw.
+    pub(in crate::nodes::simulation_node) mask_bytes: Vec<u8>,
+}
+
+impl TerrainPatchPayload {
+    /// Bakes this payload's shading masks; called off the main thread before publication.
+    pub(in crate::nodes::simulation_node) fn bake_shading_masks(&mut self) {
+        let patch = match &self.data {
+            TerrainPatchPayloadData::Regular { patch, .. } => patch,
+            TerrainPatchPayloadData::Refined { patch } => &patch.patch,
+            TerrainPatchPayloadData::RefinedFailure { .. } => return,
+        };
+        self.mask_bytes = patch.shading_mask_bytes();
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

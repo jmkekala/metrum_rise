@@ -57,6 +57,14 @@ class MockSimulation:
 	func get_terrain_world_size() -> Vector2:
 		return WORLD_SIZE
 
+	# No crown coverage, so every tree keeps an open stand.
+	func get_vegetation_stand_cover(_origin: Vector2, _span: float) -> Dictionary:
+		return {}
+
+	# No yard hedges in the fixture.
+	func get_vegetation_hedge_runs(_origin: Vector2, _span: float) -> PackedFloat32Array:
+		return PackedFloat32Array()
+
 	func get_decorative_tree_patch(
 		origin: Vector2, _span: float, _understory: bool
 	) -> PackedFloat32Array:

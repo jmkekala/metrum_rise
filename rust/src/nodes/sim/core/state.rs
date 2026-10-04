@@ -836,6 +836,7 @@ impl SimCore {
     /// Publishes allocator-owned site changes through one terrain invalidation path for every mode.
     pub(crate) fn publish_pending_building_site_changes(&mut self) {
         self.publish_pending_production_site_removals();
+        crate::nodes::simulation_node::vegetation_api::publish_yards(self);
         if let Some(bounds) = self.allocator.take_pending_site_dirty_bounds() {
             self.mark_building_site_terrain_dirty_bounds(bounds);
         }

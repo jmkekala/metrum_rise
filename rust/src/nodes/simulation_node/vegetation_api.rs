@@ -11,9 +11,18 @@ use crate::simulation::vegetation::{hash, unit};
 use brush::preset;
 
 mod brush;
+mod hedge_runs;
 mod land_cover;
+
+// Texels on each side of the square a tree's stand closure averages over; see
+// get_vegetation_stand_cover.
+const STAND_RADIUS_TEXELS: usize = 2;
 mod placement;
-use placement::{add_at, line_at, paint_at, stamp_limit};
+mod yard_planting;
+#[cfg(test)]
+pub(crate) use hedge_runs::hedge_runs;
+pub(crate) use placement::publish_yards;
+use placement::{add_at, hedge_end_at, line_at, paint_at, stamp_limit};
 
 // Lane five of a packed placement carries both the species ordinal and the renderer mesh
 // variant pinned over it, because widening the stride would cost the whole scatter buffer a
@@ -37,7 +46,7 @@ const SPECIES_ROCK: f32 = 3.0;
 // the canopy. The world seed is mixed in on top so two worlds on the same terrain arrange their
 // plants differently; the multiply spreads small seeds across the whole word before the per-use
 // offsets below are added.
-const CANOPY_SALT: u32 = 0;
+pub(crate) const CANOPY_SALT: u32 = 0;
 const UNDERSTORY_SALT: u32 = 64;
 
 fn layer_base(layer_salt: u32, seed: u32) -> u32 {
@@ -98,6 +107,22 @@ impl SimulationNode {
         );
         land_cover::Coverage::build(&core, origin, layout.span)
             .payload(land_cover::generations(&core, key))
+    }
+
+    /// Crown coverage averaged over the `40 m` square around each `8 m` texel of a world
+    /// square, without revisions. The tree renderer samples it once per tree at upload for the
+    /// tree's stand closure. The square is built `16 m` wider on every side, so a tree at its
+    /// edge averages over real neighbours. O(K + A) like the terrain payload, plus O(texels).
+    #[func]
+    pub fn get_vegetation_stand_cover(&self, origin: Vector2, span: f32) -> VarDictionary {
+        if !span.is_finite() || span <= 0.0 || span > 1024.0 || !origin.is_finite() {
+            return VarDictionary::new();
+        }
+        let mut core = self.lock_core();
+        prepare_sites(&mut core);
+        let margin = STAND_RADIUS_TEXELS as f32 * land_cover::TEXEL_M;
+        land_cover::Coverage::build(&core, origin - Vector2::splat(margin), span + 2.0 * margin)
+            .stand_grid(STAND_RADIUS_TEXELS)
     }
 
     /// Advances whenever any terrain payload generation or vegetation patch generation does, so
@@ -206,9 +231,12 @@ impl SimulationNode {
     }
 
     /// Lays a clipped hedge from `from` to `to`, one module per metre facing along the row, and
-    /// returns the number of modules planted. `option` must name a hedge preset in `brush.rs`;
-    /// any other ordinal, or a row longer than 256 m, plants nothing. O(row length). Pass the
-    /// gesture's `stroke` id so the row reverses as one undo step.
+    /// returns the number of modules planted. The row ends flush with its two ends. An end within
+    /// 1.25 m of a hedge already standing moves onto that hedge's free end or side, and where the
+    /// rows meet at an angle the new row runs on by half the old one's width to fill the corner.
+    /// `option` must name a hedge preset in `brush.rs`; any other ordinal, or a row longer than
+    /// 256 m, plants nothing. O(row length). Pass the gesture's `stroke` id so the row reverses
+    /// as one undo step.
     #[func]
     pub fn plant_vegetation_line(
         &self,
@@ -218,6 +246,26 @@ impl SimulationNode {
         stroke: i64,
     ) -> i64 {
         line_at(&mut self.lock_core(), from, to, option, stroke) as i64
+    }
+
+    /// Straight hedge runs standing in the patch at `origin`, for the distant hedge level: the
+    /// modules of each row merged into boxes of at most 16 m, packed 7 floats each (centre x,
+    /// ground height at the centre, centre z, yaw, length, the ground's rise along the run, and
+    /// the hedge index 0 low, 1 medium, 2 tall). O(m log m) in the patch's hedge modules.
+    #[func]
+    pub fn get_vegetation_hedge_runs(&self, origin: Vector2, span: f32) -> PackedFloat32Array {
+        if !span.is_finite() || span <= 0.0 || span > 1024.0 || !origin.is_finite() {
+            return PackedFloat32Array::new();
+        }
+        PackedFloat32Array::from(hedge_runs::hedge_runs(&self.lock_core(), origin, span).as_slice())
+    }
+
+    /// Where a hedge end drawn at `pos` would land once `plant_vegetation_line` joins it to a
+    /// hedge already standing; `pos` itself when no hedge is near. Lets the tool preview the row
+    /// it will lay. O(k^2) in the few hedge modules within a couple of metres.
+    #[func]
+    pub fn snap_vegetation_line_end(&self, pos: Vector2) -> Vector2 {
+        hedge_end_at(&self.lock_core(), pos)
     }
 
     /// Returns a vegetation-only patch revision; terrain payload generations are unaffected.
@@ -477,7 +525,7 @@ pub(crate) fn remove_at(core: &mut SimCore, pos: Vector2, radius: f32, stroke: i
 
 // One grid pass. Kept out of the entry point so the two layers cannot share acceptance state,
 // the caller reads as two independent passes, and a test can drive a layer without an engine.
-pub(super) fn scatter_layer(
+pub(crate) fn scatter_layer(
     core: &SimCore,
     origin: Vector2,
     span: f32,
@@ -557,11 +605,12 @@ pub(super) fn scatter_layer(
         // its own verdicts; a desynchronised pass would panic here rather than misplace one.
         let (cell_clearances, rest) = remaining.split_at(added.len());
         remaining = rest;
-        for (plant, clear) in generated
-            .iter()
-            .map(|plant| (plant, true))
-            .chain(added.iter().zip(cell_clearances).map(|(p, &c)| (p, c)))
-        {
+        for (plant, clear, authored) in generated.iter().map(|plant| (plant, true, false)).chain(
+            added
+                .iter()
+                .zip(cell_clearances)
+                .map(|(p, &c)| (p, c, true)),
+        ) {
             let &Plant {
                 x,
                 z,
@@ -576,8 +625,15 @@ pub(super) fn scatter_layer(
             if x < origin.x || z < origin.y || x >= origin.x + span || z >= origin.y + span {
                 continue;
             }
+            // An authored plant stands in a yard or beside one, where the lawn is the site's
+            // graded ground rather than the heightmap; on a slope the two differ by metres. A
+            // generated plant is cleared off every such surface, so it reads the cheap heightmap.
             let height = |x: f32, z: f32| {
-                core.heightmap.sample_visual_height_world(x, z) * crate::config::HEIGHT_SCALE
+                if authored {
+                    authored_ground_height(core, Vector2::new(x, z))
+                } else {
+                    core.heightmap.sample_visual_height_world(x, z) * crate::config::HEIGHT_SCALE
+                }
             };
             let y = height(x, z);
             // A tree's root flare is sunk to cover a slope; a clipped hedge or a yard shrub
@@ -590,9 +646,7 @@ pub(super) fn scatter_layer(
             // A hedge module is never scaled, so its scale lane carries the ground's rise along
             // the row across its one metre instead, and the renderer shears the module to it.
             // Without it every module sat level at its own centre and a row climbed in steps.
-            let lane_four = if species == SPECIES_BUSH as u8
-                && variant > brush::HEDGE_FIRST_VARIANT
-            {
+            let lane_four = if brush::hedge_index(species, variant).is_some() {
                 let (dx, dz) = (yaw.cos() * 0.5, -yaw.sin() * 0.5);
                 height(x + dx, z + dz) - height(x - dx, z - dz)
             } else {
@@ -609,6 +663,13 @@ pub(super) fn scatter_layer(
         }
     }
     packed
+}
+
+// Ground under an authored plant as drawn: a road deck, a building's flat support or a yard's
+// graded ground where one owns the point, else the visual heightmap. Bounded lookups only: the
+// road R-tree, the 512 m site chunks and the refined patch's CDT tiles.
+fn authored_ground_height(core: &SimCore, pos: Vector2) -> f32 {
+    core.get_world_surface_height_internal(pos)
 }
 
 // The generator decision has one implementation for rendering, picking and painting.
@@ -675,17 +736,24 @@ fn inside_world(core: &SimCore, x: f32, z: f32) -> bool {
 }
 
 fn placement_clear(core: &SimCore, x: f32, z: f32, layer: VegetationLayer) -> bool {
+    placement_clear_for(core, x, z, layer, false)
+}
+
+// `yard`: an authored plant, which may stand on a building's lawn (see `clear_site`).
+fn placement_clear_for(core: &SimCore, x: f32, z: f32, layer: VegetationLayer, yard: bool) -> bool {
     let (radius, max_relief) = if layer == VegetationLayer::Canopy {
         (CANOPY_CLEAR_RADIUS_M, 3.0)
     } else {
         (2.5, 1.6)
     };
-    clear_site(core, x, z, radius, max_relief)
+    clear_site(core, x, z, radius, max_relief, yard)
 }
 
 // Whether a 3x3 footprint of `radius` around a position is open, native ground within
-// `max_relief` of its centre height.
-fn clear_site(core: &SimCore, x: f32, z: f32, radius: f32, max_relief: f32) -> bool {
+// `max_relief` of its centre height. Wild vegetation keeps off a building's whole flat support;
+// with `yard`, an authored plant keeps off only its walls and paving, so a yard's lawn can be
+// planted and a house's own hedge stands where its asset put it.
+fn clear_site(core: &SimCore, x: f32, z: f32, radius: f32, max_relief: f32, yard: bool) -> bool {
     if !inside_world(core, x, z) {
         return false;
     }
@@ -703,7 +771,11 @@ fn clear_site(core: &SimCore, x: f32, z: f32, radius: f32, max_relief: f32) -> b
                 .road_surface
                 .sample_visible_surface_height(&core.region_graph, &core.heightmap, p.x, p.y)
                 .is_some()
-            || core.allocator.sample_building_site_height(p).is_some()
+            || if yard {
+                core.allocator.building_site_blocks_yard_plant(p)
+            } else {
+                core.allocator.sample_building_site_height(p).is_some()
+            }
             || core.allocator.field_clearance.covers_point(p)
         {
             return None;

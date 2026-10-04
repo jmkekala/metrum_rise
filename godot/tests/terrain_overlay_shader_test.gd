@@ -99,7 +99,7 @@ func _run() -> void:
 	var sun_lost := sun * (1.0 - 0.02)
 	material.set_shader_parameter("ground_shadow_ambient", ambient)
 	material.set_shader_parameter("ground_shadow_sun_strength", sun)
-	material.set_shader_parameter("ground_shadow_min_visibility", 0.02)
+	material.set_shader_parameter("canopy_floor_sun_visibility", 0.02)
 	var sky_share := 0.5
 	material.set_shader_parameter("overlay_mode", 0)
 	material.set_shader_parameter("land_cover_world_bounds", Vector4(-1.0, -1.0, 2.0, 2.0))
@@ -146,6 +146,42 @@ func _run() -> void:
 		absf(covered_far - expected) < 0.02,
 		"covered ground past the cascades must lose the sun its crowns would shade"
 	)
+	# Past the cascades a crown shades the ground down its sun ray, not the ground under it. Ground
+	# open overhead must darken when a stand lies toward the sun and not when it lies away from it.
+	# The coverage texels are 30 m wide over x = -20..100 m, open in the first, so the camera's
+	# ground at x = 0 is under almost no cover and the caster the sun ray reaches 20 m up +x is
+	# under most of it.
+	var stand := Image.create(4, 1, false, Image.FORMAT_RGBA8)
+	stand.fill(Color.WHITE)
+	stand.set_pixel(0, 0, Color.BLACK)
+	material.set_shader_parameter("land_cover_texture", ImageTexture.create_from_image(stand))
+	material.set_shader_parameter("land_cover_world_bounds", Vector4(-20.0, -60.0, 120.0, 120.0))
+	material.set_shader_parameter("canopy_floor_sky_transmission", 1.0)
+	material.set_shader_parameter("canopy_floor_shade", 1.0)
+	var sun_side := {}
+	for sun_x in [0.8, -0.8]:
+		RenderingServer.global_shader_parameter_set("scene_sun_direction", Vector3(sun_x, 0.6, 0.0))
+		for height in [10.0, 600.0]:
+			camera.position = Vector3(0.0, height, 0.0)
+			camera.look_at(Vector3.ZERO, Vector3(0.0, 0.0, -1.0))
+			var cast_image := await _capture(viewport)
+			sun_side[Vector2(sun_x, height)] = _rgb(cast_image.get_pixel(32, 32)).length()
+			print("terrain_floor_cast sun_x=%.1f height=%.0f shade=%.6f" % [sun_x, height, sun_side[Vector2(sun_x, height)]])
+	RenderingServer.global_shader_parameter_set("scene_sun_direction",
+		ProjectSettings.get_setting("shader_globals/scene_sun_direction")["value"])
+	_expect(
+		absf(sun_side[Vector2(0.8, 10.0)] - sun_side[Vector2(-0.8, 10.0)]) < 0.002,
+		"inside shadow range the cascades cast the crown shadow, so the far term may change nothing"
+	)
+	_expect(
+		sun_side[Vector2(0.8, 600.0)] < 0.9 * sun_side[Vector2(-0.8, 600.0)],
+		"past the cascades a stand toward the sun must shade the open ground before it"
+	)
+	_expect(
+		absf(sun_side[Vector2(-0.8, 600.0)] - sun_side[Vector2(-0.8, 10.0)]) < 0.002,
+		"past the cascades a stand away from the sun must not shade the open ground before it"
+	)
+	material.set_shader_parameter("land_cover_world_bounds", Vector4(-1.0, -1.0, 2.0, 2.0))
 	# Past the far range the ground stands in for the crowns, and the crowns see the open sky.
 	# Under a closed canopy the floor's sky share must not reach them: it turned a dense stand
 	# nearly black. The camera looks straight down, so the stand-in covers the whole view.

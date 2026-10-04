@@ -13,6 +13,20 @@ impl BuildingSiteClient {
         point_in_polygon_slice(pos, &self.footprint_world)
     }
 
+    // Walls and paving, where even a yard plant cannot stand. A site without imported mesh
+    // bounds knows no walls, so its whole support stays closed as before.
+    fn blocks_yard_plant(&self, pos: Vector2) -> bool {
+        self.structure_world.is_empty()
+            || self
+                .structure_world
+                .iter()
+                .any(|quad| point_in_polygon_slice(pos, quad))
+            || self
+                .surfaces
+                .iter()
+                .any(|surface| point_in_polygon_slice(pos, &surface.vertices_world))
+    }
+
     pub(super) fn height_at(&self, pos: Vector2) -> Option<f32> {
         // Aprons are owned by engineered terrain, not an independent flat plane.
         self.contains_point(pos).then_some(self.support_height_m)
@@ -82,14 +96,37 @@ impl BuildingAllocator {
     }
 
     pub(crate) fn sample_building_site_height(&self, pos: Vector2) -> Option<f32> {
+        self.site_at(pos, |site| site.height_at(pos))
+    }
+
+    /// Whether a site stops an authored plant at `pos`: inside its flat support, only on the
+    /// building's own walls or on authored paving, so a yard's lawn takes hedges, shrubs and
+    /// trees. Wild vegetation keeps the whole support clear through
+    /// [`Self::sample_building_site_height`]. Same bounded chunk lookup.
+    pub(crate) fn building_site_blocks_yard_plant(&self, pos: Vector2) -> bool {
+        self.site_at(pos, |site| site.contains_point(pos).then(|| site.blocks_yard_plant(pos)))
+            .unwrap_or(false)
+    }
+
+    /// Whether `pos` lies in a building's yard planting area. Same bounded chunk lookup.
+    pub(crate) fn in_yard_planting(&self, pos: Vector2) -> bool {
+        self.site_at(pos, |site| {
+            site.planting_world
+                .iter()
+                .any(|area| point_in_polygon_slice(pos, area))
+                .then_some(())
+        })
+        .is_some()
+    }
+
+    // The lowest-index site for which `probe` answers at `pos`, through the 512 m chunk index;
+    // a linear scan only while the index is being rebuilt.
+    fn site_at<T>(&self, pos: Vector2, probe: impl Fn(&BuildingSiteClient) -> Option<T>) -> Option<T> {
         if self.dirty_index
             || self.building_sites.len() != self.buildings.len()
             || self.building_chunks.is_empty()
         {
-            return self
-                .building_sites
-                .iter()
-                .find_map(|site| site.height_at(pos));
+            return self.building_sites.iter().find_map(probe);
         }
 
         let margin_m = self.max_site_radius_m.max(0.0);
@@ -100,7 +137,7 @@ impl BuildingAllocator {
         let max_chunk_z = ((pos.y + margin_m) / chunk_size).floor() as i32;
 
         let mut best_idx = usize::MAX;
-        let mut best_height = None;
+        let mut best = None;
         for chunk_x in min_chunk_x..=max_chunk_x {
             for chunk_z in min_chunk_z..=max_chunk_z {
                 let Some(indices) = self.building_chunks.get(&(chunk_x, chunk_z)) else {
@@ -110,16 +147,16 @@ impl BuildingAllocator {
                     if idx >= best_idx || idx >= self.building_sites.len() {
                         continue;
                     }
-                    let Some(height) = self.building_sites[idx].height_at(pos) else {
+                    let Some(answer) = probe(&self.building_sites[idx]) else {
                         continue;
                     };
                     best_idx = idx;
-                    best_height = Some(height);
+                    best = Some(answer);
                 }
             }
         }
 
-        best_height
+        best
     }
 
     pub(crate) fn raycast_building_site_surface(

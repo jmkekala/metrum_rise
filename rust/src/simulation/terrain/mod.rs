@@ -9,6 +9,7 @@
 
 pub(crate) mod cdt;
 pub mod chunks;
+mod patch_masks;
 mod visual;
 
 pub(crate) use visual::{TerrainVisualOverlay, TerrainVisualSource};
@@ -27,7 +28,8 @@ use crate::simulation::core::sparse_chunk_grid::SparseChunkGrid;
 use crate::simulation::network::graph::RegionGraph;
 
 const DEFAULT_TERRAIN_CHUNK_CELLS: usize = 64;
-const TERRAIN_RENDER_PATCH_BORDER_TEXELS: usize = 4;
+/// Texels of neighbouring terrain each render patch texture carries beyond its own samples.
+pub(crate) const TERRAIN_RENDER_PATCH_BORDER_TEXELS: usize = 4;
 const TERRAIN_CDT_LOCAL_MIN_SAMPLE_MARGIN_M: f32 = 8.0;
 const TERRAIN_CDT_LOCAL_SAMPLE_MARGIN_RENDER_STEPS: f32 = 4.0;
 const TERRAIN_CDT_LOCAL_SAMPLE_MARGIN_TERRAIN_CELLS: f32 = 2.0;

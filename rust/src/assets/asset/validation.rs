@@ -271,6 +271,9 @@ impl AssetManifest {
             for surface in &self.site_surfaces {
                 validate_building_site_surface(&self.asset_id, b, surface)?;
             }
+            for area in &b.yard_planting {
+                validate_lot_polygon(&self.asset_id, b, "yard planting area", &area.name, &area.vertices)?;
+            }
         } else if !self.mesh_parts.is_empty() {
             return Err(ManifestError::Validation(format!(
                 "asset_id '{}': [[mesh_parts]] is only valid for building assets",
@@ -577,43 +580,55 @@ fn validate_building_site_surface(
             asset_id, surface.name, surface.y_m
         )));
     }
-    if surface.vertices.len() < 3 {
+    validate_lot_polygon(asset_id, building, "site surface", &surface.name, &surface.vertices)
+}
+
+// A polygon on the building's lot: at least three finite vertices inside the lot, a non-zero
+// area and no self-intersection. `what` names it in messages.
+fn validate_lot_polygon(
+    asset_id: &str,
+    building: &BuildingData,
+    what: &str,
+    name: &str,
+    vertices: &[[f32; 2]],
+) -> Result<(), ManifestError> {
+    if vertices.len() < 3 {
         return Err(ManifestError::Validation(format!(
-            "asset_id '{}': site surface '{}' must contain at least three vertices",
-            asset_id, surface.name
+            "asset_id '{}': {what} '{}' must contain at least three vertices",
+            asset_id, name
         )));
     }
     let half_lot_width = f32::from(building.lot_width_cells) * ZONE_CELL_M * 0.5;
     let half_lot_depth = f32::from(building.lot_depth_cells) * ZONE_CELL_M * 0.5;
 
-    for (vertex_index, [x, z]) in surface.vertices.iter().copied().enumerate() {
+    for (vertex_index, [x, z]) in vertices.iter().copied().enumerate() {
         if !x.is_finite() || !z.is_finite() {
             return Err(ManifestError::Validation(format!(
-                "asset_id '{}': site surface '{}' vertex {} has invalid coordinate [{}, {}]; expected finite values",
-                asset_id, surface.name, vertex_index, x, z
+                "asset_id '{}': {what} '{}' vertex {} has invalid coordinate [{}, {}]; expected finite values",
+                asset_id, name, vertex_index, x, z
             )));
         }
         if x.abs() > half_lot_width + ANCHOR_LOT_EPS_M
             || z.abs() > half_lot_depth + ANCHOR_LOT_EPS_M
         {
             return Err(ManifestError::Validation(format!(
-                "asset_id '{}': site surface '{}' vertex {} crosses the building lot bounds +/-{}m x +/-{}m",
-                asset_id, surface.name, vertex_index, half_lot_width, half_lot_depth
+                "asset_id '{}': {what} '{}' vertex {} crosses the building lot bounds +/-{}m x +/-{}m",
+                asset_id, name, vertex_index, half_lot_width, half_lot_depth
             )));
         }
     }
 
-    if super::geometry::signed_area(&surface.vertices).abs() <= 0.001 {
+    if super::geometry::signed_area(&vertices).abs() <= 0.001 {
         return Err(ManifestError::Validation(format!(
-            "asset_id '{}': site surface '{}' has zero or near-zero polygon area",
-            asset_id, surface.name
+            "asset_id '{}': {what} '{}' has zero or near-zero polygon area",
+            asset_id, name
         )));
     }
 
-    if super::geometry::self_intersects(&surface.vertices) {
+    if super::geometry::self_intersects(&vertices) {
         return Err(ManifestError::Validation(format!(
-            "asset_id '{}': site surface '{}' polygon self-intersects",
-            asset_id, surface.name
+            "asset_id '{}': {what} '{}' polygon self-intersects",
+            asset_id, name
         )));
     }
 

@@ -257,6 +257,11 @@ impl SimulationNode {
         );
         dict.set("terrain_cell_m", f64::from(snapshot.terrain_cell_m));
         dict.set("chunk_span_m", f64::from(snapshot.terrain_chunk_span_m));
+        dict.set(
+            "patch_border_texels",
+            i64::try_from(crate::simulation::terrain::TERRAIN_RENDER_PATCH_BORDER_TEXELS)
+                .unwrap_or(0),
+        );
         dict
     }
 
@@ -468,6 +473,9 @@ impl SimulationNode {
                     &refined_requests,
                     &refined_entries,
                 );
+                built
+                    .par_iter_mut()
+                    .for_each(TerrainPatchPayload::bake_shading_masks);
                 let mut job_state = jobs
                     .lock()
                     .expect("terrain payload job lock poisoned during result publication");

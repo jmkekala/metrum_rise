@@ -1240,3 +1240,300 @@ fn graded_yard_vehicle_support_batch_benchmark() {
         );
     }
 }
+
+// Hedge modules standing in the vegetation edit store.
+fn yard_hedge_count(core: &SimCore) -> usize {
+    core.vegetation_edits
+        .sorted_cells()
+        .into_iter()
+        .flat_map(|cell| core.vegetation_edits.cell(cell).1.to_vec())
+        .filter(|plant| plant.species == 2 && plant.variant > 12)
+        .count()
+}
+
+#[test]
+fn a_spawned_house_lays_its_yard_hedge_which_bulldozing_takes_and_undo_returns() {
+    let mut core = test_core();
+    core.load_game_internal(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite"
+    ))
+    .unwrap();
+    core.precompute_road_mesh_data();
+    let asset = register_yard(&mut core);
+    let mut manifest = core.allocator.registry.get(&asset).unwrap().manifest.clone();
+    manifest.building.as_mut().unwrap().yard_hedge = Some(crate::assets::asset::YardHedge {
+        hedge: crate::assets::asset::YardHedgeKind::Medium,
+        edges: crate::assets::asset::LotEdge::ALL.to_vec(),
+    });
+    core.allocator.registry.register("test", manifest, String::new());
+    assert_eq!(yard_hedge_count(&core), 0);
+    let building = place_yard(&mut core, 3, -1.0, &asset).unwrap();
+    let laid = yard_hedge_count(&core);
+    // Most of a 20 m x 20 m lot's 80 m perimeter, less its gaps and anything the site rejects.
+    assert!(laid > 40, "laid {laid}");
+    // The record survives a save and load.
+    let path = temp_save_path("yard_hedge");
+    core.save_game_internal(path.to_str().unwrap(), None).unwrap();
+    core.load_game_internal(path.to_str().unwrap()).unwrap();
+    let _ = std::fs::remove_file(&path);
+    core.precompute_road_mesh_data();
+    assert_eq!(yard_hedge_count(&core), laid);
+    assert!(core.bulldoze_building(building));
+    assert_eq!(yard_hedge_count(&core), 0, "an untouched yard hedge goes with its house");
+    assert!(core.undo_action_internal());
+    assert_eq!(yard_hedge_count(&core), laid, "undo puts the house back with its hedge");
+}
+
+#[test]
+fn a_house_reaching_its_back_line_lays_every_planned_module() {
+    let mut core = test_core();
+    core.load_game_internal(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite"
+    ))
+    .unwrap();
+    core.precompute_road_mesh_data();
+    let asset = register_yard(&mut core);
+    let mut manifest = core.allocator.registry.get(&asset).unwrap().manifest.clone();
+    // The fixture's 10.5 m house box moved back until its eaves reach the back lot line (+z).
+    manifest.mesh_parts[0].position = [0.0, 0.0, 4.75];
+    manifest.building.as_mut().unwrap().yard_hedge = Some(crate::assets::asset::YardHedge {
+        hedge: crate::assets::asset::YardHedgeKind::Medium,
+        edges: vec![
+            crate::assets::asset::LotEdge::Back,
+            crate::assets::asset::LotEdge::Left,
+            crate::assets::asset::LotEdge::Right,
+        ],
+    });
+    let structures: Vec<_> = manifest
+        .mesh_parts
+        .iter()
+        .filter_map(crate::assets::asset::structure_footprint)
+        .collect();
+    let surfaces: Vec<_> = manifest.site_surfaces.iter().map(|s| s.vertices.clone()).collect();
+    let lot = crate::assets::asset::YardLot {
+        half_width_m: 10.0,
+        half_depth_m: 10.0,
+        frontage: [0.0, -1.0],
+        surfaces: &surfaces,
+        entrance: None,
+        structures: &structures,
+    };
+    let edges = manifest.building.as_ref().unwrap().yard_hedge.as_ref().unwrap().edges.clone();
+    let rows = crate::assets::asset::plan_yard_hedge(&lot, &edges);
+    // The back row opens behind the house instead of running under its eaves.
+    assert_eq!(rows.iter().filter(|row| row.from[1] == 10.0 && row.to[1] == 10.0).count(), 2);
+    core.allocator.registry.register("test", manifest, String::new());
+    place_yard(&mut core, 3, -1.0, &asset).unwrap();
+    // Every planned module is laid: none is refused on the house's own lawn. A joined corner
+    // runs a row on by half the hedge's width, which can add one module per end.
+    let lengths: Vec<f32> = rows
+        .iter()
+        .map(|row| ((row.to[0] - row.from[0]).powi(2) + (row.to[1] - row.from[1]).powi(2)).sqrt())
+        .collect();
+    let least: usize = lengths.iter().map(|l| l.ceil() as usize).sum();
+    let most: usize = lengths.iter().map(|l| (l + 0.9).ceil() as usize).sum();
+    let laid = yard_hedge_count(&core);
+    assert!((least..=most).contains(&laid), "laid {laid}, planned {least}..={most}: {rows:?}");
+}
+
+// Every recorded yard planting plant, in record order.
+fn yard_planting(core: &SimCore) -> Vec<crate::simulation::vegetation::edits::AuthoredPlant> {
+    core.vegetation_edits
+        .yard_planting()
+        .flat_map(|(_, plants)| plants.iter().map(|(_, plant)| *plant))
+        .collect()
+}
+
+#[test]
+fn spawned_houses_plant_their_own_yards_which_go_with_them_and_return_on_undo() {
+    use crate::assets::asset::{YardPlantKind, YardPlanting};
+    let mut core = test_core();
+    core.load_game_internal(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite"
+    ))
+    .unwrap();
+    core.precompute_road_mesh_data();
+    let asset = register_yard(&mut core);
+    let mut manifest = core.allocator.registry.get(&asset).unwrap().manifest.clone();
+    // The strips beside the fixture's 10.5 m house: trees on one side, within a wild tree's 6 m
+    // of the wall, and shrubs on the other.
+    manifest.building.as_mut().unwrap().yard_planting = vec![
+        YardPlanting {
+            plants: YardPlantKind::Trees,
+            name: String::new(),
+            vertices: vec![[6.0, -3.0], [9.5, -3.0], [9.5, 9.5], [6.0, 9.5]],
+        },
+        YardPlanting {
+            plants: YardPlantKind::Bushes,
+            name: String::new(),
+            vertices: vec![[-9.5, -3.0], [-6.0, -3.0], [-6.0, 9.5], [-9.5, 9.5]],
+        },
+    ];
+    core.allocator.registry.register("test", manifest, String::new());
+    let first = place_yard(&mut core, 3, -1.0, &asset).unwrap();
+    let first_plants = yard_planting(&core);
+    let trees = first_plants.iter().filter(|plant| plant.species < 2).count();
+    assert!(trees > 0 && first_plants.len() > trees, "{first_plants:?}");
+    let second = place_yard(&mut core, 9, -1.0, &asset).unwrap();
+    let both = yard_planting(&core);
+    // The same asset grows a different yard: compare each yard's plants in its own lot frame.
+    let local = |building: usize, plants: &[crate::simulation::vegetation::edits::AuthoredPlant]| {
+        let b = &core.allocator.buildings[building];
+        let front = core.allocator.registry.get(&b.asset_id).unwrap().manifest.building_frontage_forward();
+        let (bx, bz) = crate::simulation::buildings::allocator::building_local_xz_basis(b.facing_dir, front);
+        let centre = Vector2::new(b.center_x, b.center_y);
+        let mut out: Vec<_> = plants
+            .iter()
+            .map(|p| {
+                let d = Vector2::new(p.x, p.z) - centre;
+                ((d.dot(bx) * 10.0).round() as i32, (d.dot(bz) * 10.0).round() as i32)
+            })
+            .collect();
+        out.sort_unstable();
+        out
+    };
+    let second_plants = both[first_plants.len()..].to_vec();
+    assert!(!second_plants.is_empty());
+    assert_ne!(local(first, &first_plants), local(second, &second_plants));
+    // A save and load keeps the yards as they grew.
+    let path = temp_save_path("yard_planting");
+    core.save_game_internal(path.to_str().unwrap(), None).unwrap();
+    core.load_game_internal(path.to_str().unwrap()).unwrap();
+    let _ = std::fs::remove_file(&path);
+    core.precompute_road_mesh_data();
+    assert_eq!(yard_planting(&core), both);
+    // Bulldozing takes the first yard's plants only; undo plants the same ones again.
+    assert!(core.bulldoze_building(first));
+    let standing = |core: &SimCore, plant: &crate::simulation::vegetation::edits::AuthoredPlant| {
+        core.vegetation_edits
+            .sorted_cells()
+            .into_iter()
+            .any(|cell| core.vegetation_edits.cell(cell).1.contains(plant))
+    };
+    assert!(!first_plants.iter().any(|plant| standing(&core, plant)));
+    assert!(second_plants.iter().all(|plant| standing(&core, plant)));
+    assert!(core.undo_action_internal());
+    assert!(first_plants.iter().all(|plant| standing(&core, plant)));
+}
+
+#[test]
+fn a_flower_bed_grows_drifts_of_flowers_that_keep_their_room() {
+    use crate::assets::asset::{YardPlantKind, YardPlanting};
+    let mut core = test_core();
+    core.load_game_internal(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite"
+    ))
+    .unwrap();
+    core.precompute_road_mesh_data();
+    let asset = register_yard(&mut core);
+    let mut manifest = core.allocator.registry.get(&asset).unwrap().manifest.clone();
+    manifest.building.as_mut().unwrap().yard_planting = vec![YardPlanting {
+        plants: YardPlantKind::Flowers,
+        name: String::new(),
+        vertices: vec![[6.0, -3.0], [9.5, -3.0], [9.5, 9.5], [6.0, 9.5]],
+    }];
+    core.allocator.registry.register("test", manifest, String::new());
+    place_yard(&mut core, 3, -1.0, &asset).unwrap();
+    let plants = yard_planting(&core);
+    // Flower variants are bush pins 16 to 21: the six flowers past the hedges.
+    assert!(plants.len() >= 10, "{plants:?}");
+    assert!(plants.iter().all(|plant| plant.species == 2 && (16..=21).contains(&plant.variant)));
+    let kinds: std::collections::HashSet<_> = plants.iter().map(|plant| plant.variant).collect();
+    assert!(kinds.len() >= 2, "{kinds:?}");
+    // Perennials keep 0.7 m between them and a flowering shrub 1.05 m to anything else.
+    for (i, a) in plants.iter().enumerate() {
+        for b in &plants[i + 1..] {
+            let room = |plant: &crate::simulation::vegetation::edits::AuthoredPlant| {
+                if plant.variant >= 19 && plant.variant <= 20 { 0.7 } else { 0.35 }
+            };
+            let gap = Vector2::new(a.x - b.x, a.z - b.z).length();
+            assert!(gap + 1e-3 >= room(a) + room(b), "{a:?} {b:?}");
+        }
+    }
+}
+
+#[test]
+fn yard_hedges_stand_on_the_graded_lawn_of_a_sloping_yard() {
+    use crate::nodes::simulation_node::vegetation_api::{CANOPY_SALT, hedge_runs, scatter_layer};
+    let mut core = test_core();
+    core.load_game_internal(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite"
+    ))
+    .unwrap();
+    core.precompute_road_mesh_data();
+    let asset = register_yard(&mut core);
+    let mut manifest = core.allocator.registry.get(&asset).unwrap().manifest.clone();
+    manifest.building.as_mut().unwrap().yard_hedge = Some(crate::assets::asset::YardHedge {
+        hedge: crate::assets::asset::YardHedgeKind::Medium,
+        edges: crate::assets::asset::LotEdge::ALL.to_vec(),
+    });
+    core.allocator.registry.register("test", manifest, String::new());
+    // Edge 3's yards are graded up to 2.7 m below the heightmap under their hedges.
+    for side in [-1.0, 1.0] {
+        place_yard(&mut core, 3, side, &asset).unwrap();
+    }
+    settle_and_check_yards(&mut core);
+    let (mut min, mut max) = (Vector2::splat(f32::MAX), Vector2::splat(f32::MIN));
+    for cell in core.vegetation_edits.sorted_cells() {
+        for plant in core.vegetation_edits.cell(cell).1 {
+            min = Vector2::new(min.x.min(plant.x), min.y.min(plant.z));
+            max = Vector2::new(max.x.max(plant.x), max.y.max(plant.z));
+        }
+    }
+    let origin = min.floor();
+    let span = (max - origin).x.max((max - origin).y).ceil() + 1.0;
+    let packed = scatter_layer(
+        &core,
+        origin,
+        span,
+        core.vegetation.canopy_cell_m,
+        CANOPY_SALT,
+        true,
+    );
+    let mut modules = 0;
+    for plant in packed.chunks_exact(6) {
+        let (species, variant) = (plant[5] as u32 & 3, plant[5] as u32 >> 2);
+        if !(species == 2 && variant > 12) {
+            continue;
+        }
+        let pos = Vector2::new(plant[0], plant[2]);
+        let lawn = core.get_world_surface_height_internal(pos);
+        // A module settles 0.05 m into the lawn and no further.
+        assert!(
+            (plant[1] + 0.05 - lawn).abs() < 0.001,
+            "module at {pos:?} y={} lawn={lawn}",
+            plant[1]
+        );
+        modules += 1;
+    }
+    assert!(modules > 40, "modules {modules}");
+    let runs = hedge_runs(&core, origin, span);
+    assert!(!runs.is_empty());
+    for run in runs.chunks_exact(7) {
+        let pos = Vector2::new(run[0], run[2]);
+        let lawn = core.get_world_surface_height_internal(pos);
+        assert!(
+            (run[1] - lawn).abs() < 0.001,
+            "run at {pos:?} y={} lawn={lawn}",
+            run[1]
+        );
+    }
+    // A distant run is one sheared box, so it is cut wherever the graded lawn bends under it.
+    for run in runs.chunks_exact(7) {
+        let along = Vector2::new(run[3].cos(), -run[3].sin());
+        for k in 0..=16 {
+            let t = k as f32 / 16.0 - 0.5;
+            let p = Vector2::new(run[0], run[2]) + along * run[4] * t;
+            let lawn = core.get_world_surface_height_internal(p);
+            assert!(
+                (run[1] + run[5] * t - lawn).abs() < 0.2,
+                "run {run:?} leaves the lawn at {p:?}"
+            );
+        }
+    }
+}

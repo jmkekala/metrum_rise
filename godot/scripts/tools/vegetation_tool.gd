@@ -2,7 +2,7 @@
 
 ## Player vegetation input and ground-ring preview; all placement decisions stay in Rust.
 ## Rust methods called: add_vegetation_at(), remove_vegetation_at(), paint_vegetation(),
-## plant_vegetation_line(), intersect_world_surface().
+## plant_vegetation_line(), snap_vegetation_line_end(), intersect_world_surface().
 extends Node3D
 
 enum Mode { PLANT, REMOVE }
@@ -22,7 +22,8 @@ const UIStyle = preload("res://scripts/ui/ui_style.gd")
 # preset where its ratio is written down.
 #
 # "ground" marks the presets Rust bounds to a 64 m brush. "line" marks the hedges: a press sets
-# one end of the row, the release the other, and the radius plays no part.
+# one end of the row, the release the other, and the radius plays no part, so it neither shows
+# nor steps while one is selected.
 const BRUSH_OPTIONS := [
 	{"label": "Pine", "preset": 4},
 	{"label": "Spruce", "preset": 5},
@@ -34,6 +35,12 @@ const BRUSH_OPTIONS := [
 	{"label": "Cotoneaster", "preset": 14, "ground": true},
 	{"label": "Mountain pine", "preset": 15, "ground": true},
 	{"label": "Juniper", "preset": 16, "ground": true},
+	{"label": "Peony", "preset": 20, "ground": true},
+	{"label": "Lupine", "preset": 21, "ground": true},
+	{"label": "Phlox", "preset": 22, "ground": true},
+	{"label": "Hydrangea", "preset": 23, "ground": true},
+	{"label": "Rhododendron", "preset": 24, "ground": true},
+	{"label": "Summer flowers", "preset": 25, "ground": true},
 	{"label": "Hedge, low", "preset": 17, "line": true},
 	{"label": "Hedge, medium", "preset": 18, "line": true},
 	{"label": "Hedge, tall", "preset": 19, "line": true},
@@ -70,6 +77,8 @@ const MENU_DISMISS_FRAMES := 2
 const PLANT_RING_COLOR := Color(0.85, 0.95, 0.45)
 # Cross-section of the bar that previews a hedge row on the ground, in metres.
 const LINE_PREVIEW_SIZE := Vector2(0.25, 0.6)
+# Ring that marks where a hedge end will land, in place of the brush footprint.
+const LINE_CURSOR_RADIUS_M := 0.5
 const REMOVE_RING_COLOR := Color(0.95, 0.45, 0.35)
 
 # Ring stroke, in pixels. A fixed world-space stroke is honest in metres and useless on screen: at
@@ -215,14 +224,19 @@ func _process(delta: float) -> void:
 			return
 		_last_hit = probe
 	var hit := _last_hit
+	var line := is_line_option()
+	# A hedge end lands on a hedge it is drawn near, so the cursor shows it there.
+	if line:
+		hit = _line_end(hit)
+	var ring_radius := LINE_CURSOR_RADIUS_M if line else radius
 	# TorusMesh rebuilds its surface on every property write, so the stroke is only re-applied
 	# once it has drifted enough to see. Camera motion otherwise rebuilds 1024 triangles a frame.
-	var stroke := _ring_stroke_m(hit)
-	if radius != _preview_radius or absf(stroke - _preview_stroke) > _preview_stroke * 0.05:
-		_preview_radius = radius
+	var stroke := _ring_stroke_m(hit, ring_radius)
+	if ring_radius != _preview_radius or absf(stroke - _preview_stroke) > _preview_stroke * 0.05:
+		_preview_radius = ring_radius
 		_preview_stroke = stroke
-		_ring.outer_radius = radius
-		_ring.inner_radius = maxf(0.05, radius - stroke)
+		_ring.outer_radius = ring_radius
+		_ring.inner_radius = maxf(0.05, ring_radius - stroke)
 	# Colour carries the mode, because the panel has no space to and the cursor is where the
 	# player is looking when it matters.
 	if int(mode) != _preview_mode:
@@ -262,7 +276,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			if is_line_option():
 				var start = _mouse_world_pos()
 				if start != null:
-					_line_start = start
+					_line_start = _line_end(start)
 					get_viewport().set_input_as_handled()
 				return
 			_painting = mode == Mode.REMOVE or radius > MIN_RADIUS_M
@@ -366,6 +380,8 @@ func _update_option_label() -> void:
 ## dropdown forwards ctrl and the wheel here: an open popup holds the input grab, so those events
 ## never reach `_unhandled_input`.
 func step_radius(direction: int) -> void:
+	if is_line_option():
+		return
 	# Clamping at the minimum is what makes the point edit reachable again after any number of
 	# steps up, since a geometric walk never lands back on it exactly.
 	radius = clampf(
@@ -400,9 +416,15 @@ func apply_at(pos: Vector2, stroke := 0) -> int:
 		return simulation_node.paint_vegetation(pos, radius, preset, stroke)
 	return int(simulation_node.add_vegetation_at(pos, preset))
 
-## Lays the selected hedge from `from` to `to` and returns how many modules Rust planted.
+## Lays the selected hedge from `from` to `to` and returns how many modules Rust planted. Rust
+## joins either end to a hedge already standing near it.
 func apply_line(from: Vector2, to: Vector2, stroke := 0) -> int:
 	return simulation_node.plant_vegetation_line(from, to, preset, stroke)
+
+# Where Rust will put a hedge end drawn at `hit`, at the ground height under the cursor.
+func _line_end(hit: Vector3) -> Vector3:
+	var end: Vector2 = simulation_node.snap_vegetation_line_end(Vector2(hit.x, hit.z))
+	return Vector3(end.x, hit.y, end.y)
 
 # Stretches the preview bar along the ground from the row's start to the cursor.
 func _show_line(start: Vector3, end: Vector3) -> void:
@@ -418,7 +440,7 @@ func _show_line(start: Vector3, end: Vector3) -> void:
 
 # World metres that cover RING_STROKE_PX at the cursor. Same projection term as the field edit
 # tool's handle scaling, which is the existing idiom for this in the tool layer.
-func _ring_stroke_m(hit: Vector3) -> float:
+func _ring_stroke_m(hit: Vector3, ring_radius: float) -> float:
 	var camera := get_viewport().get_camera_3d()
 	if camera == null:
 		return RING_STROKE_MIN_M
@@ -427,7 +449,7 @@ func _ring_stroke_m(hit: Vector3) -> float:
 		deg_to_rad(camera.fov * 0.5)
 	) / height_px
 	# The upper bound never falls below the lower one, which it would at the point-edit radius.
-	var upper := maxf(RING_STROKE_MIN_M, radius * RING_STROKE_MAX_RATIO)
+	var upper := maxf(RING_STROKE_MIN_M, ring_radius * RING_STROKE_MAX_RATIO)
 	return clampf(RING_STROKE_PX * metres_per_px, RING_STROKE_MIN_M, upper)
 
 func _mouse_world_pos() -> Variant:
