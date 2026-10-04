@@ -113,24 +113,26 @@ def atlas(species, out):
                 for side in (-1, 1):
                     blade(pt(.49, y), pt(.49 + side * .05, y + .026), .0022, (.38, .46, .21), needle=True)
         elif species == 'pine':
-            # Five connected terminal shoots, bearing paired long needles in tufts.
-            for j in range(7):
-                root = np.array((.5 + rng.uniform(-.04, .04), .96))
-                phase = 1.5 * math.pi + (j - 3) * .17 + rng.uniform(-.05, .05)
-                reach = rng.uniform(.66, .86)
-                tip = root + reach * np.array((math.cos(phase), math.sin(phase)))
-                line(root, tip, .0022)
-                axis = (tip - root) / np.linalg.norm(tip - root)
+            # Three terminal brushes: bare shoot bases, paired slender needles at tips.
+            # The outline is a needle fan, not the old seven-shoot leafy paddle.
+            for j in range(3):
+                root = np.array((.5, .96))
+                phase = 1.5 * math.pi + (j - 1) * .42 + rng.uniform(-.06, .06)
+                reach = rng.uniform(.53, .66)
+                axis = np.array((math.cos(phase), math.sin(phase)))
                 side = np.array((-axis[1], axis[0]))
-                for k in range(150):
-                    at = tip - axis * rng.uniform(0, .50) ** 1.3 / .50 ** .3
-                    spread = rng.uniform(-.85, .85)
+                tip = root + reach * axis
+                line(root, tip, .0013)
+                for k in range(145):
+                    at = tip - axis * rng.uniform(.01, .24)
+                    spread = rng.uniform(-1.20, 1.20)
                     direction = axis * math.cos(spread) + side * math.sin(spread)
-                    length = rng.uniform(.07, .13)
+                    length = rng.uniform(.12, .23)
                     for paired in (-1, 1):
-                        end = at + direction * length + side * paired * .006
-                        c = rng.uniform(.85, 1.15)
-                        blade(pt(*at), pt(*end), .0020, np.array((.50, .62, .44)) * c, needle=True)
+                        end = at + direction * length + side * paired * .009
+                        c = rng.uniform(.80, 1.16)
+                        blade(pt(*at), pt(*end), .0011,
+                              np.array((.43, .53, .31)) * c, needle=True)
         elif species == 'aspen':
             line((.50, .97), (.47, .08), .002)
             for j in range(9):
@@ -194,19 +196,49 @@ def bark_texture(species, out):
         value[scars] *= .40
         color = np.stack((value * .91, value, value * .81), -1)
     elif species == 'pine':
-        # Band-limited periodic noise (seeded FFT filter) tiles seamlessly without the
-        # repeating zigzag of pure sines. Plates are stretched vertically, as in real pine bark.
+        # U selects a continuous plate-to-flake transition; V repeats local detail.
+        # This preserves texel density without a hard boundary between two tiles.
         rng = np.random.default_rng(5311)
         fy, fx = np.meshgrid(np.fft.fftfreq(n) * n, np.fft.fftfreq(n) * n, indexing='ij')
         def field(scale_x, scale_y):
             spectrum = np.fft.fft2(rng.standard_normal((n, n)))
             f = np.real(np.fft.ifft2(spectrum * np.exp(-(fx / scale_x) ** 2 - (fy / scale_y) ** 2)))
             return (f - f.mean()) / f.std()
-        plates = field(9, 3.5)
-        ridges = np.abs(field(14, 5))
-        value = .62 + .10 * plates + .06 * field(40, 40)
-        value = value * np.clip(.40 + ridges * 1.1, .40, 1.0)
-        color = np.stack((value * .95, value * .82, value * .68), -1)
+        def plates(columns, rows):
+            # Bounded neighbour search for the nearest two periodic jittered cells.
+            u = x * columns + .22*field(20, 12)
+            v = y * rows + .18*field(16, 8)
+            nearest = np.full((n, n), np.inf)
+            second = nearest.copy()
+            tint = np.zeros((n, n))
+            for dy in range(-2, 3):
+                for dx in range(-2, 3):
+                    cx, cy = np.floor(u) + dx, np.floor(v) + dy
+                    key = (cx % columns) * 127.1 + (cy % rows) * 311.7
+                    jitter = np.mod(np.sin(key) * 43758.5453, 1)
+                    jy = np.mod(np.sin(key + 19.19) * 23421.631, 1)
+                    distance = (u - cx - .05 - .9*jitter)**2 + (v - cy - .05 - .9*jy)**2
+                    closer = distance < nearest
+                    second = np.where(closer, nearest, np.minimum(second, distance))
+                    tint = np.where(closer, .80 + .4*jitter, tint)
+                    nearest = np.minimum(nearest, distance)
+            return np.sqrt(second)-np.sqrt(nearest), tint
+        edge, plate_tint = plates(28, 5)
+        fissures = .18 + .82*np.clip(edge/.075, 0, 1)
+        long_cracks = np.abs(np.sin(TAU*(x*40 + .09*field(18, 8))))
+        fissures *= .25 + .75*np.clip(long_cracks/.15, 0, 1)
+        fine = field(90, 90)
+        low = plate_tint * fissures * (1 + .09*fine)
+        flake_edge, flake_tint = plates(64, 16)
+        # Small irregular flakes with dark edges, rather than isolated black spots.
+        high = flake_tint * (.45 + .55*np.clip(flake_edge/.13, 0, 1)) * (1 + .045*fine)
+        # Spatial islands retain grey plates through a several-metre band.
+        fade = np.clip((x - .30 + .08*field(16, 8) + .035*(plate_tint-1)/.2) / .40, 0, 1)
+        fade = fade*fade*(3-2*fade)
+        lower = low[..., None] * np.array((.34, .30, .265))
+        upper = high[..., None] * np.array((.59, .375, .29))
+        upper *= np.where(flake_tint[..., None] < .88, np.array((.80, .91, 1.)), 1.)
+        color = lower*(1-fade[..., None]) + upper*fade[..., None]
     else:
         value = .16 + .17 * grain
         value[np.sin(TAU * (x * 29 + .11 * np.sin(TAU * y * 7))) > .85] *= .55
@@ -533,42 +565,107 @@ def build_birch(out, alpha, revision, variant):
 
 def build_pine(out, alpha, revision, variant):
     rng = random.Random(59281 + variant * 433)
-    height, radius, base, lean = [(23., 1.55, 15.0, .20), (20.5, 1.40, 13.1, -.22), (15.5, 1.65, 7.0, .15)][variant]
+    height, radius, base, lean = [(23., 2.00, 13.5, .16),
+                                  (21., 2.16, 12.5, -.18),
+                                  (9.5, 1.40, .40, .08)][variant]
     tree = setup_tree('pine', out, alpha, variant, height)
-    trunk = [Vector((lean * (i/10)**1.4 + .13*math.sin(i)*i/10, .14*math.sin(i*.8), height*.91*i/10)) for i in range(11)]
-    tree.tube(trunk, .29 if variant < 2 else .23, 8)
-    for limb in range(18):
-        t = limb/17
-        phi = limb * 2.39996323 + rng.uniform(-.5, .5)
-        radial = Vector((math.cos(phi), math.sin(phi), 0)); side = UP.cross(radial)
-        start = sample_path(trunk, (base + (height*.85-base)*t)/(height*.91))
-        reach = radius*(.80 + .35*math.sin(t*math.pi))*(1-(.70 if variant == 2 else .45)*t**3)*rng.uniform(.78,1.13)
-        end = radial*reach + Vector((lean, 0, base + (height-base)*(.08 + .78*t) + rng.uniform(-.25,.25)))
-        path = [start, start.lerp(end,.35)-UP*.10, start.lerp(end,.72)+UP*.15, end]
-        tree.tube(path, .080*(1-.65*t), 5)
+    transition = height * (.33 if variant < 2 else .22)
+
+    def wood(path, radius, sides):
+        # Pine-only remap keeps the common geometry/LOD thresholds and other species exact.
+        first, reduced_first = len(tree.vertices), len(tree.reduced)
+        tree.tube(path, radius, sides)
+        def surface(points, uv):
+            # Shift across the continuous bark atlas over the transition band.
+            # Mirrored circumferential sampling closes the seam at every height.
+            coords = []
+            for p, (u, _) in zip(points, uv):
+                h = p.z / height * (.33/.22 if variant == 2 else 1.)
+                fade = min(1., max(0., (h-.23)/.20))
+                coords.append((.015 + .22*(.5-.5*math.cos(TAU*u)) + .75*fade, p.z/1.8))
+            colours = [(1., 1., 1., 1.) for _ in points]
+            return coords, colours
+        for start in range(first, len(tree.vertices), 4):
+            coords, colours = surface(tree.vertices[start:start+4], tree.uv[start:start+4])
+            tree.uv[start:start+4], tree.colors[start:start+4] = coords, colours
+        for i in range(reduced_first, len(tree.reduced)):
+            points, uv, normals, _, slot, source = tree.reduced[i]
+            coords, colours = surface(points, uv)
+            tree.reduced[i] = (points, coords, normals, colours, slot, source)
+
+    levels = sorted(set([i / 12 for i in range(13)] + [transition / height]))
+    trunk = [Vector((lean*t*t + .035*math.sin(t*17)*t,
+                     .035*math.sin(t*12)*t, height*t)) for t in levels]
+    wood(trunk, .28 if variant < 2 else .13, 8)
+    # Interpolate by physical height: trunk ring spacing includes the bark boundary.
+    def stem(z):
+        for a, b in zip(trunk, trunk[1:]):
+            if a.z <= z <= b.z:
+                return a.lerp(b, (z-a.z)/(b.z-a.z))
+        return trunk[-1].copy()
+
+    count = (16, 16, 21)[variant]
+    for limb in range(count):
+        if variant == 2:
+            tier = limb // 3
+            t = tier / 7
+            z = base + (height-base)*t
+            phi = limb % 3 * TAU/3 + tier*.81 + rng.uniform(-.20, .20)
+            reach = radius*(1-t)**.80*rng.uniform(.82, 1.05)
+            rise = .30 + .10*t
+        else:
+            t = limb/(count-1)
+            # Different crown scaffolds: a staggered leader versus an older spreading top.
+            z = base + (height-base)*(.75*t if variant == 0 else .72*t)
+            phi = limb*2.39996323 + variant*1.1 + rng.uniform(-.42, .42)
+            reach = radius*(.76+.24*math.sin(t*math.pi))*(1-.90*t**3)
+            reach *= rng.uniform(.80, 1.12)
+            rise = rng.uniform(.30, .80) + (.35*t if variant == 0 else .70*t)
+            if variant == 1:
+                phi = (0.2,3.4,1.9,4.8,.8,3.,5.6,2.2,4.5,.3,3.6,5.4,1.5,4.,2.6,5.9)[limb]
+                z = base + (height-base) * (0.,.06,.14,.21,.30,.39,.46,.52,.57,.63,.67,.71,.74,.77,.80,.83)[limb]
+                reach = radius * (.85 if limb < 7 else .52) * rng.uniform(.72,1.12)
+                rise = rng.uniform(.25,.65) if limb < 7 else rng.uniform(.55,.95)
+        radial = Vector((math.cos(phi), math.sin(phi), 0))
+        side = UP.cross(radial)
+        start = stem(z)
+        end = start + radial*reach + UP*rise
+        elbow = start.lerp(end, .52) - UP*.14 + side*rng.uniform(-.14, .14)
+        wood([start, elbow, end], (.072 if variant < 2 else .039)*(1-.55*t), 5 if variant < 2 else 3)
         for j in range(3):
-            root = sample_path(path,.40+j*.28)
-            sign = (-1)**j
-            tip = root + radial*.20 + side*sign*rng.uniform(.20,.45)
-            tip.z = end.z + rng.uniform(.30, .75)
-            secondary = [root, root.lerp(tip,.55)-UP*.12, tip]
-            tree.tube(secondary,.033,3)
+            root = sample_path([start, elbow, end], .30+j*.31)
+            taper = 1-.60*t if variant == 2 else 1.
+            tip = root + radial*(.22*taper) + side*(j-1)*rng.uniform(.32, .48)*taper + UP*rng.uniform(.18, .42)
+            wood([root, root.lerp(tip, .55), tip], .023 if variant < 2 else .015, 3)
             for k in range(3):
-                fork = sample_path(secondary,.30+k*.32)
-                angle = phi+k*2.4+rng.uniform(-.3,.3)
-                shoot = fork+Vector((math.cos(angle)*.25,math.sin(angle)*.25,.28))
-                if k%2==0:
-                    tree.tube([fork,shoot],.011,3)
-                for q in range(5):
-                    at = fork.lerp(shoot,(q+.5)/5)
-                    direction = Vector((math.cos(angle+q*1.8),math.sin(angle+q*1.8),rng.uniform(-.2,.9)))
-                    tree.card(at,direction,rng.uniform(.48,.56),rng.uniform(.53,.63),rng.uniform(-1.6,1.6),rng.randrange(4),tip-UP*.5)
-    # Sparse retained dead stubs beneath the living crown.
-    for j in range(5):
-        z=base-3+j*.55; phi=j*2.4
-        root=sample_path(trunk,z/(height*.91))
-        tree.tube([root,root+Vector((math.cos(phi)*.55,math.sin(phi)*.55,.08))],.027,3)
-    return tree,tree.finish()
+                angle = phi + (k-1)*.85
+                shoot_axis = Vector((math.cos(angle)*.55, math.sin(angle)*.55, .60)).normalized()
+                shoot = tip + side*(k-1)*.19*taper + shoot_axis*.21
+                wood([tip, shoot], .009, 3)
+                # Cards share shoot bases; needles project out along the growing shoot.
+                # Small crossing brushes form discrete terminal clumps, leaving bare wood.
+                for q in range((8 if t < .40 else 5) if variant < 2 else 4):
+                    direction = (shoot_axis + side*rng.uniform(-.5, .5) + UP*rng.uniform(-.2, .3)).normalized()
+                    at = shoot + radial*rng.uniform(-.07, .07) + side*rng.uniform(-.10, .10)
+                    size = (.98, .98, 1.23)[variant] * (1-.40*t if variant == 2 else 1.)
+                    tree.card(at, direction, rng.uniform(.47, .53)*size,
+                              rng.uniform(.55, .65)*size, q*math.pi/3+.15*limb,
+                              (limb+j+k+q)%4, tip-UP*.25)
+    # The young tree retains a leader; old crown tops finish with short irregular shoots.
+    for j in range(3):
+        at = stem(height-.48)
+        direction = Vector((math.cos(j*2.1)*.25, math.sin(j*2.1)*.25, 1))
+        for q in range(15):
+            tree.card(at + Vector((math.cos(q*2.4)*.12, math.sin(q*2.4)*.12, -.03*q)), direction, .40, .55, q*math.pi/3, j%4, at-UP*.3)
+    for j in range(5 if variant < 2 else 2):
+        z = max(.4, base-3+j*.55)
+        root = stem(z)
+        wood([root, root+Vector((math.cos(j*2.4)*.38, math.sin(j*2.4)*.38, .06))], .021, 3)
+    obj = tree.finish()
+    tree.stats['orange_transition_m'] = round(transition, 3)
+    tree.stats['orange_transition_height_share'] = round(transition / tree.stats['height_m'], 4)
+    tree.stats['orange_fade_m'] = [round(height*t, 3) for t in ((.23,.43) if variant < 2 else (.23*.22/.33,.43*.22/.33))]
+    return tree, obj
 
 
 def build_aspen(out, alpha, revision, variant):

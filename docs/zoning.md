@@ -1723,6 +1723,9 @@ version 66 initialization. The queued-growth and curved-source round-trip regres
 Direct non-bulk road insertion now records choices from its existing affected-edge set, and
 node movement invalidates both old and new corridors. Rejected staged edits and node-move undo
 restore the original recorded choices. Selection matches with one and four Rayon workers.
+Marking a road end as a border connection, which moves that end `BORDER_EXTENSION_M` outward,
+refreshes the road's alignment the same way (`SAVE-02`); before that fix the save wrote the stale
+source and its load was rejected.
 
 The release library suite passes **1,971 tests** (73 timing fixtures ignored). All three Godot
 bridge suites pass with the rebuilt extension, and warning-free Rustdoc passes. The real Forward+

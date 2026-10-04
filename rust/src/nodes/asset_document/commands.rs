@@ -3,6 +3,7 @@
 //! Typed authoring commands over lossless document dictionaries; no JSON edit round trips.
 //! Validate the whole target set before making a private command snapshot.
 
+use crate::assets::asset::YardPlantKind;
 use crate::assets::authoring::edits::{ObjectKind, unique_name};
 use godot::{builtin::vdict, prelude::*};
 use std::collections::HashSet;
@@ -196,11 +197,16 @@ fn edit(
                 }
                 ("anchors", entry)
             }
-            "asphalt" | "concrete" => {
-                let (w, d) = if kind == "asphalt" {
-                    (2.5, 3.5)
-                } else {
-                    (0.7, 3.0)
+            // Yard paving, or a yard planting area, which the editor keeps among the surfaces
+            // under its plant kind and export writes out as `[[building.yard_planting]]`.
+            surface
+                if matches!(surface, "asphalt" | "concrete")
+                    || YardPlantKind::from_name(surface).is_some() =>
+            {
+                let (w, d) = match kind.as_str() {
+                    "asphalt" => (2.5, 3.5),
+                    "concrete" => (0.7, 3.0),
+                    _ => (2.0, 2.0),
                 };
                 let vertices = [[-w, -d], [w, -d], [w, d], [-w, d]]
                     .into_iter()
@@ -294,7 +300,9 @@ fn edit(
             }
             "material" => {
                 let material = text(args, "material");
-                if !matches!(material.as_str(), "asphalt" | "concrete") {
+                if !matches!(material.as_str(), "asphalt" | "concrete")
+                    && YardPlantKind::from_name(&material).is_none()
+                {
                     return Err("Unsupported surface material".into());
                 }
                 entry.set("material", material);

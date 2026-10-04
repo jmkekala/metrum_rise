@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
 ## Exercises vertex picking, release commits, rejection rollback and cancellation through the tool.
-## Also checks that the farm inspector keeps resident household details beside its business data.
+## Also checks that the farm inspector keeps resident household details beside its business data,
+## and that inspecting another building replaces the open inspector window.
 ## Simulation responses are controlled here; native field geometry/economy have Rust regressions.
 extends SceneTree
 
@@ -32,6 +33,13 @@ class SimulationStub extends Node3D:
 		return 0.0
 	func intersect_world_surface(_origin: Vector3, _direction: Vector3) -> Vector3:
 		return hit
+	func get_building_info_at(x: float, _z: float) -> Dictionary:
+		# Two houses: one centred at the origin and one 100 m east.
+		return {"zone_type": "residential", "center_x": 0.0 if x < 50.0 else 100.0, "center_z": 0.0}
+	func get_current_minute_of_day() -> int:
+		return 0
+	func get_current_day() -> int:
+		return 0
 	func validate_field_polygon(_id: int, _polygon: PackedVector2Array) -> Dictionary:
 		return {"ok": not reject, "error": "field overlaps a road"}
 	func resize_field_polygon(id: int, center: Vector2, expected: PackedVector2Array, polygon: PackedVector2Array) -> Dictionary:
@@ -40,6 +48,19 @@ class SimulationStub extends Node3D:
 		if reject:
 			return {"ok": false, "error": "field overlaps a road"}
 		return {"ok": true, "building_id": id, "center_x": center.x, "center_z": center.y, "field_polygon": polygon, "field_area_m2": 12000.0, "worker_capacity": 2}
+
+# Swaps the persistent window layout for a bare window so the test writes no user settings.
+class FixtureInspector extends Inspector:
+	func _create_window_entry(key: String) -> Dictionary:
+		var window := Window.new()
+		window.visible = false
+		window.close_requested.connect(_close_entry.bind(key))
+		add_child(window)
+		var title := Label.new()
+		window.add_child(title)
+		var body := VBoxContainer.new()
+		window.add_child(body)
+		return {"window": window, "title_label": title, "stats_body": body, "anchor_pos": Vector3.ZERO}
 
 class TerrainStub extends Node3D:
 	var refreshes := 0
@@ -142,6 +163,7 @@ func _run() -> void:
 	industry.active = false
 	_expect(sim.cancelled_buildings == [7], "Repeated idle updates do not repeat cancellation")
 	_test_farm_inspector(scene)
+	_test_one_inspector_at_a_time(scene)
 	scene.free()
 	if _failures == 0:
 		print("field_edit_tool_test: PASS")
@@ -176,3 +198,14 @@ func _test_farm_inspector(scene: Node) -> void:
 	_expect(rows.get("Supply Units") == "12.0" and rows.get("Replenishment") == "Stable", "Farm inspector shows household supplies")
 
 	_expect(rows.get("Machinery") == "0.0 (1.0/day at full operation)", "Farm inspector shows empty Machinery stock and upkeep rate")
+
+func _test_one_inspector_at_a_time(scene: Node) -> void:
+	var inspector := FixtureInspector.new()
+	scene.add_child(inspector)
+	_expect(inspector.try_inspect(Vector3.ZERO, Vector2(10, 10)), "Clicking a house opens its inspector")
+	var first: Window = inspector._open_windows.values()[0]["window"]
+	_expect(inspector.try_inspect(Vector3(100, 0, 0), Vector2(20, 20)), "Clicking another house is handled")
+	_expect(inspector._open_windows.size() == 1, "Inspecting another house replaces the open inspector")
+	_expect(first.is_queued_for_deletion(), "The previous inspector window is freed")
+	_expect(inspector.try_inspect(Vector3(100, 0, 0), Vector2(20, 20)) and inspector._open_windows.is_empty(), "Clicking the same house again closes its inspector")
+	inspector.free()

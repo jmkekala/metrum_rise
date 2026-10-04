@@ -14,7 +14,7 @@ const BROADLEAF := 1
 const BUSH := 2
 const ROCK := 3
 const SPECIES_COUNT := 4
-const VARIANT_COUNTS := [12, 12, 15, 6]
+const VARIANT_COUNTS := [12, 12, 21, 6]
 # Variants the appearance seed may pick when no brush named one. Bush variants past these are
 # named yard plants, which the generator must never scatter through a forest.
 const SEED_VARIANT_COUNTS := [12, 12, 6, 6]
@@ -42,12 +42,13 @@ const CROWN_GROWTH_SPAN_M := 1000.0
 # Past the trees the terrain shader stands in for them by mixing toward one crown albedo by the
 # share of each sight line a random stand of the published crown coverage would stop; see
 # terrain.gdshader. The ratio is a crown's side area over its top area, which is near one for
-# these crowns. The albedo is fitted to the authored trees: a painted stand 5 km away, seen from
-# 450 m and from 1500 m up, rendered as ground at two albedos and as trees drawn to 12 km, solves
-# per channel to (0.13-0.14, 0.17-0.18, 0.05-0.06). The procedural trees' (0.12, 0.13, 0.045)
-# had a quarter less green and turned an authored stand brown at the handover.
+# these crowns. The albedo is fitted to the authored trees with calibrated leaves and stand sun:
+# a painted stand 5.2 km away, seen from 450 m and from 1500 m up, at 09:00 and 13:00, rendered
+# as ground at two albedos and as trees drawn to 12 km, solves per channel to
+# (0.160-0.164, 0.219-0.224, 0.061-0.065). The fit before the leaf change, (0.135, 0.18, 0.06),
+# drew the stand 2.5% darker than its trees.
 const CANOPY_FAR_SIDE_RATIO := 1.0
-const CANOPY_FAR_ALBEDO := Vector3(0.135, 0.18, 0.06)
+const CANOPY_FAR_ALBEDO := Vector3(0.162, 0.222, 0.063)
 # Relative albedo spread between neighbouring far crowns. Drawn trees differ crown to crown
 # where one albedo draws a flat patch.
 const CANOPY_FAR_SPECKLE := 0.8
@@ -70,14 +71,13 @@ const FOLIAGE_ALPHA_RECTS := [
 
 # Share of its baked albedo an impostor keeps, conifer first, so that it renders to the near
 # level's luminance. Fitted over the poses of vegetation_level_match_test.gd.
-const IMPOSTOR_RADIANCE_MATCH := [1.033, 1.097]
+const IMPOSTOR_RADIANCE_MATCH := [1.100, 1.060]
 # Volume response of an impostor, conifer first, as (lift gain, wrap floor, wrap gain); see
 # vegetation_impostor.gdshader. Fitted with the radiance match above over the same poses, on
-# the authored trees; both species fit best at the same response.
-const IMPOSTOR_VOLUME := [Vector3(2.0, 0.0, 0.75), Vector3(2.0, 0.0, 0.75)]
-# Share of the near crown's sun highlight an impostor draws, fitted with the response above.
-# Backlit by a low sun, the near cards catch a sheen the impostor otherwise lacks.
-const IMPOSTOR_SHEEN := 0.5
+# the authored trees without a sun highlight. Both species fit best at a low lift. The round-5
+# pine's sparser crown needs more wrap gain on the conifer, which keeps all poses within 0.103;
+# broadleaf stays within 0.066.
+const IMPOSTOR_VOLUME := [Vector3(0.75, 0.0, 1.25), Vector3(0.75, 0.0, 1.0)]
 # One baked impostor per near variant, so a tree keeps its own shape across the handover. Four
 # shared forms stood in for 24 variants, and each tree changed into another as the camera closed.
 const IMPOSTOR_SPECIES_NAMES := ["conifer", "broadleaf"]
@@ -92,6 +92,14 @@ static var _card_texture: Texture2D
 # spruce, birch leads aspen). Each form has FORM_MODELS models, which its variants cycle through.
 const TREE_MODEL_DIR := "res://assets/models/vegetation/trees/"
 const CANOPY_FORMS := [["pine", "spruce"], ["birch", "aspen"]]
+# Share of its texture-mean leaf albedo each form keeps. The texture means came from bright
+# photo foliage and put a lone pine or birch above the meadow under it: from the air a closed
+# stand rendered at 0.78-0.87 of the meadow, against 0.30-0.50 in the green-field forest-edge
+# photos, and the sun added twice the meadow's light to a lone pine. Spruce, at a leaf Y of 0.101,
+# renders at 0.35 of the meadow and anchors the set. The others keep their reflectance relative
+# to it as typical green-band leaf reflectance puts it: pine 1.4, birch 1.8 and aspen 1.7 times
+# spruce. Applied by the near cards' material and, per layer, by the baked impostors.
+const LEAF_ALBEDO_SCALE := {"pine": 0.874, "birch": 0.585, "aspen": 0.618}
 const FORM_MODELS := 3
 # Sway weight of the trunk top, as the procedural trunks carried it. Everything farther from the
 # trunk takes the rest in proportion to its reach, so branch tips and their cards sway fully.
@@ -99,16 +107,26 @@ const TRUNK_TOP_WEIGHT := 0.16
 
 # Yard plants from tools/model_landscape.py, converted like the trees: the bush variants from
 # LANDSCAPE_FIRST_VARIANT on, in the order of the named brush presets in vegetation_api/brush.rs.
-# The last three are clipped hedge modules, one metre long, which a line lays end to end.
+# Then three clipped hedge modules, one metre long, which a line lays end to end, and the yard
+# flowers from tools/model_flowers.py.
 const LANDSCAPE_MODEL_DIR := "res://assets/models/vegetation/landscape/"
 const LANDSCAPE_FORMS := ["lilac", "spirea", "rose", "cotoneaster", "mugo", "juniper",
-	"hedge_low", "hedge_mid", "hedge_tall"]
+	"hedge_low", "hedge_mid", "hedge_tall",
+	"peony", "lupine", "phlox", "hydrangea", "rhododendron", "summer_flowers"]
 const LANDSCAPE_FIRST_VARIANT := 6
 const HEDGE_FIRST_VARIANT := 12
+const HEDGE_VARIANTS := 3
 # Sway weight per metre above the ground. A shrub bends from its base like the ground plants; a
 # clipped hedge is a dense block and barely moves.
 const SHRUB_SWAY_PER_M := 0.18
 const HEDGE_SWAY_PER_M := 0.03
+# The distant hedge: one box per straight run of modules, from get_vegetation_hedge_runs. Height
+# and width of the low, medium and tall bodies as tools/model_landscape.py builds them, and the
+# colour each module reads as from far enough away that its leaf cards blend.
+const HEDGE_RUN_SIZES: Array[Vector2] = [Vector2(0.90, 0.60), Vector2(1.40, 0.80), Vector2(1.90, 0.90)]
+const HEDGE_RUN_COLORS: Array[Color] = [
+	Color(0.25, 0.35, 0.16), Color(0.33, 0.44, 0.20), Color(0.21, 0.32, 0.24)]
+static var _hedge_run_meshes: Array[BoxMesh] = []
 # Granite boulders from tools/model_landscape.py, on one tiled stone texture.
 const ROCK_MODEL_DIR := "res://assets/models/vegetation/rocks/"
 
@@ -176,12 +194,17 @@ static func _canopy_blend(species: int, variant: int) -> ArrayMesh:
 	_form_meshes[model] = mesh
 	return mesh
 
+## Whether a model variant of a species is a clipped hedge module. The flowers follow the
+## hedges in the variant table, so the hedges are a range rather than everything past the first.
+static func is_hedge(species: int, variant: int) -> bool:
+	return species == BUSH and variant >= HEDGE_FIRST_VARIANT \
+		and variant < HEDGE_FIRST_VARIANT + HEDGE_VARIANTS
+
 ## One yard plant. A hedge module stays rigid apart from a faint sway at its top.
 static func _landscape_plant(variant: int) -> ArrayMesh:
-	var hedge := variant >= HEDGE_FIRST_VARIANT
 	return _authored_mesh(LANDSCAPE_MODEL_DIR, "landscape.json",
 		LANDSCAPE_FORMS[variant - LANDSCAPE_FIRST_VARIANT] + "_0",
-		HEDGE_SWAY_PER_M if hedge else SHRUB_SWAY_PER_M)
+		HEDGE_SWAY_PER_M if is_hedge(BUSH, variant) else SHRUB_SWAY_PER_M)
 
 ## Loads one converted model once and gives it the form's wind materials. `sway_per_m` below
 ## zero weights sway as a tree's: the trunk top takes TRUNK_TOP_WEIGHT and everything farther
@@ -248,6 +271,10 @@ static func _form_material_pair(directory: String, info_file: String, form: Stri
 		cards.set_shader_parameter("foliage_mask", load(directory + form + "_foliage.dds"))
 		cards.set_shader_parameter("leaf_mean", Vector3(info.leaf_mean[0], info.leaf_mean[1], info.leaf_mean[2]))
 		cards.set_shader_parameter("leaf_depth_mean", info.leaf_depth_mean)
+		# A uniform rather than the vertex colour, so the mesh the impostor bake reads, and its
+		# digest, keep the unscaled leaves; the impostor takes the same share per layer.
+		if directory == TREE_MODEL_DIR:
+			cards.set_shader_parameter("leaf_albedo_scale", LEAF_ALBEDO_SCALE.get(form, 1.0))
 		for material in [wood, cards]:
 			_apply_canopy_shading(material)
 			_apply_wind_visibility(material)
@@ -257,6 +284,21 @@ static func _form_material_pair(directory: String, info_file: String, form: Stri
 	return _form_materials[key]
 
 ## Baked form name of one near variant, as the bake tool and the texture files spell it.
+## Box for one distant hedge run of the given hedge index, a unit metre long along +X with its
+## base on the origin; the run's transform stretches it to the run and shears it up the slope.
+static func hedge_run_mesh(hedge: int) -> BoxMesh:
+	if _hedge_run_meshes.is_empty():
+		for index in HEDGE_RUN_SIZES.size():
+			var size: Vector2 = HEDGE_RUN_SIZES[index]
+			var mesh := BoxMesh.new()
+			mesh.size = Vector3(1.0, size.x, size.y)
+			var material := StandardMaterial3D.new()
+			material.albedo_color = HEDGE_RUN_COLORS[index]
+			material.roughness = 0.9
+			mesh.material = material
+			_hedge_run_meshes.append(mesh)
+	return _hedge_run_meshes[hedge]
+
 static func impostor_form(species: int, variant: int) -> String:
 	return "%s_%02d" % [IMPOSTOR_SPECIES_NAMES[species], variant]
 
@@ -292,19 +334,22 @@ static func impostor_material(species: int) -> ShaderMaterial:
 			material.set_shader_parameter(channel + "_atlas", array)
 		var centres := PackedVector3Array()
 		var sizes := PackedFloat32Array()
+		var leaf_scales := PackedFloat32Array()
 		for variant in range(VARIANT_COUNTS[species]):
 			var bounds: Dictionary = metadata.forms[impostor_form(species, variant)]
 			centres.append(Vector3(bounds.centre[0], bounds.centre[1], bounds.centre[2]))
 			sizes.append(bounds.size)
+			var model := canopy_model(species, variant)
+			leaf_scales.append(LEAF_ALBEDO_SCALE.get(model.substr(0, model.rfind("_")), 1.0))
 		material.set_shader_parameter("bounds_centre", centres)
 		material.set_shader_parameter("bounds_size", sizes)
+		material.set_shader_parameter("leaf_albedo_scale", leaf_scales)
 		material.set_shader_parameter("frame_bounds", _impostor_frame_bounds(species, metadata))
 		material.set_shader_parameter("impostor_radiance_match", IMPOSTOR_RADIANCE_MATCH[species])
 		var volume: Vector3 = IMPOSTOR_VOLUME[species]
 		material.set_shader_parameter("volume_lift_gain", volume.x)
 		material.set_shader_parameter("volume_wrap_floor", volume.y)
 		material.set_shader_parameter("volume_wrap_gain", volume.z)
-		material.set_shader_parameter("impostor_sheen", IMPOSTOR_SHEEN)
 		var growth_begin := SceneLightingConfig.shadow_max_distance_m()
 		material.set_shader_parameter("crown_growth", CROWN_GROWTH)
 		material.set_shader_parameter("crown_growth_begin_m", growth_begin)

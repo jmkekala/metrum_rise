@@ -1348,6 +1348,8 @@ fn register_test_asset(
             economy_profile,
             extractor: None,
             field: None,
+            yard_hedge: None,
+            yard_planting: Vec::new(),
         }),
         prop: None,
         vehicle: None,

@@ -15,6 +15,7 @@ const WINDOW_LAYOUT_ID_META := "metrum_window_layout_id"
 const WINDOW_PERSIST_POSITION_META := "metrum_window_persist_position"
 const WINDOW_LAYOUT_CONNECTED_META := "metrum_window_layout_connected"
 const WINDOW_HAS_RESTORED_POSITION_META := "metrum_window_has_restored_position"
+const WINDOW_FOLLOWS_VIEWPORT_META := "metrum_window_follows_viewport"
 
 const BG_DARK := Color(0.08, 0.08, 0.12, 0.93)
 const BG_PANEL := Color(0.10, 0.10, 0.10, 0.80)
@@ -48,7 +49,7 @@ const HUD_SHELL_CORNER := 15
 const HUD_SHELL_PAD_X := 15
 const HUD_SHELL_PAD_Y := 10
 const WINDOW_REFERENCE_VIEWPORT := Vector2(1920.0, 1080.0)
-const MAX_WINDOW_LAYOUT_SCALE := 1.6
+const MAX_WINDOW_LAYOUT_SCALE := 2.0
 const WINDOW_MAX_VIEWPORT_COVERAGE := 0.92
 
 static func ui_scale() -> float:
@@ -112,6 +113,23 @@ static func set_window_base_size(
 	window.set_meta(WINDOW_BASE_SIZE_META, base_size)
 	window.set_meta(WINDOW_BASE_MIN_SIZE_META, base_min_size)
 	_apply_window_base_size(window, viewport, false, ui_scale())
+	_follow_viewport_size(window, viewport)
+
+# Refits the window whenever the surface it opens on is resized. Leaving fullscreen shrinks the
+# game's viewport, and a window still sized for the fullscreen one hangs off its edges with its
+# footer buttons out of reach.
+static func _follow_viewport_size(window: Window, viewport: Viewport) -> void:
+	var resolved_viewport := viewport if viewport != null else _parent_viewport_for_window(window)
+	if resolved_viewport == null or window.has_meta(WINDOW_FOLLOWS_VIEWPORT_META):
+		return
+	window.set_meta(WINDOW_FOLLOWS_VIEWPORT_META, true)
+	var refit := func() -> void:
+		_apply_window_base_size(window, resolved_viewport, true, ui_scale())
+	resolved_viewport.size_changed.connect(refit)
+	window.tree_exiting.connect(func() -> void:
+		resolved_viewport.size_changed.disconnect(refit)
+		window.remove_meta(WINDOW_FOLLOWS_VIEWPORT_META)
+	, CONNECT_ONE_SHOT)
 
 static func set_persistent_window_layout(
 	window: Window,

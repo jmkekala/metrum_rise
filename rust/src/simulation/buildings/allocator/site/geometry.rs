@@ -78,6 +78,7 @@ pub(super) fn site_radius_m(site: &BuildingSiteClient) -> f32 {
                 .iter()
                 .flat_map(|surface| &surface.vertices_world),
         )
+        .chain(site.planting_world.iter().flatten())
         .map(|point| point.distance_squared_to(lot_center))
         .fold(0.0, f32::max)
         .sqrt()

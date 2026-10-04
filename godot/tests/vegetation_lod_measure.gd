@@ -53,6 +53,9 @@ static func export_mesh(mesh: ArrayMesh, species: int, variant: int, lod: int) -
 			data.shader = material.shader.resource_path.get_file()
 			data.parameters = {}
 			for uniform in material.shader.get_shader_uniform_list():
+				# The impostor applies the leaf share per layer, so the bake reads unscaled leaves.
+				if uniform.name == "leaf_albedo_scale":
+					continue
 				var value = material.get_shader_parameter(uniform.name)
 				if value is float or value is int:
 					data.parameters[uniform.name] = value

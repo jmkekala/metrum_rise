@@ -2,7 +2,9 @@
 
 //! Deterministic serialization of the sparse vegetation delta; revisions are runtime-only.
 
-use super::schema::VEGETATION_VARIANT_SAVE_VERSION;
+use super::schema::{
+    VEGETATION_VARIANT_SAVE_VERSION, YARD_HEDGE_SAVE_VERSION, YARD_PLANTING_SAVE_VERSION,
+};
 use super::{SaveLoadError, SaveLoadResult};
 use crate::simulation::vegetation::edits::{
     AuthoredPlant, VegetationCell, VegetationEdits, VegetationLayer, variant_in_range,
@@ -33,6 +35,32 @@ pub(super) fn save(tx: &Transaction<'_>, edits: &VegetationEdits) -> SaveLoadRes
                 plant.species,
                 plant.variant
             ])?;
+        }
+    }
+    // Yard records in key order, each in the order its yard laid or planted it.
+    for (table, records) in [
+        ("yard_hedge_modules", edits.yard_hedges().collect::<Vec<_>>()),
+        ("yard_planting_plants", edits.yard_planting().collect()),
+    ] {
+        let mut yard = tx.prepare(&format!(
+            "INSERT INTO {table} VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"
+        ))?;
+        for (&(parcel_id, build_generation), plants) in records {
+            for (cell, plant) in plants {
+                yard.execute(params![
+                    parcel_id as i64,
+                    build_generation,
+                    cell.layer as i64,
+                    cell.x,
+                    cell.z,
+                    plant.x,
+                    plant.z,
+                    plant.yaw,
+                    plant.scale,
+                    plant.species,
+                    plant.variant
+                ])?;
+            }
         }
     }
     Ok(())
@@ -99,6 +127,41 @@ pub(super) fn load(conn: &Connection, version: i64) -> SaveLoadResult<Vegetation
             return Err(SaveLoadError::custom("invalid authored vegetation plant"));
         }
         edits.add(cell, plant);
+    }
+    for (table, since, planting) in [
+        ("yard_hedge_modules", YARD_HEDGE_SAVE_VERSION, false),
+        ("yard_planting_plants", YARD_PLANTING_SAVE_VERSION, true),
+    ] {
+        if version < since {
+            continue;
+        }
+        let mut stmt = conn.prepare(&format!(
+            "SELECT parcel_id, build_generation, layer, cell_x, cell_z, x, z, yaw, scale, species, \
+             variant FROM {table} ORDER BY rowid"
+        ))?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let parcel_id: i64 = row.get(0)?;
+            let key = (parcel_id as u64, row.get(1)?);
+            let cell = VegetationCell {
+                layer: layer(row.get(2)?)?,
+                x: row.get(3)?,
+                z: row.get(4)?,
+            };
+            let plant = AuthoredPlant {
+                x: row.get(5)?,
+                z: row.get(6)?,
+                yaw: row.get(7)?,
+                scale: row.get(8)?,
+                species: row.get(9)?,
+                variant: row.get(10)?,
+            };
+            if planting {
+                edits.record_yard_planting(key, vec![(cell, plant)]);
+            } else {
+                edits.record_yard_hedge(key, vec![(cell, plant)]);
+            }
+        }
     }
     Ok(edits)
 }

@@ -263,11 +263,19 @@ impl WaterSystem {
         let mut depth_nonzero_count = 0;
 
         for local_z in 0..texture_height {
-            let sample_z =
-                border_clamped_index(start_z, end_z, local_z, WATER_RENDER_PATCH_BORDER_TEXELS);
+            let sample_z = border_source_index(
+                start_z,
+                local_z,
+                WATER_RENDER_PATCH_BORDER_TEXELS,
+                self.height,
+            );
             for local_x in 0..texture_width {
-                let sample_x =
-                    border_clamped_index(start_x, end_x, local_x, WATER_RENDER_PATCH_BORDER_TEXELS);
+                let sample_x = border_source_index(
+                    start_x,
+                    local_x,
+                    WATER_RENDER_PATCH_BORDER_TEXELS,
+                    self.width,
+                );
                 let flat_idx = local_z * texture_width + local_x;
                 let depth = self.visible_depth_at(sample_x, sample_z);
                 if depth > WATER_DEBUG_VISIBLE_EPSILON {
@@ -318,11 +326,19 @@ impl WaterSystem {
         };
 
         for local_z in 0..texture_height {
-            let sample_z =
-                border_clamped_index(start_z, end_z, local_z, WATER_RENDER_PATCH_BORDER_TEXELS);
+            let sample_z = border_source_index(
+                start_z,
+                local_z,
+                WATER_RENDER_PATCH_BORDER_TEXELS,
+                self.height,
+            );
             for local_x in 0..texture_width {
-                let sample_x =
-                    border_clamped_index(start_x, end_x, local_x, WATER_RENDER_PATCH_BORDER_TEXELS);
+                let sample_x = border_source_index(
+                    start_x,
+                    local_x,
+                    WATER_RENDER_PATCH_BORDER_TEXELS,
+                    self.width,
+                );
                 let baseline_depth = self.baseline.depth.get(sample_x, sample_z);
                 if baseline_depth > WATER_DEBUG_VISIBLE_EPSILON {
                     stats.baseline_nonzero += 1;
@@ -493,20 +509,19 @@ fn render_patch_interval_cells(cell_size: f32, chunk_span_m: f32) -> usize {
     ((chunk_span_m / cell_size.max(f32::EPSILON)).round() as usize).max(1)
 }
 
-fn border_clamped_index(
+// Border texels hold the neighbouring patch's real samples, clamped only at the world edge, as
+// terrain height textures do. The water shader smooths the surface over adjacent texels and pairs
+// these depths with the terrain border; repeating the patch's own edge depth instead gave each
+// side of a seam a different surface height and opened a sliver between them.
+fn border_source_index(
     start: usize,
-    end: usize,
     bordered_index: usize,
     border_texels: usize,
+    sample_limit: usize,
 ) -> usize {
-    let sample_count = end.saturating_sub(start) + 1;
-    if bordered_index < border_texels {
-        start
-    } else if bordered_index >= border_texels + sample_count {
-        end
-    } else {
-        start + bordered_index - border_texels
-    }
+    (start + bordered_index)
+        .saturating_sub(border_texels)
+        .min(sample_limit.saturating_sub(1))
 }
 
 #[cfg(test)]
@@ -519,6 +534,8 @@ mod tests {
         let mut water = WaterSystem::with_chunking(9, 9, 10.0, 4).with_render_chunk_span(30.0);
         let mut baseline = vec![0.0; 81];
         baseline[3 + 3 * 9] = 5.0;
+        // Owned by patch (0,0); patch (1,1) sees it only through its border ring.
+        baseline[2 + 2 * 9] = 7.0;
         water
             .replace_baseline_depth_from_dense(&baseline)
             .expect("baseline depth dimensions should match");
@@ -539,18 +556,20 @@ mod tests {
         assert!((patch.world_origin_z + 10.0).abs() < 0.0001);
         assert!((patch.world_size_x - 30.0).abs() < 0.0001);
         assert!((patch.world_size_z - 30.0).abs() < 0.0001);
-        assert_eq!(patch.depth_data[0], 5.0);
+        // The border holds the neighbouring sample, not a copy of this patch's edge.
+        assert_eq!(patch.depth_data[0], 7.0);
+        assert_eq!(patch.depth_data[1], 0.0);
         assert_eq!(patch.depth_data[patch.texture_width + 1], 5.0);
-        assert_eq!(patch.depth_nonzero_count, 4);
+        assert_eq!(patch.depth_nonzero_count, 2);
 
         let stats = water
             .patch_depth_stats(1, 1)
             .expect("patch (1,1) should exist on a 9x9 water grid");
 
         assert_eq!(stats.total_samples, 36);
-        assert_eq!(stats.baseline_nonzero, 4);
-        assert!((stats.baseline_max - 5.0).abs() < 0.0001);
-        assert!((stats.baseline_sum - 20.0).abs() < 0.0001);
+        assert_eq!(stats.baseline_nonzero, 2);
+        assert!((stats.baseline_max - 7.0).abs() < 0.0001);
+        assert!((stats.baseline_sum - 12.0).abs() < 0.0001);
     }
 
     #[test]

@@ -30,10 +30,28 @@ const JUNIPER: &[u8] = &[11];
 const HEDGE_LOW: &[u8] = &[12];
 const HEDGE_MID: &[u8] = &[13];
 const HEDGE_TALL: &[u8] = &[14];
+const PEONY: &[u8] = &[15];
+const LUPINE: &[u8] = &[16];
+const PHLOX: &[u8] = &[17];
+const HYDRANGEA: &[u8] = &[18];
+const RHODODENDRON: &[u8] = &[19];
+const SUMMER_FLOWERS: &[u8] = &[20];
 /// First bush variant that is a landscape plant rather than generated ground cover.
 pub(crate) const LANDSCAPE_FIRST_VARIANT: u8 = 6;
+/// Preset of the low hedge; the medium and tall hedges follow it in the table.
+pub(crate) const HEDGE_LOW_PRESET: i64 = 17;
 /// First bush variant that is a clipped hedge module, planted along a line.
 pub(crate) const HEDGE_FIRST_VARIANT: u8 = 12;
+/// Clipped hedge modules: low, medium and tall, from [`HEDGE_FIRST_VARIANT`] on.
+const HEDGE_VARIANTS: u8 = 3;
+
+/// Which hedge module a biased bush variant pin names: 0 low, 1 medium and 2 tall. Flowers
+/// follow the hedges in the variant table, so a pin past them is not a hedge.
+pub(crate) fn hedge_index(species: u8, variant: u8) -> Option<u8> {
+    // Stored variants are one past the model's, which keeps zero for "from the seed".
+    let index = variant.checked_sub(HEDGE_FIRST_VARIANT + 1)?;
+    (species == 2 && index < HEDGE_VARIANTS).then_some(index)
+}
 // A yard shrub is planted near its authored size; the generator's band would span a lilac
 // from 2.6 m to 4.7 m tall before the renderer's own spread.
 const SHRUB_SCALE: (f32, f32) = (0.85, 1.10);
@@ -125,6 +143,14 @@ pub(super) const PRESETS: &[BrushPreset] = &[
     BrushPreset { accept: 0.0, scale: (1.0, 1.0), mix: &[MixEntry { weight: 1, species: 2, variants: HEDGE_LOW }] },
     BrushPreset { accept: 0.0, scale: (1.0, 1.0), mix: &[MixEntry { weight: 1, species: 2, variants: HEDGE_MID }] },
     BrushPreset { accept: 0.0, scale: (1.0, 1.0), mix: &[MixEntry { weight: 1, species: 2, variants: HEDGE_TALL }] },
+    // 20 to 25 are yard flowers: peony, lupine, phlox, hydrangea, rhododendron and a clump of
+    // summer bedding plants, a little denser than the shrubs because each is a smaller clump.
+    BrushPreset { accept: 0.08, scale: SHRUB_SCALE, mix: &[MixEntry { weight: 1, species: 2, variants: PEONY }] },
+    BrushPreset { accept: 0.10, scale: SHRUB_SCALE, mix: &[MixEntry { weight: 1, species: 2, variants: LUPINE }] },
+    BrushPreset { accept: 0.10, scale: SHRUB_SCALE, mix: &[MixEntry { weight: 1, species: 2, variants: PHLOX }] },
+    BrushPreset { accept: 0.05, scale: SHRUB_SCALE, mix: &[MixEntry { weight: 1, species: 2, variants: HYDRANGEA }] },
+    BrushPreset { accept: 0.04, scale: SHRUB_SCALE, mix: &[MixEntry { weight: 1, species: 2, variants: RHODODENDRON }] },
+    BrushPreset { accept: 0.15, scale: SHRUB_SCALE, mix: &[MixEntry { weight: 1, species: 2, variants: SUMMER_FLOWERS }] },
 ];
 
 /// Borrows one preset, or `None` when the ordinal names none.
@@ -150,8 +176,7 @@ impl BrushPreset {
 
     /// Whether this preset plants hedge modules, which only a line may lay.
     pub(super) fn is_hedge(&self) -> bool {
-        self.mix[0].species == 2
-            && self.mix[0].variants.first().is_some_and(|&v| v >= HEDGE_FIRST_VARIANT)
+        self.mix[0].variants.first().is_some_and(|&v| hedge_index(self.mix[0].species, v + 1).is_some())
     }
 
     /// Picks the species and the biased variant pin for one proposal.

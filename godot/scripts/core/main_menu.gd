@@ -8,12 +8,19 @@ extends Control
 const NewGameDialog = preload("res://scripts/ui/new_game_dialog.gd")
 const OptionsWindow = preload("res://scripts/ui/options_window.gd")
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
+const GameSettings = preload("res://scripts/core/game_settings.gd")
 
 const WORLDS_DIR := "user://worlds"
 const SAVES_DIR := "user://saves"
 
 var _options_window = null
 var _new_game_dialog: Window = null
+
+func _enter_tree() -> void:
+	GameSettings.set_menu_frame_cap(true)
+
+func _exit_tree() -> void:
+	GameSettings.set_menu_frame_cap(false)
 
 func _ready() -> void:
 	_build_ui()

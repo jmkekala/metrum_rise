@@ -52,12 +52,6 @@ vec2 hash22(vec2 p) {
 	);
 }
 
-float macro_variation(vec2 world_xz) {
-	float a = noise2d(world_xz * 0.0014 + vec2(17.0, 3.0));
-	float b = noise2d(world_xz * 0.0045 + vec2(41.0, 29.0));
-	return clamp(a * 0.7 + b * 0.3, 0.0, 1.0);
-}
-
 float warped_noise(vec2 world_xz, float scale, vec2 offset) {
 	vec2 warp = vec2(
 		noise2d(world_xz * 0.0007 + offset),
@@ -65,6 +59,69 @@ float warped_noise(vec2 world_xz, float scale, vec2 offset) {
 	) - vec2(0.5);
 	return noise2d((world_xz + warp * 180.0) * scale + offset * 0.37);
 }
+
+// Position-only noise fields. Their lattices are 167 m or coarser, so a shader that defines
+// GRASS_BAKED_WORLD_NOISE reads all four from one world texture that terrain_world_noise.gd bakes
+// with these *_live functions once per world, instead of 13 noise evaluations per pixel.
+float macro_variation_live(vec2 world_xz) {
+	float a = noise2d(world_xz * 0.0014 + vec2(17.0, 3.0));
+	float b = noise2d(world_xz * 0.0045 + vec2(41.0, 29.0));
+	return clamp(a * 0.7 + b * 0.3, 0.0, 1.0);
+}
+
+float land_variation_broad_live(vec2 world_xz) {
+	return warped_noise(world_xz, 0.0010, vec2(5.0, 71.0));
+}
+
+float land_variation_mid_live(vec2 world_xz) {
+	return warped_noise(world_xz, 0.0036, vec2(23.0, 11.0));
+}
+
+float meadow_broad_live(vec2 world_xz) {
+	return warped_noise(world_xz, 0.006, vec2(83.0, 17.0));
+}
+
+#ifdef GRASS_BAKED_WORLD_NOISE
+// RGBA = macro, land broad, land mid, meadow broad; bounds = world min XZ, world size.
+global uniform sampler2D grass_world_noise : filter_linear;
+global uniform vec4 grass_world_noise_bounds;
+
+vec4 grass_world_noise_at(vec2 world_xz) {
+	return texture(grass_world_noise, (world_xz - grass_world_noise_bounds.xy) / grass_world_noise_bounds.zw);
+}
+
+float macro_variation(vec2 world_xz) {
+	return grass_world_noise_at(world_xz).r;
+}
+
+float land_variation_broad(vec2 world_xz) {
+	return grass_world_noise_at(world_xz).g;
+}
+
+float land_variation_mid(vec2 world_xz) {
+	return grass_world_noise_at(world_xz).b;
+}
+
+float meadow_broad(vec2 world_xz) {
+	return grass_world_noise_at(world_xz).a;
+}
+#else
+float macro_variation(vec2 world_xz) {
+	return macro_variation_live(world_xz);
+}
+
+float land_variation_broad(vec2 world_xz) {
+	return land_variation_broad_live(world_xz);
+}
+
+float land_variation_mid(vec2 world_xz) {
+	return land_variation_mid_live(world_xz);
+}
+
+float meadow_broad(vec2 world_xz) {
+	return meadow_broad_live(world_xz);
+}
+#endif
 
 vec3 apply_natural_land_variation(
 	vec3 color,
@@ -75,8 +132,8 @@ vec3 apply_natural_land_variation(
 	float cliff_face,
 	float shore_mask
 ) {
-	float broad = warped_noise(world_xz, 0.0010, vec2(5.0, 71.0));
-	float mid = warped_noise(world_xz, 0.0036, vec2(23.0, 11.0));
+	float broad = land_variation_broad(world_xz);
+	float mid = land_variation_mid(world_xz);
 	float mottle = noise2d(world_xz * 0.018 + vec2(59.0, 7.0));
 	float land_mask = clamp((1.0 - rock_mask) * (1.0 - cliff_face) * (1.0 - shore_mask * 0.65), 0.0, 1.0);
 	float open_mask = smoothstep(0.54, 0.86, broad) * (1.0 - ruggedness * 0.45);
@@ -172,7 +229,7 @@ float sample_grass_height_cross(vec2 world_xz, float scale) {
 }
 
 vec3 grass_meadow_variation(vec2 world_xz) {
-	float broad = warped_noise(world_xz, 0.006, vec2(83.0, 17.0));
+	float broad = meadow_broad(world_xz);
 	float mid = warped_noise(world_xz, 0.026, vec2(11.0, 131.0));
 	float fine = noise2d(world_xz * 0.085 + vec2(47.0, 5.0));
 	// Hue matters more than value here. Sunlit vegetation in the Kuopio reference photographs

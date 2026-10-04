@@ -37,6 +37,7 @@ const SAVES_DIR := "user://saves"
 const WORLD_CAMERA_NEAR_CLIP_M := 0.5
 const WORLD_CAMERA_MIN_FAR_M := 9000.0
 const WORLD_CAMERA_FAR_MARGIN_M := 1000.0
+const GameSettings := preload("res://scripts/core/game_settings.gd")
 
 var _current_save_path := ""
 var _simulation_speed: float = 0.0
@@ -109,16 +110,23 @@ func _ready():
 	if cul_de_sac_tool and cul_de_sac_tool.has_node("PreviewMesh"):
 		cul_de_sac_tool.get_node("PreviewMesh").visible = false
 	call_deferred("_configure_world_camera_policy")
+	add_to_group("graphics_settings")
+
+## Re-reads the player's view distance after Options applies it.
+func apply_graphics_settings() -> void:
+	_configure_world_camera_policy()
 
 func _configure_world_camera_policy() -> void:
 	var camera := get_parent().find_child("CameraNode", true, false) as CameraNode
 	if not camera:
 		return
-	camera.set_clip_policy(
-		WORLD_CAMERA_NEAR_CLIP_M,
-		WORLD_CAMERA_MIN_FAR_M,
-		WORLD_CAMERA_FAR_MARGIN_M
-	)
+	# The camera derives its far plane from the orbit distance plus the margin, floored at the
+	# minimum. Reduced view distance drops the margin and floors it lower instead, so the far
+	# plane still opens up when zoomed far out.
+	if GameSettings.get_view_distance() == GameSettings.VIEW_DISTANCE_REDUCED:
+		camera.set_clip_policy(WORLD_CAMERA_NEAR_CLIP_M, GameSettings.REDUCED_VIEW_DISTANCE_M, 0.0)
+	else:
+		camera.set_clip_policy(WORLD_CAMERA_NEAR_CLIP_M, WORLD_CAMERA_MIN_FAR_M, WORLD_CAMERA_FAR_MARGIN_M)
 	camera.configure_world_camera()
 
 func _process(delta):
@@ -261,13 +269,12 @@ func _handle_zoom_wheel(event: InputEventMouseButton) -> void:
 		camera.zoom(zoom_delta)
 
 func _ui_has_modal_popup() -> bool:
-	var viewport := get_viewport()
-	var window := viewport as Window
-	return (
-		window != null
-		and window.has_method("has_visible_popup")
-		and window.has_visible_popup()
-	)
+	# Dialogs and menus are embedded subwindows of the game window, so its own focus owner never
+	# sees their controls: a file name typed into the save dialog also panned the camera.
+	for window in get_viewport().get_embedded_subwindows():
+		if window.visible and (window.exclusive or window.has_focus()):
+			return true
+	return false
 
 func _ui_captures_keyboard_input() -> bool:
 	var viewport := get_viewport()

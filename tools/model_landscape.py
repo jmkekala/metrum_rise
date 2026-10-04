@@ -572,7 +572,8 @@ def validate(path,stats):
     assert len(doc['meshes'])==len(doc['nodes'])==1
     assert 'matrix' not in doc['nodes'][0] and 'rotation' not in doc['nodes'][0]
     prims=doc['meshes'][0]['primitives']
-    assert len(prims)==(2 if form in FORMS else 1),(path,len(prims))
+    # A hedge is one closed foliage body and a rock one stone; every other form has wood and cards.
+    assert len(prims)==(1 if form in HEDGES or form=='rock' else 2),(path,len(prims))
     triangles=0;positions=[]
     for prim in prims:
         attr=prim['attributes'];assert {'POSITION','NORMAL','TEXCOORD_0','COLOR_0'}<=attr.keys()

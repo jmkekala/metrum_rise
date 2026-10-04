@@ -14,6 +14,7 @@ extends Node
 class_name SceneLighting
 
 const DayCycleConfig := preload("res://scripts/core/day_cycle.gd")
+const GameSettings := preload("res://scripts/core/game_settings.gd")
 const SKY_CLOUD_SHADER := preload("res://scripts/shaders/sky_cloud_cover.gdshader")
 const SKY_CLOUD_PANORAMA_PATH := (
 	"res://assets/textures/general/sky/DaySkyHDRI059B_2K_TONEMAPPED.jpg"
@@ -48,6 +49,10 @@ const FAR_FADE_CURVE := 2.60
 # small casters such as tree crowns rather than as softness. The full moon subtends the same
 # angle, so the cycle never has a reason to change this and the GPU probe keeps it as a lever.
 const SUN_ANGULAR_DISTANCE_DEG := 0.55
+# SSIL carries window light spill (RENDER-10). Window thresholds in `window_lighting.rs` span
+# 1-8 degrees of sun elevation with a 0.35 degree fade, so above this no window is lit. By day
+# SSIL changed the measured image by under 0.3/255 and cost 1.5-1.9 ms (RENDER-15).
+const WINDOW_LIGHT_MAX_SUN_ELEVATION_DEG := 8.35
 const SHADOW_MAX_DISTANCE_M := 420.0
 const SHADOW_SPLIT_1 := 0.10
 const SHADOW_SPLIT_2 := 0.28
@@ -67,6 +72,13 @@ const GROUND_SHADOW_MIN_VISIBILITY := 0.02
 # where the shaded floor of a 625 stems/ha pine stand renders just above its shaded trunks, at
 # 57 against 52 in 8-bit luminance, where 0.20 put it at 40 and the old floor sat at 88.
 const CANOPY_FLOOR_SKY_TRANSMISSION := 0.40
+# Share of the sun the crowns of a closed stand pass to its floor, which the floor shade past
+# the cascades keeps. An authored crown is open, so its cascade shadow is dappled and not solid.
+# GROUND_SHADOW_MIN_VISIBILITY treated every crown as opaque and drew the far floor at half the
+# light the cascades leave it, which was a dark step in the floor of every stand at the cascade
+# edge. Fitted with the trees drawn as shadow only, over a 625 stems/ha pine stand seen
+# straight down from 300 m, inside the cascades, and from 600 m, past them.
+const CANOPY_FLOOR_SUN_VISIBILITY := 0.24
 const STATIC_CASTER_EXTRA_CULL_MARGIN_M := 32.0
 const DYNAMIC_CASTER_EXTRA_CULL_MARGIN_M := 12.0
 const RECEIVER_EXTRA_CULL_MARGIN_M := 2.0
@@ -81,6 +93,8 @@ const SHADOW_DEBUG_OVERLAY := "debug_overlay"
 static var _cloud_panorama_cache: Texture2D
 
 var _distance_fade_environment: Environment
+## Benchmarks clear this to measure the frame without SSIL; gameplay never changes it.
+var ssil_allowed := true
 var _distance_fade_terrain: Node
 var _distance_fade_begin_m := -1.0
 var _distance_fade_end_m := -1.0
@@ -140,6 +154,7 @@ static func apply_canopy_floor_shading(material: ShaderMaterial) -> void:
 	material.set_shader_parameter("canopy_floor_shade_begin_m", far_m * SHADOW_FADE_START)
 	material.set_shader_parameter("canopy_floor_shade_end_m", far_m)
 	material.set_shader_parameter("canopy_floor_sky_transmission", CANOPY_FLOOR_SKY_TRANSMISSION)
+	material.set_shader_parameter("canopy_floor_sun_visibility", CANOPY_FLOOR_SUN_VISIBILITY)
 	material.set_shader_parameter("canopy_floor_shade", canopy_shade_strength())
 
 static func apply_shadow_policy(
@@ -219,6 +234,7 @@ func _ready() -> void:
 	_simulation = scene_root.get_node_or_null("SimulationNode")
 	_configure_sun(scene_root)
 	_configure_environment(scene_root)
+	add_to_group("graphics_settings")
 	_distance_fade_terrain = scene_root.get_node_or_null("Terrain")
 	# Before the first frame is drawn, so nothing renders against the project-default palette.
 	_apply_day_cycle()
@@ -294,6 +310,9 @@ func _apply_environment_palette(sample: DayCycleConfig.Sample) -> void:
 	# every hour instead of leaving a daytime blue curtain standing at midnight.
 	_distance_fade_environment.fog_light_color = sample.fog_color
 	_distance_fade_environment.fog_sun_scatter = sample.fog_sun_scatter
+	_distance_fade_environment.ssil_enabled = (
+		ssil_allowed and sample.sun_elevation_deg < WINDOW_LIGHT_MAX_SUN_ELEVATION_DEG
+	)
 
 func _apply_shader_globals(sample: DayCycleConfig.Sample) -> void:
 	RenderingServer.global_shader_parameter_set("scene_window_clock", Vector2(sample.day_fraction * 24.0, sample.sun_elevation_deg))
@@ -483,21 +502,36 @@ func _configure_sun(scene_root: Node) -> void:
 	if sun == null:
 		return
 	_sun = sun
-	sun.light_angular_distance = SUN_ANGULAR_DISTANCE_DEG
 	# The sky shader places its own sun and moon disks so their brightness can differ from the
 	# key light's energy. Letting the engine draw a third disk from this light would double it.
 	sun.sky_mode = DirectionalLight3D.SKY_MODE_LIGHT_ONLY
 	sun.shadow_enabled = true
 	sun.shadow_bias = SHADOW_BIAS
 	sun.shadow_normal_bias = SHADOW_NORMAL_BIAS
-	sun.shadow_blur = SHADOW_BLUR
-	sun.set("directional_shadow_mode", 2)
 	sun.set("directional_shadow_max_distance", shadow_max_distance_m())
 	sun.set("directional_shadow_split_1", SHADOW_SPLIT_1)
 	sun.set("directional_shadow_split_2", SHADOW_SPLIT_2)
 	sun.set("directional_shadow_split_3", SHADOW_SPLIT_3)
-	sun.set("directional_shadow_blend_splits", true)
 	sun.set("directional_shadow_fade_start", SHADOW_FADE_START)
+	_apply_shadow_quality(sun)
+
+## Re-reads the player's graphics settings after Options applies them.
+func apply_graphics_settings() -> void:
+	if is_instance_valid(_sun):
+		_apply_shadow_quality(_sun)
+
+func _apply_shadow_quality(sun: DirectionalLight3D) -> void:
+	var low := GameSettings.get_shadow_quality() == GameSettings.SHADOW_QUALITY_LOW
+	# Angular distance drives Godot's variable-penumbra path; zero makes the directional shadow a
+	# plain PCF lookup. Two splits instead of four, and no split blending, halve the cascade
+	# sampling again.
+	sun.light_angular_distance = 0.0 if low else SUN_ANGULAR_DISTANCE_DEG
+	sun.shadow_blur = 0.0 if low else SHADOW_BLUR
+	sun.set("directional_shadow_mode", 1 if low else 2)
+	sun.set("directional_shadow_blend_splits", not low)
+	RenderingServer.directional_soft_shadow_filter_set_quality(
+		RenderingServer.SHADOW_QUALITY_HARD if low
+		else ProjectSettings.get_setting("rendering/lights_and_shadows/directional_shadow/soft_shadow_filter_quality"))
 
 func _print_debug_if_requested(scene_root: Node) -> void:
 	if not is_lighting_debug_enabled():
