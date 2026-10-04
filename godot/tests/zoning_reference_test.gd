@@ -111,7 +111,8 @@ func _reference(fixture: Dictionary) -> void:
 		# The compiled junction's curved sidewalk enters the nearest square on each corner.
 		_validate_lattice(geometry, Vector2(-110, -60), Vector2i(6, 6), fixture.name + " upper corner", [Vector2(-110, -10)])
 		_validate_lattice(geometry, Vector2(-110, 10), Vector2i(6, 6), fixture.name + " lower corner", [Vector2(-110, 10)])
-		_validate_lattice(geometry, Vector2(-180, -60), Vector2i(6, 13), fixture.name + " uninterrupted backside")
+		# The branch cannot rephase the backside; it keeps the trunk's own z = -190 endpoint phase.
+		_validate_lattice(geometry, Vector2(-180, -65), Vector2i(6, 14), fixture.name + " uninterrupted backside")
 	if fixture.name == "04_orthogonal_block":
 		_validate_lattice(geometry, Vector2(-90, -120), Vector2i(12, 25), fixture.name + " interior")
 	if fixture.name == "08_rotated_block":
