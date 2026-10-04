@@ -1823,6 +1823,8 @@ V1 inspector and viewport contract:
   position, browser/inspector/log split sizes, and editor-owned dialog positions/sizes/splits so
   restarts preserve the working layout. Restored dialog geometry must be clamped to the current
   application viewport so a saved layout cannot reopen editor-owned windows outside the app.
+  The mesh picker saves its own `mesh_import_dialog` section of `asset_editor.cfg`. An editor save
+  takes only that section from disk and writes the rest from memory, so neither save drops the other's state.
 - The asset browser presents a searchable, deterministic hierarchy rather than one flat list. The
   baseline grouping is pack, then asset category derived from the registered asset ID, then the
   individual asset. Individual asset rows display the authored `display_name`; the full asset ID is

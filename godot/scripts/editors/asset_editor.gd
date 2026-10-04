@@ -1464,8 +1464,12 @@ func _move_original_asset_after_export(
 
 # Persist local editor preferences, never asset preview lighting/material overrides.
 func _save_config() -> void:
-	# Preserve layout preferences written by the mesh picker since editor startup.
-	_config.load(CONFIG_PATH)
+	# The mesh picker saves its own section to this file. Take only that section from disk
+	# so workspace layout values staged in _config are not discarded before saving.
+	var disk := ConfigFile.new()
+	if disk.load(CONFIG_PATH) == OK and disk.has_section("mesh_import_dialog"):
+		for key in disk.get_section_keys("mesh_import_dialog"):
+			_config.set_value("mesh_import_dialog", key, disk.get_value("mesh_import_dialog", key))
 	_config.set_value("import", "last_glb_dir",    _last_glb_dir)
 	_config.set_value("ui",     "theme_mode",      _view._theme_mode)
 	_config.set_value("ui",     "font_size_header",  _view._font_size_header)
