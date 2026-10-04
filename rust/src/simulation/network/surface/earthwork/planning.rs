@@ -157,8 +157,28 @@ impl PlannedRoadSurfaceQuery {
                 chunks.extend(coverage.iter().copied());
             }
         }
+        // Local owners the commit recompiles or adds. The excerpt's other pieces are validation
+        // context equal to their live pieces, which the commit keeps with their chunks, so they
+        // come from `existing` and add no chunks of their own.
+        let recompiled_edge = |local: usize| {
+            let live = edge_ids[local];
+            live >= existing_graph.edge_count() || replaced_edges.contains(&live)
+        };
+        let recompiled_node = |local: u32| {
+            let live = node_ids[local as usize];
+            live as usize >= existing_graph.node_count() || replaced_nodes.contains(&live)
+        };
         // `self` is the bounded validation excerpt, never the resident city's surface cache.
-        chunks.extend(surface.earthwork_chunk_cache.keys().copied());
+        for (&id, coverage) in &surface.earthwork_span_chunks {
+            if recompiled_edge(id) {
+                chunks.extend(coverage.iter().copied());
+            }
+        }
+        for (&id, coverage) in &surface.earthwork_node_chunks {
+            if recompiled_node(id) {
+                chunks.extend(coverage.iter().copied());
+            }
+        }
         let chunks = chunks.into_iter().collect::<Vec<_>>();
         // Same bounded dirty-patch envelope as commit. The conservative query discovers road
         // contributors; exact tile influence and input checks decide what can be reused.
@@ -184,12 +204,14 @@ impl PlannedRoadSurfaceQuery {
                         entry
                             .edge_indices
                             .iter()
+                            .filter(|&&id| recompiled_edge(id))
                             .map(|&id| (edge_ids[id], (surface, id))),
                     );
                     nodes.extend(
                         entry
                             .node_ids
                             .iter()
+                            .filter(|&&id| recompiled_node(id))
                             .map(|&id| (node_ids[id as usize], (surface, graph, id))),
                     );
                 }
@@ -276,7 +298,11 @@ impl PlannedRoadSurfaceQuery {
                 }));
                 let mapped = surface.terrain_clip_boundary_loops_for_world_bounds(
                     graph, bounds.0, bounds.1, bounds.2, bounds.3,
-                ).into_iter().map(|boundary| {
+                ).into_iter().filter(|boundary| boundary.source_edges.iter().any(|edge| match edge.source {
+                    RoadSurfaceEarthworkFaceSource::SpanSupportBoundary { edge_idx, .. } => recompiled_edge(edge_idx),
+                    RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary { node_id, .. }
+                    | RoadSurfaceEarthworkFaceSource::NodeSameMaterialBoundaryHandoff { node_id, .. } => recompiled_node(node_id),
+                })).map(|boundary| {
                     let mut boundary = boundary.into_owned();
                     for edge in &mut boundary.source_edges {
                         edge.source = match edge.source {

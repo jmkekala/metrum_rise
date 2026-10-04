@@ -3,7 +3,8 @@
 //! Road edit latency next to junctions without a retained topology (`ROAD-44`); fixture
 //! construction, warming and undo are never timed.
 
-use super::super::populated_city::zoned_city;
+use super::super::ROAD_LOCKED_TERRAIN_RENDER_STEP_M;
+use super::super::populated_city::street_grid;
 use super::super::road_commit::RoadCommitRequest;
 use super::{RoadPreviewRequest, SimCore, road_tool_snapshots_from_core};
 use crate::nodes::sim::core::road_preview::compile_road_preview_from_context;
@@ -11,8 +12,11 @@ use crate::simulation::network::surface::{RoadSurfaceVisualNodePiece, RoadSurfac
 use godot::prelude::Vector3;
 use std::time::Instant;
 
-// The 10k-resident `PopulatedCity` layout: streets every 50 m from z = -1000 to 1000, cross
-// streets every 400 m from x = -1000 to 1000, so rows end in T junctions on the east edge.
+// The street grid of the 10k-resident `PopulatedCity`: streets every 50 m from z = -1000 to 1000,
+// cross streets every 400 m from x = -1000 to 1000, so rows end in T junctions on the east edge.
+// It is left unzoned: the city's zoning covers the first 24 m past every street end, so these
+// extensions would need a bulldoze first, and the junction compiles timed here do not read
+// zoning.
 const CITY_SIDE_M: f32 = 2041.0;
 const EAST_EDGE_X: f32 = 1000.0;
 const ROW_Z: f32 = 300.0;
@@ -63,7 +67,8 @@ type LocalProducts = (
 #[test]
 #[ignore = "unprofiled latency measurement; run alone with --release --ignored --nocapture"]
 fn cold_node_edit_latency() {
-    let mut core = zoned_city(CITY_SIDE_M);
+    let (mut core, _, _) = street_grid(CITY_SIDE_M);
+    finalize_network(&mut core);
     // Gameplay keeps undo history; the benchmark city does not.
     core.benchmark_mode = false;
     for case in &CASES {
@@ -130,7 +135,7 @@ fn cold_node_edit_latency() {
             state.commit_ms.push(commit_ms);
             state.commit_surface_ms.push(outcome.surface_ms);
             assert!(core.undo_action_internal(), "{}: undo failed", case.name);
-            core.precompute_road_mesh_data();
+            finalize_network(&mut core);
             assert_ne!(
                 generation,
                 core.transit_network
@@ -166,14 +171,27 @@ fn set_neighbourhood_topologies(core: &mut SimCore, centre: Vector3, warm: bool)
         return;
     }
     let nodes = neighbourhood_nodes(core, centre);
+    let surface = &mut core.transit_network.road_surface;
     for &node in &nodes {
-        core.transit_network
-            .road_surface
-            .mark_node_dirty(&core.region_graph, node);
+        // A node whose input is unchanged is reused or only refreshes earthwork; dropping the
+        // stored input forces the full compile that produces a topology.
+        surface.compiled_visual_node_inputs.remove(&node);
+        surface.mark_node_dirty(&core.region_graph, node);
     }
-    core.precompute_road_mesh_data();
+    finalize_network(core);
     let topologies = &core.transit_network.road_surface.compiled_visual_node_topologies;
     assert!(nodes.iter().all(|node| topologies.contains_key(node)));
+}
+
+// As the simulation thread finalizes a loaded or undone network, so the next commit's terrain
+// plan sees no surface or earthwork work left over from setup.
+fn finalize_network(core: &mut SimCore) {
+    core.rebuild_network_surface_terrain_internal();
+    core.precompute_road_mesh_data();
+    core.refresh_road_locked_terrain_patch_state(ROAD_LOCKED_TERRAIN_RENDER_STEP_M);
+    let inputs = core.collect_refined_terrain_patch_build_inputs(ROAD_LOCKED_TERRAIN_RENDER_STEP_M);
+    let entries = SimCore::build_refined_terrain_patch_cache_entries(inputs);
+    core.insert_refined_terrain_patch_cache_entries(entries);
 }
 
 fn neighbourhood_nodes(core: &SimCore, centre: Vector3) -> Vec<u32> {

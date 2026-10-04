@@ -13,6 +13,7 @@ use std::collections::{BinaryHeap, HashMap};
 /// sweep adds arcs outward from the start, the query from both ends toward the meeting node.
 /// Assumes the hierarchy was built from `graph`, so every hierarchy edge is in its endpoints'
 /// adjacency and the query's meeting check admits every pair of states at a node.
+#[derive(Clone, Debug)]
 pub struct CchCostsFrom {
     cost: Vec<f32>,
 }

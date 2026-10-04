@@ -876,6 +876,31 @@ fn planned_patch_ownership_excludes_margin_only_roads_and_matches_commit() {
 }
 
 #[test]
+fn plan_beside_unchanged_long_span_covers_only_commit_chunks() {
+    let mut core = test_core();
+    core.heightmap = TerrainSystem::with_chunking(513, 513, 1.0, 129, 0.0);
+    core.transit_network = TransitNetwork::new_with_surface_chunk_span(64.0);
+    // The preview excerpt also compiles the junction at x = 140 and the long span west of it.
+    // The commit keeps both, so planning their chunks reached patches it never dirties and
+    // rejected the edit with `road_plan_coverage_mismatch`.
+    for ends in [
+        ((-200.0, 0.0), (200.0, 0.0)),
+        ((140.0, -48.0), (140.0, 48.0)),
+        ((200.0, -48.0), (200.0, 48.0)),
+        ((200.0, 0.0), (240.0, 0.0)),
+    ] {
+        let points = [ends.0, ends.1]
+            .map(|(x, z)| Vector3::new(x, 0.0, z))
+            .to_vec();
+        let plan = commit_ready(&mut core, points);
+        if ends.0 == (200.0, 0.0) {
+            let patches = plan.terrain().unwrap().preview_patches().unwrap();
+            assert!(patches.iter().all(|patch| patch.key.patch_x >= 2));
+        }
+    }
+}
+
+#[test]
 fn planned_cdt_tiles_match_fresh_commit_meshes_and_reject_changed_inputs() {
     let mut core = test_core();
     // 128 m patches span multiple fixed 64 m CDT tiles: exercise real joined tile seams.

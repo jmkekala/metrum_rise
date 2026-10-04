@@ -65,6 +65,21 @@ pub struct EconomyHourTimes {
     pub demand_pass: bool,
 }
 
+/// Wall-clock cost of each [`PopulatedCity::build`] phase, for projecting larger tiers.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PopulatedCityBuildTimes {
+    /// Street grid, border connection and the bulk road finalization.
+    pub street_grid: Duration,
+    /// Painting the row districts with the player's brush.
+    pub zoning: Duration,
+    /// Spawning and completing a building on every legal lot.
+    pub lots: Duration,
+    /// Household admission until the requested residents live in the city.
+    pub admission: Duration,
+    /// The warm-up days' operational hours and daily settlements.
+    pub warm_up: Duration,
+}
+
 /// A fully built, fully housed city whose economy ticks can be timed hour by hour.
 pub struct PopulatedCity {
     core: SimCore,
@@ -80,16 +95,35 @@ impl PopulatedCity {
     /// Panics if the grid holds too few homes for `residents`, which means the sizing constants
     /// no longer match the bootstrap pack.
     pub fn build(residents: u32) -> Self {
+        Self::build_timed(residents).0
+    }
+
+    /// [`Self::build`], also returning the wall-clock cost of each phase.
+    pub fn build_timed(residents: u32) -> (Self, PopulatedCityBuildTimes) {
+        let mut times = PopulatedCityBuildTimes::default();
+        let started = Instant::now();
+        let (mut core, row_z, half_x) = street_grid(side_m_for(residents));
+        times.street_grid = started.elapsed();
+        let started = Instant::now();
+        paint_districts(&mut core, &row_z, half_x);
+        times.zoning = started.elapsed();
+        let started = Instant::now();
+        fill_lots(&mut core);
+        times.lots = started.elapsed();
         let mut city = Self {
-            core: zoned_city(side_m_for(residents)),
+            core,
             day: 1,
             minute_of_day: 0,
         };
+        let started = Instant::now();
         city.admit_households(residents);
+        times.admission = started.elapsed();
+        let started = Instant::now();
         for _ in 0..WARM_UP_DAYS * 24 {
             city.advance_hour();
         }
-        city
+        times.warm_up = started.elapsed();
+        (city, times)
     }
 
     /// City totals at the current clock, in the growth scenario's record form.
@@ -179,7 +213,36 @@ fn side_m_for(residents: u32) -> f32 {
 }
 
 /// Builds the street grid of a `side_m` square city with every zoned lot built and complete.
+#[cfg(test)]
 pub(super) fn zoned_city(side_m: f32) -> SimCore {
+    let (mut core, row_z, half_x) = street_grid(side_m);
+    paint_districts(&mut core, &row_z, half_x);
+    fill_lots(&mut core);
+    core
+}
+
+// Zones every row street in the repeating district pattern with the player's brush.
+fn paint_districts(core: &mut SimCore, row_z: &[f32], half_x: f32) {
+    let brush = CellSelectionShape::Brush {
+        radius_m: f64::from(ROW_SPACING_M) * 0.5 - 1.0,
+    };
+    for (row, &z) in row_z.iter().enumerate() {
+        let z = f64::from(z);
+        paint(
+            core,
+            DISTRICTS[row % DISTRICTS.len()],
+            brush,
+            &[
+                DVec2::new(f64::from(-half_x), z),
+                DVec2::new(f64::from(half_x), z),
+            ],
+        );
+    }
+}
+
+/// Builds the street grid of a `side_m` square city and its border connection, unzoned. Returns
+/// the city, the z of every row street and the half width of the grid along x.
+pub(super) fn street_grid(side_m: f32) -> (SimCore, Vec<f32>, f32) {
     let rows = (side_m / ROW_SPACING_M) as usize + 1;
     let crosses = (side_m / CROSS_SPACING_M) as usize + 1;
     let half_x = (crosses - 1) as f32 * CROSS_SPACING_M * 0.5;
@@ -217,24 +280,7 @@ pub(super) fn zoned_city(side_m: f32) -> SimCore {
     let border = core.check_border_candidate_internal(Vector3::new(border_x, border_y, trunk_z));
     assert!(border >= 0, "the trunk must end at the world edge");
     core.set_border_connection_internal(border as i32);
-
-    let brush = CellSelectionShape::Brush {
-        radius_m: f64::from(ROW_SPACING_M) * 0.5 - 1.0,
-    };
-    for (row, &z) in row_z.iter().enumerate() {
-        let z = f64::from(z);
-        paint(
-            &mut core,
-            DISTRICTS[row % DISTRICTS.len()],
-            brush,
-            &[
-                DVec2::new(f64::from(-half_x), z),
-                DVec2::new(f64::from(half_x), z),
-            ],
-        );
-    }
-    fill_lots(&mut core);
-    core
+    (core, row_z, half_x)
 }
 
 fn add_road(core: &mut SimCore, (x0, z0): (f32, f32), (x1, z1): (f32, f32)) {
@@ -245,7 +291,8 @@ fn add_road(core: &mut SimCore, (x0, z0): (f32, f32), (x1, z1): (f32, f32)) {
     );
     assert!(
         outcome.committed,
-        "road ({x0}, {z0}) -> ({x1}, {z1}) rejected"
+        "road ({x0}, {z0}) -> ({x1}, {z1}) rejected: {}",
+        core.last_road_timing
     );
 }
 

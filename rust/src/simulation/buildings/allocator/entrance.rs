@@ -206,29 +206,8 @@ impl BuildingAllocator {
         best.map(|candidate| candidate.total_time_s)
     }
 
-    pub(crate) fn freight_car_eta_from_border_node(
-        &self,
-        border_node: u32,
-        destination_idx: usize,
-        transit_network: &TransitNetwork,
-        graph: &RegionGraph,
-    ) -> Option<f32> {
-        self.freight_car_eta_from_border(
-            border_node,
-            destination_idx,
-            transit_network,
-            graph,
-            |node| {
-                transit_network
-                    .cch_graph
-                    .find_path(border_node, node, usize::MAX, graph, TransitFlags::CAR)
-                    .map(|(travel_seconds, _, _)| travel_seconds)
-            },
-        )
-    }
-
-    /// `freight_car_eta_from_border_node` with the network leg read from `costs`, the car costs
-    /// from `border_node`: O(1) per call instead of a route query.
+    /// Freight car ETA from `border_node` to a building, with the network leg read from `costs`,
+    /// the car costs from `border_node`: O(1) per call instead of a route query.
     pub(crate) fn freight_car_eta_from_border_costs(
         &self,
         border_node: u32,

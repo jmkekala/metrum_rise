@@ -524,16 +524,25 @@ fn collect_endpoint_snap_splits(
                 let mut factor_u = find_geo_factor(&edge2_geo_full, best_closest);
                 let seg = (factor_u.floor() as usize).min(edge2_geo_full.len() - 2);
                 // The float segment index is an address, not an exact geometric parameter.
-                let mut refined =
-                    closest_point_on_segment_xz(p, edge2_geo_full[seg], edge2_geo_full[seg + 1]);
-                for vertex_idx in [seg, seg + 1] {
-                    let vertex = edge2_geo_full[vertex_idx];
-                    if Vector2::new(refined.x - vertex.x, refined.z - vertex.z).length()
-                        <= INTERSECTION_NODE_CAPTURE_EPSILON
-                    {
-                        refined = vertex;
-                        factor_u = vertex_idx as f32;
-                        break;
+                let (a, b) = (edge2_geo_full[seg], edge2_geo_full[seg + 1]);
+                let mut refined = closest_point_on_segment_xz(p, a, b);
+                // An endpoint already on the road keeps its projection, and `split_edge` merges
+                // a knot this close into the junction. Moving it onto the knot shifted the whole
+                // new road sideways after its crossings were placed on its line (`ROAD-51`).
+                let on_road = Vector2::new(p.x - refined.x, p.z - refined.z).length()
+                    <= INTERSECTION_NODE_CAPTURE_EPSILON;
+                if on_road {
+                    factor_u = seg as f32 + segment_factor_xz(refined, a, b);
+                } else {
+                    for vertex_idx in [seg, seg + 1] {
+                        let vertex = edge2_geo_full[vertex_idx];
+                        if Vector2::new(refined.x - vertex.x, refined.z - vertex.z).length()
+                            <= INTERSECTION_NODE_CAPTURE_EPSILON
+                        {
+                            refined = vertex;
+                            factor_u = vertex_idx as f32;
+                            break;
+                        }
                     }
                 }
 
@@ -901,6 +910,10 @@ pub fn process_intersections(
     );
 }
 
+// Knots closer than this to a split junction merge into it (see `split_edge`): the distance
+// within which a junction and an existing node are one place.
+const SPLIT_KNOT_MERGE_M: f32 = INTERSECTION_NODE_CAPTURE_EPSILON;
+
 /// Splits an existing edge at a specific segment and junction node.
 ///
 /// Handles the geometric split, re-indexing, and migration of all dependent
@@ -937,8 +950,16 @@ pub fn split_edge(
 
     let old_end_node = old_edge.end_node;
 
+    // A knot this close to the junction on either side would leave a split half a degenerate
+    // segment with no usable direction. Resampled roads put f32 knots within about a millimetre
+    // of crossings several kilometres from the origin. The end guard keeps a later knot.
+    let tail_start = if geometry[segment_idx + 1].distance_to(split_pos) > SPLIT_KNOT_MERGE_M {
+        segment_idx + 1
+    } else {
+        segment_idx + 2
+    };
     let mut part2_geo = vec![split_pos];
-    part2_geo.extend_from_slice(&old_edge.geometry[segment_idx + 1..]);
+    part2_geo.extend_from_slice(&old_edge.geometry[tail_start..]);
 
     let mut part1_geo = old_edge.geometry[..=segment_idx].to_vec();
     // Splitting changes topology, not the solved profile of the retained road. Its control
@@ -946,13 +967,14 @@ pub fn split_edge(
     let physical = RegionGraph::physical_profile_on_control_alignment(old_edge);
     let mut part1_physical = physical[..=segment_idx].to_vec();
     let mut part2_physical = vec![split_pos];
-    part2_physical.extend_from_slice(&physical[segment_idx + 1..]);
-    if part1_geo.last().unwrap().distance_to(split_pos) > 0.001 {
+    part2_physical.extend_from_slice(&physical[tail_start..]);
+    if part1_geo.last().unwrap().distance_to(split_pos) > SPLIT_KNOT_MERGE_M {
         part1_geo.push(split_pos);
         part1_physical.push(split_pos);
     } else {
         // An existing control knot can already equal the junction while its independently
         // eased physical height differs. Both split halves must meet the authoritative node.
+        *part1_geo.last_mut().unwrap() = split_pos;
         *part1_physical.last_mut().unwrap() = split_pos;
     }
 
@@ -1251,6 +1273,126 @@ mod tests {
                     "order={order:?}"
                 );
                 assert_eq!(graph.edge(index + 3).geometry[0], graph.node(junction).pos);
+            }
+        }
+    }
+
+    #[test]
+    fn split_next_to_a_knot_leaves_no_sub_millimetre_segment() {
+        // The f32 knots of a resampled 20 km road beside a crossing at (-4200, 600): one just
+        // before the junction, one just past it (1.1 mm away, as measured on the 1M grid).
+        for knots in [
+            [-4206.0, -4200.0005, -4194.0],
+            [-4206.0, -4199.9995, -4194.0],
+        ] {
+            let mut graph = RegionGraph::new();
+            let mut network = TransitNetwork::new();
+            let mut zoning = ZoningSystem::new(&WorldConfig::default());
+            let mut allocator = BuildingAllocator::new();
+            let points: Vec<_> = knots
+                .iter()
+                .map(|&x| Vector3::new(x, 0.0, if x == knots[1] { 600.001 } else { 600.0 }))
+                .collect();
+            let start = graph.add_node(points[0], NodeType::Junction);
+            let end = graph.add_node(points[2], NodeType::Junction);
+            let edge = graph.add_edge(crate::simulation::network::build_surface_edge(
+                start,
+                end,
+                points,
+                1,
+                1,
+                EdgeClass::Standard,
+            ));
+            graph.rebuild_adjacency_list();
+            let junction = graph.add_node(Vector3::new(-4200.0, 0.0, 600.0), NodeType::Junction);
+            let segment = usize::from(knots[1] < -4200.0);
+            split_edge(
+                &mut network,
+                &mut graph,
+                edge,
+                segment,
+                0.5,
+                junction,
+                &mut zoning,
+                &mut allocator,
+            );
+            for edge in [edge, graph.edge_count() - 1] {
+                let edge = graph.edge(edge);
+                for geometry in [&edge.geometry, &edge.physical_geometry] {
+                    assert!(
+                        geometry
+                            .windows(2)
+                            .all(|pair| pair[0].distance_to(pair[1]) > SPLIT_KNOT_MERGE_M),
+                        "{knots:?}: {geometry:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn endpoint_on_a_road_beside_a_knot_keeps_the_new_road_on_its_line() {
+        // A row ending on two resampled cross streets 27 mm from one of their knots, as on the
+        // 300k grid, crossing a third street between them. Moving the ends onto the knots
+        // shifted the row sideways after its crossing was placed on the original line.
+        let mut graph = RegionGraph::new();
+        let mut network = TransitNetwork::new();
+        let mut zoning = ZoningSystem::new(&WorldConfig::default());
+        let mut allocator = BuildingAllocator::new();
+        for x in [-100.0, 0.0, 100.0] {
+            let knots: Vec<_> = [-200.0, -80.97, -74.973, -68.97, 200.0]
+                .into_iter()
+                .map(|z| Vector3::new(x, 0.0, z))
+                .collect();
+            let start = graph.add_node(knots[0], NodeType::Junction);
+            let end = graph.add_node(knots[4], NodeType::Junction);
+            graph.add_edge(crate::simulation::network::build_surface_edge(
+                start,
+                end,
+                knots,
+                1,
+                1,
+                EdgeClass::Standard,
+            ));
+        }
+        let row: Vec<_> = (0..=40)
+            .map(|i| Vector3::new(-100.0 + i as f32 * 5.0, 0.0, -75.0))
+            .collect();
+        let start = graph.add_node(row[0], NodeType::Junction);
+        let end = graph.add_node(row[40], NodeType::Junction);
+        let row_edge = graph.add_edge(crate::simulation::network::build_surface_edge(
+            start,
+            end,
+            row,
+            1,
+            1,
+            EdgeClass::Standard,
+        ));
+        graph.rebuild_adjacency_list();
+        process_intersections(
+            &mut network,
+            &mut graph,
+            row_edge,
+            &mut zoning,
+            &mut allocator,
+        );
+        let row_edges: Vec<_> = (row_edge..graph.edge_count())
+            .filter(|&id| {
+                let edge = graph.edge(id);
+                // Split halves of the north-south streets keep one x.
+                !edge.deleted && edge.geometry[0].x != edge.geometry.last().unwrap().x
+            })
+            .collect();
+        assert!(
+            row_edges.len() >= 2,
+            "the row must split at the middle street"
+        );
+        for id in row_edges {
+            for p in &graph.edge(id).geometry {
+                assert!(
+                    (p.z + 75.0).abs() < 1e-4,
+                    "row edge {id} left its line at {p:?}"
+                );
             }
         }
     }

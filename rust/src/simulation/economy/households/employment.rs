@@ -46,7 +46,10 @@ const W_STOCK: f32 = 0.35;
 const W_JOB: f32 = 0.20;
 const W_COMMUTE: f32 = 0.10;
 const GO_TO_WORK_THRESHOLD: f32 = 0.45;
-const JOB_LOCK_DAYS: u8 = 7;
+// A new job, or a search that keeps the current one, locks the worker for 5–9 days (mean 7),
+// spread per agent so workers hired together do not all reconsider on the same day.
+const JOB_LOCK_MIN_DAYS: u8 = 5;
+const JOB_LOCK_MAX_DAYS: u8 = 9;
 const JOB_UNPAID_ABANDON_DAYS: u8 = 2;
 const JOB_SEARCH_CANDIDATES: usize = 24;
 const JOB_ROUTE_SCAN_CANDIDATES: usize = JOB_SEARCH_CANDIDATES * 4;
@@ -368,6 +371,8 @@ impl HouseholdSystem {
             )
         });
         let plan_count = plans.len();
+        let mut planned_agents: Vec<usize> = plans.iter().map(|plan| plan.agent_idx).collect();
+        planned_agents.sort_unstable();
         let plan_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
         for plan in plans {
@@ -379,6 +384,12 @@ impl HouseholdSystem {
                 service_funding_by_building,
             );
         }
+        relock_settled_workers(
+            agents,
+            allocator.buildings.len(),
+            self.households.len(),
+            &planned_agents,
+        );
         let apply_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         if timing_enabled {
             debug_log!(
@@ -746,6 +757,53 @@ fn plan_agent_workplace(
     })
 }
 
+// Lock length for `agent_idx` at `work_building`: a deterministic spread over
+// `JOB_LOCK_MIN_DAYS..=JOB_LOCK_MAX_DAYS`, not a random draw.
+fn job_lock_days(agent_idx: usize, work_building: usize) -> u8 {
+    let mut hash = (agent_idx as u64) ^ (work_building as u64).rotate_left(32);
+    hash = (hash ^ (hash >> 33)).wrapping_mul(0xff51_afd7_ed55_8ccd);
+    hash ^= hash >> 33;
+    let span = u64::from(JOB_LOCK_MAX_DAYS - JOB_LOCK_MIN_DAYS + 1);
+    JOB_LOCK_MIN_DAYS + (hash % span) as u8
+}
+
+// Employed workers who were searched this pass and had no better job keep it under a new lock,
+// so they do not repeat the same search every hour. `planned_agents` (sorted) found a better
+// job; if it was full they stay unlocked and retry next hour. Workers leaving an unpaid job are
+// never locked. Same eligibility as `collect_home_job_option_keys`. O(agents), parallel.
+fn relock_settled_workers(
+    agents: &mut AgentSystem,
+    building_count: usize,
+    household_count: usize,
+    planned_agents: &[usize],
+) {
+    let soa = &mut agents.agents;
+    let (transit, age_group, home, household, work, unpaid) = (
+        &soa.transit,
+        &soa.age_group,
+        &soa.home_building,
+        &soa.household_id,
+        &soa.work_building,
+        &soa.consecutive_unpaid_days,
+    );
+    soa.job_lock_days
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(i, lock_days)| {
+            if *lock_days == 0
+                && work[i] < building_count
+                && transit[i] == TRANSIT_IN_BUILDING
+                && age_group_can_work(age_group[i])
+                && home[i] < building_count
+                && household[i] < household_count
+                && unpaid[i] < JOB_UNPAID_ABANDON_DAYS
+                && planned_agents.binary_search(&i).is_err()
+            {
+                *lock_days = job_lock_days(i, work[i]);
+            }
+        });
+}
+
 fn insert_job_choice(
     choices: &mut [JobChoice; JOB_SEARCH_CANDIDATES],
     choice_count: &mut usize,
@@ -840,7 +898,7 @@ fn apply_workplace_plan(
         }
         allocator.buildings[job].worker_count =
             allocator.buildings[job].worker_count.saturating_add(1);
-        agents.assign_work_building(plan.agent_idx, job, JOB_LOCK_DAYS);
+        agents.assign_work_building(plan.agent_idx, job, job_lock_days(plan.agent_idx, job));
         debug_log!(
             "economy",
             "agent_idx={} accepted job building={} zone={:?} score={:.2} income_pressure={:.2} stock_pressure={:.2}",

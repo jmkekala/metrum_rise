@@ -218,31 +218,7 @@ impl RoadTopologyPlan {
                 })
             })
             .collect::<Vec<_>>();
-        let replaced_edges = self
-            .edges
-            .iter()
-            .enumerate()
-            .filter_map(|(local_id, edge)| {
-                (edge.geometry.is_some()
-                    || surface.compiled_visual_span_pieces.contains_key(&local_id))
-                .then_some(edge.source)
-                .flatten()
-            })
-            .collect();
-        let replaced_nodes = self
-            .nodes
-            .iter()
-            .enumerate()
-            .filter_map(|(local_id, node)| {
-                (node.changed
-                    || self.affected_nodes.contains(&(local_id as u32))
-                    || surface
-                        .compiled_visual_node_pieces
-                        .contains_key(&(local_id as u32)))
-                .then_some(node.source)
-                .flatten()
-            })
-            .collect();
+        let (replaced_edges, replaced_nodes) = self.commit_recompiled_sources(local, source);
         self.roads = Some(Arc::new(PlannedRoadSurfaceQuery::capture(
             local,
             surface,
@@ -251,6 +227,51 @@ impl RoadTopologyPlan {
             &replaced_edges,
             &replaced_nodes,
         )));
+    }
+
+    // Source owners the commit recompiles, by the rule of `compile_dirty`: adoption marks
+    // `dirty_edges` and `affected_nodes`, the compile adds both endpoints of every dirty edge,
+    // then recompiles every span incident to those nodes and dirties all their chunks. Existing
+    // nodes use their live incidence, which the excerpt need not hold in full. Context the
+    // excerpt compiles only for validation is not replaced: the commit keeps its live pieces
+    // and chunks, and `PlannedRoadSurfaceQuery::matches_published` requires them equal.
+    // O(local nodes + their incident edges).
+    fn commit_recompiled_sources(
+        &self,
+        local: &RegionGraph,
+        source: &RegionGraph,
+    ) -> (HashSet<usize>, HashSet<u32>) {
+        let mut local_nodes = self.affected_nodes.clone();
+        local_nodes
+            .extend((0..self.nodes.len() as u32).filter(|&id| self.nodes[id as usize].changed));
+        for &edge in &self.dirty_edges {
+            let edge = local.edge(edge);
+            local_nodes.extend([edge.start_node, edge.end_node]);
+        }
+        let mut edges: HashSet<usize> = self
+            .dirty_edges
+            .iter()
+            .filter_map(|&id| self.edges[id].source)
+            .collect();
+        let mut nodes = HashSet::new();
+        for id in local_nodes
+            .iter()
+            .flat_map(|&id| [id, local.get_valid_node(id)])
+        {
+            match self.nodes[id as usize].source {
+                Some(source_id) => {
+                    nodes.insert(source_id);
+                    edges.extend(source.node_adjacency(source_id).iter().copied());
+                }
+                None => edges.extend(
+                    local
+                        .node_adjacency(id)
+                        .iter()
+                        .filter_map(|&edge| self.edges[edge].source),
+                ),
+            }
+        }
+        (edges, nodes)
     }
 
     /// Returns the bounded source records required by the existing undo journal.

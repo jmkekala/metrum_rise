@@ -26,7 +26,7 @@ pub(crate) use budget::CityServicePolicy;
 pub use budget::CityTreasury;
 pub(crate) use road_edit_plan::RoadEditPlan;
 pub(crate) use road_terrain_plan::RoadTerrainPlan;
-pub use populated_city::{EconomyHourTimes, PopulatedCity};
+pub use populated_city::{EconomyHourTimes, PopulatedCity, PopulatedCityBuildTimes};
 pub use scenario::{GrowthDayRecord, GrowthScenario};
 pub use snapshot::RenderSnapshot;
 pub use state::SimCore;

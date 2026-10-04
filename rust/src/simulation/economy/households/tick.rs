@@ -177,6 +177,10 @@ impl HouseholdSystem {
         self.resolve_household_housing(agents, allocator);
         let housing_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
+        // Job searches repeat for a worker only after a multi-day lock, so a commute estimated
+        // yesterday is rarely asked again. Dropping the cache daily bounds it to one day's
+        // searches; it grew with every pair ever scanned (7.4M entries at 30k by day 15).
+        drop(std::mem::take(&mut self.workplace_route_cache));
         self.assign_agent_workplaces_with_service_funding(
             agents,
             allocator,

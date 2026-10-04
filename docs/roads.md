@@ -100,6 +100,27 @@ The native orthogonal zoning-block fixture caught the earlier sideways drift at 
 that drift changed the road's tangent and produced incompatible zoning frames. Verification is
 recorded with the [zoning references](zoning.md#native-road-transactions-and-rendered-references).
 
+Splitting an edge at a junction merges any control knot within 5 cm of the junction, the
+intersection node capture distance, into the junction on either side (`ROAD-51`, fixed
+2026-10-04). Before, only the knot before the junction merged, and only within 1 mm. An endpoint
+snapped onto a road it already lies on keeps its exact projection. Before, it moved onto a knot
+within 5 cm. An endpoint off the road still snaps to a knot that close, as before.
+
+Long roads are resampled at about 6 m in f32, so knots land within millimetres of crossings, or
+centimetres of a projection, at whole multiples of the spacing. That caused two failures:
+
+- **1M grid.** A knot 1.1 mm past the junction at (-4200, 600) on the 20.4 km row left the second
+  half a 1.1 mm first segment. The four-way failed to compile and the row was rejected with
+  `surface_geometry_invalid`.
+- **300k grid.** The row at z = -75 ended on the outer cross streets 27 mm from their knots.
+  Moving its ends onto those knots shifted the whole row 27 mm sideways, after its crossing
+  junctions had been placed on the original line. Every row edge then ended in a 27 mm jog, and
+  eight four-ways failed.
+
+Five centimetres is far above f32 spacing anywhere in a 20 km world, and far below any authored
+segment. Regressions: `split_next_to_a_knot_leaves_no_sub_millimetre_segment` and
+`endpoint_on_a_road_beside_a_knot_keeps_the_new_road_on_its_line` (`simulation/network/topology.rs`).
+
 Road insertion, node movement, rollback and undo also refresh the zoning system's recorded
 straight-road grid choices from the affected edge set. Node movement invalidates both old and
 new corridors. These choices belong to zoning, use one local adjacency ring, and survive save
@@ -813,6 +834,20 @@ must select the identical road/site sets; no floating-point tolerance is used. I
 terrain batch, rebinding only payload generation metadata and sharing tile/seam/mesh buffers by
 Arc. It does not assemble new CDT inputs or choose geometry from the previous live tile cache.
 A mismatch rolls back the edit instead of compiling a different result after readiness.
+
+Replaced owners are exactly the owners the commit recompiles (`ROAD-50`, fixed 2026-10-03).
+Adoption marks the plan's dirty edges and affected nodes. The dirty compile adds both endpoints
+of every dirty edge, recompiles every span incident to those nodes, and dirties all their chunks.
+The plan applies the same rule, using live incidence for existing nodes, because the excerpt
+need not hold all of it. The validation excerpt also compiles neighbouring junctions and their
+spans as context. The commit keeps the live pieces and chunks of those, and `matches_published`
+requires them equal, so the plan takes context from the live surface. It adds no chunks, stamp
+owners or clip loops of its own. Before the fix, every excerpt piece counted as replaced. An edit
+next to a long span that crosses a chunk border then planned that span's chunks too, and graded
+patches the commit never dirtied. On the 10k `PopulatedCity` street grid, extending a T junction
+planned 12 patches against the commit's 9, and wasted about 300 ms of CDT on the extra column.
+The coverage check then rejected the commit with `road_plan_coverage_mismatch`. Regression:
+`plan_beside_unchanged_long_span_covers_only_commit_chunks` (`nodes/sim/core/tests/road_terrain_plan.rs`).
 
 Terrain validation separates pre-composition contributor/window checks from final publication.
 Successful triangulation alone is insufficient: every clipped patch must retain valid final render
@@ -3930,8 +3965,8 @@ reuse candidates carry the topology as optional, so an unchanged neighbour with 
 topology is still replayed exactly instead of recompiled. Evicted cost is edit latency only: the
 first preview next to a cold junction compiles it from scratch on the preview worker (about
 30–38 ms for a four-way `JunctionN`, see above), and the commit then replays the preview's
-products. Prewarming junctions near the cursor before the first preview stays open until that
-latency is measured as a problem.
+products. Measured on the 10k street grid (below), an evicted neighbourhood adds 1–2 ms to the
+first preview, so junctions near the cursor are not prewarmed.
 
 Test: `committed_node_topologies_stay_bounded_and_evicted_nodes_compile_cold_products` in
 `surface/tests/junction/dirty_recompile.rs` builds an 81-node grid (no topology retained), extends
@@ -4019,13 +4054,29 @@ Remaining exit checks, 2026-10-03:
   build fell from 505 s to 177 s and the 100k hour from 1.47 s to 29 ms. See
   [`building_allocator.md`](building_allocator.md#city-scale-spawn-and-admission-cost-alloc-02-alloc-03)
   and `economy.md`.
-- **Cold-node edit latency.** The ignored test `cold_node_edit_latency`
-  (`nodes/sim/core/tests/cold_node_edit_latency.rs`) builds the 10k `PopulatedCity` layout and
-  previews then commits three edits on its east edge: a row-end T becoming a four-way, the corner
-  bend becoming a T, and a new T 25 m from two T junctions. Each runs 15 times with the nearby
-  topologies evicted and 15 times with them retained (the pre-`ROAD-44` state), alternating,
-  undone between runs, and checks the committed local products are identical. Written, not yet
-  run.
+- **Cold-node edit latency, measured 2026-10-03.** The ignored test `cold_node_edit_latency`
+  (`nodes/sim/core/tests/cold_node_edit_latency.rs`) builds the street grid of the 10k
+  `PopulatedCity` (`street_grid`, unzoned). The full city's zoning covers the first 24 m past
+  every street end, so these extensions would need a bulldoze first. It finalizes the network as
+  the simulation thread does after a load or an undo, then previews and commits three edits on
+  the east edge: a row-end T becoming a four-way, the corner bend becoming a T, and a new T 25 m
+  from two T junctions. Each runs 15 times with the nearby topologies evicted and 15 times with
+  them retained (the pre-`ROAD-44` state), alternating, undone between runs. The committed local
+  products are identical in every run. The first run found `ROAD-50` (commits next to long spans
+  were rejected), fixed above.
+
+  `cargo test --release --lib cold_node_edit_latency -- --ignored --nocapture --test-threads=1`,
+  24 Rayon workers, nothing else running, p50 of 15 runs each:
+
+  | Edit | Preview, evicted / retained | Commit surface compile, evicted / retained | Whole commit, evicted / retained |
+  | --- | ---: | ---: | ---: |
+  | T → four-way | 36.2 / 34.4 ms | 27.1 / 26.5 ms | 519 / 522 ms |
+  | Bend → T | 22.3 / 21.3 ms | 18.6 / 18.4 ms | 480 / 481 ms |
+  | New T between two Ts | 31.4 / 29.2 ms | 26.8 / 28.1 ms | 523 / 521 ms |
+
+  An evicted neighbourhood adds 1–2 ms to the first preview and nothing measurable to the
+  commit, which replays the preview's products. Prewarming junctions near the cursor is not
+  needed.
 
 Exit: retained road-surface memory stays bounded per node and per span. Candidates include
 keeping only what a local edit needs and rebuilding the rest on demand, or evicting caches for
