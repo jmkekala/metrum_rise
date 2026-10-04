@@ -287,9 +287,9 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   - The logistics hour no longer grows near-quadratically (`ECON-15`). Supplier searches that
     found no stock scanned every supplier; the hourly supplier index now lists only suppliers
     that can ship, with identical results.
-  - Road-surface memory (`ROAD-44` in progress): junction topologies are capped and span
+  - Road-surface memory (`ROAD-44` done): junction topologies are capped and span
     products are rebuilt from sections, with identical output. 100k peak RSS fell from 14.8 GB to
-    2.0 GB, projecting about 20 GB at 1M. Triangles are now stored as fan or index forms
+    2.0 GB, and the 1M city builds in 39 min with 16.5 GB peak RSS. Triangles are now stored as fan or index forms
     (`ROAD-45`), span terrain-clip edges as compact keys (`ROAD-46`), span regions as 8 B
     records (`ROAD-47`), lanes as 96 B records (`ROAD-48`) and node triangle queries as ids into
     their regions (`ROAD-49`). Together these cut the 100k road layout from 1.74 to 1.27 GB. Span

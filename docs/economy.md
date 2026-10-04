@@ -3813,9 +3813,27 @@ the monthly trajectory from the `ECON-14` target.
 ### `ECON-13` economy tick baseline
 
 In progress, 2026-10-02. The benchmark and its city are in place, and the 10k and 100k tiers run.
-The 1M tier has not run yet: before `ROAD-44` it projected to about 110 GB, and with the
-2026-10-03 progress to about 20 GB peak. The numbers below come from single
-runs and are not yet the matched acceptance runs.
+The 1M city builds (2026-10-04, below); the 1M benchmark ticks have not run yet. The numbers below
+come from single runs and are not yet the matched acceptance runs.
+
+1M build, 2026-10-04. A temporary build-only probe, since removed, ran
+`PopulatedCity::build_timed(1_000_000)`. Release, `a4635166`, 24 logical CPUs, default Rayon
+workers, single run. The projection comes from the 30k–300k `populated_city_scaling` run.
+
+| Phase | 1M measured | Projected |
+| --- | ---: | ---: |
+| Street grid | 1,032 s | 711 s |
+| Zoning | 325 s | 427 s |
+| Lots | 311 s | 330 s |
+| Admission | 646 s | 631 s |
+| Warm-up, 48 hours | 39 s | 26 s |
+| Total | 2,353 s | 2,125 s |
+| Peak RSS | 16.5 GB (11.5 GB after build) | about 10 GB after build |
+
+Result: 1,104,604 residents, 553,789 households, 753,750 employed, 1,436,219 jobs and 742,165
+buildings. The street grid runs mostly on one thread and grows faster than the 1.34 exponent
+fitted at 300k. The transient peak during admission is about 5 GB above the post-build RSS,
+which the scaling test does not sample.
 
 1M runtime, 2026-10-03. Memory now fits, but time does not. Phase timers on the 10k, 30k and
 100k builds (temporary, not committed; release, default workers):
@@ -3876,9 +3894,10 @@ logical CPUs, 64 GB RAM, default Rayon workers.
 | --- | --- | ---: | ---: | ---: | --- | --- |
 | 10k | 11,143 / 7,634 / 14,009 | 7,428 | 17.4 s | about 1.5 GB | 17.5 / 19.2 / 21.2 ms | 16.8 ms / 327 ms / 771 ms |
 | 100k | 110,867 / 76,628 / 141,573 | 75,965 | 518 s | 14.8 GB | 1.60 / 1.62 / 1.63 s | 212 ms / 5.04 s / 12.0 s |
-| 1M | — | — | — | — | blocked by `ROAD-44` | blocked by `ROAD-44` |
+| 1M | 1,104,604 / 753,750 / 1,436,219 | 742,165 | 2,353 s | 16.5 GB | not run | not run |
 
-Times are Criterion's lower bound, estimate and upper bound. The daily range is very wide: some
+The 1M row is the 2026-10-04 build-only run above, at `a4635166`. Times are Criterion's lower
+bound, estimate and upper bound. The daily range is very wide: some
 days settle in tens of milliseconds and others take seconds. Why some days are slow has not been
 diagnosed yet.
 
@@ -3905,7 +3924,7 @@ Findings so far:
   110 GB. `ROAD-44` progress (2026-10-03) cut 100k peak RSS to 2.0 GB (from 14.8 GB), with identical
   city records and tick times.
 
-Exit: `ROAD-44` lets the 1M tier build within 64 GB, and matched runs for all three tiers are
+Exit: the 1M tier builds within 64 GB (`ROAD-44`, done 2026-10-04), and matched runs for all three tiers are
 recorded here. The slow daily ticks are tracked separately; this baseline records them as they
 are.
 

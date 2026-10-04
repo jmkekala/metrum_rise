@@ -3919,7 +3919,7 @@ the roadbed ownership contract itself.
 
 ### Retained road-surface memory (`ROAD-44`)
 
-In progress, found 2026-10-02 while building the `ECON-13` benchmark cities. Compiled road
+Done 2026-10-04, found 2026-10-02 while building the `ECON-13` benchmark cities. Compiled road
 surfaces kept their visual products and junction topology caches for every road in the city, with
 no bound. They were most of the simulation's memory. Node topologies are now bounded and span
 products are rebuilt from their sections (below); node pieces and span earthwork still keep full
@@ -4043,10 +4043,17 @@ cannot be rebuilt like span quads), span terrain-clip loops (14 MB), span region
 (9 MB), node top-source records without their arrays (7.5 MB) and sections (7 MB). The largest
 are tracked as `ROAD-45`–`ROAD-49` (below).
 
-Remaining exit checks, 2026-10-03:
+Exit checks:
 
-- **1M build.** Not attempted yet. `ROAD-45`–`ROAD-49` bring the 100k build to 1.9 GB peak RSS
-  (10k: 434 MB), which projects to about 20 GB at 1M. Time was the blocker, not memory. Phase timers
+- **1M build, measured 2026-10-04.** The 1M `PopulatedCity` builds in 2,353 s with 16.5 GB peak
+  RSS, 11.5 GB after the build: 1,104,604 residents, 553,789 households, 742,165 buildings. The
+  first attempt stopped at row z = 600 and found `ROAD-51`. A temporary build-only probe, since
+  removed, ran `PopulatedCity::build_timed(1_000_000)` and read `VmHWM` from `/proc/self/status`;
+  an outside sampler logged RSS every 10 s. Release, `a4635166`, 24 logical CPUs, default Rayon
+  workers, single run; phase times are in `economy.md` (`ECON-13`).
+
+  Before the run, `ROAD-45`–`ROAD-49` had brought the 100k build to 1.9 GB peak RSS
+  (10k: 434 MB), projecting about 20 GB at 1M. Time was the blocker, not memory. Phase timers
   on the 10k, 30k and 100k builds show building spawns (1.7 s → 175 s, `ALLOC-02`, since fixed) and household
   admission (1.5 s → about 132 s, `ALLOC-03`, since fixed) growing quadratically, and the 48 warm-up hours
   (1.7 s → 90 s) following the near-quadratic hourly tick (`ECON-15`). The 1M build projected to
