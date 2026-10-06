@@ -12,7 +12,7 @@ This directory stays intentionally flat for now. Each file should have one clear
 | [`reference.md`](reference.md) | Stable lookup tables, data formats, memory budgets, and vocabulary. |
 | [`entrance_and_exit.md`](entrance_and_exit.md) | Building entrance/exit and trip-planning spec. |
 | [`traffic.md`](traffic.md) | Lane-bound vehicle movement, car following, junction traversal, lane changes, overtaking, and traffic debug. |
-| [`economy.md`](economy.md) | Economy and freight design/spec. |
+| [`economy.md`](economy.md) | Healthy-growth plan, starter-town ledger and village failure report, current economy/freight contracts, and dated validation evidence. |
 | [`demand.md`](demand.md) | Demand, growth pressure, and household admission/removal ownership. |
 | [`zoning.md`](zoning.md) | Zoning system spec. |
 | [`building_allocator.md`](building_allocator.md) | Building placement, removal, frontage attachment, and allocator ownership boundaries. |

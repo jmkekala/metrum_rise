@@ -58,6 +58,13 @@ Important ownership note:
   households, queues spawns, then executes non-spawn building actions and publishes pending site
   changes. Workplace assignment remains outside allocator ownership.
 
+Demand-owned demolition uses `AgentSystem::evacuate_building_for_removal` before clearing the
+building record. A deserted site with zero employees can still contain former workers; they
+must receive a physical route home while the old entrance exists. The subsequent removal and
+swap-remap preserve that destination. The existing removal scans remain O(A) per bounded action;
+evacuation adds routing only for displaced occupants. Housed occupants do not trigger a border
+search. Other cleanup and player-bulldoze paths retain their existing lifecycle contracts.
+
 ## Core Data Model
 
 ### `Building`

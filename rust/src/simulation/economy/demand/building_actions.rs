@@ -20,6 +20,8 @@ use super::viability::{
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{BuildingAllocator, BuildingSiteEnvironment};
 use crate::simulation::economy::definitions::{RuntimeEconomyCatalog, RuntimeEconomyTuning};
+use crate::simulation::economy::fiscal::{CityFiscalPolicy, daily_property_tax};
+use crate::simulation::economy::households::local_utility_service_costs;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::zoning::{ZoneType, ZoningSystem};
 use rayon::prelude::*;
@@ -90,11 +92,14 @@ impl DemandSystem {
         snapshot: &DailyDemandSnapshot,
         catalog: &RuntimeEconomyCatalog,
         economy_tuning: &RuntimeEconomyTuning,
+        fiscal_policy: &CityFiscalPolicy,
         residential_occupants: &ResidentialOccupantSnapshot,
         cadence_fraction: f32,
         log_label: &str,
         environment: BuildingSiteEnvironment<'_>,
     ) {
+        let startup_utility_bill = local_utility_service_costs(catalog).iter().sum::<f32>()
+            * economy_tuning.owa_import_price_multiplier;
         let mut commercial_spawn_resource_priorities = snapshot
             .committed_unmet_commercial_consumer_demand_by_resource
             .clone();
@@ -203,6 +208,7 @@ impl DemandSystem {
                 spawns_today,
             );
             let mut spawn_rejected_absorption = 0_usize;
+            let mut spawn_rejected_viability = 0_usize;
             let mut spawn_skipped_budget = 0_usize;
             let selected_spawns: Vec<_> = if zone_type == ZoneType::Residential {
                 spawn_skipped_budget = spawn_candidate_count.saturating_sub(spawns_today);
@@ -239,6 +245,25 @@ impl DemandSystem {
                         catalog,
                         &candidate.action.asset_id,
                     ) {
+                        let level = allocator
+                            .registry
+                            .get(&candidate.action.asset_id)
+                            .and_then(|entry| entry.manifest.building.as_ref())
+                            .map_or(1, |building| building.level);
+                        let overhead = startup_utility_bill
+                            + daily_property_tax(zone_type, level, fiscal_policy);
+                        if !self.cheat_max_demands_enabled
+                            && !super::spawn_need::service_market_covers_first_worker(
+                                profile,
+                                catalog,
+                                &absorption_context,
+                                overhead,
+                                economy_tuning.owa_import_price_multiplier,
+                            )
+                        {
+                            spawn_rejected_viability += 1;
+                            continue;
+                        }
                         absorption_context.reserve_candidate(profile);
                     }
                     selected.push(candidate.action);
@@ -309,15 +334,21 @@ impl DemandSystem {
                 .collect();
             let downgrade_selected = selected_downgrades.len();
 
-            let normalized_despawn_pressure = existing_candidates
+            let (normalized_despawn_pressure, market_despawn_active) = existing_candidates
                 .despawns
                 .iter()
-                .map(|candidate| candidate.normalized_action_pressure)
-                .sum::<f32>();
-            self.despawn_hysteresis_active.set(
-                use_kind,
-                despawn_candidate_count > 0 && normalized_despawn_pressure > EPSILON,
-            );
+                .fold((0.0, false), |(pressure, market_active), candidate| {
+                    // Clearing a failed business must not activate contraction hysteresis
+                    // for healthy businesses in the same market.
+                    let market_driven = use_kind == DemandUse::Residential || !candidate.deserted;
+                    (
+                        pressure + candidate.normalized_action_pressure,
+                        market_active
+                            || (market_driven && candidate.normalized_action_pressure > EPSILON),
+                    )
+                });
+            self.despawn_hysteresis_active
+                .set(use_kind, market_despawn_active);
             let despawn_budget_units = normalized_despawn_pressure
                 * self
                     .config
@@ -351,6 +382,7 @@ impl DemandSystem {
                 spawn_planned: spawns_today,
                 spawn_selected,
                 spawn_rejected_absorption,
+                spawn_rejected_viability,
                 spawn_skipped_budget,
                 upgrade_candidates: upgrade_candidate_count,
                 upgrade_normalized_pressure: normalized_upgrade_pressure,
@@ -446,6 +478,13 @@ impl DemandSystem {
                 );
 
                 if building.is_deserted {
+                    // Failed business sites need to recover even when their output is
+                    // wanted. The existing action credit still bounds clearance cadence.
+                    let despawn_pressure = if use_kind == DemandUse::Residential {
+                        despawn_pressure
+                    } else {
+                        1.0
+                    };
                     if building.occupancy == 0
                         && building.worker_count == 0
                         && despawn_pressure > 0.0

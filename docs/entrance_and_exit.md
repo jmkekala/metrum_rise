@@ -1268,6 +1268,12 @@ For an ordinary building-origin trip, the planner must:
    - short ingress cost from `local_access_point(mode, planned_detach_lane_id, planned_detach_lane_d, curb_pos)` to `door_pos`
 5. Store the selected access legs and network path in the trip plan.
 
+When a worker loses or changes jobs while inside the former workplace, scheduling first requests
+an ordinary trip home. Shopping activities are not overridden. Demand-owned demolition evacuates
+physical occupants with the existing street-handoff routine before deleting the origin entrance;
+zero employment slots do not prove physical vacancy. Route targets and building-index remaps must
+remain valid together, so a displaced worker can return home and become a household shopper.
+
 This keeps the road graph unchanged while still planning with exact building access costs. Full node-path routing stays free-flow, while only car frontage segments receive the low-frequency cached congestion penalty defined above.
 
 The exact total-cost formula for one legal candidate is:

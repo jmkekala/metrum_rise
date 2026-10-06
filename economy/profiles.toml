@@ -375,7 +375,7 @@ resource = "machinery"
 units_per_day = 42.0
 
 [runtime_tuning]
-owa_import_price_multiplier = 1.75
+owa_import_price_multiplier = 1.25
 owa_export_price_multiplier = 0.60
 owa_distress_liquidation_multiplier = 0.25
 startup_treasury_balance = 100000.0

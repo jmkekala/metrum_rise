@@ -14,6 +14,9 @@
 use std::path::Path;
 use std::time::Instant;
 
+mod diagnostics;
+pub use diagnostics::{GrowthBusinessCashFlow, GrowthReport};
+
 use glam::DVec2;
 use godot::prelude::Vector3;
 
@@ -124,6 +127,18 @@ impl GrowthScenario {
             }
         }
         records
+    }
+
+    /// Runs the same frame path with read-only accounting observations before removal/reset.
+    /// Reporting is confined to this headless runner; the live game stores no extra history.
+    pub fn run_diagnosed_days(&mut self, days: u32) -> GrowthReport {
+        let mut report = GrowthReport::new(&self.core);
+        while report.days.len() < days as usize {
+            if self.core.step_frame_observed(FRAME_DT_S, &mut report).daily_ticks > 0 {
+                report.days.push(self.record());
+            }
+        }
+        report
     }
 
     fn record(&self) -> GrowthDayRecord {

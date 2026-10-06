@@ -15,6 +15,30 @@ It answers questions like:
 
 It does not own household data layout, freight movement, or door-to-door travel.
 
+The [healthy-growth plan](economy.md#growth-redesign-econ-11econ-14-dem-02) was revised on
+2026-10-05. `DEM-02` is planned; the formulas below still describe the current baseline.
+Economic viability and demand simplification are coordinated work, with 10k performance checks
+and the 1M run deferred.
+
+The [village failure report](economy.md#village-failure-timeline-econ-14) identified a recovery
+defect under `DEM-02` / `ECON-14`: positive demand stranded 32 deserted commercial buildings.
+The 2026-10-06 repair makes deserted, empty commercial and industrial sites eligible for clearance
+regardless of demand. It retains the existing bounded action credits, deterministic order and
+occupancy safeguards. Residential and healthy-business removal still follow demand pressure;
+failed-business clearance does not activate their contraction hysteresis.
+
+Recovery demolition evacuates remaining physical occupants through the existing street-handoff
+and route-home lifecycle before removing the entrance and remapping building indices. Empty
+employment slots alone do not mean that all former workers have left the building.
+
+Service-store candidates must also pass a first-worker break-even check: remaining unreserved
+resource demand, capped to one worker's throughput, must pay that worker, imported recipe inputs,
+current-policy property tax and imported utility overhead. At the current 1.25× import price,
+level-one personal and health services need at least 156 and 166 residents respectively if all
+their spending is available to the candidate. This is a necessary market-size check, not proof
+of household affordability or guaranteed receipts. The existing capacity reservation prevents
+several candidates from claiming the same customers; the explicit max-demand cheat bypasses it.
+
 ## Machinery and production-chain demand (`ECON-09`)
 
 Machinery upkeep creates upstream industrial demand through existing input/output ports. OWA
@@ -34,20 +58,11 @@ Initial rates, material recipes and authoring details are owned by
 
 ## Cross-Doc Implementation Order
 
-This document is intended to be implemented after the profile-based zoning and asset-editor
-foundation in [`zoning.md`](zoning.md), and before the deeper economy-side integration work in
-[`economy.md`](economy.md).
-
-Cross-doc order:
-
-1. implement the profile-based zoning and asset-editor changes from [`zoning.md`](zoning.md)
-2. implement the demand-owned growth, admission, removal, and building-change rules from this
-   document
-3. finish the deeper economy-side signal production, viability gates, and runtime handoff work in
-   [`economy.md`](economy.md)
-
-This keeps legality and authoring stable first, then moves city-growth ownership into demand, and
-only after that finishes the economy-side runtime details that demand consumes.
+The original integration established zoning/asset legality, demand-owned decisions, and the
+economy handoff. Those foundations are live. The current order is the
+[healthy-growth delivery plan](economy.md#delivery-plan): define viable budgets and customers,
+repair startup, extend economic activity, and coordinate `DEM-02` with `ECON-14`. Reuse the
+existing zoning, household, service and freight systems; do not repeat their initial integration.
 
 ## Current Runtime Snapshot
 
@@ -1231,7 +1246,9 @@ This means one valid industrial parcel can receive the full one-factory need imm
 turning the need into `1 / 24` of a parcel-count-scaled daily drip.
 Commercial unmet units are kept per resource and include baseline resident consumption,
 aggregate service demand from `service_store` sink profiles, plus below-target household pantry
-recovery spread over the authored stock target window. Existing live commercial shops subtract only
+recovery spread over the authored stock target window. Grocery recovery subtracts supplies already
+on retail shelves or reserved for shoppers; bulk pantry purchases do not create recurring jobs
+from a one-day sales spike. Existing live commercial shops subtract only
 their effective demand-responsive output capacity, not their raw full-profile output, while
 under-construction shops remain committed future capacity so the planner does not duplicate an
 already-started site. Commercial spawn need is matched by resource and averages output only across
@@ -1292,9 +1309,12 @@ normalized_despawn_pressure =
         1.0
     )
 
+candidate_despawn_weight =
+    1.0 for an eligible deserted commercial or industrial building
+    normalized_despawn_pressure otherwise
+
 despawn_action_credit[use] +=
-    normalized_despawn_pressure
-  * eligible_despawn_count[use]
+    sum(candidate_despawn_weight)
   * despawn_batch_fraction_by_use[use]
   * cadence_fraction
 
@@ -1303,6 +1323,12 @@ despawns_this_pass[use] =
 
 despawn_action_credit[use] -= despawns_this_pass[use]
 ```
+
+Failed-business clearance requires zero occupants and zero workers, and excludes broken,
+economy-broken, pending-redevelopment and under-construction buildings. It does not contribute
+to market-contraction hysteresis. At the current `0.5` daily demolition fraction, one eligible
+failed site accumulates one clearance action in approximately two days, including at positive
+demand. Placement then uses the usual legality, demand and capacity checks.
 
 Authoring rule:
 
@@ -1917,7 +1943,8 @@ Interpretation:
   unreserved inventory before the next bankruptcy check
 - two consecutive daily observations are required: the building must end one day negative and still
   be negative at the start of the next daily settlement
-- `is_deserted` is a one-way latch; no in-simulation recovery path exists once set
+- `is_deserted` is a one-way latch; the business cannot resume operation in place, but bounded
+  site clearance allows a subsequent new business
 
 ### Insolvent Employer Filter (Job Search)
 
@@ -2083,15 +2110,18 @@ No new mesh assets are required. The same geometry renders with a gray material.
 
 ### Recovery
 
-There is no in-simulation recovery path. `is_deserted` is a one-way latch.
+A deserted business does not resume operation in place: `is_deserted` is a one-way latch.
+The demand system can clear its site and subsequently place a new business.
 
 A deserted building:
 
 - occupies its parcel claim, blocking new spawns at that location
 - is ineligible for upgrade or downgrade consideration
 - is not counted in building-level demand snapshot signals (e.g. `business_owa_dependency`)
-- is removed when the player demolishes it, or when the demand system's despawn pressure
-  selects it (deserted buildings are always first in the despawn queue)
+- is removed when the player demolishes it, or when the demand system's bounded despawn budget
+  selects it (deserted buildings are always first in the despawn queue). Empty commercial and
+  industrial sites with no workers are eligible even at positive demand; deserted residential
+  buildings still require negative demand.
 
 ### Data Model
 
@@ -2185,10 +2215,26 @@ raw logs and matched summaries are under `/tmp/metrum-full-audit/demand-legacy-*
 
 ### Growth redesign (`DEM-02`)
 
-The stacked pressure, spawn-need threshold and admission layers damp each other, and regional
-pull falls to zero at `regional_growth_soft_households = 600`. `DEM-02` replaces them with one
-demand signal per zone type. The diagnosis and step order live in
-[`economy.md`](economy.md#growth-redesign-econ-11econ-14-dem-02).
+**Planned, revised 2026-10-05.** Replace stacked pressure, spawn-need threshold and admission
+penalties with one explainable signal per zone, derived from explicit economic quantities:
+
+- residential: households that can support themselves and need homes, with existing job seekers
+  considered before incoming workers;
+- commercial: affordable spending and unmet goods/service capacity by category;
+- industrial: local input requirements and viable regional sales opportunities by resource.
+
+Keep resource-specific accounting and existing/pending/selected capacity reservations beneath
+the display signal. Make land, assets, access, vacant homes, construction and execution cadence
+named constraints. Do not repeatedly discount the same distress through separate pressure layers.
+Regional customers must enter both industrial demand and the absorption/spawn calculation.
+
+The current `regional_growth_soft_households = 600` eliminates only regional pull, not job-driven
+immigration. Removing that arbitrary cutoff cannot repair early business losses on its own.
+`ECON-14` owns household budgets, viable startup, additional activities and regional trade;
+`DEM-02` consumes those economic inputs. Sector choices and numerical formulas remain design
+work. Both share healthy-growth scenario acceptance and matched 10k performance checks; the 1M
+run is deferred. The [plan and acceptance](economy.md#growth-redesign-econ-11econ-14-dem-02)
+are owned by `economy.md`.
 
 ### Open Spec Gaps
 

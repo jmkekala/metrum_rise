@@ -119,6 +119,7 @@ impl HouseholdSystem {
         treasury_balance: &mut f64,
         service_funding_by_building: &[f32],
         fiscal_policy: &CityFiscalPolicy,
+        on_wages_paid: impl FnOnce(&AgentSystem, &BuildingAllocator),
     ) -> FiscalRevenue {
         let timing_enabled = debug::category_enabled("economy");
         let total_start = Instant::now();
@@ -156,6 +157,9 @@ impl HouseholdSystem {
             owa_exports_available,
         );
         let wages_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        // Observe paid assignments before the later job search can replace them.
+        // The live caller supplies an empty callback, removed by monomorphization.
+        on_wages_paid(agents, allocator);
         phase_start = Instant::now();
         // Step 3: pay city transfer benefits from the city treasury.
         self.pay_household_transfers(agents, allocator, treasury_balance, fiscal_policy);

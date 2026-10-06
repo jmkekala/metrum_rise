@@ -2,7 +2,7 @@
 
 //! Shared household economy metrics and profile helpers.
 
-use super::Household;
+use super::{Household, REPLENISHMENT_SHOPPING_RETURNING, REPLENISHMENT_SHOPPING_TO_STORE};
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::economy::agents::MAX_ADULTS_PER_HOUSEHOLD;
 use crate::simulation::economy::definitions::{
@@ -147,30 +147,6 @@ pub(crate) fn building_total_output_inventory(
         .sum()
 }
 
-pub(crate) fn profile_output_value_per_day(
-    catalog: &RuntimeEconomyCatalog,
-    profile: &EconomyProfileRuntime,
-) -> f32 {
-    profile
-        .outputs
-        .iter()
-        .map(|port| {
-            catalog
-                .unit_price_for_resource(port.resource_runtime_id)
-                .unwrap_or_else(|| {
-                    let resource_id = catalog
-                        .resource_id_for_runtime_id(port.resource_runtime_id)
-                        .unwrap_or("<unknown>");
-                    panic!(
-                        "resource '{resource_id}' used by profile '{}' has no catalog price",
-                        profile.id
-                    )
-                })
-                * port.units_per_day.max(0.0)
-        })
-        .sum()
-}
-
 fn is_sales_scaled_commercial_store(building: &Building, profile: &EconomyProfileRuntime) -> bool {
     matches!(building.zone_type, ZoneType::Commercial)
         && matches!(profile.kind, EconomyProfileRuntimeKind::Store)
@@ -215,19 +191,25 @@ pub(crate) fn commercial_activity_signal_for_city(
             let daily_consumption =
                 household.member_count as f32 * household.consumption_rate.max(0.0);
             let target_stock = daily_consumption * household_profile.stock_target_days.max(0.0);
-            let stock_gap = (target_stock - household.stock.max(0.0)).max(0.0);
+            let incoming = if matches!(
+                household.replenishment_state,
+                REPLENISHMENT_SHOPPING_TO_STORE | REPLENISHMENT_SHOPPING_RETURNING
+            ) {
+                household.reserved_amount.max(0.0)
+            } else {
+                0.0
+            };
+            let stock_gap = (target_stock - household.stock.max(0.0) - incoming).max(0.0);
             *consumption += daily_consumption;
             *gap += stock_gap;
         },
         |left, right| (left.0 + right.0, left.1 + right.1),
     );
-    let demand_units_per_day = daily_consumption + stock_gap / recovery_days;
-
-    let live_output_units_per_day = ordered_fold(
+    let (live_output_units_per_day, retail_stock) = ordered_fold(
         &allocator.buildings,
         ACTIVITY_CHUNK_SIZE,
-        || 0.0,
-        |total, _, building| {
+        || (0.0, 0.0),
+        |(total, stock), _, building| {
             if building.broken
                 || building.economy_broken
                 || building.is_deserted
@@ -245,9 +227,14 @@ pub(crate) fn commercial_activity_signal_for_city(
                 household_supply_resource,
                 profile,
             );
+            *stock += building.inventory_units(household_supply_resource);
         },
-        |left, right| left + right,
+        |left, right| (left.0 + right.0, left.1 + right.1),
     );
+    // A household shortage is not new production demand when its goods already
+    // exist at a shop or in a shopper's reservation. Recover only the remaining gap.
+    let demand_units_per_day =
+        daily_consumption + (stock_gap - retail_stock).max(0.0) / recovery_days;
     let activity_floor_scale = if live_output_units_per_day <= MIN_POSITIVE_VALUE {
         0.0
     } else {
@@ -584,28 +571,8 @@ pub(crate) fn refresh_commercial_activity_floor(
     signal
 }
 
-fn commercial_sales_activity_scale(
-    catalog: &RuntimeEconomyCatalog,
-    building: &Building,
-    profile: &EconomyProfileRuntime,
-) -> f32 {
-    if !is_sales_scaled_commercial_store(building, profile) {
-        return 1.0;
-    }
-    let full_output_value = profile_output_value_per_day(catalog, profile);
-    if full_output_value <= MIN_POSITIVE_VALUE {
-        return 1.0;
-    }
-    (building
-        .daily_household_sales_value
-        .max(building.recent_household_sales_value)
-        .max(0.0)
-        / full_output_value)
-        .clamp(0.0, 1.0)
-}
-
 fn commercial_activity_scale_with_floor(
-    catalog: &RuntimeEconomyCatalog,
+    _catalog: &RuntimeEconomyCatalog,
     building: &Building,
     profile: &EconomyProfileRuntime,
     floor_scale: f32,
@@ -613,9 +580,9 @@ fn commercial_activity_scale_with_floor(
     if !is_sales_scaled_commercial_store(building, profile) {
         return 1.0;
     }
-    commercial_sales_activity_scale(catalog, building, profile)
-        .max(floor_scale.max(0.0))
-        .clamp(0.0, 1.0)
+    // A bulk household purchase transfers existing stock; its one-day receipt
+    // must not open recurring jobs above the consumption/recovery rate.
+    floor_scale.clamp(0.0, 1.0)
 }
 
 pub(crate) fn active_worker_capacity_for_profile(
@@ -813,8 +780,11 @@ pub(crate) fn building_operation_factors_with_floor_scale(
     );
     let effective_workers = building.worker_count.min(active_worker_capacity);
     let staffing_worker_capacity = physical_worker_capacity_for_profile(building, profile).max(1);
-    let staffing_factor =
+    let mut staffing_factor =
         (effective_workers as f32 / staffing_worker_capacity as f32).clamp(0.0, 1.0);
+    if is_sales_scaled_commercial_store(building, profile) {
+        staffing_factor = staffing_factor.min(floor_scale.clamp(0.0, 1.0));
+    }
     let production_rate_scale = output_area_scale_for_building(building, profile);
     let input_factor =
         hourly_input_availability_factor(profile, building, staffing_factor, production_rate_scale);
@@ -852,7 +822,10 @@ pub(crate) fn operating_input_demand_scale(
         .min(active_worker_capacity_for_profile(
             catalog, building, profile,
         ));
-    let staffing = (effective_workers as f32 / capacity as f32).clamp(0.0, 1.0);
+    let mut staffing = (effective_workers as f32 / capacity as f32).clamp(0.0, 1.0);
+    if is_sales_scaled_commercial_store(building, profile) {
+        staffing = staffing.min(building.commercial_activity_floor_scale.clamp(0.0, 1.0));
+    }
     let area = output_area_scale_for_building(building, profile);
     staffing * area * hourly_output_headroom_factor(profile, building, staffing, area)
 }
@@ -994,9 +967,12 @@ pub(crate) fn scaled_input_inventory_targets_for_building(
 ) -> (f32, f32, f32) {
     let mut scale = output_area_scale_for_building(building, profile);
     if is_sales_scaled_commercial_store(building, profile) {
-        let worker_capacity = profile.worker_capacity.max(1) as f32;
-        let active_capacity = active_worker_capacity_for_profile(catalog, building, profile) as f32;
-        scale *= (active_capacity / worker_capacity).clamp(0.0, 1.0);
+        scale *= commercial_activity_scale_with_floor(
+            catalog,
+            building,
+            profile,
+            building.commercial_activity_floor_scale,
+        );
     }
     profile.input_inventory_targets(input_port, scale)
 }
@@ -1146,7 +1122,7 @@ fn owa_utility_cost_for_building(
 }
 
 /// Authored daily unit prices in the shared power, water, sewage order.
-pub(super) fn local_utility_service_costs(catalog: &RuntimeEconomyCatalog) -> [f32; 3] {
+pub(crate) fn local_utility_service_costs(catalog: &RuntimeEconomyCatalog) -> [f32; 3] {
     let mut costs = [0.0f32; 3];
     for profile in catalog.all_profiles() {
         if let Some(service_idx) = utility_service_index(profile.utility_service.as_deref())

@@ -233,7 +233,8 @@ fn same_resource_upkeep_frees_storage_during_production() {
 fn small_store_stock_targets_keep_two_batches_after_activity_scaling() {
     let catalog = load_runtime_economy_catalog().unwrap();
     let profile = catalog.profile_for_id("grocery_basic").unwrap();
-    let store = make_building(0.0, ZoneType::Commercial, "test:grocery", 0.0);
+    let mut store = make_building(0.0, ZoneType::Commercial, "test:grocery", 0.0);
+    store.commercial_activity_floor_scale = 1.0 / profile.worker_capacity as f32;
     let (target, reorder, _) =
         scaled_input_inventory_targets_for_building(&catalog, &store, profile, &profile.inputs[0]);
     assert_eq!(target, 80.0);

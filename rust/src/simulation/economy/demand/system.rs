@@ -203,6 +203,7 @@ impl DemandSystem {
             &snapshot,
             catalog.as_ref(),
             economy_tuning.as_ref(),
+            fiscal_policy,
             &residential_occupants,
             DEMAND_HOURLY_CADENCE_FRACTION,
             "hourly_pass",

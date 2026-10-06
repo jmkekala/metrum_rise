@@ -16,6 +16,23 @@ use godot::prelude::godot_error;
 /// Real seconds per sim-thread frame (~60 Hz); agents move this times the speed multiplier.
 pub(super) const FRAME_DT_S: f64 = 1.0 / 60.0;
 
+/// Read-only boundaries used by the headless economy report. The live path uses `()`;
+/// monomorphization removes its empty callbacks, without storing telemetry in `SimCore`.
+pub(super) trait EconomyObserver {
+    fn buildings_changed(&mut self, _core: &SimCore) {}
+    fn hourly_economy(&mut self, _core: &SimCore) {}
+    fn wages_paid(
+        &mut self,
+        _agents: &crate::simulation::economy::agents::AgentSystem,
+        _allocator: &crate::simulation::buildings::allocator::BuildingAllocator,
+    ) {
+    }
+    fn household_settlement(&mut self, _core: &SimCore) {}
+    fn day_closed(&mut self, _core: &SimCore) {}
+}
+
+impl EconomyObserver for () {}
+
 /// Runs one named simulation phase, flushing crash diagnostics before re-raising a panic.
 pub(super) fn run_sim_phase<T>(phase: &str, run: impl FnOnce() -> T) -> T {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)) {
@@ -93,6 +110,14 @@ impl SimCore {
     /// queued demand spawns, the operational hour on whole hours, and daily settlement at
     /// midnight. Results depend only on the core state and `frame_dt_s`.
     pub(crate) fn step_frame(&mut self, frame_dt_s: f64) -> FrameStepReport {
+        self.step_frame_observed(frame_dt_s, &mut ())
+    }
+
+    pub(super) fn step_frame_observed(
+        &mut self,
+        frame_dt_s: f64,
+        observer: &mut impl EconomyObserver,
+    ) -> FrameStepReport {
         let mut report = FrameStepReport::default();
         let speed = self.time.speed_multiplier;
         if speed <= 0.0 {
@@ -135,7 +160,7 @@ impl SimCore {
         let time_advance = self.time.process_delta(frame_dt_s);
         report.elapsed_minutes = time_advance.elapsed_minutes;
         for (step_day_index, step_minute_of_day) in time_advance.iter_elapsed_minutes() {
-            self.step_authored_minute(step_day_index, step_minute_of_day, &mut report);
+            self.step_authored_minute(step_day_index, step_minute_of_day, &mut report, observer);
         }
         report.minute_ms = minute_start.elapsed().as_secs_f64() * 1000.0;
         report
@@ -146,18 +171,23 @@ impl SimCore {
         day_index: u32,
         minute_of_day: u16,
         report: &mut FrameStepReport,
+        observer: &mut impl EconomyObserver,
     ) {
         let pending_spawn_start = Instant::now();
         record_crash_phase_for_core(self, "demand spawn tick");
-        report.pending_spawns_executed += run_sim_phase("demand spawn tick", || {
+        let spawned = run_sim_phase("demand spawn tick", || {
             self.execute_pending_demand_spawns_for_minute(day_index, minute_of_day)
         });
+        report.pending_spawns_executed += spawned;
+        if spawned > 0 {
+            observer.buildings_changed(self);
+        }
         report.pending_spawn_ms += pending_spawn_start.elapsed().as_secs_f64() * 1000.0;
         if minute_of_day % 60 == 0 {
             let hourly_start = Instant::now();
             record_crash_phase_for_core(self, "operational hour tick");
             run_sim_phase("operational hour tick", || {
-                self.simulate_operational_hour_internal(day_index, minute_of_day)
+                self.simulate_operational_hour_observed(day_index, minute_of_day, observer)
             });
             report.hourly_ms += hourly_start.elapsed().as_secs_f64() * 1000.0;
             report.hourly_ticks += 1;
@@ -168,7 +198,9 @@ impl SimCore {
         if minute_of_day == 0 {
             let daily_start = Instant::now();
             record_crash_phase_for_core(self, "daily tick");
-            run_sim_phase("daily tick", || self.simulate_tick_internal(day_index));
+            run_sim_phase("daily tick", || {
+                self.simulate_tick_observed(day_index, observer)
+            });
             report.daily_ms += daily_start.elapsed().as_secs_f64() * 1000.0;
             report.daily_ticks += 1;
             if crate::debug::is_sim_enabled() {

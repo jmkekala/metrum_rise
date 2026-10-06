@@ -3,7 +3,11 @@
 //! Demand tests.
 
 use super::credits::advance_spawn_need_credit;
-use super::spawn_need::{OutputAbsorptionContext, nonresidential_passes_absorption_gate};
+use super::spawn_need::{
+    OutputAbsorptionContext, nonresidential_passes_absorption_gate,
+    service_market_covers_first_worker,
+};
+use super::types::DemandUse;
 use super::*;
 use crate::assets::AssetManifest;
 use crate::assets::asset::{Anchor, AnchorType, BuildingData, MeshPart, PlacementMode, ZoneClass};
@@ -2941,6 +2945,125 @@ fn deserted_buildings_are_despawn_first_and_never_downgrade() {
     );
     assert!(candidates.despawns.is_empty());
     assert!(candidates.downgrades.is_empty());
+}
+
+#[test]
+fn service_opening_requires_first_worker_and_overhead_from_unreserved_market() {
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let tuning = load_runtime_economy_tuning().unwrap();
+    let policy = CityFiscalPolicy::from_runtime_tuning(&tuning);
+    let overhead = crate::simulation::economy::households::local_utility_service_costs(&catalog)
+        .iter()
+        .sum::<f32>()
+        * tuning.owa_import_price_multiplier
+        + crate::simulation::economy::fiscal::daily_property_tax(ZoneType::Commercial, 1, &policy);
+    for (id, demand_id) in [
+        ("personal_service_small", "personal_service_demand"),
+        ("health_essentials_small", "health_essentials_demand"),
+    ] {
+        let profile = catalog.profile_for_id(id).unwrap();
+        let demand = catalog.profile_for_id(demand_id).unwrap();
+        let resource = profile.outputs[0].resource_runtime_id;
+        let rate = demand.consumption_rate_per_resident;
+        let revenue_per_resident = rate * catalog.unit_price_for_resource(resource).unwrap();
+        let minimum_residents =
+            ((profile.average_daily_wage() + overhead) / revenue_per_resident).floor() as u32 + 1;
+        let market = |residents| {
+            OutputAbsorptionContext::from_resource_amounts(
+                catalog.resource_count(),
+                &[],
+                &[(resource, rate)],
+                residents,
+                &[],
+            )
+        };
+        assert!(
+            !service_market_covers_first_worker(
+                profile,
+                &catalog,
+                &market(minimum_residents - 1),
+                overhead,
+                tuning.owa_import_price_multiplier
+            ),
+            "{id}: unfunded first worker"
+        );
+        let mut viable = market(minimum_residents);
+        assert!(
+            service_market_covers_first_worker(
+                profile,
+                &catalog,
+                &viable,
+                overhead,
+                tuning.owa_import_price_multiplier
+            ),
+            "{id}: viable first worker"
+        );
+        viable.reserve_candidate(profile);
+        assert!(
+            !service_market_covers_first_worker(
+                profile,
+                &catalog,
+                &viable,
+                overhead,
+                tuning.owa_import_price_multiplier
+            ),
+            "{id}: buyers already committed"
+        );
+        assert!(
+            !service_market_covers_first_worker(
+                profile,
+                &catalog,
+                &market(minimum_residents),
+                overhead + revenue_per_resident,
+                tuning.owa_import_price_multiplier
+            ),
+            "higher property/utility bills must increase the required market"
+        );
+    }
+}
+
+#[test]
+fn deserted_business_recovery_uses_bounded_credit_at_positive_demand() {
+    for use_kind in [DemandUse::Commercial, DemandUse::Industrial] {
+        let zone_type = use_kind.zone_type();
+        let mut allocator = BuildingAllocator::new();
+        let asset_id = register_test_asset(&mut allocator, "failed_business", zone_type);
+        let mut failed = building(zone_type, 0.0, 0, 0, asset_id.clone());
+        failed.is_deserted = true;
+        let mut staffed = failed.clone();
+        staffed.worker_count = 1;
+        staffed.cell_x = 1;
+        let mut occupied = failed.clone();
+        occupied.occupancy = 1;
+        occupied.cell_x = 2;
+        let mut healthy = building(zone_type, 0.0, 0, 0, asset_id);
+        healthy.cell_x = 3;
+        allocator
+            .buildings
+            .extend([failed, staffed, occupied, healthy]);
+        allocator.rebuild_zone_index();
+
+        let graph = graph_with_connected_border();
+        let households = HouseholdSystem::new();
+        let zoning = empty_zoning();
+        let mut demand = DemandSystem::new();
+        demand.cheat_max_demands_enabled = true;
+        let mut selected = 0;
+        // At the shipped half-per-day budget, a single failed site takes two
+        // days of credit. Allow one extra hour for f32 accumulation rounding.
+        for hour in 1..=49 {
+            demand.run_hourly_pass(&allocator, &households, &graph, &zoning, 100_000.0);
+            assert_eq!(demand.pressure_for_use(use_kind), 1.0);
+            assert!(!demand.despawn_hysteresis_active.get(use_kind));
+            let actions = &demand.building_actions.use_plan_mut(use_kind).despawns;
+            assert!(actions.iter().all(|action| action.cell_x == 0));
+            selected += actions.len();
+            if hour <= 24 {
+                assert_eq!(selected, 0, "clearance bypassed the action budget");
+            }
+        }
+        assert_eq!(selected, 1, "positive demand stranded the failed site");
+    }
 }
 
 #[test]

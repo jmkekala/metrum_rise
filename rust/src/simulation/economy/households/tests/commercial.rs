@@ -93,6 +93,87 @@ fn household_shortage_floor_opens_commercial_workers_without_sales() {
 }
 
 #[test]
+fn grocery_stock_and_shopper_reservations_cover_pantry_recovery_before_hiring() {
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let resource = catalog
+        .resource_runtime_id_for_id("household_supplies")
+        .unwrap();
+    let mut allocator = BuildingAllocator::new();
+    allocator
+        .buildings
+        .push(make_building(0.0, ZoneType::Residential, "test:home", 0.0));
+    allocator.buildings.push(make_building(
+        10.0,
+        ZoneType::Commercial,
+        "test:grocery",
+        0.0,
+    ));
+    let mut households = HouseholdSystem::new();
+    for _ in 0..7 {
+        households
+            .households
+            .push(make_household(0, 2, 1_000.0, 0.0));
+    }
+    allocator.buildings[1].set_inventory_units(resource, 70.0);
+    let signal =
+        refresh_commercial_activity_floor(&catalog, &households.households, &mut allocator, true);
+    assert_eq!(signal.demand_units_per_day, 14.0);
+    let profile = catalog.profile_for_id("grocery_basic").unwrap();
+    assert_eq!(
+        active_worker_capacity_for_profile(&catalog, &allocator.buildings[1], profile),
+        2
+    );
+
+    // Moving goods from the shelf into unpaid or paid shopper reservations must
+    // not create another order to produce them.
+    allocator.buildings[1].set_inventory_units(resource, 0.0);
+    for (i, household) in households.households.iter_mut().enumerate() {
+        household.reserved_amount = 10.0;
+        household.replenishment_state = if i % 2 == 0 {
+            REPLENISHMENT_SHOPPING_TO_STORE
+        } else {
+            REPLENISHMENT_SHOPPING_RETURNING
+        };
+    }
+    let signal =
+        refresh_commercial_activity_floor(&catalog, &households.households, &mut allocator, true);
+    assert_eq!(signal.demand_units_per_day, 14.0);
+    allocator.buildings[1].daily_household_sales_value = 5_000.0;
+    allocator.buildings[1].recent_household_sales_value = 5_000.0;
+    assert_eq!(
+        active_worker_capacity_for_profile(&catalog, &allocator.buildings[1], profile),
+        2,
+        "one bulk purchase must not create recurring full-capacity payroll"
+    );
+}
+
+#[test]
+fn grocery_production_and_inputs_follow_demand_below_rounded_worker_capacity() {
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let profile = catalog.profile_for_id("grocery_basic").unwrap();
+    let mut grocery = make_building(0.0, ZoneType::Commercial, "test:grocery", 0.0);
+    grocery.commercial_activity_floor_scale = 0.15; // 30 supplies/day, rounded to three workers.
+    grocery.worker_count = 3;
+    for input in &profile.inputs {
+        grocery.set_inventory_units(input.resource_runtime_id, 100.0);
+    }
+    let factors = building_operation_factors(&catalog, &grocery, profile);
+    assert_eq!(factors.active_worker_capacity, 3);
+    assert!((factors.throughput_factor * 200.0 - 30.0).abs() < 0.001);
+    let targets = scaled_input_inventory_targets_for_building(
+        &catalog,
+        &grocery,
+        profile,
+        &profile.inputs[0],
+    );
+    assert!(
+        (targets.0 - 80.0).abs() < 0.001,
+        "72 units for three days retain the existing two-shipment minimum, not 96 for rounded staffing"
+    );
+    assert!((operating_input_demand_scale(&catalog, &grocery, profile) - 0.15).abs() < 0.001);
+}
+
+#[test]
 fn explicit_work_area_capacity_scales_without_double_staffing_penalty() {
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
     let profile = catalog
@@ -241,6 +322,7 @@ fn grain_farm_density_preserves_area_yield_and_startup_payroll() {
     use crate::simulation::work_area::top_up_explicit_work_area_startup_budget;
 
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let tuning = load_runtime_economy_tuning().expect("runtime economy tuning");
     let profile = catalog
         .profile_for_id("grain_farm_basic")
         .expect("grain farm");
@@ -292,7 +374,11 @@ fn grain_farm_density_preserves_area_yield_and_startup_payroll() {
         assert_eq!(
             farm.operating_budget,
             (workers as f32 * 90.0 * 7.0).max(500.0)
-                + profile.initial_input_import_cost(&catalog, hectares, 1.75)
+                + profile.initial_input_import_cost(
+                    &catalog,
+                    hectares,
+                    tuning.owa_import_price_multiplier
+                )
         );
         assert_eq!(farm.profit_tax_budget_baseline, farm.operating_budget);
         assert!(
@@ -331,6 +417,14 @@ fn one_worker_commercial_production_uses_hourly_input_need() {
     allocator.buildings.push(store);
 
     let mut households = HouseholdSystem::new();
+    allocator
+        .buildings
+        .push(make_building(10.0, ZoneType::Residential, "test:home", 0.0));
+    for _ in 0..7 {
+        households
+            .households
+            .push(make_household(1, 2, 1_000.0, 0.0));
+    }
     households.run_building_economy(&mut allocator, true);
 
     let output_units = allocator.buildings[0].inventory_units(household_supply_resource);

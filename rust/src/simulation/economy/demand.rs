@@ -22,6 +22,7 @@ pub(crate) use actions::{
     DemandBuildingActionKey, DemandBuildingActionPlan, DemandLevelChangeAction, DemandSpawnAction,
     DemandSpawnCandidate, DemandSpawnCandidatesByUse,
 };
+pub(crate) use diagnostics::{HouseholdAdmissionDiagnostics, HouseholdRemovalDiagnostics, BuildingActionDiagnosticsByUse};
 pub use system::DemandSystem;
 pub(crate) use types::{UseTuningBool, UseTuningF32};
 

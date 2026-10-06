@@ -1,16 +1,422 @@
-# Metrum Rise — Economy Design Spec
+# Metrum Rise — Economy and Healthy Growth
 
 ## Purpose
 
-Metrum Rise needs an economy model that is believable enough to make sense, abstract enough to stay fun and usable, and efficient enough to scale. The system cannot live as a pile of hardcoded constants in Rust, and it also cannot depend on unbounded per-resident shopping behavior that explodes pathfinding and logistics cost. The baseline household-supply loop may use a bounded one-shopper carrier task per replenishing household.
+This document owns household and business finances, production, services, trade, and the economic
+conditions for healthy city growth. Buildings produce and employ; households earn and spend; the
+city collects revenue and funds infrastructure, services, and transfers. Growth must be supported
+by those flows after starter savings and business startup capital cease to cover operating losses.
 
-This document defines a building-centric economy with the following design goals:
+Economy data is authored in `economy/profiles.toml` and checked with Rust balance tests and
+headless scenarios. There is no developer economy editor. Demand decisions belong to
+[`demand.md`](demand.md), placement legality to [`zoning.md`](zoning.md), and physical trip
+execution to [`entrance_and_exit.md`](entrance_and_exit.md).
 
-- support a closed production and distribution loop that feels believable to the player
-- preserve the 1,000,000-population performance target through aggregation and bounded runtime rules
-- keep the simulation understandable, so cause and effect are visible rather than hidden behind opaque formulas
-- stay fun and easy to use, avoiding mandatory micromanagement and per-agent shopping chores
-- give developers a visual tool for balancing and validating economic relationships without hand-editing numbers in files
+## Reading Guide and Status
+
+The healthy-growth plan below was agreed on 2026-10-05. The initial `ECON-14` accounting worksheet,
+village failure report and bounded failed-business recovery are implemented. The 2026-10-06
+grocery repair survives two years without replacement capital, with positive second-year cash
+flow and no second-year household stockouts. Industrial churn, household affordability and city
+solvency still fail broader healthy-growth acceptance; see the current grocery evidence below.
+Recipes and retail prices are unchanged; imports are now 1.25× with the combined repair.
+Read-only observers extend the headless runner. The established contracts below the plan
+describe the baseline; explicitly marked future features remain proposals. Dated measurements
+apply only to their recorded builds.
+
+| Read for | Owning section |
+| --- | --- |
+| Current diagnosis, economic design, and delivery order | [Growth redesign](#growth-redesign-econ-11econ-14-dem-02) |
+| Reproducible starter budgets and candidate tuning | [Starter-town balance sheet](#starter-town-balance-sheet-econ-14) |
+| Observed business failures, fiscal losses and recovery blockers | [Village failure timeline](#village-failure-timeline-econ-14) |
+| Failed-site repair, isolated rerun and rejected import tuning | [Failed-business recovery](#failed-business-recovery-econ-14) |
+| Grocery viability, household supply and service-opening threshold | [Grocery startup repair](#grocery-startup-repair-econ-14) |
+| Timing and authoritative economy/demand handoff | [Economy time scale](#economy-time-scale) |
+| Household, business, city, and external money flows | [Money model](#money-model), [startup and trade](#startup-economy-and-outside-world-exchange), [transfers](#household-transfer-payments) |
+| Authored content and runtime execution | [Responsibility split](#responsibility-split), [data model](#economic-data-model), [household supply](#household-supply-model), [labor](#labor-model), [logistics](#logistics-model) |
+| Business failure and redevelopment boundary | [Building bankruptcy](#building-bankruptcy) |
+| Tests, scenario trajectories, and performance evidence | [Validation evidence](#validation-evidence) |
+
+## Growth Redesign (`ECON-11`–`ECON-14`, `DEM-02`)
+
+### Decision and scope
+
+The immediate objective is a city that can establish viable businesses, support its households,
+and develop a broader employment base. `ECON-14` covers this economic redesign; `DEM-02` makes
+growth decisions express the resulting needs directly. Profitable exports are one part of the
+design, alongside viable imported-input startup and affordable local commerce and services.
+
+**Use 10k residents for the current performance acceptance work. The 1M run is deferred and is
+not a prerequisite for design or implementation.** Larger recorded runs remain historical
+evidence. The long-term scale target still constrains complexity, allocations, and determinism;
+the immediate work must not be diverted into completing larger benchmark tiers.
+
+Accounting remains aggregate at household, building, service, and shipment granularity. Additional
+consumption categories must not create per-resident daily purchasing or route searches. Current
+freight and household replenishment still settle through their existing delivery lifecycles;
+representative service visits are visual. This plan does not silently change those delivery or
+congestion contracts into instantaneous settlement.
+
+### Diagnosis
+
+The numerical diagnosis below records the 2026-10-05 baseline at 1.75× imports. The
+[grocery repair](#grocery-startup-repair-econ-14) changes imports to 1.25× together with demand,
+production and lifecycle fixes; it does not resolve the employment and fiscal gaps.
+
+**The employment base is too narrow.** `ECON-11` measures 130.55 jobs per 1,000 residents for the
+shipped private consumption chain, assuming all locally producible inputs are made locally and
+there are no exports. This is a content baseline, not a target employment ratio:
+
+| Activity | Jobs per 1,000 residents |
+| --- | ---: |
+| Grocery retail | 75.00 |
+| Food processing | 50.00 |
+| Farming and machinery supporting that chain | 1.55 |
+| Personal services | 1.50 |
+| Health essentials | 2.50 |
+| Total | 130.55 |
+
+These are fractional capacity equivalents at city scale, before small-building and field staffing
+rounding. Public services, export employment, and their additional inputs are excluded. Almost all
+modeled private employment serves food consumption. More meshes using the same recipe divide the
+same customers; additional economic activities need their own funded customers and cost model.
+
+**Imported-input startup is structurally unprofitable for key businesses.** At full staffing,
+full output sales, and runtime average wages, the shipped recipes give:
+
+| Business | Sales/day | Payroll/day | Local input cost/day | Imported input cost/day | Margin with local inputs | Margin with imported inputs |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Grocery | 5,000 | 1,350 | 2,400 | 4,200 | +1,250 | −550 |
+| Food processor | 2,400 | 900 | 1,000 | 1,750 | +500 | −250 |
+
+These are paper margins before utilities, taxes, freight timing modifiers, and working-capital
+delays. Imports cost `1.75×` catalog price. The existing full-staffing solvency test assumes a
+local input price whenever a producing profile exists, even if no such supplier exists in the
+city; passing that test does not establish startup viability. Partial operation also faces whole
+worker slots and fixed building costs. A larger one-time float delays a recurring loss.
+
+**Exports do not yet provide a dependable employment base.** The normal export multiplier is
+`0.60`, with saturation reducing receipts by up to another `0.75` factor. The current export
+target test fails for the food processor, coal mine, and machinery factory even before overhead.
+Merely raising the base multiplier to `1.0` does not establish profitability after saturation,
+actual input costs, and overhead. Industrial spawn need and absorption currently count local
+household/business/utility customers; they do not reserve capacity against regional customers.
+Improved export prices alone therefore do not create an export-led construction signal.
+
+**Demand discounts related symptoms repeatedly.** Job pull, marginal commercial jobs, regional
+pull, household stability, candidate savings runway, transfer coverage, failure penalties,
+thresholds, and construction credits interact. Financial failure weakens both purchasing power
+and the growth response. Necessary constraints must remain explicit without repeatedly applying
+the same distress as several independent pressure penalties.
+
+**The 600-household term is not a hard immigration cap.** Only regional pull decays with
+`1 - households / 600`; job-driven pull remains possible above 600. At 42 households that size
+factor is still 0.93, so it cannot by itself explain the starter town's early failure. Remove the
+arbitrary size cutoff in the redesign, but do not mistake that for repairing business finances.
+
+**Business failure precedes fiscal exhaustion; site recovery alone does not fix it.** The original
+[365-day village report](#village-failure-timeline-econ-14) traces processor bankruptcy to day 14,
+last grocery closure to day 188 and treasury exhaustion to day 192. At year end, households still
+hold cash but every supply buffer is empty. All 32 standing commercial buildings are deserted;
+positive commercial demand prevented them from becoming clearance candidates. The
+[2026-10-06 repair](#failed-business-recovery-econ-14) clears those sites, but its isolated run
+still depends on repeated startup capital and fails healthy-growth acceptance. Startup viability
+remains open. The original sparse and older 25-household trajectories remain dated evidence below.
+
+### Economic model to define before tuning
+
+The first deliverable is a reproducible ledger connecting household spending to sales, inputs,
+wages, supported jobs, and the city budget. Derive employment needs from actual household age
+composition and work eligibility; do not pick an employment ratio independently of spending,
+productivity, and wages.
+
+| Ledger | Required quantities and checks |
+| --- | --- |
+| Household | Wages after income-tax withholding and funded transfers; housing, essentials, utilities and remaining taxes; desired reserve; discretionary spending from the remainder. Include worker-only, child-heavy, and elder households. |
+| Private activity | Buyer and resource/category; affordable demand; realized sales; local/imported inputs; staffed output; payroll, utilities and taxes; retained profit; cash tied up in stock and shipments. |
+| Public service | Explicitly funded jobs and inputs, service fees and tax support, operating cost at the population served. Public hiring must have recurring funding. |
+| External exchange | Imports and exports by resource and value, effective prices after modifiers, delivery capacity, and net cash entering or leaving the city. |
+| Startup and capital | Household starter savings, private owner equity, inventory grants and treasury seed funds recorded separately from recurring income. Repeated replacement businesses must not hide losses behind fresh float. |
+
+Use accounting identities rather than treating production capacity as revenue:
+
+```text
+household recurring surplus = net wages + funded transfers - recurring spending
+business operating margin = realized sales - consumed-input cost - payroll - utilities - taxes
+city recurring balance = taxes + service receipts - transfers - service costs - infrastructure upkeep
+```
+
+Cash-flow checks also include actual stock purchases, payment timing, construction expenditure,
+and explicit capital injections. Do not charge inputs twice by mixing consumed-input cost and
+inventory purchases in one profit calculation. Trace where profits, housing payments, taxes and
+external spend go; a closed goods chain alone does not establish sustainable money circulation.
+Count withheld income tax and VAT remitted to the city once each, keeping household charges,
+seller receipts, and treasury revenue consistent.
+
+For each supported business, define a minimum viable market and break-even utilization, then test
+startup, ordinary partial staffing, and steady operation. A tiny village need not support every
+business type immediately. Available workers, customers, affordable inputs, and physical delivery
+must agree before nominal job capacity is treated as durable employment.
+
+### Starter-town balance sheet (`ECON-14`)
+
+Initial worksheet completed 2026-10-05 against the shipped catalog at `21100889`, with test-only
+ledger additions. It reads compiled profiles, uses runtime fiscal arithmetic and household
+composition, and extends the existing `ECON-11` balance helpers. Reproduce from `rust/`:
+
+```bash
+cargo test --lib economy::definitions::balance_tests
+cargo test --lib economy::definitions::balance_tests::starter_ledger::starter_town_balance_sheet -- --ignored --nocapture
+```
+
+Source: `rust/src/simulation/economy/definitions/balance_tests/starter_ledger.rs`. Local report:
+`/tmp/metrum-starter-ledger-2026-10-05.log`. This is static accounting, not a growth simulation
+or proof of the smallest viable town. It assumes level-one buildings, paid demand, steady
+inventories, sufficient workers/inputs, and imported utilities. Average authored wages match
+current payroll. Business margins include consumed inputs, payroll, property tax and utilities;
+they exclude cash-based profit tax, startup purchases and delivery interruptions.
+
+Tables in this initial worksheet retain the 1.75× baseline and its candidate comparisons.
+The current catalog uses 1.25×; see the later grocery scenario evidence for acceptance and limits.
+
+**Household affordability.** A grocery/industrial worker earns 90/day gross and 79.20 after
+income tax. With all current consumption categories served, daily spending per resident is
+25 supplies + 2 grocery VAT + 0.60 personal services + 0.70 health + 5.25 imported utilities
+= **33.55**, plus **2 per household** property tax. Service settlement currently charges no VAT;
+there is no separate rent/mortgage payment. Removing an unavailable service reduces paid spending
+but does not establish that a fully served household is affordable.
+
+| Household | Workers | Current daily surplus (`1.75×` imports) | Hypothetical surplus (`1.25×` imports) |
+| --- | ---: | ---: | ---: |
+| One adult | 1 | +43.65 | +45.15 |
+| Two adults | 1 | +10.10 | +13.10 |
+| One adult, one child | 1 | +20.10 | +23.10 |
+| One adult, two children | 1 | −3.45 | +1.05 |
+| One adult, three children | 1 | −27.00 | −21.00 |
+| Two adults, two children | 2 | +42.20 | +48.20 |
+| One elder | 0 | −5.55 | −4.05 |
+| One unemployed adult, benefit active | 0 | −5.55 | −4.05 |
+| One unemployed adult, benefit expired | 0 | −35.55 | −34.05 |
+
+Transfers are 10/child and 30/elder/day; unemployment pays 30/adult/day for at most 30 days.
+The import comparison reduces utility bills; it leaves retail prices, wages and transfers
+unchanged. **Employment alone cannot repair every household type.** At `1.25×`, a single elder
+needs at least 34.05/day to cover this basket; one working adult with three children needs total
+child support of 51/day (17/child) just to break even. These are diagnostic bounds, not selected
+benefits: larger households and lower service wages require separate cases, and the treasury
+must fund any increase. A near-zero surplus also provides no recovery reserve.
+
+**Imported-input businesses.** Full staffing, all net output sold locally, ordinary freight
+timing, currency/day; these figures include overhead omitted by the older `ECON-11` check:
+
+| Business | Workers | Sales | Current input cost | Payroll | Current overhead | Current margin | Margin at `1.50×` imports | Margin at `1.25×` imports |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Grocery | 15 | 5,000 | 4,200 | 1,350 | 36.38 | −586.38 | +15.25 | +616.88 |
+| Food processor | 10 | 2,400 | 1,750 | 900 | 46.38 | −296.38 | −44.75 | +206.88 |
+| Machinery factory | 4 | 800 | 280 | 360 | 46.38 | +113.63 | +155.25 | +196.88 |
+
+Machinery sells 40 net units after its two-unit self-upkeep; a full cycle still consumes all
+12 Steel and four Metals. Do not price external inputs at `40/42` of a cycle. Local demand is
+not assumed sufficient to buy a full factory's output merely because its margin is positive.
+
+The grocery's outside-window freight multiplier is `1.10`. Full-output margins then become
+−1,006.38 / −344.75 / +316.88 at import multipliers 1.75 / 1.50 / 1.25. Consequently **1.50
+is not a robust startup repair**. At maximum authored wages of 100/day, the full-output,
+outside-window break-even import multiplier is approximately 1.313:
+`(5000 - 15*100 - 25) / (2400*1.10 + 6.5)`. The `1.25×` comparison has some headroom, but it
+was initially a candidate for scenario testing; the combined grocery repair below now accepts it.
+
+**Small markets and staffing steps.** For one grocery with stocked households, no pantry
+recovery demand and one supply unit purchased per resident/day, steady staffing is
+`ceil(15*N/200)` for `1 <= N <= 200`. At `1.25×` imports its ordinary daily margin is
+`10*N - 90*ceil(15*N/200) - 33.125`; outside-window freight replaces `10*N` with `8.5*N`.
+
+| Residents | Workers | Ordinary margin | Outside-window margin |
+| --- | ---: | ---: | ---: |
+| 13 | 1 | +6.88 | −12.63 |
+| 14 | 2 | −73.13 | −94.13 |
+| 26 | 2 | +46.88 | +7.88 |
+| 27 | 3 | −33.13 | −73.63 |
+| 40 | 3 | +96.88 | +36.88 |
+| 100 | 8 | +246.88 | +96.88 |
+
+The first positive point is not a safe minimum market: hiring the next worker can restore a
+loss. The formula stays nonnegative through every subsequent whole population up to 200 only
+from 31 residents with ordinary freight, or 68 with outside-window freight. These are paper
+thresholds, not admission rules. Actual stock recovery, competing shops, payment shortfalls,
+input batches and staffing changes need the live scenario. Current `1.75×` imports lose money
+throughout this range.
+
+Existing personal and health services first cover one worker plus overhead at **161 and 170
+residents**, respectively (156 and 166 at `1.25×`). A tiny village cannot support both merely by
+placing their buildings. Adding variants of these profiles does not increase customer spending.
+
+**Employment and the city budget.** The worksheet creates deterministic demographic samples
+with 20/50/100 homes of 100 m², `home_id = household_id`, and occupancy slot zero. It uses actual
+runtime household-size and age functions. This is a declared synthetic sample, not the observed
+growth-scenario population. The following necessary income bounds assume 90 gross per job,
+permanent child/pension transfers, no expired-benefit replacement, and all categories paid:
+
+| Households | Residents | Eligible adults | Children / elders | Jobs needed at current prices | Jobs needed at `1.25×` imports | Local-chain job equivalents |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 20 | 39 | 26 | 12 / 1 | 15.13 | 14.39 | 5.09 |
+| 50 | 109 | 67 | 32 / 10 | 39.61 | 37.54 | 14.23 |
+| 100 | 221 | 137 | 64 / 20 | 80.49 | 76.30 | 28.85 |
+
+Required jobs equal `(household spending - permanent transfers) / 79.20`; round up for actual
+workers. Household cash is not pooled, so even that number of jobs does not guarantee individual
+solvency. At current prices, two/six/twelve households in these samples still have deficits when
+**every eligible adult** earns 90/day. At `1.25×`, one/three/six still do. Local-chain figures
+use the fractional 130.55/1,000 baseline; they exclude exports/public employment and assume
+local intermediate supply. Small-building rounding adds slots but does not fund their wages.
+Jobs in the current services also pay less than 90, making the equal-wage comparison optimistic.
+
+In the 109-resident case, employing all 67 adults at 90/day produces 1,041.60 in household
+income/VAT/property taxes and costs 620 in child/pension transfers: **421.60/day remains before
+business taxes, roads and public services**. At 38 employed adults it is only **108.40/day**,
+assuming all purchases are still paid and remaining adults' unemployment support has expired.
+Business property/profit taxes can add revenue; imported utility payments go to the outside
+world. A 400 m road costs 40/day upkeep and 6,000 once to build, versus 280/day and 42,000 for
+2,800 m. These are footprint comparisons, not measured layouts. Public payroll and service
+inputs must be added explicitly; the budget does not justify filling the employment gap with
+unfunded municipal workers. The 100,000 starting treasury is capital, not recurring revenue.
+
+**Export condition.** With `1.25×` imported inputs, full-output food processing needs an
+effective export bid of at least **0.9138×** catalog price; machinery needs **0.7539×**. At
+maximum authored wages these rise to **0.9555×** and **0.8039×**, before profit-tax cash timing.
+The current saturated bid is `0.60 * 0.75 = 0.45×`; raising the base bid to 1.0 while keeping
+the saturation floor still gives only `0.75×`. Neither case supports both industries. Viability
+requires sufficient committed sales volume as well as effective price; the regional customer
+model must supply both. Retained business profit does not automatically become household income.
+
+**Current implementation boundary.** The later [grocery repair](#grocery-startup-repair-econ-14)
+uses this ledger with observed payroll, inventory, supply failures and replacement capital.
+Grocery demand/production and displacement are repaired, 1.25× imports are tested together, and
+service openings require enough market to cover their first worker and overhead. Next connect
+viable industrial sales to industrial demand and address household support against recurring
+city funding before selecting additional activities. Retail prices, wages and transfers remain
+unchanged; price-only tuning and extra startup capital do not establish healthy growth.
+
+Two accounting details need explicit treatment in that scenario: business profit tax charges
+positive daily **cash-budget changes**, resetting its baseline each day without loss carryover;
+inventory purchase days therefore differ from this consumed-input ledger. Household admission's
+reserve estimate also omits grocery VAT, property tax and the imported-utility surcharge. Both
+matter when explaining survival and admission; neither has been changed by this worksheet.
+
+Worksheet verification: five active balance checks, the manually enabled worksheet, 103 active
+household checks and three fiscal checks pass. The known export target and seven household
+targets remain ignored in these commands. No growth or performance run was repeated for this
+test-only addition; earlier growth failures remain evidence for their recorded build. Scenario
+diagnostics were completed in the subsequent [village audit](#village-failure-timeline-econ-14);
+selected tuning and live healthy-growth acceptance remain open under `ECON-14`.
+
+### Broader employment and content
+
+Develop three complementary sources of demand using existing profiles, resource ports, services,
+and fiscal accounting:
+
+| Customer | Employment source | Funding |
+| --- | --- | --- |
+| Households | Essentials, repairs, personal care, household goods, leisure | Affordable household spending |
+| Local businesses and public services | Maintenance, intermediate goods, utility and civic work | Business receipts and recurring public revenue |
+| Regional customers | Industrial exports; other exportable activities only if separately designed | Outside purchases with explicit market and delivery capacity |
+
+Candidate additions for the first small expansion are repairs/maintenance, clothing/household
+goods, and leisure/hospitality. They are **candidates, not selected profiles or approved numerical
+rates**. First recalibrate the existing personal-service and health profiles, which currently
+support only four jobs per 1,000 residents together.
+
+Each selected activity must name its payer, spending category, recipe/service output, viable
+business size, and added jobs. Replacing imports can retain expenditure locally; an additional
+factory still needs buyers. Food eaten in a restaurant must account for household food it
+replaces. Discretionary purchases must not become new compulsory bills that bankrupt poorer
+households. Reuse a shared demand category for cosmetic variants rather than multiplying demand.
+
+Public-service expansion must name its funding and service need; it is not an unlimited job
+generator. Additional resource chains should stay shallow until the existing startup loop works.
+New market pricing, new zones, and per-agent shopping systems are not prerequisites.
+
+### Demand and regional trade handoff
+
+`DEM-02` should derive one explainable signal per zone from explicit economic quantities:
+
+- Residential: households able to support themselves and needing homes, supported by funded
+  employment or sustainable non-wage income; account for existing residents seeking work first.
+- Commercial: affordable spending and unmet service/goods capacity by category, after existing
+  and committed supply. A shortage in one category cannot justify an unrelated shop.
+- Industrial: local input requirements plus viable regional sales opportunities by resource,
+  after existing and committed output. Regional customers must participate in both the signal
+  and the capacity reservation used to select actual factories.
+
+Keep home availability, suitable zoned land/assets, access, construction already underway, and
+execution cadence as named constraints. Explain the binding constraint to the player. Avoid
+stacking several normalized penalties for the same household or business failure. One display
+signal must retain resource-specific accounting underneath it, including reservations for
+buildings selected earlier in the same pass.
+
+Regional opportunity needs a deterministic definition of buyers, purchasable output, effective
+price, and delivery limits. Prevent duplicate factories from all claiming the same opportunity.
+Imports must allow the supported starter businesses to survive; established local suppliers
+should improve costs and employment. Ordinary supported exporters must cover costs after any
+saturation rule. Preserve local input reservations and prevent profitable buy/resell arbitrage.
+The old `export multiplier >= 1.0` proposal is replaced by these viability requirements; the
+actual price and volume rules must be derived from the ledger before implementation.
+
+### Delivery plan
+
+`ECON-11` and `ECON-12` remain completed foundations. Extend their tests and scenarios as part of
+`ECON-14`; they are not evidence that healthy growth is already solved. Numeric acceptance ranges,
+sector selection, and regional market formulas remain to be designed.
+
+| Sequence | Owner | Deliverable | Acceptance before proceeding |
+| --- | --- | --- | --- |
+| Define budgets and employment | `ECON-14` | Household-to-business ledger, actual working population, per-activity margins and supported jobs; scenario diagnostics that explain failures. | Reproducible arithmetic using shipped data, named recipients/sources for money flows, explicit gaps and chosen acceptance ranges. |
+| Repair the startup economy | `ECON-14` | Viable starter grocery and industry with imported inputs, partial staffing, overhead, delivery delays and finite startup funds; failed sites can be replaced under positive demand. | Targeted balance/recovery checks plus a village run that survives beyond starter capital; local suppliers improve the supported operating case. |
+| Establish wider economic demand | `ECON-14` | Viable regional purchases and a small selected set of additional activities; recalibrate existing services. | Each activity has affordable customers, an explicit funding source and viable scale. Exports pass cost and capacity checks. |
+| Simplify growth decisions | `DEM-02`, coordinated with `ECON-14` | Capacity-based residential/commercial/industrial signals and explicit execution constraints, including regional customers. | Signals can be calculated by hand; new and pending construction reserve the correct demand; no duplicate pressure model remains. |
+| Validate village, town, and diversified city | `ECON-14` and `DEM-02` | Deterministic scenarios with realistic starting funds, suitable land/access and stated player-placed facilities. | Business survival, household affordability, recurring fiscal balance and sustained growth meet the agreed ranges; mature stability is valid when capacity is satisfied. |
+| Measure relevant changes | `ECON-13` | Matched hourly/daily release comparisons at 10k; record setup separately and inspect slow settlement days. | No unexplained regression for the changed workload; no 100k or 1M run required. This runs alongside implementation, not ahead of all design work. |
+
+The trade and demand steps must be developed together where regional demand changes the capacity
+calculation. Do not land a price-only fix and assume industrial construction will discover the
+new customers automatically. Tests should extend the existing ledger and scenario infrastructure;
+the removed editor/sandbox is not to be recreated.
+
+### Healthy-growth acceptance
+
+Population alone is insufficient. Scenarios must expose:
+
+- household disposable income, essential stockouts, employment by eligible population, funded
+  vacancies, and immigration/emigration with their limiting reasons;
+- business sales/utilization, local/imported input costs, payroll, operating cash, closures and
+  replacement rates, distinguishing private startup equity from recurring receipts;
+- city recurring income/expense by source, transfers, service costs and infrastructure upkeep,
+  separately from one-time build costs and starting treasury;
+- import/export quantities and values, committed construction, and whether growth has exhausted
+  available land, transport, labor, or customer demand.
+
+Run beyond the applicable household support and business startup windows. Require sustainable
+operation and growth where opportunity exists, not monotonically rising population in a finite
+map or zero bankruptcies. Include recovery after a temporary supply interruption. Check more than
+one viable zoning/service mix so tuning cannot merely memorize the original starter fixture.
+
+The original year-one test only compares final versus midyear households and requires positive
+treasury throughout. Retain it as an initial regression, then add the above causal measurements
+and explicit bounds under `ECON-14`. Do not pass it by increasing initial treasury or repeatedly
+replacing insolvent businesses. Prepopulated performance cities with unlimited funding do not
+establish growth or solvency.
+
+### Runtime constraints
+
+Reuse the existing household/building stores, resource catalog, supplier index, and routing/chunk
+indices. Aggregate spending and capacity on the existing hourly/daily cadence. With a fixed
+authored catalog, new aggregation work should be O(H × C + B × P + S), where H is households, C is
+consumption categories, B is buildings, P is profile ports, and S is active shipments; bound
+routing, existing agent/labor passes, and candidate selection separately. Use existing indices
+for searches. No household-to-every-shop or
+building-to-every-supplier scans, per-agent inventory model, or new hot-loop allocations.
+Independent bulk passes use Rayon with deterministic reduction/order. Record build, workload,
+worker settings and measurements when accepting runtime changes.
 
 ## Core Principles
 
@@ -44,6 +450,9 @@ An agent's everyday need is therefore not "buy bread now" but "does my household
 ### 3. Physical logistics matter
 
 Goods do not teleport through the economy. If a transfer is local and meaningful to gameplay, it should be represented by a physical movement job across the `RegionGraph`.
+
+Ordinary freight follows that rule. The existing emergency inventory liquidation is an explicit
+immediate cash-settlement exception; see [building bankruptcy](#building-bankruptcy).
 
 Important exception for `v0.1`:
 
@@ -464,8 +873,8 @@ startup file snapshot; invalid configuration reports an error instead of silentl
   unemployment time limit
 - `pension_daily_benefit_per_elder`: daily transfer per elder
 - `child_support_daily_benefit_per_child`: daily transfer per child
-- `unemployment_max_days`: maximum unemployment-benefit runway before the household becomes
-  removal-eligible through demand
+- `unemployment_max_days`: maximum unemployment-benefit duration; loss of income can lead to
+  housing distress, while demand owns the separate removal rules
 
 ### City fiscal policy
 
@@ -693,7 +1102,8 @@ At the beginning of a new city:
 - early shops and workplaces may operate in `OWA`-backed mode until local supply chains exist
 - surplus may later be exported, but exports are not required to start the city
 
-This prevents the economy from deadlocking on day one when no households, producers, or internal supply chains exist yet.
+These mechanisms support initial establishment. The current margins and growth scenario show
+that they do not yet establish sustained viability; repairing that is `ECON-14`.
 
 This section uses `startup economy` to mean early-city money, inventories, freight, and `OWA` support. It does not own any special fresh-map building-placement exception, and it does not own the demand-side decision about whether new households should be admitted.
 
@@ -710,10 +1120,13 @@ Rules:
 - connected border connections act as the physical ingress and egress gateways of the `OWA`
 - the `OWA` may sell supported external goods without consuming local inputs and may buy exported city goods as an external sink
 - the `OWA` may also provide missing utility service such as imported `power`, imported `water`, or external `sewage` processing as paid external services
-- the `OWA` owns per-resource `import_ask` prices and `export_bid` prices rather than reusing local building prices directly
-- `import_ask` must always remain above `export_bid` for the same resource so trivial buy-and-sell arbitrage cannot exist
-- `OWA` price updates happen once per operational day with smoothing and bounded daily movement rather than instant per-order jumps
-- in `v0.1`, only industrial zone buildings with surplus output may export to the `OWA`; commercial zone buildings do not export their outputs
+- current import asks and export bids derive from catalog unit prices and authored multipliers;
+  freight timing can modify import cost, and hourly export planning applies fulfilled-export
+  saturation and recovery. There is no separate daily smoothed regional price market
+- import asks must exceed comparable export bids so buying and reselling the same resource
+  cannot create profit; `ECON-14` must preserve this across effective price modifiers
+- industrial-zone producers and explicit field producers/extractors may export surplus; the
+  latter can use `ZoneType::None`. Commercial service outputs cannot be exported as inventory
 - utility fallback through the `OWA` is an external service purchase, not a trucked-goods delivery
 - payments for `OWA` utility fallback leave the local economy as external service spend rather than becoming city treasury revenue
 - player tariffs may later modify effective trade cost, but tariffs do not replace the base `OWA` rules
@@ -751,7 +1164,9 @@ This keeps outside trade grounded in the same traffic and delivery logic as loca
 
 ### Local advantage over permanent `OWA` reliance
 
-The outside world should keep the city alive, but it should not be the best long-term strategy.
+Imports should support establishment, and local supply should improve costs and employment.
+The following describes the current sourcing/export rules. Their prices do not yet satisfy the
+[healthy-growth viability requirements](#demand-and-regional-trade-handoff).
 
 Local supply chains should usually beat permanent `OWA` dependence through:
 
@@ -789,14 +1204,17 @@ enabled and the city has at least one connected outside freight gateway; local i
 early-city job growth.
 
 **Export Constraints**:
-- **Pricing**: The `OWA` pays `local_unit_price × owa_export_price_multiplier` (default 0.60x), ensuring that local sales are always more profitable than selling surplus on the external market.
+- **Pricing**: The normal bid is `local_unit_price × owa_export_price_multiplier` (currently
+  0.60×), before saturation. This favors local sales but makes several export profiles unviable;
+  the redesign must evaluate effective margins rather than preserve the discount as a goal.
 - **Saturation**: repeated fulfilled exports of the same resource reduce the effective export bid.
   Authored logistics tuning controls the truckloads needed to reach the floor, the floor factor,
   and the recovery hours. Queued, failed, expired, or still-in-transit export offers do not
   saturate the external market.
 - **Distress pricing**: forced bankruptcy liquidation uses the separate `owa_distress_liquidation_multiplier`, which must be no higher than the scheduled export multiplier. The shipped value is lower than scheduled export pricing so fire-sale liquidation is a rescue path, not a preferred operating model.
 - **Efficiency**: Exports must meet the building's `min_shipment_units` threshold and respect the building's global shipment cooldown. This forces industrial sites to batch their overproduction into meaningful truckloads rather than spamming tiny hourly export shipments.
-- **Zoning**: In `v0.1`, only Industrial buildings may export; Commercial buildings do not export their inventories.
+- **Eligibility**: Industrial-zone producers and explicit field producers/extractors may export;
+  commercial stores do not export inventory through scheduled freight.
 
 ### Household admission and removal handoff
 
@@ -811,8 +1229,10 @@ For `v0.1`, the economy-side contract is:
   transfer-policy amounts, treasury balance, and budget-backed job openings to calculate
   deterministic move-in acceptance; economy still owns the actual transfer payment and household
   materialization
-- household admission does not require a physically simulated border-entry transport visualization path in `v0.1`
-- whether a later transport layer visualizes household arrival or departure through border spawns or exits is a separate transport-layer decision
+- current household admission launches an arrival carrier and materializes the household when
+  that carrier reaches its home; the shared headless growth scenario therefore advances agents
+- trip execution belongs to the transport layer; demand owns admission decisions and economy
+  owns the household created on arrival
 - births and other within-household demographic change are later systems, not part of the `v0.1` economy model
 
 ### Household housing affordability, relocation, and eviction
@@ -1228,18 +1648,20 @@ Renaming or deleting a profile that assets still reference leaves those building
 
 #### Business Solvency Requirement
 
-A supply chain that circulates goods but leaves businesses structurally bankrupt is a failed
-economy design that causes "zombie businesses" at runtime. Each business profile must be
-profitable at full staffing with `wage_max_currency_per_day`, inferred input prices, and its own
-`unit_price_currency` output price:
+A supply chain must cover business costs as well as move goods. The existing `ECON-11` paper
+check evaluates full staffing, maximum authored wages, all output sold at catalog price, and
+inputs bought locally whenever their producing profile exists (otherwise imported):
 
 ```text
 daily_profit = daily_revenue - (worker_capacity * wage_max_currency_per_day + daily_input_cost)
 ```
 
-The removed editor sandbox enforced this rule during scenario playback. Since `ECON-11` the
-Rust test `shipped_businesses_are_solvent_at_full_staffing` enforces it on the shipped file (see
-[`ECON-11` balance tests](#econ-11-balance-tests)).
+The Rust test `shipped_businesses_are_solvent_at_full_staffing` checks this on the shipped file.
+It is a necessary baseline, not runtime solvency acceptance: it omits overhead, weak sales,
+partial staffing, delivery/payment timing, and imported inputs when a local producing profile
+exists but no local supplier operates. `ECON-14` extends acceptance to the supported startup and
+steady-state cases defined in the [economic ledger](#economic-model-to-define-before-tuning).
+The separate export target still fails; see [`ECON-11` balance tests](#econ-11-balance-tests).
 
 ### Runtime Simulation
 
@@ -1593,17 +2015,16 @@ turning every resident into an independent grocery pathfinder.
 
 ### Recommended v0.1 Resource Chain
 
-For the first useful loop, do not start with dozens of goods. Start with one essential household chain.
-
-Example:
+The current essential inventory chain is:
 
 - `grain_farm` grows `grain` from a player-drawn field polygon
 - `food_processor` converts `grain` into `packaged_food`
-- `distribution_center` or `grocery` converts or forwards `packaged_food` into `household_supplies`
-- households replenish from `grocery` or `distribution_center` in periodic batches rather than per-person daily errands
+- `grocery` converts `packaged_food` into `household_supplies`
+- households replenish from groceries in periodic batches rather than per-person daily errands
 - `household` consumes `household_supplies`
 
-If that chain works, the broader economy architecture is sound enough to extend.
+Machinery upkeep and aggregate service outputs also operate today. A working goods chain alone
+does not establish sufficient jobs or household income; expansion follows the healthy-growth plan.
 
 ### Standalone Service Commercial
 
@@ -1785,9 +2206,12 @@ Where:
 - explicit field producers and extractors replace `worker_capacity` in this ratio with the
   area-scaled active worker capacity; an uncommitted area has zero active worker capacity, and
   10,000 m2 receives exactly the authored worker count
-- commercial store `filled_workers` is capped by the larger of recent household sales and a
-  local household-demand floor before this ratio is calculated; the demand floor includes current
-  resident consumption plus household supply recovery spread over the authored pantry target days
+- grocery `filled_workers` is capped by recurring resident consumption plus pantry recovery,
+  net of retail stock and shopper reservations. Recovery is spread over the authored pantry
+  target days; recent bulk purchases do not independently open worker slots. Production and
+  upstream input demand are further capped to the continuous demand rate, so rounding jobs up
+  to whole workers does not create surplus output. Input inventory uses that same demand rate,
+  retaining the existing minimum shipment buffer
 - a zero-sales store still keeps one bootstrap worker slot, but household shortage can open more
   active worker slots before sales recover so essential shops do not deadlock on empty shelves
 - `input_factor` is the limiting required-input coverage for the current production step, clamped
@@ -1994,7 +2418,7 @@ The runtime then resolves:
 - which network path and carrier type to use
 - the shipment ETA and border-terminal choice using the building entrance/access abstraction rather than a legacy edge-endpoint proxy
 
-This keeps the simulation physical without forcing the editor graph to become a per-vehicle routing interface.
+This keeps physical delivery in the shared runtime route and shipment systems.
 
 For ordinary trucked goods in `v0.1`, route cost and ETA must use the same exact car-access abstraction as the entrance cache:
 
@@ -2192,348 +2616,29 @@ Examples of compiled forms:
 - asset-type recipe tables
 - supplier-consumer compatibility lists
 
-## Scope Recommendations
-
-### v0.1 must stay narrow
-
-The first implementation should solve one closed loop well instead of sketching ten unfinished ones.
-
-Recommended v0.1 scope:
-
-- one essential household resource chain
-- lightweight explicit household records anchored to residential buildings
-- per-building production/inventory buffers and per-household supply buffers
-- household supply consumption
-- workplace labor demand
-- fixed internal base prices and fixed wage bands
-- simple city treasury-backed infrastructure build cost and daily maintenance
-- baseline `Utility Service Layer` with local utility producers/processors and `OWA` external-service fallback
-- truck-based local and border freight delivery with batched reservation-based shipment rules
-- utility-scored work/home decision logic
-
-### v0.1 non-goals
-
-Do not make these blockers for the first pass:
-
-- personal retail trips as a daily need
-- deep commodity markets with dozens of goods
-- full dynamic local market pricing or wage response
-- arbitrary user scripting inside economy rules
-- remote or hybrid work simulation
-- full multimodal freight from day one
-- world-scale intercity import simulation
-
-### v0.2 and later
-
-After the first household supply loop is stable, add:
-
-- internal bulk terminals and bulk transfer
-- gameplay area-based policy differentiation
-- more resource classes
-- service economy layers
-- Automated Delivery System (`ADS`) home-delivery fulfillment
-- richer regional trade layers beyond the `OWA`
-- additional transport modes for freight
-
-## Example Chain
-
-A good starter chain for simulation and tuning is:
-
-- `grain_farm`
-  - inputs: `labor`
-  - outputs: `grain`
-  - placement: explicit farm building plus player-drawn field polygon; 10,000 m2 receives the authored output rate, while `worker_capacity_area_m2` determines the area receiving the authored worker count
-- `food_processor`
-  - inputs: `grain`, `labor`
-  - outputs: `packaged_food`
-- `grocery` or `distribution_center`
-  - inputs: `packaged_food`, `labor`
-  - outputs: `household_supplies`
-- `basic_household_demand`
-  - inputs: `household_supplies`
-  - runtime variables: `household_size`, `stock_days`, `consumption_rate` (`household_supplies / day / resident`), `replenishment_mode`
-
-In this starter chain, baseline `power`, `water`, and `sewage` behavior comes from the `Utility Service Layer` unless a building is meant to define a documented special-case utility rule explicitly.
-
-Replenishment for this chain should happen through the bounded one-shopper household shopping flow
-in `v0.1`. `ADS` is a later extension, not part of the first implementation scope.
-
-This example is intentionally broad. It avoids modeling "one loaf of bread per person per day" while still creating meaningful logistics, staffing, and shortage gameplay.
-
-### Seed values for first implementation
-
-The first playable implementation should ship with a small shared seed-balance set so the example chain is runnable.
-
-These are shipped `economy/profiles.toml` values, not Rust defaults:
-
-- household `consumption_rate`: `1.0 household_supplies / day / resident`
-- household replenishment target: `5.0 days` of supplies
-- household replenishment trigger: below `2.5 days` of supplies
-- immigrant starting supplies: `3.0 days`
-- immigrant starting budget: `15.0 currency / resident`
-- unemployment benefit: `30.0 currency / unemployed adult / day`
-- pension: `30.0 currency / elder / day`
-- child support: `10.0 currency / child / day`
-- household utility cost: `3.0 currency / resident / day`
-- residential stay reserve thresholds by level: `0.5`, `3.0`, `6.0` days
-- household replenishment check cadence: every `6` in-game hours
-- `grain_farm` `base_rate`: `290 grain / day / hectare`
-- `grain_farm` worker capacity: `1 / 10 hectares`, rounded up with a two-worker minimum for committed fields
-- `grain_farm` wage band: `80-100 currency / workday`
-- `food_processor` `base_rate`: `160 packaged_food / day`
-- `food_processor` worker capacity: `10`
-- `food_processor` wage band: `80-100 currency / workday`
-- `grocery` or `distribution_center` throughput target: `200 household_supplies / day`
-- `grocery` worker capacity: `15`
-- `grocery` wage band: `80-100 currency / workday`
-- grocery inventory target: `3.0 days` of supply
-- grocery reorder threshold: `2.0 days` of supply
-- grocery critical threshold: `0.5 days` of supply
-- grocery minimum shipment size: `40 packaged_food`
-- local base price for `grain`: `6 currency / unit`
-- local base price for `packaged_food`: `15 currency / unit`
-- local base price for `household_supplies`: `25 currency / unit`
-- `OWA import_ask` for `packaged_food`: `26.25 currency / unit` (local × `owa_import_price_multiplier = 1.75`)
-- `OWA import_ask` for `household_supplies`: `43.75 currency / unit` (local × 1.75)
-- initial `OWA export_bid` for `packaged_food`: `9.00 currency / unit` (local × `owa_export_price_multiplier = 0.60`)
-- saturated `OWA export_bid` bottoms at `75%` of the normal export bid after roughly `4` same-resource truckloads, then recovers over `24` operational hours with no further exports
-- OWA utility fallback uses the same per-service unit prices as local utility billing; with no local power, water, or sewage provider, a private non-residential or explicit field/extractor business pays `(3.0 + 2.0 + 1.5) × 1.75 = 11.375 currency/day`
-
-**`OWA` import price implementation:** the runtime derives the effective OWA import price as `local_unit_price × owa_import_price_multiplier`. A value of `1.75` means the OWA charges 75% more than the local producer, making local supply chains economically preferred once they are operational. Values below `1.0` are rejected at runtime. The multiplier also applies to the `adjusted_unit_price` freight-timing modifier on top.
-
-**`OWA` export price implementation:** when an industrial building has unreserved output inventory exceeding one day's production buffer after reachable local business/utility input holds and its own same-resource input reserve, the logistics system creates an outbound export shipment. The initial OWA bid is `local_unit_price × owa_export_price_multiplier`. A value of `0.60` means the OWA initially pays 60% of the local price, keeping exports a loss-reducing safety valve rather than a preferred revenue source. Repeated same-resource exports apply the authored saturation factor only after the freight reaches the `OWA` border and revenue settles. Values outside `[0.0, 1.0]` are rejected at validation time.
-
-**Commercial store scaling implementation:** commercial store active worker capacity and input
-inventory targets scale from the larger of recent household sales and local essential demand.
-The local demand floor is computed from housed household consumption plus below-target pantry
-recovery demand, divided across live household-facing shop output capacity. A new or zero-sales
-store keeps one active worker slot and at least one minimum truckload worth of input target so it
-can bootstrap; household shortage can raise that floor before sales recover. Larger stores still
-use sales as the long-run brake against immediately operating at full authored capacity when the
-resident base does not justify it.
-
-These numbers are only a bootstrap reference pack. They live in editable economy data so all implementations and test scenarios start from the same baseline before the editor-driven balancing pass diverges. Runtime code must validate this data and fail loudly when required values are missing; it must not silently substitute balance values from Rust.
-
-## Suggested Implementation Order
-
-Cross-doc sequencing note:
-
-- the shared cross-doc order is defined in [`zoning.md`](zoning.md): zoning and asset-editor
-  foundation first, demand-layer integration second, economy integration third
-- this section is therefore the economy-local implementation order that should run once the zoning
-  and demand ownership contracts already exist
-
-The codebase already ships part of the `v0.1` starter loop: explicit household records, simple
-building budgets and inventories, bounded freight reservations, `OWA` import fallback, and the first
-developer-side economy data path. The phases below are therefore the recommended continuation order
-from the current partial implementation, not a claim that every earlier phase is still untouched.
-
-Current status summary:
-
-- Phase 1 is complete in the live runtime.
-- Phase 2 is complete in the live runtime.
-- Phase 3 is complete in the live runtime.
-- Phase 4 is complete in the live runtime.
-- Phase 5 is complete in the live runtime.
-- Phase 6 is complete in the live runtime.
-- Phase 7 is largely complete already.
-- Phase 8 is ongoing cleanup rather than untouched future work.
-
-Recommended continuation order from the current runtime:
-
-1. land Phase 5 treasury and fiscal settlement
-2. then land Phase 6 utility/service runtime actors
-3. keep Phase 8 cleanup running alongside those phases instead of treating it as one final isolated pass
-
-### Phase 1 - Stabilize the current starter loop
-
-- Treat the explicit-household plus bounded-freight path as the only authoritative `v0.1` baseline.
-- Keep one essential chain authoritative: local producer -> local shop or distribution -> household supplies.
-- Do not widen scope into dynamic pricing, unbounded per-agent daily shopping, or broad multi-resource simulation yet.
-
-Current status:
-
-- complete
-- explicit household records, bounded freight reservations, `OWA` startup fallback, household
-  supplies, building operating budgets, and the starter industrial input/output slice are all live
-- this phase should now be treated as the settled baseline to build on rather than as active work
-
-Goal: keep the already-landed economy slice small, testable, and worth building on.
-
-### Phase 2 - Add the shared operational clock and schedule contract
-
-- Introduce the shared operational runtime state described earlier in this document, centered on `day_index` and `minute_of_day`.
-- Move work timing, household replenishment cadence, and freight timing preferences onto authored schedule windows and stable offsets.
-- Cache or periodically refresh travel estimates instead of opening fresh per-agent path queries on the hot path.
-
-Current status:
-
-- complete
-- runtime time now persists `day_index` plus `minute_of_day` instead of the old coarse day-only
-  handoff
-- household replenishment, building production, utility spending, and freight now run on authored
-  operational-hour cadence derived from the shared minute clock
-- workplace trips now read authored work windows and stable per-agent offsets instead of relying on
-  one implicit global workday
-- commute estimates are cached and periodically refreshed on the agent hot path rather than opened
-  every tick
-
-Goal: give labor, deliveries, and later school or service timing one deterministic time base before more systems depend on it.
-
-### Phase 3 - Make authored economy profiles drive runtime behavior
-
-- Resolve asset-side `economy_profile` references into compiled runtime tables during load and placement.
-- Keep the hand-authored TOML as the authoritative authoring surface and treat runtime caches as derived data only.
-- Replace hardcoded starter-loop constants incrementally with profile-backed worker caps, rates, buffers, and fixed `v0.1` price or wage values.
-- Preserve explicit unresolved-profile and broken-economy behavior instead of silent fallback.
-
-Current status:
-
-- complete
-- asset-side `economy_profile` references now resolve into a compiled runtime economy catalog during
-  placement, level changes, and save/load
-- live buildings now carry derived runtime `economy_profile` bindings and enter explicit
-  `economy_broken` state when authored profiles are missing or unsupported
-- starter work schedules, freight timing, wages, prices, throughput, reorder thresholds, and
-  viability gates now read authored economy-profile data instead of broad-zone starter constants
-- the current runtime catalog now compiles typed input/output ports and profile-backed work or
-  freight timing, while broader fiscal and utility layers remain later phases rather than Phase 3
-  drift
-
-Goal: stop duplicating economy rules between runtime code, packs, and the editor data model.
-
-### Phase 4 - Generalize inventories and freight one resource at a time
-
-- Move from the old starter supply-plus-industrial-input buffers toward fully resource-typed building inventories, reservations, and shortage state.
-- Keep shipment creation bounded, batched, and entrance-aware; do not regress into per-order or per-agent freight.
-- Expand to additional resources only after the starter household-supply loop still works cleanly on the generalized runtime.
-
-Current status:
-
-- complete
-- live buildings now carry typed per-resource inventories instead of the old untyped `stock` /
-  `input_stock` split
-- shipment reservations and in-flight freight are now tracked by `(building, resource)` rather
-  than by building only
-- the compiled runtime economy catalog now resolves authored resource ids plus typed input/output
-  ports, so new production chains can reuse the same inventory and freight model without another
-  runtime rewrite
-- the shipped starter content still only exercises a narrow baseline household-supply chain, but
-  that is now a content choice rather than a runtime inventory limitation
-
-Goal: support more than one production chain without rewriting the logistics foundation again.
-
-### Phase 5 - Add treasury ownership and daily fiscal settlement
-
-- Separate household budgets, building budgets, and the city treasury into explicit ledgers.
-- Land build cost, upkeep, utility charges, operator revenue, and later `VAT` or subsidy hooks on the daily fiscal settlement cadence.
-- Keep `v0.1` pricing and wage response fixed while this ledger split stabilizes.
-
-Why this is needed before Phase 6:
-
-- The grocery store (`grocery_basic`) requires `packaged_food` input to produce `household_supplies`.
-  The bootstrap path therefore needs explicit money and freight support before local industry is
-  stable.
-- Once household supplies hit zero, the household supply stability signal collapses to `0.0`, which kills
-  `city_stability_factor` and drives admission pressure to zero regardless of startup support.
-  Population cannot grow past the first wave of immigrants.
-- Phase 5 must close the first household supply loop through authored profile data: startup
-  operating float, paid `OWA` imports when local suppliers are absent, and household starting
-  supplies. The runtime must not silently seed store inventory from Rust.
-
-Current status:
-
-- complete
-- `CityTreasury` lives in `SimCore` and tracks balance, lifetime build cost, lifetime tax revenue,
-  daily road upkeep, and pending/finalized daily tax buckets
-- startup balance initialised at `100,000` currency
-- road placement deducts `50 currency/meter` from the treasury; balance may go negative per spec
-- daily road upkeep deducts `0.1 currency/meter/day` on the daily fiscal settlement pass
-- commercial and industrial startup budgets now include a seven-day wage runway plus the expected
-  first full `OWA` input import cost, computed from authored profile prices and
-  `runtime_tuning.owa_import_price_multiplier`
-- `grocery_basic` currently ships with `starting_inventory_days = 0.0`; stores do not receive
-  hidden Rust-seeded output inventory
-- treasury is persisted in the `city_treasury` SQLite table
-- `get_treasury_balance()` Godot func exposes the live balance for UI display
-
-Goal: make money flow explicit before adding richer service or policy behavior.
-
-### Phase 6 - Add the `Utility Service Layer` and first service-building slice
-
-- Replace the current placeholder utility-availability behavior with connected local utility producers or processors plus `OWA` fallback.
-- Make city-owned and privately operated utility or service buildings real economy actors rather than invisible background rules.
-- Land `CIV-01` here so city stability is no longer only conceptual.
-
-Current status:
-
-- complete
-- `EconomyProfileRuntimeKind::UtilityProducer` and `UtilityProcessor` variants added; `utility_service`
-  field (`"power"`, `"water"`, `"sewage"`) propagated from authored TOML through compiled runtime profile
-- four utility-adjacent profiles landed in `economy/profiles.toml`: `coal_mine_basic`
-  (`coal` extractor/price profile), `power_plant_basic` (coal-fueled power, 20 workers, three-shift),
-  `water_plant_basic` (water, 3 workers), `wastewater_treatment_basic` (sewage, 3 workers)
-- daily utility settlement scans active providers per service, resolves `power` from accumulated
-  produced units, charges commercial, office, mixed-use, and industrial consumers independently for
-  `power`, `water`, and `sewage`, routes split household utility ledger payments into matching local
-  utility revenue when covered, applies missing-service `OWA` surcharges to household budgets,
-  falls back to OWA service spend for uncovered private and city-service demand, and records
-  city-owned local utility fees and city-paid OWA fallback in the city budget ledger
-- active utility providers must be non-broken, non-deserted, and connected to the network; starter
-  `water` and `sewage` providers also require current workers with positive operational throughput,
-  while `power` settlement uses the day's already accumulated produced units
-- explicit city service assets are registry-discovered, road-frontage placed through the Services
-  toolbar, charged to the treasury at placement, and staffed through the normal job system with
-  city-funded wages and city-funded fuel/input purchases
-- the gameplay Economy Overview window reads Rust-owned daily budget history, displays city income /
-  expense / net / treasury trends, and exposes a live electricity funding slider whose changes apply
-  without OK/Cancel/Apply confirmation; the slider sets the default staffed power-worker slots
-  instead of directly multiplying production
-- power plant inspectors show actual worker count and can set a per-plant funding override that
-  persists separately from the citywide electricity funding slider
-- no invisible utility buildings exist
-
-Goal: turn baseline services into real runtime constraints without treating utilities as trucked goods.
-
-### Phase 7 - Complete the demand and economy handoff
-
-- Assume the demand-owned outputs from [`demand.md`](demand.md) already exist as part of the
-  earlier cross-doc implementation order.
-- Finish routing household admission or removal and city-growth pressure through those demand-owned
-  daily outputs instead of allocator-local formulas.
-- Keep economy responsible for creating and updating household or building economy state once
-  demand has already decided the outcome.
-
-Current status:
-
-- largely complete
-- demand-owned household admission, removal, startup support, and hourly building action plans are
-  already integrated into the live runtime
-- economy-side relocation, eviction, viability, and building-change gates already participate in
-  that handoff
-- any remaining work here is boundary hardening, not a missing first-pass integration
-
-Goal: finish the demand and economy ownership boundary cleanly instead of leaving allocator-local or
-economy-local fallback growth decisions behind.
-
-### Phase 8 - Remove transitional hardcoding and old assumptions
-
-- Delete remaining transitional zone-type-only economy branches and hidden fallback paths that
-  bypass profile or runtime state.
-- Rewrite tests, save/load expectations, and tooling diagnostics around explicit households, compiled profiles, utility or service resolution, and bounded freight.
-- Keep the `v0.1` scope intentionally narrow even during cleanup; later market complexity should extend this model, not compete with it.
-
-Current status:
-
-- ongoing
-- allocator-owned immigration heuristics are already gone
-- the main remaining cleanup themes are broader profile-driven runtime resolution, richer utility
-  actors, generalized inventories, and the building-loss displacement fallback still called out in
-  the cross-doc cleanup work
-
-Goal: finish with one coherent economy model instead of a mix of prototype and authored code paths.
-
----
+## Scope and Extension Boundaries
+
+The baseline already has explicit households, typed resource inventories, labor, fiscal
+settlement, local utilities and OWA fallback, bounded freight, private construction, transfers,
+and a demand/economy handoff. The former eight implementation phases are retired; the active
+sequence is the [healthy-growth delivery plan](#delivery-plan).
+
+Extend these systems with a small set of economically justified activities after startup
+viability is established. Fixed authored prices and wages remain the baseline. Dynamic markets,
+arbitrary scripting, remote work, new zoning categories, bulk terminals, multimodal freight,
+policy geography, and Automated Delivery System (`ADS`) home delivery remain outside this work.
+They must not become prerequisites for a healthy village or town.
+
+The shipped reference chain is grain farm → food processor → grocery → household supplies.
+Farms and processors also consume machinery; machinery factories import steel and metals and
+retain machinery for their own upkeep. Personal services and health essentials are aggregate
+service outputs alongside this inventory chain. Exact recipes, capacities and prices live in
+`economy/profiles.toml`; [standalone service commercial](#standalone-service-commercial) and
+[machinery upkeep](#machinery-upkeep-econ-09) own their runtime contracts.
+
+The data-driven inventory and service systems can represent more economic activities, but that
+alone does not supply affordable demand, appropriate assets, or viable margins. Each addition
+must pass the healthy-growth ledger and scenario checks before it expands the shipped catalog.
 
 ## Household Transfer Payments
 
@@ -2547,16 +2652,15 @@ The first transfer set is:
 - pension paid per elder
 - child support paid per child
 
-These transfers replaced the old `pioneer_demand` floor as the mechanism that keeps early-city
-households solvent. Unlike the Pioneer floor, they are real simulation money flows: funds move from
-the city treasury into household budgets, households spend through the normal replenishment loop,
-stores earn real revenue, and that revenue creates real commercial and industrial pressure.
+These transfers replaced the old `pioneer_demand` floor with explicit support payments from city
+treasury to household budgets. They can fund purchases through the normal replenishment loop;
+they do not guarantee stock availability, business solvency, or recurring public funding.
 
 ### Ownership
 
 This section owns the household-transfer spec. `demand.md` documents the demand-owned move-in
 acceptance formula that reads exact candidate composition, policy amounts, and treasury balance as
-source values. `households.rs` owns the runtime disbursement implementation. `nodes/sim/core.rs`
+source values. `households/benefits.rs` owns disbursement. `nodes/sim/core/budget.rs`
 owns the `CityTreasury` struct; starting balance is authored in `economy/profiles.toml`.
 
 ### Design Invariants
@@ -2571,14 +2675,13 @@ owns the `CityTreasury` struct; starting balance is authored in `economy/profile
   composition instead of from an average worker assumption.
 - Transfers must generate real purchasing activity. A household that receives support must still
   use the normal household replenishment and utility-payment systems.
-- Unemployment benefit must not create infinite runway. A household that cannot find work within
-  the configured `unemployment_max_days` becomes removal-eligible through demand rather than
-  subsisting on unemployment payments indefinitely. Pension and child support are not capped by
-  unemployment duration.
+- Unemployment benefit stops after the configured `unemployment_max_days`. Exhaustion alone is
+  not an automatic emigration trigger: housing distress and demand-owned removal rules determine
+  departure. Pension and child support are not capped by unemployment duration.
 
 ### Money Source
 
-`CityTreasury` already exists in `nodes/sim/core.rs` and is fully implemented:
+`CityTreasury` lives in `nodes/sim/core/budget.rs`:
 
 - **Starting balance**: `startup_treasury_balance = 100_000` authored in `economy/profiles.toml` `[runtime_tuning]`.
 - **Current deductions**: road build cost ($15/meter) and daily road upkeep ($0.1/meter/day);
@@ -2649,7 +2752,7 @@ those sub-buckets.
 | Condition | Outcome |
 |---|---|
 | All adult household members find employment | Unemployment disbursement stops; `unemployment_days_elapsed` resets to 0 |
-| `unemployment_days_elapsed >= unemployment_max_days` | Household becomes emigration-eligible at normal removal priority; benefit stops |
+| `unemployment_days_elapsed >= unemployment_max_days` | Unemployment benefit stops; housing and demand rules separately determine whether the household leaves |
 | `treasury.balance <= 0.0` | Transfer disbursement stops for all households; support-backed bootstrap ends organically |
 
 ### Authored Tuning Parameters
@@ -2664,7 +2767,7 @@ durations, fiscal tax defaults, and OWA import/export multipliers all live in th
 |---|---|---|
 | `startup_treasury_balance` | `economy/profiles.toml` runtime_tuning | Total treasury at map start |
 | `unemployment_daily_benefit_per_member` | `economy/profiles.toml` runtime_tuning | Default currency paid per unemployed adult per day |
-| `unemployment_max_days` | `economy/profiles.toml` runtime_tuning | Days before an unemployed household becomes emigration-eligible |
+| `unemployment_max_days` | `economy/profiles.toml` runtime_tuning | Maximum unemployment-benefit duration |
 | `pension_daily_benefit_per_elder` | `economy/profiles.toml` runtime_tuning | Default currency paid per elder per day |
 | `child_support_daily_benefit_per_child` | `economy/profiles.toml` runtime_tuning | Default currency paid per child per day |
 | `runtime_tuning.fiscal.*` | `economy/profiles.toml` runtime_tuning | Default tax and property-tax policy values |
@@ -2676,13 +2779,13 @@ durations, fiscal tax defaults, and OWA import/export multipliers all live in th
 
 The removed Pioneer demand floor (`pioneer_demand = 0.70`) existed because the `stock_stab` supply-stability metric and
 `afford` metrics collapse to near-zero on a fresh map, starving the spawn system of signal.
-Household transfers restore these signals through real economic activity:
+Household transfers can improve these signals through real economic activity:
 
 1. Disbursement gives households money based on exact adult/elder/child composition -> `afford` rises.
-2. Households with money attempt grocery replenishment -> the `stock_stab` supply-stability metric rises.
-3. The grocery earns real revenue → absorption gate threshold is met sooner → second grocery spawns.
-4. More groceries need supply → industrial spawn pressure rises.
-5. Industrial buildings hire workers → households exit unemployment → benefit drain slows.
+2. Successful, affordable grocery replenishment improves household stock stability.
+3. Grocery sales support payroll and inputs; additional shops require unmet customer demand.
+4. Operating shops create input demand that can support local industry.
+5. Sustainable hiring reduces unemployment claims; the city must still fund other transfers.
 
 The pioneer demand floor has been removed from `demand.rs`. The unemployment benefit is the
 work-search cash-support mechanism for adult workers, while pension and child support cover
@@ -2697,7 +2800,7 @@ Live values in `economy/profiles.toml` `[runtime_tuning]`:
 |---|---|---|
 | `startup_treasury_balance` | 100,000 | Total treasury at map start |
 | `unemployment_daily_benefit_per_member` | 30.0 | Currency paid per unemployed adult per day |
-| `unemployment_max_days` | 30 | Days before unemployed household becomes emigration-eligible |
+| `unemployment_max_days` | 30 | Maximum unemployment-benefit duration |
 | `pension_daily_benefit_per_elder` | 30.0 | Currency paid per elder per day |
 | `child_support_daily_benefit_per_child` | 10.0 | Currency paid per child per day |
 | `runtime_tuning.households.immigrant_starting_stock_days` | 3.0 | Supply days granted to arriving households |
@@ -2720,7 +2823,7 @@ Live values in `economy/profiles.toml` `[runtime_tuning]`:
 | `power_plant_basic.unit_price_currency` | 3.0 | Local power service price per aggregate power unit |
 | `water_plant_basic.unit_price_currency` | 2.0 | Local water service price per aggregate water unit |
 | `wastewater_treatment_basic.unit_price_currency` | 1.5 | Local sewage service price per aggregate sewage unit |
-| `owa_import_price_multiplier` | 1.75 | OWA import and missing local utility fallback price multiplier |
+| `owa_import_price_multiplier` | 1.25 | OWA import and missing local utility fallback price multiplier |
 | `owa_export_price_multiplier` | 0.60 | Scheduled OWA surplus export price multiplier |
 | `owa_distress_liquidation_multiplier` | 0.25 | Forced liquidation fire-sale price multiplier; must be no higher than scheduled export |
 
@@ -2784,7 +2887,7 @@ results are `/tmp/metrum-full-audit/site-order-{before,after}-identity.json` and
 `site-order-matched-bench.json`. These timings cover lookup and removal of buildings without
 production sites; they do not measure the O(S) shifts required by affected-site edits.
 
-Machinery reference price is 20 currency/unit; OWA imports cost 35 at the shipped 1.75 multiplier.
+Machinery reference price is 20 currency/unit; OWA imports cost 25 at the current 1.25 multiplier.
 These are initial game-balance values. Heavy mines are intended to benefit from local customers
 and local Machinery: at full operation per hectare, 120 Coal sells locally for 960, imported
 Machinery costs 140 and five workers cost 450/day before other charges. Low-price OWA exports
@@ -3287,8 +3390,8 @@ utility buildings manage their operating budget, pay obligations, and enter bank
 explicit service buildings are treasury-funded municipal facilities in the live `v0.1` path; they
 provide staffed service and city revenue but do not enter the private-building bankruptcy loop. The
 previous system used an hourly utility gate (`utility_service_available`) that permanently froze
-any building whose budget dipped below a single hourly charge — see ECON-01 in the Current
-Simulation Status section for the incident record. This spec replaced that system entirely.
+any building whose budget dipped below a single hourly charge. `ECON-01` retired that mechanism;
+the [retired mechanisms](#retired-mechanisms) table records the completed corrections.
 
 ### Operating Budget
 
@@ -3300,11 +3403,13 @@ against the city treasury.
 Money enters the budget from:
 
 - sales revenue when households or other buildings purchase the building's output
+- scheduled export receipts and explicit emergency liquidation receipts
 - utility service revenue distributed to private local provider buildings when consumers pay charges
 
 Money leaves the budget from:
 
 - daily wage payments to workers
+- input purchases and business taxes
 - daily utility cost charged once per day on the same cadence as wages
 
 The budget is allowed to go negative. A negative budget is not immediately fatal — it triggers a
@@ -3400,12 +3505,12 @@ Private businesses pay daily utility costs even when this makes their operating 
 Each private non-residential or explicit field/extractor business consumes one aggregate unit per
 service daily. The authored baseline prices are shared across these businesses:
 
-| Service | Local unit price | OWA unit price (× 1.75) |
+| Service | Local unit price | OWA unit price (× 1.25) |
 | --- | ---: | ---: |
-| Power | 3.0 | 5.25 |
-| Water | 2.0 | 3.50 |
-| Sewage | 1.5 | 2.625 |
-| Total daily cost | 6.5 | 11.375 |
+| Power | 3.0 | 3.75 |
+| Water | 2.0 | 2.50 |
+| Sewage | 1.5 | 1.875 |
+| Total daily cost | 6.5 | 8.125 |
 
 `power`, `water`, and `sewage` resolve independently. `Power` uses aggregate daily produced units:
 consumers pay the local authored utility price only for the covered share, and uncovered private
@@ -3498,7 +3603,10 @@ Deserted buildings are excluded from:
 - throughput computation (`run_building_economy` skips them)
 - demand system capacity accounting (fixes ECON-02: frozen buildings no longer block new spawns)
 
-The demand system is responsible for physically removing or redeveloping deserted buildings.
+The demand system clears empty deserted commercial and industrial sites with no workers
+independently of demand pressure, using its existing bounded demolition credit. Healthy business
+and residential removal remain demand-driven. Clearance permits a subsequent normal placement;
+it does not resurrect the bankrupt company or preserve its cash.
 
 #### Worker ejection on bankruptcy
 
@@ -3536,205 +3644,35 @@ profiles whose active slots are demand-limited rather than purely physical: `ser
 commercial profiles and explicit field/extractor profiles. This keeps logged `worker_count` aligned
 with the current market-backed slots instead of waiting two unpaid days for surplus workers to quit.
 
-### Replacement Targets
+## Retired Mechanisms
 
-The following code, fields, and constants are made redundant by this spec and must be removed
-during implementation:
+These are completed corrections, not additional healthy-growth deliverables. Their old incident
+reports and replacement instructions must not be read as descriptions of the current runtime.
 
-**`Building` struct fields to remove:**
+| ID / mechanism | Current contract |
+| --- | --- |
+| `ECON-01`: hourly utility-budget freeze | Utilities settle daily. Throughput has no `utility_factor`; private failure uses the distress/desertion lifecycle above. |
+| `ECON-02`: inactive nominal capacity blocking replacement | Demand excludes inactive states and distinguishes live output from committed construction. See `demand.md` for absorption accounting. |
+| `ECON-03`: repeated startup float refill | Private float is assigned once at creation. No daily rescue refill; insolvency can cause desertion. |
+| `ECON-04`: more zoned land generating arbitrary businesses | Spawn volume follows missing economic capacity; eligible sites cap placement rather than manufacture customers. |
+| `ECON-05`: pioneer floor creating non-residential demand | The pioneer floor is removed. Household transfers are explicit fiscal flows; commercial and industrial demand read their customers. |
+| Bankruptcy gap | `budget_distress` and `is_deserted` are implemented. Do not add another economic-death timer as if bankruptcy were missing. |
+| Economy editor (`ECON-10`) | Removed. Authored TOML, Rust balance checks, and headless runtime scenarios are the balancing workflow. |
 
-- `utility_service_available: bool` — replaced by `is_deserted` for logistics gating; no longer
-  used as a throughput multiplier
-- `economy_dead_days: u32` — replaced by `budget_distress: bool` (simpler two-day rule)
-- `startup_reset_used: bool` — the refill mechanism it guards is removed; startup float is set
-  once at spawn
+Seven days of payroll float and first-import financing repaired initial capitalization; they do
+not prove recurring solvency. Transfers replaced the pioneer floor, but they neither guarantee
+stock availability nor establish a sustainable city budget. The prior claim that a startup
+starvation window was acceptable is not a healthy-growth acceptance criterion.
 
-**New `Building` field to add:**
+Preserve the ownership boundaries: explicit household records, demand-owned growth decisions,
+player-placed city facilities, one-time private owner equity, and shared freight/trip execution.
+New activity should extend those systems without restoring old fallback growth logic.
 
-- `budget_distress: bool` — true if budget was negative at end of previous daily settlement
+## Validation Evidence
 
-**Functions to remove or replace:**
-
-- `resolve_building_utilities` Phase 2 (the per-building hourly deduction and gate-set loop) —
-  replaced by Step 3 of the daily settlement sequence; Phase 1 (find utility providers) and
-  Phase 3 (distribute local revenue) are retained and called from the daily path
-- `run_desertion_check` — replaced by Step 1 of the daily settlement sequence
-- `ensure_building_startup_float` — the daily refill scan is removed; float is set at construction
-
-**Constants to remove:**
-
-- `STARTUP_FLOAT_REFILL_THRESHOLD` — only used by the refill mechanism
-- `DESERTED_THRESHOLD_DAYS` — replaced by the two-day consecutive rule
-- `OPERATIONAL_HOURS_PER_DAY` divisor on utility costs — utility is now a flat daily charge
-
-**Throughput formula change:**
-
-- Remove `utility_factor` from `run_building_economy`; the term and the `if utility_service_available` branch that sets it are deleted
-
-**Save/load schema:**
-
-- Remove `utility_service_available`, `economy_dead_days`, and `startup_reset_used` from
-  `BuildingSchema` in `save/schema.rs` and the corresponding `world.rs` serialisation and
-  deserialisation paths. Add `budget_distress`.
-
-## Legacy Cleanup Targets
-
-As implementation starts, remove or refactor any code, tests, editor UX, or helper structures that still assume the older economy model rather than this spec.
-
-The current spec replaces these legacy assumptions:
-
-- unbounded per-agent daily shopping or `Home -> Work -> Shop -> Home` loops as the baseline
-  essentials model; the allowed `v0.1` replacement is a bounded one-shopper household
-  replenishment task
-- implicit or aggregated household representation instead of explicit household runtime records
-- global demand counters as the primary economy loop rather than as one coarse pressure layer
-- probabilistic or RNG-driven activity selection instead of decision-utility scoring plus authored schedule profiles
-- `ADS` or household home delivery as a `v0.1` baseline feature
-- free-floating local price response or wage response in `v0.1`
-- abstract external-market or throughput-budget trade models instead of `OWA` plus physical border freight for ordinary goods
-- utilities as trucked goods or free background access instead of the `Utility Service Layer`
-- `district` or gameplay-area-scoped economy authoring in `v0.1`
-- player-facing raw balancing edits instead of a separate bounded policy layer
-- auto-spawned city-owned facilities instead of explicit player placement for city-owned buildings
-- city-grant startup funding for private businesses instead of private startup float or owner equity
-
-## Current Simulation Status: The Pioneer Phase (v0.1.x)
-
-As of the first full implementation of the agent-driven demand system, the simulation has encountered a specific "Pioneer Bootstrap Phase" deadlock that prevents organic growth without manual intervention.
-
-### 1. ~~The "Salary Bomb" Deadlock~~ — Fixed
-
-Startup capital is computed as `max(500, worker_capacity * avg_daily_wage * 7 + first_owa_input_import_cost)` for all commercial and industrial buildings at spawn. The shipped `food_processor_basic` receives **15,820**: 6,300 for wages, 6,720 for Grain and 2,800 for Machinery. The shipped `grocery_basic` receives **22,050**, and `machinery_factory_basic` receives **8,680**, including their first full input buffers at `owa_import_price_multiplier = 1.75`. The `500` floor still applies to low-wage or zero-worker buildings.
-
-### 2. The "Starving Pioneer" Trap — Mostly Resolved
-
-Immigrant households arrive with `runtime_tuning.households.immigrant_starting_budget_per_member = 15.0` (30 for a standard 2-person household).
-- **Utility Drain**: `runtime_tuning.households.utility_cost_per_member_per_day = 3.0`, so a 2-person household pays 6/day. Budget runway on utilities alone is about 5 days.
-- **Starting supplies**: `runtime_tuning.households.immigrant_starting_stock_days = 3.0` days of household supplies pre-loaded on spawn.
-- **Transfer floor**: `unemployment_daily_benefit_per_member = 30.0` per unemployed adult,
-  `pension_daily_benefit_per_elder = 30.0`, and
-  `child_support_daily_benefit_per_child = 10.0` provide baseline support from exact household
-  composition rather than from total resident count.
-- **Gap**: Starting supplies run out around day 4. If no valid store has sellable inventory, households may still be unable to restock even with adequate benefit income.
-
-With the salary bomb resolved, business wages reach workers by day 7. The 2–3 day starvation window (days 4–7) is the remaining residual of this trap and is acceptable for the pioneer phase. The circular deadlock that previously kept households permanently broke is broken.
-
-### 3. ~~Circular Dependency Failure~~ — Resolved by fix #1
-
-~~Because the starter households cannot buy, the **Grocery Store** earns $0 revenue. Because the store earns no revenue, it never places a paid shipment order with the **Farm**. The Farm remains at $0 revenue and continues to fail its wage checks, completing the deadlock.~~
-
-With businesses now seeded with a full 7-day wage runway, this chain no longer jams on first boot.
-
-### 4. The "Ghost Business" (The Bankruptcy Gap)
-
-Currently, a business can reach a $0.0 budget and 100% unemployment but remain on the map indefinitely.
-- **Logic Gap**: The `DemandSystem` only considers a building for removal (despawn) if **Demand Pressure** for that zone falls below the `despawn_threshold` (e.g., < 0.15).
-- **Missing Trigger**: There is no "Liquidation" or "Bankruptcy" event triggered by the building's internal economy. Even if a business is economically dead, it is kept "on life support" by the city's overall scarcity signals.
-- **Result**: The city results in a collection of non-functional shell buildings that take up valuable land but cannot produce goods or pay workers.
-
-The authoritative spec for the **Deserted Building** lifecycle state — which resolves this gap — is in [`demand.md § Building Desertion`](demand.md#building-desertion). That section owns the trigger rule, all system effects, rendering contract, and data-model changes.
-
-### 5. The "Starving Pioneer" Glue (Low Emigration)
-Households that find themselves broke and starving are currently "trapped" in the city rather than emigrating.
-- **Logic Gap**: The `pioneer_demand` floor (0.70) designed to attract the first wave of immigrants is also being used as a floor for **City Stability**.
-- **Result**: Because stability never falls below 0.70, the calculated **removal pressure** remains artificially low. The simulation "protects" the pioneer wave so hard that they are unable to leave even when their economic situation is hopeless.
-- **Calibration Target**: De-couple the bootstrap floor from removal calculations so that "despair-driven emigration" can function independently of "attraction-driven immigration."
-
-### 6. ~~ECON-01: Commercial/Industrial Budget Deadlock — No Recovery Path~~ — Fixed
-
-**Observed**: In a 594-day run, the grocery (idx=22) entered a permanent freeze on Day 64 at `budget=-2.0`, `utility_service_available=false`. Eight farms entered the same state with `budget=0.0`. All remained frozen for 530+ days with inventory sitting unused.
-
-**Mechanism**:
-1. In the older implementation, an hourly utility charge derived from Rust constants fired in `resolve_building_utilities`.
-2. If `operating_budget < hourly_cost` → `utility_service_available = false`.
-3. In the older implementation, `utility_service_available = false` set `utility_factor = 0.0`
-   in `run_building_economy`, making `throughput_factor = 0.0` — no production, no sales, no revenue.
-4. No revenue → budget never recovers → permanent freeze with no exit.
-
-**Result**: A single budget dip below the utility threshold permanently locks the building out of the economy. 12 buildings deadlocked in the 594-day run. The grocery had 108 units of packaged_food stuck in inventory the entire time.
-
-**Resolution**: The live `v0.1` model removed the `utility_factor` throughput gate. Utility costs
-settle through the daily utility/bankruptcy sequence, and the explicit deserted-building lifecycle
-removes permanently inactive buildings from all economy flows.
-
-### 7. ECON-02: Absorption Gate Uses Nominal Capacity, Ignores Operational State
-
-**Observed**: Only 1 commercial building (the initial grocery) was ever spawned across 594 days, despite 31 commercial candidates remaining available throughout. `spawns_today=1` was calculated for 402 of those days but no placement occurred.
-
-**Mechanism**: `nonresidential_passes_absorption_gate` in `demand.rs` computes:
-```
-placed_capacity = sum of nominal output (units/day) for all non-broken, non-economy_broken buildings
-consumer_demand = consumption_rate_per_resident × housed_resident_count
-```
-The grocery profile outputs 200 `household_supplies`/day. The `basic_household_demand` profile has `consumption_rate_per_resident = 1.0`. At 131 residents: `consumer_demand = 131`. Gate condition `placed_capacity < consumer_demand` -> `200 < 131` -> **false** -> second grocery permanently blocked.
-
-The gate does not check `utility_service_available`. A frozen, non-functional grocery still counts at full 200/day nominal capacity. The self-correction mechanism the economy needs (spawn a second grocery when the first fails) is blocked by the very building that failed.
-
-**Resolution**: The live demand absorption path uses current output absorption context and excludes
-inactive building states instead of applying the legacy `utility_factor` throughput gate.
-
-### 8. ECON-03: One-Time Bankruptcy Reset Fires Repeatedly
-
-**Observed**: Idle farms (workers=0, revenue=0) cycle through budget 3150→0→3150 on ~250-day cycles indefinitely. The startup float refill is intended as a bootstrap rescue but becomes a permanent subsidy for buildings that are locationally unviable (too far from residential for agents to commute).
-
-**Mechanism**: `ensure_building_startup_float` fires every daily tick for any Commercial/Industrial building where `operating_budget < STARTUP_FLOAT_REFILL_THRESHOLD && revenue == 0.0 && worker_count == 0`. There was no guard preventing repeat fires.
-
-**Fix**: Removed the startup refill path. Startup operating budget is now assigned once when the
-building is created, and the two-day `budget_distress` bankruptcy rule handles buildings that spend
-that float without becoming viable. A building that cannot attract workers or earn revenue now
-enters `is_deserted`, which is the correct signal for the demand system to consider removal.
-
-### 9. ECON-04: Commercial/Industrial Spawn Volume Scales with Road/Zone Area
-
-**Observed**: Adding roads between two daily ticks caused commercial candidates to jump from 13 → 79 and industrial from 34 → 90, spawning 4 grocery stores and 5 farms in a single day — far exceeding the 0–1 that is normal when the road network is stable.
-
-**Fix**: Demand spawn planning no longer sums candidate pressure into the spawn rate. The spawn path computes a deterministic missing-building need from the frozen city snapshot, multiplies that need by the average normalized spawn pressure for eligible candidates, and uses `eligible_spawn_count` only as the final placement cap. Residential need is based on missing household slots against a small vacancy reserve, commercial need is based on unmet household-facing output units/day, and industrial need uses resource-specific business/utility input gaps divided by eligible factories' net output. Existing, pending and selected output capacity reserves that demand. Industrial growth pressure can also rise from actual business/utility `OWA` input dependency. The exact formulas are owned by [`demand.md`](demand.md).
-
-### 10. ECON-05: Pioneer Demand Floor Leaks into Non-Residential Spawn Rate
-
-**Observed**: `spawn_limit` for commercial and industrial is `resident_presence.max(pioneer_demand * 0.5)`. At the pioneer baseline of `pioneer_demand = 0.700`, this floor is 0.35 — meaning even with zero residents the system keeps non-residential spawn pressure non-zero.
-
-**Fix**: The pioneer spawn floor and non-residential `spawn_limit` path have been removed. Commercial growth comes from household purchase stability and missing household-facing shop capacity; industrial growth comes from missing local industrial capacity for active business/utility inputs and actual `OWA` input dependency. Household transfers are the bootstrap income source for households.
-
-## Growth Redesign (`ECON-11`–`ECON-14`, `DEM-02`)
-
-Planned 2026-10-02 on branch `economy`, after `ECON-10` removed the economy editor. The city
-stops growing for structural reasons that tuning values alone cannot fix.
-
-### Diagnosis
-
-- **No export base.** Jobs exist only to serve residents. The closed supply chain in
-  `economy/profiles.toml` gives 130.55 jobs per 1,000 residents (measured by `ECON-11`). That is
-  too few jobs to employ the households that growth brings in.
-- **Exporting loses money.** `owa_export_price_multiplier = 0.60` pays 60% of
-  `unit_price_currency`, and export saturation lowers it further to a `0.75` floor factor. A
-  producer that is solvent at the internal price cannot cover its wages and inputs by selling
-  outside the city.
-- **Regional pull ends at 600 households.** The regional growth pull in
-  `rust/src/simulation/economy/demand/snapshot.rs` scales by
-  `1 - households / regional_growth_soft_households`, and `demand/growth_profiles.toml` sets
-  that to `600`. Above 600 households the outside world sends no one.
-- **Stacked damping.** Demand pressure channels, spawn-need thresholds and admission penalties
-  each scale the growth signal down. No single number explains why a zone does not grow, so the
-  system cannot be balanced on paper.
-
-### Decision
-
-Settlement stays aggregate: money and goods flows are computed in aggregate, and agents
-visualize them rather than drive them (decided 2026-10-02).
-
-### Plan
-
-Each step gives the next something to measure against. Prices, target ratios and the new demand
-formula are chosen after `ECON-11`–`ECON-13` produce numbers, not before.
-
-| Order | ID | Deliverable | Acceptance |
-| --- | --- | --- | --- |
-| 1 | `ECON-11` (done) | Pure Rust balance tests on the shipped `economy/profiles.toml`: business solvency (the check lost with `ECON-10`), export margin for basic industries, and jobs per 1,000 residents for the closed chain. | Run in `cargo test` without Godot in milliseconds. Assertions describing the target design start `#[ignore]` with a reason and are enabled by `ECON-14`. |
-| 2 | `ECON-12` (done) | Extract the frame step inlined in `rust/src/nodes/sim/core/thread.rs` into a `SimCore` step callable by the sim thread and by tests. Add a growth-scenario integration test in `rust/tests/` that runs a seeded, zoned map for 365 simulated days and records households, jobs and treasury. | Two runs give identical results; no Godot required; sim-thread behavior unchanged. Design reviewed 2026-10-02 before code moved. |
-| 3 | `ECON-13` (in progress) | Criterion baseline for the hourly and daily economy ticks at 10k, 100k and 1M residents. | Matched, unprofiled release runs; commands, build identity and results recorded in [`ECON-13` economy tick baseline](#econ-13-economy-tick-baseline). |
-| 4 | `ECON-14` | Export base: basic industries sell to the region at no less than `1.0×` their unit price, and regional demand no longer ends at a fixed household count. | `ECON-11` target tests enabled and passing; the `ECON-12` scenario shows sustained growth; no `ECON-13` regression. |
-| 4 | `DEM-02` | One demand signal per zone type, driven by jobs, residents and exports, replacing the stacked pressure and threshold layers. Owned by [`demand.md`](demand.md). | Same as `ECON-14`; the signal for a zone can be computed by hand from its inputs. |
+The following records distinguish implemented test infrastructure from economic targets that
+still fail. Historical timings and trajectories are retained with their dates and workload
+limits; they do not validate a later build.
 
 ### `ECON-11` balance tests
 
@@ -3755,6 +3693,11 @@ so passing is necessary for solvency but not sufficient.
 
 Run them with `cargo test --lib economy::definitions::balance_tests`; add `-- --ignored` to see
 the `ECON-14` target fail with the per-profile breakdown.
+
+Review verification on 2026-10-05 at `21100889`: `cargo test --lib
+economy::definitions::balance_tests -- --include-ignored` passed the three active checks and
+failed the export target with the same −560/−4/−200 breakdown. These export figures use maximum
+authored wages; the startup margin table in the diagnosis uses runtime average wages.
 
 ### `ECON-12` growth scenario
 
@@ -3779,7 +3722,8 @@ through those player paths. It has:
 - the repository's `godot/bootstrap/mods` pack.
 
 Then it runs at maximum speed (32×), frame by frame, because a household is admitted only once
-its carrier reaches home. `rust/tests/growth_scenario.rs` holds two tests:
+its carrier reaches home. `rust/tests/growth_scenario.rs` initially held these two tests; the
+subsequent diagnostic audit also adds observer-equivalence and accounting checks:
 
 | Test | State | Result on 2026-10-02 |
 | --- | --- | --- |
@@ -3796,9 +3740,29 @@ its carrier reaches home. `rust/tests/growth_scenario.rs` holds two tests:
 | 302 | 24 | 39 | 1 / 6 | 59 | −4,955 |
 | 366 | 18 | 28 | 0 / 0 | 59 | −20,235 |
 
-Households reach 25 by day 107 and stop. Buildings keep being added while the treasury falls
-about 130 per day. Once it is negative, near day 280, jobs fall to zero and households start
-leaving.
+In that 2026-10-02 run, households reach 25 by day 107 and stop. Buildings keep being added while
+the treasury falls about 130 per day. Once it is negative, near day 280, jobs fall to zero and
+households start leaving.
+
+Review verification on 2026-10-05 at `21100889`, `cargo test --test growth_scenario --
+--include-ignored` in the test profile: concurrent-year determinism passed; the growth target
+failed. Selected records from this newer trajectory:
+
+| Day | Households | Residents | Employed / nominal jobs | Buildings | Treasury |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 32 | 18 | 30 | 14 / 51 | 32 | 52,462 |
+| 122 | 29 | 50 | 27 / 87 | 74 | 37,473 |
+| 182 | 42 | 74 | 20 / 29 | 97 | 7,392 |
+| 212 | 29 | 51 | 0 / 0 | 68 | −3,897 |
+| 366 | 12 | 19 | 0 / 0 | 55 | −42,465 |
+
+That review used the historical 25-household ignore description. The diagnostic extension below
+replaces it with the unmet healthy-growth target. A positive initial treasury is not evidence of
+recurring fiscal solvency.
+
+The same review ran the demand, household and balance unit suites; the fresh diagnostic-extension
+counts below distinguish active tests from ignored targets. No performance benchmark was rerun for that assessment or this
+documentation revision.
 
 Limits:
 
@@ -3807,14 +3771,420 @@ Limits:
 - Results are reproducible for one build and asset pack. Any change to simulation code, tuning
   or the bootstrap pack can move them, so the test pins determinism, not the trajectory.
 
-Run the determinism test with `cargo test --test growth_scenario`. Add `-- --ignored` to print
-the monthly trajectory from the `ECON-14` target.
+Run the active checks with `cargo test --test growth_scenario`. Add `-- --ignored` to run the
+unmet `ECON-14` target and include the compact failure report in its assertion output.
+
+#### Village failure timeline (`ECON-14`)
+
+The 2026-10-05 diagnostic extension observes the existing frame/hour/settlement paths; prices,
+wages, demand formulas and the fixture are unchanged. `GrowthScenario::run_diagnosed_days`
+returns ordinary daily records plus a `GrowthReport`. The report reads household ledgers before
+removal, business receipts and cash before lifecycle actions, and the city ledger at close.
+Business identities use parcel id plus build generation rather than swap-removable indices.
+The live runner uses a statically dispatched empty observer and stores no diagnostic history.
+
+Reproduce from the repository root:
+
+```bash
+METRUM_GROWTH_REPORT=/tmp/metrum-village-daily-2026-10-05.txt \
+  cargo test --manifest-path rust/Cargo.toml --test growth_scenario
+cargo test --manifest-path rust/Cargo.toml --test growth_scenario \
+  starter_town_keeps_growing_and_solvent_through_year_one -- --ignored
+```
+
+The first command saves all 365 settlement records and checks deterministic accounting and
+cash reconciliation. The second intentionally fails the existing healthy-growth target and
+prints selected days plus first failure events. Day labels identify the newly opened day;
+the first window starts at day 1, 07:30. Household accounting/counts precede departures; city
+population follows them. Launched carriers are distinguished from resident arrivals.
+
+**Observed sequence, 2026-10-05 catalog, bootstrap pack and recovery rule:**
+
+| Day | Evidence | Interpretation |
+| ---: | --- | --- |
+| 2–6 | Treasury starts at 57,640 after 42,360 of road construction; road upkeep is 283.40/day. Household cash-flow deficits first appear on day 4, supply stockouts on day 6. | The road network has a recurring bill immediately. A single household purchase-day deficit is not proof of persistent unaffordability. |
+| 10–14 | First food processor is cash-negative on day 10; it closes on day 14. Employment falls from 20 on day 10 to 10 on day 14. Day-14 taxes are 270.97 against 500 transfers and 283.40 upkeep. Treasury still holds 56,261.56. | Private business failure precedes fiscal exhaustion and raises transfer needs. |
+| 18–41 | First machinery factory closes day 18, personal-service store day 26, health store day 40. The first exhausted unemployment window with no benefit payment is day 41. | Early business losses are not caused by the city's eventual inability to pay benefits. Services also lack enough sales to cover their minimum operation. |
+| 98–163 | First grocery closes day 98. Firms are repeatedly replaced with fresh startup funds. First household departure is day 163. | Replacement capital temporarily sustains activity; building growth alone is not healthy economic growth. |
+| 188–192 | Last grocery closes day 188. By day 190 all 42 households have empty supplies while holding 103,898.72 in cash. Treasury turns negative on day 192. | Loss of supply/recovery is decisive even while households still have purchasing power. |
+| 200–366 | All jobs are gone by day 200. Year ends with 12 households / 19 residents, no jobs, treasury −42,464.59. Remaining households hold 71,291.49 but all have empty supplies. | Continuing fiscal losses and missing businesses prevent recovery; aggregate household cash alone is a misleading health measure. |
+
+Over the year the city collects **102,575.15** in taxes, pays **99,238.74** in transfers and
+**103,441.00** in road upkeep. Recurring cash flow is **−100,104.59**, with 344 deficit days;
+no further city construction is charged. Starting capital is separate. This fixture has no
+municipal utility providers, so municipal payroll/input costs are zero. Its road footprint is
+expensive relative to its small tax base; this is evidence for this fixture, not a universal
+road-price conclusion.
+
+Private businesses receive **380,310** of startup cash across repeated placements and suffer
+**53 bankruptcies**. Actual gross private payroll totals **264,592.50**. Inputs below are net
+cash commitments/refunds, not consumed-input margins or delivered inventory values:
+
+| Profile | Sales, including liquidation | Input cash | Startup cash | Bankruptcies |
+| --- | ---: | ---: | ---: | ---: |
+| Food processing | 154,484.99 | 232,100.00 | 174,020 | 11 |
+| Grocery | 173,174.75 | 128,444.99 | 44,100 | 2 |
+| Machinery | 46,491.24 | 78,960.00 | 86,800 | 10 |
+| Personal services | 3,302.87 | ≈0 | 26,880 | 16 |
+| Health services | 3,634.62 | ≈0 | 48,510 | 14 |
+
+**Specific growth blockers:**
+
+- At day 10, two vacant household slots exist, but the candidate has estimated daily income
+  40 against essential-cost estimate 58.60 and only 1.61 days of search runway. Admission
+  acceptance is zero despite positive incoming need. This is the current planner's estimate,
+  with the omissions described in the worksheet above, not a corrected affordability model.
+- By year end, commercial pressure is **1.0**, yet the planner returns **zero placement
+  candidates** and **zero despawn candidates**. All **32 standing commercial buildings are
+  deserted**: two groceries, 16 personal-service stores and 14 health stores. Source inspection
+  of the then-current `collect_existing_building_candidates` confirmed that deserted-building
+  clearance required **negative growth pressure**. Thus unmet demand prevented the clearance
+  needed to replace failed businesses. The isolated repair is recorded below.
+- Industry then has no local intermediate demand and zero construction pressure. Household
+  admission has zero incoming need, zero funded jobs and zero acceptance despite 11 vacant
+  homes. Raising residential zoning or nominal job capacity does not address these conditions.
+
+**Next repair identified by this run:** separate deserted-site recovery from negative demand,
+then test viable startup imports, minimum staffing/market size and household affordability together. Require actual
+sales, supplied households and recurring fiscal funding after startup capital and temporary
+benefits. The report does not establish a final import multiplier, wage, tax or service size.
+
+Accounting limits: private input cash is inferred from hourly sales minus operating-cash change,
+where the existing runtime posts freight payments/refunds; `f32` rounding leaves sub-unit
+residues (including approximately zero service inputs). Delivered input value is reported
+separately; neither is consumed-input cost. Household bills are actual cash payments and shopping
+reservations/refunds, so cash-limited spending must be read alongside stockouts. Payroll is the
+actual aggregate private gross payment, reconstructed from net wages plus income tax, excluding
+municipal wages. The observer also checks transfers lost from the UI ledger after household
+removal; this run loses **0**, so the earlier source-ordering concern does not explain its deficit.
+
+The headless observer uses deterministic ordered accumulation: O(B log B) per observed economy/
+lifecycle boundary, O(H) per daily household capture, O(B + days × profiles) retained storage.
+These scans/allocations exist only in the opted-in small scenario, never the live tick or 10k
+benchmark. Validation and the matched live-path performance comparison are recorded below.
+
+**Verification for this diagnostic extension (2026-10-05).** Fresh targeted unit checks pass:
+103 household, 62 demand, five balance, three fiscal and three city-budget tests (**176 active**,
+11 ignored targets/manual worksheets). Commands from the repository root:
+
+```bash
+cargo test --manifest-path rust/Cargo.toml --lib -- \
+  economy::households::tests economy::demand::tests economy::fiscal::tests \
+  economy::definitions::balance_tests nodes::sim::core::budget::tests
+```
+
+The scenario checks compare two concurrent diagnosed years, compare observed/unobserved daily
+states over a full year, and attach the observer after day 40 to verify that existing capital
+is not counted again. The healthy-growth assertion remains ignored by default and fails when
+enabled; that economic failure is the subject of the report, not a passing growth acceptance.
+City/business reconciliation errors round to 0.0000; the largest individual household residual
+is 0.0215 currency from `f32` accumulation, below the 0.1 test tolerance.
+
+**Matched 10k cost check.** Baseline source is `21100889`, extracted to
+`/tmp/metrum-village-baseline`; changed source is that build plus this diagnostic extension.
+Authored economy/demand/zoning data and bootstrap assets match. Both release binaries were built
+from the repository root with `cargo bench --manifest-path <checkout>/rust/Cargo.toml
+--bench economy_tick_benchmark -- /10k` and default target flags (the nested `rust/.cargo`
+CPU override is not loaded from that working directory). Eight Rayon workers, no profiling,
+23 hourly samples and ten daily samples per process. Setup is outside timing. The fixture has
+11,120 residents, 5,597 households and 7,396 buildings after its warm-up; all runs finish with
+identical recorded state. Its large treasury is a timing-fixture property, not growth evidence.
+
+The first pair flagged +13.7% hourly cost (2.204 → 2.507 ms); daily intervals overlapped.
+This justified an alternating **baseline / changed / changed / baseline** repeat with saved
+binaries, no simultaneous builds/tests, and shared Criterion output:
+
+```bash
+RAYON_NUM_THREADS=8 CRITERION_HOME=/tmp/metrum-village-paired \
+  /tmp/metrum-village-head-bench /10k --save-baseline head_A --bench
+# Same command with after-bench/after_A, after-bench/after_B, head-bench/head_B.
+```
+
+| Run | Setup, s | Hour mean, ms (95% interval) | Daily mean, ms (95% interval) |
+| --- | ---: | ---: | ---: |
+| Baseline A | 15.0 | 2.825 (2.626–3.026) | 818.8 (614.2–996.2) |
+| Changed A | 14.6 | 2.141 (2.044–2.259) | 832.6 (625.7–1,017.0) |
+| Changed B | 14.6 | 2.341 (2.183–2.513) | 850.1 (639.0–1,036.2) |
+| Baseline B | 14.7 | 2.701 (2.436–2.973) | 814.4 (612.5–992.0) |
+
+The hourly regression does not reproduce; process-to-process variation is larger than the
+initial comparison implied. No consistent hourly slowdown is demonstrated, and daily confidence
+intervals overlap. Do not claim a speedup or use these broad daily intervals as proof that
+`ECON-13` performance work is complete. No larger tier was run.
+
+Artifacts: `/tmp/metrum-village-daily-2026-10-05.txt`, `/tmp/metrum-village-tests-final.log`,
+`/tmp/metrum-village-unit-final.log`, `/tmp/metrum-village-bench-head.log`,
+`/tmp/metrum-village-bench-after.log`, `/tmp/metrum-village-{head_A,after_A,after_B,head_B}.log`,
+and `/tmp/metrum-village-paired/economy_tick/`. Saved binary SHA-256 prefixes:
+baseline `8b4fa257985b0cc8`, changed `2e1ec6347b2c40f5`.
+
+#### Failed-business recovery (`ECON-14`)
+
+**Implemented 2026-10-06; economic acceptance still fails.** Deserted, empty commercial and
+industrial buildings now receive demolition weight `1.0` at any demand pressure. The existing
+hourly credits, `0.5` daily demolition fraction, deterministic deserted-first order and execution
+safeguards remain authoritative. Staffed or occupied sites are protected. This recovery weight
+does not enable contraction hysteresis for healthy buildings. Residential behavior is unchanged.
+
+The implementation adds O(1) work per candidate to the existing parallel building scan and
+combines pressure/hysteresis accumulation in the existing O(D) despawn reduction. Existing
+candidate collection and sorting bounds remain unchanged; no new simulation allocation or
+spatial structure was added. The village observer separately reports rebuilt-site startup cash
+using the parcel's demolition generation; it is a subset of total startup cash, not sales. New
+placements on previously unused parcels remain in total startup cash, so this subset alone does
+not measure every replacement of a failed firm's economic activity.
+
+The same 365-day village fixture was rerun before any tuning. The first processor still fails
+on day 14; clearance fixes site availability, not operating losses:
+
+| Measure | Original diagnostic run, 2026-10-05 | Recovery only, 2026-10-06 | Import-only experiment, rejected |
+| --- | ---: | ---: | ---: |
+| Import multiplier | 1.75 | 1.75 | 1.25 |
+| Year-end households / residents | 12 / 19 | 22 / 35 | 22 / 37 |
+| Year-end employed | 0 | 20 | 19 |
+| Year-end households with empty supplies | 12 | 13 | 17 |
+| Year-end treasury | −42,464.59 | 104.30 | 106.30 |
+| First negative treasury day | 192 | 153 | 162 |
+| Recurring city net over year | −100,104.59 | −57,535.70 | −57,533.70 |
+| Private startup cash | 380,310 | 923,475 | 653,370 |
+| Of which rebuilt-site startup cash | Not split in original report | 659,715 | 463,815 |
+| Business bankruptcies | 53 | 95 | 76 |
+| Grocery bankruptcies | 2 | 5 | 9 |
+
+The recovery-only run ends with active businesses and available commercial sites, rather than
+32 stranded deserted commercial buildings. Its 39 nominal job slots and 20 employed are not a
+sustainable outcome: even the final 30 days need **92,015** of new private capital and record
+**seven bankruptcies**. That period's recurring city net of **+117.39** is supported by the
+circulation of startup money, while supplies remain unreliable. A positive final treasury does
+not establish solvency; it already went negative during the year, and benefit payments become
+cash-limited. The healthy-growth assertion remains ignored by default and fails when enabled.
+
+The subsequent experiment changed only the import multiplier to the worksheet's `1.25` candidate.
+It reduced total startup capital and industry closures but increased grocery closures from five
+to nine and left 17 households without supplies at year end. It did not meet acceptance and was
+**reverted at that stage**. The subsequent combined repair below retests 1.25× after correcting
+the demonstrated staffing, production and physical-displacement defects.
+
+**Follow-up at this stage:** measure actual grocery staffing/payroll against recurring sales and
+pantry-replenishment demand; establish the paid market needed for a service to fund its first
+worker plus overhead; test import costs together with those constraints and household budgets.
+Industrial export losses remain separate evidence that local-demand volume is insufficient to
+guarantee viability. Keep startup and rebuilt-site capital outside operating income. Additional
+activities and broad demand simplification follow this foundation, as specified in the plan.
+
+**Fresh correctness checks:** 180 targeted unit tests pass; 12 existing ignored targets/manual
+checks remain ignored. The village suite passes concurrent-year determinism, complete accounting
+comparison, observed/unobserved equivalence and cash reconciliation; its enabled growth target
+fails. Maximum recovery-only residuals: city/business `0.0000`, household `0.0266` currency.
+
+```bash
+cargo test --manifest-path rust/Cargo.toml --lib -- \
+  economy::households::tests economy::demand::tests economy::fiscal::tests \
+  economy::definitions::balance_tests nodes::sim::core::budget::tests \
+  buildings::allocator::tests::demand_actions
+METRUM_GROWTH_REPORT=/tmp/metrum-recovery-only-2026-10-06.txt \
+  cargo test --manifest-path rust/Cargo.toml --test growth_scenario -- --include-ignored
+```
+
+**Fresh matched 10k performance:** pre-repair diagnostic binary SHA-256 prefix
+`2e1ec6347b2c40f5`, repaired binary `3e763b5a4042b07b`. Both derive from `21100889` plus the
+existing worksheet/diagnostic work; the repaired build additionally contains this recovery rule,
+regression and replacement-capital reporting. Same root-invoked release configuration, unchanged
+economy/demand data, eight Rayon workers, unprofiled runs with no concurrent builds/tests.
+The fixture starts and ends identically: 11,120 residents, 5,597 households, 7,619 employed,
+13,881 nominal jobs and 7,396 buildings. Setup is outside timing; the observer is disabled.
+
+| Build | Setup, s | Hour mean, ms (95% interval) | Daily mean, ms (95% interval) |
+| --- | ---: | ---: | ---: |
+| Before | 14.6 | 2.491 (2.256–2.762) | 838.5 (630.2–1,020.5) |
+| Recovery | 14.8 | 2.578 (2.410–2.762) | 820.0 (615.0–999.7) |
+
+Criterion detects no significant change (hour `p=0.60`, daily `p=0.91`). This is a populated-city
+cost comparison, not organic-growth acceptance or closure of the broad daily-cost work in
+`ECON-13`. No larger tier was run.
+
+```bash
+cargo bench --manifest-path rust/Cargo.toml --bench economy_tick_benchmark --no-run
+RAYON_NUM_THREADS=8 CRITERION_HOME=/tmp/metrum-recovery-perf-before \
+  /tmp/metrum-village-after-bench /10k --save-baseline before --bench
+RAYON_NUM_THREADS=8 CRITERION_HOME=/tmp/metrum-recovery-perf-before \
+  /tmp/metrum-recovery-after-bench /10k --baseline before --bench
+```
+
+Artifacts: `/tmp/metrum-recovery-only-2026-10-06.txt`, `/tmp/metrum-recovery-only-tests.log`,
+`/tmp/metrum-import125-2026-10-06.txt`, `/tmp/metrum-import125-tests.log`,
+`/tmp/metrum-recovery-final-unit.log`, `/tmp/metrum-recovery-bench-build.log`,
+`/tmp/metrum-recovery-perf-{before,after}.log`, and `/tmp/metrum-recovery-perf-before/economy_tick/`.
+The import experiment used the same scenario executable in a fresh process after editing only
+the multiplier; the runtime loader reads authored data at process startup.
+
+#### Grocery startup repair (`ECON-14`)
+
+**Implemented 2026-10-06.** The earlier import-only failure had multiple causes. Stores counted
+empty household pantries as production demand even when goods were already on retail shelves
+or reserved for shoppers, hired from bulk daily sales spikes, and produced at rounded worker
+capacity. The recovery-only trace reached about 605 units on grocery shelves while 13 households
+had no supplies. Some household shoppers were unavailable because a job change stranded them
+inside a former workplace; demolition could then leave them without any valid building location.
+
+The repair uses recurring household consumption plus net pantry recovery, subtracting retail
+inventory and reservations. Whole worker slots remain necessary, but production, operating input
+demand and input stock targets follow the continuous demand rate. Former workers return home
+through ordinary routing; demand demolition evacuates physical occupants before deleting their
+origin. Existing removal/remapping, shipment and shopping-reservation lifecycles remain in use.
+
+Imports change from **1.75× to 1.25×** with these fixes. Wages, retail prices, recipes, worker
+capacities, transfers and initial treasury are unchanged. Service openings must cover the first
+worker, current-policy property tax, imported utilities and recipe inputs from remaining market
+demand. Personal/health service thresholds are 156/166 residents with current level-one defaults,
+assuming paid demand; no service opens prematurely in this village. This check is necessary, not
+a household affordability guarantee or a complete model of future sales.
+
+The observer records paid wages before job reassignment, hourly production and sales units,
+inventory, staffing, household shortage state, and startup cash independently of operating cash.
+The initial 18,450 grocery float includes imported opening inventory funding; no later grocery
+capital appears, including on previously unused parcels.
+
+| Observed measure | First 365 days | Second 365 days |
+| --- | ---: | ---: |
+| Households / residents at end | 16 / 26 | 16 / 26 |
+| Grocery sales | 248,963.91 | 244,173.47 |
+| Grocery gross wages paid | 94,950 | 79,740 |
+| Grocery operating cash change after purchases, wages and taxes | −3,024.36 | +14,764.16 |
+| Grocery new startup cash | 18,450 | 0 |
+| Grocery bankruptcies | 0 | 0 |
+| Household-days with an empty pantry at settlement | 4 / 6,125 | 0 / 5,840 |
+| Year-end grocery cash | 15,425.64 | 30,189.80 |
+| Year-end city treasury | −51.00 | −123.65 |
+
+The first year still uses working capital; its final 30 days generate about 1,035 operating cash
+with no empty pantries. The second year demonstrates receipts covering grocery wages and other
+costs without recapitalization. The active two-year regression checks no grocery bankruptcies,
+no second-year startup funding, paid wages, positive second-year operating cash and no second-year
+empty household pantries. Concurrent-year determinism, observer neutrality and cash reconciliation
+also pass; maximum city/business residual is below 0.0001 and household residual below 0.001.
+
+**This is grocery acceptance in this fixture, not a healthy city.** First-year industrial firms
+still receive 345,780 startup cash and fail 29 times; their wages and cheap local inputs help
+support grocery sales. City recurring net is −57,691 in year one. Year two still has industrial
+recapitalization, no population growth and cash-limited transfers. Grocery staffing cliffs in the
+worksheet remain; this result is not proof that every small population or zoning mix is viable.
+The broader growth/solvency test still fails when enabled. Industrial sales, funded employment,
+household affordability and municipal funding are the next work; neither `ECON-14` nor `DEM-02`
+is complete.
+
+**Complexity:** grocery aggregation reuses the existing ordered parallel O(H + B) reduction with
+constant catalog size; per-building production/input and per-agent return decisions remain O(1).
+Service opening adds O(profile ports) per candidate and one catalog utility-price scan per plan.
+Evacuation reuses serial lifecycle mutation: O(A) per bounded demolition, already the removal's
+complexity, plus route planning only for displaced occupants. Housed occupants avoid border
+search. The richer O((H + B) log B + A) observer is opt-in and absent from live/performance runs.
+
+Fresh targeted checks: **272 unit tests pass**, including employment, movement, shopping,
+demolition/remapping, production, demand and fiscal regressions; 20 existing manual/target tests
+remain ignored. The ordinary scenario suite has three passing tests; broader healthy growth
+remains an explicitly ignored failing target.
+
+```bash
+cargo test --manifest-path rust/Cargo.toml --lib -- \
+  economy::households::tests economy::demand::tests economy::fiscal::tests \
+  economy::definitions::balance_tests economy::agents \
+  buildings::allocator::tests::demand_actions nodes::sim::core::budget::tests
+METRUM_GROWTH_REPORT=/tmp/metrum-grocery-final-year.txt \
+METRUM_GROWTH_LONG_REPORT=/tmp/metrum-grocery-two-years.txt \
+  cargo test --manifest-path rust/Cargo.toml --test growth_scenario -- --include-ignored
+```
+
+Artifacts: `/tmp/metrum-grocery-unit-third.log`, `/tmp/metrum-grocery-final-scenario.log`,
+`/tmp/metrum-grocery-final-year.txt`, `/tmp/metrum-grocery-two-years.txt`. Causal traces are
+`/tmp/metrum-grocery-trace-baseline.txt`, `/tmp/metrum-grocery-inventory175-v2.txt`,
+`/tmp/metrum-grocery-inventory125.txt`, `/tmp/metrum-grocery-return125.txt`,
+`/tmp/metrum-grocery-services125.txt`, and `/tmp/metrum-grocery-evac125.txt`.
+These are local artifacts; the acceptance tests and figures above are the durable record.
+
+**Fresh matched 10k performance:** recovery-only binary SHA-256 prefix `3e763b5a4042b07b`
+versus grocery repair `1defbd8b1b5abe26`. Both processes load the same current 1.25× catalog
+(`profiles.toml` SHA-256 prefix `3fce7b69d4e13062`), isolating runtime changes from import tuning.
+Both derive from `21100889` plus the existing ledger/diagnostics/recovery work; the latter adds
+the grocery, service-opening and displacement changes above. Root-invoked unprofiled release
+builds, eight Rayon workers, sequential runs with no concurrent builds/tests, observer disabled.
+
+| Build | Setup, s | Hour mean, ms (95% interval) | Daily mean, ms (95% interval) |
+| --- | ---: | ---: | ---: |
+| Recovery baseline | 14.7 | 2.750 (2.554–2.971) | 823.26 (619.65–1,002.2) |
+| Grocery repair | 15.5 | 2.130 (2.041–2.229) | 827.89 (621.96–1,008.1) |
+
+Criterion reports hourly improvement of 22.6% (`p < 0.01`); daily change is not significant
+(`p = 0.97`). The fixture is identical before/after: 11,120 residents, 5,597 households,
+7,619 employed, 13,881 nominal jobs and 7,396 buildings, with matching treasury records. Each
+sample is one tick: 23 operational-hour and ten daily-settlement samples, with setup excluded.
+These figures validate this populated workload, not organic growth or worst-case demolition;
+the broad daily cost remains `ECON-13` work. No larger tier was run.
+
+```bash
+cargo bench --manifest-path rust/Cargo.toml --bench economy_tick_benchmark --no-run
+RAYON_NUM_THREADS=8 CRITERION_HOME=/tmp/metrum-grocery-perf \
+  /tmp/metrum-recovery-after-bench /10k --save-baseline before --bench
+RAYON_NUM_THREADS=8 CRITERION_HOME=/tmp/metrum-grocery-perf \
+  /tmp/metrum-grocery-after-bench /10k --baseline before --bench
+```
+
+Performance artifacts: `/tmp/metrum-grocery-bench-build.log`,
+`/tmp/metrum-grocery-perf-{before,after}.log`, `/tmp/metrum-grocery-perf/economy_tick/`.
+Final ordinary scenario verification: `/tmp/metrum-grocery-final-active.log`.
 
 ### `ECON-13` economy tick baseline
 
-In progress, 2026-10-02. The benchmark and its city are in place, and the 10k and 100k tiers run.
-The 1M city builds (2026-10-04, below); the 1M benchmark ticks have not run yet. The numbers below
-come from single runs and are not yet the matched acceptance runs.
+**Current scope, 2026-10-05: in progress at 10k residents.** Capture matched, unprofiled release
+hourly and daily runs for economy changes, recording build/workload identity, worker settings,
+setup cost, distributions and artifacts. Diagnose relevant slow daily ticks separately from
+ordinary hourly cost. Historical 100k/1M work is not a gate for the healthy-growth redesign.
+The 1M benchmark run is deferred; do not schedule it as the next economy task.
+
+Exit for this iteration: a reproducible 10k baseline and matched comparisons for changed runtime
+paths, with regressions explained and resolved. The historical 9.5 ms hourly result is evidence
+for its original build, not a current acceptance measurement. A populated timing fixture does
+not demonstrate organic growth, business survival, or city solvency.
+
+**Benchmark city.** `PopulatedCity::build(residents)` (`rust/src/nodes/sim/core/populated_city.rs`)
+builds a square city sized for the requested residents (about 2,800 per km², plus 8% headroom):
+
+- Streets run every 50 m, with back-to-back lots between them, and cross streets every 400 m.
+  Roads are added through the bulk path of the in-game benchmark city; cross streets go in one
+  block at a time so rows never split a city-length road (`ROAD-52`).
+- An `OWA` trunk runs from the world edge along the middle street.
+- Streets are zoned with the player's brush in a repeating pattern of eight rows: six
+  residential, one commercial and one industrial.
+- Every lot is built through the demand spawn executor with the `godot/bootstrap/mods` pack, and
+  construction is completed.
+- Households are admitted through demand admission until the resident count is reached. Their
+  carriers are placed at home instead of driving in. This is the only step that bypasses the
+  game.
+- The treasury is effectively unlimited, so city services stay funded in every tier.
+- Two simulated days run before timing starts.
+
+The economy then runs on its real hourly cadence without agent movement, so trips the economy
+starts never finish.
+
+**Benchmark.** `rust/benches/economy_tick_benchmark.rs` builds each tier once, outside the timed
+region, and keeps advancing the city hour by hour. Only the tick under test is timed, and every
+sample is one tick:
+
+- `operational_hour`: each of the 23 demand-pass hours of one day.
+- `daily_settlement`: ten consecutive days.
+
+In the original 10k/100k records, household, resident, employment, job and building counts
+were unchanged across the short runs. This does not establish financial stability. Use the
+explicit 10k filter:
+`cd rust && cargo bench --bench economy_tick_benchmark -- /10k`. The unfiltered harness still
+includes larger tiers; those runs are deferred. Criterion warns that the target time is too short;
+that is intended.
+
+#### Historical larger-city builds and initial timings
+
+The following 2026-10-02–04 measurements and projections are retained for their original builds.
+They do not expand the current 10k acceptance scope. Initial ECON-13 timings were single runs;
+the later matched logistics comparison is recorded under `ECON-15`.
 
 1M build, 2026-10-04. A temporary build-only probe, since removed, ran
 `PopulatedCity::build_timed(1_000_000)`. Release, `a4635166`, 24 logical CPUs, default Rayon
@@ -3870,39 +4240,7 @@ along with `ALLOC-04`:
 
 - The 100k build fell from 505 s to 177 s, with identical records.
 - The 1M hour projects to about 0.3 s.
-- The 1M run is next.
-
-**Benchmark city.** `PopulatedCity::build(residents)` (`rust/src/nodes/sim/core/populated_city.rs`)
-builds a square city sized for the requested residents (about 2,800 per km², plus 8% headroom):
-
-- Streets run every 50 m, with back-to-back lots between them, and cross streets every 400 m.
-  Roads are added through the bulk path of the in-game benchmark city; cross streets go in one
-  block at a time so rows never split a city-length road (`ROAD-52`).
-- An `OWA` trunk runs from the world edge along the middle street.
-- Streets are zoned with the player's brush in a repeating pattern of eight rows: six
-  residential, one commercial and one industrial.
-- Every lot is built through the demand spawn executor with the `godot/bootstrap/mods` pack, and
-  construction is completed.
-- Households are admitted through demand admission until the resident count is reached. Their
-  carriers are placed at home instead of driving in. This is the only step that bypasses the
-  game.
-- The treasury is effectively unlimited, so city services stay funded in every tier.
-- Two simulated days run before timing starts.
-
-The economy then runs on its real hourly cadence without agent movement, so trips the economy
-starts never finish.
-
-**Benchmark.** `rust/benches/economy_tick_benchmark.rs` builds each tier once, outside the timed
-region, and keeps advancing the city hour by hour. Only the tick under test is timed, and every
-sample is one tick:
-
-- `operational_hour`: each of the 23 demand-pass hours of one day.
-- `daily_settlement`: ten consecutive days.
-
-The city cannot drift far during a run. At both tiers, households, residents, employed, jobs and
-buildings were the same after the runs as before. Run it with
-`cd rust && cargo bench --bench economy_tick_benchmark -- /10k` (or `/100k`, `/1m`). Criterion
-warns that the target time is too short; that is intended.
+- The then-planned 1M tick run did not complete; it is deferred by the 2026-10-05 scope decision.
 
 Build: branch `economy` at `522aae16` plus uncommitted `ECON-13` changes, `bench` profile, 24
 logical CPUs, 64 GB RAM, default Rayon workers.
@@ -3940,10 +4278,6 @@ Findings so far:
   30 MB, buildings, households and zoning included. At the 1M layout that projected to about
   110 GB. `ROAD-44` progress (2026-10-03) cut 100k peak RSS to 2.0 GB (from 14.8 GB), with identical
   city records and tick times.
-
-Exit: the 1M tier builds within 64 GB (`ROAD-44`, done 2026-10-04), and matched runs for all three tiers are
-recorded here. The slow daily ticks are tracked separately; this baseline records them as they
-are.
 
 ### `ECON-15` logistics hourly scaling
 
@@ -4009,35 +4343,3 @@ tracked under `ECON-13`.
 
 Coverage: `supplier_index_lists_only_suppliers_with_an_unreserved_truckload` in
 `logistics/tests.rs`.
-
-## Future Calibration Targets
-
-Remaining open items for the pioneer phase:
-- **Dynamic Wage Scaling**: Allow buildings to pay partial wages from available budget instead of stopping at the first worker the budget cannot cover.
-- **Liquidation Logic**: Implement an "Economic Death" trigger — despawn a business that stays at $0 budget for a sustained period even when demand pressure is high (Ghost Business problem, issue #4 above).
-- **Household bootstrap gap**: The 2-3 day starvation window (days 4-7, between starting-supply depletion and first wages) is the remaining residual from issue #2. Resolved by household transfers — see [Household Transfer Payments](#household-transfer-payments).
-- **Pioneer Floor Retirement**: ~~Done.~~ Pioneer demand floor removed from `demand.rs`; household transfers are the replacement and are live.
-
-
-
-## Summary
-
-The economy is authored as hand-edited TOML data, not hardcoded numbers and not gameplay UI controls.
-
-The recommended design is:
-
-- assets define identity, base metadata, and an `economy_profile` reference
-- `economy/profiles.toml` defines profiles, recipes, prices, wages, and runtime tuning
-- runtime simulation executes compiled building-level inventories, labor, and shipment rules
-- `v0.1` uses fixed internal base prices and fixed wage bands rather than a full dynamic local market
-- the city treasury covers simple road, infrastructure, and civic-facility build cost plus daily upkeep in the first pass
-- wages and labor prices remain simulation outcomes rather than direct player inputs
-- missing assets and missing economy profiles both degrade into explicit broken states rather than silent remaps
-- logistics uses batched, reservation-based shipment rules with bounded supplier search and cooldown-based failure handling
-- the `OWA` acts as an external buyer and seller, but all imported and exported goods still move through physical border freight
-- future player policies such as income tax, property tax, `VAT`, tariffs, and subsidies use a separate bounded gameplay UI
-- households consume shared household supply, with bounded one-shopper replenishment trips rather
-  than constant per-resident shopping
-- fresh-map startup support and later private development remain bounded systems, and zoning alone must not spam empty buildings
-
-That gives Metrum Rise a debuggable economy authoring workflow without violating the project's scale and performance constraints.

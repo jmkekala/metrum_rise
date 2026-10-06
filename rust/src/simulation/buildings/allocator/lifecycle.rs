@@ -419,12 +419,12 @@ impl BuildingAllocator {
         logistics: &mut ShipmentSystem,
         treasury_balance: &mut f64,
         graph: &RegionGraph,
-        lanes: &LaneSystem,
-        road_surface: &RoadSurfaceSystem,
+        network: &TransitNetwork,
         terrain: &TerrainSystem,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
     ) -> DemandBuildingActionExecution {
+        let road_surface = &network.road_surface;
         let mut mutated_any = false;
         let mut execution = DemandBuildingActionExecution::default();
 
@@ -440,6 +440,15 @@ impl BuildingAllocator {
                 if !self.can_demand_despawn(building_idx) {
                     continue;
                 }
+                // Employment slots can be empty while former employees remain inside.
+                // Preserve a physical route home before deletion invalidates the entrance.
+                agents.evacuate_building_for_removal(
+                    building_idx,
+                    households,
+                    self,
+                    network,
+                    graph,
+                );
                 mutated_any |= self.remove_building_at_index(
                     building_idx,
                     zoning,
@@ -508,7 +517,7 @@ impl BuildingAllocator {
             // swap-removed vacancies out of building order, and admission breaks ties by
             // vacancy position (`ALLOC-03`). One O(N) pass per batch, not per spawn.
             self.rebuild_zone_index();
-            self.rebuild_entrance_cache(graph, lanes);
+            self.rebuild_entrance_cache(graph, &network.lane_system);
         }
         execution
     }

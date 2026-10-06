@@ -321,6 +321,49 @@ impl OutputAbsorptionContext {
     }
 }
 
+pub(super) fn service_market_covers_first_worker(
+    profile: &EconomyProfileRuntime,
+    catalog: &RuntimeEconomyCatalog,
+    absorption: &OutputAbsorptionContext,
+    daily_overhead: f32,
+    import_multiplier: f32,
+) -> bool {
+    if profile.kind != EconomyProfileRuntimeKind::ServiceStore {
+        return true;
+    }
+    if profile.worker_capacity == 0 {
+        return false;
+    }
+    let first_worker_scale = 1.0 / profile.worker_capacity as f32;
+    let revenue: f32 = profile
+        .outputs
+        .iter()
+        .map(|port| {
+            absorption
+                .unmet_units(port.resource_runtime_id)
+                .min(profile.net_output_units_per_day(port) * first_worker_scale)
+                * catalog
+                    .unit_price_for_resource(port.resource_runtime_id)
+                    .unwrap_or(0.0)
+        })
+        .sum();
+    let inputs: f32 = profile
+        .inputs
+        .iter()
+        .map(|port| {
+            port.units_per_day.max(0.0)
+                * first_worker_scale
+                * catalog
+                    .unit_price_for_resource(port.resource_runtime_id)
+                    .unwrap_or(0.0)
+                * import_multiplier
+        })
+        .sum();
+    // Necessary break-even market, independent of owner startup cash. The existing
+    // capacity reservation prevents another selected shop from counting these buyers.
+    revenue > profile.average_daily_wage() + daily_overhead + inputs
+}
+
 pub(super) fn nonresidential_passes_absorption_gate(
     allocator: &BuildingAllocator,
     catalog: &RuntimeEconomyCatalog,

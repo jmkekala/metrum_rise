@@ -298,12 +298,9 @@ impl AgentSystem {
             household_targets.insert(household_id, target_home);
         }
 
-        let border_plan = self.best_border_exit_plan_from_building(
-            building_id,
-            allocator,
-            transit_network,
-            graph,
-        );
+        // Most business removals only need trips home. Resolve a border exit once,
+        // and only if a physically displaced occupant has no surviving home.
+        let mut border_plan = None;
         for agent_idx in 0..self.agents.len() {
             let household_id = self.agents.household_id[agent_idx];
             let mut home_after_removal = self.agents.home_building[agent_idx];
@@ -353,7 +350,17 @@ impl AgentSystem {
                         transit_network,
                         graph,
                     );
-                } else if let Some(plan) = border_plan.clone() {
+                } else if let Some(plan) = border_plan
+                    .get_or_insert_with(|| {
+                        self.best_border_exit_plan_from_building(
+                            building_id,
+                            allocator,
+                            transit_network,
+                            graph,
+                        )
+                    })
+                    .clone()
+                {
                     if !self.start_building_origin_plan_on_network(
                         agent_idx,
                         plan,

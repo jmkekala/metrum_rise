@@ -292,36 +292,42 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
 
 ## Current Priorities
 
-- **Economy growth redesign (`ECON-11`–`ECON-12` done; `ECON-13` in progress; `ECON-15` done; `ECON-14`, `DEM-02` open)**: the city stops growing because
-  it has no export base, exports pay `0.60×` unit price, and regional pull ends at 600 households.
-  Balance tests and a headless growth scenario are in place; the scenario's starter town stalls at
-  25 households and runs out of money near day 280.
-  - The `ECON-13` tick benchmark runs at 10k residents (hour 9.5 ms) and 100k (hour 29 ms).
-    Building it exposed and fixed a job search that routed every home to every workplace, with
-    identical results.
-  - The logistics hour no longer grows near-quadratically (`ECON-15`). Supplier searches that
-    found no stock scanned every supplier; the hourly supplier index now lists only suppliers
-    that can ship, with identical results.
-  - Road-surface memory (`ROAD-44` done): junction topologies are capped and span
-    products are rebuilt from sections, with identical output. 100k peak RSS fell from 14.8 GB to
-    2.0 GB, and the 1M city builds in 39 min with 16.5 GB peak RSS. Triangles are now stored as fan or index forms
-    (`ROAD-45`), span terrain-clip edges as compact keys (`ROAD-46`), span regions as 8 B
-    records (`ROAD-47`), lanes as 96 B records (`ROAD-48`) and node triangle queries as ids into
-    their regions (`ROAD-49`). Together these cut the 100k road layout from 1.74 to 1.27 GB. Span
-    earthwork records remain.
-  - The street grid now builds in linear time (`ROAD-52`): bulk road adds mark only their own
-    cell lots, long self-crossing checks use a sweep, and the benchmark city adds cross streets a
-    block at a time. 300k street grid 142 s → 66.5 s; 1M projects to about 220 s instead of
-    1,032 s. The scaling test now records each tier's build peak RSS (`ECON-16`).
-  - The 1M city now fits in memory (about 20 GB projected), and the steps that made its build
-    project to 10+ hours are fixed:
-    - Batch building spawns (`ALLOC-02`) no longer scan every building.
-    - Household admission no longer scans every vacancy (`ALLOC-03`) or routes from every border
-      per household (`ALLOC-04`).
-    - The hourly tick is no longer near-quadratic (`ECON-15`).
-  - 100k build 505 s → 177 s, records identical. The 1M run is next.
-  - The export base and a single demand signal follow. See
-    [`economy.md`](economy.md#growth-redesign-econ-11econ-14-dem-02).
+- **Healthy city growth (`ECON-11`–`ECON-12` done; `ECON-13`–`ECON-14` in progress; `DEM-02` open)**:
+  plan revised 2026-10-05; failed-business recovery and grocery viability repaired 2026-10-06. Define household budgets and supported employment,
+  repair imported-input startup, add a small set of funded commercial/service/industrial
+  activities and viable regional sales, then simplify demand around unmet capacity.
+  - The current private consumption chain supports only 130.55 jobs per 1,000 residents, mostly
+    food retail/processing. The grocery repair accepts 1.25× imports with demand/production and
+    movement fixes; industrial export losses persist. Additional activity needs affordable customers.
+  - The initial `ECON-14` [starter-town ledger](economy.md#starter-town-balance-sheet-econ-14)
+    is reproducible from shipped profiles. Lower import costs can repair paper business margins,
+    but staffing steps, household deficits and a large funded-employment gap remain. The
+    [village failure report](economy.md#village-failure-timeline-econ-14) traces
+    the first processor failure to day 14, the last grocery closure to day 188 and treasury
+    exhaustion to day 192 in the original run. The [recovery repair](economy.md#failed-business-recovery-econ-14)
+    now clears empty failed commercial/industrial sites at any demand using the existing budget.
+    Its isolated year ends with 35 residents and 20 employed, but 95 bankruptcies and 923,475 in
+    startup capital show continued churn; 659,715 is separately identified as rebuilt-site capital.
+    The original import-only trial failed. The subsequent
+    [combined grocery repair](economy.md#grocery-startup-repair-econ-14) survives two years without
+    grocery recapitalization: year-two operating cash +14,764 and no household stockouts.
+    Recovery demolition now evacuates former workers, and service openings require enough
+    remaining market to pay their first worker and overhead. The town still stalls at 26 residents;
+    industrial replacements and cash-limited transfers prevent healthy-growth acceptance.
+    Next address viable industrial customers and margins, household affordability and recurring
+    fiscal funding before adding activities or simplifying broader demand.
+  - The 2026-10-05 review at `21100889` passed targeted unit tests and concurrent-year
+    determinism; both enabled economic targets failed. The starter scenario ends with 12
+    households, no jobs and treasury −42,465. The 600-household regional-pull term is not a hard
+    immigration cap and does not explain this early failure.
+  - Use matched **10k** hourly/daily performance checks. **The 1M run is deferred** and larger
+    tiers do not block this work. Existing scaling fixes (`ECON-15`, `ALLOC-02`–`ALLOC-04`,
+    `ROAD-44`–`ROAD-49`, `ROAD-52`, `ECON-16`) and their measurements remain recorded in the
+    owner docs; road span earthwork records remain separate work.
+  - Healthy-growth acceptance covers household affordability, business survival beyond startup
+    funds, recurring fiscal balance and growth where opportunity exists. Numerical ranges and
+    the first added activities are still design work. See the
+    [plan and evidence](economy.md#growth-redesign-econ-11econ-14-dem-02).
 - **Road preview display performance (`ROAD-30`–`ROAD-35`, `ROAD-37`–`ROAD-40` and `ROAD-42` done;
   `ROAD-36`, `ROAD-41` and `ROAD-43` parked)**: prioritize **Road and terrain**. With input-to-display baselines captured, tackle native buffer validation, rendering
   resource reuse, retained geometry locality, packed payload deltas, worker scheduling and
@@ -1122,9 +1128,9 @@ reopening requires a current reproduction, not an assumption that the old geomet
   request failures after route-topology changes. The Godot renderer maps the freight vehicle type
   to `assets/models/vehicles/freight/delivery.glb`. See [`economy.md`](economy.md).
 - Industrial exports now hold affordable local business and utility input demand before selling to `OWA`,
-  repeated same-resource exports saturate to a lower outside bid, and commercial store jobs/input
-  targets scale from the larger of recent household sales and local household demand/stock
-  recovery instead of immediately using full authored capacity.
+  and repeated same-resource exports saturate to a lower outside bid. Grocery jobs/input targets
+  now follow resident consumption and pantry recovery net of shelves and shopper reservations;
+  whole worker rounding and bulk sales do not inflate production demand.
 - Added `service_store` economy profiles for aggregate standalone commercial services, with starter
   barber and pharmacy assets bound to `personal_service_small` and `health_essentials_small`;
   personal-service demand now also creates capped representative visible visits without changing

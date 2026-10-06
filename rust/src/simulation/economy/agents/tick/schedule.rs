@@ -5,6 +5,7 @@
 use super::planning::estimate_building_origin_trip_seconds;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::time::TimeSystem;
+use crate::simulation::economy::agents::{ACTIVITY_HOME, ACTIVITY_WORK};
 use crate::simulation::economy::definitions::{
     MinuteWindow, OperationalClockRuntimeTuning, RuntimeEconomyCatalog, WorkTimingProfile,
 };
@@ -89,6 +90,16 @@ pub(super) fn maybe_schedule_work_trip(
     operational_clock: &OperationalClockRuntimeTuning,
     economy_catalog: &RuntimeEconomyCatalog,
 ) -> Option<(usize, u8)> {
+    // A job can end or change while its worker is still inside the old workplace.
+    // Return through the ordinary trip planner before using the new job's schedule.
+    if home_building != usize::MAX
+        && current_building != home_building
+        && current_building != work_building
+        && current_activity == ACTIVITY_WORK
+    {
+        cache.clear_departure_if_cached();
+        return Some((home_building, ACTIVITY_HOME));
+    }
     if home_building == usize::MAX || work_building == usize::MAX {
         cache.clear_departure_if_cached();
         return None;
@@ -361,6 +372,66 @@ mod tests {
             cached_work_profile_index: &mut data.cached_work_profile_index[0],
         };
         run(&mut cache);
+    }
+
+    #[test]
+    fn job_loss_or_change_returns_a_worker_from_the_former_workplace() {
+        let tuning =
+            crate::simulation::economy::definitions::load_runtime_economy_tuning().unwrap();
+        let catalog =
+            crate::simulation::economy::definitions::load_runtime_economy_catalog().unwrap();
+        let allocator = BuildingAllocator::new();
+        let network = TransitNetwork::new();
+        let graph = RegionGraph::new();
+        let pathfind_count = AtomicU32::new(0);
+        for work in [usize::MAX, 2] {
+            with_schedule_cache(|cache| {
+                *cache.next_departure_day = 9;
+                *cache.next_departure_target_building = 1;
+                let trip = maybe_schedule_work_trip(
+                    1,
+                    ACTIVITY_WORK,
+                    0,
+                    work,
+                    false,
+                    0,
+                    cache,
+                    0.0,
+                    &test_clock(1, 0),
+                    &allocator,
+                    &network,
+                    &graph,
+                    &pathfind_count,
+                    &tuning.operational_clock,
+                    &catalog,
+                );
+                assert_eq!(trip, Some((0, ACTIVITY_HOME)));
+                assert_eq!(*cache.next_departure_target_building, usize::MAX);
+                assert_eq!(*cache.next_departure_day, u32::MAX);
+                let shopping = maybe_schedule_work_trip(
+                    1,
+                    crate::simulation::economy::agents::ACTIVITY_SHOPPING,
+                    0,
+                    work,
+                    false,
+                    0,
+                    cache,
+                    0.0,
+                    &test_clock(1, 0),
+                    &allocator,
+                    &network,
+                    &graph,
+                    &pathfind_count,
+                    &tuning.operational_clock,
+                    &catalog,
+                );
+                assert_eq!(
+                    shopping, None,
+                    "job changes must not override a shopping visit"
+                );
+            });
+        }
+        assert_eq!(pathfind_count.load(std::sync::atomic::Ordering::Relaxed), 0);
     }
 
     #[test]

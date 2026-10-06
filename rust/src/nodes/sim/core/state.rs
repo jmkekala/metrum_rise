@@ -9,6 +9,7 @@ use std::time::Instant;
 use super::budget::{
     CityServicePolicy, CityTreasury, DailyBudgetLedgerEntry, ROAD_UPKEEP_PER_METER_PER_DAY,
 };
+use super::frame::EconomyObserver;
 use super::snapshot::SimulationSnapshot;
 use super::terrain_payloads::{
     CachedRefinedTerrainPatch, ROAD_LOCKED_TERRAIN_RENDER_STEP_M, RefinedTerrainAssemblyLedger,
@@ -480,6 +481,15 @@ impl SimCore {
 impl SimCore {
     /// Executes one coarse operational-hour economy step before the daily settlement boundary.
     pub fn simulate_operational_hour_internal(&mut self, day_index: u32, minute_of_day: u16) {
+        self.simulate_operational_hour_observed(day_index, minute_of_day, &mut ());
+    }
+
+    pub(super) fn simulate_operational_hour_observed(
+        &mut self,
+        day_index: u32,
+        minute_of_day: u16,
+        observer: &mut impl EconomyObserver,
+    ) {
         let absolute_hour = day_index
             .saturating_sub(1)
             .saturating_mul(24)
@@ -505,8 +515,11 @@ impl SimCore {
             &self.fiscal_policy,
         );
         self.collect_fiscal_revenue(fiscal_revenue);
+        // Capture receipts before demand can remove or replace their building.
+        observer.hourly_economy(self);
         if minute_of_day != 0 {
             self.execute_hourly_demand_pass(day_index, minute_of_day, &service_funding_by_building);
+            observer.buildings_changed(self);
         }
     }
 
@@ -645,6 +658,14 @@ impl SimCore {
 
     /// Executes one full economy / daily tick (called once per in-game day).
     pub fn simulate_tick_internal(&mut self, day_index: u32) {
+        self.simulate_tick_observed(day_index, &mut ());
+    }
+
+    pub(super) fn simulate_tick_observed(
+        &mut self,
+        day_index: u32,
+        observer: &mut impl EconomyObserver,
+    ) {
         let tick_start = Instant::now();
 
         debug_log!(
@@ -669,6 +690,7 @@ impl SimCore {
             &mut self.region_graph,
         );
         self.publish_pending_building_site_changes();
+        observer.buildings_changed(self);
         // Drain building dirty-zone flags → mark matching flow fields for rebuild.
         {
             use crate::simulation::buildings::allocator::BASELINE_PRIVATE_ZONES;
@@ -694,8 +716,11 @@ impl SimCore {
             &mut self.treasury.balance,
             &service_funding_by_building,
             &self.fiscal_policy,
+            |agents, allocator| observer.wages_paid(agents, allocator),
         );
         self.collect_fiscal_revenue(fiscal_revenue);
+        // Household swap-removal below also removes its ledger; observe paid flows first.
+        observer.household_settlement(self);
         // City treasury: settle daily road upkeep on the fiscal cadence.
         let road_length_m: f64 = self
             .region_graph
@@ -731,6 +756,7 @@ impl SimCore {
         self.treasury.finalize_daily_tax_window();
         self.record_daily_budget_ledger(day_index);
         self.log_daily_city_flow_diagnostics(day_index, removed_households);
+        observer.day_closed(self);
         self.debug_household_admissions_since_daily = 0;
         self.print_daily_building_economy(day_index);
         self.households.reset_daily_ledgers();
@@ -828,8 +854,7 @@ impl SimCore {
                     &mut self.logistics,
                     &mut self.treasury.balance,
                     &self.region_graph,
-                    &self.transit_network.lane_system,
-                    &self.transit_network.road_surface,
+                    &self.transit_network,
                     &self.heightmap,
                     self.demand.runtime_catalog(),
                     self.demand.runtime_tuning(),

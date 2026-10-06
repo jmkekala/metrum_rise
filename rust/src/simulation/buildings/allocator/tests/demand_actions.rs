@@ -109,8 +109,7 @@ fn benchmark_demand_action_lookup() {
                 &mut logistics,
                 &mut treasury,
                 &graph,
-                &network.lane_system,
-                &network.road_surface,
+                &network,
                 &terrain,
                 demand.runtime_catalog(),
                 demand.runtime_tuning(),
@@ -201,8 +200,7 @@ fn test_demand_building_spawn_plan_executes_from_hourly_budget() {
         &mut logistics,
         &mut 0.0,
         &graph,
-        &network.lane_system,
-        &network.road_surface,
+        &network,
         &terrain,
         demand.runtime_catalog(),
         demand.runtime_tuning(),
@@ -374,6 +372,12 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
     stale.asset_id = "building.replaced".to_owned();
     plan.residential.despawns.insert(0, stale);
 
+    // No employment/occupancy slots remain, but a former worker is still inside
+    // the building being removed. Their home is the record swap-removal will move.
+    let former_worker = agents.spawn_housed_agent(2, 0.0, 0.0);
+    agents.current_building[former_worker] = 0;
+    agents.activity[former_worker] = crate::simulation::economy::agents::ACTIVITY_WORK;
+
     let demand = DemandSystem::new();
     let terrain = compiled_flat_test_terrain(&mut network, &graph);
     allocator.execute_demand_building_actions(
@@ -384,11 +388,22 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         &mut logistics,
         &mut 0.0,
         &graph,
-        &network.lane_system,
-        &network.road_surface,
+        &network,
         &terrain,
         demand.runtime_catalog(),
         demand.runtime_tuning(),
+    );
+
+    assert_eq!(
+        agents.transit[former_worker],
+        crate::simulation::economy::agents::TRANSIT_NETWORK,
+    );
+    assert_eq!(agents.current_building[former_worker], usize::MAX);
+    assert_eq!(agents.home_building[former_worker], 0);
+    assert_eq!(agents.target_building[former_worker], 0);
+    assert_eq!(
+        agents.activity[former_worker],
+        crate::simulation::economy::agents::ACTIVITY_HOME
     );
 
     let spawned_exists = allocator
@@ -464,8 +479,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         &mut logistics,
         &mut 0.0,
         &graph,
-        &network.lane_system,
-        &network.road_surface,
+        &network,
         &blocked_terrain,
         demand.runtime_catalog(),
         demand.runtime_tuning(),
@@ -545,8 +559,7 @@ fn test_commercial_demand_spawn_startup_budget_includes_first_import_cost() {
         &mut logistics,
         &mut 0.0,
         &graph,
-        &network.lane_system,
-        &network.road_surface,
+        &network,
         &terrain,
         demand.runtime_catalog(),
         demand.runtime_tuning(),

@@ -7,6 +7,8 @@
 //! import-only inputs pay the `OWA` import multiplier. Utility bills, property and profit tax,
 //! freight and export saturation are left out, so passing is necessary for a solvent business but
 //! not sufficient. See `docs/economy.md#growth-redesign-econ-11econ-14-dem-02`.
+//! The `starter_ledger` child module adds the ECON-14 imported-input, overhead and household
+//! worksheet; its assumptions are documented separately from these original balance checks.
 
 use super::runtime::{
     EconomyProfileRuntime, EconomyProfileRuntimeKind, ResourceRuntimeId, RuntimeEconomyCatalog,
@@ -16,6 +18,8 @@ use super::{load_runtime_economy_catalog, load_runtime_economy_tuning};
 use crate::simulation::work_area::{
     minimum_work_area_workers, profile_kind_uses_explicit_work_area,
 };
+
+mod starter_ledger;
 
 /// Closed-chain jobs per 1,000 residents for the shipped profiles. Update it deliberately when
 /// a tuning change moves the figure; `ECON-14` is expected to.
