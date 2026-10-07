@@ -292,6 +292,22 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
 
 ## Current Priorities
 
+- **Starting treasury**: new games begin with 500,000, increased from 100,000. See
+  [money source](economy.md#money-source); earlier balance runs retain their original starting capital.
+
+- **Electricity accounting (`ECON-14`, implemented)**: profile-authored building demand,
+  kWh meters, demand-limited coal generation and unpaid household bills are implemented.
+  The [consumption table and 1/2/3-worker ledger](economy.md#electricity-consumption-and-coal-balance)
+  target an affordable 170-resident starter plant. Fresh validation passes 362 economy tests,
+  all three village growth tests and six staffed plant/mine scenarios. A labor/housing guard fixes
+  an unstaffed industrial startup after housing saturation; fuel buffers now follow staffed capacity.
+  The small town supports one power worker, or two with a working 1 ha mine; a third loses money.
+  Final matched 10k timing adds 0.18 ms/hour (+8.4%); the earlier revision measured +0.35 ms.
+  Neither comparison detects a significant daily change.
+  Mid-day save continuation, removal/undo accounting and the Godot display regression pass.
+  Pre-73 saves retain cash and convert generation, but lack the new meters for their first partial day;
+  see [validation and limitations](economy.md#electricity-validation-econ-14).
+
 - **Healthy city growth (`ECON-11`–`ECON-12` done; `ECON-13`–`ECON-14` in progress; `DEM-02` open)**:
   failed-business recovery, grocery viability and regional industrial markets repaired 2026-10-06;
   existing village services, area-based producer costs and explicit resource units extend that foundation.
@@ -317,7 +333,7 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
     Varied-town pantry shortages and pensioner affordability remain open; the owner doc records
     fresh correctness and matched 10k performance evidence.
   - [Resource units and payload](economy.md#resource-units-and-freight-payload): physical goods
-    use kg, electricity MJ, water/sewage m³ and services completed-service equivalents.
+    use kg, electricity kWh (MWh display), water/sewage m³ and services completed-service equivalents.
     Processing and retail quantities conserve mass while price conversions preserve recipe
     monetary values. A carrier holds at most 20,000 kg; per-resource delivery batches remain
     40/50/100 kg. The payload check adds O(1) arithmetic, with no extra routing or trip expansion.

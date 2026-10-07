@@ -585,22 +585,22 @@ func _refresh_service_details() -> void:
 		_service_graph.set_series([], [])
 		return
 
-	var produced := _sum(entries, "power_produced")
 	var consumed := _sum(entries, "power_consumed")
 	var unmet := _sum(entries, "power_unmet")
 	var demand := consumed + unmet
 	var coverage := 0.0 if demand <= 0.001 else consumed / demand
 
-	_add_metric(_service_details, "Production", "%.1f MJ" % produced)
-	_add_metric(_service_details, "Consumed", "%.1f MJ" % consumed)
-	_add_metric(_service_details, "Unmet Demand", "%.1f MJ" % unmet)
+	_add_metric(_service_details, "Consumption", _electricity_energy(demand))
+	_add_metric(_service_details, "Local supply", _electricity_energy(consumed))
+	_add_metric(_service_details, "Imports", _electricity_energy(unmet))
+	_add_metric(_service_details, "Consumption cost", _money(_sum(entries, "electricity_consumption_cost")))
 	_add_metric(_service_details, "Coverage", _percent(coverage))
 	_add_metric(_service_details, "Coal Inventory", "%.1f kg" % float(latest.get("coal_inventory", 0.0)))
 	_add_metric(_service_details, "Coal Consumed", "%.1f kg" % _sum(entries, "coal_consumed"))
 	_add_metric(_service_details, "Fuel and Machinery", _money(_sum(entries, "electricity_fuel_cost")))
 	_add_metric(_service_details, "Wage Cost", _money(_sum(entries, "electricity_wage_cost")))
 	_add_metric(_service_details, "Utility Revenue", _money(_sum(entries, "electricity_revenue")))
-	_add_metric(_service_details, "Net Balance", _signed_money(_sum(entries, "electricity_net")))
+	_add_metric(_service_details, "Net cash flow", _signed_money(_sum(entries, "electricity_net")))
 
 	_service_graph.set_series(
 		[
@@ -609,7 +609,7 @@ func _refresh_service_details() -> void:
 			_series(entries, "power_unmet"),
 		],
 		[Color(0.22, 0.74, 0.48), Color(0.26, 0.64, 0.92), Color(0.92, 0.42, 0.32)],
-		["Produced", "Consumed", "Unmet"],
+		["Generated (kWh)", "Local supply (kWh)", "Imports (kWh)"],
 		day_labels,
 		""
 	)
@@ -888,6 +888,9 @@ func _add_metric(
 	value.add_theme_color_override("font_color", value_color)
 	UIStyle.set_font_size(value, ROW_FONT_SIZE)
 	row.add_child(value)
+
+func _electricity_energy(kwh: float) -> String:
+	return "%.1f MWh" % (kwh / 1000.0) if absf(kwh) >= 1000.0 else "%.1f kWh" % kwh
 
 func _money(value: float) -> String:
 	var sign := "-" if value < 0.0 else ""

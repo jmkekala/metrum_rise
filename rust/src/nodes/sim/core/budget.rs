@@ -129,8 +129,10 @@ pub(crate) struct DailyBudgetLedgerEntry {
     pub(crate) electricity_wage_cost: f64,
     /// Local electricity revenue collected from consumers.
     pub(crate) electricity_revenue: f64,
-    /// Local electricity service balance after fuel and payroll.
+    /// Electricity cash flow after input purchases, payroll and utility upkeep.
     pub(crate) electricity_net: f64,
+    /// Bills for all electricity delivered citywide, including imported power and unpaid usage.
+    pub(crate) electricity_consumption_cost: f64,
 }
 /// City-level fiscal ledger, separate from household budgets and building budgets.
 ///
@@ -638,7 +640,8 @@ impl SimCore {
         let electricity_revenue = f64::from(
             power.household_local_revenue
                 + power.private_local_revenue
-                + power.city_service_local_cost,
+                + power.city_service_local_cost
+                - power.power_auxiliary_local_cost,
         );
         let utility_service_revenue = f64::from(power.utility_local_revenue.max(0.0));
         let imports_owa = f64::from(power.city_service_utility_owa_cost.max(0.0));
@@ -651,7 +654,10 @@ impl SimCore {
         let power_consumed = f64::from(power.served_units.max(0.0));
         let power_unmet = f64::from((power.demand_units - power.served_units).max(0.0));
         let power_produced = f64::from(power.supply_units.max(0.0));
-        let electricity_net = electricity_revenue - electricity_fuel_cost - electricity_wage_cost;
+        let electricity_net = electricity_revenue
+            - electricity_fuel_cost
+            - electricity_wage_cost
+            - f64::from(power.power_upkeep_utility_cost);
 
         let income = tax_income + utility_service_revenue;
         let expenses =
@@ -691,6 +697,15 @@ impl SimCore {
             electricity_wage_cost,
             electricity_revenue,
             electricity_net,
+            electricity_consumption_cost: {
+                let catalog = load_runtime_economy_catalog().expect("validated economy catalog");
+                let tuning = load_runtime_economy_tuning().expect("validated economy tuning");
+                let price =
+                    crate::simulation::economy::households::local_utility_service_costs(&catalog)
+                        [0];
+                f64::from(price)
+                    * (power_consumed + power_unmet * f64::from(tuning.owa_import_price_multiplier))
+            },
         }
     }
 
@@ -700,9 +715,10 @@ impl SimCore {
         };
         let coal_runtime_id = catalog.resource_runtime_id_for_id("coal");
         let mut coal_inventory = 0.0f64;
-        let mut coal_consumed = 0.0f64;
-        let mut power_input_cost = 0.0f64;
-        let mut total_input_cost = 0.0f64;
+        let removed = self.households.removed_electricity;
+        let mut coal_consumed = removed.coal_consumed_kg;
+        let mut power_input_cost = removed.power_input_cost;
+        let mut total_input_cost = removed.city_input_cost;
 
         // Fiscal reports keep index-order floating-point accumulation deterministic.
         for building in &self.allocator.buildings {

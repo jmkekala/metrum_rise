@@ -743,6 +743,9 @@ fn make_building(
         daily_city_funded_input_cost: 0.0,
         daily_household_sales_value: 0.0,
         daily_power_service_units: 0.0,
+        daily_electricity: Default::default(),
+        recent_electricity: Default::default(),
+        hourly_economy_activity: 0.0,
         daily_power_served_units: 0.0,
         recent_power_service_units: 0.0,
         recent_power_served_units: 0.0,
@@ -1333,7 +1336,7 @@ fn city_service_owa_fuel_import_debits_treasury_not_building_budget() {
         "power",
         "power_plant_basic",
     );
-    let service_building = make_building(
+    let mut service_building = make_building(
         &allocator,
         50.0,
         ZoneType::None,
@@ -1342,6 +1345,7 @@ fn city_service_owa_fuel_import_debits_treasury_not_building_budget() {
         0.0,
         0.0,
     );
+    service_building.worker_count = 1;
     allocator.buildings.push(service_building);
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
     allocator.rebuild_zone_index();

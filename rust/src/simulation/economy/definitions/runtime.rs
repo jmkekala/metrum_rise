@@ -191,8 +191,8 @@ pub(crate) struct HouseholdRuntimeTuning {
     pub immigrant_starting_budget_per_member: f32,
     /// Minimum budget for materialized households that already have a home but no record.
     pub household_starting_budget_floor: f32,
-    /// Daily household utility charge per resident.
-    pub utility_cost_per_member_per_day: f32,
+    /// Combined daily water/sewage charge per resident; electricity is metered separately.
+    pub water_sewage_cost_per_member_per_day: f32,
     /// Minimum reserve-days required to move into each residential level.
     pub residential_move_in_min_reserve_days_by_level: Vec<f32>,
     /// Minimum reserve-days required to remain in each residential level.
@@ -237,8 +237,8 @@ pub(crate) enum QuantityUnit {
     #[serde(rename = "kg")]
     Kilogram,
     /// Electrical energy supplied during an interval, not instantaneous power.
-    #[serde(rename = "MJ")]
-    Megajoule,
+    #[serde(rename = "kWh")]
+    KilowattHour,
     /// Supplied water or treated wastewater volume.
     #[serde(rename = "m3")]
     CubicMetre,
@@ -252,7 +252,7 @@ impl QuantityUnit {
     pub(crate) fn symbol(self) -> &'static str {
         match self {
             Self::Kilogram => "kg",
-            Self::Megajoule => "MJ",
+            Self::KilowattHour => "kWh",
             Self::CubicMetre => "m³",
             Self::Service => "services",
         }
@@ -304,6 +304,18 @@ pub(crate) enum EconomyProfileRuntimeKind {
     Unsupported,
 }
 
+/// Daily electricity coefficients; operating load is per hectare for field/mine profiles.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct ElectricityDemand {
+    /// Standby load once per occupied building, independent of production.
+    pub idle_kwh_per_day: f32,
+    /// Additional full-activity load, scaled by the existing production activity.
+    pub operating_kwh_per_day: f32,
+    /// Residential demand per linked resident, independent of their ability to pay.
+    pub per_resident_kwh_per_day: f32,
+}
+
 /// Compiled runtime view of one authored `economy_profile`.
 #[derive(Clone, Debug)]
 pub(crate) struct EconomyProfileRuntime {
@@ -335,8 +347,12 @@ pub(crate) struct EconomyProfileRuntime {
     pub minimum_field_area_m2: f32,
     /// Initial site preparation cost per added hectare, separate from the building footprint.
     pub area_build_cost_per_hectare: f32,
-    /// Additional electricity (MJ), water (m³), sewage (m³) per operational hectare/day.
+    /// Additional electricity (kWh), water (m³), sewage (m³) per operational hectare/day.
     pub area_utility_units_per_hectare: [f32; 3],
+    /// Profile-authored daily standby, activity and residential electricity rates.
+    pub electricity: ElectricityDemand,
+    /// Maximum electrical output at full staffing; energy capacity is kW times hours.
+    pub power_capacity_kw: f32,
     /// Authored target stock horizon in days for the starter live runtime.
     pub stock_target_days: f32,
     /// Output units pre-seeded into inventory when the building is first placed.
@@ -384,8 +400,33 @@ impl EconomyProfileRuntime {
         } else {
             0.0
         };
-        self.area_utility_units_per_hectare
-            .map(|units| 1.0 + area * units)
+        [
+            self.electricity_demand_kwh_per_day(hectares, 1.0, 0),
+            1.0 + area * self.area_utility_units_per_hectare[1],
+            1.0 + area * self.area_utility_units_per_hectare[2],
+        ]
+    }
+
+    /// Physical demand for a building, independent of its cash or electricity supply.
+    pub(crate) fn electricity_demand_kwh_per_day(
+        &self,
+        hectares: f32,
+        activity: f32,
+        residents: u32,
+    ) -> f32 {
+        let uses_area =
+            crate::simulation::work_area::profile_kind_uses_explicit_work_area(self.kind);
+        let area = if uses_area {
+            crate::simulation::work_area::sanitize_work_area_scale(hectares)
+        } else {
+            0.0
+        };
+        self.electricity.idle_kwh_per_day
+            + area * self.area_utility_units_per_hectare[0]
+            + self.electricity.operating_kwh_per_day
+                * activity.clamp(0.0, 1.0)
+                * if uses_area { area } else { 1.0 }
+            + self.electricity.per_resident_kwh_per_day * residents as f32
     }
 
     /// Charges added area only; shrinking or recommitting an unchanged site grants no refund.

@@ -557,7 +557,10 @@ Baseline ownership rule:
 - `candidate_effective_workers` is `candidate_adult_count`; children and elders contribute no
   worker capacity
 - `candidate_daily_essential_cost` combines household demand-sink resource prices, including
-  aggregate service-store demand resources, and per-member utility cost for that candidate size
+  aggregate service-store demand resources, and imported utility costs for that candidate size.
+  Electricity reserves use authored residential kWh rates and include one conservative home base
+  load per candidate household, separately from per-resident costs;
+  household power arrears reduce the cash available for housing reserves
 - `immigrant_starter_savings_per_household` comes from economy-owned household starter tuning
 - transfer amounts come from live economy-owned `CityFiscalPolicy`
 - `existing_unemployed_adult_count`, `existing_child_count`, `existing_elder_count`, and
@@ -714,6 +717,12 @@ plus input-buffer startup grant. Construction, deserted/broken industry and unre
 cash block that opportunity. A bulk-input payment can make one day cash-negative without erasing
 earned reserves; factories need not synchronize profitable days. Local unmet demand remains
 eligible independently.
+
+Industrial openings also require either unemployed adults beyond existing job vacancies or room
+for additional households: vacant/unfinished homes, residential placement candidates, or eligible
+home upgrades. The building-action pass reuses its existing residential candidates for this O(1)
+gate. Outside customers alone cannot justify an unstaffable startup after housing is saturated.
+Max-demand cheat mode bypasses this gate along with the other ordinary opening checks.
 
 A producer/processor candidate must cover full payroll, imported external inputs, property tax,
 utilities and the minimum possible dispatch cost. Prospective sites have no freight route quote;

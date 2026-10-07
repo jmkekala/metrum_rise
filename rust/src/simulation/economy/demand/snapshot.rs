@@ -197,8 +197,10 @@ pub(super) struct DailyDemandSnapshot {
     pub(super) candidate_elder_count: u16,
     pub(super) immigrant_starter_savings_per_household: f32,
     pub(super) candidate_daily_essential_cost: f32,
-    /// Recurring consumption and imported utility cost before per-home property tax.
+    /// Recurring consumption and variable imported utility cost per resident.
     pub(super) daily_essential_cost_per_resident: f32,
+    /// Full home base electricity allowance, charged once per prospective household.
+    pub(super) daily_home_electricity_cost: f32,
     pub(super) unemployment_daily_benefit_per_adult: f32,
     pub(super) pension_daily_benefit_per_elder: f32,
     pub(super) child_support_daily_benefit_per_child: f32,
@@ -314,10 +316,16 @@ impl DailyDemandSnapshot {
                 consumption_rate_per_resident.max(0.0) * resource_price.max(0.0);
         }
         // Admission must remain affordable with imported utilities, before local coverage exists.
+        let daily_home_electricity_cost =
+            crate::simulation::economy::households::household_daily_utility_allowance(
+                catalog, tuning, 0.0,
+            ) * tuning.owa_import_price_multiplier;
         let daily_essential_cost_per_resident = daily_supply_cost_per_resident
             * (1.0 + fiscal_policy.household_vat_rate)
-            + tuning.households.utility_cost_per_member_per_day
-                * tuning.owa_import_price_multiplier;
+            + crate::simulation::economy::households::household_daily_utility_allowance(
+                catalog, tuning, 1.0,
+            ) * tuning.owa_import_price_multiplier
+            - daily_home_electricity_cost;
         let commercial_activity_signal =
             commercial_activity_signal_for_city(catalog, &households.households, allocator);
         let household_accumulator =
@@ -380,6 +388,7 @@ impl DailyDemandSnapshot {
             candidate_household_size * tuning.households.immigrant_starting_budget_per_member;
         let candidate_daily_essential_cost = candidate_household_size
             * daily_essential_cost_per_resident
+            + daily_home_electricity_cost
             + daily_property_tax(
                 ZoneType::Residential,
                 candidate.home_level.max(1),
@@ -699,6 +708,7 @@ impl DailyDemandSnapshot {
             immigrant_starter_savings_per_household,
             candidate_daily_essential_cost,
             daily_essential_cost_per_resident,
+            daily_home_electricity_cost,
             unemployment_daily_benefit_per_adult: fiscal_policy
                 .unemployment_benefit_per_adult_per_day,
             pension_daily_benefit_per_elder: fiscal_policy.pension_per_elder_per_day,

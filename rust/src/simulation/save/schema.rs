@@ -6,7 +6,10 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 72;
+pub const SAVE_VERSION: i64 = 73;
+
+/// Electricity uses kWh and persists physical meters plus unpaid consumer bills.
+pub const ELECTRICITY_KWH_SAVE_VERSION: i64 = 73;
 
 /// Arrival carriers persist their approved adult/elder composition.
 pub const HOUSEHOLD_ARRIVAL_SAVE_VERSION: i64 = 72;
@@ -300,7 +303,8 @@ CREATE TABLE buildings(
     recent_power_served_units REAL NOT NULL,
     recent_household_sales_value REAL NOT NULL,
     support_height_m REAL NOT NULL,
-    build_generation INTEGER NOT NULL DEFAULT 0
+    build_generation INTEGER NOT NULL DEFAULT 0,
+    electricity_usage TEXT NOT NULL
 );
 CREATE TABLE building_inventories(
     building_id INTEGER NOT NULL,
@@ -313,6 +317,7 @@ CREATE TABLE resource_extractor_sites(
     building_id INTEGER NOT NULL,
     resource_id TEXT NOT NULL,
     total_reserve_units REAL NOT NULL,
+    reserve_density_kg_per_m2 REAL NOT NULL,
     extracted_units REAL NOT NULL
 );
 CREATE TABLE resource_extractor_site_points(
@@ -334,6 +339,10 @@ CREATE TABLE agriculture_field_site_points(
     x REAL NOT NULL,
     z REAL NOT NULL,
     PRIMARY KEY(site_id, point_index)
+);
+CREATE TABLE electricity_day_state(
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    removed_buildings TEXT NOT NULL
 );
 CREATE TABLE households(
     household_id INTEGER PRIMARY KEY,
@@ -362,7 +371,8 @@ CREATE TABLE households(
     unemployment_days_elapsed INTEGER NOT NULL,
     power_consumption_cost REAL NOT NULL,
     water_consumption_cost REAL NOT NULL,
-    sewage_consumption_cost REAL NOT NULL
+    sewage_consumption_cost REAL NOT NULL,
+    electricity_account TEXT NOT NULL
 );
 CREATE TABLE city_treasury(
     balance REAL NOT NULL,
@@ -433,7 +443,8 @@ CREATE TABLE city_budget_history(
     electricity_fuel_cost REAL NOT NULL,
     electricity_wage_cost REAL NOT NULL,
     electricity_revenue REAL NOT NULL,
-    electricity_net REAL NOT NULL
+    electricity_net REAL NOT NULL,
+    electricity_consumption_cost REAL NOT NULL
 );
 CREATE TABLE shipments(
     shipment_id INTEGER PRIMARY KEY,

@@ -40,6 +40,12 @@ pub(crate) struct DailyHouseholdLedger {
     pub(crate) household_supply_consumption_cost: f32,
     /// Residential electricity charge paid from the household budget.
     pub(crate) power_consumption_cost: f32,
+    /// Delivered electricity independent of cash; billed at daily settlement.
+    pub(crate) electricity: crate::simulation::economy::electricity::ElectricityUsage,
+    /// Unpaid electricity after settlement, included in household distress reporting.
+    pub(crate) power_unpaid_cost: f32,
+    /// Collected electricity payments attributed to local generation, excluding unpaid bills.
+    pub(crate) power_local_payment: f32,
     /// Residential water-service charge paid from the household budget.
     pub(crate) water_consumption_cost: f32,
     /// Residential sewage-service charge paid from the household budget.
@@ -60,7 +66,7 @@ impl DailyHouseholdLedger {
 }
 
 /// Completed daily electricity settlement summary kept for city budget reporting.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct DailyPowerSettlementSummary {
     /// Total electricity demand considered by the daily utility settlement.
     pub(crate) demand_units: f32,
@@ -82,6 +88,10 @@ pub(crate) struct DailyPowerSettlementSummary {
     pub(crate) city_service_utility_local_cost: f32,
     /// City-service payments routed to OWA fallback across all settled services.
     pub(crate) city_service_utility_owa_cost: f32,
+    /// Plant auxiliary electricity fees that are internal transfers, not external sales.
+    pub(crate) power_auxiliary_local_cost: f32,
+    /// Imported auxiliary electricity and plant water/sewage upkeep paid outside the power service.
+    pub(crate) power_upkeep_utility_cost: f32,
 }
 
 /// Actual city-funded payroll settled during the latest fiscal day.
@@ -98,6 +108,8 @@ pub(crate) struct CityServiceWages {
 pub struct Household {
     /// Residential building currently anchoring the household.
     pub home_building_id: usize,
+    /// Unpaid local/OWA electricity bills carried into the next settlement.
+    pub(crate) power_arrears: crate::simulation::economy::electricity::ElectricityBill,
     /// Shared household budget used for essentials in the first-pass loop.
     pub budget: f32,
     /// Current household stock buffer in `household_supplies`.
@@ -183,12 +195,18 @@ pub struct HouseholdSystem {
     pub(super) daily_ledgers: Vec<DailyHouseholdLedger>,
     pub(super) last_power_settlement: DailyPowerSettlementSummary,
     pub(super) last_city_service_wages: CityServiceWages,
+    pub(super) electricity_residents_scratch: Vec<AtomicU32>,
+    pub(super) electricity_hour_scratch: Vec<super::electricity::HourlyBuildingElectricity>,
+    pub(super) electricity_totals_scratch: Vec<[f64; 2]>,
+    /// Closed building accounts retained until the current fiscal day is reported.
+    pub(crate) removed_electricity: super::electricity::RemovedBuildingElectricity,
 }
 
 /// Household records changed when one building is removed.
 pub(crate) struct HouseholdBuildingUndo {
     pub(crate) records: Vec<(usize, Household, DailyHouseholdLedger)>,
     pub(crate) mutated_building_ids: Vec<usize>,
+    removed_electricity: super::electricity::RemovedBuildingElectricity,
 }
 
 impl HouseholdSystem {
@@ -214,6 +232,10 @@ impl HouseholdSystem {
             daily_ledgers: Vec::new(),
             last_power_settlement: DailyPowerSettlementSummary::default(),
             last_city_service_wages: CityServiceWages::default(),
+            electricity_residents_scratch: Vec::new(),
+            electricity_hour_scratch: Vec::new(),
+            electricity_totals_scratch: Vec::new(),
+            removed_electricity: Default::default(),
         }
     }
 
@@ -247,11 +269,13 @@ impl HouseholdSystem {
         HouseholdBuildingUndo {
             records,
             mutated_building_ids,
+            removed_electricity: self.removed_electricity,
         }
     }
 
     /// Restores records captured by [`Self::capture_building_undo`].
     pub(crate) fn restore_building_undo(&mut self, undo: HouseholdBuildingUndo) {
+        self.removed_electricity = undo.removed_electricity;
         self.ensure_daily_ledger_len();
         for (household_id, household, ledger) in undo.records {
             if let Some(target) = self.households.get_mut(household_id) {
@@ -289,6 +313,10 @@ impl HouseholdSystem {
         self.daily_ledgers.clear();
         self.last_power_settlement = DailyPowerSettlementSummary::default();
         self.last_city_service_wages = CityServiceWages::default();
+        self.electricity_residents_scratch.clear();
+        self.electricity_hour_scratch.clear();
+        self.electricity_totals_scratch.clear();
+        self.removed_electricity = Default::default();
     }
 
     /// Remaps building references after a building swap-remove.
@@ -383,6 +411,21 @@ impl HouseholdSystem {
         ledger.sewage_consumption_cost = paid[2];
     }
 
+    /// Restores physical power meters and collected local payments without charging again.
+    pub(crate) fn restore_electricity_account(
+        &mut self,
+        household_id: usize,
+        usage: crate::simulation::economy::electricity::ElectricityUsage,
+        unpaid: f32,
+        local_payment: f32,
+    ) {
+        self.ensure_daily_ledger_len();
+        let ledger = &mut self.daily_ledgers[household_id];
+        ledger.electricity = usage;
+        ledger.power_unpaid_cost = unpaid;
+        ledger.power_local_payment = local_payment;
+    }
+
     /// Returns the most recently completed daily electricity settlement summary.
     pub(crate) fn last_power_settlement(&self) -> DailyPowerSettlementSummary {
         self.last_power_settlement
@@ -395,6 +438,7 @@ impl HouseholdSystem {
 
     /// Starts the next household accounting window after daily settlement and reporting.
     pub(crate) fn reset_daily_ledgers(&mut self) {
+        self.removed_electricity = Default::default();
         self.ensure_daily_ledger_len();
         for (ledger, household) in self.daily_ledgers.iter_mut().zip(&self.households) {
             *ledger = DailyHouseholdLedger::default();

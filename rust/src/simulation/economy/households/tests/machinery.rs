@@ -91,6 +91,7 @@ fn mine_upkeep_is_charged_once_and_only_for_remaining_reserve() {
         polygon_world: Vec::new(),
         area_m2: 20_000.0,
         total_reserve_units: 5.0,
+        reserve_density_kg_per_m2: crate::simulation::extraction::COAL_UNITS_PER_FULL_RICHNESS_M2,
         extracted_units: 0.0,
     }]);
     extraction.apply_work_area_scales(&mut allocator);
@@ -103,7 +104,12 @@ fn mine_upkeep_is_charged_once_and_only_for_remaining_reserve() {
     extraction.produce_hourly(&mut allocator, &catalog);
     assert_eq!(allocator.buildings[0].inventory_units(coal), 5.0);
     assert!(
-        (allocator.buildings[0].inventory_units(machinery) - (80.0 - 4.0 / 24.0)).abs() < 0.001
+        (allocator.buildings[0].inventory_units(machinery)
+            - (80.0
+                - 5.0 * profile.input_port(machinery).unwrap().units_per_day
+                    / profile.outputs[0].units_per_day))
+            .abs()
+            < 0.001
     );
     let stock = allocator.buildings[0].resource_inventory.clone();
     extraction.produce_hourly(&mut allocator, &catalog);
@@ -255,7 +261,7 @@ fn supported_producers_can_cover_imported_machinery_wages_and_taxes() {
         ("coal_mine_basic", ZoneType::None, 0.0),
         ("food_processor_basic", ZoneType::Industrial, 0.0),
         ("machinery_factory_basic", ZoneType::Industrial, 0.0),
-        ("power_plant_basic", ZoneType::None, 1200.0),
+        ("power_plant_basic", ZoneType::None, 23590.0),
         ("water_plant_basic", ZoneType::None, 200.0),
         ("wastewater_treatment_basic", ZoneType::None, 250.0),
     ] {

@@ -377,7 +377,12 @@ fn grain_farm_density_preserves_area_yield_and_startup_runway() {
             .abs()
                 < 0.001
         );
-        let daily_imported_utilities = (6.5 + 8.0 * hectares) * tuning.owa_import_price_multiplier;
+        let daily_imported_utilities = profile
+            .utility_demand_units_per_day(hectares)
+            .into_iter()
+            .zip(local_utility_service_costs(&catalog))
+            .map(|(qty, price)| qty * price * tuning.owa_import_price_multiplier)
+            .sum::<f32>();
         let expected_budget = (workers as f32 * 90.0 * 7.0).max(500.0)
             + profile.initial_input_import_cost(
                 &catalog,

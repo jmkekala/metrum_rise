@@ -330,6 +330,8 @@ impl AgricultureSystem {
                 profile,
                 area_factor * factors.throughput_factor * (produced / hourly_units),
             );
+            building.hourly_economy_activity =
+                factors.throughput_factor * (produced / hourly_units);
             building.add_inventory_units(output_port.resource_runtime_id, produced);
         }
     }

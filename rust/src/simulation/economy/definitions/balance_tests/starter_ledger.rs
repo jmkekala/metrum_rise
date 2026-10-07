@@ -70,22 +70,6 @@ impl<'a> Ledger<'a> {
         self.catalog.profile_for_id(id).unwrap()
     }
 
-    fn utility_unit_cost(&self) -> f64 {
-        ["power", "water", "sewage"]
-            .iter()
-            .map(|service| {
-                f64::from(
-                    self.catalog
-                        .all_profiles()
-                        .iter()
-                        .find(|p| p.utility_service.as_deref() == Some(service))
-                        .unwrap()
-                        .unit_price_currency,
-                )
-            })
-            .sum()
-    }
-
     // One-output ordinary businesses only. Explicit area producers need their own area case.
     // sold_units is net saleable output; self-upkeep is removed before scaling external inputs.
     fn business(
@@ -127,7 +111,17 @@ impl<'a> Ledger<'a> {
                 * market.output_price,
             inputs,
             wages: f64::from(workers) * f64::from(profile.average_daily_wage()),
-            overhead: self.utility_unit_cost() * market.imports
+            overhead: profile
+                .utility_demand_units_per_day(0.0)
+                .into_iter()
+                .zip(
+                    crate::simulation::economy::households::local_utility_service_costs(
+                        self.catalog,
+                    ),
+                )
+                .map(|(qty, price)| f64::from(qty * price))
+                .sum::<f64>()
+                * market.imports
                 + f64::from(daily_property_tax(zone, 1, &self.policy)),
         }
     }
@@ -135,8 +129,13 @@ impl<'a> Ledger<'a> {
     // All modeled consumer categories are available and paid. Inventory groceries charge VAT;
     // aggregate service sales currently do not. No rent payment exists in the current model.
     fn consumer_costs(&self, imports: f64) -> (f64, f64) {
-        let mut spending =
-            f64::from(self.tuning.households.utility_cost_per_member_per_day) * imports;
+        let mut spending = f64::from(
+            crate::simulation::economy::households::household_daily_utility_allowance(
+                self.catalog,
+                self.tuning,
+                1.0,
+            ),
+        ) * imports;
         let mut vat = 0.0;
         for sink in self
             .catalog
@@ -231,8 +230,8 @@ fn household_ledger_reconciles_wages_vat_property_and_transfers() {
         elder_count: 0,
     };
     let balance = ledger.household(composition, 1, false, 90.0, 1.75);
-    // Net 79.20 + child support 10 - (2 * 36.49 + property 2).
-    assert!((balance.surplus() - 14.22).abs() < 1e-4);
+    // Net 79.20 + child support 10 - (2 * 36.84 + property 2), including the home electricity reserve.
+    assert!((balance.surplus() - 13.52).abs() < 1e-4);
     // Treasury gets withheld income tax + grocery VAT + property, never VAT on service sales.
     assert!((balance.taxes - (10.8 + 4.0 + 2.0)).abs() < 1e-4);
     let unemployed = ledger.household(composition, 0, false, 90.0, 1.75);

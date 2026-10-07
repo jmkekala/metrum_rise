@@ -58,6 +58,7 @@ import_unit_price_currency = 6.4
 
 [[profiles]]
 id = "grain_farm_basic"
+electricity = { idle_kwh_per_day = 2.0, operating_kwh_per_day = 3.0, per_resident_kwh_per_day = 0.0 }
 display_name = "Grain Farm"
 kind = "field_producer"
 description = "Mechanized grain farm with two to six workers; authored output is kg per hectare/day."
@@ -66,9 +67,9 @@ worker_capacity_area_m2 = 100000.0
 area_worker_capacity_max = 6
 minimum_field_area_m2 = 40000.0
 area_build_cost_per_hectare = 20000.0
-# Annualized electricity MJ and supplemental water m3 per hectare/day, including idle operation.
+# Annualized electricity kWh and supplemental water m3 per hectare/day, including idle operation.
 # Field irrigation does not enter sewers; the farm building retains its base utility demand.
-area_utility_units_per_hectare = [2.0, 1.0, 0.0]
+area_utility_units_per_hectare = [0.555556, 1.0, 0.0]
 # 7.3 tonnes/ha/year, spread over 365 simulation days until crop seasons are modeled.
 base_rate_units_per_day = 20.0
 wage_min_currency_per_day = 80.0
@@ -92,6 +93,7 @@ units_per_day = 0.1
 
 [[profiles]]
 id = "food_processor_basic"
+electricity = { idle_kwh_per_day = 4.0, operating_kwh_per_day = 28.0, per_resident_kwh_per_day = 0.0 }
 display_name = "Food Processing Plant"
 kind = "processor"
 description = "Starter industrial processor converting grain into packaged food for grocery stores."
@@ -122,6 +124,7 @@ units_per_day = 2.0
 
 [[profiles]]
 id = "grocery_basic"
+electricity = { idle_kwh_per_day = 8.0, operating_kwh_per_day = 12.0, per_resident_kwh_per_day = 0.0 }
 display_name = "Grocery"
 kind = "store"
 description = "Starter store throughput node converting packaged food into household supplies."
@@ -148,6 +151,7 @@ units_per_day = 200.0
 
 [[profiles]]
 id = "personal_service_small"
+electricity = { idle_kwh_per_day = 2.0, operating_kwh_per_day = 4.0, per_resident_kwh_per_day = 0.0 }
 display_name = "Small Personal Service"
 kind = "service_store"
 description = "Small labor-driven commercial service such as a barber, salon, tailor, or laundromat. Outputs aggregate service capacity rather than stored goods; the live simulation may add capped representative visible visits."
@@ -170,6 +174,7 @@ units_per_day = 80.0
 
 [[profiles]]
 id = "health_essentials_small"
+electricity = { idle_kwh_per_day = 2.0, operating_kwh_per_day = 4.0, per_resident_kwh_per_day = 0.0 }
 display_name = "Small Health Essentials"
 kind = "service_store"
 description = "Small pharmacy-style commercial service for day-to-day health essentials. Outputs aggregate service capacity and has no freight inputs in the first pass."
@@ -192,6 +197,7 @@ units_per_day = 120.0
 
 [[profiles]]
 id = "basic_household_demand"
+electricity = { idle_kwh_per_day = 1.0, operating_kwh_per_day = 0.0, per_resident_kwh_per_day = 5.0 }
 display_name = "Household Demand"
 kind = "demand_sink"
 description = "Aggregated household-side supply reserve sink for the economy loop."
@@ -257,16 +263,17 @@ units_per_day = 1.0
 
 [[profiles]]
 id = "coal_mine_basic"
+electricity = { idle_kwh_per_day = 2.0, operating_kwh_per_day = 540.0, per_resident_kwh_per_day = 0.0 }
 display_name = "Coal Mine"
 kind = "extractor"
 description = "Deposit-backed starter coal mine that extracts local coal into on-site inventory for power plants and OWA export."
 worker_capacity = 5
 area_build_cost_per_hectare = 25000.0
-area_utility_units_per_hectare = [40.0, 10.0, 10.0]
-base_rate_units_per_day = 120.0
+area_utility_units_per_hectare = [60.0, 10.0, 10.0]
+base_rate_units_per_day = 9600.0
 wage_min_currency_per_day = 80.0
 wage_max_currency_per_day = 100.0
-unit_price_currency = 8.0
+unit_price_currency = 0.1
 stock_target_days = 4.0
 reorder_threshold_days = 2.0
 critical_threshold_days = 1.0
@@ -277,7 +284,7 @@ freight_timing_profile = "always_open"
 
 [[profiles.outputs]]
 resource = "coal"
-units_per_day = 120.0
+units_per_day = 9600.0
 
 [[profiles.inputs]]
 resource = "machinery"
@@ -285,28 +292,29 @@ units_per_day = 4.0
 
 [[profiles]]
 id = "power_plant_basic"
+electricity = { idle_kwh_per_day = 10.0, operating_kwh_per_day = 400.0, per_resident_kwh_per_day = 0.0 }
 display_name = "Power Plant"
 kind = "utility_producer"
 description = "Basic coal-fired power station providing electricity to connected buildings. If absent or unfueled, the city falls back to OWA power at higher cost."
 worker_capacity = 20
-base_rate_units_per_day = 1200.0
+power_capacity_kw = 1000.0
 wage_min_currency_per_day = 100.0
 wage_max_currency_per_day = 130.0
-unit_price_currency = 3.0
+unit_price_currency = 0.2
 stock_target_days = 3.0
 reorder_threshold_days = 1.5
 critical_threshold_days = 0.5
 consumption_rate_per_resident = 0.0
 starting_inventory_days = 0.0
 utility_service = "power"
-utility_quantity_unit = "MJ"
+utility_quantity_unit = "kWh"
 work_schedule_profile = "three_shift_work"
 freight_timing_profile = "always_open"
 outputs = []
 
 [[profiles.inputs]]
 resource = "coal"
-units_per_day = 96.0
+units_per_day = 10800.0
 
 [[profiles.inputs]]
 resource = "machinery"
@@ -314,6 +322,7 @@ units_per_day = 4.0
 
 [[profiles]]
 id = "water_plant_basic"
+electricity = { idle_kwh_per_day = 4.0, operating_kwh_per_day = 8.0, per_resident_kwh_per_day = 0.0 }
 display_name = "Water Treatment Plant"
 kind = "utility_producer"
 description = "Basic water treatment plant supplying water to connected buildings. If absent, the city falls back to OWA water at higher cost."
@@ -339,6 +348,7 @@ units_per_day = 0.5
 
 [[profiles]]
 id = "wastewater_treatment_basic"
+electricity = { idle_kwh_per_day = 4.0, operating_kwh_per_day = 10.0, per_resident_kwh_per_day = 0.0 }
 display_name = "Wastewater Treatment"
 kind = "utility_processor"
 description = "Basic wastewater treatment plant handling sewage from connected buildings. If absent, the city falls back to OWA sewage at higher cost."
@@ -364,6 +374,7 @@ units_per_day = 0.5
 
 [[profiles]]
 id = "machinery_factory_basic"
+electricity = { idle_kwh_per_day = 4.0, operating_kwh_per_day = 26.0, per_resident_kwh_per_day = 0.0 }
 display_name = "Small Machinery Factory"
 kind = "processor"
 description = "Small industrial factory converting steel and non-steel metals into machinery and spare parts. Produces 42 kg/day, including 2 kg for its own upkeep (40 kg net)."
@@ -394,11 +405,18 @@ units_per_day = 2.0
 resource = "machinery"
 units_per_day = 42.0
 
+[[profiles]]
+id = "building_electricity_default"
+display_name = "Default building electricity"
+kind = "unsupported"
+description = "Electricity fallback for occupied workplaces and public services without an economic recipe."
+electricity = { idle_kwh_per_day = 2.0, operating_kwh_per_day = 8.0 }
+
 [runtime_tuning]
 owa_import_price_multiplier = 1.25
 owa_export_price_multiplier = 1.0
 owa_distress_liquidation_multiplier = 0.25
-startup_treasury_balance = 100000.0
+startup_treasury_balance = 500000.0
 unemployment_daily_benefit_per_member = 30.0
 unemployment_max_days = 30
 pension_daily_benefit_per_elder = 30.0
@@ -516,7 +534,7 @@ industrial = "always_open"
 immigrant_starting_stock_days = 3.0
 immigrant_starting_budget_per_member = 15.0
 household_starting_budget_floor = 10.0
-utility_cost_per_member_per_day = 3.0
+water_sewage_cost_per_member_per_day = 2.0
 residential_move_in_min_reserve_days_by_level = [
     0.5,
     6.0,

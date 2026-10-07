@@ -202,8 +202,10 @@ impl VegetationEditUndo {
 pub(crate) struct BuildingRemovalUndo {
     /// Cell-derived parcel released by this deletion, including paint-independent grace claims.
     pub(crate) cell_lot: Option<crate::simulation::zoning::CellLotRemovalUndo>,
-    /// City-funded freight refunds posted by this deletion, reversed when it is undone.
+    /// Freight refunds and final utility payments posted by deletion, reversed on undo.
     pub(crate) treasury_refund: f64,
+    /// Fiscal day of the journal; closed utility bills cannot be reopened by later undo.
+    pub(crate) day_index: u32,
     pub(crate) building_idx: usize,
     pub(crate) original_building_count: usize,
     pub(crate) expected_post_building_ref_revision: u64,

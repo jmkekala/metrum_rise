@@ -332,6 +332,9 @@ fn building(
         daily_city_funded_input_cost: 0.0,
         daily_household_sales_value: 0.0,
         daily_power_service_units: 0.0,
+        daily_electricity: Default::default(),
+        recent_electricity: Default::default(),
+        hourly_economy_activity: 0.0,
         daily_power_served_units: 0.0,
         recent_power_service_units: 0.0,
         recent_power_served_units: 0.0,
@@ -351,6 +354,7 @@ fn housed_household(
 ) -> Household {
     Household {
         home_building_id,
+        power_arrears: Default::default(),
         budget,
         stock: stock_days * member_count as f32,
         member_count,
@@ -471,6 +475,7 @@ fn vacant_admission_snapshot() -> DailyDemandSnapshot {
         immigrant_starter_savings_per_household: 30.0,
         candidate_daily_essential_cost: 56.0,
         daily_essential_cost_per_resident: 27.0,
+        daily_home_electricity_cost: 0.0,
         unemployment_daily_benefit_per_adult: 30.0,
         pension_daily_benefit_per_elder: 30.0,
         child_support_daily_benefit_per_child: 10.0,
@@ -1336,6 +1341,35 @@ fn max_demand_cheat_plans_commercial_spawn_without_consumer_need() {
             .spawn_rejected_absorption,
         0
     );
+}
+
+#[test]
+fn industrial_opening_requires_labor_or_room_for_new_households() {
+    let mut allocator = BuildingAllocator::new();
+    register_test_asset(&mut allocator, "industrial_labor", ZoneType::Industrial);
+    let households = HouseholdSystem::new();
+    let graph = graph_with_connected_border();
+    let zoning = industrial_zoning_run(&graph);
+    let mut demand = DemandSystem::new();
+    demand.spawn_action_credit.industrial = 1.0;
+    demand.run_hourly_pass(&allocator, &households, &graph, &zoning, 100_000.0);
+    assert!(demand.building_actions.industrial.spawns.is_empty());
+    assert!(
+        demand
+            .last_building_action_diagnostics
+            .industrial
+            .spawn_rejected_viability
+            > 0
+    );
+
+    let home = register_test_asset(&mut allocator, "available_home", ZoneType::Residential);
+    allocator
+        .buildings
+        .push(building(ZoneType::Residential, 0.0, 0, 0, home));
+    allocator.rebuild_zone_index();
+    demand.spawn_action_credit.industrial = 1.0;
+    demand.run_hourly_pass(&allocator, &households, &graph, &zoning, 100_000.0);
+    assert_eq!(demand.building_actions.industrial.spawns.len(), 1);
 }
 
 #[test]

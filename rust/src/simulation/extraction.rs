@@ -24,7 +24,7 @@ use godot::prelude::Vector2;
 /// Maximum accepted gap from the mine footprint to its extraction polygon.
 pub(crate) const EXTRACTOR_POLYGON_LINK_DISTANCE_M: f32 = 10.0;
 /// Coal units contributed by one square metre of full-richness authored deposit.
-pub(crate) const COAL_UNITS_PER_FULL_RICHNESS_M2: f32 = 6.0;
+pub(crate) const COAL_UNITS_PER_FULL_RICHNESS_M2: f32 = 480.0;
 
 const MIN_EXTRACTOR_POLYGON_AREA_M2: f32 = 1.0;
 
@@ -41,6 +41,8 @@ pub(crate) struct ExtractorSite {
     pub(crate) area_m2: f32,
     /// Current-area reserve snapshot, floored at this mine's cumulative extracted amount.
     pub(crate) total_reserve_units: f32,
+    /// Full-richness kg/m² fixed when the site is opened, including across tuning migrations.
+    pub(crate) reserve_density_kg_per_m2: f32,
     /// Cumulative extraction by this mine, retained when its polygon changes.
     pub(crate) extracted_units: f32,
 }
@@ -184,13 +186,22 @@ impl ResourceExtractionSystem {
             EXTRACTOR_POLYGON_LINK_DISTANCE_M,
         )?;
 
-        let sampled_reserve_units =
-            reserve_units_for_resource(&resource_id, deposits, &polygon_world)?;
-        validate_extractor_reserve(sampled_reserve_units, 0.0)?;
         let position = self
             .sites
             .binary_search_by_key(&building_idx, |site| site.building_idx);
         let had_site = position.is_ok();
+        let reserve_density_kg_per_m2 = position
+            .ok()
+            .map_or(COAL_UNITS_PER_FULL_RICHNESS_M2, |idx| {
+                self.sites[idx].reserve_density_kg_per_m2
+            });
+        let sampled_reserve_units = reserve_units_for_resource(
+            &resource_id,
+            deposits,
+            &polygon_world,
+            reserve_density_kg_per_m2,
+        )?;
+        validate_extractor_reserve(sampled_reserve_units, 0.0)?;
         let extracted_units = position
             .ok()
             .map_or(0.0, |idx| self.sites[idx].extracted_units);
@@ -204,6 +215,7 @@ impl ResourceExtractionSystem {
             polygon_world,
             area_m2,
             total_reserve_units,
+            reserve_density_kg_per_m2,
             extracted_units,
         };
         let area_scale = site.productive_area_scale();
@@ -296,6 +308,8 @@ impl ResourceExtractionSystem {
                 profile,
                 area_factor * factors.throughput_factor * (produced / hourly_units),
             );
+            building.hourly_economy_activity =
+                factors.throughput_factor * (produced / hourly_units);
             building.add_inventory_units(output_port.resource_runtime_id, produced);
             site.extracted_units += produced;
             building.set_work_area_scale(site.productive_area_scale());
@@ -324,11 +338,11 @@ fn reserve_units_for_resource(
     resource_id: &str,
     deposits: &ResourceDepositSystem,
     polygon_world: &[Vector2],
+    reserve_density_kg_per_m2: f32,
 ) -> Result<f32, String> {
     match resource_id {
         COAL_RESOURCE_ID => {
-            Ok(deposits
-                .coal_reserve_units_for_polygon(polygon_world, COAL_UNITS_PER_FULL_RICHNESS_M2))
+            Ok(deposits.coal_reserve_units_for_polygon(polygon_world, reserve_density_kg_per_m2))
         }
         other => Err(format!(
             "resource extractor deposits for '{other}' are not implemented yet"
@@ -506,6 +520,7 @@ mod tests {
             polygon_world: vec![Vector2::ZERO, Vector2::RIGHT, Vector2::ONE],
             area_m2: 0.5,
             total_reserve_units: 100_000.0,
+            reserve_density_kg_per_m2: COAL_UNITS_PER_FULL_RICHNESS_M2,
             extracted_units: building_idx as f32,
         }
     }
@@ -700,7 +715,14 @@ mod tests {
         let first = extraction
             .commit_site(0, polygon(15.0), &deposits, &mut allocator)
             .unwrap();
-        assert_eq!(first.total_reserve_units, 1_200.0);
+        assert_eq!(
+            first.total_reserve_units,
+            200.0 * COAL_UNITS_PER_FULL_RICHNESS_M2
+        );
+        // Restore the old density and reserve, as loading a pre-kWh save does. Even a fresh
+        // edit must retain that density instead of manufacturing coal at the new rate.
+        extraction.sites[0].reserve_density_kg_per_m2 = 6.0;
+        extraction.sites[0].total_reserve_units = 1_200.0;
         extraction.sites[0].extracted_units = 900.0;
         allocator.buildings[0].operating_budget = 1.0;
         for (right, expected_remaining) in [(15.0, 300.0), (5.0, 0.0), (15.0, 300.0)] {

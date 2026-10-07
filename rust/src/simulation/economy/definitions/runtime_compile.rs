@@ -59,7 +59,7 @@ pub(super) fn compile_runtime_catalog(
                 batch > 0.0 && batch <= runtime_tuning.logistics.truck_payload_kg
             }
             QuantityUnit::Service => batch == 0.0,
-            QuantityUnit::Megajoule | QuantityUnit::CubicMetre => false,
+            QuantityUnit::KilowattHour | QuantityUnit::CubicMetre => false,
         };
         if !batch.is_finite() || !valid_batch {
             return Err(format!(
@@ -148,6 +148,14 @@ fn validate_required_runtime_catalog(catalog: &RuntimeEconomyCatalog) -> Result<
         }
     }
 
+    if catalog
+        .profile_for_id("building_electricity_default")
+        .is_none()
+    {
+        return Err(
+            "runtime economy catalog requires profile 'building_electricity_default'".to_owned(),
+        );
+    }
     let household_profile = catalog
         .profile_for_id(HOUSEHOLD_DEMAND_PROFILE_ID)
         .ok_or_else(|| {
@@ -206,6 +214,19 @@ fn compile_runtime_profile(
             profile.wage_max_currency_per_day,
         ),
         ("unit_price_currency", profile.unit_price_currency),
+        (
+            "electricity.idle_kwh_per_day",
+            profile.electricity.idle_kwh_per_day,
+        ),
+        (
+            "electricity.operating_kwh_per_day",
+            profile.electricity.operating_kwh_per_day,
+        ),
+        (
+            "electricity.per_resident_kwh_per_day",
+            profile.electricity.per_resident_kwh_per_day,
+        ),
+        ("power_capacity_kw", profile.power_capacity_kw),
         ("minimum_field_area_m2", profile.minimum_field_area_m2),
         (
             "area_build_cost_per_hectare",
@@ -277,10 +298,43 @@ fn compile_runtime_profile(
         ));
     }
 
+    let base_rate_units_per_day = if profile.utility_service.as_deref() == Some("power") {
+        if profile.power_capacity_kw <= 0.0
+            || profile.base_rate_units_per_day != 0.0
+            || !(profile.power_capacity_kw * 24.0).is_finite()
+        {
+            return Err(format!(
+                "profile '{}' power needs positive finite power_capacity_kw and no duplicate base_rate_units_per_day",
+                profile.id
+            ));
+        }
+        profile.power_capacity_kw * 24.0
+    } else {
+        if profile.power_capacity_kw != 0.0 {
+            return Err(format!(
+                "profile '{}' power_capacity_kw requires a power utility",
+                profile.id
+            ));
+        }
+        profile.base_rate_units_per_day
+    };
     let compiled_inputs =
         compile_resource_ports(profile, &profile.inputs, "input", resource_by_id)?;
     let compiled_outputs =
         compile_resource_ports(profile, &profile.outputs, "output", resource_by_id)?;
+    if profile.utility_service.as_deref() == Some("power")
+        && (profile.worker_capacity == 0
+            || kind != EconomyProfileRuntimeKind::UtilityProducer
+            || !profile
+                .inputs
+                .iter()
+                .any(|p| p.resource == "coal" && p.units_per_day > 0.0))
+    {
+        return Err(format!(
+            "profile '{}' power requires worker capacity and a positive coal recipe",
+            profile.id
+        ));
+    }
 
     let runtime_supported = match kind {
         EconomyProfileRuntimeKind::Producer
@@ -302,7 +356,7 @@ fn compile_runtime_profile(
         work_schedule_profile: profile.work_schedule_profile.clone(),
         freight_timing_profile: profile.freight_timing_profile.clone(),
         unit_price_currency: profile.unit_price_currency,
-        base_rate_units_per_day: profile.base_rate_units_per_day,
+        base_rate_units_per_day,
         wage_min_currency_per_day: profile.wage_min_currency_per_day,
         wage_max_currency_per_day: profile.wage_max_currency_per_day,
         worker_capacity: profile.worker_capacity,
@@ -311,6 +365,8 @@ fn compile_runtime_profile(
         minimum_field_area_m2: profile.minimum_field_area_m2,
         area_build_cost_per_hectare: profile.area_build_cost_per_hectare,
         area_utility_units_per_hectare: profile.area_utility_units_per_hectare,
+        electricity: profile.electricity,
+        power_capacity_kw: profile.power_capacity_kw,
         stock_target_days: profile.stock_target_days,
         starting_inventory_days: profile.starting_inventory_days,
         reorder_threshold_days: profile.reorder_threshold_days,
@@ -329,7 +385,7 @@ fn validate_profile_units(
     catalog: &RuntimeEconomyCatalog,
 ) -> Result<(), String> {
     let expected_utility_unit = match profile.utility_service.as_deref() {
-        Some("power") => Some(QuantityUnit::Megajoule),
+        Some("power") => Some(QuantityUnit::KilowattHour),
         Some("water" | "sewage") => Some(QuantityUnit::CubicMetre),
         None => None,
         Some(service) => {

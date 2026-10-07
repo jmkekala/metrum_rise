@@ -236,6 +236,9 @@ fn forced_liquidation_sells_only_unreserved_inventory() {
 
     let mut households = HouseholdSystem::new();
     let mut treasury_balance = 0.0;
+    for _ in 0..24 {
+        households.run_electricity_hour(&mut allocator);
+    }
     households.settle_daily_utilities(&mut allocator, &logistics, &mut treasury_balance);
 
     assert_eq!(
@@ -256,6 +259,11 @@ fn forced_liquidation_sells_only_unreserved_inventory() {
             .profile_for_id(profile_id)
             .expect("utility profile")
             .unit_price_currency
+            * if *profile_id == "power_plant_basic" {
+                8.0
+            } else {
+                1.0
+            }
     })
     .sum::<f32>()
         * tuning.owa_import_price_multiplier;
@@ -868,19 +876,13 @@ fn utility_provider_must_have_workers_before_receiving_service_revenue() {
     assert_eq!(allocator.buildings[1].revenue, 0.0);
     assert!(allocator.buildings[2].revenue > 0.0);
     assert!(allocator.buildings[3].revenue > 0.0);
-    let treasury_after_unfueled_power = treasury_balance;
 
     allocator.buildings[0].operating_budget = 500.0;
     let coal = catalog
         .resource_runtime_id_for_id("coal")
         .expect("coal resource");
     allocator.buildings[1].set_inventory_units(coal, 10.0);
-    households.settle_daily_utilities(&mut allocator, &logistics, &mut treasury_balance);
-    assert_eq!(allocator.buildings[1].revenue, 0.0);
-    assert!(treasury_balance < treasury_after_unfueled_power);
-
-    allocator.buildings[0].operating_budget = 500.0;
-    allocator.buildings[1].daily_power_service_units = 1.0;
+    households.run_electricity_hour(&mut allocator);
     households.settle_daily_utilities(&mut allocator, &logistics, &mut treasury_balance);
     assert!(allocator.buildings[1].revenue > 0.0);
     assert!(allocator.buildings[2].revenue > 0.0);
@@ -909,6 +911,9 @@ fn private_nonresidential_utility_bill_uses_unified_service_prices() {
     let logistics = ShipmentSystem::new();
     let mut households = HouseholdSystem::new();
     let mut treasury_balance = 0.0;
+    for _ in 0..24 {
+        households.run_electricity_hour(&mut allocator);
+    }
     households.settle_daily_utilities(&mut allocator, &logistics, &mut treasury_balance);
 
     let expected_owa_utility_cost = [
@@ -922,6 +927,11 @@ fn private_nonresidential_utility_bill_uses_unified_service_prices() {
             .profile_for_id(profile_id)
             .expect("utility profile")
             .unit_price_currency
+            * if *profile_id == "power_plant_basic" {
+                8.0
+            } else {
+                1.0
+            }
     })
     .sum::<f32>()
         * tuning.owa_import_price_multiplier;
@@ -960,6 +970,9 @@ fn idle_work_areas_pay_area_scaled_imported_utilities() {
             let logistics = ShipmentSystem::new();
             let mut households = HouseholdSystem::new();
             let mut treasury_balance = 0.0;
+            for _ in 0..24 {
+                households.run_electricity_hour(&mut allocator);
+            }
             households.settle_daily_utilities(&mut allocator, &logistics, &mut treasury_balance);
 
             let expected_owa_utility_cost = [
@@ -974,7 +987,11 @@ fn idle_work_areas_pay_area_scaled_imported_utilities() {
                     .profile_for_id(profile_id)
                     .expect("utility profile")
                     .unit_price_currency
-                    * (1.0 + area * farm_profile.area_utility_units_per_hectare[service])
+                    * if service == 0 {
+                        farm_profile.electricity_demand_kwh_per_day(area, 0.0, 0)
+                    } else {
+                        1.0 + area * farm_profile.area_utility_units_per_hectare[service]
+                    }
             })
             .sum::<f32>()
                 * tuning.owa_import_price_multiplier;
@@ -984,9 +1001,11 @@ fn idle_work_areas_pay_area_scaled_imported_utilities() {
                     .abs()
                     < 0.1
             );
-            assert_eq!(
-                households.last_power_settlement().demand_units,
-                1.0 + area * farm_profile.area_utility_units_per_hectare[0]
+            assert!(
+                (households.last_power_settlement().demand_units
+                    - farm_profile.electricity_demand_kwh_per_day(area, 0.0, 0))
+                .abs()
+                    < 0.02
             );
             assert_eq!(households.last_power_settlement().coverage, 0.0);
             assert_eq!(treasury_balance, 0.0);
@@ -1000,11 +1019,16 @@ fn idle_work_areas_pay_area_scaled_imported_utilities() {
                 "power_plant_basic",
             );
             let power = catalog.profile_for_id("power_plant_basic").unwrap();
-            let demand = 1.0 + area * farm_profile.area_utility_units_per_hectare[0];
+            let demand = farm_profile.electricity_demand_kwh_per_day(area, 0.0, 0);
             let mut provider = make_building(20.0, ZoneType::None, &power_asset, 0.0);
             provider.economy_profile_runtime_id = power.runtime_id;
             provider.daily_power_service_units = demand * 0.5;
             provider.worker_count = 0; // Production was already recorded; no municipal consumer load.
+            allocator.reset_daily_input_accumulators();
+            allocator.buildings[0]
+                .daily_electricity
+                .workplace
+                .record(demand, 0.5);
             allocator.buildings.push(provider);
             allocator.buildings[0].operating_budget = 1_000_000.0;
             households.settle_daily_utilities(&mut allocator, &logistics, &mut treasury_balance);
@@ -1072,7 +1096,11 @@ fn household_utility_owa_surcharge_uses_unified_multiplier() {
     household.budget = 100.0;
     households.households.push(household);
     households.ensure_daily_ledger_len();
-    households.daily_ledgers[0].power_consumption_cost = 3.0;
+    households.daily_ledgers[0].electricity.record(6.0, 0.0);
+    allocator.buildings[0]
+        .daily_electricity
+        .residential
+        .record(6.0, 0.0);
     households.daily_ledgers[0].water_consumption_cost = 2.0;
     households.daily_ledgers[0].sewage_consumption_cost = 1.5;
 
@@ -1080,7 +1108,7 @@ fn household_utility_owa_surcharge_uses_unified_multiplier() {
     let mut treasury_balance = 0.0;
     households.settle_daily_utilities(&mut allocator, &logistics, &mut treasury_balance);
 
-    let expected_power_bill = 3.0 * tuning.owa_import_price_multiplier;
+    let expected_power_bill = 6.0 * 0.2 * tuning.owa_import_price_multiplier;
     let expected_water_bill = 2.0 * tuning.owa_import_price_multiplier;
     let expected_sewage_bill = 1.5 * tuning.owa_import_price_multiplier;
     let expected_total_bill = expected_power_bill + expected_water_bill + expected_sewage_bill;
@@ -1095,7 +1123,7 @@ fn household_utility_owa_surcharge_uses_unified_multiplier() {
             < 0.001
     );
     assert!(
-        (households.households[0].budget - (100.0 - (expected_total_bill - 6.5))).abs() < 0.001
+        (households.households[0].budget - (100.0 - (expected_total_bill - 3.5))).abs() < 0.001
     );
     assert_eq!(treasury_balance, 0.0);
     assert_eq!(
@@ -1108,7 +1136,7 @@ fn household_utility_owa_surcharge_uses_unified_multiplier() {
 fn household_utility_revenue_cannot_exceed_cash_actually_paid() {
     let catalog = load_runtime_economy_catalog().unwrap();
     let tuning = load_runtime_economy_tuning().unwrap();
-    let hourly_cost = tuning.households.utility_cost_per_member_per_day / 24.0;
+    let hourly_cost = tuning.households.water_sewage_cost_per_member_per_day / 24.0;
     for initial_budget in [0.0, hourly_cost / 4.0] {
         let mut allocator = BuildingAllocator::new();
         allocator.buildings.push(make_building(
@@ -1128,13 +1156,13 @@ fn household_utility_revenue_cannot_exceed_cash_actually_paid() {
             .profile_for_id("power_plant_basic")
             .unwrap()
             .runtime_id;
-        // Output already produced today remains available after the workers leave.
-        plant.daily_power_service_units = 42.0;
+        // Unstaffed plant has standby demand, but earns no power revenue.
         allocator.buildings.push(plant);
         let mut households = HouseholdSystem::new();
         let mut household = make_household(0, 1, 0.0, 0.0);
         household.budget = initial_budget;
         households.households.push(household);
+        households.run_electricity_hour(&mut allocator);
         households.consume_household_stock(&mut AgentSystem::new());
         let mut treasury = 0.0;
         households.settle_daily_utilities(&mut allocator, &ShipmentSystem::new(), &mut treasury);
@@ -1148,8 +1176,9 @@ fn household_utility_revenue_cannot_exceed_cash_actually_paid() {
             "paid={paid}, available={initial_budget}"
         );
         assert_eq!(households.households[0].budget, 0.0);
-        assert!((treasury - f64::from(initial_budget / 3.0)).abs() < 0.00001);
-        assert!((allocator.buildings[1].revenue - initial_budget / 3.0).abs() < 0.00001);
+        assert!((treasury + 10.0 * 0.25 / 24.0).abs() < 0.00001);
+        assert!(households.households[0].power_arrears.total() > 0.0);
+        assert_eq!(allocator.buildings[1].revenue, 0.0);
     }
 }
 
@@ -1160,14 +1189,14 @@ fn household_utility_surcharge_records_only_the_remaining_cash() {
     household.budget = 0.25;
     households.households.push(household);
     households.ensure_daily_ledger_len();
-    households.daily_ledgers[0].power_consumption_cost = 3.0;
+    households.daily_ledgers[0].water_consumption_cost = 3.0;
     households.settle_daily_utilities(
         &mut BuildingAllocator::new(),
         &ShipmentSystem::new(),
         &mut 0.0,
     );
     assert_eq!(households.households[0].budget, 0.0);
-    assert!((households.daily_ledgers()[0].power_consumption_cost - 3.25).abs() < 0.00001);
+    assert!((households.daily_ledgers()[0].water_consumption_cost - 3.25).abs() < 0.00001);
 }
 
 #[test]
@@ -1198,21 +1227,28 @@ fn household_utility_payment_flows_to_fueled_power_provider() {
         .profile_for_id("power_plant_basic")
         .expect("power profile");
     power_building.economy_profile_runtime_id = power_profile.runtime_id;
-    power_building.worker_count = power_profile.worker_capacity;
-    power_building.daily_power_service_units = 42.0;
+    power_building.worker_count = 1;
+    power_building.daily_power_service_units = 131.0;
+    power_building.daily_power_served_units = 131.0;
+    power_building.daily_electricity.workplace.record(30.0, 1.0);
     allocator.buildings.push(power_building);
 
     let mut households = HouseholdSystem::new();
     households.households.push(make_household(0, 20, 0.0, 0.0));
     households.ensure_daily_ledger_len();
-    households.daily_ledgers[0].power_consumption_cost = 60.0;
+    households.households[0].budget = 1000.0;
+    households.daily_ledgers[0].electricity.record(101.0, 1.0);
+    allocator.buildings[0]
+        .daily_electricity
+        .residential
+        .record(101.0, 1.0);
 
     let logistics = ShipmentSystem::new();
     let mut treasury_balance = 0.0;
     households.settle_daily_utilities(&mut allocator, &logistics, &mut treasury_balance);
 
-    assert!((allocator.buildings[1].revenue - 63.0).abs() < 0.001);
-    assert!((allocator.buildings[1].daily_power_served_units - 21.0).abs() < 0.001);
+    assert!((allocator.buildings[1].revenue - 20.2).abs() < 0.001);
+    assert!((allocator.buildings[1].daily_power_served_units - 131.0).abs() < 0.001);
     let missing_city_utility_owa = ["water_plant_basic", "wastewater_treatment_basic"]
         .iter()
         .map(|profile_id| {
@@ -1223,10 +1259,10 @@ fn household_utility_payment_flows_to_fueled_power_provider() {
         })
         .sum::<f32>()
         * tuning.owa_import_price_multiplier;
-    assert!((treasury_balance - (60.0 - missing_city_utility_owa as f64)).abs() < 0.001);
+    assert!((treasury_balance - (20.2 - missing_city_utility_owa as f64)).abs() < 0.001);
     let summary = households.last_power_settlement();
-    assert!((summary.utility_local_revenue - 63.0).abs() < 0.001);
-    assert!((summary.city_service_utility_local_cost - 3.0).abs() < 0.001);
+    assert!((summary.utility_local_revenue - 26.2).abs() < 0.001);
+    assert!((summary.city_service_utility_local_cost - 6.0).abs() < 0.001);
     assert!((summary.city_service_utility_owa_cost - missing_city_utility_owa).abs() < 0.001);
 }
 
@@ -1264,14 +1300,19 @@ fn power_settlement_uses_recorded_output_after_coal_is_consumed() {
     let mut households = HouseholdSystem::new();
     households.households.push(make_household(0, 20, 0.0, 0.0));
     households.ensure_daily_ledger_len();
-    households.daily_ledgers[0].power_consumption_cost = 60.0;
+    households.households[0].budget = 1000.0;
+    households.daily_ledgers[0].electricity.record(60.0, 1.0);
+    allocator.buildings[0]
+        .daily_electricity
+        .residential
+        .record(60.0, 1.0);
 
     let logistics = ShipmentSystem::new();
     let mut treasury_balance = 0.0;
     households.settle_daily_utilities(&mut allocator, &logistics, &mut treasury_balance);
 
-    assert!((allocator.buildings[1].revenue - 60.0).abs() < 0.001);
-    assert!((treasury_balance - 60.0).abs() < 0.001);
+    assert!((allocator.buildings[1].revenue - 12.0).abs() < 0.001);
+    assert!((treasury_balance - 12.0).abs() < 0.001);
 }
 
 #[test]

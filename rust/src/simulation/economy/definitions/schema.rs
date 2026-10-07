@@ -2,7 +2,7 @@
 
 //! Authored TOML schema for economy resources, profiles, and runtime tuning.
 
-use super::runtime::{QuantityUnit, RuntimeEconomyTuning};
+use super::runtime::{ElectricityDemand, QuantityUnit, RuntimeEconomyTuning};
 use super::serde_helpers::{deserialize_u16_from_number, deserialize_u32_from_number};
 use crate::simulation::work_area::EXPLICIT_WORK_AREA_BASE_M2;
 use serde::{Deserialize, Serialize};
@@ -88,9 +88,15 @@ pub(super) struct EconomyProfile {
     /// Initial preparation cost for each added hectare of field or extraction area.
     #[serde(default)]
     pub(super) area_build_cost_per_hectare: f32,
-    /// Additional electricity (MJ), water (m³), sewage (m³) per operational hectare/day.
+    /// Additional electricity (kWh), water (m³), sewage (m³) per operational hectare/day.
     #[serde(default)]
     pub(super) area_utility_units_per_hectare: [f32; 3],
+    /// Standby, operating and per-resident daily electricity coefficients.
+    #[serde(default)]
+    pub(super) electricity: ElectricityDemand,
+    /// Power profile's maximum output at full staffing, compiled into daily kWh capacity.
+    #[serde(default)]
+    pub(super) power_capacity_kw: f32,
     #[serde(default)]
     pub(super) base_rate_units_per_day: f32,
     #[serde(default)]

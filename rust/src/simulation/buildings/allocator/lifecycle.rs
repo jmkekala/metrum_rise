@@ -262,6 +262,12 @@ impl BuildingAllocator {
                 agents.evict_building(i);
                 households.invalidate_building(i, self);
                 logistics.invalidate_building(i, self, agents, households, treasury_balance);
+                let city_owned = self.is_city_service_building(&self.buildings[i]);
+                households.close_building_electricity(
+                    &mut self.buildings[i],
+                    city_owned,
+                    treasury_balance,
+                );
                 let last_idx = self.buildings.len() - 1;
                 if i < last_idx {
                     if let Some(zone_idx) =
@@ -1159,6 +1165,12 @@ impl BuildingAllocator {
         agents.evict_building(building_idx);
         households.invalidate_building(building_idx, self);
         logistics.invalidate_building(building_idx, self, agents, households, treasury_balance);
+        let city_owned = self.is_city_service_building(&self.buildings[building_idx]);
+        households.close_building_electricity(
+            &mut self.buildings[building_idx],
+            city_owned,
+            treasury_balance,
+        );
         if let Some(zone_idx) = baseline_private_zone_slot(zone_type) {
             self.dirty_zones[zone_idx] = true;
         }

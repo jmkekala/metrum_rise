@@ -305,7 +305,7 @@ func _populate(entry: Dictionary, info: Dictionary) -> void:
 					_add_row(
 						stats_body,
 						"Energy Produced",
-						"%.1f %s" % [power_produced, str(info.get("utility_quantity_unit", "MJ"))]
+						_electricity_quantity(power_produced, "kWh", "MWh")
 					)
 					_add_power_consumption_bar(stats_body, power_consumed, power_produced)
 				_add_row(stats_body, "City Inputs Today", _money(float(info.get("city_input_cost_today", 0.0))))
@@ -321,6 +321,16 @@ func _populate(entry: Dictionary, info: Dictionary) -> void:
 			_add_row(stats_body, "Budget", _money(float(info.get("operating_budget", 0.0))))
 		if info.has("utility_service_available") and not info.has("utility_service"):
 			_add_row(stats_body, "Utility", "Yes" if info["utility_service_available"] else "No")
+
+	_add_section(stats_body, "Electricity · last day")
+	_add_row(stats_body, "Consumption", _electricity_quantity(float(info.get("electricity_consumption_kwh", 0.0)), "kWh", "MWh"))
+	_add_row(stats_body, "Local supply", _electricity_quantity(float(info.get("electricity_local_kwh", 0.0)), "kWh", "MWh"))
+	_add_row(stats_body, "Imports", _electricity_quantity(float(info.get("electricity_imported_kwh", 0.0)), "kWh", "MWh"))
+	_add_row(stats_body, "Cost", _money(float(info.get("electricity_cost", 0.0))))
+	if float(info.get("household_power_arrears", 0.0)) > 0.0:
+		_add_row(stats_body, "Unpaid household bills", _money(float(info["household_power_arrears"])))
+	if info.has("power_staffed_capacity_kw"):
+		_add_row(stats_body, "Staffed capacity", _electricity_quantity(float(info["power_staffed_capacity_kw"]), "kW", "MW"))
 
 	var inventory: Array = info.get("inventory", [])
 	if inventory.size() > 0:
@@ -355,6 +365,11 @@ func _zone_label(zone: String) -> String:
 		"industrial": return "Industrial"
 		"utility": return "Utility"
 		_: return zone.capitalize()
+
+func _electricity_quantity(amount: float, small_unit: String, large_unit: String) -> String:
+	if absf(amount) >= 1000.0:
+		return "%.1f %s" % [amount / 1000.0, large_unit]
+	return "%.1f %s" % [amount, small_unit]
 
 func _money(amount: float) -> String:
 	return "$%.0f" % amount
@@ -587,7 +602,7 @@ func _add_power_consumption_bar(stats_body: VBoxContainer, consumed_units: float
 	bar_holder.add_child(bar)
 
 	var value := Label.new()
-	value.text = "%.1f / %.1f MJ" % [consumed_units, produced_units]
+	value.text = "%s / %s" % [_electricity_quantity(consumed_units, "kWh", "MWh"), _electricity_quantity(produced_units, "kWh", "MWh")]
 	value.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	value.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	value.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)

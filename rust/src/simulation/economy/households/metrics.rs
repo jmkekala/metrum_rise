@@ -979,6 +979,12 @@ pub(crate) fn scaled_input_inventory_targets_for_building(
     input_port: &RuntimeResourcePort,
 ) -> (f32, f32, f32) {
     let mut scale = output_area_scale_for_building(building, profile);
+    if profile.utility_service.as_deref() == Some("power") {
+        // Reserve fuel for staffed capacity, not the entire plant. Dispatch can use less,
+        // while the existing shipment-batch floor still keeps deliveries consolidated.
+        let capacity = physical_worker_capacity_for_profile(building, profile).max(1);
+        scale *= (building.worker_count as f32 / capacity as f32).min(1.0);
+    }
     if is_sales_scaled_commercial_store(building, profile) {
         scale *= commercial_activity_scale_with_floor(
             catalog,
@@ -1015,13 +1021,27 @@ pub(crate) fn household_reserve_days(
         members * household.consumption_rate.max(0.0) * household_supply_unit_price(catalog);
     let daily_cash_demand_sink_cost = members
         * demand_sink_cash_cost_per_resident_excluding_resource(catalog, household_supply_resource);
-    let daily_utility_cost = members * tuning.households.utility_cost_per_member_per_day;
+    let daily_utility_cost = household_daily_utility_allowance(catalog, tuning, members);
     let daily_essential_cost = daily_supply_cost + daily_cash_demand_sink_cost + daily_utility_cost;
     if daily_essential_cost <= 0.0 {
         0.0
     } else {
-        (household.budget.max(0.0) / daily_essential_cost).max(0.0)
+        ((household.budget - household.power_arrears.total()).max(0.0) / daily_essential_cost)
+            .max(0.0)
     }
+}
+
+/// Conservative full-home utility allowance for admission, reserves and job seeking.
+/// Forecasts reserve the entire base because future occupants of an offered flat are not known.
+pub(crate) fn household_daily_utility_allowance(
+    catalog: &RuntimeEconomyCatalog,
+    tuning: &RuntimeEconomyTuning,
+    members: f32,
+) -> f32 {
+    let home = household_demand_profile(catalog);
+    members * tuning.households.water_sewage_cost_per_member_per_day
+        + (home.electricity.idle_kwh_per_day + members * home.electricity.per_resident_kwh_per_day)
+            * local_utility_service_costs(catalog)[0]
 }
 
 /// Whether a household with an independent adult or elder has an operational home.
@@ -1130,8 +1150,12 @@ fn owa_utility_cost_for_building(
     if !private_zone && !explicit_area_business {
         return 0.0;
     }
-    local_utility_service_costs(catalog).iter().sum::<f32>()
-        * tuning.owa_import_price_multiplier.max(0.0)
+    profile
+        .utility_demand_units_per_day(building.work_area_scale)
+        .iter()
+        .zip(local_utility_service_costs(catalog))
+        .map(|(units, price)| units * price * tuning.owa_import_price_multiplier.max(0.0))
+        .sum()
 }
 
 /// Authored daily unit prices in the shared power, water, sewage order.
@@ -1311,6 +1335,7 @@ mod tests {
 
         let household = Household {
             home_building_id: 0,
+            power_arrears: Default::default(),
             budget: 1_000.0,
             stock: 0.0,
             member_count: 2,
@@ -1336,9 +1361,12 @@ mod tests {
         };
 
         let expected_daily_cost = household.member_count as f32
-            * (household_supply_unit_price(catalog.as_ref())
-                + service_cost_per_resident
-                + tuning.households.utility_cost_per_member_per_day);
+            * (household_supply_unit_price(catalog.as_ref()) + service_cost_per_resident)
+            + household_daily_utility_allowance(
+                catalog.as_ref(),
+                tuning.as_ref(),
+                household.member_count as f32,
+            );
         let reserve_days = household_reserve_days(catalog.as_ref(), tuning.as_ref(), &household);
         assert!((reserve_days - household.budget / expected_daily_cost).abs() < 0.001);
     }

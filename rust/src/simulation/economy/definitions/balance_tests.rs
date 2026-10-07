@@ -19,6 +19,7 @@ use crate::simulation::work_area::{
     minimum_work_area_workers, profile_kind_uses_explicit_work_area,
 };
 
+mod power_ledger;
 mod producer_ledger;
 mod starter_ledger;
 

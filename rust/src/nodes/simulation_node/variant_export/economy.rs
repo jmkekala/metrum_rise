@@ -43,5 +43,9 @@ pub(in crate::nodes::simulation_node) fn budget_ledger_entry_dict(
     dict.set("electricity_wage_cost", entry.electricity_wage_cost);
     dict.set("electricity_revenue", entry.electricity_revenue);
     dict.set("electricity_net", entry.electricity_net);
+    dict.set(
+        "electricity_consumption_cost",
+        entry.electricity_consumption_cost,
+    );
     dict
 }

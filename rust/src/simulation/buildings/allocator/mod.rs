@@ -236,6 +236,13 @@ pub struct Building {
     /// Daily utility settlement uses this to route electricity payments without re-reading
     /// end-of-day fuel inventory after the plant has already consumed it.
     pub daily_power_service_units: f32,
+    /// This day's electricity delivered to workplaces and residences, in kWh.
+    pub(crate) daily_electricity: crate::simulation::economy::electricity::BuildingElectricityUsage,
+    /// Last completed day's consumption, retained for building inspection.
+    pub(crate) recent_electricity:
+        crate::simulation::economy::electricity::BuildingElectricityUsage,
+    /// Realized production fraction for this hour, rebuilt by the owning production pass.
+    pub(crate) hourly_economy_activity: f32,
     /// Aggregate utility power service units consumed from this building during the current day.
     ///
     /// Daily settlement derives this from citywide power demand and the plant's share of total
@@ -848,6 +855,7 @@ impl BuildingAllocator {
             building.daily_household_sales_value = 0.0;
             building.recent_power_service_units = building.daily_power_service_units.max(0.0);
             building.daily_power_service_units = 0.0;
+            building.recent_electricity = std::mem::take(&mut building.daily_electricity);
             building.recent_power_served_units = building.daily_power_served_units.max(0.0);
             building.daily_power_served_units = 0.0;
         }

@@ -78,6 +78,9 @@ pub(super) fn make_building(
         daily_city_funded_input_cost: 0.0,
         daily_household_sales_value: 0.0,
         daily_power_service_units: 0.0,
+        daily_electricity: Default::default(),
+        recent_electricity: Default::default(),
+        hourly_economy_activity: 0.0,
         daily_power_served_units: 0.0,
         recent_power_service_units: 0.0,
         recent_power_served_units: 0.0,
@@ -368,10 +371,11 @@ pub(super) fn make_household(
             household_supply_resource,
         );
     let daily_utility_cost =
-        member_count.max(1) as f32 * tuning.households.utility_cost_per_member_per_day;
+        household_daily_utility_allowance(&catalog, &tuning, member_count.max(1) as f32);
     let daily_essential_cost = daily_supply_cost + daily_service_cost + daily_utility_cost;
     Household {
         home_building_id,
+        power_arrears: Default::default(),
         budget: reserve_days * daily_essential_cost,
         stock: stock_days * member_count.max(1) as f32 * consumption_rate,
         member_count,

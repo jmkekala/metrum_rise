@@ -15,6 +15,7 @@ pub(super) struct HouseholdAdmissionBudget {
     remaining_job_equivalents: f32,
     net_wage_per_day: f32,
     essentials_per_member: f32,
+    home_electricity_cost: f32,
     transfer_claim_per_day: f32,
     treasury: f32,
     transfer_coverage_days: f32,
@@ -80,6 +81,30 @@ mod tests {
         assert!(budget.claim(elder, 1, 1, &policy));
         assert!(!budget.claim(elder, 1, 1, &policy));
     }
+
+    #[test]
+    fn arrival_budget_charges_home_electricity_once_per_household() {
+        let policy = policy();
+        let property = daily_property_tax(ZoneType::Residential, 1, &policy);
+        let mut budget = HouseholdAdmissionBudget {
+            remaining_job_equivalents: 2.0,
+            net_wage_per_day: (60.0 + 0.25 + property) / 2.0,
+            essentials_per_member: 30.0,
+            home_electricity_cost: 0.25,
+            treasury: 100_000.0,
+            transfer_coverage_days: 30.0,
+            ..Default::default()
+        };
+        assert!(budget.claim(
+            HouseholdAgeComposition {
+                adult_count: 2,
+                ..Default::default()
+            },
+            2,
+            1,
+            &policy,
+        ));
+    }
 }
 
 impl HouseholdAdmissionBudget {
@@ -89,6 +114,7 @@ impl HouseholdAdmissionBudget {
             remaining_job_equivalents: snapshot.move_in_job_equivalent_slots,
             net_wage_per_day: snapshot.average_move_in_job_wage_per_day,
             essentials_per_member: snapshot.daily_essential_cost_per_resident,
+            home_electricity_cost: snapshot.daily_home_electricity_cost,
             transfer_claim_per_day: snapshot.existing_unemployed_member_count as f32
                 * snapshot.unemployment_daily_benefit_per_adult
                 + snapshot.existing_child_count as f32
@@ -126,6 +152,7 @@ impl HouseholdAdmissionBudget {
         };
         let recurring_income = employed * self.net_wage_per_day + permanent_transfers * reliability;
         let cost = f32::from(members) * self.essentials_per_member
+            + self.home_electricity_cost
             + daily_property_tax(ZoneType::Residential, home_level.max(1), policy);
         if recurring_income + EPSILON < cost {
             return false;

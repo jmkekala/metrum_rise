@@ -45,7 +45,7 @@ fn place_producer(scenario: &mut GrowthScenario, mine: bool, hectares: f32, x: f
     }
     // Declared one-time infrastructure endowment: these cases isolate business operation.
     // The real placement charges stay in lifetime construction costs and report headers;
-    // no money is added after simulation starts or to a running business.
+    // no money is added during the observed operating window or to a running business.
     core.treasury.balance += core.treasury.lifetime_build_cost - construction_before;
     owner
 }
@@ -54,6 +54,234 @@ fn verify_accounting(report: &GrowthReport) {
     assert!(report.max_city_cash_residual() < 0.1, "{report}");
     assert!(report.max_business_cash_residual() < 0.1, "{report}");
     assert!(report.max_household_cash_residual() < 0.1, "{report}");
+}
+
+#[test]
+#[ignore = "manual electricity balance: growing village, real fuel freight and 1/2/3 staffed slots"]
+fn coal_power_balance_matrix() {
+    let directory = std::env::var("METRUM_POWER_REPORT_DIR")
+        .unwrap_or_else(|_| "/tmp/metrum-power-balance".into());
+    std::fs::create_dir_all(&directory).unwrap();
+    for mine in [false, true] {
+        for workers in [1_u32, 2, 3] {
+            let mut scenario = GrowthScenario::starter_town();
+            // Add services while housing remains available, so their vacancies can recruit.
+            // Waiting until every home is occupied leaves no labor for a newly placed plant.
+            scenario.run_days(365);
+            if mine {
+                place_producer(&mut scenario, true, 1.0, -900.0);
+            }
+            let residents_before = scenario.record().residents;
+            let core = &mut scenario.core;
+            let plant = core
+                .place_service_building_internal(
+                    "kenney:building.power.coal_power_plant",
+                    -700.0,
+                    8.0,
+                )
+                .expect("power plant placement funded by the existing city treasury");
+            let x = core.allocator.buildings[plant].center_x;
+            let z = core.allocator.buildings[plant].center_y;
+            assert!(core.set_building_service_funding_override_at(
+                x,
+                z,
+                "electricity",
+                workers as f32 / 20.0
+            ));
+            let report = scenario.run_diagnosed_days(365);
+            // Other buildings may have been swap-removed during the run.
+            let plant = scenario
+                .core
+                .allocator
+                .nearest_building_idx_at(x, z)
+                .unwrap();
+            assert_eq!(
+                scenario.core.allocator.buildings[plant].asset_id,
+                "kenney:building.power.coal_power_plant"
+            );
+            let history = &scenario.core.budget_history;
+            let sum = |f: fn(&super::super::budget::DailyBudgetLedgerEntry) -> f64| {
+                history.iter().rev().take(90).map(f).sum::<f64>()
+            };
+            let name = format!(
+                "power-{workers}-workers-{}",
+                if mine { "local-coal" } else { "imported-coal" }
+            );
+            let summary = format!(
+                "{name}: residents before {residents_before}, after {}; trailing 90 days generation {:.2} kWh, imports {:.2} kWh, coal {:.2} kg, revenue {:.2}, fuel/machinery/freight purchases {:.2}, wages {:.2}, net {:.2}; city recurring {:.2}; empty pantry-days {}; actual workers {}\n",
+                report.days.last().unwrap().residents,
+                sum(|d| d.power_produced),
+                sum(|d| d.power_unmet),
+                sum(|d| d.coal_consumed),
+                sum(|d| d.electricity_revenue),
+                sum(|d| d.electricity_fuel_cost),
+                sum(|d| d.electricity_wage_cost),
+                sum(|d| d.electricity_net),
+                report.recurring_city_balance(90),
+                report.empty_household_days(90),
+                scenario.core.allocator.buildings[plant].worker_count,
+            );
+            eprint!("{summary}");
+            std::fs::write(
+                Path::new(&directory).join(format!("{name}.txt")),
+                format!("{summary}{}", report.daily_report()),
+            )
+            .unwrap();
+            verify_accounting(&report);
+            assert_eq!(
+                scenario.core.allocator.buildings[plant].worker_count, workers,
+                "{summary}"
+            );
+            assert!(sum(|d| d.power_produced) > 0.0, "{summary}");
+            assert_eq!(report.empty_household_days(90), 0, "{summary}");
+            assert!(report.recurring_city_balance(90) > 0.0, "{summary}");
+        }
+    }
+}
+
+#[test]
+fn power_demolition_undo_restores_the_meter_and_refunds_only_its_bill() {
+    let mut scenario = GrowthScenario::starter_town();
+    let core = &mut scenario.core;
+    let plant = core
+        .place_service_building_internal("kenney:building.power.coal_power_plant", -700.0, 8.0)
+        .unwrap();
+    core.allocator.buildings[plant].construction_remaining_hours = 0;
+    core.allocator.buildings[plant]
+        .daily_electricity
+        .workplace
+        .record(10.0, 0.0);
+    let before = core.treasury.balance;
+    assert!(core.push_building_removal_undo(plant));
+    assert!(core.allocator.remove_building_for_bulldoze(
+        plant,
+        &mut core.zoning,
+        &mut core.agents,
+        &mut core.households,
+        &mut core.logistics,
+        &mut core.treasury.balance,
+    ));
+    core.publish_pending_building_site_changes();
+    core.seal_building_removal_undo(core.treasury.balance - before);
+    assert_eq!(core.treasury.balance, before - 2.5);
+    assert_eq!(
+        core.households.removed_electricity.settlement.demand_units,
+        10.0
+    );
+    assert!(core.undo_action_internal());
+    assert_eq!(core.treasury.balance, before);
+    assert_eq!(
+        core.households.removed_electricity.settlement.demand_units,
+        0.0
+    );
+    assert_eq!(
+        core.allocator.buildings[plant]
+            .daily_electricity
+            .workplace
+            .consumed_kwh,
+        10.0
+    );
+    assert!(core.push_building_removal_undo(plant));
+    assert!(core.allocator.remove_building_for_bulldoze(
+        plant,
+        &mut core.zoning,
+        &mut core.agents,
+        &mut core.households,
+        &mut core.logistics,
+        &mut core.treasury.balance,
+    ));
+    core.publish_pending_building_site_changes();
+    core.seal_building_removal_undo(core.treasury.balance - before);
+    // Isolate the fiscal boundary from unrelated geometry/population changes.
+    core.time.day_index += 1;
+    assert!(!core.undo_action_internal());
+    assert_eq!(core.treasury.balance, before - 2.5);
+}
+
+#[test]
+#[ignore = "physical mid-day save continuation, with and without power-plant demolition"]
+fn electricity_save_continuation_preserves_bills_and_removed_meters() {
+    for remove in [false, true] {
+        let mut source = GrowthScenario::starter_town();
+        source.run_days(180);
+        let plant = source
+            .core
+            .place_service_building_internal("kenney:building.power.coal_power_plant", -700.0, 8.0)
+            .unwrap();
+        assert!(source.core.set_building_service_funding_override_at(
+            -700.0,
+            8.0,
+            "electricity",
+            0.05
+        ));
+        source.run_days(60);
+        while source.core.time.minute_of_day < 720 {
+            source.core.step_frame(FRAME_DT_S);
+        }
+        let plant = source
+            .core
+            .allocator
+            .nearest_building_idx_at(-700.0, 8.0)
+            .unwrap_or(plant);
+        assert_eq!(source.core.allocator.buildings[plant].worker_count, 1);
+        assert!(source.core.allocator.buildings[plant].daily_power_service_units > 0.0);
+        if remove {
+            let core = &mut source.core;
+            assert!(core.allocator.remove_building_for_bulldoze(
+                plant,
+                &mut core.zoning,
+                &mut core.agents,
+                &mut core.households,
+                &mut core.logistics,
+                &mut core.treasury.balance,
+            ));
+            core.publish_pending_building_site_changes();
+        }
+        let path = std::env::temp_dir().join(format!(
+            "metrum-power-continuation-{}-{remove}.sqlite",
+            std::process::id()
+        ));
+        source
+            .core
+            .save_game_internal(path.to_str().unwrap(), None)
+            .unwrap();
+        let mut loaded = GrowthScenario::starter_town();
+        loaded
+            .core
+            .load_game_internal(path.to_str().unwrap())
+            .unwrap();
+        // Loading intentionally pauses gameplay; resume both worlds at the same speed.
+        loaded.core.time.speed_multiplier = source.core.time.speed_multiplier;
+        assert_eq!(source.core.treasury.balance, loaded.core.treasury.balance);
+        source.run_days(1);
+        loaded.run_days(1);
+        let a = source.core.budget_history.back().unwrap();
+        let b = loaded.core.budget_history.back().unwrap();
+        for (name, left, right) in [
+            ("generation", a.power_produced, b.power_produced),
+            ("local consumption", a.power_consumed, b.power_consumed),
+            ("imports", a.power_unmet, b.power_unmet),
+            (
+                "bills",
+                a.electricity_consumption_cost,
+                b.electricity_consumption_cost,
+            ),
+            (
+                "fuel purchases",
+                a.electricity_fuel_cost,
+                b.electricity_fuel_cost,
+            ),
+            ("coal consumed", a.coal_consumed, b.coal_consumed),
+            ("revenue", a.electricity_revenue, b.electricity_revenue),
+            ("net cash", a.electricity_net, b.electricity_net),
+        ] {
+            assert!(
+                (left - right).abs() < 0.01,
+                "removed={remove} {name}: {left} vs {right}"
+            );
+        }
+        std::fs::remove_file(path).unwrap();
+    }
 }
 
 #[test]

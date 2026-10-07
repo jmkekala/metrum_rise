@@ -14,6 +14,73 @@ execution to [`entrance_and_exit.md`](entrance_and_exit.md).
 
 ## Reading Guide and Status
 
+### Electricity consumption and coal balance
+
+Electricity accounting uses kWh, with MWh for large displayed totals and kW/MW
+for generating capacity. The following are initial game-balance rates, not measured real-world
+building specifications. Hourly usage is daily usage divided by 24. Operating load uses existing
+activity (0–1); farms/mines multiply it by hectares. Area maintenance applies even while idle.
+
+| Profile | Idle kWh/building/day | Operating kWh/day at full activity | Additional demand |
+| --- | ---: | ---: | --- |
+| Residential household | 1, shared once per home | 0 | 5 kWh/resident/day |
+| Grocery | 8 | 12 | — |
+| Food processor | 4 | 28 | — |
+| Barber / pharmacy | 2 | 4 | — |
+| Machinery factory | 4 | 26 | — |
+| Water / wastewater plant | 4 | 8 / 10 | — |
+| Grain farm | 2 | 3 per ha | 0.555556 kWh/ha/day maintenance |
+| Coal mine | 2 | 540 per ha | 60 kWh/ha/day maintenance |
+| Coal power plant | 10 | 400 at all 20 staffed slots | 50 kW capacity per worker |
+| Other occupied workplaces / public services | 2 | 8 | Authored fallback profile |
+
+Initial tariffs are 0.20 currency/kWh local and 0.25 imported. The resident component remains
+1 currency/day before the shared building load. Water and sewage retain their existing model.
+The coal recipe is 0.45 kg/kWh actually generated. Machinery upkeep is 0.2 kg per staffed
+worker/day even when sales are low. Auxiliary demand follows staffed activity before dispatch;
+own consumption earns no external revenue. OWA supplies any unmet local demand.
+
+Coal is retuned to 0.10 currency/kg and 9,600 kg/ha/day (five workers/ha), preserving the mine's
+960 currency/ha/day gross local sales before costs. New full-richness deposits hold 480 kg/m²,
+retaining 500 full-production days. This is a balance change, not a change to the kg unit:
+existing coal stocks, cargo and remaining deposits must not be multiplied. More mass can change
+freight costs; the physical mine scenarios must validate this independently.
+Each committed mine retains its reserve density when its boundary is edited. Older saves retain
+6 kg/m²; new sites use 480 kg/m². Editing a legacy mine must not replenish it at the new density.
+
+Power input buffers follow staffed capacity: one worker targets 1,620 kg coal, with an 810 kg
+reorder threshold. An unstaffed plant requests no new inputs. Existing minimum freight batches
+still apply to coal and machinery. UI electricity net is cash flow after purchases, wages and
+utility upkeep; bulk purchases can make a reporting window differ from steady operating margin.
+
+Reference worksheet: each 170-resident block has 85 occupied homes and 65 kWh/day of workplace
+usage, totalling 1,000 kWh/day of paying external demand. Coal/machinery/water/sewage are imported;
+coal is 0.125/kg, machinery 25/kg, wages 115/worker/day. One plant pays 4.375/day for water/sewage.
+Freight uses a 0.5-hour one-way journey, the authored reorder lots and 20 t payload. This worksheet
+is a steady operating margin, excluding construction and startup capital, not a physical-run result.
+
+| Workers / reference residents | Capacity kW | Generation kWh/day (incl. own use) | External revenue | Coal cost | Wages | Machinery | Water/sewage | Freight | Daily surplus |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 / 170 | 50 | 1,030 | 200 | 57.94 | 115 | 5 | 4.38 | 4.68 | 13.01 |
+| 2 / 340 | 100 | 2,050 | 400 | 115.31 | 230 | 10 | 4.38 | 4.69 | 35.62 |
+| 3 / 510 | 150 | 3,070 | 600 | 172.69 | 345 | 15 | 4.38 | 4.73 | 58.21 |
+
+Delivery determines bills independently of cash. Record amounts owed and paid separately; unpaid
+electricity feeds financial distress and cannot create collected utility revenue. Public buildings
+are paid by the city, businesses by their operating accounts, residences by their households.
+Inactive/deserted/unfinished buildings consume nothing initially; an empty home has no household
+load until occupied. Mixed-use residential and business components must each be charged once.
+Unprofiled occupied buildings use the authored fallback.
+
+Removal settles the workplace's outstanding daily bill and retains its energy, generation and
+city input purchases/refunds for the day's report. Removal after midnight billing cannot charge
+again. Same-day undo restores the meter and treasury change; undo cannot reopen a closed fiscal
+day. These checks and mid-day save continuation pass. The results below validate the stated
+workloads, not every saved-world state.
+
+Fresh tests, physical runs and matched 10k timings are recorded in
+[Electricity validation](#electricity-validation-econ-14).
+
 The healthy-growth plan below was agreed on 2026-10-05. `ECON-14` has implemented causal
 accounting, failed-business recovery, grocery viability, recurring household affordability,
 village services, area-based producer costs and canonical resource units. The earlier capped
@@ -29,7 +96,7 @@ placement and edits require at least 4 ha. Imports remain 1.25× and export bids
 Current validation is recorded with that revision; earlier passing runs do not validate it.
 
 [Resource units and freight payload](#resource-units-and-freight-payload) define physical goods
-in kg, electricity in MJ, water/sewage in m³ and services as service equivalents. Trucks carry
+in kg, electricity in kWh (MWh display), water/sewage in m³ and services as service equivalents. Trucks carry
 at most 20,000 kg, independently of their minimum order batches. These are explicit game-balance
 rates, not calibrated real-world yields. Additional funded activities, varied settlement
 fixtures and broader demand simplification remain `ECON-14` / `DEM-02` work.
@@ -297,7 +364,7 @@ Business property/profit taxes can add revenue; imported utility payments go to 
 world. A 400 m road costs 40/day upkeep and 6,000 once to build, versus 280/day and 42,000 for
 2,800 m. These are footprint comparisons, not measured layouts. Public payroll and service
 inputs must be added explicitly; the budget does not justify filling the employment gap with
-unfunded municipal workers. The 100,000 starting treasury is capital, not recurring revenue.
+unfunded municipal workers. The 500,000 starting treasury is capital, not recurring revenue.
 
 **Export condition.** With `1.25×` imported inputs, full-output food processing needs an
 effective export bid of at least **0.9138×** catalog price; machinery needs **0.7539×**. At
@@ -1786,11 +1853,11 @@ compiled once into the runtime catalog. Recipe ports cache their resource's deli
 Inventories, recipe rates, deposits, shipments, resource-specific demand and prices use that
 resource's canonical measure. Names ending in `units` remain generic schema fields, not an
 additional conversion layer. The inspector displays units for stock, inputs, household supplies,
-coal reserves and electricity; the utility overview displays MJ and kg.
+coal reserves and electricity; the utility overview displays kWh/MWh and kg.
 
 The conventions follow [BIPM's SI Brochure](https://www.bipm.org/en/publications/si-brochure):
-mass is kg, volume m³ and energy J, displayed here as MJ (1,000,000 J). A tonne (`t`) is 1,000 kg;
-1 kWh is 3.6 MJ. Electricity consumed over a day is energy, not instantaneous power in watts.
+mass is kg, volume m³ and energy J; electricity is accounted in kWh. A tonne (`t`) is 1,000 kg;
+1 kWh is 3.6 MJ (3,600,000 J). Electricity consumed over a day is energy, not instantaneous power in watts.
 Area remains m², with hectares (10,000 m²) in site authoring and UI. Production rates are per
 **operational game day**; the compressed wall-clock duration does not change cargo mass or
 multiply a daily recipe by real-world seconds. Service equivalents are counts, not SI quantities.
@@ -1806,7 +1873,7 @@ multiply a daily recipe by real-world seconds. Service equivalents are counts, n
 | `metals` | kg | Imported non-steel metals; no local producer profile yet | 100 kg |
 | `personal_services` | service equivalent | Completed aggregate personal-service demand | None; no freight/storage |
 | `health_essentials` | service equivalent | Completed aggregate pharmacy-style service demand | None; no medicine cargo yet |
-| Electricity (`power`) | MJ | Energy produced, supplied and consumed through the utility layer | None; network service |
+| Electricity (`power`) | kWh | Energy produced, supplied and consumed through the utility layer | None; network service |
 | Water / sewage | m³ | Supplied water / treated wastewater | None; network service |
 
 All currently authored building outputs, at full operation before staffing, input, stock,
@@ -1815,13 +1882,13 @@ deposit and customer limits:
 | Building/profile | Material inputs per day | Output per day |
 | --- | --- | --- |
 | Grain farm | 0.1 kg machinery per ha | 20 kg grain per ha |
-| Coal mine | 4 kg machinery per ha | 120 kg coal per ha, removed from the deposit |
+| Coal mine | 4 kg machinery per ha | 9,600 kg coal per ha, removed from the deposit |
 | Food processor | 200 kg grain + 2 kg machinery | 200 kg packaged food |
 | Grocery | 200 kg packaged food | 200 kg household supplies |
 | Machinery factory | 30 kg steel + 10 kg metals + 2 kg own machinery | 42 kg machinery gross; 40 kg saleable after self-upkeep |
 | Barber / personal service | No authored material input | 80 service equivalents |
 | Pharmacy / health essentials | No authored material input | 120 service equivalents |
-| Coal power plant | 96 kg coal + 4 kg machinery | 1,200 MJ electricity |
+| Coal power plant | Up to 10,800 kg coal + 4 kg staffed machinery upkeep | Up to 24,000 kWh at full 20-worker staffing; demand-limited |
 | Water plant | 0.5 kg machinery | No authored throughput limit yet; provider presence enables local water coverage |
 | Wastewater treatment | 0.5 kg machinery | No authored throughput limit yet; provider presence enables local sewage coverage |
 | Residential / farm household | 1 kg supplies per resident, plus aggregate service demand | No saleable output; households consume and supply labor |
@@ -1829,10 +1896,11 @@ deposit and customer limits:
 
 Household service demand remains 0.10 personal and 0.16 health equivalents per resident/day.
 An equivalent is economic service capacity, not a promise that each settlement produces one
-visible visit. Daily utility demand for ordinary private businesses is 1 MJ electricity,
-1 m³ water and 1 m³ sewage, plus per-ha additions of `[20 MJ, 160 m³, 20 m³]` for farms or
-`[40 MJ, 10 m³, 10 m³]` for mines. Household utilities still derive quantities from their
-authored monetary allowance and utility prices. Water/sewage volume labels do not imply that
+visible visit. Electricity demand now follows the profile table at the top of this document.
+Private workplaces retain 1 m³ water and 1 m³ sewage/day, plus per-ha maintenance of
+`[1 m³ water, 0 m³ sewage]` for grain farms and `[10 m³ water, 10 m³ sewage]` for coal mines.
+Household water/sewage retains a 2 currency/resident/day allowance; electricity is physically
+metered and billed separately. Water/sewage volume labels do not imply that
 their existing provider-presence model now simulates pipes or measured production capacity.
 
 **Initial unit conversion (before the production/freight revision).** Old food/grain bundles become 1.25 kg and old steel/metals
@@ -2305,14 +2373,14 @@ Rules:
 - most ordinary utility consumers do not need those utility ports repeated explicitly on every profile unless they have a documented special case
 - households still do not own `economy_profile`, but occupied residential households consume utility service and generate `sewage` load as a runtime consequence of occupancy and activity
 - local utility service must first be satisfied by local utility-producing or utility-processing buildings connected through this utility layer
-- `v0.1` utility service is not a detailed line-by-line grid simulation; `power` now uses aggregate daily produced units while `water` and `sewage` still use the starter provider-present fallback model
+- `v0.1` utility service is not a detailed line-by-line grid simulation; `power` now dispatches against hourly kWh demand while `water` and `sewage` still use the starter provider-present fallback model
 - utility availability resolves independently per service; a local `power` provider does not satisfy `water` or `sewage`
 - each utility service settles through the same bill formula:
   `local_charge = demand_units * local_unit_price * local_coverage` and
   `owa_charge = demand_units * local_unit_price * owa_import_price_multiplier * missing_coverage`
-- commercial, office, mixed, and industrial buildings consume a base of 1 MJ electricity, 1 m³ water and 1 m³ sewage/day; explicit fields/mines add authored area-scaled demand
-- households keep their authored base utility cost split across power, water, and sewage ledger buckets; the daily utility settlement routes the locally covered share to local utility revenue and applies only the missing-service `OWA` surcharge to household budgets
-- a valid connected local `power` producer contributes the service units actually accumulated during hourly operation from `base_rate_units_per_day * current throughput`, capped by fuel/input availability at those hours; end-of-day settlement must not credit unproduced capacity
+- electricity follows each profile's idle/activity/residential/area rates; workplaces retain 1 m³ water and 1 m³ sewage/day, plus authored field/mine area upkeep
+- household electricity delivery and payments are separate: unpaid local/import bills carry forward and reduce housing reserves. The water/sewage allowance is split between those two ledger buckets
+- connected plants generate the lesser of hourly demand, staffed kW capacity and available coal; maintenance follows staffing while coal follows actual generation. Metered local/import shares determine daily bills
 - city service funding policies are runtime simulation state owned by Rust; the live electricity funding policy sets the default funded worker slots for city-owned power plants, and production follows the resulting staffed workers plus fuel/input availability
 - live city and per-building funding controls reject NaN/infinite values without changing policy or staffing; finite values retain the existing `[0, 1]` slider clamp, and per-building controls reject non-finite pick coordinates
 - individual city-owned power plants may carry a per-building funding override; citywide electricity funding changes do not clear those plant overrides
@@ -3200,7 +3268,7 @@ owns the `CityTreasury` struct; starting balance is authored in `economy/profile
 
 `CityTreasury` lives in `nodes/sim/core/budget.rs`:
 
-- **Starting balance**: `startup_treasury_balance = 100_000` authored in `economy/profiles.toml` `[runtime_tuning]`.
+- **Starting balance**: `startup_treasury_balance = 500_000` authored in `economy/profiles.toml` `[runtime_tuning]`. Increased from 100,000 for new games; saved treasury balances remain authoritative.
 - **Current deductions**: road build cost ($15/meter) and daily road upkeep ($0.1/meter/day);
   unemployment, pension, and child-support disbursements.
 - **Persisted**: saved and loaded via the `city_treasury` SQLite table.
@@ -3315,7 +3383,7 @@ Live values in `economy/profiles.toml` `[runtime_tuning]`:
 
 | Parameter | Value | Role |
 |---|---|---|
-| `startup_treasury_balance` | 100,000 | Total treasury at map start |
+| `startup_treasury_balance` | 500,000 | Total treasury at map start |
 | `unemployment_daily_benefit_per_member` | 30.0 | Currency paid per unemployed adult per day |
 | `unemployment_max_days` | 30 | Maximum unemployment-benefit duration |
 | `pension_daily_benefit_per_elder` | 30.0 | Currency paid per elder per day |
@@ -3339,7 +3407,7 @@ Live values in `economy/profiles.toml` `[runtime_tuning]`:
 | `grain_farm_basic.minimum_field_area_m2` | 40,000 m² | Minimum 4 ha for new field commits and resizing |
 | `power_plant_basic.base_rate_units_per_day` | 1200.0 MJ/day | Full-staffed starter power service production before staffing and coal-input limits |
 | `power_plant_basic.inputs.coal` | 96.0 kg/day | Coal fuel consumed by a fully staffed starter power plant |
-| `power_plant_basic.unit_price_currency` | 3.0 | Local electricity price per MJ |
+| `power_plant_basic.unit_price_currency` | 0.20 | Local electricity price per kWh |
 | `water_plant_basic.unit_price_currency` | 2.0 | Local water price per m³ |
 | `wastewater_treatment_basic.unit_price_currency` | 1.5 | Local sewage treatment price per m³ |
 | `owa_import_price_multiplier` | 1.25 | OWA import and missing local utility fallback price multiplier |
@@ -4028,33 +4096,42 @@ source and raw samples are under `/tmp/metrum-full-audit/employment-{before,fina
 **Step 3 — Pay utility cost.**
 
 Private businesses pay daily utility costs even when this makes their operating budget negative.
-Each private non-residential or explicit field/extractor business consumes a base of 1 MJ
-electricity, 1 m³ water and 1 m³ sewage daily; farms/mines add the area demands documented above.
+Electricity is metered hourly using the profile rates above. Water/sewage retains 1 m³ each
+per workplace/day; farms/mines add authored area maintenance. Unpaid electricity is a deficit,
+not collected utility revenue.
 The authored baseline prices are shared across these businesses:
 
 | Service | Local unit price | OWA unit price (× 1.25) |
 | --- | ---: | ---: |
-| Electricity / MJ | 3.0 | 3.75 |
+| Electricity / kWh | 0.20 | 0.25 |
 | Water / m³ | 2.0 | 2.50 |
 | Sewage / m³ | 1.5 | 1.875 |
-| Total daily cost | 6.5 | 8.125 |
+| Daily total | Depends on metered electricity and area | Depends on metered electricity and area |
 
-`power`, `water`, and `sewage` resolve independently. `Power` uses aggregate daily produced MJ:
+`power`, `water`, and `sewage` resolve independently. Power uses hourly metered kWh:
 consumers pay the local authored utility price only for the covered share, and uncovered private
 demand pays the OWA fallback share. If a staffed local `water` or `sewage` provider exists,
 consumers pay that service's local authored utility price; otherwise they pay that service's OWA
 fallback share. Local service fees for city-owned providers deposit into the city treasury;
 provider `revenue` remains telemetry. OWA fallback spend leaves the local economy.
 
-Residential buildings pay household utility costs from the household budget on the existing hourly
-cadence. The hourly charge is split into power, water, and sewage ledger buckets. Daily utility
-settlement routes the power bucket into local power revenue only up to aggregate local power
-coverage, and routes water/sewage buckets to local providers only when those services are available,
-without charging households a second time.
-Only cash actually deducted is recorded as a household utility payment. The hourly base charge
-and daily OWA surcharge are capped by remaining household cash; they do not create household
-debt. Unpaid amounts cannot become provider revenue or recorded OWA spending. The base utility
-prices and service-name lookup are shared with operating-buffer estimates.
+Residential electricity is metered hourly and billed at daily settlement. Households pay only
+from available cash; the remaining local/import charges carry forward as arrears and reduce
+housing reserves. Water/sewage retains its hourly allowance and cash-limited OWA surcharge.
+Electricity is excluded from that allowance, so no charge is duplicated. Provider revenue records
+cash actually collected; physical demand is independent of cash.
+Household payment ledgers record the actual cash debit at the account's stored precision, so
+repeated fractional hourly fees reconcile even as household savings grow.
+
+Save format 73 stores each building's current/previous-day meters, daily city-funded input costs,
+closed accounts from removed buildings, and each household's electricity meter, collected payments
+and arrears. Mid-day continuation preserves the next electricity settlement, including demolition.
+Older power quantities convert MJ to kWh (divide by 3.6); coal inventories, shipments and remaining
+deposits keep their physical kg values. Old files have no consumer meters, local/import payment
+split, removed accounts or input-cost ledger to recover. Those new fields start at zero: the first
+day after a pre-73 load combines legacy generation/payment totals with newly metered consumption,
+so it is a conversion boundary, not an exact replay of the old electricity settlement. Household
+cash and recorded payments are retained without charging them again.
 
 Save format 61 stores the three collected utility payments with each household and restores them
 before load-time repair or settlement, without charging cash again. Formats 57–60 had no such
@@ -4200,6 +4277,97 @@ New activity should extend those systems without restoring old fallback growth l
 The following records distinguish test infrastructure, dated failures and current acceptance.
 The regional-market section records the passing starter-economy checks; older timings and
 trajectories retain their original dates and do not validate a later build.
+
+### Electricity validation (`ECON-14`)
+
+**Current correctness (2026-10-07).** The lifecycle revision passes 362 economy tests
+(`/tmp/metrum-power-final-economy.log`) and 25 save/load tests
+(`/tmp/metrum-power-final-save.log`). Coverage includes fuel limits, fixed staffed upkeep,
+cash-poor delivery, mixed-use bills, multiple providers, rounded cash debits, legacy mine density,
+removed-building meters/input costs and removal after midnight billing. Fourteen field-lifecycle
+checks pass (`/tmp/metrum-power-lifecycle-fields.log`). Actual-core demolition/undo and mid-day
+save continuation pass (`/tmp/metrum-power-lifecycle-undo-2.log`,
+`/tmp/metrum-power-continuation-2.log`). Continuation compares uninterrupted and loaded runs with
+the plant present or demolished, through the next settlement: energy, bills, fuel, revenue and net
+cash agree within 0.01. This proves format-73 continuation; pre-73 migration has the cutover limits
+documented above.
+
+The broader core batch passes 113 tests (`/tmp/metrum-power-final-core.log`). The allocator batch
+passes 59 and fails two startup residential family/variant selection fixtures before their selection
+assertions (`/tmp/metrum-power-lifecycle-allocator.log`). Both fail identically on unchanged HEAD
+`318b1634` (`/tmp/metrum-power-baseline-demand-selection.log`); they remain tracked under `DEM-02`.
+
+The headless Godot economy regression passes against the current extension in an isolated user
+profile, checking rendered kWh/MWh values and kW/MW formatting as well as the existing machinery
+authoring checks (`/tmp/metrum-power-godot-ui.log`).
+Fresh `cargo doc --no-deps` reports no missing-doc warnings; its one unresolved
+`VegetationGenerator` link is unrelated (`/tmp/metrum-power-final-rustdoc.log`).
+
+All three growth integration tests pass after adding the industrial labor/housing guard
+(`/tmp/metrum-power-final-growth.log`). It rejects startups when no unemployed workers remain
+beyond existing vacancies and neither vacant, unfinished nor additional candidate homes can house
+more, reusing existing residential placement/upgrade candidates. This fixes the late unstaffed
+factory failure found by the initial two-year run. The village ends with 155 residents and 115
+employed, no bankruptcies/replacement capital, no second-year empty-household days, and positive
+recurring city finances (`/tmp/metrum-power-final-two-years.txt`). This village contains no
+power plant, exercising OWA electricity supply and affordability.
+
+**Physical plant/mine runs.** `coal_power_balance_matrix --ignored --nocapture --test-threads=1`,
+with `RAYON_NUM_THREADS=8`, grows the village for 365 days, places the plant while housing remains
+available, then observes 365 days of real hiring, production, freight and settlement. Mine cases
+place a 1 ha mine at the same time. The producer fixture declares a one-time construction
+endowment before observation; business opening cash is excluded from operating cash changes.
+Plant construction is treasury-funded. All six cases pass accounting, actual staffing, generation,
+final-quarter household supply and positive recurring city-budget checks. Every private profile
+has positive observed operating cash change and no bankruptcy or replacement startup capital.
+
+| Coal source | Workers | Final residents | Generation/day, kWh | Imports/day, kWh | Plant cash flow/day |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Imported | 1 | 153 | 1,200.00 | 106.76 | +41.36 |
+| Imported | 2 | 156 | 1,352.47 | 0 | −61.93 |
+| Imported | 3 | 156 | 1,342.47 | 0 | −183.73 |
+| Local mine | 1 | 155 | 1,200.00 | 699.40 | +54.96 |
+| Local mine | 2 | 156 | 1,899.97 | 0 | +37.79 |
+| Local mine | 3 | 156 | 1,919.97 | 0 | −77.39 |
+
+These are trailing-90-day cash averages, including input purchases/freight, wages and utility
+upkeep; they are distinct from the steady operating worksheet above. Bulk machinery stocks can
+span a reporting window. The mine adds electricity demand and supplies fuel; its observed-year
+operating cash gain is 62,931–65,735, excluding opening cash. More staffed capacity alone does not
+create customers. Final lifecycle-build artifacts: `/tmp/metrum-power-final-plants.log` and
+`/tmp/metrum-power-final-plants/power-*-workers-*.txt`.
+
+**Matched 10k performance.** Sequential unprofiled release runs, eight Rayon workers pinned to
+CPUs `0,2,4,6,8,10,12,14`; no concurrent tests/builds. Both use the existing `/10k` fixture:
+11,120 residents, 5,597 households, 7,620 employed and 7,396 buildings. Setup is outside timing;
+23 hourly samples and ten daily samples advance the same workload. No larger tier ran.
+
+| Build | Setup, s | Hour mean, ms (95% interval) | Daily mean, ms (95% interval) |
+| --- | ---: | ---: | ---: |
+| HEAD `318b1634` | 15.3 | 2.205 (2.133–2.281) | 823.09 (618.50–1,004.10) |
+| kWh + lifecycle accounting | 15.3 | 2.389 (2.329–2.454) | 795.91 (594.74–972.64) |
+
+The final revision adds about 0.18 ms/hour (+8.4%, `p<0.01`); daily change is not significant
+(`p=0.85`). The preceding staffed-buffer revision measured +0.35 ms/hour (+16.6%, `p=0.01`),
+also with no significant daily change (`p=0.98`), in `/tmp/metrum-power-perf-before.log` and
+`/tmp/metrum-power-perf-buffer.log`. These runs establish added hourly cost, not unchanged
+performance or a lifecycle-optimization speedup; process variation affects its magnitude. New work
+is O(buildings + households), with reused scratch, parallel passes, fixed-order reductions and
+no added routing or per-agent scheduling. The broad daily cost remains `ECON-13` work.
+
+Builds use `RUSTFLAGS='' CARGO_ENCODED_RUSTFLAGS='' cargo bench --manifest-path rust/Cargo.toml
+--bench economy_tick_benchmark --no-run`. HEAD source/configuration is isolated in
+`/tmp/metrum-power-baseline-source`; its bootstrap assets match the workspace. Executable SHA-256
+prefixes are `3cbb0ec1b218f55c` (HEAD) and `2eaee9667c7b2df1` (final lifecycle build); catalog prefixes
+are `a30680e6f8cde47b` and `753ce26467a405b2`. Run commands:
+
+```bash
+RAYON_NUM_THREADS=8 CRITERION_HOME=/tmp/metrum-power-final-perf taskset -c 0,2,4,6,8,10,12,14 /tmp/metrum-power-head-economy --bench /10k --save-baseline before
+RAYON_NUM_THREADS=8 CRITERION_HOME=/tmp/metrum-power-final-perf taskset -c 0,2,4,6,8,10,12,14 /tmp/metrum-power-final-economy-bench --bench /10k --baseline before
+```
+
+Logs: `/tmp/metrum-power-final-perf-before.log`, `/tmp/metrum-power-final-perf-after.log`;
+full executable/catalog identities: `/tmp/metrum-power-final-bench-sha256.txt`.
 
 ### `ECON-11` balance tests
 

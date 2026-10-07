@@ -10,6 +10,7 @@ use crate::simulation::economy::agents::{ACTIVITY_HOME, ACTIVITY_SHOPPING};
 fn household_replenishment_uses_one_visible_shopper_trip() {
     let household = Household {
         home_building_id: 0,
+        power_arrears: Default::default(),
         budget: 300.0,
         stock: 0.0,
         member_count: 2,
@@ -84,6 +85,7 @@ fn household_replenishment_uses_one_visible_shopper_trip() {
 fn household_replenishment_reservation_uses_live_policy_vat() {
     let household = Household {
         home_building_id: 0,
+        power_arrears: Default::default(),
         budget: 1_000.0,
         stock: 0.0,
         member_count: 2,
@@ -138,6 +140,7 @@ fn household_replenishment_reservation_uses_live_policy_vat() {
 fn child_at_home_does_not_carry_household_shopping_trip() {
     let household = Household {
         home_building_id: 0,
+        power_arrears: Default::default(),
         budget: 300.0,
         stock: 0.0,
         member_count: 2,
@@ -192,6 +195,7 @@ fn child_at_home_does_not_carry_household_shopping_trip() {
 fn elder_can_carry_household_shopping_trip() {
     let household = Household {
         home_building_id: 0,
+        power_arrears: Default::default(),
         budget: 300.0,
         stock: 0.0,
         member_count: 1,
@@ -232,6 +236,7 @@ fn elder_can_carry_household_shopping_trip() {
 fn zero_stock_household_bypasses_replenishment_stagger_when_store_has_supply() {
     let household = Household {
         home_building_id: 0,
+        power_arrears: Default::default(),
         budget: 300.0,
         stock: 0.0,
         member_count: 2,
@@ -275,6 +280,7 @@ fn zero_stock_household_bypasses_replenishment_stagger_when_store_has_supply() {
 fn household_can_restock_from_far_store() {
     let household = Household {
         home_building_id: 0,
+        power_arrears: Default::default(),
         budget: 300.0,
         stock: 0.0,
         member_count: 2,
@@ -315,6 +321,7 @@ fn replenishment_search_cursor_reaches_next_store_window() {
     let mut households = HouseholdSystem::new();
     households.households.push(Household {
         home_building_id: 0,
+        power_arrears: Default::default(),
         budget: 300.0,
         stock: 0.0,
         member_count: 2,
@@ -390,6 +397,7 @@ fn replenishment_search_cursor_window_wraps_supplier_index() {
     let mut households = HouseholdSystem::new();
     households.households.push(Household {
         home_building_id: 0,
+        power_arrears: Default::default(),
         budget: 300.0,
         stock: 0.0,
         member_count: 2,
@@ -465,6 +473,7 @@ fn replenishment_search_cursor_window_wraps_supplier_index() {
 fn unreachable_store_does_not_reserve_household_supplies() {
     let household = Household {
         home_building_id: 0,
+        power_arrears: Default::default(),
         budget: 300.0,
         stock: 0.0,
         member_count: 2,
@@ -537,6 +546,7 @@ fn unreachable_store_does_not_reserve_household_supplies() {
 fn deserted_store_cannot_sell_household_supplies() {
     let household = Household {
         home_building_id: 0,
+        power_arrears: Default::default(),
         budget: 300.0,
         stock: 0.0,
         member_count: 2,
@@ -590,6 +600,7 @@ fn repeated_replenishment_failures_become_terminal_shortage() {
     let tuning = load_runtime_economy_tuning().expect("runtime economy tuning");
     let household = Household {
         home_building_id: 0,
+        power_arrears: Default::default(),
         budget: 300.0,
         stock: 0.0,
         member_count: 2,
@@ -632,6 +643,7 @@ fn repeated_replenishment_failures_become_terminal_shortage() {
 fn household_waits_without_reservation_when_no_member_is_home() {
     let household = Household {
         home_building_id: 0,
+        power_arrears: Default::default(),
         budget: 300.0,
         stock: 0.0,
         member_count: 2,
@@ -688,6 +700,7 @@ fn household_waits_without_reservation_when_no_member_is_home() {
 fn canceled_shopping_to_store_restores_reserved_store_inventory() {
     let mut household = Household {
         home_building_id: 0,
+        power_arrears: Default::default(),
         budget: 0.0,
         stock: 0.0,
         member_count: 2,
@@ -787,6 +800,7 @@ fn shopping_deadlines_allow_physical_travel_before_bounded_delay() {
 fn shopping_timeout_restores_pre_pickup_reservation() {
     let mut household = Household {
         home_building_id: 0,
+        power_arrears: Default::default(),
         budget: 0.0,
         stock: 0.0,
         member_count: 2,
@@ -838,6 +852,7 @@ fn shopping_timeout_restores_pre_pickup_reservation() {
 fn invalidating_home_restores_pre_pickup_store_reservation() {
     let mut household = Household {
         home_building_id: 0,
+        power_arrears: Default::default(),
         budget: 0.0,
         stock: 0.0,
         member_count: 2,
@@ -896,6 +911,7 @@ fn terminal_replenishment_shortage_retries_on_normal_cadence() {
     let tuning = load_runtime_economy_tuning().expect("runtime economy tuning");
     let household = Household {
         home_building_id: 0,
+        power_arrears: Default::default(),
         budget: 300.0,
         stock: 0.0,
         member_count: 2,
@@ -941,6 +957,7 @@ fn terminal_replenishment_shortage_retries_on_normal_cadence() {
 fn store_losing_household_supply_profile_before_pickup_restores_reservation() {
     let mut household = Household {
         home_building_id: 0,
+        power_arrears: Default::default(),
         budget: 0.0,
         stock: 0.0,
         member_count: 2,
@@ -1005,6 +1022,7 @@ fn low_stock_household_can_buy_affordable_partial_restock() {
 
     let household = Household {
         home_building_id: 0,
+        power_arrears: Default::default(),
         budget: partial_units * unit_price * (1.0 + tuning.fiscal.household_vat_rate),
         stock: 0.0,
         member_count: 2,

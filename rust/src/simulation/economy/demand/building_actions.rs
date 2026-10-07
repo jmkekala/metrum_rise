@@ -118,6 +118,8 @@ impl DemandSystem {
             environment,
         );
         let mut absorption_context = snapshot.output_absorption.clone();
+        let mut housing_can_grow =
+            snapshot.vacant_household_slots > 0 || snapshot.under_construction_household_slots > 0;
         for use_kind in [
             DemandUse::Residential,
             DemandUse::Commercial,
@@ -139,6 +141,11 @@ impl DemandSystem {
             let upgrade_candidate_count = existing_candidates.upgrades.len();
             let downgrade_candidate_count = existing_candidates.downgrades.len();
             let despawn_candidate_count = existing_candidates.despawns.len();
+            if use_kind == DemandUse::Residential {
+                // Reuse candidates already collected for this pass. Regional customers
+                // cannot staff a new factory when there is neither labor nor room to house it.
+                housing_can_grow |= spawn_candidate_count > 0 || upgrade_candidate_count > 0;
+            }
 
             let mut spawn_profile_missing = 0_usize;
             let normalized_spawn_pressure = spawn_candidates
@@ -221,12 +228,20 @@ impl DemandSystem {
                 spawn_skipped_budget = spawn_candidate_count;
                 Vec::new()
             } else {
-                // Non-residential: output absorption is the final ordinary hard gate. Cheat mode
-                // bypasses it explicitly, while staffing remains an operational outcome after spawn.
+                // Non-residential openings need customers and a possible source of labor.
+                // Cheat mode bypasses these ordinary viability gates explicitly.
                 let mut selected = Vec::new();
                 for candidate in spawn_candidates {
                     if selected.len() >= spawns_today {
                         spawn_skipped_budget += 1;
+                        continue;
+                    }
+                    if !self.cheat_max_demands_enabled
+                        && zone_type == ZoneType::Industrial
+                        && !housing_can_grow
+                        && snapshot.existing_unemployed_member_count <= snapshot.open_job_slots
+                    {
+                        spawn_rejected_viability += 1;
                         continue;
                     }
                     if !self.cheat_max_demands_enabled

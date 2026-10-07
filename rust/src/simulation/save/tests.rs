@@ -256,6 +256,9 @@ fn snapshot_test_building(
         daily_city_funded_input_cost: 0.0,
         daily_household_sales_value: 123.0,
         daily_power_service_units: 78.0,
+        daily_electricity: Default::default(),
+        recent_electricity: Default::default(),
+        hourly_economy_activity: 0.0,
         daily_power_served_units: 77.0,
         recent_power_service_units: 79.0,
         recent_power_served_units: 76.0,
@@ -311,7 +314,7 @@ fn extractor_load_rejects_invalid_depletion_without_clamping() {
     let conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(schema::SCHEMA).unwrap();
     conn.execute(
-        "INSERT INTO resource_extractor_sites VALUES (0, 0, 'coal', 100.0, 20.0)",
+        "INSERT INTO resource_extractor_sites VALUES (0, 0, 'coal', 100.0, 480.0, 20.0)",
         [],
     )
     .unwrap();
@@ -340,7 +343,7 @@ fn extractor_load_rejects_invalid_depletion_without_clamping() {
             params![total, extracted],
         )
         .unwrap();
-        let result = world::load_resource_extraction(&conn, 1);
+        let result = world::load_resource_extraction(&conn, 1, SAVE_VERSION);
         assert_eq!(
             result.is_ok(),
             valid,
@@ -440,6 +443,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         ],
         area_m2: 100.0,
         total_reserve_units: 1234.0,
+        reserve_density_kg_per_m2: crate::simulation::extraction::COAL_UNITS_PER_FULL_RICHNESS_M2,
         extracted_units: 321.0,
     }]);
     let agriculture = AgricultureSystem::from_sites(vec![FieldSite {
@@ -456,6 +460,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     let mut households = HouseholdSystem::new();
     households.households.push(Household {
         home_building_id: 0,
+        power_arrears: Default::default(),
         budget: 178.0,
         stock: 3.0,
         member_count: 2,
@@ -480,6 +485,21 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         unemployment_days_elapsed: 0,
     });
     households.restore_utility_payments(0, [3.25, 2.5, 1.75]);
+    let meter = crate::simulation::economy::electricity::ElectricityUsage {
+        consumed_kwh: 11.0,
+        local_kwh: 7.0,
+    };
+    households.restore_electricity_account(0, meter, 1.5, 2.0);
+    households.households[0].power_arrears.local = 0.5;
+    households.households[0].power_arrears.imported = 1.0;
+    allocator.buildings[0].daily_electricity.residential = meter;
+    allocator.buildings[0].recent_electricity.workplace = meter;
+    allocator.buildings[0].daily_city_funded_input_cost = 17.25;
+    households.removed_electricity.settlement.demand_units = 12.0;
+    households.removed_electricity.settlement.served_units = 10.0;
+    households.removed_electricity.city_input_cost = -2.5;
+    households.removed_electricity.power_input_cost = -2.5;
+    households.removed_electricity.coal_consumed_kg = 4.5;
     let mut logistics = ShipmentSystem::new();
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
     let household_supplies = catalog
@@ -671,6 +691,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         electricity_wage_cost: 8.0,
         electricity_revenue: 30.0,
         electricity_net: 10.0,
+        electricity_consumption_cost: 12.5,
     });
     let mut pending_demand_spawns = VecDeque::new();
     pending_demand_spawns.push_back(PendingDemandSpawnAction {
@@ -801,6 +822,33 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     assert_eq!(paid.power_consumption_cost, 3.25);
     assert_eq!(paid.water_consumption_cost, 2.5);
     assert_eq!(paid.sewage_consumption_cost, 1.75);
+    assert_eq!(paid.electricity.consumed_kwh, 11.0);
+    assert_eq!(paid.electricity.local_kwh, 7.0);
+    assert_eq!(paid.power_unpaid_cost, 1.5);
+    assert_eq!(paid.power_local_payment, 2.0);
+    assert_eq!(loaded.households.households[0].power_arrears.total(), 1.5);
+    assert_eq!(
+        loaded.allocator.buildings[0].daily_city_funded_input_cost,
+        17.25
+    );
+    assert_eq!(
+        serde_json::to_string(&loaded.households.removed_electricity).unwrap(),
+        serde_json::to_string(&households.removed_electricity).unwrap(),
+    );
+    assert_eq!(
+        loaded.allocator.buildings[0]
+            .daily_electricity
+            .residential
+            .consumed_kwh,
+        11.0
+    );
+    assert_eq!(
+        loaded.allocator.buildings[0]
+            .recent_electricity
+            .workplace
+            .local_kwh,
+        7.0
+    );
     let conn = Connection::open(&path).unwrap();
     let mut accepted_corruptions = Vec::new();
     for (column, invalid_values) in [
@@ -916,6 +964,36 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     // once at the read boundary, retaining all money and unchanged household supply quantities.
     conn.execute("UPDATE save_meta SET version = 69", [])
         .unwrap();
+    conn.execute("ALTER TABLE buildings DROP COLUMN electricity_usage", [])
+        .unwrap();
+    conn.execute("ALTER TABLE households DROP COLUMN electricity_account", [])
+        .unwrap();
+    conn.execute("DROP TABLE electricity_day_state", [])
+        .unwrap();
+    conn.execute(
+        "ALTER TABLE city_budget_history DROP COLUMN electricity_consumption_cost",
+        [],
+    )
+    .unwrap();
+    let old_power = load_from_sqlite(&path, &allocator.registry).unwrap();
+    assert_eq!(
+        old_power.resource_extraction.sites()[0].reserve_density_kg_per_m2,
+        6.0
+    );
+    assert!(
+        (old_power.allocator.buildings[0].daily_power_service_units - 78.0 / 3.6).abs() < 0.001
+    );
+    assert!((old_power.budget_history[0].power_produced - 70.0 / 3.6).abs() < 0.001);
+    assert_eq!(
+        old_power.households.households[0].power_arrears.total(),
+        0.0
+    );
+    assert_eq!(
+        old_power.households.daily_ledgers()[0]
+            .electricity
+            .consumed_kwh,
+        0.0
+    );
     conn.execute("UPDATE shipments SET resource_runtime_id = 2", [])
         .unwrap();
     conn.execute("INSERT INTO building_inventories(building_id, resource_runtime_id, amount) VALUES (0, 8, 12)", []).unwrap();
@@ -1238,6 +1316,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     assert_eq!(loaded_budget.child_support, 1.0);
     assert_eq!(loaded_budget.power_coverage, 0.95);
     assert_eq!(loaded_budget.electricity_net, 10.0);
+    assert_eq!(loaded_budget.electricity_consumption_cost, 12.5);
     let packaged_food = catalog
         .resource_runtime_id_for_id("packaged_food")
         .expect("packaged food resource");
@@ -1355,6 +1434,9 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
         daily_city_funded_input_cost: 0.0,
         daily_household_sales_value: 0.0,
         daily_power_service_units: 0.0,
+        daily_electricity: Default::default(),
+        recent_electricity: Default::default(),
+        hourly_economy_activity: 0.0,
         daily_power_served_units: 0.0,
         recent_power_service_units: 0.0,
         recent_power_served_units: 0.0,

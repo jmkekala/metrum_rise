@@ -155,7 +155,7 @@ fn save_budget_history(
     budget_history: &VecDeque<DailyBudgetLedgerEntry>,
 ) -> SaveLoadResult<()> {
     let mut stmt = tx.prepare(
-        "INSERT INTO city_budget_history(sequence, day_index, income, expenses, net, treasury, tax_income, income_tax, household_vat, business_profit_tax, property_tax, residential_property_tax, commercial_property_tax, industrial_property_tax, utility_service_revenue, benefits, unemployment_benefits, pensions, child_support, city_wages, fuel_input_purchases, imports_owa, construction_service_costs, power_produced, power_consumed, power_unmet, power_coverage, coal_inventory, coal_consumed, electricity_fuel_cost, electricity_wage_cost, electricity_revenue, electricity_net) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33)",
+        "INSERT INTO city_budget_history(sequence, day_index, income, expenses, net, treasury, tax_income, income_tax, household_vat, business_profit_tax, property_tax, residential_property_tax, commercial_property_tax, industrial_property_tax, utility_service_revenue, benefits, unemployment_benefits, pensions, child_support, city_wages, fuel_input_purchases, imports_owa, construction_service_costs, power_produced, power_consumed, power_unmet, power_coverage, coal_inventory, coal_consumed, electricity_fuel_cost, electricity_wage_cost, electricity_revenue, electricity_net, electricity_consumption_cost) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34)",
     )?;
     for (sequence, entry) in budget_history.iter().enumerate() {
         stmt.execute(params![
@@ -192,20 +192,29 @@ fn save_budget_history(
             entry.electricity_wage_cost,
             entry.electricity_revenue,
             entry.electricity_net,
+            entry.electricity_consumption_cost,
         ])?;
     }
     Ok(())
 }
 
-fn load_budget_history(conn: &Connection) -> SaveLoadResult<VecDeque<DailyBudgetLedgerEntry>> {
+fn load_budget_history(
+    conn: &Connection,
+    version: i64,
+) -> SaveLoadResult<VecDeque<DailyBudgetLedgerEntry>> {
     let mut history = VecDeque::new();
     if !sqlite_table_exists(conn, "city_budget_history")? {
         return Ok(history);
     }
 
-    let mut stmt = conn.prepare(
-        "SELECT day_index, income, expenses, net, treasury, tax_income, income_tax, household_vat, business_profit_tax, property_tax, residential_property_tax, commercial_property_tax, industrial_property_tax, utility_service_revenue, benefits, unemployment_benefits, pensions, child_support, city_wages, fuel_input_purchases, imports_owa, construction_service_costs, power_produced, power_consumed, power_unmet, power_coverage, coal_inventory, coal_consumed, electricity_fuel_cost, electricity_wage_cost, electricity_revenue, electricity_net FROM city_budget_history ORDER BY sequence",
-    )?;
+    let cost_column = if version >= ELECTRICITY_KWH_SAVE_VERSION {
+        "electricity_consumption_cost"
+    } else {
+        "power_consumed * 3.0 + power_unmet * 3.75"
+    };
+    let mut stmt = conn.prepare(&format!(
+        "SELECT day_index, income, expenses, net, treasury, tax_income, income_tax, household_vat, business_profit_tax, property_tax, residential_property_tax, commercial_property_tax, industrial_property_tax, utility_service_revenue, benefits, unemployment_benefits, pensions, child_support, city_wages, fuel_input_purchases, imports_owa, construction_service_costs, power_produced, power_consumed, power_unmet, power_coverage, coal_inventory, coal_consumed, electricity_fuel_cost, electricity_wage_cost, electricity_revenue, electricity_net, {cost_column} FROM city_budget_history ORDER BY sequence",
+    ))?;
     let rows = stmt.query_map([], |row| {
         Ok((
             row.get::<_, i64>(0)?,
@@ -240,6 +249,7 @@ fn load_budget_history(conn: &Connection) -> SaveLoadResult<VecDeque<DailyBudget
             row.get::<_, f64>(29)?,
             row.get::<_, f64>(30)?,
             row.get::<_, f64>(31)?,
+            row.get::<_, f64>(32)?,
         ))
     })?;
     for row in rows {
@@ -276,6 +286,7 @@ fn load_budget_history(conn: &Connection) -> SaveLoadResult<VecDeque<DailyBudget
             electricity_wage_cost,
             electricity_revenue,
             electricity_net,
+            electricity_consumption_cost,
         ) = row?;
         history.push_back(DailyBudgetLedgerEntry {
             day_index: i64_to_u32(day_index)?,
@@ -300,9 +311,24 @@ fn load_budget_history(conn: &Connection) -> SaveLoadResult<VecDeque<DailyBudget
             fuel_input_purchases,
             imports_owa,
             construction_service_costs,
-            power_produced,
-            power_consumed,
-            power_unmet,
+            power_produced: power_produced
+                * if version >= ELECTRICITY_KWH_SAVE_VERSION {
+                    1.0
+                } else {
+                    1.0 / 3.6
+                },
+            power_consumed: power_consumed
+                * if version >= ELECTRICITY_KWH_SAVE_VERSION {
+                    1.0
+                } else {
+                    1.0 / 3.6
+                },
+            power_unmet: power_unmet
+                * if version >= ELECTRICITY_KWH_SAVE_VERSION {
+                    1.0
+                } else {
+                    1.0 / 3.6
+                },
             power_coverage,
             coal_inventory,
             coal_consumed,
@@ -310,6 +336,7 @@ fn load_budget_history(conn: &Connection) -> SaveLoadResult<VecDeque<DailyBudget
             electricity_wage_cost,
             electricity_revenue,
             electricity_net,
+            electricity_consumption_cost,
         });
     }
     Ok(history)
@@ -592,7 +619,7 @@ pub(crate) fn load_from_sqlite(
     let mut households = world::load_households(&conn, version)?;
     let mut logistics = world::load_shipments(&conn, version)?;
     let mut resource_extraction =
-        world::load_resource_extraction(&conn, allocator.buildings.len())?;
+        world::load_resource_extraction(&conn, allocator.buildings.len(), version)?;
     let mut agriculture = world::load_agriculture(&conn, allocator.buildings.len())?;
     let mut agents = agents::load_agents(&conn, time_r.5, version)?;
     let treasury_row: (
@@ -711,7 +738,7 @@ pub(crate) fn load_from_sqlite(
         CityServicePolicy::default()
     };
     let fiscal_policy = load_fiscal_policy(&conn)?;
-    let budget_history = load_budget_history(&conn)?;
+    let budget_history = load_budget_history(&conn, version)?;
 
     Ok(LoadedSimulation {
         vegetation,

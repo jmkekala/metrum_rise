@@ -322,6 +322,7 @@ impl SimCore {
                 .zoning
                 .capture_cell_lot_removal_undo(self.allocator.buildings[building_idx].parcel_id),
             treasury_refund: 0.0,
+            day_index: self.time.day_index,
             building_idx,
             original_building_count,
             expected_post_building_ref_revision: self
@@ -555,7 +556,8 @@ impl SimCore {
         {
             return false;
         }
-        if undo.original_building_count == 0
+        if undo.day_index != self.time.day_index
+            || undo.original_building_count == 0
             || undo.building_idx >= undo.original_building_count
             || self.allocator.buildings.len().saturating_add(1) != undo.original_building_count
             || self.allocator.building_ref_revision != undo.expected_post_building_ref_revision

@@ -43,6 +43,7 @@ impl HouseholdSystem {
         phase_start = Instant::now();
         let owa_exports_available = has_connected_border_node(graph);
         self.run_building_economy(allocator, owa_exports_available);
+        self.run_electricity_hour(allocator);
         let building_economy_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
         logistics.hourly_tick(

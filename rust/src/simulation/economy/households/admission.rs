@@ -45,6 +45,7 @@ impl HouseholdSystem {
             tuning.households.immigrant_starting_budget_per_member * member_count as f32;
         self.households.push(Household {
             home_building_id,
+            power_arrears: Default::default(),
             budget: starting_budget,
             stock: member_count as f32 * consumption_rate * starting_stock_days,
             member_count,

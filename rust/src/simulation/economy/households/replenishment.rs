@@ -32,7 +32,7 @@ use rayon::prelude::*;
 
 const GROCERY_SEARCH_CANDIDATES: usize = 24;
 const GROCERY_ROUTE_SCAN_CANDIDATES: usize = GROCERY_SEARCH_CANDIDATES * 16;
-const HOUSEHOLD_UTILITY_SERVICE_COUNT: f32 = 3.0;
+const HOUSEHOLD_UTILITY_SERVICE_COUNT: f32 = 2.0;
 
 /// Household stock is healthy and no replenishment is pending.
 pub const REPLENISHMENT_STABLE: u8 = 0;
@@ -466,7 +466,7 @@ impl HouseholdSystem {
         let progress = self.progress_households_for_operational_hour(
             allocator.buildings.len(),
             trigger_days,
-            tuning.households.utility_cost_per_member_per_day,
+            tuning.households.water_sewage_cost_per_member_per_day,
             household_supply_unit_price,
         );
         if progress.any_zero_stock {
@@ -516,7 +516,7 @@ impl HouseholdSystem {
         &mut self,
         building_count: usize,
         trigger_days: f32,
-        utility_cost_per_member_per_day: f32,
+        water_sewage_cost_per_member_per_day: f32,
         household_supply_unit_price: f32,
     ) -> HouseholdHourProgress {
         self.ensure_daily_ledger_len();
@@ -537,10 +537,13 @@ impl HouseholdSystem {
                         / OPERATIONAL_HOURS_PER_DAY;
                     household.stock = (household.stock - hourly_consumption).max(0.0);
                     let hourly_utility_cost = household.member_count as f32
-                        * utility_cost_per_member_per_day
+                        * water_sewage_cost_per_member_per_day
                         / OPERATIONAL_HOURS_PER_DAY;
-                    let paid_utility_cost = hourly_utility_cost.min(household.budget.max(0.0));
+                    let cash_before = household.budget;
                     household.budget = (household.budget - hourly_utility_cost).max(0.0);
+                    // Record the debit at the account's precision. Fractional hourly fees
+                    // otherwise drift from the ledger as household savings grow.
+                    let paid_utility_cost = (cash_before - household.budget).max(0.0);
                     let hourly_supply_cost = hourly_consumption * household_supply_unit_price;
                     ledger.household_supply_consumption_cost += hourly_supply_cost;
                     record_household_utility_cost(ledger, paid_utility_cost);
@@ -615,7 +618,7 @@ impl HouseholdSystem {
         let progress = self.progress_households_for_operational_hour(
             0,
             trigger_days,
-            tuning.households.utility_cost_per_member_per_day,
+            tuning.households.water_sewage_cost_per_member_per_day,
             supply_unit_price,
         );
         if progress.any_zero_stock {
@@ -1164,7 +1167,6 @@ impl HouseholdSystem {
 
 fn record_household_utility_cost(ledger: &mut DailyHouseholdLedger, total_cost: f32) {
     let service_cost = total_cost.max(0.0) / HOUSEHOLD_UTILITY_SERVICE_COUNT;
-    ledger.power_consumption_cost += service_cost;
     ledger.water_consumption_cost += service_cost;
     ledger.sewage_consumption_cost += service_cost;
 }

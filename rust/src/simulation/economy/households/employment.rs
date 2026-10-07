@@ -1044,10 +1044,13 @@ fn household_income_pressure(
         members * household.consumption_rate.max(0.0) * household_supply_unit_price(catalog);
     let daily_service_cost = members
         * demand_sink_cash_cost_per_resident_excluding_resource(catalog, household_supply_resource);
-    let daily_utility_cost = members * tuning.households.utility_cost_per_member_per_day;
+    let daily_utility_cost =
+        super::metrics::household_daily_utility_allowance(catalog, tuning, members);
     let reserve_target =
         (daily_supply_cost + daily_service_cost + daily_utility_cost) * target_days;
-    (1.0 - (household.budget / reserve_target.max(1.0)).clamp(0.0, 1.0)).clamp(0.0, 1.0)
+    (1.0 - ((household.budget - household.power_arrears.total()) / reserve_target.max(1.0))
+        .clamp(0.0, 1.0))
+    .clamp(0.0, 1.0)
 }
 
 fn normalized_commute_penalty_seconds(commute_seconds: f32) -> f32 {

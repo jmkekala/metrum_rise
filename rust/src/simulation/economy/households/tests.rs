@@ -32,6 +32,7 @@ use godot::prelude::{Vector2, Vector3};
 
 mod business;
 mod commercial;
+mod electricity;
 mod employment;
 mod farms;
 mod housing;

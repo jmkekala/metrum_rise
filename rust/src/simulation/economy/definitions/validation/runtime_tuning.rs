@@ -195,10 +195,10 @@ pub(in crate::simulation::economy::definitions) fn validate_runtime_tuning(
         "runtime_tuning.households.household_starting_budget_floor",
     )?;
     validate_range(
-        tuning.households.utility_cost_per_member_per_day,
+        tuning.households.water_sewage_cost_per_member_per_day,
         0.0,
         f32::INFINITY,
-        "runtime_tuning.households.utility_cost_per_member_per_day",
+        "runtime_tuning.households.water_sewage_cost_per_member_per_day",
     )?;
     validate_nonempty_level_array(
         &tuning

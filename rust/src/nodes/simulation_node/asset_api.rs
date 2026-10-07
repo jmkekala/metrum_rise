@@ -222,6 +222,31 @@ impl SimulationNode {
         );
         dict.set("construction_progress", b.construction_progress() as f64);
         dict.set("occupancy", b.occupancy as i32);
+        let usage = b.recent_electricity;
+        let consumed_kwh = usage.workplace.consumed_kwh + usage.residential.consumed_kwh;
+        let local_kwh = usage.workplace.local_kwh + usage.residential.local_kwh;
+        dict.set("electricity_consumption_kwh", consumed_kwh as f64);
+        dict.set("electricity_local_kwh", local_kwh as f64);
+        dict.set(
+            "electricity_imported_kwh",
+            (consumed_kwh - local_kwh).max(0.0) as f64,
+        );
+        if let (Ok(catalog), Ok(tuning)) = (
+            crate::simulation::economy::definitions::load_runtime_economy_catalog(),
+            crate::simulation::economy::definitions::load_runtime_economy_tuning(),
+        ) {
+            let price =
+                crate::simulation::economy::households::local_utility_service_costs(&catalog)[0];
+            let bill = usage
+                .workplace
+                .bill(price, tuning.owa_import_price_multiplier)
+                .total()
+                + usage
+                    .residential
+                    .bill(price, tuning.owa_import_price_multiplier)
+                    .total();
+            dict.set("electricity_cost", bill as f64);
+        }
         dict.set(
             "household_capacity",
             core.allocator.household_capacity(best_idx),
@@ -276,6 +301,7 @@ impl SimulationNode {
         let mut elder_agents = 0i32;
         let mut household_count = 0i32;
         let mut household_budget_total = 0.0f32;
+        let mut household_power_arrears = 0.0f32;
         let mut household_stock_total = 0.0f32;
         let mut household_stock_days_total = 0.0f32;
         let mut household_stock_days_min = f32::INFINITY;
@@ -291,6 +317,7 @@ impl SimulationNode {
                     adult_agents += h.adult_count as i32;
                     elder_agents += h.elder_count as i32;
                     household_budget_total += h.budget;
+                    household_power_arrears += h.power_arrears.total();
                     household_stock_total += h.stock;
                     household_stock_days_total += h.stock_days;
                     household_stock_days_min = household_stock_days_min.min(h.stock_days);
@@ -334,6 +361,7 @@ impl SimulationNode {
             };
             dict.set("household_count", household_count);
             dict.set("household_budget_total", household_budget_total as f64);
+            dict.set("household_power_arrears", household_power_arrears as f64);
             dict.set(
                 "household_budget_avg",
                 (household_budget_total / household_divisor) as f64,
@@ -433,6 +461,14 @@ impl SimulationNode {
                     dict.set("utility_service_available", utility_active);
                     dict.set("utility_local_revenue", b.revenue as f64);
                     if utility_service == "power" {
+                        dict.set("power_capacity_kw", profile.power_capacity_kw as f64);
+                        dict.set(
+                            "power_staffed_capacity_kw",
+                            (profile.power_capacity_kw
+                                * b.worker_count.min(profile.worker_capacity) as f32
+                                / profile.worker_capacity.max(1) as f32)
+                                as f64,
+                        );
                         dict.set(
                             "service_funding_effective",
                             core.effective_electricity_funding_for_building(best_idx) as f64,

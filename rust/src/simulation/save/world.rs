@@ -284,11 +284,22 @@ pub(super) fn save_world(
     super::cell_zoning::save(tx, zoning, maps)?;
 
     // Buildings
-    let mut bld_stmt = tx.prepare("INSERT INTO buildings(building_id, parcel_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, service_funding_override, revenue, operating_budget, profit_tax_budget_baseline, last_day_profit, shipment_cooldown_hours, width, depth, asset_id, level, construction_total_hours, construction_remaining_hours, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress, daily_household_sales_value, daily_power_service_units, daily_power_served_units, recent_power_service_units, recent_power_served_units, recent_household_sales_value, support_height_m, build_generation) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35)")?;
+    let mut bld_stmt = tx.prepare("INSERT INTO buildings(building_id, parcel_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, service_funding_override, revenue, operating_budget, profit_tax_budget_baseline, last_day_profit, shipment_cooldown_hours, width, depth, asset_id, level, construction_total_hours, construction_remaining_hours, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress, daily_household_sales_value, daily_power_service_units, daily_power_served_units, recent_power_service_units, recent_power_served_units, recent_household_sales_value, support_height_m, build_generation, electricity_usage) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36)")?;
     let mut inventory_stmt = tx.prepare(
         "INSERT INTO building_inventories(building_id, resource_runtime_id, amount) VALUES (?1, ?2, ?3)",
     )?;
     for (saved_bid, b) in buildings.buildings.iter().enumerate() {
+        if !b.daily_city_funded_input_cost.is_finite() {
+            return Err(SaveLoadError::custom("invalid city input cost"));
+        }
+        for usage in [
+            b.daily_electricity.workplace,
+            b.daily_electricity.residential,
+            b.recent_electricity.workplace,
+            b.recent_electricity.residential,
+        ] {
+            validate_electricity_usage(usage)?;
+        }
         let saved_bid_db = usize_to_i64(saved_bid)?;
         let saved_eid = maps
             .edge_old_to_new
@@ -331,7 +342,13 @@ pub(super) fn save_world(
             b.recent_power_served_units,
             b.recent_household_sales_value,
             b.support_height_m,
-            i64::from(b.build_generation)
+            i64::from(b.build_generation),
+            serde_json::to_string(&(
+                b.daily_electricity,
+                b.recent_electricity,
+                b.daily_city_funded_input_cost
+            ))
+            .map_err(|err| SaveLoadError::custom(err.to_string()))?,
         ])?;
         for (slot, amount) in b.resource_inventory.iter().enumerate() {
             if *amount <= 0.0 {
@@ -342,13 +359,37 @@ pub(super) fn save_world(
     }
     save_resource_extraction(tx, resource_extraction, maps)?;
     save_agriculture(tx, agriculture, maps)?;
-    let mut household_stmt = tx.prepare("INSERT INTO households(household_id, home_building, budget, stock, member_count, child_count, adult_count, elder_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, replenishment_failure_count, reserved_store_building_id, reserved_amount, reserved_total_cost, shopping_agent_id, shopping_agent_schedule_seed, shopping_timeout_hours_remaining, replenishment_search_cursor, stay_failure_days, unhoused_days_elapsed, replenishment_offset_hours, unemployment_days_elapsed, power_consumption_cost, water_consumption_cost, sewage_consumption_cost) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)")?;
+    if !households.removed_electricity.is_valid() {
+        return Err(SaveLoadError::custom(
+            "invalid removed-building electricity account",
+        ));
+    }
+    tx.execute(
+        "INSERT INTO electricity_day_state(singleton, removed_buildings) VALUES (1, ?1)",
+        [serde_json::to_string(&households.removed_electricity)
+            .map_err(|err| SaveLoadError::custom(err.to_string()))?],
+    )?;
+    let mut household_stmt = tx.prepare("INSERT INTO households(household_id, home_building, budget, stock, member_count, child_count, adult_count, elder_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, replenishment_failure_count, reserved_store_building_id, reserved_amount, reserved_total_cost, shopping_agent_id, shopping_agent_schedule_seed, shopping_timeout_hours_remaining, replenishment_search_cursor, stay_failure_days, unhoused_days_elapsed, replenishment_offset_hours, unemployment_days_elapsed, power_consumption_cost, water_consumption_cost, sewage_consumption_cost, electricity_account) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)")?;
     for (hid, household) in households.households.iter().enumerate() {
         let ledger = households
             .daily_ledgers()
             .get(hid)
             .copied()
             .unwrap_or_default();
+        validate_electricity_usage(ledger.electricity)?;
+        if [
+            household.power_arrears.local,
+            household.power_arrears.imported,
+            ledger.power_unpaid_cost,
+            ledger.power_local_payment,
+        ]
+        .iter()
+        .any(|v| !v.is_finite() || *v < 0.0)
+        {
+            return Err(SaveLoadError::custom(
+                "invalid household electricity account",
+            ));
+        }
         household_stmt.execute(params![
             usize_to_i64(hid)?,
             optional_building_to_db(household.home_building_id, maps)?,
@@ -381,6 +422,13 @@ pub(super) fn save_world(
             ledger.power_consumption_cost,
             ledger.water_consumption_cost,
             ledger.sewage_consumption_cost,
+            serde_json::to_string(&(
+                ledger.electricity,
+                household.power_arrears,
+                ledger.power_unpaid_cost,
+                ledger.power_local_payment
+            ))
+            .map_err(|err| SaveLoadError::custom(err.to_string()))?,
         ])?;
     }
 
@@ -479,12 +527,13 @@ fn save_resource_extraction(
     maps: &SnapshotMaps,
 ) -> SaveLoadResult<()> {
     let mut site_stmt = tx.prepare(
-        "INSERT INTO resource_extractor_sites(site_id, building_id, resource_id, total_reserve_units, extracted_units) VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT INTO resource_extractor_sites(site_id, building_id, resource_id, total_reserve_units, extracted_units, reserve_density_kg_per_m2) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
     )?;
     let mut point_stmt = tx.prepare(
         "INSERT INTO resource_extractor_site_points(site_id, point_index, x, z) VALUES (?1, ?2, ?3, ?4)",
     )?;
     for (site_id, site) in resource_extraction.sites().iter().enumerate() {
+        validate_reserve_density(site.reserve_density_kg_per_m2)?;
         validate_extractor_reserve(site.total_reserve_units, site.extracted_units)
             .map_err(SaveLoadError::custom)?;
         let saved_building_id = optional_building_to_db(site.building_idx, maps)?;
@@ -500,6 +549,7 @@ fn save_resource_extraction(
             site.resource_id.as_str(),
             site.total_reserve_units,
             site.extracted_units,
+            site.reserve_density_kg_per_m2,
         ])?;
         for (point_index, point) in site.polygon_world.iter().enumerate() {
             point_stmt.execute(params![
@@ -832,7 +882,17 @@ pub(super) fn load_buildings(
     //      29=daily_power_served_units 30=recent_power_service_units
     //      31=recent_power_served_units 32=recent_household_sales_value 33=support_height_m
     //      34=build_generation
-    let mut stmt = conn.prepare(&format!("SELECT building_id, parcel_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, service_funding_override, revenue, operating_budget, profit_tax_budget_baseline, last_day_profit, shipment_cooldown_hours, width, depth, asset_id, level, construction_total_hours, construction_remaining_hours, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress, daily_household_sales_value, daily_power_service_units, daily_power_served_units, recent_power_service_units, recent_power_served_units, recent_household_sales_value, support_height_m, {} FROM buildings ORDER BY building_id", generation_column(version)))?;
+    let electricity_column = if version >= ELECTRICITY_KWH_SAVE_VERSION {
+        "electricity_usage"
+    } else {
+        "NULL"
+    };
+    let power_scale = if version >= ELECTRICITY_KWH_SAVE_VERSION {
+        1.0
+    } else {
+        1.0 / 3.6
+    };
+    let mut stmt = conn.prepare(&format!("SELECT building_id, parcel_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, service_funding_override, revenue, operating_budget, profit_tax_budget_baseline, last_day_profit, shipment_cooldown_hours, width, depth, asset_id, level, construction_total_hours, construction_remaining_hours, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress, daily_household_sales_value, daily_power_service_units, daily_power_served_units, recent_power_service_units, recent_power_served_units, recent_household_sales_value, support_height_m, {}, {electricity_column} FROM buildings ORDER BY building_id", generation_column(version)))?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let bid = i64_to_usize(row.get(0)?)?;
@@ -847,6 +907,27 @@ pub(super) fn load_buildings(
         let profile_kind = catalog
             .profile_by_runtime_id(economy_binding.runtime_id)
             .map(|profile| profile.kind);
+        let electricity_usage: (
+            crate::simulation::economy::electricity::BuildingElectricityUsage,
+            crate::simulation::economy::electricity::BuildingElectricityUsage,
+            f32,
+        ) = match row.get::<_, Option<String>>(35)? {
+            Some(json) => {
+                serde_json::from_str(&json).map_err(|err| SaveLoadError::custom(err.to_string()))?
+            }
+            None => Default::default(),
+        };
+        if !electricity_usage.2.is_finite() {
+            return Err(SaveLoadError::custom("invalid city input cost"));
+        }
+        for usage in [
+            electricity_usage.0.workplace,
+            electricity_usage.0.residential,
+            electricity_usage.1.workplace,
+            electricity_usage.1.residential,
+        ] {
+            validate_electricity_usage(usage)?;
+        }
         allocator.buildings.push(Building {
             build_generation: i64_to_u32(row.get(34)?)?,
             center_x: 0.0,
@@ -885,12 +966,15 @@ pub(super) fn load_buildings(
             // Input dependency telemetry is daily-only and starts fresh each session.
             daily_owa_input_value: 0.0,
             daily_local_input_value: 0.0,
-            daily_city_funded_input_cost: 0.0,
+            daily_city_funded_input_cost: electricity_usage.2,
             daily_household_sales_value: row.get(27)?,
-            daily_power_service_units: row.get(28)?,
-            daily_power_served_units: row.get(29)?,
-            recent_power_service_units: row.get(30)?,
-            recent_power_served_units: row.get(31)?,
+            daily_power_service_units: row.get::<_, f32>(28)? * power_scale,
+            daily_electricity: electricity_usage.0,
+            recent_electricity: electricity_usage.1,
+            hourly_economy_activity: 0.0,
+            daily_power_served_units: row.get::<_, f32>(29)? * power_scale,
+            recent_power_service_units: row.get::<_, f32>(30)? * power_scale,
+            recent_power_served_units: row.get::<_, f32>(31)? * power_scale,
             recent_household_sales_value: row.get(32)?,
             commercial_activity_floor_scale: 0.0,
             work_area_scale: initial_work_area_scale(zone_type, profile_kind),
@@ -922,10 +1006,16 @@ pub(super) fn load_buildings(
 pub(super) fn load_resource_extraction(
     conn: &Connection,
     building_count: usize,
+    version: i64,
 ) -> SaveLoadResult<ResourceExtractionSystem> {
-    let mut stmt = conn.prepare(
-        "SELECT site_id, building_id, resource_id, total_reserve_units, extracted_units FROM resource_extractor_sites ORDER BY site_id",
-    )?;
+    let density_column = if version >= ELECTRICITY_KWH_SAVE_VERSION {
+        "reserve_density_kg_per_m2"
+    } else {
+        "6.0"
+    };
+    let mut stmt = conn.prepare(&format!(
+        "SELECT site_id, building_id, resource_id, total_reserve_units, extracted_units, {density_column} FROM resource_extractor_sites ORDER BY site_id",
+    ))?;
     let mut rows = stmt.query([])?;
     let mut sites = Vec::new();
     while let Some(row) = rows.next()? {
@@ -942,6 +1032,8 @@ pub(super) fn load_resource_extraction(
         let resource_id: String = row.get(2)?;
         let total_reserve_units: f32 = row.get(3)?;
         let extracted_units: f32 = row.get(4)?;
+        let reserve_density_kg_per_m2 = row.get(5)?;
+        validate_reserve_density(reserve_density_kg_per_m2)?;
         validate_extractor_reserve(total_reserve_units, extracted_units)
             .map_err(SaveLoadError::custom)?;
         sites.push(ExtractorSite {
@@ -950,6 +1042,7 @@ pub(super) fn load_resource_extraction(
             polygon_world: Vec::new(),
             area_m2: 0.0,
             total_reserve_units,
+            reserve_density_kg_per_m2,
             extracted_units,
         });
     }
@@ -1053,12 +1146,31 @@ pub(super) fn load_agriculture(
 
 pub(super) fn load_households(conn: &Connection, version: i64) -> SaveLoadResult<HouseholdSystem> {
     let mut households = HouseholdSystem::new();
+    if version >= ELECTRICITY_KWH_SAVE_VERSION {
+        let json: String = conn.query_row(
+            "SELECT removed_buildings FROM electricity_day_state WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        households.removed_electricity =
+            serde_json::from_str(&json).map_err(|err| SaveLoadError::custom(err.to_string()))?;
+        if !households.removed_electricity.is_valid() {
+            return Err(SaveLoadError::custom(
+                "invalid removed-building electricity account",
+            ));
+        }
+    }
     let utility_columns = if version >= 61 {
         "power_consumption_cost, water_consumption_cost, sewage_consumption_cost"
     } else {
         "0.0, 0.0, 0.0"
     };
-    let mut stmt = conn.prepare(&format!("SELECT household_id, home_building, budget, stock, member_count, child_count, adult_count, elder_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, replenishment_failure_count, reserved_store_building_id, reserved_amount, reserved_total_cost, shopping_agent_id, shopping_agent_schedule_seed, shopping_timeout_hours_remaining, replenishment_search_cursor, stay_failure_days, unhoused_days_elapsed, replenishment_offset_hours, unemployment_days_elapsed, {utility_columns} FROM households ORDER BY household_id"))?;
+    let electricity_column = if version >= ELECTRICITY_KWH_SAVE_VERSION {
+        "electricity_account"
+    } else {
+        "NULL"
+    };
+    let mut stmt = conn.prepare(&format!("SELECT household_id, home_building, budget, stock, member_count, child_count, adult_count, elder_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, replenishment_failure_count, reserved_store_building_id, reserved_amount, reserved_total_cost, shopping_agent_id, shopping_agent_schedule_seed, shopping_timeout_hours_remaining, replenishment_search_cursor, stay_failure_days, unhoused_days_elapsed, replenishment_offset_hours, unemployment_days_elapsed, {utility_columns}, {electricity_column} FROM households ORDER BY household_id"))?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let hid = i64_to_usize(row.get(0)?)?;
@@ -1080,6 +1192,7 @@ pub(super) fn load_households(conn: &Connection, version: i64) -> SaveLoadResult
         }
         households.households.push(Household {
             home_building_id: db_to_optional_usize(row.get(1)?)?,
+            power_arrears: Default::default(),
             budget: row.get(2)?,
             stock: row.get(3)?,
             member_count,
@@ -1111,6 +1224,26 @@ pub(super) fn load_households(conn: &Connection, version: i64) -> SaveLoadResult
             return Err(SaveLoadError::custom("invalid household utility payment"));
         }
         households.restore_utility_payments(hid, paid);
+        if let Some(json) = row.get::<_, Option<String>>(27)? {
+            let (usage, arrears, unpaid, local): (
+                crate::simulation::economy::electricity::ElectricityUsage,
+                crate::simulation::economy::electricity::ElectricityBill,
+                f32,
+                f32,
+            ) = serde_json::from_str(&json)
+                .map_err(|err| SaveLoadError::custom(err.to_string()))?;
+            validate_electricity_usage(usage)?;
+            if [arrears.local, arrears.imported, unpaid, local]
+                .iter()
+                .any(|v| !v.is_finite() || *v < 0.0)
+            {
+                return Err(SaveLoadError::custom(
+                    "invalid household electricity account",
+                ));
+            }
+            households.households[hid].power_arrears = arrears;
+            households.restore_electricity_account(hid, usage, unpaid, local);
+        }
     }
     Ok(households)
 }
@@ -1335,4 +1468,25 @@ pub(super) fn load_grid_system<T: GridSystemLoader>(
     let mut s = T::new_with_config(config);
     s.grid_mut().data = unpack_f32_blob(&raw.2, w * h)?;
     Ok(s)
+}
+
+fn validate_electricity_usage(
+    usage: crate::simulation::economy::electricity::ElectricityUsage,
+) -> SaveLoadResult<()> {
+    if !usage.consumed_kwh.is_finite()
+        || !usage.local_kwh.is_finite()
+        || usage.consumed_kwh < 0.0
+        || usage.local_kwh < 0.0
+        || usage.local_kwh > usage.consumed_kwh + 0.001
+    {
+        return Err(SaveLoadError::custom("invalid electricity meter"));
+    }
+    Ok(())
+}
+
+fn validate_reserve_density(density: f32) -> SaveLoadResult<()> {
+    if !density.is_finite() || density <= 0.0 {
+        return Err(SaveLoadError::custom("invalid extractor reserve density"));
+    }
+    Ok(())
 }
