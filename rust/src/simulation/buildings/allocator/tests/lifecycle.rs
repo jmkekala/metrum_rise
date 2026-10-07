@@ -636,6 +636,7 @@ fn test_immigration_claims_vacant_home() {
         &mut treasury_balance,
         &[],
         &crate::simulation::economy::fiscal::CityFiscalPolicy::default(),
+        |_, _| {},
     );
     assert_eq!(agents.len(), expected_household_size as usize);
     assert_eq!(households.households.len(), 1);
@@ -667,8 +668,12 @@ fn test_hourly_startup_admission_avoids_zero_rounding() {
         "b.res.house",
         ZoneClass::Residential,
     );
-    let commercial_asset =
-        register_test_asset(&mut allocator, "base", "b.com.shop", ZoneClass::Commercial);
+    let industrial_asset = register_test_asset(
+        &mut allocator,
+        "base",
+        "b.ind.processor",
+        ZoneClass::Industrial,
+    );
     let mut agents = AgentSystem::new();
     let mut households = HouseholdSystem::new();
     let mut graph = RegionGraph::new();
@@ -687,21 +692,21 @@ fn test_hourly_startup_admission_avoids_zero_rounding() {
     let edge_id = graph.edge_count() - 1;
     graph.set_node_type(0, crate::simulation::network::types::NodeType::Border);
     let catalog = load_runtime_economy_catalog().expect("catalog");
-    let grocery_profile_runtime_id = catalog
-        .profile_for_id("grocery_basic")
-        .expect("grocery starter profile")
+    let processor_profile_runtime_id = catalog
+        .profile_for_id("food_processor_basic")
+        .expect("funded industrial profile")
         .runtime_id;
 
     for (asset_id, zone_type, center_x, frontage_t, cell_x, occupancy, profile_id) in [
         (residential_asset, ZoneType::Residential, 10.0, 0.1, 0, 1, 0),
         (
-            commercial_asset,
-            ZoneType::Commercial,
+            industrial_asset,
+            ZoneType::Industrial,
             40.0,
             0.4,
             4,
             0,
-            grocery_profile_runtime_id,
+            processor_profile_runtime_id,
         ),
     ] {
         let mut building = indexed_test_building(asset_id, zone_type, 0);
@@ -715,6 +720,7 @@ fn test_hourly_startup_admission_avoids_zero_rounding() {
         building.cell_x = cell_x;
         building.occupancy = occupancy;
         building.economy_profile_runtime_id = profile_id;
+        building.operating_budget = 10_000.0;
         allocator.buildings.push(building);
     }
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
@@ -722,7 +728,13 @@ fn test_hourly_startup_admission_avoids_zero_rounding() {
 
     let tuning =
         crate::simulation::economy::definitions::load_runtime_economy_tuning().expect("tuning");
-    let household_id = households.admit_immigrant_household(&catalog, &tuning, 0, 2);
+    let household_id = households.admit_immigrant_household(
+        &catalog,
+        &tuning,
+        0,
+        2,
+        crate::simulation::economy::agents::household_age_composition(0, 0, 2),
+    );
     for _ in 0..2 {
         let idx = agents.spawn_housed_agent(0, 0.0, 0.0);
         agents.household_id[idx] = household_id;

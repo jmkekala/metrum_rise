@@ -184,6 +184,9 @@ impl SimulationNode {
                 let mut entry = VarDictionary::new();
                 entry.set("name", GString::from(name));
                 entry.set("amount", amount as f64);
+                if let Some(measure) = catalog.resource_measure(runtime_id) {
+                    entry.set("unit", GString::from(measure.unit.symbol()));
+                }
                 if let Some(input) = input {
                     let scale = if profile.is_some_and(|profile| {
                         crate::simulation::work_area::profile_kind_uses_explicit_work_area(
@@ -424,6 +427,9 @@ impl SimulationNode {
                         && b.worker_count > 0
                         && factors.throughput_factor > 0.0;
                     dict.set("utility_service", GString::from(utility_service));
+                    if let Some(unit) = profile.utility_quantity_unit {
+                        dict.set("utility_quantity_unit", GString::from(unit.symbol()));
+                    }
                     dict.set("utility_service_available", utility_active);
                     dict.set("utility_local_revenue", b.revenue as f64);
                     if utility_service == "power" {

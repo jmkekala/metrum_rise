@@ -268,6 +268,45 @@ fn snapshot_test_building(
 }
 
 #[test]
+fn pending_household_composition_survives_save_and_migrates_legacy_carriers() {
+    let (graph, edge) = snapshot_test_graph();
+    let mut allocator = BuildingAllocator::new();
+    let asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "arrival_home",
+        ZoneClass::Residential,
+    );
+    allocator
+        .buildings
+        .push(snapshot_test_building(edge, 0, asset));
+    let mut agents = AgentSystem::new();
+    let carrier = agents.spawn_household_arrival_carrier(0, 6, 17, 0, -20.0, 0.0);
+    let approved = agents.pending_household_composition(carrier);
+    let maps = build_snapshot_maps(&graph, &allocator, &agents).unwrap();
+    let mut conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(schema::SCHEMA).unwrap();
+    let tx = conn.transaction().unwrap();
+    agents::save_agents(&tx, &agents, &graph, &TransitNetwork::new(), &maps).unwrap();
+    tx.commit().unwrap();
+    let restored = agents::load_agents(&conn, 0.0, SAVE_VERSION).unwrap();
+    assert_eq!(restored.pending_household_composition(carrier), approved);
+    conn.execute("UPDATE agents SET pending_household_adults = 7", [])
+        .unwrap();
+    assert!(agents::load_agents(&conn, 0.0, SAVE_VERSION).is_err());
+    conn.execute_batch(
+        "ALTER TABLE agents DROP COLUMN pending_household_adults;
+        ALTER TABLE agents DROP COLUMN pending_household_elders;",
+    )
+    .unwrap();
+    let legacy = agents::load_agents(&conn, 0.0, 71).unwrap();
+    assert_eq!(
+        legacy.pending_household_composition(carrier),
+        crate::simulation::economy::agents::household_age_composition(0, carrier, 6)
+    );
+}
+
+#[test]
 fn extractor_load_rejects_invalid_depletion_without_clamping() {
     let conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(schema::SCHEMA).unwrap();
@@ -456,6 +495,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         status: ShipmentStatus::InTransit,
         carrier_agent_id: usize::MAX,
         total_cost: 640.0,
+        freight_cost: 16.0,
         eta_hours: 1,
         queued_hours: 0,
     });
@@ -469,7 +509,6 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             terminal: true,
         },
     );
-    logistics.set_owa_export_saturation_units(household_supplies, 120.0);
     let mut network_sys = TransitNetwork::new();
     network_sys.lane_system.rebuild(&mut graph);
     let planned_lane_id = network_sys.lane_system.edge_lanes[&edge_id][0] as u32;
@@ -482,6 +521,8 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             household_id: 0,
             age_group: AGE_ADULT,
             pending_household_size: 0,
+            pending_household_adults: 0,
+            pending_household_elders: 0,
             freight_shipment_id: u64::MAX,
             work_building: usize::MAX,
             current_building: usize::MAX,
@@ -532,6 +573,8 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             household_id: 0,
             age_group: AGE_ADULT,
             pending_household_size: 0,
+            pending_household_adults: 0,
+            pending_household_elders: 0,
             freight_shipment_id: u64::MAX,
             work_building: usize::MAX,
             current_building: usize::MAX,
@@ -814,7 +857,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         [],
     )
     .unwrap();
-    if agents::load_agents(&conn, 0.0).is_ok() {
+    if agents::load_agents(&conn, 0.0, SAVE_VERSION).is_ok() {
         accepted_corruptions.push("agent path sequence gap".to_owned());
     }
     conn.execute(
@@ -859,6 +902,66 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         conn.execute(&format!("UPDATE households SET {column} = ?1"), [original])
             .unwrap();
     }
+    for invalid in [-1.0, f64::INFINITY, 641.0] {
+        conn.execute("UPDATE shipments SET freight_cost = ?1", [invalid])
+            .unwrap();
+        assert!(
+            load_from_sqlite(&path, &allocator.registry).is_err(),
+            "invalid carrier quote"
+        );
+    }
+    conn.execute("UPDATE shipments SET freight_cost = 16", [])
+        .unwrap();
+    // Version 69 stores food/grain bundles and larger raw-metal bundles. Convert quantities
+    // once at the read boundary, retaining all money and unchanged household supply quantities.
+    conn.execute("UPDATE save_meta SET version = 69", [])
+        .unwrap();
+    conn.execute("UPDATE shipments SET resource_runtime_id = 2", [])
+        .unwrap();
+    conn.execute("INSERT INTO building_inventories(building_id, resource_runtime_id, amount) VALUES (0, 8, 12)", []).unwrap();
+    // Older quota ledgers are ignored; old jobs keep their already agreed zero carrier fee.
+    conn.execute_batch(
+        "CREATE TABLE owa_export_saturation(resource_runtime_id INTEGER, units REAL);
+        INSERT INTO owa_export_saturation VALUES (2, 120);
+        ALTER TABLE shipments DROP COLUMN freight_cost;",
+    )
+    .unwrap();
+    let kg_save = load_from_sqlite(&path, &allocator.registry).unwrap();
+    assert_eq!(kg_save.allocator.buildings[0].inventory_units(2), 52.5);
+    assert_eq!(kg_save.allocator.buildings[0].inventory_units(8), 30.0);
+    assert_eq!(kg_save.logistics.shipments[0].amount, 100.0);
+    assert_eq!(
+        kg_save.logistics.shipments[0].total_cost,
+        loaded.logistics.shipments[0].total_cost
+    );
+    assert_eq!(kg_save.logistics.shipments[0].freight_cost, 0.0);
+    assert_eq!(
+        kg_save.households.households[0].stock,
+        loaded.households.households[0].stock
+    );
+    assert_eq!(kg_save.treasury.balance, loaded.treasury.balance);
+    conn.execute("UPDATE shipments SET amount = 30000", [])
+        .unwrap();
+    assert!(
+        load_from_sqlite(&path, &allocator.registry).is_err(),
+        "one carrier cannot restore an oversized load"
+    );
+    conn.execute(
+        "UPDATE shipments SET resource_runtime_id = 1, amount = 80",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "DELETE FROM building_inventories WHERE resource_runtime_id = 8",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "DELETE FROM owa_export_saturation WHERE resource_runtime_id = 2",
+        [],
+    )
+    .unwrap();
+
     // A save written before the pin has no `variant` column at all. Reading one must not name
     // it, or every existing city fails to open on the format that added it.
     conn.execute("UPDATE save_meta SET version = 62", [])
@@ -1157,10 +1260,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             terminal: true,
         })
     );
-    assert_eq!(
-        loaded.logistics.owa_export_saturation_units()[household_supplies as usize - 1],
-        120.0
-    );
+    assert_eq!(loaded.logistics.shipments[0].freight_cost, 16.0);
 }
 
 #[test]

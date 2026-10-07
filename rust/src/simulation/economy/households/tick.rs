@@ -27,6 +27,7 @@ impl HouseholdSystem {
         treasury_balance: &mut f64,
         service_funding_by_building: &[f32],
         fiscal_policy: &CityFiscalPolicy,
+        on_delivery: impl FnMut(&crate::simulation::economy::logistics::Shipment, &BuildingAllocator),
     ) -> FiscalRevenue {
         let timing_enabled = debug::category_enabled("economy");
         let total_start = Instant::now();
@@ -52,6 +53,7 @@ impl HouseholdSystem {
             graph,
             minute_of_day,
             treasury_balance,
+            on_delivery,
         );
         let logistics_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();

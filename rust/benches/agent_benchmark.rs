@@ -13,8 +13,9 @@ use metrum_rise::simulation::core::config::WorldConfig;
 use metrum_rise::simulation::core::time::TimeSystem;
 use metrum_rise::simulation::economy::agents::data::Agent;
 use metrum_rise::simulation::economy::agents::{
-    ACCESS_PLAN_VALID, AGE_ADULT, AgentSystem, MODE_CAR, TRANSIT_ACCESS_EGRESS,
-    TRANSIT_ACCESS_INGRESS, TRANSIT_IN_BUILDING, TRANSIT_NETWORK, VEHICLE_SEDAN,
+    ACCESS_PLAN_VALID, ACTIVITY_HOME, ACTIVITY_SHOPPING, ACTIVITY_WORK, AGE_ADULT, AgentSystem,
+    MODE_CAR, TRANSIT_ACCESS_EGRESS, TRANSIT_ACCESS_INGRESS, TRANSIT_IN_BUILDING, TRANSIT_NETWORK,
+    VEHICLE_SEDAN,
 };
 use metrum_rise::simulation::economy::households::HouseholdSystem;
 use metrum_rise::simulation::economy::logistics::ShipmentSystem;
@@ -426,6 +427,8 @@ fn make_access_egress_agent(shared: &AccessSharedSetup) -> Agent {
         home_building: 0,
         household_id: usize::MAX,
         pending_household_size: 0,
+        pending_household_adults: 0,
+        pending_household_elders: 0,
         work_building: usize::MAX,
         pos_x: shared.door_pos.x,
         pos_y: shared.door_pos.y,
@@ -488,6 +491,8 @@ fn make_access_ingress_agent(shared: &AccessSharedSetup) -> Agent {
         home_building: 0,
         household_id: usize::MAX,
         pending_household_size: 0,
+        pending_household_adults: 0,
+        pending_household_elders: 0,
         work_building: usize::MAX,
         pos_x: shared.lane_point.x,
         pos_y: shared.lane_point.y,
@@ -589,6 +594,8 @@ fn make_idle_agent(shared: &SharedSetup) -> Agent {
         home_building: usize::MAX,
         household_id: usize::MAX,
         pending_household_size: 0,
+        pending_household_adults: 0,
+        pending_household_elders: 0,
         work_building: usize::MAX,
         pos_x: 0.0,
         pos_y: 0.0,
@@ -655,6 +662,8 @@ fn make_on_road_agent(shared: &SharedSetup, route: Vec<u32>, progression: f32) -
         home_building: usize::MAX,
         household_id: usize::MAX,
         pending_household_size: 0,
+        pending_household_adults: 0,
+        pending_household_elders: 0,
         work_building: usize::MAX,
         pos_x: 0.0,
         pos_y: 0.0,
@@ -792,6 +801,57 @@ fn bench_agent_tick(c: &mut Criterion) {
                 });
             },
         );
+    }
+
+    // Valid homes/jobs with a cached future departure isolate indoor deadline polling.
+    // The clock is fixed, so repeated frames never turn this into a routing benchmark.
+    for (label, activity) in [
+        ("indoor_schedule", ACTIVITY_HOME),
+        ("indoor_shopping", ACTIVITY_SHOPPING),
+    ] {
+        group.bench_function(BenchmarkId::new(label, 10_000), |b| {
+            let mut agents = AgentSystem::new();
+            let mut allocator = access_shared.allocator.clone();
+            allocator.buildings.push(allocator.buildings[0].clone());
+            let mut graph = access_shared.graph.clone();
+            let mut transit = TransitNetwork::new();
+            for _ in 0..10_000 {
+                let mut agent = make_idle_agent(&shared);
+                agent.home_building = 0;
+                agent.work_building = 1;
+                agent.current_building = 0;
+                agent.activity = activity;
+                agent.next_departure_day = clock.day_index;
+                agent.next_departure_minute = 60;
+                agent.next_departure_origin_building = 0;
+                agent.next_departure_target_building = 1;
+                agent.next_departure_activity = ACTIVITY_WORK;
+                agents.agents.push(agent);
+            }
+            // Scrubbing and retained scratch allocation belong to untimed setup.
+            agents.tick(&allocator, &mut transit, &mut graph, 0.016, &clock);
+            b.iter(|| {
+                agents.tick(
+                    black_box(&allocator),
+                    black_box(&mut transit),
+                    black_box(&mut graph),
+                    black_box(0.016),
+                    black_box(&clock),
+                );
+            });
+            assert_eq!(
+                agents
+                    .pathfind_count
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                0
+            );
+            assert!(
+                agents
+                    .transit
+                    .iter()
+                    .all(|&state| state == TRANSIT_IN_BUILDING)
+            );
+        });
     }
 
     group.finish();

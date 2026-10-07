@@ -20,8 +20,9 @@ mod validation;
 
 pub(crate) use runtime::{
     EconomyProfileRuntime, EconomyProfileRuntimeKind, FreightTimingProfile, HouseholdRuntimeTuning,
-    LogisticsRuntimeTuning, MinuteWindow, OperationalClockRuntimeTuning, ResourceRuntimeId,
-    RuntimeEconomyCatalog, RuntimeEconomyTuning, RuntimeResourcePort, WorkTimingProfile,
+    LogisticsRuntimeTuning, MinuteWindow, OperationalClockRuntimeTuning, QuantityUnit,
+    ResourceRuntimeId, RuntimeEconomyCatalog, RuntimeEconomyTuning, RuntimeResourcePort,
+    WorkTimingProfile,
 };
 pub(crate) use runtime_loader::{load_runtime_economy_catalog, load_runtime_economy_tuning};
 pub(crate) use serde_helpers::deserialize_unsigned_from_number;

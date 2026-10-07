@@ -18,7 +18,7 @@ use crate::simulation::economy::definitions::{
 use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
-use crate::simulation::economy::fiscal::{CityFiscalPolicy, tax_amount};
+use crate::simulation::economy::fiscal::{CityFiscalPolicy, daily_property_tax, tax_amount};
 use crate::simulation::economy::households::{
     Household, HouseholdSystem, active_worker_capacity_equivalent_for_profile_with_floor_scale,
     active_worker_capacity_for_profile_with_floor_scale,
@@ -197,6 +197,8 @@ pub(super) struct DailyDemandSnapshot {
     pub(super) candidate_elder_count: u16,
     pub(super) immigrant_starter_savings_per_household: f32,
     pub(super) candidate_daily_essential_cost: f32,
+    /// Recurring consumption and imported utility cost before per-home property tax.
+    pub(super) daily_essential_cost_per_resident: f32,
     pub(super) unemployment_daily_benefit_per_adult: f32,
     pub(super) pension_daily_benefit_per_elder: f32,
     pub(super) child_support_daily_benefit_per_child: f32,
@@ -243,6 +245,7 @@ impl DailyDemandSnapshot {
             &fiscal_policy,
             treasury_balance,
             &[],
+            households.households.len(),
         )
     }
 
@@ -256,6 +259,7 @@ impl DailyDemandSnapshot {
         fiscal_policy: &CityFiscalPolicy,
         treasury_balance: f64,
         service_funding_by_building: &[f32],
+        candidate_seed: usize,
     ) -> Self {
         let mut commercial_profile_output_resources = Vec::new();
         for profile in catalog.all_profiles() {
@@ -309,8 +313,11 @@ impl DailyDemandSnapshot {
             daily_supply_cost_per_resident +=
                 consumption_rate_per_resident.max(0.0) * resource_price.max(0.0);
         }
-        let daily_essential_cost_per_resident =
-            daily_supply_cost_per_resident + tuning.households.utility_cost_per_member_per_day;
+        // Admission must remain affordable with imported utilities, before local coverage exists.
+        let daily_essential_cost_per_resident = daily_supply_cost_per_resident
+            * (1.0 + fiscal_policy.household_vat_rate)
+            + tuning.households.utility_cost_per_member_per_day
+                * tuning.owa_import_price_multiplier;
         let commercial_activity_signal =
             commercial_activity_signal_for_city(catalog, &households.households, allocator);
         let household_accumulator =
@@ -326,9 +333,10 @@ impl DailyDemandSnapshot {
             allocator,
             catalog,
             fiscal_policy.income_tax_rate,
+            tuning.owa_import_price_multiplier,
             &demand_sink_rates_by_resource,
             commercial_activity_signal.household_supply_resource_runtime_id,
-            commercial_activity_signal.activity_floor_scale,
+            commercial_activity_signal.recurring_activity_floor_scale,
             &service_activity_scale_by_resource,
             service_funding_by_building,
         );
@@ -359,17 +367,24 @@ impl DailyDemandSnapshot {
             building_accumulator.sales_scaled_household_supply_output_units_per_day;
 
         let housed_adult_count = household_accumulator.housed_adult_count;
-        let existing_unemployed_member_count = housed_adult_count.saturating_sub(filled_job_count);
+        let existing_unemployed_member_count = housed_adult_count
+            .saturating_sub(filled_job_count)
+            .saturating_add(households.pending_arrivals.adults);
         let prefer_worker_capable_candidate = open_job_slots > existing_unemployed_member_count;
 
         let vacant_household_slots = total_household_slots.saturating_sub(occupied_household_slots);
         let candidate =
-            candidate_household_preview(allocator, households, prefer_worker_capable_candidate);
+            candidate_household_preview(allocator, candidate_seed, prefer_worker_capable_candidate);
         let candidate_household_size = candidate.household_size as f32;
         let immigrant_starter_savings_per_household =
             candidate_household_size * tuning.households.immigrant_starting_budget_per_member;
-        let candidate_daily_essential_cost =
-            candidate_household_size * daily_essential_cost_per_resident;
+        let candidate_daily_essential_cost = candidate_household_size
+            * daily_essential_cost_per_resident
+            + daily_property_tax(
+                ZoneType::Residential,
+                candidate.home_level.max(1),
+                fiscal_policy,
+            );
         let candidate_household_supply_demand_units = candidate_household_size
             * resource_amount(
                 &demand_sink_rates_by_resource,
@@ -380,14 +395,18 @@ impl DailyDemandSnapshot {
             catalog,
             fiscal_policy.income_tax_rate,
             commercial_activity_signal.household_supply_resource_runtime_id,
-            commercial_activity_signal.demand_units_per_day,
-            commercial_activity_signal.activity_floor_scale,
+            commercial_activity_signal.recurring_demand_units_per_day,
+            commercial_activity_signal.recurring_activity_floor_scale,
             sales_scaled_household_supply_output_units_per_day,
             candidate_household_supply_demand_units,
             service_funding_by_building,
         );
-        let live_child_count = household_accumulator.live_child_count;
-        let live_elder_count = household_accumulator.live_elder_count;
+        let live_child_count = household_accumulator
+            .live_child_count
+            .saturating_add(households.pending_arrivals.children);
+        let live_elder_count = household_accumulator
+            .live_elder_count
+            .saturating_add(households.pending_arrivals.elders);
         let housed_household_count = household_accumulator.housed_household_count;
         let unhoused_household_count = household_accumulator.unhoused_household_count;
         let zero_budget_household_count = household_accumulator.zero_budget_household_count;
@@ -395,7 +414,22 @@ impl DailyDemandSnapshot {
             household_accumulator.persistent_exit_eligible_household_count;
         let household_affordability_sum = household_accumulator.household_affordability_sum;
         let household_stock_stability_sum = household_accumulator.household_stock_stability_sum;
-        let output_absorption = OutputAbsorptionContext::from_resource_amounts(
+        let connected_border_count = graph
+            .nodes()
+            .iter()
+            .enumerate()
+            .filter(|(idx, node)| {
+                node.node_type == NodeType::Border
+                    && graph.node_adjacency(*idx as u32).iter().any(|&edge_idx| {
+                        let edge = graph.edge(edge_idx);
+                        !edge.deleted
+                            && edge.primary_type == TransitType::Road
+                            && (edge.allowed_types & TransitFlags::CAR) != 0
+                    })
+            })
+            .count() as u32;
+        let external_connection_available = if connected_border_count > 0 { 1.0 } else { 0.0 };
+        let mut output_absorption = OutputAbsorptionContext::from_resource_amounts(
             catalog.resource_count(),
             &committed_output_capacity_by_resource,
             &demand_sink_rates_by_resource,
@@ -403,7 +437,14 @@ impl DailyDemandSnapshot {
             &business_input_need_by_resource,
         );
 
-        let total_household_count = housed_household_count.saturating_add(unhoused_household_count);
+        let export_expansion_available = connected_border_count > 0
+            && tuning.owa_export_price_multiplier > EPSILON
+            && !building_accumulator.unsettled_industry;
+        output_absorption.set_export_expansion_available(export_expansion_available);
+
+        let total_household_count = housed_household_count
+            .saturating_add(unhoused_household_count)
+            .saturating_add(households.pending_arrivals.households);
         let housing_availability = if total_household_slots == 0 {
             0.0
         } else {
@@ -480,26 +521,13 @@ impl DailyDemandSnapshot {
             industrial_missing_input_value +=
                 (need_units - live_local_units).max(0.0) * resource_price.max(0.0);
         }
-        let industrial_input_capacity_deficit = if business_input_need_value <= EPSILON {
+        let industrial_input_capacity_deficit = if export_expansion_available {
+            1.0
+        } else if business_input_need_value <= EPSILON {
             0.0
         } else {
             clamp01(industrial_missing_input_value / business_input_need_value)
         };
-        let connected_border_count = graph
-            .nodes()
-            .iter()
-            .enumerate()
-            .filter(|(idx, node)| {
-                node.node_type == NodeType::Border
-                    && graph.node_adjacency(*idx as u32).iter().any(|&edge_idx| {
-                        let edge = graph.edge(edge_idx);
-                        !edge.deleted
-                            && edge.primary_type == TransitType::Road
-                            && (edge.allowed_types & TransitFlags::CAR) != 0
-                    })
-            })
-            .count() as u32;
-        let external_connection_available = if connected_border_count > 0 { 1.0 } else { 0.0 };
         let unhoused_household_ratio = if total_household_count == 0 {
             0.0
         } else {
@@ -670,6 +698,7 @@ impl DailyDemandSnapshot {
             candidate_elder_count: candidate.composition.elder_count,
             immigrant_starter_savings_per_household,
             candidate_daily_essential_cost,
+            daily_essential_cost_per_resident,
             unemployment_daily_benefit_per_adult: fiscal_policy
                 .unemployment_benefit_per_adult_per_day,
             pension_daily_benefit_per_elder: fiscal_policy.pension_per_elder_per_day,
@@ -733,22 +762,23 @@ const BASELINE_STARTER_CONSTRUCTION_HOUSEHOLD_SIZE: u16 = 2;
 struct CandidateHouseholdPreview {
     household_size: u16,
     composition: HouseholdAgeComposition,
+    home_level: u8,
 }
 
 fn candidate_household_preview(
     allocator: &BuildingAllocator,
-    households: &HouseholdSystem,
+    candidate_seed: usize,
     prefer_worker_capable: bool,
 ) -> CandidateHouseholdPreview {
-    let next_household_id = households.households.len();
     if let Some((home_building_id, household_size)) = allocator
-        .next_household_admission_candidate_for_household(next_household_id, prefer_worker_capable)
+        .next_household_admission_candidate_for_household(candidate_seed, prefer_worker_capable)
     {
         return CandidateHouseholdPreview {
             household_size,
+            home_level: allocator.buildings[home_building_id].level,
             composition: household_age_composition(
                 home_building_id,
-                next_household_id,
+                candidate_seed,
                 household_size,
             ),
         };
@@ -760,12 +790,14 @@ fn candidate_household_preview(
     }
     CandidateHouseholdPreview {
         household_size,
-        composition: household_age_composition(usize::MAX, next_household_id, household_size),
+        home_level: 1,
+        composition: household_age_composition(usize::MAX, candidate_seed, household_size),
     }
 }
 
 #[derive(Default)]
 struct BuildingSnapshotAccumulator {
+    unsettled_industry: bool,
     total_household_slots: u32,
     occupied_household_slots: u32,
     existing_private_building_count: u32,
@@ -793,6 +825,7 @@ impl BuildingSnapshotAccumulator {
         allocator: &BuildingAllocator,
         catalog: &RuntimeEconomyCatalog,
         income_tax_rate: f32,
+        import_multiplier: f32,
         demand_sink_rates_by_resource: &[(ResourceRuntimeId, f32)],
         household_supply_resource_runtime_id: ResourceRuntimeId,
         commercial_activity_floor_scale: f32,
@@ -801,6 +834,26 @@ impl BuildingSnapshotAccumulator {
         idx: usize,
         building: &Building,
     ) {
+        // Export-led growth is staged by the existing ordered building reduction, not by
+        // fictitious buyer quotas. Failed, unfinished, idle or cash-depleted zoned
+        // factories must settle before another export startup receives owner capital.
+        if building.zone_type == ZoneType::Industrial {
+            self.unsettled_industry |= building.broken
+                || building.economy_broken
+                || building.is_deserted
+                || building.is_under_construction()
+                || catalog
+                    .profile_by_runtime_id(building.economy_profile_runtime_id)
+                    .is_none_or(|profile| {
+                        building.worker_count == 0
+                            || building.revenue <= 0.0
+                            // Bulk replenishment moves cash across day boundaries. Recovered
+                            // startup cash measures earned surplus without requiring every
+                            // factory's receipts and purchases to align on the same day.
+                            || building.operating_budget
+                                <= profile.zoned_startup_budget(catalog, import_multiplier)
+                    });
+        }
         if building.broken || building.economy_broken || building.is_deserted {
             return;
         }
@@ -999,6 +1052,7 @@ impl BuildingSnapshotAccumulator {
     }
 
     fn merge(&mut self, other: Self) {
+        self.unsettled_industry |= other.unsettled_industry;
         self.total_household_slots = self
             .total_household_slots
             .saturating_add(other.total_household_slots);
@@ -1130,6 +1184,7 @@ fn collect_building_snapshot_accumulator(
     allocator: &BuildingAllocator,
     catalog: &RuntimeEconomyCatalog,
     income_tax_rate: f32,
+    import_multiplier: f32,
     demand_sink_rates_by_resource: &[(ResourceRuntimeId, f32)],
     household_supply_resource_runtime_id: ResourceRuntimeId,
     commercial_activity_floor_scale: f32,
@@ -1145,6 +1200,7 @@ fn collect_building_snapshot_accumulator(
                 allocator,
                 catalog,
                 income_tax_rate,
+                import_multiplier,
                 demand_sink_rates_by_resource,
                 household_supply_resource_runtime_id,
                 commercial_activity_floor_scale,
@@ -1394,7 +1450,9 @@ impl HouseholdSnapshotAccumulator {
             );
         } else {
             self.unhoused_household_count = self.unhoused_household_count.saturating_add(1);
-            let is_destitute = household.budget <= EPSILON
+            // A small transfer can leave positive cash without funding even one day's needs.
+            // Literal zero cash would keep these households in a rehousing/eviction loop.
+            let is_destitute = household_reserve_days(catalog, tuning, household) < 1.0
                 && household.stock_days
                     <= config.household_action.persistent_exit_destitute_stock_days;
             let destitute_exit_eligible = is_destitute

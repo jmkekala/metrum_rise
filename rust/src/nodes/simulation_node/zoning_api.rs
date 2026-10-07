@@ -584,6 +584,42 @@ impl SimulationNode {
         dict
     }
 
+    /// Quotes area construction and imported daily utilities without committing the polygon.
+    #[func]
+    pub fn get_industry_area_quote(
+        &self,
+        building_id: i32,
+        polygon_points: PackedVector2Array,
+    ) -> VarDictionary {
+        let mut dict = VarDictionary::new();
+        let Some(core) = self.try_lock_core() else {
+            dict.set("pending", true);
+            return dict;
+        };
+        let quote = usize::try_from(building_id)
+            .map_err(|_| "invalid industry building id".to_owned())
+            .and_then(|id| {
+                let area = crate::simulation::extraction::validate_extractor_polygon_world(
+                    polygon_points.as_slice(),
+                )?;
+                core.industry_area_quote_internal(id, area)
+                    .map(|(cost, utilities)| (area, cost, utilities))
+            });
+        match quote {
+            Ok((area, cost, utilities)) => {
+                dict.set("ok", true);
+                dict.set("area_hectares", f64::from(area) / 10_000.0);
+                dict.set("build_cost", cost);
+                dict.set("imported_utilities_per_day", f64::from(utilities));
+            }
+            Err(error) => {
+                dict.set("ok", false);
+                dict.set("error", GString::from(error.as_str()));
+            }
+        }
+        dict
+    }
+
     /// Checks a field drag without changing its committed polygon or economic state.
     #[func]
     pub fn validate_field_polygon(
@@ -605,6 +641,12 @@ impl SimulationNode {
             Ok(area) => {
                 dict.set("ok", true);
                 dict.set("area_m2", f64::from(area));
+                if let Ok((cost, utilities)) =
+                    core.industry_area_quote_internal(building_id as usize, area)
+                {
+                    dict.set("build_cost", cost);
+                    dict.set("imported_utilities_per_day", f64::from(utilities));
+                }
             }
             Err(error) => {
                 dict.set("ok", false);

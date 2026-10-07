@@ -29,8 +29,7 @@ pub(crate) struct RuntimeEconomyTuning {
     /// 1.0 are rejected at validation time.
     pub owa_import_price_multiplier: f32,
     /// Multiplier applied to the local resource price when an industrial building exports surplus
-    /// output to the OWA. Values below 1.0 make OWA exports less profitable than local sales,
-    /// keeping the OWA as a safety-valve rather than a primary revenue source. Must be in
+    /// output to the finite regional market. Must be in
     /// `[0.0, 1.0]`; values outside this range are rejected at validation time.
     pub owa_export_price_multiplier: f32,
     /// Multiplier applied when a distressed building fire-sells unreserved output inventory.
@@ -70,7 +69,7 @@ pub(crate) struct OperationalClockRuntimeTuning {
     /// Consecutive failed household replenishment attempts before terminal shortage.
     #[serde(default, deserialize_with = "deserialize_u16_from_number")]
     pub household_replenishment_terminal_failure_count: u16,
-    /// Maximum operational hours a visible household shopper may spend on one leg.
+    /// Extra operational hours allowed beyond estimated physical travel for each shopping leg.
     #[serde(default, deserialize_with = "deserialize_u16_from_number")]
     pub household_shopping_leg_timeout_hours: u16,
     /// Hours to wait before retrying a failed freight request.
@@ -89,8 +88,12 @@ pub(crate) struct OperationalClockRuntimeTuning {
 /// Runtime controls for batched freight and border-terminal behavior.
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub(crate) struct LogisticsRuntimeTuning {
-    /// Resource units represented by one baseline truckload quantum.
-    pub truck_load_units: f32,
+    /// Maximum cargo mass carried by one physical freight vehicle, independent of batching.
+    pub truck_payload_kg: f32,
+    /// Carrier contract fee per dispatched vehicle, independent of cargo mass.
+    pub dispatch_fee_currency: f32,
+    /// Carrier price per operational vehicle-hour, including the return journey.
+    pub vehicle_hour_cost_currency: f32,
     /// Maximum active dispatched OWA freight jobs allowed at one border node.
     #[serde(default, deserialize_with = "deserialize_u16_from_number")]
     pub border_active_jobs_per_node: u16,
@@ -103,12 +106,6 @@ pub(crate) struct LogisticsRuntimeTuning {
     /// Failed request attempts before a building/resource request becomes terminal.
     #[serde(default, deserialize_with = "deserialize_u16_from_number")]
     pub terminal_failure_attempts: u16,
-    /// Same-resource `OWA` export truckloads needed to reach the saturated export bid.
-    pub owa_export_saturation_loads_to_floor: f32,
-    /// Lowest multiplier applied to the normal `OWA` export bid when saturated.
-    pub owa_export_saturation_floor_factor: f32,
-    /// Operational hours without further exports needed to clear full saturation.
-    pub owa_export_saturation_recovery_hours: f32,
 }
 
 /// Runtime controls for fresh private building construction.
@@ -233,13 +230,53 @@ pub(crate) struct BuildingViabilityRuntimeTuning {
 /// Compact runtime resource id resolved from authored resource names.
 pub(crate) type ResourceRuntimeId = u16;
 
+/// Canonical resource or utility quantity; rates use these quantities per operational day.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum QuantityUnit {
+    /// Physical goods are accounted and carried by mass.
+    #[serde(rename = "kg")]
+    Kilogram,
+    /// Electrical energy supplied during an interval, not instantaneous power.
+    #[serde(rename = "MJ")]
+    Megajoule,
+    /// Supplied water or treated wastewater volume.
+    #[serde(rename = "m3")]
+    CubicMetre,
+    /// Completed service equivalents, which cannot be stored or shipped as cargo.
+    #[serde(rename = "service")]
+    Service,
+}
+
+impl QuantityUnit {
+    /// Display symbol for an already canonical quantity; no numeric conversion is needed.
+    pub(crate) fn symbol(self) -> &'static str {
+        match self {
+            Self::Kilogram => "kg",
+            Self::Megajoule => "MJ",
+            Self::CubicMetre => "m³",
+            Self::Service => "services",
+        }
+    }
+}
+
+/// Immutable dimensional and batching metadata indexed by stable resource id.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ResourceMeasure {
+    /// Canonical quantity for inventory, rates and prices.
+    pub unit: QuantityUnit,
+    /// Minimum freight batch in kg; services have no freight batch.
+    pub shipment_batch_kg: f32,
+}
+
 /// One compiled runtime resource port.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RuntimeResourcePort {
     /// Runtime resource id carried through this port.
     pub resource_runtime_id: ResourceRuntimeId,
-    /// Authored throughput in units per day.
+    /// Authored throughput in the resource's canonical quantity per operational day.
     pub units_per_day: f32,
+    /// Resource-specific ordinary freight batch, precompiled to avoid hot-path lookups.
+    pub shipment_batch_kg: f32,
 }
 
 /// Broad runtime behavior class compiled from one authored economy profile.
@@ -292,6 +329,14 @@ pub(crate) struct EconomyProfileRuntime {
     pub worker_capacity: u32,
     /// Precompiled field/extraction worker density, independent of output per hectare.
     pub workers_per_hectare: f32,
+    /// Whole-site staffing ceiling for area-backed producers, independent of land-scaled costs.
+    pub area_worker_capacity_max: Option<u32>,
+    /// Smallest field that may be newly committed or resized for this crop profile.
+    pub minimum_field_area_m2: f32,
+    /// Initial site preparation cost per added hectare, separate from the building footprint.
+    pub area_build_cost_per_hectare: f32,
+    /// Additional electricity (MJ), water (m³), sewage (m³) per operational hectare/day.
+    pub area_utility_units_per_hectare: [f32; 3],
     /// Authored target stock horizon in days for the starter live runtime.
     pub stock_target_days: f32,
     /// Output units pre-seeded into inventory when the building is first placed.
@@ -301,13 +346,13 @@ pub(crate) struct EconomyProfileRuntime {
     pub reorder_threshold_days: f32,
     /// Authored critical threshold in days for emergency freight.
     pub critical_threshold_days: f32,
-    /// Authored lower shipment bound for ordinary freight requests.
-    pub min_shipment_units: f32,
     /// Household-demand consumption rate used by abstract sink profiles.
     pub consumption_rate_per_resident: f32,
     /// Which utility service this building provides ("power", "water", or "sewage").
     /// `None` for non-utility profiles.
     pub utility_service: Option<String>,
+    /// Physical measure of utility throughput and billing; absent for non-utilities.
+    pub utility_quantity_unit: Option<QuantityUnit>,
     /// Compiled typed input ports used by the live runtime.
     pub inputs: Vec<RuntimeResourcePort>,
     /// Compiled typed output ports used by the live runtime.
@@ -317,6 +362,38 @@ pub(crate) struct EconomyProfileRuntime {
 }
 
 impl EconomyProfileRuntime {
+    /// Checks the crop's area minimum for previews and commits, before land or cash changes.
+    pub(crate) fn validate_field_area(&self, area_m2: f32) -> Result<(), String> {
+        if area_m2 < self.minimum_field_area_m2 {
+            return Err(format!(
+                "field must cover at least {:.1} ha ({:.0} m²)",
+                self.minimum_field_area_m2 / 10_000.0,
+                self.minimum_field_area_m2
+            ));
+        }
+        Ok(())
+    }
+
+    /// Private-building utility demand, including area maintenance independent of production.
+    pub(crate) fn utility_demand_units_per_day(&self, hectares: f32) -> [f32; 3] {
+        let area = if matches!(
+            self.kind,
+            EconomyProfileRuntimeKind::FieldProducer | EconomyProfileRuntimeKind::Extractor
+        ) {
+            crate::simulation::work_area::sanitize_work_area_scale(hectares)
+        } else {
+            0.0
+        };
+        self.area_utility_units_per_hectare
+            .map(|units| 1.0 + area * units)
+    }
+
+    /// Charges added area only; shrinking or recommitting an unchanged site grants no refund.
+    pub(crate) fn area_expansion_cost(&self, previous_m2: f32, new_m2: f32) -> f64 {
+        (f64::from(new_m2) - f64::from(previous_m2)).max(0.0) / 10_000.0
+            * f64::from(self.area_build_cost_per_hectare)
+    }
+
     /// Returns the authored average daily wage for the profile.
     pub(crate) fn average_daily_wage(&self) -> f32 {
         ((self.wage_min_currency_per_day + self.wage_max_currency_per_day) * 0.5).max(0.0)
@@ -376,7 +453,7 @@ impl EconomyProfileRuntime {
         if scale <= 0.0 || port.units_per_day <= 0.0 {
             return (0.0, 0.0, 0.0);
         }
-        let batch = self.min_shipment_units.max(0.0);
+        let batch = port.shipment_batch_kg;
         let target = (self.inventory_target_units_for(port) * scale).max(2.0 * batch);
         let reorder = if self.reorder_threshold_days > 0.0 {
             (self.inventory_reorder_units_for(port) * scale)
@@ -408,6 +485,17 @@ impl EconomyProfileRuntime {
             .sum()
     }
 
+    /// Initial owner equity for a zoned business: seven payroll days and opening input buffers.
+    pub(crate) fn zoned_startup_budget(
+        &self,
+        catalog: &RuntimeEconomyCatalog,
+        imports: f32,
+    ) -> f32 {
+        (self.worker_capacity as f32 * self.average_daily_wage() * 7.0
+            + self.initial_input_import_cost(catalog, 1.0, imports))
+        .max(500.0)
+    }
+
     /// Returns the runtime output buffer cap in units for one output resource.
     pub(crate) fn output_buffer_capacity_units_for(&self, port: &RuntimeResourcePort) -> f32 {
         let capacity = port.units_per_day.max(0.0) * self.stock_target_days.max(0.0);
@@ -423,9 +511,18 @@ pub(crate) struct RuntimeEconomyCatalog {
     pub(super) resource_by_id: BTreeMap<String, ResourceRuntimeId>,
     pub(super) resource_id_by_runtime_id: Vec<String>,
     pub(super) price_by_resource: BTreeMap<ResourceRuntimeId, f32>,
+    pub(super) resource_measures: Vec<ResourceMeasure>,
 }
 
 impl RuntimeEconomyCatalog {
+    /// Returns immutable quantity and batching metadata in O(1) by stable resource id.
+    pub(crate) fn resource_measure(&self, resource: ResourceRuntimeId) -> Option<ResourceMeasure> {
+        resource
+            .checked_sub(1)
+            .and_then(|slot| self.resource_measures.get(slot as usize))
+            .copied()
+    }
+
     /// Returns one compiled runtime profile by authored id.
     pub(crate) fn profile_for_id(&self, profile_id: &str) -> Option<&EconomyProfileRuntime> {
         let runtime_id = *self.by_id.get(profile_id)?;

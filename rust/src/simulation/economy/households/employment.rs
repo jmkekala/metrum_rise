@@ -728,7 +728,10 @@ fn plan_agent_workplace(
             - W_COMMUTE * option.commute_penalty;
         if candidate == old_job {
             current_job_score = Some(score);
-        } else if score >= GO_TO_WORK_THRESHOLD {
+        } else if old_job >= building_count || score >= GO_TO_WORK_THRESHOLD {
+            // Demand counts unemployed adults as the first available labor supply.
+            // Savings must not make those adults refuse every funded, reachable offer;
+            // income/stock pressure still controls voluntary switches from an existing job.
             insert_job_choice(
                 &mut choices,
                 &mut choice_count,
@@ -1436,8 +1439,7 @@ fn build_home_job_options_for_key(
         );
     }
 
-    let home_trip_ends =
-        BuildingTripEnds::origin(key.home_idx, allocator, transit_network, graph);
+    let home_trip_ends = BuildingTripEnds::origin(key.home_idx, allocator, transit_network, graph);
     let home_foot_components =
         foot_components.building_components(allocator, graph, key.home_idx, TransitFlags::FOOT);
     scan_home_job_bucket(

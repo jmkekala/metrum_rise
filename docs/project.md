@@ -254,7 +254,7 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   keeps the stroke editable. Road logging no longer enables the cyan surface overlay implicitly.
   See [`roads.md`](roads.md#third-road-boundary-and-placement-feedback-road-25).
 
-- **Machinery upkeep (`ECON-09`)**: farms use 1 and coal mines 4 Machinery per hectare/day; food processors and utilities use building-level inputs. Paid OWA imports, small-consumer stock batches, startup funding and inspector stock/rates are integrated. Business/utility customers drive matching industrial demand. The audit unified restock/supplier logic, preserved small-shop shipment buffers, corrected net production headroom and city payroll/refund reporting, removed duplicate ledger/resource helpers and production constants, and rejected duplicate recipe ports. Depleted mines now stop creating jobs and Machinery demand; distress sales protect upkeep stock, and inventory fill counts shared input/output stock once. `machinery_factory_basic` is ready for the incoming four-worker industrial asset (Steel + Metals → 40 net Machinery/day); the production model itself is still user-created content. See [`economy.md`](economy.md#machinery-upkeep-econ-09) and [`asset_editor.md`](asset_editor.md).
+- **Machinery upkeep (`ECON-09`)**: grain farms use 0.1 kg and coal mines 4 kg Machinery per hectare/day; food processors and utilities use building-level inputs. Paid OWA imports, small-consumer stock batches, startup funding and inspector stock/rates are integrated. Business/utility customers drive matching industrial demand. The audit unified restock/supplier logic, preserved small-shop shipment buffers, corrected net production headroom and city payroll/refund reporting, removed duplicate ledger/resource helpers and production constants, and rejected duplicate recipe ports. Depleted mines now stop creating jobs and Machinery demand; distress sales protect upkeep stock, and inventory fill counts shared input/output stock once. `machinery_factory_basic` is ready for the incoming four-worker industrial asset (Steel + Metals → 40 net Machinery/day); the production model itself is still user-created content. See [`economy.md`](economy.md#machinery-upkeep-econ-09) and [`asset_editor.md`](asset_editor.md).
 
 - **Terrain reload and yard seams**: CDT cleanup now preserves distinct near-endpoint
   intersections instead of merging them by a dimensionless tolerance. This fixes the reproduced
@@ -293,29 +293,63 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
 ## Current Priorities
 
 - **Healthy city growth (`ECON-11`–`ECON-12` done; `ECON-13`–`ECON-14` in progress; `DEM-02` open)**:
-  plan revised 2026-10-05; failed-business recovery and grocery viability repaired 2026-10-06. Define household budgets and supported employment,
-  repair imported-input startup, add a small set of funded commercial/service/industrial
-  activities and viable regional sales, then simplify demand around unmet capacity.
-  - The current private consumption chain supports only 130.55 jobs per 1,000 residents, mostly
-    food retail/processing. The grocery repair accepts 1.25× imports with demand/production and
-    movement fixes; industrial export losses persist. Additional activity needs affordable customers.
-  - The initial `ECON-14` [starter-town ledger](economy.md#starter-town-balance-sheet-econ-14)
-    is reproducible from shipped profiles. Lower import costs can repair paper business margins,
-    but staffing steps, household deficits and a large funded-employment gap remain. The
-    [village failure report](economy.md#village-failure-timeline-econ-14) traces
-    the first processor failure to day 14, the last grocery closure to day 188 and treasury
-    exhaustion to day 192 in the original run. The [recovery repair](economy.md#failed-business-recovery-econ-14)
-    now clears empty failed commercial/industrial sites at any demand using the existing budget.
-    Its isolated year ends with 35 residents and 20 employed, but 95 bankruptcies and 923,475 in
-    startup capital show continued churn; 659,715 is separately identified as rebuilt-site capital.
-    The original import-only trial failed. The subsequent
-    [combined grocery repair](economy.md#grocery-startup-repair-econ-14) survives two years without
-    grocery recapitalization: year-two operating cash +14,764 and no household stockouts.
-    Recovery demolition now evacuates former workers, and service openings require enough
-    remaining market to pay their first worker and overhead. The town still stalls at 26 residents;
-    industrial replacements and cash-limited transfers prevent healthy-growth acceptance.
-    Next address viable industrial customers and margins, household affordability and recurring
-    fiscal funding before adding activities or simplifying broader demand.
+  failed-business recovery, grocery viability and regional industrial markets repaired 2026-10-06;
+  existing village services, area-based producer costs and explicit resource units extend that foundation.
+  Production/freight economics now replace fixed outside buying caps; validation is in progress. Next resolve varied-town affordability,
+  define funded activities and simplify demand around unmet capacity.
+  - The private local-consumption comparison gives 144.50 jobs per 1,000 residents with 20 ha
+    reference grain farms, mostly
+    food retail/processing. Additional meshes do not create customers; new activities need
+    affordable spending or explicit external/public funding.
+  - The [regional-market repair](economy.md#regional-industrial-markets-econ-14) replaces export
+    price decay with finite shared customer volumes at 1.0× prices; imports remain 1.25×.
+    New factories must cover full operating costs, and household admission requires recurring
+    income rather than temporary benefits or pantry-refill jobs. Shopping and rehousing fixes
+    keep supply tasks viable. The two-year village now sustains 58 residents and 45 jobs, with no
+    bankruptcies or replacement capital, no second-year stockouts, and all eligible benefits paid.
+    The [service and producer audit](economy.md#village-services-and-producer-audit-econ-14)
+    opens barber/pharmacy at 60 residents, each with one worker and positive year-two operating
+    cash (+5,719 / +2,685); city recurring balance is +199,536 after transfers and road upkeep.
+    Farms/mines now charge 20,000 / 25,000 per added hectare and consume area-scaled utilities.
+    Placement/edit previews quote both costs. Corrected freight clock conversion restores input
+    deliveries. One-hectare producers cover ongoing costs; oversized sites fail without fresh
+    capital. Initial private capital and diagnostic infrastructure endowments are explicit.
+    Varied-town pantry shortages and pensioner affordability remain open; the owner doc records
+    fresh correctness and matched 10k performance evidence.
+  - [Resource units and payload](economy.md#resource-units-and-freight-payload): physical goods
+    use kg, electricity MJ, water/sewage m³ and services completed-service equivalents.
+    Processing and retail quantities conserve mass while price conversions preserve recipe
+    monetary values. A carrier holds at most 20,000 kg; per-resource delivery batches remain
+    40/50/100 kg. The payload check adds O(1) arithmetic, with no extra routing or trip expansion.
+    Save format 72 preserves arrival composition and carrier quotes and still converts pre-70 quantities; oversized
+    legacy shipment cargo is rejected. [Production/freight economics](economy.md#production-and-freight-economics-econ-14)
+    remove outside purchase quotas. Quotes use cached route time (4 dispatch + 4 per round-trip
+    vehicle-hour), with no additional routing for pricing. Producer reorder lots and daily-output
+    export batches replace tiny hourly loads. Grain farms produce 20 kg/ha/day (7.3 t/ha/year)
+    with two to six workers; placement and resizing enforce a 4 ha minimum. Area
+    construction and upkeep remain uncapped. Expansion waits for operating industry to recover startup cash. Unemployed adults
+    now accept reachable funded work even with household savings, matching demand’s labor pool.
+    Earlier farm validation: 395 Rust checks and both Godot economy/field checks pass; 4/10/20/100 ha
+    farms survive two years with positive final-quarter cash and no recapitalization. Matched 10k
+    timing detects no significant change. The subsequent shopping repair retains task ownership
+    until hourly delivery acknowledgement; work departures no longer discard paid cargo. Admission
+    now reserves incoming adults and transfer claims, checks each family's recurring income, and
+    preserves approved composition through arrival/save. Applicants advance with simulation hours
+    even after rejection; bulk-input purchase days no longer stall recovered factories. Fresh
+    validation: 392 targeted Rust tests and all three growth integration tests pass. The two-year
+    village grows from 114 residents / 88 employed at year one to 156 / 119, with no replacement
+    business capital, no second-year empty-pantry days, and positive recurring city finances.
+    All four farm towns now stay supplied through year two. A 20 ha mine's depletion still leaves
+    unemployment and household shortages (182 empty-household-days in year two); recovery after
+    a large finite-resource closure remains open. The 1/4 ha mine towns stay supplied after depletion.
+    Fresh 10k timing on the same eight performance cores detects no significant change
+    (hour 2.086 → 2.050 ms; daily intervals remain broad). The fixture has one extra employed
+    resident after the admission fix. Unpinned mixed-core comparisons and full limits are in the owner doc.
+    The following results belong to the earlier unit-only build.
+    [Unit-only validation](economy.md#unit-and-payload-validation-econ-14): 350 Rust checks, three
+    growth scenarios and the Godot quantity display pass; matched 10k timings show no significant
+    change. Two residential selection tests fail identically on the pre-change build and remain
+    separate `DEM-02` startup/selection work.
   - The 2026-10-05 review at `21100889` passed targeted unit tests and concurrent-year
     determinism; both enabled economic targets failed. The starter scenario ends with 12
     households, no jobs and treasury −42,465. The 600-household regional-pull term is not a hard

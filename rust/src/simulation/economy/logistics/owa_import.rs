@@ -14,7 +14,7 @@ use super::quantization::quantize_requested_amount;
 use super::reservations::ReservationViews;
 use super::resource::{input_purchase_budget, reserve_input_payment};
 use super::route_cache::FreightRouteCache;
-use super::timing::{adjusted_travel_seconds, adjusted_unit_price, eta_hours_from_travel_seconds};
+use super::timing::{adjusted_unit_price, eta_hours_from_travel_seconds, freight_cost};
 
 impl ShipmentSystem {
     #[allow(clippy::too_many_arguments)]
@@ -23,7 +23,7 @@ impl ShipmentSystem {
         dest_idx: usize,
         desired_amount: f32,
         allow_emergency: bool,
-        min_shipment_units: f32,
+        shipment_batch_kg: f32,
         unit_price: f32,
         resource_runtime_id: ResourceRuntimeId,
         allocator: &mut BuildingAllocator,
@@ -36,6 +36,7 @@ impl ShipmentSystem {
         minute_of_day: u16,
         catalog: &RuntimeEconomyCatalog,
         logistics_tuning: &LogisticsRuntimeTuning,
+        seconds_per_day: f64,
         treasury_balance: &mut f64,
     ) -> bool {
         if border_nodes.is_empty() {
@@ -45,19 +46,20 @@ impl ShipmentSystem {
         // Use the actual charge price (including any outside-window premium) for the
         // affordability check so the building cannot be charged more than it can afford.
         let effective_unit_price = adjusted_unit_price(unit_price, freight_profile, minute_of_day);
-        let max_affordable_amount =
-            input_purchase_budget(allocator, dest_idx) / effective_unit_price.max(f32::EPSILON);
-        let Some(amount) = quantize_requested_amount(
+        let max_affordable_amount = (input_purchase_budget(allocator, dest_idx)
+            - logistics_tuning.dispatch_fee_currency)
+            .max(0.0)
+            / effective_unit_price.max(f32::EPSILON);
+        let Some(_) = quantize_requested_amount(
             desired_amount,
             f32::MAX,
             max_affordable_amount,
-            min_shipment_units,
+            shipment_batch_kg,
             allow_emergency,
-            logistics_tuning.truck_load_units,
+            logistics_tuning.truck_payload_kg,
         ) else {
             return false;
         };
-        let total_cost = amount * effective_unit_price;
 
         let active_cap = usize::from(logistics_tuning.border_active_jobs_per_node);
         let queued_cap = usize::from(logistics_tuning.border_queued_jobs_per_node);
@@ -69,6 +71,20 @@ impl ShipmentSystem {
             else {
                 continue;
             };
+            let fee = freight_cost(travel_seconds, seconds_per_day, logistics_tuning);
+            if quantize_requested_amount(
+                desired_amount,
+                f32::MAX,
+                (input_purchase_budget(allocator, dest_idx) - fee).max(0.0)
+                    / effective_unit_price.max(f32::EPSILON),
+                shipment_batch_kg,
+                allow_emergency,
+                logistics_tuning.truck_payload_kg,
+            )
+            .is_none()
+            {
+                continue;
+            }
             if reservations.border_active_job_count(border_node) < active_cap {
                 if best_active.is_none_or(|(_, best_cost)| travel_seconds < best_cost) {
                     best_active = Some((border_node, travel_seconds));
@@ -89,13 +105,27 @@ impl ShipmentSystem {
                 return false;
             };
 
+        let freight_cost = freight_cost(best_cost, seconds_per_day, logistics_tuning);
+        let Some(amount) = quantize_requested_amount(
+            desired_amount,
+            f32::MAX,
+            (input_purchase_budget(allocator, dest_idx) - freight_cost).max(0.0)
+                / effective_unit_price.max(f32::EPSILON),
+            shipment_batch_kg,
+            allow_emergency,
+            logistics_tuning.truck_payload_kg,
+        ) else {
+            return false;
+        };
+        let total_cost = amount * effective_unit_price + freight_cost;
         reserve_input_payment(allocator, treasury_balance, dest_idx, total_cost);
         let shipment_id = self.allocate_shipment_id();
-        let eta_hours = eta_hours_from_travel_seconds(adjusted_travel_seconds(
+        let eta_hours = eta_hours_from_travel_seconds(
             best_cost,
             freight_profile,
             minute_of_day,
-        ));
+            seconds_per_day,
+        );
         self.shipments.push(Shipment {
             id: shipment_id,
             resource_runtime_id,
@@ -106,6 +136,7 @@ impl ShipmentSystem {
             status,
             carrier_agent_id: usize::MAX,
             total_cost,
+            freight_cost,
             eta_hours,
             queued_hours: 0,
         });

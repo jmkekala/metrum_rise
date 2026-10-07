@@ -1,57 +1,82 @@
 # Resource IDs are persisted in saves. Append IDs; never renumber existing resources.
+# All physical quantities are kg; recipe rates use kg per operational day.
+# Services count completed-service equivalents and never enter freight inventories.
+# Upstream bundle conversions preserve money flows: food/grain x1.25 kg, steel/metals x2.5 kg.
 [[resources]]
 id = "household_supplies"
+quantity_unit = "kg"
+shipment_batch_kg = 40.0
 runtime_id = 1
 
 [[resources]]
 id = "packaged_food"
+quantity_unit = "kg"
+shipment_batch_kg = 50.0
 runtime_id = 2
 
 [[resources]]
 id = "grain"
+quantity_unit = "kg"
+shipment_batch_kg = 50.0
 runtime_id = 3
 
 [[resources]]
 id = "coal"
+quantity_unit = "kg"
+shipment_batch_kg = 40.0
 runtime_id = 4
 
 [[resources]]
 id = "health_essentials"
+quantity_unit = "service"
 runtime_id = 5
 
 [[resources]]
 id = "personal_services"
+quantity_unit = "service"
 runtime_id = 6
 
 [[resources]]
 id = "machinery"
+quantity_unit = "kg"
+shipment_batch_kg = 40.0
 runtime_id = 7
 
 [[resources]]
 id = "steel"
+quantity_unit = "kg"
+shipment_batch_kg = 100.0
 runtime_id = 8
-import_unit_price_currency = 8.0
+import_unit_price_currency = 3.2
 
 [[resources]]
 id = "metals"
+quantity_unit = "kg"
+shipment_batch_kg = 100.0
 runtime_id = 9
-import_unit_price_currency = 16.0
+import_unit_price_currency = 6.4
 
 [[profiles]]
 id = "grain_farm_basic"
 display_name = "Grain Farm"
 kind = "field_producer"
-description = "Field-backed grain farm with one worker per ten hectares; authored output is per hectare."
+description = "Mechanized grain farm with two to six workers; authored output is kg per hectare/day."
 worker_capacity = 1
 worker_capacity_area_m2 = 100000.0
-base_rate_units_per_day = 290.0
+area_worker_capacity_max = 6
+minimum_field_area_m2 = 40000.0
+area_build_cost_per_hectare = 20000.0
+# Annualized electricity MJ and supplemental water m3 per hectare/day, including idle operation.
+# Field irrigation does not enter sewers; the farm building retains its base utility demand.
+area_utility_units_per_hectare = [2.0, 1.0, 0.0]
+# 7.3 tonnes/ha/year, spread over 365 simulation days until crop seasons are modeled.
+base_rate_units_per_day = 20.0
 wage_min_currency_per_day = 80.0
 wage_max_currency_per_day = 100.0
-unit_price_currency = 6.0
+unit_price_currency = 4.8
 stock_target_days = 4.0
-reorder_threshold_days = 0.0
-critical_threshold_days = 0.0
-min_shipment_units = 40.0
+reorder_threshold_days = 2.0
+critical_threshold_days = 1.0
 consumption_rate_per_resident = 0.0
 starting_inventory_days = 0.0
 work_schedule_profile = "three_shift_work"
@@ -59,11 +84,11 @@ freight_timing_profile = "always_open"
 
 [[profiles.outputs]]
 resource = "grain"
-units_per_day = 290.0
+units_per_day = 20.0
 
 [[profiles.inputs]]
 resource = "machinery"
-units_per_day = 1.0
+units_per_day = 0.1
 
 [[profiles]]
 id = "food_processor_basic"
@@ -71,14 +96,13 @@ display_name = "Food Processing Plant"
 kind = "processor"
 description = "Starter industrial processor converting grain into packaged food for grocery stores."
 worker_capacity = 10
-base_rate_units_per_day = 160.0
+base_rate_units_per_day = 200.0
 wage_min_currency_per_day = 80.0
 wage_max_currency_per_day = 100.0
-unit_price_currency = 15.0
+unit_price_currency = 12.0
 stock_target_days = 4.0
-reorder_threshold_days = 0.0
-critical_threshold_days = 0.0
-min_shipment_units = 40.0
+reorder_threshold_days = 2.0
+critical_threshold_days = 1.0
 consumption_rate_per_resident = 0.0
 starting_inventory_days = 0.0
 work_schedule_profile = "three_shift_work"
@@ -86,11 +110,11 @@ freight_timing_profile = "always_open"
 
 [[profiles.inputs]]
 resource = "grain"
-units_per_day = 160.0
+units_per_day = 200.0
 
 [[profiles.outputs]]
 resource = "packaged_food"
-units_per_day = 160.0
+units_per_day = 200.0
 
 [[profiles.inputs]]
 resource = "machinery"
@@ -109,7 +133,6 @@ unit_price_currency = 25.0
 stock_target_days = 3.0
 reorder_threshold_days = 2.0
 critical_threshold_days = 0.5
-min_shipment_units = 40.0
 consumption_rate_per_resident = 0.0
 starting_inventory_days = 0.0
 work_schedule_profile = "daytime_work"
@@ -117,7 +140,7 @@ freight_timing_profile = "daytime_receive"
 
 [[profiles.inputs]]
 resource = "packaged_food"
-units_per_day = 160.0
+units_per_day = 200.0
 
 [[profiles.outputs]]
 resource = "household_supplies"
@@ -136,7 +159,6 @@ unit_price_currency = 20.0
 stock_target_days = 0.0
 reorder_threshold_days = 0.0
 critical_threshold_days = 0.0
-min_shipment_units = 0.0
 consumption_rate_per_resident = 0.0
 starting_inventory_days = 0.0
 work_schedule_profile = "daytime_work"
@@ -159,7 +181,6 @@ unit_price_currency = 14.0
 stock_target_days = 0.0
 reorder_threshold_days = 0.0
 critical_threshold_days = 0.0
-min_shipment_units = 0.0
 consumption_rate_per_resident = 0.0
 starting_inventory_days = 0.0
 work_schedule_profile = "daytime_work"
@@ -182,7 +203,6 @@ unit_price_currency = 0.0
 stock_target_days = 5.0
 reorder_threshold_days = 2.5
 critical_threshold_days = 1.0
-min_shipment_units = 1.0
 consumption_rate_per_resident = 1.0
 starting_inventory_days = 0.0
 outputs = []
@@ -204,8 +224,8 @@ unit_price_currency = 0.0
 stock_target_days = 0.0
 reorder_threshold_days = 0.0
 critical_threshold_days = 0.0
-min_shipment_units = 0.0
-consumption_rate_per_resident = 0.03
+# Two currency per resident/day funds a first worker in a village without cutting wages.
+consumption_rate_per_resident = 0.10
 starting_inventory_days = 0.0
 outputs = []
 
@@ -226,8 +246,8 @@ unit_price_currency = 0.0
 stock_target_days = 0.0
 reorder_threshold_days = 0.0
 critical_threshold_days = 0.0
-min_shipment_units = 0.0
-consumption_rate_per_resident = 0.05
+# 2.24 currency per resident/day covers one pharmacy worker and overhead around 60 residents.
+consumption_rate_per_resident = 0.16
 starting_inventory_days = 0.0
 outputs = []
 
@@ -241,14 +261,15 @@ display_name = "Coal Mine"
 kind = "extractor"
 description = "Deposit-backed starter coal mine that extracts local coal into on-site inventory for power plants and OWA export."
 worker_capacity = 5
+area_build_cost_per_hectare = 25000.0
+area_utility_units_per_hectare = [40.0, 10.0, 10.0]
 base_rate_units_per_day = 120.0
 wage_min_currency_per_day = 80.0
 wage_max_currency_per_day = 100.0
 unit_price_currency = 8.0
 stock_target_days = 4.0
-reorder_threshold_days = 0.0
-critical_threshold_days = 0.0
-min_shipment_units = 40.0
+reorder_threshold_days = 2.0
+critical_threshold_days = 1.0
 consumption_rate_per_resident = 0.0
 starting_inventory_days = 0.0
 work_schedule_profile = "three_shift_work"
@@ -275,10 +296,10 @@ unit_price_currency = 3.0
 stock_target_days = 3.0
 reorder_threshold_days = 1.5
 critical_threshold_days = 0.5
-min_shipment_units = 40.0
 consumption_rate_per_resident = 0.0
 starting_inventory_days = 0.0
 utility_service = "power"
+utility_quantity_unit = "MJ"
 work_schedule_profile = "three_shift_work"
 freight_timing_profile = "always_open"
 outputs = []
@@ -304,10 +325,10 @@ unit_price_currency = 2.0
 stock_target_days = 7.0
 reorder_threshold_days = 3.0
 critical_threshold_days = 1.0
-min_shipment_units = 40.0
 consumption_rate_per_resident = 0.0
 starting_inventory_days = 0.0
 utility_service = "water"
+utility_quantity_unit = "m3"
 work_schedule_profile = "three_shift_work"
 freight_timing_profile = "always_open"
 outputs = []
@@ -329,10 +350,10 @@ unit_price_currency = 1.5
 stock_target_days = 7.0
 reorder_threshold_days = 3.0
 critical_threshold_days = 1.0
-min_shipment_units = 40.0
 consumption_rate_per_resident = 0.0
 starting_inventory_days = 0.0
 utility_service = "sewage"
+utility_quantity_unit = "m3"
 work_schedule_profile = "three_shift_work"
 freight_timing_profile = "always_open"
 outputs = []
@@ -345,26 +366,25 @@ units_per_day = 0.5
 id = "machinery_factory_basic"
 display_name = "Small Machinery Factory"
 kind = "processor"
-description = "Small industrial factory converting steel and non-steel metals into machinery and spare parts. Produces 42 units/day, including 2 for its own upkeep (40 net)."
+description = "Small industrial factory converting steel and non-steel metals into machinery and spare parts. Produces 42 kg/day, including 2 kg for its own upkeep (40 kg net)."
 worker_capacity = 4
 base_rate_units_per_day = 42.0
 wage_min_currency_per_day = 80.0
 wage_max_currency_per_day = 100.0
 unit_price_currency = 20.0
 stock_target_days = 4.0
-reorder_threshold_days = 0.0
-critical_threshold_days = 0.0
-min_shipment_units = 40.0
+reorder_threshold_days = 2.0
+critical_threshold_days = 1.0
 work_schedule_profile = "three_shift_work"
 freight_timing_profile = "always_open"
 
 [[profiles.inputs]]
 resource = "steel"
-units_per_day = 12.0
+units_per_day = 30.0
 
 [[profiles.inputs]]
 resource = "metals"
-units_per_day = 4.0
+units_per_day = 10.0
 
 [[profiles.inputs]]
 resource = "machinery"
@@ -376,7 +396,7 @@ units_per_day = 42.0
 
 [runtime_tuning]
 owa_import_price_multiplier = 1.25
-owa_export_price_multiplier = 0.60
+owa_export_price_multiplier = 1.0
 owa_distress_liquidation_multiplier = 0.25
 startup_treasury_balance = 100000.0
 unemployment_daily_benefit_per_member = 30.0
@@ -385,14 +405,14 @@ pension_daily_benefit_per_elder = 30.0
 child_support_daily_benefit_per_child = 10.0
 
 [runtime_tuning.logistics]
-truck_load_units = 40.0
+# Maximum cargo mass for one simulated freight vehicle; batching is per resource.
+truck_payload_kg = 20000.0
+dispatch_fee_currency = 4.0
+vehicle_hour_cost_currency = 4.0
 border_active_jobs_per_node = 4
 border_queued_jobs_per_node = 4
 queued_shipment_expiry_hours = 12
 terminal_failure_attempts = 3
-owa_export_saturation_loads_to_floor = 4.0
-owa_export_saturation_floor_factor = 0.75
-owa_export_saturation_recovery_hours = 24.0
 
 [runtime_tuning.construction]
 residential_hours_by_level = [6, 12, 18]

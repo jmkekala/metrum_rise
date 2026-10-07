@@ -8,7 +8,7 @@ use super::replenishment::{REPLENISHMENT_STABLE, stable_replenishment_offset_hou
 use crate::debug_log;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::{
-    AgentSystem, TRANSIT_IN_BUILDING, household_age_composition, household_member_age_group,
+    AgentSystem, HouseholdAgeComposition, TRANSIT_IN_BUILDING,
 };
 use crate::simulation::economy::definitions::{
     RuntimeEconomyCatalog, RuntimeEconomyTuning, load_runtime_economy_catalog,
@@ -31,6 +31,7 @@ impl HouseholdSystem {
         tuning: &RuntimeEconomyTuning,
         home_building_id: usize,
         member_count: u16,
+        age_composition: HouseholdAgeComposition,
     ) -> usize {
         // Restored household records may not have transient daily ledgers yet.
         self.ensure_daily_ledger_len();
@@ -40,8 +41,6 @@ impl HouseholdSystem {
         let starting_stock_days = target_days.min(tuning.households.immigrant_starting_stock_days);
 
         let member_count = member_count.max(1);
-        let age_composition =
-            household_age_composition(home_building_id, self.households.len(), member_count);
         let starting_budget =
             tuning.households.immigrant_starting_budget_per_member * member_count as f32;
         self.households.push(Household {
@@ -85,6 +84,7 @@ impl HouseholdSystem {
         allocator: &BuildingAllocator,
     ) -> MaterializedHouseholdCarriers {
         let mut materialized = MaterializedHouseholdCarriers::default();
+        self.pending_arrivals = Default::default();
         let mut catalog = None;
         let mut tuning = None;
         let mut i = 0;
@@ -95,11 +95,17 @@ impl HouseholdSystem {
                 continue;
             }
             let home = agents.home_building[i];
-            if home == usize::MAX
-                || home >= allocator.buildings.len()
-                || agents.transit[i] != TRANSIT_IN_BUILDING
-                || agents.current_building[i] != home
-            {
+            if home >= allocator.buildings.len() {
+                i += 1;
+                continue;
+            }
+            let composition = agents.pending_household_composition(i);
+            if agents.transit[i] != TRANSIT_IN_BUILDING || agents.current_building[i] != home {
+                // Reuse this pass: pending adults cannot back another admission's wages.
+                self.pending_arrivals.households += 1;
+                self.pending_arrivals.adults += u32::from(composition.adult_count);
+                self.pending_arrivals.elders += u32::from(composition.elder_count);
+                self.pending_arrivals.children += u32::from(composition.child_count);
                 i += 1;
                 continue;
             }
@@ -115,22 +121,26 @@ impl HouseholdSystem {
             }
             let catalog_ref = catalog.as_ref().expect("catalog loaded above");
             let tuning_ref = tuning.as_ref().expect("tuning loaded above");
-            let household_id =
-                self.admit_immigrant_household(catalog_ref, tuning_ref, home, pending_size);
+            let household_id = self.admit_immigrant_household(
+                catalog_ref,
+                tuning_ref,
+                home,
+                pending_size,
+                composition,
+            );
             let home_door = allocator
                 .entrances
                 .get(home)
                 .map(|entrance| entrance.door_pos);
 
-            let carrier_age_group = household_member_age_group(home, household_id, 0, pending_size);
+            let carrier_age_group = composition.member_age_group(0);
             agents.materialize_household_carrier(i, household_id, carrier_age_group, home_door);
 
             for member_index in 1..pending_size {
                 let (x, y) = home_door
                     .map(|door| (door.x, door.y))
                     .unwrap_or((agents.pos_x[i], agents.pos_y[i]));
-                let age_group =
-                    household_member_age_group(home, household_id, member_index, pending_size);
+                let age_group = composition.member_age_group(member_index);
                 let resident_idx = agents.spawn_housed_agent_with_age_group(home, x, y, age_group);
                 agents.assign_household_id(resident_idx, household_id);
             }
@@ -162,15 +172,33 @@ mod tests {
         let catalog = load_runtime_economy_catalog().unwrap();
         let tuning = load_runtime_economy_tuning().unwrap();
         let mut households = HouseholdSystem::new();
-        households.admit_immigrant_household(&catalog, &tuning, 0, 1);
-        households.admit_immigrant_household(&catalog, &tuning, 1, 4);
+        households.admit_immigrant_household(
+            &catalog,
+            &tuning,
+            0,
+            1,
+            crate::simulation::economy::agents::household_age_composition(0, 0, 1),
+        );
+        households.admit_immigrant_household(
+            &catalog,
+            &tuning,
+            1,
+            4,
+            crate::simulation::economy::agents::household_age_composition(1, 1, 4),
+        );
         households.households[0].budget = 1_234.0;
         households.households[1].budget = 4_321.0;
         // Bare records from older saves need their ledger slots before another admission.
         let mut restored = HouseholdSystem::new();
         restored.households = households.households;
         assert!(restored.daily_ledgers.is_empty());
-        let admitted = restored.admit_immigrant_household(&catalog, &tuning, 2, 2);
+        let admitted = restored.admit_immigrant_household(
+            &catalog,
+            &tuning,
+            2,
+            2,
+            crate::simulation::economy::agents::household_age_composition(2, 2, 2),
+        );
         assert_eq!(admitted, 2);
         assert_eq!(restored.daily_ledgers.len(), 3);
         for (household, ledger) in restored.households.iter().zip(&restored.daily_ledgers) {

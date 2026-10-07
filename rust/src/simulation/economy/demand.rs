@@ -3,6 +3,7 @@
 //! Demand-driven daily growth pass built from authored baseline tuning.
 
 mod actions;
+mod admission;
 mod building_actions;
 mod config;
 mod credits;
@@ -22,7 +23,9 @@ pub(crate) use actions::{
     DemandBuildingActionKey, DemandBuildingActionPlan, DemandLevelChangeAction, DemandSpawnAction,
     DemandSpawnCandidate, DemandSpawnCandidatesByUse,
 };
-pub(crate) use diagnostics::{HouseholdAdmissionDiagnostics, HouseholdRemovalDiagnostics, BuildingActionDiagnosticsByUse};
+pub(crate) use diagnostics::{
+    BuildingActionDiagnosticsByUse, HouseholdAdmissionDiagnostics, HouseholdRemovalDiagnostics,
+};
 pub use system::DemandSystem;
 pub(crate) use types::{UseTuningBool, UseTuningF32};
 

@@ -14,6 +14,8 @@
 use std::path::Path;
 use std::time::Instant;
 
+#[cfg(test)]
+mod balance_cases;
 mod diagnostics;
 pub use diagnostics::{GrowthBusinessCashFlow, GrowthReport};
 
@@ -76,7 +78,11 @@ impl GrowthScenario {
     /// Panics if the bootstrap pack is missing or a scripted edit is rejected; both mean the
     /// fixture no longer matches the tools it drives.
     pub fn starter_town() -> Self {
-        let mut core = SimCore::new(WorldConfig::new(WORLD_SIZE_M, WORLD_SIZE_M, 40.0, 10.0));
+        Self::starter_town_in_world(WORLD_SIZE_M)
+    }
+
+    fn starter_town_in_world(world_size_m: f32) -> Self {
+        let mut core = SimCore::new(WorldConfig::new(world_size_m, world_size_m, 40.0, 10.0));
         core.precompute_road_mesh_data();
         install_bootstrap_assets(&mut core);
 
@@ -134,7 +140,12 @@ impl GrowthScenario {
     pub fn run_diagnosed_days(&mut self, days: u32) -> GrowthReport {
         let mut report = GrowthReport::new(&self.core);
         while report.days.len() < days as usize {
-            if self.core.step_frame_observed(FRAME_DT_S, &mut report).daily_ticks > 0 {
+            if self
+                .core
+                .step_frame_observed(FRAME_DT_S, &mut report)
+                .daily_ticks
+                > 0
+            {
                 report.days.push(self.record());
             }
         }

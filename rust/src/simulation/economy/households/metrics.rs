@@ -46,6 +46,10 @@ pub(crate) struct CommercialActivitySignal {
     pub(crate) household_supply_resource_runtime_id: ResourceRuntimeId,
     pub(crate) demand_units_per_day: f32,
     pub(crate) activity_floor_scale: f32,
+    /// Daily consumption without the temporary work needed to fill household pantries.
+    pub(crate) recurring_demand_units_per_day: f32,
+    /// Share of authored output supported by ongoing consumption alone.
+    pub(crate) recurring_activity_floor_scale: f32,
 }
 
 pub(super) fn stock_days(stock: f32, member_count: u16, consumption_rate: f32) -> f32 {
@@ -245,6 +249,12 @@ pub(crate) fn commercial_activity_signal_for_city(
         household_supply_resource_runtime_id: household_supply_resource,
         demand_units_per_day,
         activity_floor_scale,
+        recurring_demand_units_per_day: daily_consumption,
+        recurring_activity_floor_scale: if live_output_units_per_day <= MIN_POSITIVE_VALUE {
+            0.0
+        } else {
+            (daily_consumption / live_output_units_per_day).clamp(0.0, 1.0)
+        },
     }
 }
 
@@ -385,6 +395,7 @@ pub(crate) fn physical_worker_capacity_for_profile(
             profile.workers_per_hectare,
             building.work_area_scale,
             minimum_work_area_workers(profile.kind),
+            profile.area_worker_capacity_max,
         )
     } else {
         profile.worker_capacity
@@ -515,12 +526,13 @@ fn explicit_work_area_activity_scale_by_resource(
             continue;
         }
         let local_market_units = resource_amount(&local_input_demand, resource_runtime_id);
-        let owa_market_units = if owa_exports_enabled {
+        // Outside demand is not rationed. Actual hiring still requires cash, available inputs
+        // and inventory headroom; delivered net proceeds pay the subsequent payroll.
+        let market_units = if owa_exports_enabled {
             output_units_per_day
         } else {
-            0.0
+            local_market_units
         };
-        let market_units = local_market_units + owa_market_units;
         scales.push((
             resource_runtime_id,
             (market_units / output_units_per_day).clamp(0.0, 1.0),
@@ -652,6 +664,7 @@ pub(crate) fn active_worker_capacity_equivalent_for_profile_with_floor_scale(
             profile.workers_per_hectare,
             building.work_area_scale,
             minimum_work_area_workers(profile.kind),
+            profile.area_worker_capacity_max,
         ) * floor_scale.clamp(0.0, 1.0);
     }
     if is_service_scaled_commercial_store(building, profile) {

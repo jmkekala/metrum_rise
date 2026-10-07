@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## Checks economy overview money formatting and the asset editor's economy profile selector.
+## Checks economy money/quantity displays and the asset editor's economy profile selector.
 ## Editor controllers stay detached so this test never changes user configuration.
 extends SceneTree
 
 const EconomyOverview = preload("res://scripts/ui/economy_overview.gd")
+const BuildingInspector = preload("res://scripts/ui/building_inspector.gd")
 
 var _failures := 0
 
@@ -21,6 +22,27 @@ func _run() -> void:
 	_expect(overview._expense_money(100.0) == "-$100", "Input purchases display as expenses")
 	_expect(overview._expense_money(-100.0) == "+$100", "Input refunds display as returned money")
 	overview.free()
+	var inspector := BuildingInspector.new()
+	_expect(inspector._resource_units(750.0) == "750.0 kg", "Small deposits display kilograms")
+	_expect(inspector._resource_units(20000.0) == "20.0 t", "Large deposits convert kilograms to tonnes")
+	var window := Window.new()
+	var title := Label.new()
+	var body := VBoxContainer.new()
+	inspector._populate({"window": window, "title_label": title, "stats_body": body}, {
+		"zone_type": "residential", "household_stock_total": 12.0,
+		"inventory": [{"name": "packaged_food", "unit": "kg", "amount": 100.0, "daily_input_units": 200.0}],
+	})
+	var labels: Array[String] = []
+	for row in body.get_children():
+		for child in row.get_children():
+			if child is Label:
+				labels.append(child.text)
+	_expect(labels.has("12.0 kg"), "Household supplies display kilograms")
+	_expect(labels.has("100.0 kg (200.0 kg/day at full operation)"), "Stock and recipe rate carry their resource unit")
+	body.free()
+	title.free()
+	window.free()
+	inspector.free()
 	var authoring := AssetAuthoringPolicy.new()
 	_expect(authoring.reload_catalog().is_empty(), "Authoring catalog loads")
 	var metadata := {"asset_class": "building", "placement_mode": "zoned_private", "zone_type": "industrial", "economy_profile": "machinery_factory_basic"}

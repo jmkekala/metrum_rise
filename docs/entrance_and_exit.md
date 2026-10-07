@@ -523,12 +523,11 @@ This keeps the SoA compact and avoids save/load churn from adding another per-ag
 
 ##### Activity and household shopping intent
 
-`activity` and `planned_activity` describe the purpose of the in-building stop, not the movement
-phase:
+`activity` and `planned_activity` describe the owned task, including its in-building stops:
 
 - `0 = home`
 - `1 = work`
-- `2 = shopping or other non-home stop`
+- `2 = shopping task or other visit`
 
 Household replenishment shopping must not add a new `TRANSIT_*` state. The economy selects one
 eligible household member, records that carrier on the household request, writes
@@ -538,8 +537,11 @@ IN_BUILDING`.
 
 After store arrival, the household economy pass observes the carrier in-building at the store,
 updates the household request, and schedules the same agent back home with `planned_target_building`
-set to the home building and `planned_activity = 0`. Movement code is responsible only for the
-trip; household stock, store inventory, budget reservation, refunds, and store revenue are owned by
+set to the home building and `planned_activity = 2`. Shopping activity survives home arrival until
+the household pass credits the delivered stock and restores home activity, clearing any queued
+return reminder. Work scheduling must not interrupt either pickup or delivery acknowledgement.
+Cancellation also releases the task through the normal home-return path. Movement code is
+responsible only for the trip; household stock, store inventory, budget reservation, refunds, and store revenue are owned by
 [`economy.md`](economy.md).
 
 ##### Add these new SoA fields
@@ -1037,6 +1039,8 @@ No midpoint heuristics are needed here.
   - `access_flags = 0`
   - `transit = TRANSIT_IN_BUILDING`
 - No replanning is allowed during ordinary ingress movement.
+- Arrival preserves shopping activity at both the store and home until the economy acknowledges
+  pickup or delivery. Other arrivals at home set home activity; other destinations preserve purpose.
 - Arrival only changes the agent's location and activity state. Economy-specific side effects such
   as household-stock fulfillment, store revenue, reservation release, or return-trip scheduling must
   be applied by the owning economy pass after it observes the agent in `TRANSIT_IN_BUILDING`.

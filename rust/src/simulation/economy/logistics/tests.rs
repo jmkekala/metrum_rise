@@ -31,10 +31,10 @@ fn benchmark_supplier_index() {
     let resource = catalog.resource_runtime_id_for_id("packaged_food").unwrap();
     let components = ModeComponentIndex::build(&graph, TransitFlags::CAR);
     let reservations = ShipmentSystem::new().build_reservation_views(catalog.resource_count());
-    let truck_load_units = load_runtime_economy_tuning()
+    let truck_payload_kg = load_runtime_economy_tuning()
         .unwrap()
         .logistics
-        .truck_load_units;
+        .truck_payload_kg;
     for count in [1_024, 8_192, 65_536] {
         let mut allocator = BuildingAllocator::new();
         let asset = register_test_asset(
@@ -71,7 +71,7 @@ fn benchmark_supplier_index() {
                 &catalog,
                 &components,
                 &reservations,
-                truck_load_units,
+                truck_payload_kg,
             );
             *sample = start.elapsed().as_secs_f64() * 1_000.0;
             let mut found = 0;
@@ -145,6 +145,7 @@ fn returning_shipments_close_without_changing_settled_cargo_or_unrelated_agents(
             status: ShipmentStatus::Returning,
             carrier_agent_id: carrier_id,
             total_cost: 200.0,
+            freight_cost: 0.0,
             eta_hours: 1,
             queued_hours: 5,
         });
@@ -205,6 +206,7 @@ fn stale_shipment_carrier_cannot_remove_an_unrelated_agent() {
                 status: ShipmentStatus::InTransit,
                 carrier_agent_id: unrelated,
                 total_cost: 200.0,
+                freight_cost: 0.0,
                 eta_hours: 1,
                 queued_hours: 0,
             });
@@ -251,6 +253,7 @@ fn returning_carrier_fixture(count: usize) -> (ShipmentSystem, AgentSystem) {
             status: ShipmentStatus::Returning,
             carrier_agent_id: agent,
             total_cost: 200.0,
+            freight_cost: 0.0,
             eta_hours: u16::MAX,
             queued_hours: 0,
         });
@@ -393,6 +396,7 @@ macro_rules! logistics_tick {
             $graph,
             $minute,
             &mut treasury_balance,
+            |_, _| {},
         )
     }};
 }
@@ -450,6 +454,7 @@ fn progress_shipments_for_test(
         network,
         graph,
         &mut treasury_balance,
+        |_, _| {},
     )
 }
 
@@ -742,7 +747,14 @@ fn make_building(
         recent_power_service_units: 0.0,
         recent_power_served_units: 0.0,
         recent_household_sales_value: 0.0,
-        commercial_activity_floor_scale: 0.0,
+        // Freight fixtures model a store serving enough demand for one worker.
+        commercial_activity_floor_scale: catalog
+            .profile_by_runtime_id(economy_binding.runtime_id)
+            .filter(|profile| {
+                profile.kind
+                    == crate::simulation::economy::definitions::EconomyProfileRuntimeKind::Store
+            })
+            .map_or(0.0, |profile| 1.0 / profile.worker_capacity as f32),
         work_area_scale: 1.0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
@@ -808,6 +820,227 @@ fn graph_with_border_to(end_x: f32) -> (RegionGraph, TransitNetwork, usize, usiz
     network.lane_system.rebuild(&mut graph);
     network.cch_graph = crate::simulation::pathing::cch::CchGraph::build(&graph);
     (graph, network, e0, e1, n0)
+}
+
+#[test]
+fn payload_limits_local_import_and_export_cargo_without_losing_stock_or_money() {
+    // A small test payload makes all three planners reach the limit with minimal setup.
+    // The shipped 20,000 kg limit is checked separately.
+    for (local_supplier, export) in [(true, false), (false, false), (true, true)] {
+        let (graph, network, source_edge, destination_edge, border) = simple_graph_with_border();
+        let mut allocator = BuildingAllocator::new();
+        if local_supplier {
+            let asset = register_test_asset(
+                &mut allocator,
+                "test",
+                "payload_source",
+                ZoneClass::Industrial,
+            );
+            allocator.buildings.push(make_building(
+                &allocator,
+                -50.0,
+                ZoneType::Industrial,
+                source_edge,
+                &asset,
+                600.0,
+                0.0,
+            ));
+        }
+        let destination_idx = allocator.buildings.len();
+        if !export {
+            let asset = register_test_asset(
+                &mut allocator,
+                "test",
+                "payload_buyer",
+                ZoneClass::Commercial,
+            );
+            let mut buyer = make_building(
+                &allocator,
+                50.0,
+                ZoneType::Commercial,
+                destination_edge,
+                &asset,
+                0.0,
+                10_000.0,
+            );
+            buyer.commercial_activity_floor_scale = 1.0;
+            allocator.buildings.push(buyer);
+        }
+        allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+        let mut shipments = ShipmentSystem::new();
+        let mut planning =
+            super::planning::FreightPlanningContext::build(&mut shipments, &allocator, &graph);
+        std::sync::Arc::make_mut(&mut planning.tuning)
+            .logistics
+            .truck_payload_kg = 100.0;
+        let food = planning
+            .catalog
+            .resource_runtime_id_for_id("packaged_food")
+            .unwrap();
+        let price = planning.catalog.unit_price_for_resource(food).unwrap();
+        let expected_payment = 100.0
+            * price
+            * if !local_supplier {
+                planning.tuning.owa_import_price_multiplier
+            } else {
+                1.0
+            };
+        let mut treasury = 0.0;
+        if export {
+            shipments.create_profile_output_exports(
+                &mut allocator,
+                &network,
+                &graph,
+                480,
+                &mut planning,
+            );
+        } else {
+            shipments.create_profile_input_shipments(
+                &mut allocator,
+                &network,
+                &graph,
+                480,
+                &mut planning,
+                &mut treasury,
+            );
+            assert_eq!(
+                allocator.buildings[destination_idx].operating_budget,
+                10_000.0 - shipments.shipments[0].total_cost
+            );
+        }
+        planning.finish(&mut shipments);
+        assert_eq!(shipments.shipments.len(), 1);
+        assert_eq!(shipments.shipments[0].amount, 100.0);
+        let fee = shipments.shipments[0].freight_cost;
+        assert!(fee > 0.0);
+        assert_eq!(
+            shipments.shipments[0].total_cost,
+            expected_payment + if export { 0.0 } else { fee }
+        );
+        assert_eq!(
+            shipments.shipments[0].source,
+            if local_supplier {
+                ShipmentEndpoint::Building(0)
+            } else {
+                ShipmentEndpoint::OwaBorder(border)
+            }
+        );
+        assert_eq!(
+            shipments.shipments[0].destination,
+            if export {
+                ShipmentEndpoint::OwaBorder(border)
+            } else {
+                ShipmentEndpoint::Building(destination_idx)
+            }
+        );
+        let mut agents = AgentSystem::new();
+        progress_shipments_for_test(
+            &mut shipments,
+            &mut allocator,
+            &mut agents,
+            &network,
+            &graph,
+        );
+        assert_eq!(agents.len(), 1, "one capped shipment creates one carrier");
+        if local_supplier {
+            assert_eq!(allocator.buildings[0].inventory_units(food), 500.0);
+            assert_eq!(
+                allocator.buildings[0].operating_budget, 0.0,
+                "seller paid only on arrival"
+            );
+        }
+        mark_carrier_arrived(&shipments, &mut agents, 0);
+        progress_shipments_for_test(
+            &mut shipments,
+            &mut allocator,
+            &mut agents,
+            &network,
+            &graph,
+        );
+        if !export {
+            assert_eq!(
+                allocator.buildings[destination_idx].inventory_units(food),
+                100.0
+            );
+            assert_eq!(
+                allocator.buildings[destination_idx].operating_budget,
+                10_000.0 - shipments.shipments[0].total_cost
+            );
+        }
+        if local_supplier {
+            assert_eq!(
+                allocator.buildings[0].operating_budget,
+                expected_payment - if export { fee } else { 0.0 }
+            );
+            assert_eq!(
+                allocator.buildings[0].inventory_units(food),
+                500.0,
+                "excess cargo stays at source"
+            );
+        }
+        assert_eq!(treasury, 0.0);
+    }
+}
+
+#[test]
+fn minimum_input_order_must_afford_the_carrier_as_well_as_the_goods() {
+    for local in [false, true] {
+        let (graph, network, source_edge, dest_edge, _) = simple_graph_with_border();
+        let mut allocator = BuildingAllocator::new();
+        if local {
+            let asset =
+                register_test_asset(&mut allocator, "test", "fee_source", ZoneClass::Industrial);
+            allocator.buildings.push(make_building(
+                &allocator,
+                -50.0,
+                ZoneType::Industrial,
+                source_edge,
+                &asset,
+                500.0,
+                0.0,
+            ));
+        }
+        let asset = register_test_asset(&mut allocator, "test", "fee_buyer", ZoneClass::Commercial);
+        let goods_budget = 50.0 * 12.0 * if local { 1.0 } else { 1.25 };
+        let buyer = allocator.buildings.len();
+        allocator.buildings.push(make_building(
+            &allocator,
+            50.0,
+            ZoneType::Commercial,
+            dest_edge,
+            &asset,
+            0.0,
+            goods_budget,
+        ));
+        allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+        let mut shipments = ShipmentSystem::new();
+        create_profile_input_shipments_for_test(
+            &mut shipments,
+            &mut allocator,
+            &network,
+            &graph,
+            480,
+        );
+        assert!(shipments.shipments.is_empty());
+        assert_eq!(allocator.buildings[buyer].operating_budget, goods_budget);
+        allocator.buildings[buyer].operating_budget += 100.0;
+        allocator.buildings[buyer].shipment_cooldown_hours = 0;
+        create_profile_input_shipments_for_test(
+            &mut shipments,
+            &mut allocator,
+            &network,
+            &graph,
+            480,
+        );
+        assert_eq!(shipments.shipments.len(), 1);
+        let job = &shipments.shipments[0];
+        assert_eq!(job.amount, 50.0);
+        assert_eq!(job.total_cost, goods_budget + job.freight_cost);
+        assert!(
+            (allocator.buildings[buyer].operating_budget - (100.0 - job.freight_cost)).abs()
+                < 0.001
+        );
+    }
 }
 
 #[test]
@@ -1050,6 +1283,7 @@ fn owa_border_fallback_creates_import_shipment() {
         &graph,
         480,
         &mut treasury_balance,
+        |_, _| {},
     );
 
     assert_eq!(shipments.shipments.len(), 1);
@@ -1127,6 +1361,7 @@ fn city_service_owa_fuel_import_debits_treasury_not_building_budget() {
         &graph,
         480,
         &mut treasury_balance,
+        |_, _| {},
     );
 
     assert_eq!(shipments.shipments.len(), 2);
@@ -1140,7 +1375,10 @@ fn city_service_owa_fuel_import_debits_treasury_not_building_budget() {
                 * catalog
                     .unit_price_for_resource(shipment.resource_runtime_id)
                     .unwrap()
-                * 1.75
+                * load_runtime_economy_tuning()
+                    .unwrap()
+                    .owa_import_price_multiplier
+                + shipment.freight_cost
         })
         .sum();
     assert!((treasury_balance - (1_000.0 - f64::from(expected_cost))).abs() < 0.01);
@@ -1162,6 +1400,7 @@ fn city_service_owa_fuel_import_debits_treasury_not_building_budget() {
         &network,
         &graph,
         &mut treasury_balance,
+        |_, _| {},
     );
     assert!(allocator.buildings[0].inventory_units(coal) > 0.0);
     assert!(allocator.buildings[0].daily_owa_input_value > 0.0);
@@ -1203,12 +1442,16 @@ fn owa_border_fallback_scales_import_to_affordable_amount() {
     let grocery = catalog
         .profile_for_id("grocery_basic")
         .expect("grocery starter profile");
-    let truck_load_units = load_runtime_economy_tuning()
+    let truck_payload_kg = load_runtime_economy_tuning()
         .expect("runtime economy tuning")
         .logistics
-        .truck_load_units;
-    assert!(shipments.shipments[0].amount >= grocery.min_shipment_units);
-    assert_eq!(shipments.shipments[0].amount % truck_load_units, 0.0);
+        .truck_payload_kg;
+    assert!(shipments.shipments[0].amount >= grocery.inputs[0].shipment_batch_kg);
+    assert_eq!(
+        shipments.shipments[0].amount % grocery.inputs[0].shipment_batch_kg,
+        0.0
+    );
+    assert!(shipments.shipments[0].amount <= truck_payload_kg);
     let grocery_input = grocery.inputs.first().expect("grocery input port");
     assert!(shipments.shipments[0].amount < grocery.inventory_target_units_for(grocery_input));
     assert!(allocator.buildings[0].operating_budget >= 0.0);
@@ -1253,6 +1496,64 @@ fn industrial_processor_requests_input_imports() {
         ShipmentEndpoint::Building(0)
     );
     assert_eq!(allocator.buildings[0].inventory_units(grain), 0.0);
+}
+
+#[test]
+fn factory_batches_input_orders_and_daily_exports_instead_of_hourly_trucks() {
+    let (graph, network, edge, _, _) = simple_graph_with_border();
+    let mut allocator = BuildingAllocator::new();
+    let asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "batched_factory",
+        ZoneClass::Industrial,
+    );
+    allocator.buildings.push(make_building(
+        &allocator,
+        -50.0,
+        ZoneType::Industrial,
+        edge,
+        &asset,
+        200.0,
+        20_000.0,
+    ));
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let grain = catalog.resource_runtime_id_for_id("grain").unwrap();
+    let food = catalog.resource_runtime_id_for_id("packaged_food").unwrap();
+    let machinery = catalog.resource_runtime_id_for_id("machinery").unwrap();
+    allocator.buildings[0].set_inventory_units(grain, 750.0);
+    allocator.buildings[0].set_inventory_units(machinery, 80.0);
+    let mut shipments = ShipmentSystem::new();
+    for hour in 0..24 {
+        // Six hours of output fit one 50 kg minimum batch. Wait for a daily lot.
+        if hour % 6 == 5 {
+            allocator.buildings[0].add_inventory_units(food, 50.0);
+        }
+        create_profile_input_shipments_for_test(
+            &mut shipments,
+            &mut allocator,
+            &network,
+            &graph,
+            hour * 60,
+        );
+        create_profile_output_exports_for_test(
+            &mut shipments,
+            &mut allocator,
+            &network,
+            &graph,
+            hour * 60,
+        );
+        assert_eq!(shipments.shipments.len(), usize::from(hour == 23));
+    }
+    assert_eq!(shipments.shipments[0].amount, 200.0);
+    assert_eq!(shipments.shipments[0].resource_runtime_id, food);
+    allocator.buildings[0].shipment_cooldown_hours = 0;
+    allocator.buildings[0].set_inventory_units(grain, 399.0);
+    create_profile_input_shipments_for_test(&mut shipments, &mut allocator, &network, &graph, 0);
+    assert_eq!(shipments.shipments.len(), 2);
+    assert_eq!(shipments.shipments[1].resource_runtime_id, grain);
+    assert_eq!(shipments.shipments[1].amount, 400.0);
 }
 
 #[test]
@@ -1323,10 +1624,10 @@ fn owa_export_buffer_uses_active_explicit_work_area_output() {
         ZoneType::None,
         industrial_edge,
         &field_asset,
-        3_000.0,
+        425.0,
         0.0,
     ));
-    // One of two workers produces 2,900/day, leaving 100 units above the export reserve.
+    // One of two workers produces 200 kg/day, leaving 225 kg above the reserve.
     allocator.buildings[0].work_area_scale = 20.0;
     allocator.buildings[0].commercial_activity_floor_scale = 1.0;
     allocator.buildings[0].worker_count = 1;
@@ -1348,7 +1649,7 @@ fn owa_export_buffer_uses_active_explicit_work_area_output() {
         shipments.shipments[0].destination,
         ShipmentEndpoint::OwaBorder(border_node)
     );
-    assert_eq!(shipments.shipments[0].amount, 80.0);
+    assert_eq!(shipments.shipments[0].amount, 200.0);
 }
 
 #[test]
@@ -1363,7 +1664,7 @@ fn owa_export_buffer_ignores_output_headroom_throttle() {
         ZoneType::None,
         industrial_edge,
         &field_asset,
-        290.0,
+        200.0,
         0.0,
     ));
     allocator.buildings[0].work_area_scale = 0.25;
@@ -1387,8 +1688,8 @@ fn owa_export_buffer_ignores_output_headroom_throttle() {
         shipments.shipments[0].destination,
         ShipmentEndpoint::OwaBorder(border_node)
     );
-    // Two workers fully staff this small field: reserve 72.5/day despite its full buffer.
-    assert_eq!(shipments.shipments[0].amount, 200.0);
+    // Two workers fully staff this small field: reserve 50 kg/day despite its full buffer.
+    assert_eq!(shipments.shipments[0].amount, 150.0);
 }
 
 #[test]
@@ -1468,7 +1769,7 @@ fn local_supplier_reservations_prevent_same_pass_overpromise() {
 }
 
 #[test]
-fn supplier_index_lists_only_suppliers_with_an_unreserved_truckload() {
+fn supplier_index_lists_only_suppliers_with_an_unreserved_batch() {
     use crate::simulation::economy::accessibility::ReachableBucketScanEvent;
     let (graph, network, industrial_edge, commercial_edge, _) = simple_graph_with_border();
     let mut allocator = BuildingAllocator::new();
@@ -1523,6 +1824,7 @@ fn supplier_index_lists_only_suppliers_with_an_unreserved_truckload() {
         status: ShipmentStatus::Queued,
         carrier_agent_id: usize::MAX,
         total_cost: 0.0,
+        freight_cost: 0.0,
         eta_hours: 1,
         queued_hours: 0,
     });
@@ -1568,7 +1870,7 @@ fn owa_export_holds_affordable_local_input_need_first() {
         ZoneType::Industrial,
         industrial_edge,
         &industrial_asset,
-        200.0,
+        400.0,
         0.0,
     ));
     allocator.buildings.push(make_building(
@@ -1619,7 +1921,7 @@ fn unreachable_local_input_need_does_not_hold_owa_export() {
         ZoneType::Industrial,
         industrial_edge,
         &industrial_asset,
-        200.0,
+        400.0,
         0.0,
     ));
     allocator.buildings.push(make_building(
@@ -1676,13 +1978,16 @@ fn zero_sales_commercial_input_target_reorders_before_empty() {
     assert_eq!(shipments.shipments.len(), 1);
     assert_eq!(
         shipments.shipments[0].amount,
-        2.0 * grocery.min_shipment_units
+        2.0 * grocery.inputs[0].shipment_batch_kg
     );
     allocator.buildings[0].set_inventory_units(grocery.inputs[0].resource_runtime_id, 39.5);
     let mut restock = ShipmentSystem::new();
     create_profile_input_shipments_for_test(&mut restock, &mut allocator, &network, &graph, 480);
     assert_eq!(restock.shipments.len(), 1);
-    assert_eq!(restock.shipments[0].amount, grocery.min_shipment_units);
+    assert_eq!(
+        restock.shipments[0].amount,
+        grocery.inputs[0].shipment_batch_kg
+    );
 }
 
 #[test]
@@ -1724,6 +2029,7 @@ fn deserted_destination_rejects_inbound_delivery() {
         status: ShipmentStatus::InTransit,
         carrier_agent_id: usize::MAX,
         total_cost: 600.0,
+        freight_cost: 0.0,
         eta_hours: 1,
         queued_hours: 0,
     });
@@ -1775,6 +2081,7 @@ fn under_construction_destination_rejects_inbound_delivery() {
         status: ShipmentStatus::InTransit,
         carrier_agent_id: usize::MAX,
         total_cost: 600.0,
+        freight_cost: 0.0,
         eta_hours: 1,
         queued_hours: 0,
     });
@@ -1839,6 +2146,7 @@ fn deserted_local_source_releases_reserved_delivery() {
         status: ShipmentStatus::InTransit,
         carrier_agent_id: usize::MAX,
         total_cost: 600.0,
+        freight_cost: 0.0,
         eta_hours: 1,
         queued_hours: 0,
     });
@@ -1890,6 +2198,7 @@ fn queued_owa_import_expires_and_refunds_destination() {
         status: ShipmentStatus::Queued,
         carrier_agent_id: usize::MAX,
         total_cost: 240.0,
+        freight_cost: 0.0,
         eta_hours: 1,
         queued_hours: tuning.logistics.queued_shipment_expiry_hours - 1,
     });
@@ -1957,6 +2266,7 @@ fn stuck_in_transit_local_delivery_expires_and_restores_source_stock() {
     create_profile_input_shipments_for_test(&mut shipments, &mut allocator, &network, &graph, 480);
     assert_eq!(shipments.shipments.len(), 1);
     let total_cost = shipments.shipments[0].total_cost;
+    assert!(shipments.shipments[0].freight_cost > 0.0);
 
     progress_shipments_for_test(
         &mut shipments,
@@ -2209,6 +2519,7 @@ fn building_removal_refunds_unsettled_city_freight_to_its_payer() {
             },
             carrier_agent_id: usize::MAX,
             total_cost: 800.0,
+            freight_cost: 0.0,
             eta_hours: 1,
             queued_hours: 0,
         });
@@ -2416,7 +2727,7 @@ fn owa_exports_respect_border_cap_within_pass() {
             ZoneType::Industrial,
             industrial_edge,
             &industrial_asset,
-            400.0,
+            50.0,
             0.0,
         ));
     }
@@ -2456,7 +2767,7 @@ fn owa_exports_respect_border_cap_within_pass() {
 }
 
 #[test]
-fn repeated_owa_exports_saturate_export_revenue() {
+fn delivered_exports_pay_freight_without_depressing_the_bid() {
     let (graph, network, industrial_edge, _commercial_edge, _) = simple_graph_with_border();
     let mut allocator = BuildingAllocator::new();
     let industrial_asset = register_test_asset(
@@ -2481,12 +2792,9 @@ fn repeated_owa_exports_saturate_export_revenue() {
     create_profile_output_exports_for_test(&mut shipments, &mut allocator, &network, &graph, 480);
     assert_eq!(shipments.shipments.len(), 1);
     let first_unit_revenue = shipments.shipments[0].total_cost / shipments.shipments[0].amount;
-    assert!(
-        shipments
-            .owa_export_saturation_units()
-            .iter()
-            .all(|units| *units == 0.0)
-    );
+    let first = shipments.shipments[0].clone();
+    let cash_before = allocator.buildings[0].operating_budget;
+    assert!(first.freight_cost > 0.0);
 
     let resource_runtime_id = shipments.shipments[0].resource_runtime_id;
     let mut agents = AgentSystem::new();
@@ -2506,10 +2814,11 @@ fn repeated_owa_exports_saturate_export_revenue() {
         &graph,
     );
     assert!(
-        shipments
-            .owa_export_saturation_units()
-            .iter()
-            .any(|units| *units > 0.0)
+        (allocator.buildings[0].operating_budget
+            - cash_before
+            - (first.total_cost - first.freight_cost))
+            .abs()
+            < 0.001
     );
 
     shipments.shipments.clear();
@@ -2519,7 +2828,96 @@ fn repeated_owa_exports_saturate_export_revenue() {
 
     assert_eq!(shipments.shipments.len(), 1);
     let second_unit_revenue = shipments.shipments[0].total_cost / shipments.shipments[0].amount;
-    assert!(second_unit_revenue < first_unit_revenue);
+    assert_eq!(second_unit_revenue, first_unit_revenue);
+}
+
+#[test]
+fn exports_have_no_shared_buying_quota_but_reserve_real_stock() {
+    let (graph, network, edge, _, _) = simple_graph_with_border();
+    let mut allocator = BuildingAllocator::new();
+    let asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "export_factory",
+        ZoneClass::Industrial,
+    );
+    for x in [-60.0, -40.0] {
+        allocator.buildings.push(make_building(
+            &allocator,
+            x,
+            ZoneType::Industrial,
+            edge,
+            &asset,
+            1_000.0,
+            0.0,
+        ));
+    }
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    let mut shipments = ShipmentSystem::new();
+    create_profile_output_exports_for_test(&mut shipments, &mut allocator, &network, &graph, 480);
+    let reserved: f32 = shipments.shipments.iter().map(|s| s.amount).sum();
+    assert_eq!(
+        reserved, 1600.0,
+        "both factories export their 800 kg surplus, above the former 600 kg quota"
+    );
+    assert!(
+        shipments
+            .shipments
+            .iter()
+            .all(|s| s.freight_cost > 0.0 && s.total_cost > s.freight_cost)
+    );
+    for building in &mut allocator.buildings {
+        building.shipment_cooldown_hours = 0;
+    }
+    create_profile_output_exports_for_test(&mut shipments, &mut allocator, &network, &graph, 480);
+    assert_eq!(
+        shipments.shipments.iter().map(|s| s.amount).sum::<f32>(),
+        reserved,
+        "already reserved cargo cannot be sold twice"
+    );
+}
+
+#[test]
+fn export_waits_until_its_cargo_pays_the_carrier_quote() {
+    let (graph, network, edge, _, _) = simple_graph_with_border();
+    let mut allocator = BuildingAllocator::new();
+    let asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "costly_export",
+        ZoneClass::Industrial,
+    );
+    allocator.buildings.push(make_building(
+        &allocator,
+        -50.0,
+        ZoneType::Industrial,
+        edge,
+        &asset,
+        400.0,
+        0.0,
+    ));
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    let mut shipments = ShipmentSystem::new();
+    let mut planning =
+        super::planning::FreightPlanningContext::build(&mut shipments, &allocator, &graph);
+    std::sync::Arc::make_mut(&mut planning.tuning)
+        .logistics
+        .dispatch_fee_currency = 3_000.0;
+    shipments.create_profile_output_exports(&mut allocator, &network, &graph, 480, &mut planning);
+    assert!(
+        shipments.shipments.is_empty(),
+        "2400 of cargo cannot pay 3000+ freight"
+    );
+    let food = planning
+        .catalog
+        .resource_runtime_id_for_id("packaged_food")
+        .unwrap();
+    assert_eq!(allocator.buildings[0].inventory_units(food), 400.0);
+    allocator.buildings[0].add_inventory_units(food, 200.0);
+    shipments.create_profile_output_exports(&mut allocator, &network, &graph, 480, &mut planning);
+    assert_eq!(shipments.shipments.len(), 1);
+    assert_eq!(shipments.shipments[0].amount, 400.0);
+    assert!(shipments.shipments[0].total_cost > shipments.shipments[0].freight_cost);
 }
 
 #[test]
@@ -2532,7 +2930,7 @@ fn owa_export_eta_uses_freight_timing_window() {
         "test",
         "timed_export_industrial",
         ZoneClass::Industrial,
-        Some("grocery_basic"),
+        Some("food_processor_basic"),
     );
     let mut building = make_building(
         &allocator,
@@ -2554,15 +2952,29 @@ fn owa_export_eta_uses_freight_timing_window() {
 
     let mut shipments = ShipmentSystem::new();
     let mut agents = AgentSystem::new();
-    let mut treasury_balance = 0.0;
-    shipments.hourly_tick(
+    let mut planning =
+        super::planning::FreightPlanningContext::build(&mut shipments, &allocator, &graph);
+    // Give this factory a receive window without changing the global catalog.
+    let tuning = std::sync::Arc::make_mut(&mut planning.tuning);
+    let timing = tuning
+        .operational_clock
+        .freight_profiles
+        .iter_mut()
+        .find(|profile| profile.id == "always_open")
+        .unwrap();
+    timing.preferred_windows = vec![crate::simulation::economy::definitions::MinuteWindow {
+        start_minute: 420,
+        end_minute: 1080,
+    }];
+    timing.outside_window_eta_penalty_minutes = 60;
+    shipments.create_profile_output_exports(&mut allocator, &network, &graph, 0, &mut planning);
+    planning.finish(&mut shipments);
+    progress_shipments_for_test(
+        &mut shipments,
         &mut allocator,
         &mut agents,
-        &mut crate::simulation::economy::households::HouseholdSystem::new(),
         &network,
         &graph,
-        0,
-        &mut treasury_balance,
     );
 
     let export_idx = shipments
@@ -2633,7 +3045,7 @@ fn machinery_factory_supplies_city_service_while_retaining_own_upkeep() {
     );
     for port in &profile.inputs {
         if port.resource_runtime_id != machinery {
-            factory.set_inventory_units(port.resource_runtime_id, 80.0);
+            factory.set_inventory_units(port.resource_runtime_id, 2.0 * port.shipment_batch_kg);
         }
     }
     allocator.buildings.push(factory);
@@ -2717,7 +3129,13 @@ fn incoming_machinery_factory_can_start_on_paid_owa_deliveries() {
     );
     let catalog = load_runtime_economy_catalog().unwrap();
     let profile = catalog.profile_for_id("machinery_factory_basic").unwrap();
-    let import_cost = profile.initial_input_import_cost(&catalog, 1.0, 1.75);
+    let import_cost = profile.initial_input_import_cost(
+        &catalog,
+        1.0,
+        load_runtime_economy_tuning()
+            .unwrap()
+            .owa_import_price_multiplier,
+    );
     let payroll = 7.0 * profile.worker_capacity as f32 * profile.average_daily_wage();
     let mut factory = make_building(
         &allocator,
@@ -2743,10 +3161,13 @@ fn incoming_machinery_factory_can_start_on_paid_owa_deliveries() {
         &graph,
         480,
         &mut treasury,
+        |_, _| {},
     );
     assert_eq!(shipments.shipments.len(), 3);
     assert_eq!(treasury, 10_000.0, "private imports use the factory budget");
-    assert!((allocator.buildings[0].operating_budget - payroll).abs() < 0.01);
+    let fees: f32 = shipments.shipments.iter().map(|job| job.freight_cost).sum();
+    assert!(fees > 0.0);
+    assert!((allocator.buildings[0].operating_budget - (payroll - fees)).abs() < 0.01);
     for idx in 0..3 {
         assert_eq!(
             shipments.shipments[idx].source,
@@ -2761,11 +3182,12 @@ fn incoming_machinery_factory_can_start_on_paid_owa_deliveries() {
         &network,
         &graph,
         &mut treasury,
+        |_, _| {},
     );
     for port in &profile.inputs {
         assert_eq!(
             allocator.buildings[0].inventory_units(port.resource_runtime_id),
-            80.0
+            2.0 * port.shipment_batch_kg
         );
     }
     let factors = crate::simulation::economy::households::building_operation_factors(
@@ -2793,6 +3215,11 @@ fn local_export_holds_share_the_buyers_budget_across_recipe_inputs() {
         Some("machinery_factory_basic"),
     );
     let food = register_test_asset(&mut allocator, "test", "hold_food", ZoneClass::Industrial);
+    let grain_price = catalog
+        .profile_for_id("grain_farm_basic")
+        .unwrap()
+        .unit_price_currency;
+    let buyer_budget = 50.0 * grain_price + 10.0; // Enough for grain freight, not a second input batch.
     for (asset, x, zone, edge, stock, budget) in [
         (farm, -70.0, ZoneType::None, supply_edge, 500.0, 0.0),
         (
@@ -2803,7 +3230,14 @@ fn local_export_holds_share_the_buyers_budget_across_recipe_inputs() {
             240.0,
             0.0,
         ),
-        (food, 50.0, ZoneType::Industrial, buyer_edge, 0.0, 240.0),
+        (
+            food,
+            50.0,
+            ZoneType::Industrial,
+            buyer_edge,
+            0.0,
+            buyer_budget,
+        ),
     ] {
         let mut building = make_building(&allocator, x, zone, edge, &asset, stock, budget);
         if budget == 0.0 {
@@ -2828,13 +3262,13 @@ fn local_export_holds_share_the_buyers_budget_across_recipe_inputs() {
     let machinery = catalog.resource_runtime_id_for_id("machinery").unwrap();
     assert_eq!(
         planning.reservations.reserved_inbound_amount(2, grain),
-        40.0
+        50.0
     );
     assert_eq!(
         planning.reservations.reserved_inbound_amount(2, machinery),
         0.0
     );
-    assert_eq!(allocator.buildings[2].operating_budget, 240.0);
+    assert_eq!(allocator.buildings[2].operating_budget, buyer_budget);
 }
 
 #[test]

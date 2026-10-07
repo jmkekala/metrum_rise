@@ -5,7 +5,7 @@
 use super::planning::estimate_building_origin_trip_seconds;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::time::TimeSystem;
-use crate::simulation::economy::agents::{ACTIVITY_HOME, ACTIVITY_WORK};
+use crate::simulation::economy::agents::{ACTIVITY_HOME, ACTIVITY_SHOPPING, ACTIVITY_WORK};
 use crate::simulation::economy::definitions::{
     MinuteWindow, OperationalClockRuntimeTuning, RuntimeEconomyCatalog, WorkTimingProfile,
 };
@@ -90,6 +90,12 @@ pub(super) fn maybe_schedule_work_trip(
     operational_clock: &OperationalClockRuntimeTuning,
     economy_catalog: &RuntimeEconomyCatalog,
 ) -> Option<(usize, u8)> {
+    // Shopping owns the agent through pickup and delivery acknowledgement, including
+    // visits to the worker's own workplace and a return that reached home between hours.
+    if current_activity == ACTIVITY_SHOPPING {
+        cache.clear_departure_if_cached();
+        return None;
+    }
     // A job can end or change while its worker is still inside the old workplace.
     // Return through the ordinary trip planner before using the new job's schedule.
     if home_building != usize::MAX
@@ -429,6 +435,49 @@ mod tests {
                     shopping, None,
                     "job changes must not override a shopping visit"
                 );
+            });
+        }
+        assert_eq!(pathfind_count.load(std::sync::atomic::Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn active_shopping_blocks_due_work_departures_at_home_and_work() {
+        let tuning =
+            crate::simulation::economy::definitions::load_runtime_economy_tuning().unwrap();
+        let catalog =
+            crate::simulation::economy::definitions::load_runtime_economy_catalog().unwrap();
+        let allocator = BuildingAllocator::new();
+        let network = TransitNetwork::new();
+        let graph = RegionGraph::new();
+        let pathfind_count = AtomicU32::new(0);
+        for (origin, target, activity) in [(0, 1, ACTIVITY_WORK), (1, 0, ACTIVITY_HOME)] {
+            with_schedule_cache(|cache| {
+                *cache.next_departure_day = 1;
+                *cache.next_departure_minute = 480;
+                *cache.next_departure_origin_building = origin;
+                *cache.next_departure_target_building = target;
+                *cache.next_departure_activity = activity;
+                assert_eq!(
+                    maybe_schedule_work_trip(
+                        origin,
+                        ACTIVITY_SHOPPING,
+                        0,
+                        1,
+                        false,
+                        0,
+                        cache,
+                        0.0,
+                        &test_clock(1, 480),
+                        &allocator,
+                        &network,
+                        &graph,
+                        &pathfind_count,
+                        &tuning.operational_clock,
+                        &catalog,
+                    ),
+                    None
+                );
+                assert_eq!(*cache.next_departure_target_building, usize::MAX);
             });
         }
         assert_eq!(pathfind_count.load(std::sync::atomic::Ordering::Relaxed), 0);

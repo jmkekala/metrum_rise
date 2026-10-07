@@ -32,6 +32,7 @@ impl ShipmentSystem {
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
         treasury_balance: &mut f64,
+        mut on_delivery: impl FnMut(&Shipment, &BuildingAllocator),
     ) {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
@@ -154,13 +155,11 @@ impl ShipmentSystem {
                     && !allocator.buildings[src_idx].is_deserted
                     && !allocator.buildings[src_idx].is_under_construction()
                 {
-                    self.record_owa_export_saturation(
-                        shipment.resource_runtime_id,
-                        shipment.amount,
-                        catalog.resource_count(),
-                    );
                     allocator.buildings[src_idx].revenue += shipment.total_cost;
-                    allocator.buildings[src_idx].operating_budget += shipment.total_cost;
+                    allocator.buildings[src_idx].operating_budget +=
+                        shipment.total_cost - shipment.freight_cost;
+
+                    on_delivery(&shipment, allocator);
 
                     debug_log!(
                         "economy",
@@ -261,11 +260,14 @@ impl ShipmentSystem {
                         continue;
                     }
 
-                    allocator.buildings[src_idx].revenue += shipment.total_cost;
-                    allocator.buildings[src_idx].operating_budget += shipment.total_cost;
+                    allocator.buildings[src_idx].revenue +=
+                        shipment.total_cost - shipment.freight_cost;
+                    allocator.buildings[src_idx].operating_budget +=
+                        shipment.total_cost - shipment.freight_cost;
                     allocator.buildings[dest_idx]
                         .add_inventory_units(shipment.resource_runtime_id, shipment.amount);
                     allocator.buildings[dest_idx].daily_local_input_value += shipment.total_cost;
+                    on_delivery(&shipment, allocator);
                     debug_log!(
                         "economy",
                         "freight input fulfilled shipment_id={} source=local src_idx={} src_asset={} dest_idx={} dest_asset={} resource={} amount={:.1} cost={:.1} dest_inventory={:.1}",
@@ -319,6 +321,7 @@ impl ShipmentSystem {
                     allocator.buildings[dest_idx]
                         .add_inventory_units(shipment.resource_runtime_id, shipment.amount);
                     allocator.buildings[dest_idx].daily_owa_input_value += shipment.total_cost;
+                    on_delivery(&shipment, allocator);
                     debug_log!(
                         "economy",
                         "freight input fulfilled shipment_id={} source=owa border_node={} dest_idx={} dest_asset={} resource={} amount={:.1} cost={:.1} dest_inventory={:.1}",

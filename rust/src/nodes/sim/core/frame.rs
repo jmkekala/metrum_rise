@@ -21,6 +21,12 @@ pub(super) const FRAME_DT_S: f64 = 1.0 / 60.0;
 pub(super) trait EconomyObserver {
     fn buildings_changed(&mut self, _core: &SimCore) {}
     fn hourly_economy(&mut self, _core: &SimCore) {}
+    fn freight_delivered(
+        &mut self,
+        _shipment: &crate::simulation::economy::logistics::Shipment,
+        _allocator: &crate::simulation::buildings::allocator::BuildingAllocator,
+    ) {
+    }
     fn wages_paid(
         &mut self,
         _agents: &crate::simulation::economy::agents::AgentSystem,

@@ -68,11 +68,28 @@ pub(in crate::simulation::economy::definitions) fn validate_runtime_tuning(
         );
     }
     validate_range(
-        tuning.logistics.truck_load_units,
+        tuning.logistics.truck_payload_kg,
         f32::EPSILON,
         f32::INFINITY,
-        "runtime_tuning.logistics.truck_load_units",
+        "runtime_tuning.logistics.truck_payload_kg",
     )?;
+    for (name, value) in [
+        (
+            "dispatch_fee_currency",
+            tuning.logistics.dispatch_fee_currency,
+        ),
+        (
+            "vehicle_hour_cost_currency",
+            tuning.logistics.vehicle_hour_cost_currency,
+        ),
+    ] {
+        validate_range(
+            value,
+            0.0,
+            f32::MAX,
+            &format!("runtime_tuning.logistics.{name}"),
+        )?;
+    }
     if tuning.logistics.border_active_jobs_per_node == 0 {
         return Err("runtime_tuning.logistics.border_active_jobs_per_node must be > 0".to_owned());
     }
@@ -84,28 +101,6 @@ pub(in crate::simulation::economy::definitions) fn validate_runtime_tuning(
     }
     if tuning.logistics.terminal_failure_attempts == 0 {
         return Err("runtime_tuning.logistics.terminal_failure_attempts must be > 0".to_owned());
-    }
-    for (value, field) in [
-        (
-            tuning.logistics.owa_export_saturation_loads_to_floor,
-            "owa_export_saturation_loads_to_floor",
-        ),
-        (
-            tuning.logistics.owa_export_saturation_recovery_hours,
-            "owa_export_saturation_recovery_hours",
-        ),
-    ] {
-        let label = format!("runtime_tuning.logistics.{field}");
-        validate_range(value, 0.0, f32::MAX, &label)?;
-        if value == 0.0 {
-            return Err(format!("{label} must be > 0"));
-        }
-    }
-    if !(0.0..=1.0).contains(&tuning.logistics.owa_export_saturation_floor_factor) {
-        return Err(
-            "runtime_tuning.logistics.owa_export_saturation_floor_factor must be between 0 and 1"
-                .to_owned(),
-        );
     }
     validate_nonempty_u16_level_array(
         &tuning.construction.residential_hours_by_level,

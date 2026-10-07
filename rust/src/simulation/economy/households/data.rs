@@ -30,6 +30,8 @@ pub(crate) struct DailyHouseholdLedger {
     pub(crate) pension_income: f32,
     /// Child-support transfer received during daily settlement.
     pub(crate) child_support_income: f32,
+    /// Eligible transfers before treasury cash limits, across all benefit categories.
+    pub(crate) transfer_claim: f32,
     /// Residential property tax paid during daily settlement.
     pub(crate) property_tax_paid: f32,
     /// Net household budget reserved or spent on shopping during the ledger window.
@@ -145,10 +147,25 @@ pub struct Household {
     pub unemployment_days_elapsed: u32,
 }
 
+/// Incoming households counted during the existing arrival-carrier pass.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct PendingHouseholdArrivals {
+    /// Homes already claimed by carriers which have not arrived.
+    pub(crate) households: u32,
+    /// Incoming adults which share the labor pool with existing unemployed residents.
+    pub(crate) adults: u32,
+    /// Incoming pension claimants.
+    pub(crate) elders: u32,
+    /// Incoming child-support claimants.
+    pub(crate) children: u32,
+}
+
 /// Collection of explicit household records for the live simulation.
 pub struct HouseholdSystem {
     /// All known households. Agents reference these by index.
     pub households: Vec<Household>,
+    /// Derived before each hourly demand pass; rebuilt from persisted arrival carriers.
+    pub(crate) pending_arrivals: PendingHouseholdArrivals,
     pub(super) member_count_scratch: Vec<AtomicU32>,
     pub(super) child_count_scratch: Vec<AtomicU32>,
     pub(super) adult_count_scratch: Vec<AtomicU32>,
@@ -179,6 +196,7 @@ impl HouseholdSystem {
     pub fn new() -> Self {
         Self {
             households: Vec::new(),
+            pending_arrivals: PendingHouseholdArrivals::default(),
             member_count_scratch: Vec::new(),
             child_count_scratch: Vec::new(),
             adult_count_scratch: Vec::new(),
@@ -256,6 +274,7 @@ impl HouseholdSystem {
     /// Clears all households.
     pub fn clear(&mut self) {
         self.households.clear();
+        self.pending_arrivals = PendingHouseholdArrivals::default();
         self.member_count_scratch.clear();
         self.child_count_scratch.clear();
         self.adult_count_scratch.clear();

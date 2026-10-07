@@ -1501,6 +1501,7 @@ mod tests {
         assert_eq!(diagnostics.total_household_slots, 1);
         assert_eq!(diagnostics.housed_households, 1);
         assert_eq!(diagnostics.vacant_household_slots, 0);
+        // The fixture commits 20 ha, covered by the grain farm's two-worker minimum.
         assert_eq!(diagnostics.industrial_job_capacity, 2);
         assert_eq!(
             diagnostics.industrial_filled_jobs,

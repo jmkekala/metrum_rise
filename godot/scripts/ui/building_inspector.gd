@@ -252,7 +252,7 @@ func _populate(entry: Dictionary, info: Dictionary) -> void:
 				float(info.get("household_stock_days_min", 0.0)),
 			]
 		)
-		_add_row(stats_body, "Supply Units", "%.1f" % float(info.get("household_stock_total", 0.0)))
+		_add_row(stats_body, "Stored Supplies", "%.1f kg" % float(info.get("household_stock_total", 0.0)))
 		_add_row(stats_body, "Replenishment", str(info.get("household_replenishment_state", "-")))
 		if int(info.get("household_replenishment_active", 0)) > 0:
 			_add_row(
@@ -304,8 +304,8 @@ func _populate(entry: Dictionary, info: Dictionary) -> void:
 					var power_consumed := float(info.get("utility_power_consumed_today", 0.0))
 					_add_row(
 						stats_body,
-						"Power Output",
-						"%.1f units" % power_produced
+						"Energy Produced",
+						"%.1f %s" % [power_produced, str(info.get("utility_quantity_unit", "MJ"))]
 					)
 					_add_power_consumption_bar(stats_body, power_consumed, power_produced)
 				_add_row(stats_body, "City Inputs Today", _money(float(info.get("city_input_cost_today", 0.0))))
@@ -326,9 +326,10 @@ func _populate(entry: Dictionary, info: Dictionary) -> void:
 	if inventory.size() > 0:
 		_add_section(stats_body, "Inventory")
 		for item in inventory:
-			var stock_text := "%.1f" % float(item.get("amount", 0.0))
+			var unit := str(item.get("unit", ""))
+			var stock_text := "%.1f %s" % [float(item.get("amount", 0.0)), unit]
 			if item.has("daily_input_units"):
-				stock_text += " (%.1f/day at full operation)" % float(item["daily_input_units"])
+				stock_text += " (%.1f %s/day at full operation)" % [float(item["daily_input_units"]), unit]
 			_add_row(stats_body, _resource_label(str(item.get("name", "?"))), stock_text)
 
 	var flags: Array[String] = []
@@ -367,8 +368,8 @@ func _resource_label(resource_id: String) -> String:
 
 func _resource_units(amount: float) -> String:
 	if absf(amount) >= 1000.0:
-		return "%.1f k units" % (amount / 1000.0)
-	return "%.1f units" % amount
+		return "%.1f t" % (amount / 1000.0)
+	return "%.1f kg" % amount
 
 func _add_section(stats_body: VBoxContainer, title: String) -> void:
 	stats_body.add_child(HSeparator.new())
@@ -586,7 +587,7 @@ func _add_power_consumption_bar(stats_body: VBoxContainer, consumed_units: float
 	bar_holder.add_child(bar)
 
 	var value := Label.new()
-	value.text = "%.1f / %.1f units" % [consumed_units, produced_units]
+	value.text = "%.1f / %.1f MJ" % [consumed_units, produced_units]
 	value.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	value.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	value.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)

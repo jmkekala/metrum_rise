@@ -150,6 +150,9 @@ func _update_drag() -> void:
 	var pending := bool(validation.get("pending", false))
 	_valid = pending or bool(validation.get("ok", false))
 	_hint.text = (HELP if _valid and not pending else str(validation.get("error", "Invalid field"))) + "\n" + ProductionPlotOverlay.LEGEND
+	if bool(validation.get("ok", false)):
+		_hint.text += "\nExpansion $%.0f; utilities $%.0f/day if imported" % [
+			float(validation.get("build_cost", 0.0)), float(validation.get("imported_utilities_per_day", 0.0))]
 	_redraw()
 
 func _release_drag() -> void:

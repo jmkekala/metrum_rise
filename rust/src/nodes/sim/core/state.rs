@@ -513,6 +513,7 @@ impl SimCore {
             &mut self.treasury.balance,
             &service_funding_by_building,
             &self.fiscal_policy,
+            |shipment, allocator| observer.freight_delivered(shipment, allocator),
         );
         self.collect_fiscal_revenue(fiscal_revenue);
         // Capture receipts before demand can remove or replace their building.
@@ -814,6 +815,8 @@ impl SimCore {
             &self.heightmap,
             RoadSurfaceCompileReason::SimCommit,
         );
+        self.demand
+            .set_admission_candidate_hour(day_index, minute_of_day);
         self.demand.run_hourly_pass_with_service_funding(
             &self.allocator,
             &self.households,
@@ -831,11 +834,19 @@ impl SimCore {
             .allocator
             .execute_demand_household_admission_with_preference(
                 self.demand.households_to_admit_today,
-                self.households.households.len(),
+                self.demand.admission_candidate_seed,
                 self.demand.prefer_worker_capable_admission(),
                 &mut self.agents,
                 &self.transit_network,
                 &self.region_graph,
+                |composition, members, home_level| {
+                    self.demand.claim_household_admission(
+                        composition,
+                        members,
+                        home_level,
+                        &self.fiscal_policy,
+                    )
+                },
             );
         self.debug_household_admissions_since_daily = self
             .debug_household_admissions_since_daily

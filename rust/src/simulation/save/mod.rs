@@ -590,11 +590,11 @@ pub(crate) fn load_from_sqlite(
     let (mut zoning, quarantined_parcels) = world::load_zoning(&conn, &config, &graph, version)?;
     let mut allocator = world::load_buildings(&conn, registry, &zoning.profiles, version)?;
     let mut households = world::load_households(&conn, version)?;
-    let mut logistics = world::load_shipments(&conn)?;
+    let mut logistics = world::load_shipments(&conn, version)?;
     let mut resource_extraction =
         world::load_resource_extraction(&conn, allocator.buildings.len())?;
     let mut agriculture = world::load_agriculture(&conn, allocator.buildings.len())?;
-    let mut agents = agents::load_agents(&conn, time_r.5)?;
+    let mut agents = agents::load_agents(&conn, time_r.5, version)?;
     let treasury_row: (
         f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64,
     ) = conn.query_row(

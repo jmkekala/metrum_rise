@@ -29,6 +29,10 @@ pub(super) struct LoadedAgentRecord {
     pub household_id: usize,
     pub age_group: u8,
     pub pending_household_size: u16,
+    /// Approved incoming adult count.
+    pub pending_household_adults: u16,
+    /// Approved incoming elder count.
+    pub pending_household_elders: u16,
     pub freight_shipment_id: u64,
     pub work_building: usize,
     pub current_building: usize,
@@ -80,7 +84,7 @@ pub(super) fn save_agents(
     maps: &SnapshotMaps,
 ) -> SaveLoadResult<()> {
     lanes::save_lane_references(tx, graph, network, maps)?;
-    let mut stmt = tx.prepare("INSERT INTO agents(agent_id, home_building, household_id, age_group, pending_household_size, freight_shipment_id, work_building, current_building, target_building, freight_target_border_node, current_node, planned_attach_node, planned_detach_node, planned_attach_lane_id, planned_detach_lane_id, planned_attach_lane_d, planned_detach_lane_d, access_flags, next_replan_time, current_edge, current_lane_id, lane_distance, pos_x, pos_y, activity, transit, transit_mode, happiness, money, journey_start_time, schedule_seed, cached_commute_minutes, next_commute_refresh_time, next_departure_day, next_departure_minute, next_departure_origin_building, next_departure_target_building, next_departure_activity, cached_schedule_work_building, cached_work_profile_index, has_car, vehicle_type, current_path_index) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43)")?;
+    let mut stmt = tx.prepare("INSERT INTO agents(agent_id, home_building, household_id, age_group, pending_household_size, freight_shipment_id, work_building, current_building, target_building, freight_target_border_node, current_node, planned_attach_node, planned_detach_node, planned_attach_lane_id, planned_detach_lane_id, planned_attach_lane_d, planned_detach_lane_d, access_flags, next_replan_time, current_edge, current_lane_id, lane_distance, pos_x, pos_y, activity, transit, transit_mode, happiness, money, journey_start_time, schedule_seed, cached_commute_minutes, next_commute_refresh_time, next_departure_day, next_departure_minute, next_departure_origin_building, next_departure_target_building, next_departure_activity, cached_schedule_work_building, cached_work_profile_index, has_car, vehicle_type, current_path_index, pending_household_adults, pending_household_elders) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45)")?;
     let mut path_stmt = tx.prepare(
         "INSERT INTO agent_path_nodes(agent_id, step_index, node_id) VALUES (?1, ?2, ?3)",
     )?;
@@ -158,7 +162,9 @@ pub(super) fn save_agents(
             i64::from(agents.cached_work_profile_index[i]),
             agents.has_car[i],
             i64::from(agents.vehicle_type[i]),
-            usize_to_i64(agents.current_path_index[i])?
+            usize_to_i64(agents.current_path_index[i])?,
+            i64::from(agents.pending_household_adults[i]),
+            i64::from(agents.pending_household_elders[i])
         ])?;
 
         for (idx, &nid) in agents.current_path[i].iter().enumerate() {
@@ -178,7 +184,11 @@ pub(super) fn save_agents(
     Ok(())
 }
 
-pub(super) fn load_agents(conn: &Connection, sim_time: f32) -> SaveLoadResult<AgentSystem> {
+pub(super) fn load_agents(
+    conn: &Connection,
+    sim_time: f32,
+    version: i64,
+) -> SaveLoadResult<AgentSystem> {
     let mut car_paths = HashMap::new();
     {
         let mut stmt = conn.prepare("SELECT agent_id, step_index, node_id FROM agent_path_nodes ORDER BY agent_id, step_index")?;
@@ -196,12 +206,46 @@ pub(super) fn load_agents(conn: &Connection, sim_time: f32) -> SaveLoadResult<Ag
     let mut agents = AgentSystem::new();
     agents.sim_time = sim_time;
     {
-        let mut stmt = conn.prepare("SELECT agent_id, home_building, household_id, age_group, pending_household_size, freight_shipment_id, work_building, current_building, target_building, freight_target_border_node, current_node, planned_attach_node, planned_detach_node, planned_attach_lane_id, planned_detach_lane_id, planned_attach_lane_d, planned_detach_lane_d, access_flags, next_replan_time, current_edge, current_lane_id, lane_distance, pos_x, pos_y, activity, transit, transit_mode, happiness, money, journey_start_time, schedule_seed, cached_commute_minutes, next_commute_refresh_time, next_departure_day, next_departure_minute, next_departure_origin_building, next_departure_target_building, next_departure_activity, cached_schedule_work_building, cached_work_profile_index, has_car, vehicle_type, current_path_index FROM agents ORDER BY agent_id")?;
+        let pending_columns = if version >= super::schema::HOUSEHOLD_ARRIVAL_SAVE_VERSION {
+            "pending_household_adults, pending_household_elders"
+        } else {
+            "0, 0"
+        };
+        let mut stmt = conn.prepare(&format!("SELECT agent_id, home_building, household_id, age_group, pending_household_size, freight_shipment_id, work_building, current_building, target_building, freight_target_border_node, current_node, planned_attach_node, planned_detach_node, planned_attach_lane_id, planned_detach_lane_id, planned_attach_lane_d, planned_detach_lane_d, access_flags, next_replan_time, current_edge, current_lane_id, lane_distance, pos_x, pos_y, activity, transit, transit_mode, happiness, money, journey_start_time, schedule_seed, cached_commute_minutes, next_commute_refresh_time, next_departure_day, next_departure_minute, next_departure_origin_building, next_departure_target_building, next_departure_activity, cached_schedule_work_building, cached_work_profile_index, has_car, vehicle_type, current_path_index, {pending_columns} FROM agents ORDER BY agent_id"))?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let aid = i64_to_usize(row.get(0)?)?;
             if aid != agents.len() {
                 return Err(SaveLoadError::custom("non-contiguous agent ids"));
+            }
+            let pending_size = i64_to_u16(row.get(4)?)?;
+            let home = db_to_optional_usize(row.get(1)?)?;
+            let (pending_adults, pending_elders) =
+                if version >= super::schema::HOUSEHOLD_ARRIVAL_SAVE_VERSION {
+                    (i64_to_u16(row.get(43)?)?, i64_to_u16(row.get(44)?)?)
+                } else if pending_size > 0 {
+                    // Older saves never recorded the approved age mix. Choose it once, using
+                    // saved ids; later home remaps and arrival ordering cannot resample it.
+                    let composition = crate::simulation::economy::agents::household_age_composition(
+                        home,
+                        aid,
+                        pending_size,
+                    );
+                    (composition.adult_count, composition.elder_count)
+                } else {
+                    (0, 0)
+                };
+            if pending_size > 0
+                && (u32::from(pending_adults) + u32::from(pending_elders) > u32::from(pending_size)
+                    || pending_adults + pending_elders == 0
+                    || pending_adults
+                        > crate::simulation::economy::agents::MAX_ADULTS_PER_HOUSEHOLD
+                    || pending_elders
+                        > crate::simulation::economy::agents::MAX_ELDERS_PER_HOUSEHOLD)
+            {
+                return Err(SaveLoadError::custom(
+                    "invalid pending household composition",
+                ));
             }
             push_loaded_agent(
                 &mut agents,
@@ -209,7 +253,9 @@ pub(super) fn load_agents(conn: &Connection, sim_time: f32) -> SaveLoadResult<Ag
                     home_building: db_to_optional_usize(row.get(1)?)?,
                     household_id: db_to_optional_usize(row.get(2)?)?,
                     age_group: i64_to_u8(row.get(3)?)?,
-                    pending_household_size: i64_to_u16(row.get(4)?)?,
+                    pending_household_size: pending_size,
+                    pending_household_adults: pending_adults,
+                    pending_household_elders: pending_elders,
                     freight_shipment_id: db_to_optional_u64(row.get(5)?)?,
                     work_building: db_to_optional_usize(row.get(6)?)?,
                     current_building: db_to_optional_usize(row.get(7)?)?,
@@ -268,6 +314,8 @@ pub(super) fn push_loaded_agent(agents: &mut AgentSystem, rec: LoadedAgentRecord
         household_id: rec.household_id,
         age_group: rec.age_group,
         pending_household_size: rec.pending_household_size,
+        pending_household_adults: rec.pending_household_adults,
+        pending_household_elders: rec.pending_household_elders,
         freight_shipment_id: rec.freight_shipment_id,
         work_building: rec.work_building,
         pos_x: rec.pos_x,

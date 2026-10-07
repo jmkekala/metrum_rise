@@ -6,7 +6,16 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 69;
+pub const SAVE_VERSION: i64 = 72;
+
+/// Arrival carriers persist their approved adult/elder composition.
+pub const HOUSEHOLD_ARRIVAL_SAVE_VERSION: i64 = 72;
+
+/// Freight contract fees are persisted; obsolete outside buyer quotas are removed.
+pub const FREIGHT_COST_SAVE_VERSION: i64 = 71;
+
+/// First version using kg for all physical economy inventories, recipes and freight cargo.
+pub const ECONOMY_SI_SAVE_VERSION: i64 = 70;
 
 /// First version recording the plants each building's yard planting areas planted.
 ///
@@ -441,7 +450,8 @@ CREATE TABLE shipments(
     carrier_agent_id INTEGER NOT NULL,
     total_cost REAL NOT NULL,
     eta_hours INTEGER NOT NULL,
-    queued_hours INTEGER NOT NULL
+    queued_hours INTEGER NOT NULL,
+    freight_cost REAL NOT NULL
 );
 CREATE TABLE freight_request_failures(
     destination_building_id INTEGER NOT NULL,
@@ -450,16 +460,14 @@ CREATE TABLE freight_request_failures(
     terminal INTEGER NOT NULL,
     PRIMARY KEY(destination_building_id, resource_runtime_id)
 );
-CREATE TABLE owa_export_saturation(
-    resource_runtime_id INTEGER PRIMARY KEY,
-    units REAL NOT NULL
-);
 CREATE TABLE agents(
     agent_id INTEGER PRIMARY KEY,
     home_building INTEGER NOT NULL,
     household_id INTEGER NOT NULL,
     age_group INTEGER NOT NULL,
     pending_household_size INTEGER NOT NULL DEFAULT 0,
+    pending_household_adults INTEGER NOT NULL DEFAULT 0,
+    pending_household_elders INTEGER NOT NULL DEFAULT 0,
     freight_shipment_id INTEGER NOT NULL,
     work_building INTEGER NOT NULL,
     current_building INTEGER NOT NULL,

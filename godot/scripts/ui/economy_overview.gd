@@ -591,12 +591,12 @@ func _refresh_service_details() -> void:
 	var demand := consumed + unmet
 	var coverage := 0.0 if demand <= 0.001 else consumed / demand
 
-	_add_metric(_service_details, "Production", "%.1f units" % produced)
-	_add_metric(_service_details, "Consumed", "%.1f units" % consumed)
-	_add_metric(_service_details, "Unmet Demand", "%.1f units" % unmet)
+	_add_metric(_service_details, "Production", "%.1f MJ" % produced)
+	_add_metric(_service_details, "Consumed", "%.1f MJ" % consumed)
+	_add_metric(_service_details, "Unmet Demand", "%.1f MJ" % unmet)
 	_add_metric(_service_details, "Coverage", _percent(coverage))
-	_add_metric(_service_details, "Coal Inventory", "%.1f" % float(latest.get("coal_inventory", 0.0)))
-	_add_metric(_service_details, "Coal Consumed", "%.1f" % _sum(entries, "coal_consumed"))
+	_add_metric(_service_details, "Coal Inventory", "%.1f kg" % float(latest.get("coal_inventory", 0.0)))
+	_add_metric(_service_details, "Coal Consumed", "%.1f kg" % _sum(entries, "coal_consumed"))
 	_add_metric(_service_details, "Fuel and Machinery", _money(_sum(entries, "electricity_fuel_cost")))
 	_add_metric(_service_details, "Wage Cost", _money(_sum(entries, "electricity_wage_cost")))
 	_add_metric(_service_details, "Utility Revenue", _money(_sum(entries, "electricity_revenue")))

@@ -5,7 +5,7 @@
 //! These evaluate authored recipes, wages and prices at full staffing without running the
 //! simulation. Outputs sell, and locally produced inputs are bought, at the catalog unit price;
 //! import-only inputs pay the `OWA` import multiplier. Utility bills, property and profit tax,
-//! freight and export saturation are left out, so passing is necessary for a solvent business but
+//! freight and finite customer volumes are left out, so passing is necessary for a solvent business but
 //! not sufficient. See `docs/economy.md#growth-redesign-econ-11econ-14-dem-02`.
 //! The `starter_ledger` child module adds the ECON-14 imported-input, overhead and household
 //! worksheet; its assumptions are documented separately from these original balance checks.
@@ -19,11 +19,12 @@ use crate::simulation::work_area::{
     minimum_work_area_workers, profile_kind_uses_explicit_work_area,
 };
 
+mod producer_ledger;
 mod starter_ledger;
 
 /// Closed-chain jobs per 1,000 residents for the shipped profiles. Update it deliberately when
 /// a tuning change moves the figure; `ECON-14` is expected to.
-const CLOSED_CHAIN_JOBS_PER_1000_RESIDENTS: f64 = 130.55;
+const CLOSED_CHAIN_JOBS_PER_1000_RESIDENTS: f64 = 144.50;
 
 /// Privately run profiles whose payroll must be covered by sales.
 fn is_business(kind: EconomyProfileRuntimeKind) -> bool {
@@ -194,8 +195,9 @@ fn loss_making_profiles(
 }
 
 /// Jobs needed to supply `units_per_day` of `resource` through local producers, upstream
-/// included. Area-staffed producers are counted per hectare without the per-field staffing
-/// floor, which stops binding at city scale.
+/// included. Area-staffed producers use their reference-scale density (20 ha grain farms).
+/// Farm subdivision matters: this excludes both the small-field floor and large-field ceiling,
+/// so it is a repeatable comparison ledger, not a prediction for every city layout.
 fn jobs_to_supply(
     catalog: &RuntimeEconomyCatalog,
     resource: ResourceRuntimeId,
@@ -271,8 +273,6 @@ fn solvency_check_reports_a_profile_whose_wages_exceed_revenue() {
 }
 
 #[test]
-#[ignore = "ECON-14: exports pay owa_export_price_multiplier = 0.60, so basic industries lose money \
-            selling to the OWA"]
 fn basic_industries_profit_from_exporting_all_output() {
     let catalog = load_runtime_economy_catalog().unwrap();
     let tuning = load_runtime_economy_tuning().unwrap();

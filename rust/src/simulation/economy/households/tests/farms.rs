@@ -51,7 +51,7 @@ fn farm_has_one_household_slot_independent_of_field_jobs() {
     assert_eq!(allocator.flat_size_m2(0), 120.0);
     assert!(allocator.next_household_admission_candidate().is_some());
     let catalog = load_runtime_economy_catalog().unwrap();
-    for (hectares, jobs) in [(0.01, 2), (20.0, 2), (30.0, 3), (100.0, 10)] {
+    for (hectares, jobs) in [(0.01, 2), (20.0, 2), (30.0, 3), (100.0, 6)] {
         allocator.buildings[0].set_work_area_scale(hectares);
         assert_eq!(allocator.household_capacity(0), 1);
         assert_eq!(allocator.worker_capacity_with_catalog(0, &catalog), jobs);
@@ -99,12 +99,53 @@ fn bankrupt_farm_withdraws_vacancy_before_rehousing() {
 }
 
 #[test]
+fn incoming_households_keep_their_approved_members_when_arrivals_reverse() {
+    let mut allocator = farm_allocator();
+    allocator.buildings.push(allocator.buildings[0].clone());
+    let mut agents = AgentSystem::new();
+    let first = agents.spawn_household_arrival_carrier(0, 6, 17, 0, 0.0, 0.0);
+    let second = agents.spawn_household_arrival_carrier(1, 3, 18, 0, 0.0, 0.0);
+    let first_mix = agents.pending_household_composition(first);
+    let second_mix = agents.pending_household_composition(second);
+    let mut households = HouseholdSystem::new();
+    households.materialize_arrived_household_carriers(&mut agents, &allocator);
+    assert_eq!(households.pending_arrivals.households, 2);
+    assert_eq!(
+        households.pending_arrivals.adults,
+        u32::from(first_mix.adult_count + second_mix.adult_count)
+    );
+
+    // The second carrier arrives first. Its actual household id is now 0, not its seed 18.
+    agents.current_building[second] = 1;
+    agents.transit[second] = TRANSIT_IN_BUILDING;
+    households.materialize_arrived_household_carriers(&mut agents, &allocator);
+    assert_eq!(households.pending_arrivals.households, 1);
+    assert_eq!(
+        households.pending_arrivals.adults,
+        u32::from(first_mix.adult_count)
+    );
+    assert_eq!(households.households[0].adult_count, second_mix.adult_count);
+    assert_eq!(households.households[0].elder_count, second_mix.elder_count);
+
+    agents.current_building[first] = 0;
+    agents.transit[first] = TRANSIT_IN_BUILDING;
+    households.materialize_arrived_household_carriers(&mut agents, &allocator);
+    assert_eq!(households.pending_arrivals.households, 0);
+    households.rebuild_household_and_worker_counts(&agents, &mut allocator);
+    for (household, approved) in households.households.iter().zip([second_mix, first_mix]) {
+        assert_eq!(household.adult_count, approved.adult_count);
+        assert_eq!(household.elder_count, approved.elder_count);
+        assert_eq!(household.child_count, approved.child_count);
+    }
+}
+
+#[test]
 fn farm_carrier_materializes_one_normal_household_once() {
     let mut allocator = farm_allocator();
     let mut households = HouseholdSystem::new();
     let mut agents = AgentSystem::new();
     allocator.claim_vacancy(0);
-    let carrier = agents.spawn_household_arrival_carrier(0, 6, 0, 10.0, 0.0);
+    let carrier = agents.spawn_household_arrival_carrier(0, 6, 0, 0, 10.0, 0.0);
     agents.current_building[carrier] = 0;
     agents.transit[carrier] = TRANSIT_IN_BUILDING;
     let arrival = households.materialize_arrived_household_carriers(&mut agents, &allocator);
@@ -234,6 +275,8 @@ fn farm_family_works_on_site_and_larger_fields_hire_commuters() {
         assert_eq!(agents.pathfind_count.load(Ordering::Relaxed), routes);
     }
     allocator.buildings[0].set_work_area_scale(30.0);
+    // Extra land can employ a commuter against uncapped outside sales, without placing
+    // artificial local buyers. The existing budget still limits affordable payroll.
     households.assign_agent_workplaces_with_service_funding(
         &mut agents,
         &mut allocator,

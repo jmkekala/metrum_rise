@@ -166,6 +166,8 @@ impl SimCore {
                 household_id: usize::MAX,
                 age_group: AGE_ADULT,
                 pending_household_size: 0,
+                pending_household_adults: 0,
+                pending_household_elders: 0,
                 freight_shipment_id: u64::MAX,
                 work_building: usize::MAX,
                 pos_x: node_pos.x,

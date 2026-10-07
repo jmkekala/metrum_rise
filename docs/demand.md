@@ -16,7 +16,9 @@ It answers questions like:
 It does not own household data layout, freight movement, or door-to-door travel.
 
 The [healthy-growth plan](economy.md#growth-redesign-econ-11econ-14-dem-02) was revised on
-2026-10-05. `DEM-02` is planned; the formulas below still describe the current baseline.
+2026-10-05. `DEM-02` remains planned; the formulas below include the initial regional-market
+and recurring-income constraints added under `ECON-14` on 2026-10-06, plus the subsequent
+uncapped-export/staged-opening revision.
 Economic viability and demand simplification are coordinated work, with 10k performance checks
 and the 1M run deferred.
 
@@ -34,7 +36,8 @@ employment slots alone do not mean that all former workers have left the buildin
 Service-store candidates must also pass a first-worker break-even check: remaining unreserved
 resource demand, capped to one worker's throughput, must pay that worker, imported recipe inputs,
 current-policy property tax and imported utility overhead. At the current 1.25× import price,
-level-one personal and health services need at least 156 and 166 residents respectively if all
+level-one personal and health services need at least 47 and 52 residents respectively after
+the 2026-10-06 village-service tuning (previously 156/166), if all
 their spending is available to the candidate. This is a necessary market-size check, not proof
 of household affordability or guaranteed receipts. The existing capacity reservation prevents
 several candidates from claiming the same customers; the explicit max-demand cheat bypasses it.
@@ -112,6 +115,9 @@ Current live behavior:
 - household admission previews the exact next candidate child/adult/elder composition and uses
   that composition for worker count, unemployment, pension, child-support, and essential-cost
   viability instead of converting household size through an averaged worker assumption
+- each physically launchable household also claims the batch's remaining recurring-income
+  capacity. Its approved adult/elder counts travel with the carrier and survive arrival reordering
+  and save/load; incoming adults are included in the next hourly labor forecast
 - gameplay cheat mode is the explicit exception to the ordinary organic demand model: once enabled,
   it pins the three R/C/I channels at maximum, persists that override in saves, and lets each
   baseline private-use family with legal candidates plan at least one spawn per demand pass without
@@ -546,6 +552,8 @@ Baseline ownership rule:
   When current budget-backed open jobs remain after existing unemployed adults are counted, the
   preview prefers a claimable household with at least one adult worker before falling back to the
   deterministic smallest-vacancy order.
+  The seed includes households still travelling into town; materialization uses the approved
+  counts rather than resampling from its eventual household index.
 - `candidate_effective_workers` is `candidate_adult_count`; children and elders contribute no
   worker capacity
 - `candidate_daily_essential_cost` combines household demand-sink resource prices, including
@@ -554,7 +562,8 @@ Baseline ownership rule:
 - transfer amounts come from live economy-owned `CityFiscalPolicy`
 - `existing_unemployed_adult_count`, `existing_child_count`, `existing_elder_count`, and
   `open_job_slots` come from the settled household and job-offering building state. Existing
-  unemployed adults count adult household members only; children and elders are not work-eligible.
+  unemployed adults include pending adult arrivals; pending children and elders also contribute
+  to forecast transfer claims. Children and elders are not work-eligible.
   Open jobs count commercial, industrial, and utility/service profile slots with a positive
   authored wage and current operating budget
 - `move_in_job_slots`, `move_in_job_equivalent_slots`, and
@@ -562,6 +571,8 @@ Baseline ownership rule:
   marginal commercial jobs for candidate household runway checks. Integer marginal commercial
   slots describe physical jobs that would unlock after admission; fractional marginal commercial
   worker-equivalents describe expected partial employment/income from the candidate's own demand.
+  Admission prices that income from the worker-equivalents only: rounding up a physical vacancy
+  must not promote fractional recurring sales into a full wage.
   Neither form hires a live worker before the household exists.
 - `business_input_need_value`, `local_industrial_input_capacity_value`,
   `industrial_missing_input_value`, and `industrial_input_capacity_deficit` are derived by the
@@ -693,11 +704,66 @@ Deterministic `v0.1` `DemandChannel` formulas:
 
 Baseline helper terms:
 
+Industrial local customer value includes operating business input needs. Committed output,
+including construction and candidates selected in the current pass, reserves those customers.
+Outside buyers have no quantity cap and are never converted into infinite unmet output units.
+With a connected freight gateway and positive export bid, demand grants at most one export-led
+opening at a time: existing zoned industry must be live and employing workers, show paid revenue,
+and hold more operating cash than its original seven-day payroll
+plus input-buffer startup grant. Construction, deserted/broken industry and unrecovered startup
+cash block that opportunity. A bulk-input payment can make one day cash-negative without erasing
+earned reserves; factories need not synchronize profitable days. Local unmet demand remains
+eligible independently.
+
+A producer/processor candidate must cover full payroll, imported external inputs, property tax,
+utilities and the minimum possible dispatch cost. Prospective sites have no freight route quote;
+this is a necessary lower-bound check, not a promise of profitability. Actual route fees affect
+cash recovery before the next export-led opening. Same-resource upkeep is netted from saleable
+output. Selecting an industrial candidate consumes the export opening for the current pass;
+ordinary construction then reserves it in later snapshots. Need is local missing-building count,
+or one export opening, never a fictitious volume of outside customers. The readiness boolean
+reuses the existing deterministic parallel building reduction, with O(1) fixed-profile work per
+building and no additional route searches.
+
+Employment now lets unemployed adults accept reachable funded jobs even when household reserves
+are healthy, matching the local labor pool subtracted from admission opportunities. Existing
+workers retain their job-switch ranking and locks.
+
+Admission forecasts grocery jobs from recurring consumption, excluding temporary pantry refill
+work. Candidate essential bills include demand-sink consumption with household VAT, imported
+utility costs and property tax at the candidate home's level. Starter cash and unemployment
+benefits still describe search runway, but only wages and funded ongoing benefits can cover a
+permanent household. This is an initial viability constraint; broader pressure simplification
+remains `DEM-02` work.
+
+Batch execution must not reuse the first candidate's wages for every vacant home. Demand keeps
+one scalar budget of remaining worker-equivalents, net entry wage, transfer claims and per-member
+essential costs from the hourly snapshot. For each legal border-to-home arrival, it checks the
+actual family and home-level property tax, then reserves that family's adults and transfer
+claims. A refusal changes neither the budget nor housing occupancy. The marginal commercial
+forecast is credited once to the batch, not again per household. This is O(1) arithmetic per
+candidate inside the existing bounded launch loop; the existing vacancy index and border routing
+are reused. Prepopulated benchmark fixtures explicitly bypass demand admission.
+
+Pending counts are accumulated during the existing carrier-materialization pass, adding no scan
+or allocation. Arrival turns those counts into ordinary residents before the next forecast;
+invalidated carriers cease claiming capacity. This reserves aggregate forecast capacity, not a
+specific employer contract: the existing reachable-work search still owns hiring. The model does
+not promise employment under later business closures, disconnected roads or policy changes.
+The outside applicant seed advances with simulation hours, independently of the number admitted:
+rejecting an unaffordable family cannot freeze the stream. Preview and launch use the same seed;
+the approved composition is stored on the carrier rather than recomputed from arrival order.
+The hour seed is derived again from the saved clock on load.
+Save format 72 stores two u16 composition counts per agent; inactive carrier counts are ignored.
+Pre-72 pending carriers lacked an approved mix, so loading chooses it once from their saved ids;
+existing residents retain their saved ages.
+
 ```text
 goods_shortage   = 1.0 - household_stock_stability
 commercial_need  = max(goods_shortage, commercial_capacity_deficit)
 industrial_input_capacity_deficit =
-    if business_input_need_value <= EPSILON then 0.0
+    if export_expansion_available then 1.0
+    else if business_input_need_value <= EPSILON then 0.0
     else clamp(
         industrial_missing_input_value / business_input_need_value,
         0.0,
@@ -761,13 +827,18 @@ expected_transfer_income_per_day =
     candidate_transfer_claim_per_day * transfer_reliability
 expected_daily_income =
     expected_wage_income_per_day + expected_transfer_income_per_day
+recurring_income_per_day =
+    expected_wage_income_per_day
+    + (candidate_pension_claim_per_day + candidate_child_support_claim_per_day)
+      * transfer_reliability
 daily_deficit =
     max(candidate_daily_essential_cost - expected_daily_income, 0.0)
 move_in_search_runway_days =
     if daily_deficit <= EPSILON then move_in_target_search_runway_days
     else immigrant_starter_savings_per_household / daily_deficit
 move_in_runway_factor =
-    clamp(
+    if recurring_income_per_day + EPSILON < candidate_daily_essential_cost then 0.0
+    else clamp(
         (move_in_search_runway_days - move_in_min_search_runway_days)
         / (move_in_target_search_runway_days - move_in_min_search_runway_days),
         0.0,
@@ -1255,9 +1326,10 @@ already-started site. Commercial spawn need is matched by resource and averages 
 candidates that produce that resource: a candidate grocery can satisfy `household_supplies` demand
 but not unresolved `personal_services` or `health_essentials` demand.
 Industrial unmet units subtract committed local capacity from active business/utility input need
-for the candidate resource. Thus one commercial building that actively needs `160` input units/day and one industrial
-building that outputs `160` compatible units/day yields zero further industrial spawn need even if
-the commercial building imported a large one-time OWA starter shipment earlier in the day.
+for the candidate resource. Thus one commercial building that actively needs `200 kg` of packaged
+food/day and one industrial building that outputs `200 kg` of packaged food/day yields zero further
+industrial spawn need even if the commercial building imported a large one-time OWA starter shipment
+earlier in the day.
 
 For upgrade:
 
@@ -1575,7 +1647,7 @@ computes a persistent-exit candidate count from explicit economy-owned household
 ```text
 destitute_unhoused =
     home_is_none
-    AND budget <= epsilon
+    AND household_reserve_days < 1.0
     AND stock_days <= persistent_exit_destitute_stock_days
 
 persistent_exit_eligible =
@@ -1588,8 +1660,9 @@ persistent_exit_eligible =
     )
 ```
 
-With the shipped values, a household with no home, no money, and no meaningful stock becomes
-persistent-exit eligible after 2 settled unhoused days. Any household still without a home becomes
+With the shipped values, a household with no home, less than one day of essential cash reserves,
+and no meaningful stock becomes persistent-exit eligible after 2 settled unhoused days. Small
+transfers must not trap a starving household in repeated eviction and brief rehousing. Any household still without a home becomes
 persistent-exit eligible after 7 settled unhoused days, even if it briefly retained money or stock.
 Persistent exit then removes a deterministic fraction of the eligible tail each day after crisis
 removal has consumed its budget share.

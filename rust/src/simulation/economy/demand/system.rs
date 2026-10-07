@@ -3,6 +3,7 @@
 //! Demand system state and pass orchestration.
 
 use super::actions::DemandBuildingActionPlan;
+use super::admission::HouseholdAdmissionBudget;
 use super::config::{DemandConfig, load_builtin_demand_config};
 use super::credits::{
     advance_household_action_credit, advance_persistent_exit_credit, clamp01,
@@ -55,6 +56,9 @@ pub struct DemandSystem {
     pub(super) last_removal_diagnostics: HouseholdRemovalDiagnostics,
     pub(super) last_building_action_diagnostics: BuildingActionDiagnosticsByUse,
     pub(super) residential_occupant_scratch: ResidentialOccupantScratch,
+    admission_budget: HouseholdAdmissionBudget,
+    /// Current outside applicant seed, derived from simulation time rather than accepted arrivals.
+    pub(crate) admission_candidate_seed: usize,
 }
 
 impl DemandSystem {
@@ -93,6 +97,8 @@ impl DemandSystem {
             last_removal_diagnostics: HouseholdRemovalDiagnostics::default(),
             last_building_action_diagnostics: BuildingActionDiagnosticsByUse::default(),
             residential_occupant_scratch: ResidentialOccupantScratch::default(),
+            admission_budget: HouseholdAdmissionBudget::default(),
+            admission_candidate_seed: 0,
         }
     }
 
@@ -108,6 +114,23 @@ impl DemandSystem {
 
     pub(crate) fn prefer_worker_capable_admission(&self) -> bool {
         self.last_admission_diagnostics.move_in_job_equivalent_slots > 0.001
+    }
+
+    /// Advances the deterministic outside applicant stream even when a household is rejected.
+    pub(crate) fn set_admission_candidate_hour(&mut self, day_index: u32, minute_of_day: u16) {
+        self.admission_candidate_seed = day_index as usize * 24 + usize::from(minute_of_day / 60);
+    }
+
+    /// Consumes a batch's remaining recurring-income capacity for one actual arrival candidate.
+    pub(crate) fn claim_household_admission(
+        &mut self,
+        composition: crate::simulation::economy::agents::HouseholdAgeComposition,
+        members: u16,
+        home_level: u8,
+        fiscal_policy: &CityFiscalPolicy,
+    ) -> bool {
+        self.admission_budget
+            .claim(composition, members, home_level, fiscal_policy)
     }
 
     /// Refreshes RCI telemetry and advances hourly household and building demand outputs.
@@ -164,6 +187,7 @@ impl DemandSystem {
             fiscal_policy,
             treasury_balance,
             service_funding_by_building,
+            self.admission_candidate_seed,
         );
         let residential_occupants = ResidentialOccupantSnapshot::from_runtime_with_catalog(
             allocator,
@@ -174,6 +198,7 @@ impl DemandSystem {
         );
 
         let pressures = self.update_pressure_channels_from_snapshot(&snapshot);
+        self.admission_budget = HouseholdAdmissionBudget::from_snapshot(&snapshot, &self.config);
         self.apply_cheat_max_demands_if_enabled();
         let admission_threshold = self.config.household_action.admission_threshold;
         let admission_credit_before = self.admission_action_credit;
@@ -234,6 +259,7 @@ impl DemandSystem {
             fiscal_policy,
             treasury_balance,
             service_funding_by_building,
+            self.admission_candidate_seed,
         );
         let pressures = self.update_pressure_channels_from_snapshot(&snapshot);
         self.apply_cheat_max_demands_if_enabled();
@@ -420,6 +446,7 @@ impl DemandSystem {
             fiscal_policy,
             treasury_balance,
             service_funding_by_building,
+            self.admission_candidate_seed,
         );
         let pressures = self.update_pressure_channels_from_snapshot(&snapshot);
         self.apply_cheat_max_demands_if_enabled();

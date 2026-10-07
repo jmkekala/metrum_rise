@@ -25,8 +25,6 @@ pub(super) struct FreightPlanningContext {
     pub(super) catalog: Arc<RuntimeEconomyCatalog>,
     /// Cached authored runtime tuning used by all freight planners this hour.
     pub(super) tuning: Arc<RuntimeEconomyTuning>,
-    /// Runtime resource count captured from the catalog.
-    pub(super) resource_count: usize,
     /// Reservation view seeded from existing shipments and updated by new plans.
     pub(super) reservations: ReservationViews,
     /// Reachable `OWA` border nodes in deterministic graph order.
@@ -63,14 +61,13 @@ impl FreightPlanningContext {
             &catalog,
             &freight_components,
             &reservations,
-            tuning.logistics.truck_load_units,
+            tuning.logistics.truck_payload_kg,
         );
         let route_cache = std::mem::take(&mut shipments.freight_route_cache);
 
         Self {
             catalog,
             tuning,
-            resource_count,
             reservations,
             border_nodes,
             freight_components,

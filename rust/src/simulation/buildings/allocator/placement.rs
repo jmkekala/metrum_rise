@@ -1662,7 +1662,6 @@ impl BuildingAllocator {
         // workers for STARTUP_RUNWAY_DAYS before first revenue arrives, AND cover the cost
         // of the first OWA input import (which fires immediately when local supply is absent).
         // Computed from profile data so it scales with the building.
-        const STARTUP_MIN_BUDGET: f32 = 500.0;
         let profile_kind = catalog
             .profile_by_runtime_id(economy_binding.runtime_id)
             .map(|profile| profile.kind);
@@ -1688,6 +1687,7 @@ impl BuildingAllocator {
                     profile.average_daily_wage(),
                     work_area_scale,
                     minimum_work_area_workers(profile.kind),
+                    profile.area_worker_capacity_max,
                 )
             }
             ZoneType::Commercial | ZoneType::Industrial => {
@@ -1702,17 +1702,7 @@ impl BuildingAllocator {
                                 placement.asset_id, economy_binding.runtime_id
                             )
                         });
-                    let daily_wage = profile.average_daily_wage();
-                    const STARTUP_RUNWAY_DAYS: f32 = 7.0;
-                    let wage_runway =
-                        profile.worker_capacity as f32 * daily_wage * STARTUP_RUNWAY_DAYS;
-
-                    // Add expected cost of the first full OWA input import so the building can
-                    // absorb it without going into distress on its opening day.
-                    let owa_import_multiplier = tuning.owa_import_price_multiplier;
-                    let first_import_base_cost =
-                        profile.initial_input_import_cost(catalog, 1.0, owa_import_multiplier);
-                    (wage_runway + first_import_base_cost).max(STARTUP_MIN_BUDGET)
+                    profile.zoned_startup_budget(catalog, tuning.owa_import_price_multiplier)
                 }
             }
             _ => 0.0,

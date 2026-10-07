@@ -13,6 +13,7 @@ const Inspector = preload("res://scripts/ui/building_inspector.gd")
 class SimulationStub extends Node3D:
 	var hit := Vector3.ZERO
 	var reject := false
+	var reject_area_quote := false
 	var commits := 0
 	var cancelled_buildings: Array[int] = []
 	var previous := PackedVector2Array()
@@ -25,7 +26,11 @@ class SimulationStub extends Node3D:
 		result.merge({"ok": true, "building_id": 7, "area_kind": "field"})
 		return result
 	func commit_field_polygon(_id: int, _polygon: PackedVector2Array) -> Dictionary:
-		return {"ok": true, "area_m2": 10000.0}
+		return {"ok": true, "area_m2": 40000.0}
+	func get_industry_area_quote(_id: int, _polygon: PackedVector2Array) -> Dictionary:
+		if reject_area_quote:
+			return {"ok": false, "error": "field must cover at least 4.0 ha (40000 m²)"}
+		return {"ok": true, "area_hectares": 4.0, "build_cost": 80000.0, "imported_utilities_per_day": 48.125}
 	func cancel_pending_industry_building(id: int) -> bool:
 		cancelled_buildings.append(id)
 		return true
@@ -41,7 +46,7 @@ class SimulationStub extends Node3D:
 	func get_current_day() -> int:
 		return 0
 	func validate_field_polygon(_id: int, _polygon: PackedVector2Array) -> Dictionary:
-		return {"ok": not reject, "error": "field overlaps a road"}
+		return {"ok": not reject, "error": "field overlaps a road", "build_cost": 10000.0, "imported_utilities_per_day": 776.875}
 	func resize_field_polygon(id: int, center: Vector2, expected: PackedVector2Array, polygon: PackedVector2Array) -> Dictionary:
 		commits += 1
 		previous = expected.duplicate()
@@ -121,6 +126,7 @@ func _run() -> void:
 	tool._input(InputEventMouseMotion.new())
 	tool._process(0.016)
 	_expect(sim.commits == 0 and tool._committed == polygon, "Motion must not mutate the committed field")
+	_expect(tool._hint.text.contains("Expansion $10000") and tool._hint.text.contains("utilities $777/day"), "Resize shows the Rust construction and utility quote before release")
 	var release := InputEventMouseButton.new()
 	release.button_index = MOUSE_BUTTON_LEFT
 	tool._input(release)
@@ -152,6 +158,13 @@ func _run() -> void:
 	industry._hide_preview_visuals()
 	_expect(industry._plot_overlay.visible, "Switching from the building ghost to polygon drawing retains the guide")
 	industry._polygon_points.assign(Array(polygon))
+	industry._update_polygon_mesh()
+	_expect(industry._price_label.visible and industry._price_label.text.contains("setup $80.0k"), "New fields show their area construction quote before commit")
+	_expect(industry._price_label.text.contains("utilities $48/day if imported"), "New fields show the imported utility estimate")
+	sim.reject_area_quote = true
+	industry._update_polygon_mesh()
+	_expect(industry._price_label.visible and industry._price_label.text.contains("at least 4.0 ha"), "Undersized fields show the Rust minimum-area rejection during drawing")
+	sim.reject_area_quote = false
 	industry._commit_polygon()
 	_expect(not industry._plot_overlay.visible and not industry._field_hint.visible, "Finishing the polygon clears the guide")
 	_expect(sim.cancelled_buildings.is_empty(), "Finishing a polygon preserves its farm")
@@ -185,7 +198,7 @@ func _test_farm_inspector(scene: Node) -> void:
 		"adult_count": 2, "elder_count": 1, "worker_count": 7, "worker_capacity": 8,
 		"household_budget_total": 125.0, "household_budget_avg": 125.0,
 		"household_stock_total": 12.0, "household_replenishment_state": "Stable",
-		"inventory": [{"name": "machinery", "amount": 0.0, "daily_input_units": 1.0}]}
+		"inventory": [{"name": "machinery", "unit": "kg", "amount": 0.0, "daily_input_units": 1.0}]}
 	inspector._populate(entry, info)
 	var rows := {}
 	for row in body.get_children():
@@ -195,9 +208,9 @@ func _test_farm_inspector(scene: Node) -> void:
 	_expect(rows.get("Children") == "2" and rows.get("Adults") == "2" and rows.get("Elders") == "1", "Farm inspector displays resident age groups independently of workers")
 	_expect(rows.get("Workers") == "7 / 8", "Household details preserve farm business staffing")
 	_expect(rows.get("Household Money") == "$125.0 total / $125.0 avg", "Farm inspector shows household money")
-	_expect(rows.get("Supply Units") == "12.0" and rows.get("Replenishment") == "Stable", "Farm inspector shows household supplies")
+	_expect(rows.get("Stored Supplies") == "12.0 kg" and rows.get("Replenishment") == "Stable", "Farm inspector shows household supplies")
 
-	_expect(rows.get("Machinery") == "0.0 (1.0/day at full operation)", "Farm inspector shows empty Machinery stock and upkeep rate")
+	_expect(rows.get("Machinery") == "0.0 kg (1.0 kg/day at full operation)", "Farm inspector shows empty Machinery stock and upkeep rate")
 
 func _test_one_inspector_at_a_time(scene: Node) -> void:
 	var inspector := FixtureInspector.new()

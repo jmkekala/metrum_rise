@@ -32,6 +32,8 @@ fn unemployment_timer_advances_when_treasury_is_empty_and_requires_valid_home() 
     let mut treasury = 0.0;
     households.pay_unemployment_benefits(&agents, &allocator, &mut treasury);
     assert_eq!(households.households[0].unemployment_days_elapsed, 1);
+    assert_eq!(households.daily_ledgers()[0].transfer_claim, 30.0);
+    assert_eq!(households.daily_ledgers()[0].transfer_income(), 0.0);
 
     households.households[0].unemployment_days_elapsed = 0;
     allocator.buildings[0].broken = true;
@@ -227,6 +229,7 @@ fn forced_liquidation_sells_only_unreserved_inventory() {
         status: ShipmentStatus::InTransit,
         carrier_agent_id: usize::MAX,
         total_cost: 0.0,
+        freight_cost: 0.0,
         eta_hours: 1,
         queued_hours: 0,
     });
@@ -433,7 +436,11 @@ fn service_store_sales_use_staffed_aggregate_household_demand() {
     let service_unit_price = catalog
         .unit_price_for_resource(personal_services)
         .expect("personal service unit price");
-    let expected_revenue = 100.0 * 0.03 / 24.0 * service_unit_price;
+    let demand_rate = catalog
+        .profile_for_id("personal_service_demand")
+        .unwrap()
+        .consumption_rate_per_resident;
+    let expected_revenue = 100.0 * demand_rate / 24.0 * service_unit_price;
     assert!(
         (allocator.buildings[1].revenue - expected_revenue).abs() < 0.001,
         "service revenue should be demand-capped and capacity-share credited"
@@ -637,7 +644,7 @@ fn service_store_fake_inventory_cannot_liquidate_for_payroll() {
 }
 
 #[test]
-fn explicit_work_area_wage_pass_keeps_capacity_and_releases_surplus_workers() {
+fn explicit_work_area_wages_keep_funded_workers_and_release_them_when_area_shrinks() {
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
     let farm_profile = catalog
         .profile_for_id("grain_farm_basic")
@@ -687,13 +694,12 @@ fn explicit_work_area_wage_pass_keeps_capacity_and_releases_surplus_workers() {
     let mut treasury_balance = 0.0;
     households.pay_daily_wages(&mut agents, &mut allocator, 0.0, &mut treasury_balance);
 
-    assert_eq!(
-        allocator.buildings[1].worker_count, 8,
-        "OWA-capable farms should keep their full area-scaled worker slots active"
-    );
-    for &agent in &workers {
+    assert_eq!(allocator.buildings[1].worker_count, 6);
+    for &agent in &workers[..6] {
         assert_eq!(agents.work_building[agent], 1);
-        assert_eq!(agents.consecutive_unpaid_days[agent], 0);
+    }
+    for &agent in &workers[6..] {
+        assert_eq!(agents.work_building[agent], usize::MAX);
     }
 
     allocator.buildings[1].set_work_area_scale(1.0);
@@ -705,7 +711,6 @@ fn explicit_work_area_wage_pass_keeps_capacity_and_releases_surplus_workers() {
         budget_before - 180.0
     );
     assert_eq!(agents.work_building[workers[0]], 1);
-    assert_eq!(agents.work_building[workers[1]], 1);
     for &agent in &workers[2..] {
         assert_eq!(agents.work_building[agent], usize::MAX);
         assert_eq!(agents.consecutive_unpaid_days[agent], 0);
@@ -932,48 +937,89 @@ fn private_nonresidential_utility_bill_uses_unified_service_prices() {
 }
 
 #[test]
-fn explicit_work_area_utility_bill_uses_private_business_prices() {
+fn idle_work_areas_pay_area_scaled_imported_utilities() {
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
     let tuning = load_runtime_economy_tuning().expect("runtime economy tuning");
-    let farm_profile = catalog
-        .profile_for_id("grain_farm_basic")
-        .expect("grain farm runtime profile");
-    let mut allocator = BuildingAllocator::new();
-    let farm_asset = register_test_asset(
-        &mut allocator,
-        "test",
-        "explicit_utility_farm",
-        ZoneClass::Industrial,
-    );
-    let mut farm = make_building(0.0, ZoneType::None, &farm_asset, 0.0);
-    farm.economy_profile_runtime_id = farm_profile.runtime_id;
-    farm.operating_budget = 100.0;
-    allocator.buildings.push(farm);
+    for id in ["grain_farm_basic", "coal_mine_basic"] {
+        for area in [0.0, 1.0, 4.0, 100.0] {
+            let farm_profile = catalog.profile_for_id(id).unwrap();
+            let mut allocator = BuildingAllocator::new();
+            let farm_asset = register_test_asset(
+                &mut allocator,
+                "test",
+                "explicit_utility_farm",
+                ZoneClass::Industrial,
+            );
+            let mut farm = make_building(0.0, ZoneType::None, &farm_asset, 0.0);
+            farm.economy_profile_runtime_id = farm_profile.runtime_id;
+            farm.set_work_area_scale(area);
+            farm.worker_count = 0; // Unstaffed and empty of inputs: maintenance still consumes utilities.
+            farm.operating_budget = 1_000_000.0;
+            allocator.buildings.push(farm);
 
-    let logistics = ShipmentSystem::new();
-    let mut households = HouseholdSystem::new();
-    let mut treasury_balance = 0.0;
-    households.settle_daily_utilities(&mut allocator, &logistics, &mut treasury_balance);
+            let logistics = ShipmentSystem::new();
+            let mut households = HouseholdSystem::new();
+            let mut treasury_balance = 0.0;
+            households.settle_daily_utilities(&mut allocator, &logistics, &mut treasury_balance);
 
-    let expected_owa_utility_cost = [
-        "power_plant_basic",
-        "water_plant_basic",
-        "wastewater_treatment_basic",
-    ]
-    .iter()
-    .map(|profile_id| {
-        catalog
-            .profile_for_id(profile_id)
-            .expect("utility profile")
-            .unit_price_currency
-    })
-    .sum::<f32>()
-        * tuning.owa_import_price_multiplier;
-    assert!(
-        (allocator.buildings[0].operating_budget - (100.0 - expected_owa_utility_cost)).abs()
-            < 0.001
-    );
-    assert_eq!(treasury_balance, 0.0);
+            let expected_owa_utility_cost = [
+                "power_plant_basic",
+                "water_plant_basic",
+                "wastewater_treatment_basic",
+            ]
+            .iter()
+            .enumerate()
+            .map(|(service, profile_id)| {
+                catalog
+                    .profile_for_id(profile_id)
+                    .expect("utility profile")
+                    .unit_price_currency
+                    * (1.0 + area * farm_profile.area_utility_units_per_hectare[service])
+            })
+            .sum::<f32>()
+                * tuning.owa_import_price_multiplier;
+            assert!(
+                (allocator.buildings[0].operating_budget
+                    - (1_000_000.0 - expected_owa_utility_cost))
+                    .abs()
+                    < 0.1
+            );
+            assert_eq!(
+                households.last_power_settlement().demand_units,
+                1.0 + area * farm_profile.area_utility_units_per_hectare[0]
+            );
+            assert_eq!(households.last_power_settlement().coverage, 0.0);
+            assert_eq!(treasury_balance, 0.0);
+
+            // A local plant covers half the enlarged electricity demand; the remainder
+            // stays imported. Both the producer bill and treasury receipts must agree.
+            let power_asset = register_test_utility_asset(
+                &mut allocator,
+                "test",
+                "area_power",
+                "power_plant_basic",
+            );
+            let power = catalog.profile_for_id("power_plant_basic").unwrap();
+            let demand = 1.0 + area * farm_profile.area_utility_units_per_hectare[0];
+            let mut provider = make_building(20.0, ZoneType::None, &power_asset, 0.0);
+            provider.economy_profile_runtime_id = power.runtime_id;
+            provider.daily_power_service_units = demand * 0.5;
+            provider.worker_count = 0; // Production was already recorded; no municipal consumer load.
+            allocator.buildings.push(provider);
+            allocator.buildings[0].operating_budget = 1_000_000.0;
+            households.settle_daily_utilities(&mut allocator, &logistics, &mut treasury_balance);
+            let local_receipt = demand * 0.5 * power.unit_price_currency;
+            let saving = local_receipt * (tuning.owa_import_price_multiplier - 1.0);
+            assert_eq!(households.last_power_settlement().coverage, 0.5);
+            assert!(
+                (allocator.buildings[0].operating_budget
+                    - (1_000_000.0 - expected_owa_utility_cost + saving))
+                    .abs()
+                    < 0.1
+            );
+            assert!((treasury_balance - f64::from(local_receipt)).abs() < 0.01);
+        }
+    }
 }
 
 #[test]

@@ -25,6 +25,7 @@ impl ShipmentSystem {
         graph: &RegionGraph,
         minute_of_day: u16,
         treasury_balance: &mut f64,
+        on_delivery: impl FnMut(&super::data::Shipment, &BuildingAllocator),
     ) {
         let timing_enabled = debug::category_enabled("economy");
         let total_start = Instant::now();
@@ -69,6 +70,7 @@ impl ShipmentSystem {
             transit_network,
             graph,
             treasury_balance,
+            on_delivery,
         );
         let progress_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();

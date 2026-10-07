@@ -28,7 +28,7 @@ pub(super) fn input_restock_request(
     }
     let amount = (target - stock).max(0.0);
     let emergency = stock <= critical;
-    (amount > 0.0 && (amount >= profile.min_shipment_units || emergency))
+    (amount > 0.0 && (amount >= input.shipment_batch_kg || emergency))
         .then_some((amount, emergency))
 }
 

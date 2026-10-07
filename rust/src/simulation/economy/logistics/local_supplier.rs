@@ -7,7 +7,7 @@ use crate::simulation::economy::accessibility::{
     ModeComponentIndex, ReachableBucketScanEvent, lower_bound_travel_seconds,
 };
 use crate::simulation::economy::definitions::{
-    FreightTimingProfile, ResourceRuntimeId, RuntimeEconomyCatalog,
+    FreightTimingProfile, LogisticsRuntimeTuning, ResourceRuntimeId, RuntimeEconomyCatalog,
 };
 use crate::simulation::economy::households::saleable_output_stock;
 use crate::simulation::network::TransitNetwork;
@@ -20,7 +20,7 @@ use super::reservations::ReservationViews;
 use super::resource::{input_purchase_budget, reserve_input_payment};
 use super::route_cache::FreightRouteCache;
 use super::supplier_index::SupplierCandidateIndex;
-use super::timing::{adjusted_travel_seconds, adjusted_unit_price, eta_hours_from_travel_seconds};
+use super::timing::{adjusted_unit_price, eta_hours_from_travel_seconds, freight_cost};
 
 /// A local freight offer shared by input orders and export protection.
 #[derive(Clone, Copy)]
@@ -29,8 +29,9 @@ pub(super) struct LocalSupplierChoice {
     pub(super) supplier_idx: usize,
     /// Affordable, unreserved stock rounded to an allowed shipment quantity.
     pub(super) amount: f32,
-    /// Buyer payment for this quantity, including the freight-window price adjustment.
+    /// Buyer payment including the freight-window goods adjustment and the carrier quote.
     pub(super) total_cost: f32,
+    freight_cost: f32,
     travel_seconds: f32,
 }
 
@@ -41,7 +42,7 @@ impl ShipmentSystem {
         dest_idx: usize,
         desired_amount: f32,
         allow_emergency: bool,
-        min_shipment_units: f32,
+        shipment_batch_kg: f32,
         resource_runtime_id: ResourceRuntimeId,
         allocator: &mut BuildingAllocator,
         transit_network: &TransitNetwork,
@@ -53,15 +54,16 @@ impl ShipmentSystem {
         freight_profile: &FreightTimingProfile,
         minute_of_day: u16,
         catalog: &RuntimeEconomyCatalog,
-        truck_load_units: f32,
+        logistics_tuning: &LogisticsRuntimeTuning,
         max_freight_speed: f32,
+        seconds_per_day: f64,
         treasury_balance: &mut f64,
     ) -> bool {
         let best_choice = find_local_supplier(
             dest_idx,
             desired_amount,
             allow_emergency,
-            min_shipment_units,
+            shipment_batch_kg,
             resource_runtime_id,
             input_purchase_budget(allocator, dest_idx),
             allocator,
@@ -74,18 +76,20 @@ impl ShipmentSystem {
             freight_profile,
             minute_of_day,
             catalog,
-            truck_load_units,
+            logistics_tuning,
             max_freight_speed,
+            seconds_per_day,
         );
 
         if let Some(choice) = best_choice {
             reserve_input_payment(allocator, treasury_balance, dest_idx, choice.total_cost);
             let shipment_id = self.allocate_shipment_id();
-            let eta_hours = eta_hours_from_travel_seconds(adjusted_travel_seconds(
+            let eta_hours = eta_hours_from_travel_seconds(
                 choice.travel_seconds,
                 freight_profile,
                 minute_of_day,
-            ));
+                seconds_per_day,
+            );
             self.shipments.push(Shipment {
                 id: shipment_id,
                 resource_runtime_id,
@@ -96,6 +100,7 @@ impl ShipmentSystem {
                 status: ShipmentStatus::InTransit,
                 carrier_agent_id: usize::MAX,
                 total_cost: choice.total_cost,
+                freight_cost: choice.freight_cost,
                 eta_hours,
                 queued_hours: 0,
             });
@@ -134,7 +139,7 @@ pub(super) fn find_local_supplier(
     dest_idx: usize,
     desired_amount: f32,
     allow_emergency: bool,
-    min_shipment_units: f32,
+    shipment_batch_kg: f32,
     resource_runtime_id: ResourceRuntimeId,
     destination_budget: f32,
     allocator: &BuildingAllocator,
@@ -147,8 +152,9 @@ pub(super) fn find_local_supplier(
     freight_profile: &FreightTimingProfile,
     minute_of_day: u16,
     catalog: &RuntimeEconomyCatalog,
-    truck_load_units: f32,
+    logistics_tuning: &LogisticsRuntimeTuning,
     max_freight_speed: f32,
+    seconds_per_day: f64,
 ) -> Option<LocalSupplierChoice> {
     if dest_idx >= allocator.entrances.len() {
         return None;
@@ -173,7 +179,7 @@ pub(super) fn find_local_supplier(
                     dest_idx,
                     desired_amount,
                     allow_emergency,
-                    min_shipment_units,
+                    shipment_batch_kg,
                     resource_runtime_id,
                     destination_budget,
                     allocator,
@@ -184,7 +190,8 @@ pub(super) fn find_local_supplier(
                     freight_profile,
                     minute_of_day,
                     catalog,
-                    truck_load_units,
+                    logistics_tuning,
+                    seconds_per_day,
                 );
                 true
             }
@@ -210,7 +217,7 @@ fn update_best_local_supplier_choice(
     dest_idx: usize,
     desired_amount: f32,
     allow_emergency: bool,
-    min_shipment_units: f32,
+    shipment_batch_kg: f32,
     resource_runtime_id: ResourceRuntimeId,
     destination_budget: f32,
     allocator: &BuildingAllocator,
@@ -221,7 +228,8 @@ fn update_best_local_supplier_choice(
     freight_profile: &FreightTimingProfile,
     minute_of_day: u16,
     catalog: &RuntimeEconomyCatalog,
-    truck_load_units: f32,
+    logistics_tuning: &LogisticsRuntimeTuning,
+    seconds_per_day: f64,
 ) {
     if candidate_idx == dest_idx || candidate_idx >= allocator.buildings.len() {
         return;
@@ -258,14 +266,15 @@ fn update_best_local_supplier_choice(
         freight_profile,
         minute_of_day,
     );
-    let max_affordable = destination_budget / effective_unit_price.max(f32::EPSILON);
-    let Some(amount) = quantize_requested_amount(
+    let max_affordable = (destination_budget - logistics_tuning.dispatch_fee_currency).max(0.0)
+        / effective_unit_price.max(f32::EPSILON);
+    let Some(_) = quantize_requested_amount(
         desired_amount,
         available,
         max_affordable,
-        min_shipment_units,
+        shipment_batch_kg,
         allow_emergency,
-        truck_load_units,
+        logistics_tuning.truck_payload_kg,
     ) else {
         return;
     };
@@ -275,11 +284,23 @@ fn update_best_local_supplier_choice(
         return;
     };
 
-    let total_cost = amount * effective_unit_price;
+    let freight_cost = freight_cost(travel_seconds, seconds_per_day, logistics_tuning);
+    let Some(amount) = quantize_requested_amount(
+        desired_amount,
+        available,
+        (destination_budget - freight_cost).max(0.0) / effective_unit_price.max(f32::EPSILON),
+        shipment_batch_kg,
+        allow_emergency,
+        logistics_tuning.truck_payload_kg,
+    ) else {
+        return;
+    };
+    let total_cost = amount * effective_unit_price + freight_cost;
     let choice = LocalSupplierChoice {
         supplier_idx: candidate_idx,
         amount,
         total_cost,
+        freight_cost,
         travel_seconds,
     };
     if best_choice.is_none_or(|best| local_supplier_choice_precedes(choice, best)) {

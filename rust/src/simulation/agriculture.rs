@@ -253,6 +253,11 @@ impl AgricultureSystem {
         if footprint.overlaps_roads(roads) {
             return Err("field overlaps a road".to_owned());
         }
+        let catalog = load_runtime_economy_catalog()?;
+        let profile = catalog
+            .profile_by_runtime_id(building.economy_profile_runtime_id)
+            .ok_or_else(|| "field economy profile is unavailable".to_owned())?;
+        profile.validate_field_area(area_m2)?;
         Ok(area_m2)
     }
 

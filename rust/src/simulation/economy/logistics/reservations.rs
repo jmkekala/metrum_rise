@@ -297,6 +297,7 @@ mod tests {
             status: ShipmentStatus::Queued,
             carrier_agent_id: usize::MAX,
             total_cost: 0.0,
+            freight_cost: 0.0,
             eta_hours: 1,
             queued_hours: 0,
         }

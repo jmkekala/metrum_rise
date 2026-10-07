@@ -146,7 +146,8 @@ fn snapshot_remaps_all_lane_roles_after_incremental_rebuild_and_edge_compaction(
     crate::simulation::save::network::save_network(&tx, &graph, &maps).unwrap();
     save_agents(&tx, &agents, &graph, &network, &maps).unwrap();
     tx.commit().unwrap();
-    let mut restored = load_agents(&conn, 0.0).unwrap();
+    let mut restored =
+        load_agents(&conn, 0.0, crate::simulation::save::schema::SAVE_VERSION).unwrap();
     let mut new_graph = crate::simulation::save::network::load_graph(&conn).unwrap();
     assert_eq!(new_graph.edge_count(), graph.edge_count() - 1);
     assert_eq!(new_graph.node_count(), graph.node_count() - 1);

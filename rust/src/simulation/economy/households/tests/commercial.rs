@@ -167,8 +167,8 @@ fn grocery_production_and_inputs_follow_demand_below_rounded_worker_capacity() {
         &profile.inputs[0],
     );
     assert!(
-        (targets.0 - 80.0).abs() < 0.001,
-        "72 units for three days retain the existing two-shipment minimum, not 96 for rounded staffing"
+        (targets.0 - 100.0).abs() < 0.001,
+        "90 kg for three days retain the two-batch minimum, not 120 kg for rounded staffing"
     );
     assert!((operating_input_demand_scale(&catalog, &grocery, profile) - 0.15).abs() < 0.001);
 }
@@ -237,17 +237,18 @@ fn explicit_work_area_market_scale_limits_jobs_and_output() {
         catalog.resource_runtime_id_for_id("machinery").unwrap(),
         80.0,
     );
-    building.work_area_scale = 160.0;
+    // Four physical slots make the quarter-market case exactly one whole worker.
+    building.work_area_scale = 40.0;
     building.commercial_activity_floor_scale = 0.25;
-    building.worker_count = 4;
+    building.worker_count = 1;
 
     assert_eq!(
         active_worker_capacity_for_profile(&catalog, &building, profile),
-        4
+        1
     );
     let factors = building_operation_factors(&catalog, &building, profile);
-    assert_eq!(factors.active_worker_capacity, 4);
-    assert_eq!(factors.effective_workers, 4);
+    assert_eq!(factors.active_worker_capacity, 1);
+    assert_eq!(factors.effective_workers, 1);
     assert!(
         (factors.throughput_factor - 0.25).abs() < 0.001,
         "market-capped explicit work areas should produce against physical area capacity"
@@ -316,7 +317,7 @@ fn explicit_work_area_activity_requires_owa_gateway_or_local_demand() {
 }
 
 #[test]
-fn grain_farm_density_preserves_area_yield_and_startup_payroll() {
+fn grain_farm_density_preserves_area_yield_and_startup_runway() {
     use crate::simulation::agriculture::{AgricultureSystem, FieldSite};
     use crate::simulation::economy::households::metrics::active_worker_capacity_equivalent_for_profile_with_floor_scale;
     use crate::simulation::work_area::top_up_explicit_work_area_startup_budget;
@@ -331,11 +332,16 @@ fn grain_farm_density_preserves_area_yield_and_startup_payroll() {
         (0.0, 0),
         (0.01, 2),
         (1.0, 2),
+        (4.0, 2),
         (10.0, 2),
         (10.01, 2),
         (20.0, 2),
         (20.01, 3),
-        (100.0, 10),
+        (50.0, 5),
+        (50.01, 6),
+        (60.0, 6),
+        (100.0, 6),
+        (1000.0, 6),
     ] {
         let mut allocator = BuildingAllocator::new();
         let mut farm = make_building(0.0, ZoneType::None, "test:farm", 0.0);
@@ -364,25 +370,27 @@ fn grain_farm_density_preserves_area_yield_and_startup_payroll() {
             (active_worker_capacity_equivalent_for_profile_with_floor_scale(
                 &catalog, farm, profile, 1.0
             ) - if hectares > 0.0 {
-                (hectares / 10.0).max(2.0)
+                (hectares * 0.1).clamp(2.0, 6.0)
             } else {
                 0.0
             })
             .abs()
                 < 0.001
         );
-        assert_eq!(
-            farm.operating_budget,
-            (workers as f32 * 90.0 * 7.0).max(500.0)
-                + profile.initial_input_import_cost(
-                    &catalog,
-                    hectares,
-                    tuning.owa_import_price_multiplier
-                )
+        let daily_imported_utilities = (6.5 + 8.0 * hectares) * tuning.owa_import_price_multiplier;
+        let expected_budget = (workers as f32 * 90.0 * 7.0).max(500.0)
+            + profile.initial_input_import_cost(
+                &catalog,
+                hectares,
+                tuning.owa_import_price_multiplier,
+            )
+            + daily_imported_utilities * 7.0;
+        assert!(
+            (farm.operating_budget - expected_budget).abs() <= expected_budget * f32::EPSILON * 2.0
         );
         assert_eq!(farm.profit_tax_budget_baseline, farm.operating_budget);
         assert!(
-            (scaled_output_units_per_day_for_building(farm, profile, output) - 290.0 * hectares)
+            (scaled_output_units_per_day_for_building(farm, profile, output) - 20.0 * hectares)
                 .abs()
                 < 0.01
         );
@@ -395,7 +403,7 @@ fn grain_farm_density_preserves_area_yield_and_startup_payroll() {
         agriculture.produce_hourly(&mut allocator, &catalog);
         assert!(
             (allocator.buildings[0].inventory_units(output.resource_runtime_id)
-                - 290.0 * hectares / 24.0)
+                - 20.0 * hectares / 24.0)
                 .abs()
                 < 0.001
         );

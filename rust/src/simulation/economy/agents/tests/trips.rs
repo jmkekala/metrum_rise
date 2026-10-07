@@ -6,6 +6,41 @@ use super::support::*;
 use super::*;
 
 #[test]
+fn shopping_arrivals_preserve_trip_purpose_until_economy_acknowledges_them() {
+    let mut allocator = BuildingAllocator::new();
+    allocator
+        .buildings
+        .push(create_test_building(usize::MAX, 1));
+    allocator
+        .buildings
+        .push(create_test_building(usize::MAX, 1));
+    let mut agents = AgentSystem::new();
+    let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
+    agents.work_building[agent] = 1;
+    let mut network = TransitNetwork::new();
+    let mut graph = RegionGraph::new();
+    for destination in [1, 0] {
+        agents.current_building[agent] = usize::MAX;
+        agents.target_building[agent] = destination;
+        agents.activity[agent] = ACTIVITY_SHOPPING;
+        agents.transit[agent] = TRANSIT_ACCESS_INGRESS;
+        // The first frame arrives; subsequent frames must await pickup/delivery accounting.
+        for _ in 0..3 {
+            agents.tick(
+                &allocator,
+                &mut network,
+                &mut graph,
+                0.1,
+                &test_clock(0, 480),
+            );
+            assert_eq!(agents.current_building[agent], destination);
+            assert_eq!(agents.transit[agent], TRANSIT_IN_BUILDING);
+            assert_eq!(agents.activity[agent], ACTIVITY_SHOPPING);
+        }
+    }
+}
+
+#[test]
 fn test_agent_departure_car_selection() {
     let mut graph = RegionGraph::new();
     let n0 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);

@@ -8,7 +8,9 @@ use crate::simulation::buildings::allocator::{
     BuildingAllocator, DemandSpawnPlacementRejection, baseline_private_zone_slot,
     resolve_building_economy_profile_binding_with_catalog, zone_class_to_zone_type,
 };
-use crate::simulation::economy::agents::{AgentSystem, household_age_composition};
+use crate::simulation::economy::agents::{
+    AgentSystem, HouseholdAgeComposition, household_age_composition,
+};
 use crate::simulation::economy::definitions::{RuntimeEconomyCatalog, RuntimeEconomyTuning};
 use crate::simulation::economy::demand::{
     DemandBuildingActionKey, DemandBuildingActionPlan, DemandLevelChangeAction, DemandSpawnAction,
@@ -305,7 +307,7 @@ impl BuildingAllocator {
         }
     }
 
-    /// Admits the already-decided demand-owned household count as border-origin arrival carriers.
+    /// Launches bounded arrival candidates after demand claims their actual income requirements.
     pub(super) fn admit_households_from_demand(
         &mut self,
         households_to_spawn: usize,
@@ -314,6 +316,7 @@ impl BuildingAllocator {
         agents: &mut AgentSystem,
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
+        mut claim_income: impl FnMut(HouseholdAgeComposition, u16, u8) -> bool,
     ) -> usize {
         if households_to_spawn == 0 {
             return 0;
@@ -356,12 +359,18 @@ impl BuildingAllocator {
                 }
                 break;
             };
+            let household_seed = next_household_id.saturating_add(launched);
+            let composition = household_age_composition(home_idx, household_seed, household_size);
+            if !claim_income(composition, household_size, self.buildings[home_idx].level) {
+                break;
+            }
             // One household consumes 1 slot of household_capacity regardless of size.
             self.claim_vacancy(home_idx);
             let border_pos = graph.node(border_node).pos;
             let carrier_idx = agents.spawn_household_arrival_carrier(
                 home_idx,
                 household_size,
+                household_seed,
                 border_node,
                 border_pos.x,
                 border_pos.z,

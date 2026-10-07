@@ -287,6 +287,7 @@ fn demand_household_removal_remaps_moved_freight_carrier() {
         status: ShipmentStatus::InTransit,
         carrier_agent_id: freight,
         total_cost: 0.0,
+        freight_cost: 0.0,
         eta_hours: 1,
         queued_hours: 0,
     });
@@ -386,6 +387,9 @@ fn unhoused_household_rehouses_into_affordable_vacant_home() {
         agents.transit[a] = TRANSIT_ACCESS_INGRESS;
     }
 
+    // The movement tick has already settled one resident's invalid ingress while unhoused.
+    agents.transit[a1] = TRANSIT_IN_BUILDING;
+
     households.resolve_household_housing(&mut agents, &mut allocator);
 
     assert_eq!(households.households[0].home_building_id, 0);
@@ -395,6 +399,8 @@ fn unhoused_household_rehouses_into_affordable_vacant_home() {
     assert_eq!(agents.home_building[a1], 0);
     assert_eq!(agents.target_building[a0], 0);
     assert_eq!(agents.target_building[a1], 0);
+    assert_eq!(agents.transit[a0], TRANSIT_ACCESS_INGRESS);
+    assert_eq!(agents.transit[a1], TRANSIT_ACCESS_INGRESS);
 }
 
 #[test]

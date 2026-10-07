@@ -15,6 +15,7 @@ use std::fmt::{self, Write};
 use super::super::frame::EconomyObserver;
 use super::super::state::SimCore;
 use super::GrowthDayRecord;
+use crate::simulation::buildings::allocator::Building;
 use crate::simulation::economy::agents::age_group_can_work;
 use crate::simulation::economy::definitions::EconomyProfileRuntimeKind;
 use crate::simulation::economy::demand::{
@@ -24,6 +25,26 @@ use crate::simulation::economy::households::{
     REPLENISHMENT_SHOPPING_TO_STORE, active_worker_capacity_for_profile_with_floor_scale,
 };
 use crate::simulation::zoning::ZoneType;
+
+// Explicit sites have no parcel. Their fixed position identifies them across swap-removal;
+// ordinary zoned businesses retain their parcel/generation identity through level changes.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum BusinessIdentity {
+    Parcel(u64, u32),
+    Explicit(u32, u32, u32),
+}
+
+fn business_identity(building: &Building) -> BusinessIdentity {
+    if building.parcel_id != 0 {
+        BusinessIdentity::Parcel(building.parcel_id, building.build_generation)
+    } else {
+        BusinessIdentity::Explicit(
+            building.center_x.to_bits(),
+            building.center_y.to_bits(),
+            building.build_generation,
+        )
+    }
+}
 
 #[derive(Clone, Copy, Default)]
 struct BusinessSnapshot {
@@ -39,7 +60,15 @@ struct BusinessSnapshot {
 #[derive(Clone, Debug, Default, PartialEq)]
 struct BusinessDay {
     sales: f64,
+    local_sales: f64,
+    export_sales: f64,
+    export_units: f64,
+    export_deliveries: u32,
+    import_deliveries: u32,
+    imported_inputs: f64,
+    local_inputs: f64,
     input_purchases: f64,
+    delivered_freight_cost: f64,
     inputs_received: f64,
     cash_change: f64,
     startup_cash: f64,
@@ -59,12 +88,16 @@ struct BusinessDay {
     staffed_hours: f64,
     capacity_hours: f64,
     sample_hours: u32,
+    area_hectares: f64,
+    remaining_reserve: f64,
+    extracted_units: f64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 struct HouseholdDay {
     wages: f64,
     transfers: f64,
+    unpaid_transfers: f64,
     unemployment: f64,
     shopping: f64,
     utilities: f64,
@@ -114,7 +147,7 @@ pub struct GrowthReport {
     pub days: Vec<GrowthDayRecord>,
     details: Vec<DayDiagnostics>,
     current: DayDiagnostics,
-    businesses: BTreeMap<(u64, u32), BusinessSnapshot>,
+    businesses: BTreeMap<BusinessIdentity, BusinessSnapshot>,
     profile_names: BTreeMap<u16, String>,
     opening_treasury: f64,
     opening_build_cost: f64,
@@ -137,6 +170,21 @@ pub struct GrowthBusinessCashFlow {
     pub operating_cash_change: f64,
     /// New owner capital, including sites built on previously unused parcels.
     pub startup_cash: f64,
+    /// Owner capital injected on previously demolished parcels; a subset of startup cash.
+    pub replacement_startup_cash: f64,
+    /// Receipts from physically delivered sales to local buildings.
+    pub local_sales: f64,
+    /// Receipts from physically delivered regional exports.
+    pub export_sales: f64,
+    /// Net trade costs paid: input commitments, their freight and delivered export freight,
+    /// including cancellation refunds.
+    pub input_purchases: f64,
+    /// Carrier fees on delivered jobs (a subset of trade costs; input payment may precede delivery).
+    pub delivered_freight_cost: f64,
+    /// Successfully delivered export loads; each owns one physical carrier.
+    pub export_deliveries: u32,
+    /// Successfully delivered imported input loads; excludes local deliveries.
+    pub import_deliveries: u32,
     /// Businesses newly marked deserted during this period.
     pub bankruptcies: u32,
 }
@@ -186,18 +234,22 @@ impl GrowthReport {
         }
         let mut seen = BTreeSet::new();
         for (building_idx, building) in core.allocator.buildings.iter().enumerate() {
-            if !matches!(
+            let profile = catalog.profile_by_runtime_id(building.economy_profile_runtime_id);
+            let explicit_producer = profile.is_some_and(|p| {
+                matches!(
+                    p.kind,
+                    EconomyProfileRuntimeKind::FieldProducer | EconomyProfileRuntimeKind::Extractor
+                )
+            });
+            if (!matches!(
                 building.zone_type,
                 ZoneType::Commercial | ZoneType::Industrial
-            ) || core.allocator.is_city_service_building(building)
+            ) && !explicit_producer)
+                || core.allocator.is_city_service_building(building)
             {
                 continue;
             }
-            assert_ne!(
-                building.parcel_id, 0,
-                "village businesses must have stable parcels"
-            );
-            let key = (building.parcel_id, building.build_generation);
+            let key = business_identity(building);
             assert!(seen.insert(key), "duplicate village business identity");
             let now = BusinessSnapshot {
                 profile: building.economy_profile_runtime_id,
@@ -226,6 +278,20 @@ impl GrowthReport {
                 day.inputs_received += now.inputs_received - before.inputs_received;
                 if hourly {
                     day.input_purchases += sales - cash_change;
+                    if !building.is_deserted
+                        && !building.is_under_construction()
+                        && let Some(profile) = profile
+                    {
+                        day.staffed_hours += f64::from(building.worker_count);
+                        day.capacity_hours +=
+                            f64::from(active_worker_capacity_for_profile_with_floor_scale(
+                                catalog,
+                                building,
+                                profile,
+                                building.commercial_activity_floor_scale,
+                            ));
+                        day.sample_hours += 1;
+                    }
                     if let Some(profile) = catalog.profile_by_runtime_id(now.profile)
                         && profile.kind == EconomyProfileRuntimeKind::Store
                         && profile.output_port(supply_resource).is_some()
@@ -234,17 +300,6 @@ impl GrowthReport {
                             / f64::from(profile.unit_price_currency);
                         day.supplied_units += sold;
                         day.produced_units += now.supply_stock - before.supply_stock + sold;
-                        if !building.is_deserted && !building.is_under_construction() {
-                            day.staffed_hours += f64::from(building.worker_count);
-                            day.capacity_hours +=
-                                f64::from(active_worker_capacity_for_profile_with_floor_scale(
-                                    catalog,
-                                    building,
-                                    profile,
-                                    building.commercial_activity_floor_scale,
-                                ));
-                            day.sample_hours += 1;
-                        }
                     }
                 }
                 day.closures += u32::from(now.deserted && !before.deserted);
@@ -322,6 +377,13 @@ impl GrowthReport {
                 total.payroll += b.payroll;
                 total.operating_cash_change += b.cash_change;
                 total.startup_cash += b.startup_cash;
+                total.replacement_startup_cash += b.replacement_startup_cash;
+                total.local_sales += b.local_sales;
+                total.export_sales += b.export_sales;
+                total.input_purchases += b.input_purchases;
+                total.delivered_freight_cost += b.delivered_freight_cost;
+                total.export_deliveries += b.export_deliveries;
+                total.import_deliveries += b.import_deliveries;
                 total.bankruptcies += b.closures;
             }
         }
@@ -335,6 +397,26 @@ impl GrowthReport {
             .rev()
             .take(last_days)
             .map(|d| d.household.empty_stock)
+            .sum()
+    }
+
+    /// Treasury receipts minus recurring expenses, excluding initial and construction capital.
+    pub fn recurring_city_balance(&self, last_days: usize) -> f64 {
+        self.details
+            .iter()
+            .rev()
+            .take(last_days)
+            .map(|d| d.recurring_net)
+            .sum()
+    }
+
+    /// Eligible household benefits not paid because treasury cash was unavailable.
+    pub fn unpaid_household_transfers(&self, last_days: usize) -> f64 {
+        self.details
+            .iter()
+            .rev()
+            .take(last_days)
+            .map(|d| d.household.unpaid_transfers)
             .sum()
     }
 
@@ -366,6 +448,11 @@ impl GrowthReport {
         )?;
         writeln!(
             out,
+            "Private cash already present at observer attachment: {:.2}; excluded from operating cash changes.",
+            self.opening_business_cash
+        )?;
+        writeln!(
+            out,
             "Flows are per completed day; the initial fixture starts 07:30. City counts are after departures; HH accounting/counts are before departures. Launch counts are carriers, not arrivals."
         )?;
         writeln!(
@@ -389,7 +476,7 @@ impl GrowthReport {
         )?;
         writeln!(
             out,
-            "Run totals: taxes {:.2}, transfers {:.2}, roads {:.2}, recurring net {:+.2}, private payroll {:.2}.",
+            "Run totals: taxes {:.2}, transfers {:.2}, roads {:.2}, recurring net {:+.2}, private payroll {:.2}, unpaid eligible transfers {:.2}.",
             self.details.iter().map(|d| d.taxes).sum::<f64>(),
             self.details
                 .iter()
@@ -397,7 +484,8 @@ impl GrowthReport {
                 .sum::<f64>(),
             self.details.iter().map(|d| d.upkeep).sum::<f64>(),
             self.details.iter().map(|d| d.recurring_net).sum::<f64>(),
-            self.details.iter().map(|d| d.payroll).sum::<f64>()
+            self.details.iter().map(|d| d.payroll).sum::<f64>(),
+            self.unpaid_household_transfers(usize::MAX)
         )?;
         for (profile, name) in &self.profile_names {
             let mut total = BusinessDay::default();
@@ -405,10 +493,19 @@ impl GrowthReport {
                 if let Some(b) = day.businesses.get(profile) {
                     total.sales += b.sales;
                     total.input_purchases += b.input_purchases;
+                    total.delivered_freight_cost += b.delivered_freight_cost;
+                    total.export_deliveries += b.export_deliveries;
+                    total.import_deliveries += b.import_deliveries;
                     total.startup_cash += b.startup_cash;
                     total.replacement_startup_cash += b.replacement_startup_cash;
                     total.cash_change += b.cash_change;
                     total.closures += b.closures;
+                    total.local_sales += b.local_sales;
+                    total.export_sales += b.export_sales;
+                    total.export_units += b.export_units;
+                    total.imported_inputs += b.imported_inputs;
+                    total.local_inputs += b.local_inputs;
+                    total.payroll += b.payroll;
                 }
             }
             writeln!(
@@ -420,6 +517,20 @@ impl GrowthReport {
                 total.replacement_startup_cash,
                 total.cash_change,
                 total.closures
+            )?;
+            writeln!(
+                out,
+                "    trade local-sales {:.2}, export-sales {:.2} / {:.2} units, delivered-inputs imported/local {:.2}/{:.2}, payroll {:.2}, other-expenses {:.2}, delivered-freight {:.2}, export/import-loads {}/{}",
+                total.local_sales,
+                total.export_sales,
+                total.export_units,
+                total.imported_inputs,
+                total.local_inputs,
+                total.payroll,
+                total.sales - total.input_purchases - total.payroll - total.cash_change,
+                total.delivered_freight_cost,
+                total.export_deliveries,
+                total.import_deliveries
             )?;
         }
         Ok(())
@@ -503,18 +614,41 @@ impl GrowthReport {
                 b.removed_cash,
                 b.deserted
             )?;
+            writeln!(
+                out,
+                "    trade local-sales {:.2}, export-sales {:.2} / {:.2} units, delivered-inputs imported/local {:.2}/{:.2}, payroll {:.2}, other-expenses {:.2}, delivered-freight {:.2}, export/import-loads {}/{}",
+                b.local_sales,
+                b.export_sales,
+                b.export_units,
+                b.imported_inputs,
+                b.local_inputs,
+                b.payroll,
+                b.sales - b.input_purchases - b.payroll - b.cash_change,
+                b.delivered_freight_cost,
+                b.export_deliveries,
+                b.import_deliveries
+            )?;
             if b.sample_hours > 0 {
                 writeln!(
                     out,
-                    "    grocery produced {:.2} sold {:.2} stock+reserved {:.2} inputs-stock {:.2}; mean workers/cap {:.2}/{:.2}, paid payroll {:.2}, other expenses {:.2}",
-                    b.produced_units,
-                    b.supplied_units,
-                    b.supply_stock,
+                    "    inputs-stock {:.2}; mean workers/cap {:.2}/{:.2}",
                     b.input_stock,
                     b.staffed_hours / f64::from(b.sample_hours),
                     b.capacity_hours / f64::from(b.sample_hours),
-                    b.payroll,
-                    b.sales - b.input_purchases - b.cash_change - b.payroll,
+                )?;
+            }
+            if self.profile_names[profile] == "grocery_basic" {
+                writeln!(
+                    out,
+                    "    grocery-units produced {:.2} sold {:.2} stock+reserved {:.2}",
+                    b.produced_units, b.supplied_units, b.supply_stock,
+                )?;
+            }
+            if b.area_hectares > 0.0 || b.extracted_units > 0.0 {
+                writeln!(
+                    out,
+                    "    productive hectares {:.4}; coal reserve {:.2}, cumulative extraction {:.2}",
+                    b.area_hectares, b.remaining_reserve, b.extracted_units
                 )?;
             }
         }
@@ -547,7 +681,7 @@ impl GrowthReport {
         };
         writeln!(
             out,
-            "  admission {gate}: vacancy {} funded/physical {}/{} unfunded {} local-unemployed {} need {:.3} acceptance {:.3} runway {:.2} candidate-income {:.2} cost-estimate {:.2} failure-factor {:.3} pressure {:.3}/{:.3} credit {:.3}->{:.3} planned/launched {}/{}",
+            "  admission {gate}: vacancy {} funded/physical {}/{} unfunded {} local-unemployed {} need {:.3} acceptance {:.3} runway {:.2} candidate-income {:.2} recurring-income {:.2} cost-estimate {:.2} failure-factor {:.3} pressure {:.3}/{:.3} credit {:.3}->{:.3} planned/launched {}/{}",
             a.vacant_household_slots,
             a.funded_worker_capacity,
             a.physical_worker_capacity,
@@ -557,6 +691,7 @@ impl GrowthReport {
             a.move_in_acceptance,
             a.move_in_search_runway_days,
             a.expected_wage_income_per_day + a.expected_transfer_income_per_day,
+            a.recurring_income_per_day,
             a.daily_essential_cost,
             a.failure_factor,
             a.pressure,
@@ -584,7 +719,7 @@ impl GrowthReport {
             } else if b.spawn_selected == 0 && b.spawn_rejected_absorption > 0 {
                 "output-absorption"
             } else if b.spawn_selected == 0 && b.spawn_rejected_viability > 0 {
-                "service-market-cannot-fund-first-worker"
+                "market-cannot-fund-operation"
             } else {
                 "selected"
             };
@@ -612,6 +747,47 @@ impl GrowthReport {
 }
 
 impl EconomyObserver for GrowthReport {
+    fn freight_delivered(
+        &mut self,
+        shipment: &crate::simulation::economy::logistics::Shipment,
+        allocator: &crate::simulation::buildings::allocator::BuildingAllocator,
+    ) {
+        use crate::simulation::economy::logistics::ShipmentEndpoint;
+        if let ShipmentEndpoint::Building(source) = shipment.source {
+            let day = self
+                .current
+                .businesses
+                .entry(allocator.buildings[source].economy_profile_runtime_id)
+                .or_default();
+            if matches!(shipment.destination, ShipmentEndpoint::OwaBorder(_)) {
+                day.export_sales += f64::from(shipment.total_cost);
+                day.export_units += f64::from(shipment.amount);
+                day.export_deliveries += 1;
+                day.delivered_freight_cost += f64::from(shipment.freight_cost);
+            } else {
+                day.local_sales += f64::from(shipment.total_cost - shipment.freight_cost);
+            }
+        }
+        if let ShipmentEndpoint::Building(destination) = shipment.destination {
+            let building = &allocator.buildings[destination];
+            if allocator.is_city_service_building(building) {
+                return;
+            }
+            let day = self
+                .current
+                .businesses
+                .entry(building.economy_profile_runtime_id)
+                .or_default();
+            day.delivered_freight_cost += f64::from(shipment.freight_cost);
+            if matches!(shipment.source, ShipmentEndpoint::OwaBorder(_)) {
+                day.imported_inputs += f64::from(shipment.total_cost);
+                day.import_deliveries += 1;
+            } else {
+                day.local_inputs += f64::from(shipment.total_cost);
+            }
+        }
+    }
+
     fn buildings_changed(&mut self, core: &SimCore) {
         self.sample_businesses(core, false);
     }
@@ -654,14 +830,18 @@ impl EconomyObserver for GrowthReport {
     fn household_settlement(&mut self, core: &SimCore) {
         self.sample_businesses(core, false);
         let h = &mut self.current.household;
-        for (household, ledger) in core
+        self.stranded_members.clear();
+        for (hid, (household, ledger)) in core
             .households
             .households
             .iter()
             .zip(core.households.daily_ledgers())
+            .enumerate()
         {
             h.wages += f64::from(ledger.wage_income);
             h.transfers += f64::from(ledger.transfer_income());
+            h.unpaid_transfers +=
+                f64::from((ledger.transfer_claim - ledger.transfer_income()).max(0.0));
             h.unemployment += f64::from(ledger.unemployment_benefit_income);
             h.shopping += f64::from(ledger.shopping_spend);
             let utilities = ledger.power_consumption_cost
@@ -688,6 +868,11 @@ impl EconomyObserver for GrowthReport {
                 u32::from(household.stock <= f32::EPSILON && household.member_count > 0);
             if household.stock <= f32::EPSILON && household.member_count > 0 {
                 h.empty_by_replenishment_state[household.replenishment_state as usize] += 1;
+                writeln!(self.stranded_members, "Shortage household {hid}: budget {:.2} wages {:.2} transfers {:.2} shopping {:.2} home {} state {} failed {} shopper {} store {} amount {:.2} reserved-cost {:.2} cooldown {}",
+                    household.budget, ledger.wage_income, ledger.transfer_income(), ledger.shopping_spend,
+                    household.home_building_id, household.replenishment_state, household.replenishment_failure_count,
+                    household.shopping_agent_id, household.reserved_store_building_id, household.reserved_amount,
+                    household.reserved_total_cost, household.cooldown_hours).unwrap();
             }
             h.zero_cash +=
                 u32::from(household.budget <= f32::EPSILON && household.member_count > 0);
@@ -728,8 +913,20 @@ impl EconomyObserver for GrowthReport {
         }
         self.current.payroll = h.wages + core.treasury.pending_income_tax
             - f64::from(core.households.last_city_service_wages().total);
-        self.stranded_members.clear();
         for agent in 0..core.agents.len() {
+            if core
+                .households
+                .households
+                .get(core.agents.household_id[agent])
+                .is_some_and(|household| household.stock <= f32::EPSILON)
+            {
+                let a = &core.agents;
+                writeln!(self.stranded_members,
+                    "Shortage member {agent}: household {} age {} transit {} activity {} home {} current {} work {} target {} planned {} replan {} mode {} edge {}",
+                    a.household_id[agent], a.age_group[agent], a.transit[agent], a.activity[agent],
+                    a.home_building[agent], a.current_building[agent], a.work_building[agent],
+                    a.target_building[agent], a.planned_target_building[agent], a.next_replan_time[agent], a.transit_mode[agent], a.current_edge[agent]).unwrap();
+            }
             if core.agents.transit[agent] == crate::simulation::economy::agents::TRANSIT_IN_BUILDING
                 && core.agents.activity[agent] == crate::simulation::economy::agents::ACTIVITY_WORK
                 && core.agents.current_building[agent] != core.agents.home_building[agent]
@@ -761,8 +958,8 @@ impl EconomyObserver for GrowthReport {
 
     fn day_closed(&mut self, core: &SimCore) {
         self.sample_businesses(core, false);
-        for building in &core.allocator.buildings {
-            let key = (building.parcel_id, building.build_generation);
+        for (building_idx, building) in core.allocator.buildings.iter().enumerate() {
+            let key = business_identity(building);
             if let Some(snapshot) = self.businesses.get_mut(&key) {
                 let b = self.current.businesses.entry(snapshot.profile).or_default();
                 b.cash += snapshot.cash;
@@ -770,11 +967,22 @@ impl EconomyObserver for GrowthReport {
                 b.deserted += u32::from(building.is_deserted);
                 b.negative_cash += u32::from(snapshot.cash < 0.0 && !building.is_deserted);
                 b.supply_stock += snapshot.supply_stock;
+                if let Some(site) = core.resource_extraction.site_for_building(building_idx) {
+                    b.remaining_reserve += f64::from(site.remaining_reserve_units());
+                    b.extracted_units += f64::from(site.extracted_units);
+                }
                 if let Some(profile) = core
                     .demand
                     .runtime_catalog()
                     .profile_by_runtime_id(snapshot.profile)
                 {
+                    if matches!(
+                        profile.kind,
+                        EconomyProfileRuntimeKind::FieldProducer
+                            | EconomyProfileRuntimeKind::Extractor
+                    ) {
+                        b.area_hectares += f64::from(building.work_area_scale);
+                    }
                     b.input_stock += profile
                         .inputs
                         .iter()

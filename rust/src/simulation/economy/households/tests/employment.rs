@@ -74,63 +74,65 @@ fn benchmark_payroll_phase() {
 }
 
 #[test]
-fn no_car_agent_can_take_walk_reachable_job() {
-    let mut graph = RegionGraph::new();
-    let n0 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
-    let n1 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
-    graph.add_edge(make_foot_only_edge(n0, n1));
-    graph.rebuild_adjacency_list();
+fn no_car_unemployed_adult_can_take_reachable_job_even_with_household_savings() {
+    for (budget, stock_days) in [(0.0, 0.0), (100_000.0, 7.0)] {
+        let mut graph = RegionGraph::new();
+        let n0 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+        let n1 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
+        graph.add_edge(make_foot_only_edge(n0, n1));
+        graph.rebuild_adjacency_list();
 
-    let mut network = TransitNetwork::new();
-    network.lane_system.rebuild(&mut graph);
-    network.cch_graph = CchGraph::build(&graph);
+        let mut network = TransitNetwork::new();
+        network.lane_system.rebuild(&mut graph);
+        network.cch_graph = CchGraph::build(&graph);
 
-    let mut households = HouseholdSystem::new();
-    households.households.push(make_household(0, 1, 0.0, 0.0));
-    households.households[0].budget = 0.0;
-    households.households[0].stock = 0.0;
-    households.households[0].stock_days = 0.0;
+        let mut households = HouseholdSystem::new();
+        households.households.push(make_household(0, 1, 0.0, 0.0));
+        households.households[0].budget = budget;
+        households.households[0].stock = stock_days;
+        households.households[0].stock_days = stock_days;
 
-    let mut allocator = BuildingAllocator::new();
-    let residential_asset = register_test_asset(
-        &mut allocator,
-        "test",
-        "walk_job_res",
-        ZoneClass::Residential,
-    );
-    let commercial_asset = register_test_asset(
-        &mut allocator,
-        "test",
-        "walk_job_com",
-        ZoneClass::Commercial,
-    );
-    allocator.buildings.push(make_building(
-        0.0,
-        ZoneType::Residential,
-        &residential_asset,
-        0.0,
-    ));
-    allocator.buildings.push(make_building(
-        20.0,
-        ZoneType::Commercial,
-        &commercial_asset,
-        0.0,
-    ));
-    allocator.rebuild_zone_index();
-    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+        let mut allocator = BuildingAllocator::new();
+        let residential_asset = register_test_asset(
+            &mut allocator,
+            "test",
+            "walk_job_res",
+            ZoneClass::Residential,
+        );
+        let commercial_asset = register_test_asset(
+            &mut allocator,
+            "test",
+            "walk_job_com",
+            ZoneClass::Commercial,
+        );
+        allocator.buildings.push(make_building(
+            0.0,
+            ZoneType::Residential,
+            &residential_asset,
+            0.0,
+        ));
+        allocator.buildings.push(make_building(
+            20.0,
+            ZoneType::Commercial,
+            &commercial_asset,
+            0.0,
+        ));
+        allocator.rebuild_zone_index();
+        allocator.rebuild_entrance_cache(&graph, &network.lane_system);
 
-    let mut agents = AgentSystem::new();
-    let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
-    agents.household_id[agent] = 0;
-    agents.transit[agent] = TRANSIT_IN_BUILDING;
-    agents.current_building[agent] = 0;
-    agents.has_car[agent] = false;
+        let mut agents = AgentSystem::new();
+        let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
+        agents.household_id[agent] = 0;
+        agents.transit[agent] = TRANSIT_IN_BUILDING;
+        agents.current_building[agent] = 0;
+        agents.has_car[agent] = false;
 
-    households.rebuild_household_and_worker_counts(&agents, &mut allocator);
-    households.assign_agent_workplaces(&mut agents, &mut allocator, &network, &graph);
+        households.rebuild_household_and_worker_counts(&agents, &mut allocator);
+        households.assign_agent_workplaces(&mut agents, &mut allocator, &network, &graph);
 
-    assert_eq!(agents.work_building[agent], 1);
-    assert_eq!(allocator.buildings[1].worker_count, 1);
+        assert_eq!(agents.work_building[agent], 1);
+        assert_eq!(allocator.buildings[1].worker_count, 1);
+    }
 }
 
 #[test]
@@ -589,7 +591,13 @@ fn immigrant_household_assigns_nearby_work_during_founding() {
     let mut households = HouseholdSystem::new();
     let catalog = load_runtime_economy_catalog().expect("catalog");
     let tuning = load_runtime_economy_tuning().expect("tuning");
-    let hid = households.admit_immigrant_household(&catalog, &tuning, 0, 2);
+    let hid = households.admit_immigrant_household(
+        &catalog,
+        &tuning,
+        0,
+        2,
+        crate::simulation::economy::agents::household_age_composition(0, 0, 2),
+    );
     households.households[hid].budget = 0.0;
     households.households[hid].stock = 1.0;
     households.households[hid].stock_days = 0.5;
@@ -692,6 +700,7 @@ fn operational_hour_tick_rebuilds_household_and_worker_counts_together() {
         &mut treasury_balance,
         &[],
         &crate::simulation::economy::fiscal::CityFiscalPolicy::default(),
+        |_, _| {},
     );
 
     assert_eq!(households.households[0].member_count, 1);

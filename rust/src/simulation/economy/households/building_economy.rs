@@ -32,7 +32,6 @@ const UTILITY_SERVICE_COUNT: usize = 3;
 const UTILITY_PRICE_EPSILON: f32 = 0.0001;
 const POWER_UNIT_EPSILON: f32 = 0.0001;
 const LIQUIDATION_UNIT_PRICE_EPSILON: f32 = 0.0001;
-const NON_RESIDENTIAL_UTILITY_DEMAND_UNITS_PER_DAY: f32 = 1.0;
 const CITY_SERVICE_UTILITY_DEMAND_UNITS_PER_DAY: f32 = 1.0;
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -118,8 +117,14 @@ impl HouseholdSystem {
             }
             let profile = catalog.profile_by_runtime_id(building.economy_profile_runtime_id);
             if is_private_utility_consumer(building, profile) {
-                for units in &mut private_utility_demand_units_by_service {
-                    *units += NON_RESIDENTIAL_UTILITY_DEMAND_UNITS_PER_DAY;
+                let demand = profile.map_or([1.0; 3], |p| {
+                    p.utility_demand_units_per_day(building.work_area_scale)
+                });
+                for (units, demand) in private_utility_demand_units_by_service
+                    .iter_mut()
+                    .zip(demand)
+                {
+                    *units += demand;
                 }
             } else if allocator.is_city_service_building(building) && building.worker_count > 0 {
                 for units in &mut city_service_utility_demand_units_by_service {
@@ -220,10 +225,13 @@ impl HouseholdSystem {
                 continue;
             }
             let mut daily_cost = 0.0f32;
+            let demand = profile.map_or([1.0; 3], |p| {
+                p.utility_demand_units_per_day(building.work_area_scale)
+            });
             for service_idx in 0..UTILITY_SERVICE_COUNT {
                 let settlement = &mut utility_settlements[service_idx];
                 let unit_price = local_utility_costs[service_idx].max(0.0);
-                let demand_units = NON_RESIDENTIAL_UTILITY_DEMAND_UNITS_PER_DAY;
+                let demand_units = demand[service_idx];
                 let coverage = settlement.coverage.clamp(0.0, 1.0);
                 let local_cost = unit_price * demand_units * coverage;
                 let owa_cost = unit_price

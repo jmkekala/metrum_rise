@@ -36,11 +36,24 @@ pub(crate) struct HouseholdAgeComposition {
     pub(crate) elder_count: u16,
 }
 
+impl HouseholdAgeComposition {
+    /// Returns the stable adult/elder/child ordering within this approved household.
+    pub(crate) fn member_age_group(self, member_index: u16) -> u8 {
+        if member_index < self.adult_count {
+            AGE_ADULT
+        } else if member_index < self.adult_count.saturating_add(self.elder_count) {
+            AGE_ELDER
+        } else {
+            AGE_CHILD
+        }
+    }
+}
+
 /// Agent is at home or travelling to a home stop.
 pub const ACTIVITY_HOME: u8 = 0;
 /// Agent is at work or travelling to a work stop.
 pub const ACTIVITY_WORK: u8 = 1;
-/// Agent is shopping or at another non-home, non-work stop.
+/// Agent owns a shopping trip (through home delivery acknowledgement) or another visit.
 pub const ACTIVITY_SHOPPING: u8 = 2;
 
 /// Agent is inside a building and hidden until the next trip trigger fires.
@@ -118,24 +131,15 @@ pub(crate) fn age_group_can_shop(age_group: u8) -> bool {
 }
 
 /// Deterministically chooses one member's age group for a newly admitted household.
+#[cfg(test)]
 pub(crate) fn household_member_age_group(
     home_building: usize,
     household_id: usize,
     member_index: u16,
     household_size: u16,
 ) -> u8 {
-    let composition = household_age_composition(home_building, household_id, household_size);
-    if member_index < composition.adult_count {
-        AGE_ADULT
-    } else if member_index
-        < composition
-            .adult_count
-            .saturating_add(composition.elder_count)
-    {
-        AGE_ELDER
-    } else {
-        AGE_CHILD
-    }
+    household_age_composition(home_building, household_id, household_size)
+        .member_age_group(member_index)
 }
 
 pub(crate) fn household_age_composition(

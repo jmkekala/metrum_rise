@@ -53,6 +53,8 @@ impl AgentSystem {
         self.agents.household_id[agent_idx] = household_id;
         self.agents.age_group[agent_idx] = age_group;
         self.agents.pending_household_size[agent_idx] = 0;
+        self.agents.pending_household_adults[agent_idx] = 0;
+        self.agents.pending_household_elders[agent_idx] = 0;
         self.agents.target_building[agent_idx] = usize::MAX;
         self.agents.planned_target_building[agent_idx] = usize::MAX;
         self.clear_route_and_lane_state(agent_idx);
@@ -112,6 +114,11 @@ impl AgentSystem {
                 self.agents.target_building[agent_idx] = new_home;
                 self.agents.planned_target_building[agent_idx] = new_home;
                 self.agents.activity[agent_idx] = 0;
+                // Invalid ingress settles an unhoused resident without a current building.
+                // Rehousing must resume ingress, since building-origin planning needs one.
+                if self.agents.transit[agent_idx] == TRANSIT_IN_BUILDING {
+                    self.agents.transit[agent_idx] = TRANSIT_ACCESS_INGRESS;
+                }
                 needs_replan = true;
             }
             if needs_replan {
@@ -825,7 +832,13 @@ mod tests {
         let catalog = load_runtime_economy_catalog().expect("built-in economy catalog loads");
         let tuning = load_runtime_economy_tuning().expect("built-in economy tuning loads");
         let mut households = HouseholdSystem::new();
-        let household_id = households.admit_immigrant_household(&catalog, &tuning, 0, 1);
+        let household_id = households.admit_immigrant_household(
+            &catalog,
+            &tuning,
+            0,
+            1,
+            crate::simulation::economy::agents::household_age_composition(0, 0, 1),
+        );
 
         let mut agents = AgentSystem::new();
         let agent_idx = agents.spawn_housed_agent(0, 25.0, 8.0);

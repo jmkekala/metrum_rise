@@ -13,7 +13,9 @@ use crate::simulation::economy::accessibility::{
     BuildingModeComponents, ModeComponentIndex, ReachableBucketIndex, ReachableBucketScanEvent,
     chunk_for_point,
 };
-use crate::simulation::economy::agents::tick::building_origin_trip_is_feasible;
+use crate::simulation::economy::agents::tick::{
+    building_origin_trip_is_feasible, estimate_building_origin_trip_seconds,
+};
 use crate::simulation::economy::agents::{
     ACTIVITY_HOME, ACTIVITY_SHOPPING, AgentSystem, TRANSIT_IN_BUILDING, age_group_can_shop,
 };
@@ -474,6 +476,9 @@ impl HouseholdSystem {
         let household_vat_collected = self.process_active_household_shopping(
             agents,
             allocator,
+            transit_network,
+            graph,
+            tuning.operational_clock.seconds_per_day,
             &catalog,
             household_supply_resource,
             retry_cooldown_hours,
@@ -645,6 +650,9 @@ impl HouseholdSystem {
         self.process_active_household_shopping(
             agents,
             allocator,
+            transit_network,
+            graph,
+            tuning.operational_clock.seconds_per_day,
             &catalog,
             household_supply_resource,
             retry_cooldown_hours,
@@ -787,6 +795,9 @@ impl HouseholdSystem {
                 &mut self.daily_ledgers,
                 agents,
                 allocator,
+                transit_network,
+                graph,
+                tuning.operational_clock.seconds_per_day,
                 household_supply_resource,
                 tuning
                     .operational_clock
@@ -884,6 +895,9 @@ impl HouseholdSystem {
         &mut self,
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+        seconds_per_day: f64,
         catalog: &RuntimeEconomyCatalog,
         household_supply_resource: u16,
         retry_cooldown_hours: u16,
@@ -900,6 +914,9 @@ impl HouseholdSystem {
                         hid,
                         agents,
                         allocator,
+                        transit_network,
+                        graph,
+                        seconds_per_day,
                         catalog,
                         household_supply_resource,
                         retry_cooldown_hours,
@@ -925,6 +942,9 @@ impl HouseholdSystem {
         hid: usize,
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+        seconds_per_day: f64,
         catalog: &RuntimeEconomyCatalog,
         household_supply_resource: u16,
         retry_cooldown_hours: u16,
@@ -967,8 +987,18 @@ impl HouseholdSystem {
             store.operating_budget += store_revenue;
             store.daily_household_sales_value += store_revenue;
             self.households[hid].replenishment_state = REPLENISHMENT_SHOPPING_RETURNING;
-            self.households[hid].shopping_timeout_hours_remaining = shopping_leg_timeout_hours;
-            schedule_shopper_home(&self.households[hid], agents);
+            self.households[hid].shopping_timeout_hours_remaining = shopping_leg_budget_hours(
+                store_idx,
+                self.households[hid].home_building_id,
+                agents.has_car[agent_idx],
+                allocator,
+                transit_network,
+                graph,
+                &agents.pathfind_count,
+                seconds_per_day,
+                shopping_leg_timeout_hours,
+            );
+            schedule_shopper_home(&self.households[hid], agents, ACTIVITY_SHOPPING);
             return household_vat_collected;
         } else if shopping_leg_timed_out(&mut self.households[hid]) {
             self.cancel_replenishment_before_pickup_with_ledger(
@@ -1014,6 +1044,9 @@ impl HouseholdSystem {
             && agents.current_building[agent_idx] == home_idx
         {
             let household = &mut self.households[hid];
+            // Release the owned task only after its cargo reaches this household. This
+            // also clears a home plan reissued while the carrier was still returning.
+            schedule_shopper_home(household, agents, ACTIVITY_HOME);
             household.stock += household.reserved_amount;
             household.stock_days = stock_days(
                 household.stock,
@@ -1036,7 +1069,7 @@ impl HouseholdSystem {
                 terminal_failure_count,
             );
         } else {
-            schedule_shopper_home(&self.households[hid], agents);
+            schedule_shopper_home(&self.households[hid], agents, ACTIVITY_SHOPPING);
         }
     }
 
@@ -1256,6 +1289,9 @@ fn apply_replenishment_plan(
     daily_ledgers: &mut [DailyHouseholdLedger],
     agents: &mut AgentSystem,
     allocator: &mut BuildingAllocator,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    seconds_per_day: f64,
     household_supply_resource: u16,
     retry_cooldown_hours: u16,
     terminal_failure_count: u16,
@@ -1349,6 +1385,17 @@ fn apply_replenishment_plan(
 
     let household = &mut households[plan.household_id];
     if let Some((store_idx, amount, total_cost)) = found_sale {
+        let leg_budget = shopping_leg_budget_hours(
+            household.home_building_id,
+            store_idx,
+            agents.has_car[plan.shopper_agent_id],
+            allocator,
+            transit_network,
+            graph,
+            &agents.pathfind_count,
+            seconds_per_day,
+            shopping_leg_timeout_hours,
+        );
         let store = &mut allocator.buildings[store_idx];
         store.remove_inventory_units(household_supply_resource, amount);
         household.budget -= total_cost;
@@ -1357,7 +1404,7 @@ fn apply_replenishment_plan(
         household.reserved_total_cost = total_cost;
         household.shopping_agent_id = plan.shopper_agent_id;
         household.shopping_agent_schedule_seed = agents.schedule_seed[plan.shopper_agent_id];
-        household.shopping_timeout_hours_remaining = shopping_leg_timeout_hours;
+        household.shopping_timeout_hours_remaining = leg_budget;
         household.replenishment_search_cursor = 0;
         household.replenishment_state = REPLENISHMENT_SHOPPING_TO_STORE;
         if let Some(ledger) = daily_ledgers.get_mut(plan.household_id) {
@@ -1399,7 +1446,7 @@ fn cancel_replenishment_before_pickup(
             .add_inventory_units(household_supply_resource, household.reserved_amount);
     }
     household.budget += household.reserved_total_cost;
-    schedule_shopper_home(household, agents);
+    schedule_shopper_home(household, agents, ACTIVITY_HOME);
     clear_replenishment_request(household);
     register_replenishment_failure(household, retry_cooldown_hours, terminal_failure_count);
 }
@@ -1410,7 +1457,7 @@ fn cancel_replenishment_after_pickup(
     retry_cooldown_hours: u16,
     terminal_failure_count: u16,
 ) {
-    schedule_shopper_home(household, agents);
+    schedule_shopper_home(household, agents, ACTIVITY_HOME);
     clear_replenishment_request(household);
     register_replenishment_failure(household, retry_cooldown_hours, terminal_failure_count);
 }
@@ -1495,6 +1542,33 @@ fn valid_store_for_pickup(
     })
 }
 
+// The authored timeout is delay allowance beyond the route's physical travel time.
+// One bounded route-cost query per accepted leg; no per-frame queries or stored paths.
+fn shopping_leg_budget_hours(
+    origin: usize,
+    destination: usize,
+    has_car: bool,
+    allocator: &BuildingAllocator,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    pathfind_count: &std::sync::atomic::AtomicU32,
+    seconds_per_day: f64,
+    delay_allowance_hours: u16,
+) -> u16 {
+    let travel_seconds = estimate_building_origin_trip_seconds(
+        origin,
+        destination,
+        has_car,
+        allocator,
+        transit_network,
+        graph,
+        pathfind_count,
+    )
+    .unwrap_or(0);
+    let travel_hours = (f64::from(travel_seconds) * 24.0 / seconds_per_day).ceil() as u16;
+    delay_allowance_hours.saturating_add(travel_hours)
+}
+
 /// Checks both the outward shopping trip and the return home through the live trip planner.
 pub(super) fn shopping_route_is_feasible(
     home_idx: usize,
@@ -1526,7 +1600,7 @@ pub(super) fn shopping_route_is_feasible(
     )
 }
 
-fn schedule_shopper_home(household: &Household, agents: &mut AgentSystem) {
+fn schedule_shopper_home(household: &Household, agents: &mut AgentSystem, activity: u8) {
     let agent_idx = household.shopping_agent_id;
     if agent_idx >= agents.len()
         || agents.schedule_seed[agent_idx] != household.shopping_agent_schedule_seed
@@ -1538,11 +1612,12 @@ fn schedule_shopper_home(household: &Household, agents: &mut AgentSystem) {
         && agents.current_building[agent_idx] == household.home_building_id
     {
         agents.planned_target_building[agent_idx] = usize::MAX;
-        agents.planned_activity[agent_idx] = ACTIVITY_HOME;
+        agents.planned_activity[agent_idx] = activity;
+        agents.activity[agent_idx] = activity;
         return;
     }
     agents.planned_target_building[agent_idx] = household.home_building_id;
-    agents.planned_activity[agent_idx] = ACTIVITY_HOME;
+    agents.planned_activity[agent_idx] = activity;
 }
 
 /// Returns squared center distance without a square root during candidate ranking.

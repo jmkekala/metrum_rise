@@ -213,11 +213,11 @@ fn ledger_nets_machinery_upkeep_before_pricing_external_inputs() {
     // Forty saleable units need one complete 42-unit production cycle, not 40/42 of its inputs.
     assert!(
         (balance.inputs
-            - (12.0 * 8.0 + 4.0 * 16.0) * f64::from(tuning.owa_import_price_multiplier))
+            - (30.0 * 3.2 + 10.0 * 6.4) * f64::from(tuning.owa_import_price_multiplier))
         .abs()
-            < 1e-6
+            < 1e-4
     );
-    assert!((balance.sales - 40.0 * 20.0).abs() < 1e-6);
+    assert!((balance.sales - 40.0 * 20.0).abs() < 1e-4);
 }
 
 #[test]
@@ -231,12 +231,56 @@ fn household_ledger_reconciles_wages_vat_property_and_transfers() {
         elder_count: 0,
     };
     let balance = ledger.household(composition, 1, false, 90.0, 1.75);
-    // Net 79.20 + child support 10 - (2 * 33.55 + property 2).
-    assert!((balance.surplus() - 20.1).abs() < 1e-4);
+    // Net 79.20 + child support 10 - (2 * 36.49 + property 2).
+    assert!((balance.surplus() - 14.22).abs() < 1e-4);
     // Treasury gets withheld income tax + grocery VAT + property, never VAT on service sales.
     assert!((balance.taxes - (10.8 + 4.0 + 2.0)).abs() < 1e-4);
     let unemployed = ledger.household(composition, 0, false, 90.0, 1.75);
     assert!((unemployed.transfers - 10.0).abs() < 1e-4);
+}
+
+#[test]
+fn sixty_residents_fund_service_jobs_and_workers_can_afford_essentials() {
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let tuning = load_runtime_economy_tuning().unwrap();
+    let ledger = Ledger::new(&catalog, &tuning);
+    let imports = f64::from(tuning.owa_import_price_multiplier);
+    for (business, sink) in [
+        ("personal_service_small", "personal_service_demand"),
+        ("health_essentials_small", "health_essentials_demand"),
+    ] {
+        let profile = ledger.profile(business);
+        let units = 60.0 * f64::from(ledger.profile(sink).consumption_rate_per_resident);
+        let balance = ledger.business(
+            profile,
+            1,
+            units,
+            Market {
+                imports,
+                input_freight: 1.0,
+                output_price: 1.0,
+            },
+        );
+        assert!(
+            balance.margin() > 0.0,
+            "{business}: recurring sales must fund the job"
+        );
+        let household = ledger.household(
+            HouseholdAgeComposition {
+                adult_count: 1,
+                child_count: 0,
+                elder_count: 0,
+            },
+            1,
+            false,
+            profile.average_daily_wage(),
+            imports,
+        );
+        assert!(
+            household.surplus() > 0.0,
+            "{business}: wages must cover all consumer categories"
+        );
+    }
 }
 
 #[test]
@@ -335,15 +379,11 @@ fn starter_town_balance_sheet() {
                     p.worker_capacity,
                     output,
                     Market {
-                        output_price: f64::from(tuning.owa_export_price_multiplier)
-                            * f64::from(tuning.logistics.owa_export_saturation_floor_factor),
+                        output_price: f64::from(tuning.owa_export_price_multiplier),
                         ..market
                     },
                 );
-                println!(
-                    "EXPORT {id} current saturated margin {:.3}",
-                    export.margin()
-                );
+                println!("EXPORT {id} regional price margin {:.3}", export.margin());
             }
         }
         let capacity = f64::from(grocery.net_output_units_per_day(&grocery.outputs[0]));

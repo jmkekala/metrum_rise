@@ -7,7 +7,8 @@ use super::snapshot::DailyDemandSnapshot;
 use super::types::{DemandUse, EPSILON, RESIDENTIAL_SPAWN_VACANT_SLOT_RESERVE_RATIO};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::definitions::{
-    EconomyProfileRuntime, EconomyProfileRuntimeKind, ResourceRuntimeId, RuntimeEconomyCatalog,
+    EconomyProfileRuntime, EconomyProfileRuntimeKind, LogisticsRuntimeTuning, ResourceRuntimeId,
+    RuntimeEconomyCatalog,
 };
 
 use crate::simulation::economy::resource_totals::{add_resource_amount, resource_amount};
@@ -143,6 +144,11 @@ pub(super) fn industrial_spawn_need_buildings(
                 .fold(0.0, f32::max)
         })
         .fold(0.0, f32::max)
+        .max(if snapshot.output_absorption.export_expansion_available() {
+            1.0
+        } else {
+            0.0
+        })
 }
 
 fn average_residential_candidate_household_slots(
@@ -236,6 +242,7 @@ pub(super) fn resource_has_household_demand(
 pub(super) struct OutputAbsorptionContext {
     placed_output_units_by_resource: Vec<f32>,
     demand_units_by_resource: Vec<f32>,
+    export_expansion_available: bool,
 }
 
 impl OutputAbsorptionContext {
@@ -243,6 +250,7 @@ impl OutputAbsorptionContext {
         Self {
             placed_output_units_by_resource: vec![0.0; resource_count + 1],
             demand_units_by_resource: vec![0.0; resource_count + 1],
+            export_expansion_available: false,
         }
     }
 
@@ -278,8 +286,40 @@ impl OutputAbsorptionContext {
         (self.consumer_demand(resource) - self.placed_capacity(resource)).max(0.0)
     }
 
+    /// A single export-led opening, granted only after previous industry has settled.
+    /// Outside buyers themselves impose no quantity limit and never enter local demand totals.
+    pub(super) fn set_export_expansion_available(&mut self, available: bool) {
+        self.export_expansion_available = available;
+    }
+
+    /// Whether one further export-led opening can be considered in this pass.
+    pub(super) fn export_expansion_available(&self) -> bool {
+        self.export_expansion_available
+    }
+
+    fn attainable_sales(
+        &self,
+        resource: ResourceRuntimeId,
+        output: f32,
+        export_multiplier: f32,
+    ) -> f32 {
+        let local_sales = output.min(self.unmet_units(resource));
+        let export_sales = if self.export_expansion_available {
+            output - local_sales
+        } else {
+            0.0
+        };
+        local_sales + export_sales * export_multiplier
+    }
+
     /// Reserve selected output immediately; a new factory cannot justify its own customers.
     pub(super) fn reserve_candidate(&mut self, profile: &EconomyProfileRuntime) {
+        if matches!(
+            profile.kind,
+            EconomyProfileRuntimeKind::Processor | EconomyProfileRuntimeKind::Producer
+        ) {
+            self.export_expansion_available = false;
+        }
         for port in &profile.outputs {
             self.add_placed_capacity(
                 port.resource_runtime_id,
@@ -364,6 +404,70 @@ pub(super) fn service_market_covers_first_worker(
     revenue > profile.average_daily_wage() + daily_overhead + inputs
 }
 
+// Factories hire up to their full authored workforce. Permit construction only when
+// remaining customers can pay that payroll and overhead, assuming imported inputs.
+pub(super) fn industrial_market_covers_operation(
+    profile: &EconomyProfileRuntime,
+    catalog: &RuntimeEconomyCatalog,
+    absorption: &OutputAbsorptionContext,
+    overhead: f32,
+    imports: f32,
+    exports: f32,
+    logistics: &LogisticsRuntimeTuning,
+) -> bool {
+    if !matches!(
+        profile.kind,
+        EconomyProfileRuntimeKind::Processor | EconomyProfileRuntimeKind::Producer
+    ) {
+        return true;
+    }
+    let revenue: f32 = profile
+        .outputs
+        .iter()
+        .map(|port| {
+            absorption.attainable_sales(
+                port.resource_runtime_id,
+                profile.net_output_units_per_day(port),
+                exports,
+            ) * catalog
+                .unit_price_for_resource(port.resource_runtime_id)
+                .unwrap_or(0.0)
+        })
+        .sum();
+    let inputs: f32 = profile
+        .inputs
+        .iter()
+        .filter(|port| profile.output_port(port.resource_runtime_id).is_none())
+        .map(|port| {
+            port.units_per_day
+                * catalog
+                    .unit_price_for_resource(port.resource_runtime_id)
+                    .unwrap_or(0.0)
+                * imports
+        })
+        .sum();
+    // Necessary lower bound before a site has a route quote: at least enough paid dispatches
+    // for full production and external inputs. Actual route fees must be earned back before
+    // the next export-led opening; this check does not invent a prospective route.
+    let daily_loads: f32 = profile
+        .inputs
+        .iter()
+        .filter(|port| profile.output_port(port.resource_runtime_id).is_none())
+        .map(|port| port.units_per_day / logistics.truck_payload_kg)
+        .chain(
+            profile
+                .outputs
+                .iter()
+                .map(|port| profile.net_output_units_per_day(port) / logistics.truck_payload_kg),
+        )
+        .sum();
+    revenue
+        > inputs
+            + profile.worker_capacity as f32 * profile.average_daily_wage()
+            + overhead
+            + daily_loads * logistics.dispatch_fee_currency
+}
+
 pub(super) fn nonresidential_passes_absorption_gate(
     allocator: &BuildingAllocator,
     catalog: &RuntimeEconomyCatalog,
@@ -378,6 +482,11 @@ pub(super) fn nonresidential_passes_absorption_gate(
     };
     candidate_profile.outputs.iter().any(|port| {
         candidate_profile.net_output_units_per_day(port) > EPSILON
-            && absorption.unmet_units(port.resource_runtime_id) > EPSILON
+            && (absorption.unmet_units(port.resource_runtime_id) > EPSILON
+                || (absorption.export_expansion_available
+                    && matches!(
+                        candidate_profile.kind,
+                        EconomyProfileRuntimeKind::Processor | EconomyProfileRuntimeKind::Producer
+                    )))
     })
 }

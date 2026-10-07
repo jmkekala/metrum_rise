@@ -8,7 +8,9 @@ use crate::simulation::buildings::allocator::resolve_building_economy_profile_bi
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::economy::agents::AgentSystem;
-use crate::simulation::economy::definitions::load_runtime_economy_catalog;
+use crate::simulation::economy::definitions::{
+    QuantityUnit, load_runtime_economy_catalog, load_runtime_economy_tuning,
+};
 use crate::simulation::economy::demand::{DemandSpawnAction, DemandSystem};
 use crate::simulation::economy::households::{Household, HouseholdSystem};
 use crate::simulation::economy::logistics::{
@@ -382,7 +384,7 @@ pub(super) fn save_world(
         ])?;
     }
 
-    let mut shipment_stmt = tx.prepare("INSERT INTO shipments(shipment_id, resource_runtime_id, amount, source_endpoint_kind, source_building_id, source_border_node, destination_endpoint_kind, destination_building_id, destination_border_node, carrier_class, status, carrier_agent_id, total_cost, eta_hours, queued_hours) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)")?;
+    let mut shipment_stmt = tx.prepare("INSERT INTO shipments(shipment_id, resource_runtime_id, amount, source_endpoint_kind, source_building_id, source_border_node, destination_endpoint_kind, destination_building_id, destination_border_node, carrier_class, status, carrier_agent_id, total_cost, eta_hours, queued_hours, freight_cost) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)")?;
     for shipment in &logistics.shipments {
         let (source_kind, source_building_id, source_border_node) =
             shipment_endpoint_to_db(shipment.source, maps)?;
@@ -408,6 +410,7 @@ pub(super) fn save_world(
             shipment.total_cost,
             i64::from(shipment.eta_hours),
             i64::from(shipment.queued_hours),
+            shipment.freight_cost,
         ])?;
     }
     let mut request_failure_stmt = tx.prepare("INSERT INTO freight_request_failures(destination_building_id, resource_runtime_id, failures, terminal) VALUES (?1, ?2, ?3, ?4)")?;
@@ -418,19 +421,6 @@ pub(super) fn save_world(
             i64::from(failure.failures),
             if failure.terminal { 1_i64 } else { 0_i64 },
         ])?;
-    }
-    let mut saturation_stmt = tx
-        .prepare("INSERT INTO owa_export_saturation(resource_runtime_id, units) VALUES (?1, ?2)")?;
-    for (slot, units) in logistics
-        .owa_export_saturation_units()
-        .iter()
-        .copied()
-        .enumerate()
-    {
-        if units <= 0.0 {
-            continue;
-        }
-        saturation_stmt.execute(params![i64::from(slot as u16 + 1), units])?;
     }
 
     Ok(())
@@ -921,7 +911,10 @@ pub(super) fn load_buildings(
                 "building inventory references missing building",
             ));
         };
-        building.set_inventory_units(resource_runtime_id, amount);
+        building.set_inventory_units(
+            resource_runtime_id,
+            amount * quantity_scale_from_save(version, resource_runtime_id),
+        );
     }
     Ok(allocator)
 }
@@ -1122,22 +1115,70 @@ pub(super) fn load_households(conn: &Connection, version: i64) -> SaveLoadResult
     Ok(households)
 }
 
-pub(super) fn load_shipments(conn: &Connection) -> SaveLoadResult<ShipmentSystem> {
+fn quantity_scale_from_save(version: i64, resource: u16) -> f32 {
+    if version >= super::schema::ECONOMY_SI_SAVE_VERSION {
+        return 1.0;
+    }
+    // Stable persisted IDs: food/grain were 1.25 kg bundles, steel/metals 2.5 kg bundles.
+    // Household supplies, coal and machinery retain their quantities; money is never scaled.
+    match resource {
+        2 | 3 => 1.25,
+        8 | 9 => 2.5,
+        _ => 1.0,
+    }
+}
+
+pub(super) fn load_shipments(conn: &Connection, version: i64) -> SaveLoadResult<ShipmentSystem> {
     let mut logistics = ShipmentSystem::new();
-    let mut stmt = conn.prepare("SELECT shipment_id, resource_runtime_id, amount, source_endpoint_kind, source_building_id, source_border_node, destination_endpoint_kind, destination_building_id, destination_border_node, carrier_class, status, carrier_agent_id, total_cost, eta_hours, queued_hours FROM shipments ORDER BY shipment_id")?;
+    let catalog = load_runtime_economy_catalog().map_err(SaveLoadError::custom)?;
+    let payload = load_runtime_economy_tuning()
+        .map_err(SaveLoadError::custom)?
+        .logistics
+        .truck_payload_kg;
+    let fee_column = if version >= super::schema::FREIGHT_COST_SAVE_VERSION {
+        "freight_cost"
+    } else {
+        "0.0"
+    };
+    let mut stmt = conn.prepare(&format!("SELECT shipment_id, resource_runtime_id, amount, source_endpoint_kind, source_building_id, source_border_node, destination_endpoint_kind, destination_building_id, destination_border_node, carrier_class, status, carrier_agent_id, total_cost, eta_hours, queued_hours, {fee_column} FROM shipments ORDER BY shipment_id"))?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
+        let resource = i64_to_u16(row.get(1)?)?;
+        let amount = row.get::<_, f32>(2)? * quantity_scale_from_save(version, resource);
+        if !amount.is_finite()
+            || amount <= 0.0
+            || amount > payload
+            || !catalog
+                .resource_measure(resource)
+                .is_some_and(|measure| measure.unit == QuantityUnit::Kilogram)
+        {
+            return Err(SaveLoadError::custom(
+                "saved shipment cargo must be physical kg within one vehicle's payload; oversized legacy shipments cannot be loaded",
+            ));
+        }
+        let freight_cost: f32 = row.get(15)?;
+        let total_cost: f32 = row.get(12)?;
+        if !freight_cost.is_finite()
+            || freight_cost < 0.0
+            || !total_cost.is_finite()
+            || total_cost < freight_cost
+        {
+            return Err(SaveLoadError::custom(
+                "invalid saved freight contract price",
+            ));
+        }
         logistics.shipments.push(Shipment {
             id: u64::try_from(row.get::<_, i64>(0)?)
                 .map_err(|_| SaveLoadError::custom("bad shipment id"))?,
-            resource_runtime_id: i64_to_u16(row.get(1)?)?,
-            amount: row.get(2)?,
+            resource_runtime_id: resource,
+            amount,
             source: shipment_endpoint_from_db(row.get(3)?, row.get(4)?, row.get(5)?)?,
             destination: shipment_endpoint_from_db(row.get(6)?, row.get(7)?, row.get(8)?)?,
             carrier_class: carrier_class_from_db(row.get(9)?)?,
             status: shipment_status_from_db(row.get(10)?)?,
             carrier_agent_id: db_to_optional_usize(row.get(11)?)?,
-            total_cost: row.get(12)?,
+            total_cost,
+            freight_cost,
             eta_hours: i64_to_u16(row.get(13)?)?,
             queued_hours: i64_to_u16(row.get(14)?)?,
         });
@@ -1163,13 +1204,6 @@ pub(super) fn load_shipments(conn: &Connection) -> SaveLoadResult<ShipmentSystem
                 terminal: row.get::<_, i64>(3)? != 0,
             },
         );
-    }
-    let mut saturation_stmt = conn.prepare(
-        "SELECT resource_runtime_id, units FROM owa_export_saturation ORDER BY resource_runtime_id",
-    )?;
-    let mut saturation_rows = saturation_stmt.query([])?;
-    while let Some(row) = saturation_rows.next()? {
-        logistics.set_owa_export_saturation_units(i64_to_u16(row.get(0)?)?, row.get(1)?);
     }
     Ok(logistics)
 }

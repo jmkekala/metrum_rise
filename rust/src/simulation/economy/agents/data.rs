@@ -24,6 +24,10 @@ pub struct Agent {
     /// Pending resident count carried by a border-origin household arrival car; `0` for normal
     /// agents.
     pub pending_household_size: u16,
+    /// Adults approved for this arrival carrier; ignored when pending size is zero.
+    pub pending_household_adults: u16,
+    /// Elders approved for this arrival carrier; remaining pending members are children.
+    pub pending_household_elders: u16,
     /// Stable freight shipment id carried by this vehicle; `u64::MAX` means ordinary resident.
     pub freight_shipment_id: u64,
     /// Index into `BuildingAllocator::buildings` for the agent's workplace. `usize::MAX` = unemployed.
@@ -36,7 +40,7 @@ pub struct Agent {
     /// Runtime-stable identifier used by render interpolation; not persisted in saves.
     pub render_id: u64,
 
-    /// Current activity: `0` = Home, `1` = Work, `2` = other non-home stop.
+    /// Current activity: `0` = Home, `1` = Work, `2` = shopping task or other visit.
     pub activity: u8,
     /// Current transit phase. One of the `TRANSIT_*` constants defined in this module.
     pub transit: u8,

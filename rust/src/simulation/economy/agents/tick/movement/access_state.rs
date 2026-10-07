@@ -6,7 +6,7 @@ mod egress;
 mod ingress;
 
 use super::super::slices::MovementSlices;
-use crate::simulation::economy::agents::TRANSIT_IN_BUILDING;
+use crate::simulation::economy::agents::{ACTIVITY_HOME, ACTIVITY_SHOPPING, TRANSIT_IN_BUILDING};
 use godot::prelude::Vector2;
 
 pub(super) use egress::handle_access_egress;
@@ -68,13 +68,13 @@ pub(super) unsafe fn arrive_in_building(
         *slices.transit.get_mut(i) = TRANSIT_IN_BUILDING;
 
         let home = *slices.home.get(i);
-        let work = *slices.work.get(i);
-        *slices.activity.get_mut(i) = if building_id == home {
-            0
-        } else if building_id == work {
-            1
+        let activity = *slices.activity.get(i);
+        *slices.activity.get_mut(i) = if building_id == home && activity != ACTIVITY_SHOPPING {
+            ACTIVITY_HOME
         } else {
-            2
+            // Preserve shopping through store pickup and the household's hourly delivery
+            // acknowledgement. Merely arriving home must not resume a work departure.
+            activity
         };
 
         clear_access_plan(i, slices);

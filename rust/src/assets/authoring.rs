@@ -196,6 +196,8 @@ pub(crate) fn describe(data: &Value, catalog: Option<&RuntimeEconomyCatalog>) ->
             let summary = json!({
                 "id": profile.id, "worker_capacity": profile.worker_capacity,
                 "workers_per_hectare": profile.workers_per_hectare,
+                "area_worker_capacity_max": profile.area_worker_capacity_max,
+                "minimum_field_area_m2": profile.minimum_field_area_m2,
             });
             if compatible {
                 profiles.push(summary.clone());

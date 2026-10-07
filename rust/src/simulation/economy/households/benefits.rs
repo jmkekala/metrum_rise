@@ -90,6 +90,8 @@ impl HouseholdSystem {
 
             let pension_claim = household.elder_count as f32 * pension_per_elder;
             let child_support_claim = household.child_count as f32 * child_support_per_child;
+            daily_ledgers[hid].transfer_claim +=
+                unemployment_claim + pension_claim + child_support_claim;
             let unemployment_paid = pay_transfer_claim(treasury_balance, unemployment_claim);
             let pension_paid = pay_transfer_claim(treasury_balance, pension_claim);
             let child_support_paid = pay_transfer_claim(treasury_balance, child_support_claim);

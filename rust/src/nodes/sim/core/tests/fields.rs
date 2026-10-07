@@ -67,9 +67,17 @@ pub(in crate::nodes::sim::core) fn add_farm_household(core: &mut SimCore, farm: 
     use crate::simulation::economy::agents::{age_group_can_work, household_member_age_group};
     let catalog = load_runtime_economy_catalog().unwrap();
     let tuning = crate::simulation::economy::definitions::load_runtime_economy_tuning().unwrap();
-    let household = core
-        .households
-        .admit_immigrant_household(&catalog, &tuning, farm, 4);
+    let household = core.households.admit_immigrant_household(
+        &catalog,
+        &tuning,
+        farm,
+        4,
+        crate::simulation::economy::agents::household_age_composition(
+            farm,
+            core.households.households.len(),
+            4,
+        ),
+    );
     core.allocator.claim_vacancy(farm);
     for member in 0..4 {
         let age = household_member_age_group(farm, household, member, 4);
@@ -147,6 +155,65 @@ fn field_resize_is_atomic_and_recalculates_capacity_without_new_startup_money() 
 }
 
 #[test]
+fn grain_field_minimum_rejects_preview_commit_and_shrink_without_spending() {
+    let (mut core, farm, reference) = farm_fixture();
+    let minimum = rectangle(reference[0].x, reference[0].y, 200.0, 200.0);
+    let undersized = rectangle(reference[0].x, reference[0].y, 200.0, 199.5);
+    let initial_cash = core.treasury.balance;
+    let initial_budget = core.allocator.buildings[farm].operating_budget;
+    let revision = core.agriculture.visual_revision();
+    let error = core
+        .validate_field_polygon_internal(farm, &undersized)
+        .unwrap_err();
+    assert!(error.contains("4.0 ha"), "{error}");
+    assert!(core.industry_area_quote_internal(farm, 39_900.0).is_err());
+    assert!(
+        core.commit_field_polygon_internal(farm, undersized.clone())
+            .is_err()
+    );
+    assert_eq!(core.treasury.balance, initial_cash);
+    assert_eq!(
+        core.allocator.buildings[farm].operating_budget,
+        initial_budget
+    );
+    assert_eq!(core.agriculture.visual_revision(), revision);
+    assert!(core.agriculture.site_for_building(farm).is_none());
+    assert_eq!(
+        core.validate_field_polygon_internal(farm, &minimum)
+            .unwrap(),
+        40_000.0
+    );
+    assert_eq!(
+        core.industry_area_quote_internal(farm, 40_000.0).unwrap().0,
+        80_000.0
+    );
+    core.commit_field_polygon_internal(farm, minimum.clone())
+        .unwrap();
+    let cash = core.treasury.balance;
+    let budget = core.allocator.buildings[farm].operating_budget;
+    let revision = core.agriculture.visual_revision();
+    let center = Vector2::new(
+        core.allocator.buildings[farm].center_x,
+        core.allocator.buildings[farm].center_y,
+    );
+    assert!(
+        core.resize_field_polygon_internal(farm, center, &minimum, undersized)
+            .is_err()
+    );
+    assert_eq!(core.treasury.balance, cash);
+    assert_eq!(core.allocator.buildings[farm].operating_budget, budget);
+    assert_eq!(core.agriculture.visual_revision(), revision);
+    assert_eq!(
+        core.agriculture
+            .site_for_building(farm)
+            .unwrap()
+            .polygon_world,
+        minimum
+    );
+    assert_eq!(core.allocator.buildings[farm].work_area_scale, 4.0);
+}
+
+#[test]
 fn field_attachment_uses_the_authored_rotated_farm_lot() {
     let (mut core, farm, _) = farm_fixture();
     let asset = core.allocator.buildings[farm].asset_id.clone();
@@ -178,7 +245,7 @@ fn field_attachment_uses_the_authored_rotated_farm_lot() {
         .map(|p| p.y)
         .fold(f32::NEG_INFINITY, f32::max);
     // The displayed lot extends along X; the former road-aligned reconstruction extended along Z.
-    let polygon = rectangle(max_x - 9.0, max_z + 1.0, 10.0, 10.0);
+    let polygon = rectangle(max_x - 9.0, max_z + 1.0, 200.0, 200.0);
     core.commit_field_polygon_internal(farm, polygon).unwrap();
 }
 
@@ -368,7 +435,7 @@ fn field_resize_invalidates_old_and_new_cells_and_rejects_new_paint_atomically()
     assert!(core.prepare_cell_chunk_internal((0, 0)));
     assert!(core.zoning.cells.pick(point).is_none());
 
-    let smaller = rectangle(polygon[0].x, polygon[0].y, 40.0, 500.0);
+    let smaller = rectangle(polygon[0].x, polygon[0].y, 80.0, 500.0);
     core.resize_field_polygon_internal(farm, center, &polygon, smaller.clone())
         .unwrap();
     assert!(
@@ -503,7 +570,7 @@ fn demolition_undo_preserves_a_newer_resize_of_the_swap_moved_field() {
     ));
     core.publish_pending_building_site_changes();
     core.seal_building_removal_undo(0.0);
-    let smaller = rectangle(polygon[0].x, polygon[0].y, 40.0, 500.0);
+    let smaller = rectangle(polygon[0].x, polygon[0].y, 80.0, 500.0);
     let center = Vector2::new(
         core.allocator.buildings[first].center_x,
         core.allocator.buildings[first].center_y,
@@ -600,7 +667,7 @@ fn demolition_undo_rechecks_another_fields_later_expansion() {
     assert_ne!(neighbor, moved);
     core.commit_field_polygon_internal(farm, polygon.clone())
         .unwrap();
-    let original_neighbor = rectangle(472.0, polygon[0].y, 40.0, 500.0);
+    let original_neighbor = rectangle(432.0, polygon[0].y, 80.0, 500.0);
     core.commit_field_polygon_internal(neighbor, original_neighbor.clone())
         .unwrap();
     assert!(core.push_building_removal_undo(farm));
@@ -660,7 +727,7 @@ fn field_cell_cache_edit_scaling() {
     assert!(core.prepare_cell_chunk_internal((0, 0)));
     let grid = core.zoning.cells.pick(point).unwrap().grid;
     let frame = core.zoning.cells.frame(grid).unwrap();
-    let smaller = rectangle(polygon[0].x, polygon[0].y, 40.0, 500.0);
+    let smaller = rectangle(polygon[0].x, polygon[0].y, 80.0, 500.0);
     let mut previous_count = 0;
     let mut remote_chunks = std::collections::BTreeSet::new();
     let mut previous_local = None;

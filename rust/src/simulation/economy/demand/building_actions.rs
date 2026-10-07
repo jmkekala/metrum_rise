@@ -253,13 +253,21 @@ impl DemandSystem {
                         let overhead = startup_utility_bill
                             + daily_property_tax(zone_type, level, fiscal_policy);
                         if !self.cheat_max_demands_enabled
-                            && !super::spawn_need::service_market_covers_first_worker(
+                            && (!super::spawn_need::service_market_covers_first_worker(
                                 profile,
                                 catalog,
                                 &absorption_context,
                                 overhead,
                                 economy_tuning.owa_import_price_multiplier,
-                            )
+                            ) || !super::spawn_need::industrial_market_covers_operation(
+                                profile,
+                                catalog,
+                                &absorption_context,
+                                overhead,
+                                economy_tuning.owa_import_price_multiplier,
+                                economy_tuning.owa_export_price_multiplier,
+                                &economy_tuning.logistics,
+                            ))
                         {
                             spawn_rejected_viability += 1;
                             continue;

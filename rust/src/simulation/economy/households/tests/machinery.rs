@@ -29,8 +29,8 @@ fn machinery_factory_consumes_imported_materials_and_its_own_upkeep() {
     }
     let factory = &allocator.buildings[0];
     assert!((factory.inventory_units(machinery) - 120.0).abs() < 0.001);
-    assert!((factory.inventory_units(steel) - 68.0).abs() < 0.001);
-    assert!((factory.inventory_units(metals) - 76.0).abs() < 0.001);
+    assert!((factory.inventory_units(steel) - 50.0).abs() < 0.001);
+    assert!((factory.inventory_units(metals) - 70.0).abs() < 0.001);
     allocator.buildings[0].set_inventory_units(steel, 0.0);
     let stock = allocator.buildings[0].resource_inventory.clone();
     households.run_building_economy(&mut allocator, true);
@@ -51,7 +51,7 @@ fn farm_upkeep_follows_area_staffing_and_available_stock() {
     farm.economy_profile_runtime_id = profile.runtime_id;
     farm.worker_count = 1;
     farm.commercial_activity_floor_scale = 1.0;
-    farm.set_inventory_units(machinery, 0.5 / 24.0);
+    farm.set_inventory_units(machinery, 0.05 / 24.0);
     allocator.buildings.push(farm);
     let mut agriculture = AgricultureSystem::from_sites(vec![FieldSite {
         building_idx: 0,
@@ -62,7 +62,7 @@ fn farm_upkeep_follows_area_staffing_and_available_stock() {
     agriculture.apply_work_area_scales(&mut allocator);
     agriculture.produce_hourly(&mut allocator, &catalog);
     assert!(allocator.buildings[0].inventory_units(machinery) < 0.0001);
-    assert!((allocator.buildings[0].inventory_units(grain) - 290.0 * 0.5 / 24.0).abs() < 0.001);
+    assert!((allocator.buildings[0].inventory_units(grain) - 20.0 * 0.5 / 24.0).abs() < 0.001);
     let stock = allocator.buildings[0].resource_inventory.clone();
     agriculture.produce_hourly(&mut allocator, &catalog);
     assert_eq!(allocator.buildings[0].resource_inventory, stock);
@@ -144,11 +144,11 @@ fn machinery_inventory_fill_counts_shared_stock_once() {
     for input in &profile.inputs {
         factory.set_inventory_units(input.resource_runtime_id, 80.0);
     }
-    // Two 80-unit material stores and one shared 168-unit Machinery store.
+    // Two 200 kg material stores and one shared 168 kg machinery store.
     for stock in [0.0, 80.0, 168.0] {
         factory.set_inventory_units(machinery, stock);
         let fill = building_inventory_fill_ratio(&catalog, &factory, profile).unwrap();
-        assert!((fill - (160.0 + stock) / 328.0).abs() < 0.0001);
+        assert!((fill - (160.0 + stock) / 568.0).abs() < 0.0001);
     }
 }
 
@@ -199,7 +199,7 @@ fn small_upkeep_buffers_reorder_before_empty_and_zero_area_never_orders() {
         let port = profile.input_port(machinery).unwrap();
         let (target, reorder, _) = profile.input_inventory_targets(port, scale);
         assert_eq!(target, 80.0);
-        assert!(target - profile.min_shipment_units > port.units_per_day * scale);
+        assert!(target - port.shipment_batch_kg > port.units_per_day * scale);
         assert!(reorder == 0.0 || reorder >= 40.0);
         assert_eq!(profile.input_inventory_targets(port, 0.0), (0.0, 0.0, 0.0));
         assert!(profile.initial_input_import_cost(&catalog, scale, 1.75) >= 2_800.0);
@@ -226,7 +226,7 @@ fn same_resource_upkeep_frees_storage_during_production() {
     allocator.buildings.push(factory);
     HouseholdSystem::new().run_building_economy(&mut allocator, true);
     assert!((allocator.buildings[0].inventory_units(machinery) - capacity).abs() < 0.001);
-    assert!((allocator.buildings[0].inventory_units(steel) - 79.5).abs() < 0.001);
+    assert!((allocator.buildings[0].inventory_units(steel) - 78.75).abs() < 0.001);
 }
 
 #[test]
@@ -237,9 +237,9 @@ fn small_store_stock_targets_keep_two_batches_after_activity_scaling() {
     store.commercial_activity_floor_scale = 1.0 / profile.worker_capacity as f32;
     let (target, reorder, _) =
         scaled_input_inventory_targets_for_building(&catalog, &store, profile, &profile.inputs[0]);
-    assert_eq!(target, 80.0);
-    assert_eq!(reorder, 40.0);
-    assert!(target - reorder >= profile.min_shipment_units);
+    assert_eq!(target, 100.0);
+    assert_eq!(reorder, 50.0);
+    assert!(target - reorder >= profile.inputs[0].shipment_batch_kg);
 }
 
 #[test]
@@ -260,13 +260,19 @@ fn supported_producers_can_cover_imported_machinery_wages_and_taxes() {
         ("wastewater_treatment_basic", ZoneType::None, 250.0),
     ] {
         let profile = catalog.profile_for_id(id).unwrap();
-        let building = make_building(0.0, zone, "test:balance", 0.0);
+        let mut building = make_building(0.0, zone, "test:balance", 0.0);
+        let area_scale = if profile.kind == EconomyProfileRuntimeKind::FieldProducer {
+            building.work_area_scale = 4.0;
+            4.0
+        } else {
+            1.0
+        };
         let workers = physical_worker_capacity_for_profile(&building, profile);
         let sales = service_sales
             + profile
                 .outputs
                 .iter()
-                .map(|port| profile.net_output_units_per_day(port))
+                .map(|port| profile.net_output_units_per_day(port) * area_scale)
                 .sum::<f32>();
         let input_cost: f32 = profile
             .inputs
@@ -282,23 +288,19 @@ fn supported_producers_can_cover_imported_machinery_wages_and_taxes() {
                     1.0
                 };
                 port.units_per_day
+                    * area_scale
                     * catalog
                         .unit_price_for_resource(port.resource_runtime_id)
                         .unwrap()
                     * multiplier
             })
             .sum();
-        let utility_cost: f32 = [
-            "power_plant_basic",
-            "water_plant_basic",
-            "wastewater_treatment_basic",
-        ]
-        .iter()
-        .map(|id| {
-            catalog.profile_for_id(id).unwrap().unit_price_currency
-                * tuning.owa_import_price_multiplier
-        })
-        .sum();
+        let utility_cost: f32 = profile
+            .utility_demand_units_per_day(area_scale)
+            .into_iter()
+            .zip(local_utility_service_costs(&catalog))
+            .map(|(qty, price)| qty * price * tuning.owa_import_price_multiplier)
+            .sum();
         let pretax_profit = sales * profile.unit_price_currency
             - input_cost
             - workers as f32 * profile.wage_max_currency_per_day

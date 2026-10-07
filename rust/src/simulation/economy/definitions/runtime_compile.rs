@@ -3,8 +3,8 @@
 //! Compilation from authored economy profiles into compact runtime catalog data.
 
 use super::runtime::{
-    EconomyProfileRuntime, EconomyProfileRuntimeKind, ResourceRuntimeId, RuntimeEconomyCatalog,
-    RuntimeEconomyTuning, RuntimeResourcePort,
+    EconomyProfileRuntime, EconomyProfileRuntimeKind, QuantityUnit, ResourceMeasure,
+    ResourceRuntimeId, RuntimeEconomyCatalog, RuntimeEconomyTuning, RuntimeResourcePort,
 };
 use super::schema::{
     AuthoredProfileKind, EconomyProfile, EconomyResource, PROFILE_KIND_DEMAND_SINK, ResourcePort,
@@ -53,6 +53,24 @@ pub(super) fn compile_runtime_catalog(
             ));
         }
         catalog.resource_id_by_runtime_id.push(resource.id.clone());
+        let batch = resource.shipment_batch_kg;
+        let valid_batch = match resource.quantity_unit {
+            QuantityUnit::Kilogram => {
+                batch > 0.0 && batch <= runtime_tuning.logistics.truck_payload_kg
+            }
+            QuantityUnit::Service => batch == 0.0,
+            QuantityUnit::Megajoule | QuantityUnit::CubicMetre => false,
+        };
+        if !batch.is_finite() || !valid_batch {
+            return Err(format!(
+                "resource '{}' needs a positive kg batch fitting one truck, or a non-freight service measure",
+                resource.id
+            ));
+        }
+        catalog.resource_measures.push(ResourceMeasure {
+            unit: resource.quantity_unit,
+            shipment_batch_kg: batch,
+        });
         if let Some(price) = resource.import_unit_price_currency {
             if !price.is_finite() || price <= 0.0 {
                 return Err(format!(
@@ -90,7 +108,12 @@ pub(super) fn compile_runtime_catalog(
 
         let runtime_id = u16::try_from(idx + 1)
             .map_err(|_| "runtime economy catalog exceeds u16 profile id range".to_owned())?;
-        let compiled = compile_runtime_profile(runtime_id, profile, &catalog.resource_by_id)?;
+        let mut compiled = compile_runtime_profile(runtime_id, profile, &catalog.resource_by_id)?;
+        for port in compiled.inputs.iter_mut().chain(&mut compiled.outputs) {
+            port.shipment_batch_kg =
+                catalog.resource_measures[port.resource_runtime_id as usize - 1].shipment_batch_kg;
+        }
+        validate_profile_units(&compiled, &catalog)?;
         if compiled.unit_price_currency > 0.0 {
             for output in &compiled.outputs {
                 catalog
@@ -183,11 +206,15 @@ fn compile_runtime_profile(
             profile.wage_max_currency_per_day,
         ),
         ("unit_price_currency", profile.unit_price_currency),
+        ("minimum_field_area_m2", profile.minimum_field_area_m2),
+        (
+            "area_build_cost_per_hectare",
+            profile.area_build_cost_per_hectare,
+        ),
         ("stock_target_days", profile.stock_target_days),
         ("starting_inventory_days", profile.starting_inventory_days),
         ("reorder_threshold_days", profile.reorder_threshold_days),
         ("critical_threshold_days", profile.critical_threshold_days),
-        ("min_shipment_units", profile.min_shipment_units),
         (
             "consumption_rate_per_resident",
             profile.consumption_rate_per_resident,
@@ -198,6 +225,14 @@ fn compile_runtime_profile(
             0.0,
             f32::MAX,
             &format!("profile '{}'.{field}", profile.id),
+        )?;
+    }
+    for value in profile.area_utility_units_per_hectare {
+        validate_range(
+            value,
+            0.0,
+            f32::MAX,
+            &format!("profile '{}'.area_utility_units_per_hectare", profile.id),
         )?;
     }
     if !profile.worker_capacity_area_m2.is_finite() || profile.worker_capacity_area_m2 <= 0.0 {
@@ -225,6 +260,22 @@ fn compile_runtime_profile(
         AuthoredProfileKind::UtilityProcessor => EconomyProfileRuntimeKind::UtilityProcessor,
         AuthoredProfileKind::Unsupported => EconomyProfileRuntimeKind::Unsupported,
     };
+
+    if profile.minimum_field_area_m2 > 0.0 && kind != EconomyProfileRuntimeKind::FieldProducer {
+        return Err(format!(
+            "profile '{}'.minimum_field_area_m2 requires a field producer",
+            profile.id
+        ));
+    }
+    if let Some(maximum) = profile.area_worker_capacity_max
+        && (!crate::simulation::work_area::profile_kind_uses_explicit_work_area(kind)
+            || maximum < crate::simulation::work_area::minimum_work_area_workers(kind).max(1))
+    {
+        return Err(format!(
+            "profile '{}'.area_worker_capacity_max requires an area-backed profile and must meet its staffing minimum",
+            profile.id
+        ));
+    }
 
     let compiled_inputs =
         compile_resource_ports(profile, &profile.inputs, "input", resource_by_id)?;
@@ -256,17 +307,96 @@ fn compile_runtime_profile(
         wage_max_currency_per_day: profile.wage_max_currency_per_day,
         worker_capacity: profile.worker_capacity,
         workers_per_hectare,
+        area_worker_capacity_max: profile.area_worker_capacity_max,
+        minimum_field_area_m2: profile.minimum_field_area_m2,
+        area_build_cost_per_hectare: profile.area_build_cost_per_hectare,
+        area_utility_units_per_hectare: profile.area_utility_units_per_hectare,
         stock_target_days: profile.stock_target_days,
         starting_inventory_days: profile.starting_inventory_days,
         reorder_threshold_days: profile.reorder_threshold_days,
         critical_threshold_days: profile.critical_threshold_days,
-        min_shipment_units: profile.min_shipment_units,
         consumption_rate_per_resident: profile.consumption_rate_per_resident,
         utility_service: profile.utility_service.clone(),
+        utility_quantity_unit: profile.utility_quantity_unit,
         inputs: compiled_inputs,
         outputs: compiled_outputs,
         runtime_supported,
     })
+}
+
+fn validate_profile_units(
+    profile: &EconomyProfileRuntime,
+    catalog: &RuntimeEconomyCatalog,
+) -> Result<(), String> {
+    let expected_utility_unit = match profile.utility_service.as_deref() {
+        Some("power") => Some(QuantityUnit::Megajoule),
+        Some("water" | "sewage") => Some(QuantityUnit::CubicMetre),
+        None => None,
+        Some(service) => {
+            return Err(format!(
+                "profile '{}' has unknown utility '{service}'",
+                profile.id
+            ));
+        }
+    };
+    if profile.utility_quantity_unit != expected_utility_unit {
+        return Err(format!(
+            "profile '{}' has an inconsistent utility quantity unit",
+            profile.id
+        ));
+    }
+    let is_service = profile.kind == EconomyProfileRuntimeKind::ServiceStore;
+    if profile.kind != EconomyProfileRuntimeKind::DemandSink
+        && profile.outputs.iter().any(|port| {
+            (catalog
+                .resource_measure(port.resource_runtime_id)
+                .unwrap()
+                .unit
+                == QuantityUnit::Service)
+                != is_service
+        })
+    {
+        return Err(format!(
+            "profile '{}' mixes physical output and service capacity",
+            profile.id
+        ));
+    }
+    if profile.kind != EconomyProfileRuntimeKind::DemandSink
+        && profile.inputs.iter().any(|port| {
+            catalog
+                .resource_measure(port.resource_runtime_id)
+                .unwrap()
+                .unit
+                != QuantityUnit::Kilogram
+        })
+    {
+        return Err(format!(
+            "profile '{}' has a non-physical material input",
+            profile.id
+        ));
+    }
+    if matches!(
+        profile.kind,
+        EconomyProfileRuntimeKind::Processor | EconomyProfileRuntimeKind::Store
+    ) {
+        let input_kg: f64 = profile
+            .inputs
+            .iter()
+            .map(|p| f64::from(p.units_per_day))
+            .sum();
+        let output_kg: f64 = profile
+            .outputs
+            .iter()
+            .map(|p| f64::from(p.units_per_day))
+            .sum();
+        if output_kg > input_kg + input_kg.max(1.0) * 1e-6 {
+            return Err(format!(
+                "profile '{}' creates material mass: {input_kg} kg in, {output_kg} kg out",
+                profile.id
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn compile_resource_ports(
@@ -300,6 +430,7 @@ fn compile_resource_ports(
             Ok(RuntimeResourcePort {
                 resource_runtime_id,
                 units_per_day: port.units_per_day,
+                shipment_batch_kg: 0.0, // Bound to the resource measure by catalog compilation.
             })
         })
         .collect()
@@ -329,7 +460,7 @@ mod tests {
             .iter()
             .find(|profile| profile.id == "machinery_factory_basic")
             .unwrap();
-        let scalar_fields: [fn(&mut EconomyProfile) -> &mut f32; 10] = [
+        let scalar_fields: [fn(&mut EconomyProfile) -> &mut f32; 9] = [
             |p| &mut p.base_rate_units_per_day,
             |p| &mut p.wage_min_currency_per_day,
             |p| &mut p.wage_max_currency_per_day,
@@ -338,7 +469,6 @@ mod tests {
             |p| &mut p.starting_inventory_days,
             |p| &mut p.reorder_threshold_days,
             |p| &mut p.critical_threshold_days,
-            |p| &mut p.min_shipment_units,
             |p| &mut p.consumption_rate_per_resident,
         ];
         for (field, select) in scalar_fields.into_iter().enumerate() {
@@ -404,18 +534,52 @@ mod tests {
         let resources = BTreeMap::new();
         let default_area = compile_runtime_profile(1, &profile, &resources).unwrap();
         assert_eq!(default_area.workers_per_hectare, 5.0);
+        assert_eq!(default_area.area_worker_capacity_max, None);
         profile.worker_capacity = 1;
         profile.worker_capacity_area_m2 = 100_000.0;
+        profile.area_worker_capacity_max = Some(6);
+        profile.minimum_field_area_m2 = 40_000.0;
         let farm = compile_runtime_profile(1, &profile, &resources).unwrap();
         assert_eq!(farm.worker_capacity, 1);
         assert_eq!(farm.workers_per_hectare, 0.1);
+        assert_eq!(farm.area_worker_capacity_max, Some(6));
+        assert_eq!(farm.minimum_field_area_m2, 40_000.0);
         assert_eq!(farm.base_rate_units_per_day, 290.0);
 
         for invalid_area in [0.0, -1.0, f32::NAN, f32::INFINITY, f32::MIN_POSITIVE] {
             profile.worker_capacity_area_m2 = invalid_area;
             assert!(compile_runtime_profile(1, &profile, &resources).is_err());
         }
+        profile.worker_capacity_area_m2 = 100_000.0;
+        for invalid_maximum in [0, 1] {
+            profile.area_worker_capacity_max = Some(invalid_maximum);
+            assert!(compile_runtime_profile(1, &profile, &resources).is_err());
+        }
+        profile.area_worker_capacity_max = Some(6);
+        profile.kind = "processor".into();
+        assert!(compile_runtime_profile(1, &profile, &resources).is_err());
     }
+    #[test]
+    fn area_costs_reject_negative_and_nonfinite_values() {
+        let mut profile: EconomyProfile =
+            toml::from_str("id = 'test_farm'\ndisplay_name = 'Farm'\nkind = 'field_producer'")
+                .unwrap();
+        let resources = BTreeMap::new();
+        for invalid in [-1.0, f32::NAN, f32::INFINITY] {
+            profile.minimum_field_area_m2 = invalid;
+            assert!(compile_runtime_profile(1, &profile, &resources).is_err());
+            profile.minimum_field_area_m2 = 0.0;
+            profile.area_build_cost_per_hectare = invalid;
+            assert!(compile_runtime_profile(1, &profile, &resources).is_err());
+            profile.area_build_cost_per_hectare = 0.0;
+            for service in 0..3 {
+                profile.area_utility_units_per_hectare[service] = invalid;
+                assert!(compile_runtime_profile(1, &profile, &resources).is_err());
+                profile.area_utility_units_per_hectare[service] = 0.0;
+            }
+        }
+    }
+
     #[test]
     fn shipped_resource_ids_survive_reordering_and_import_only_prices_roundtrip() {
         let mut project = shipped_profiles();
@@ -439,8 +603,8 @@ mod tests {
         ] {
             assert_eq!(catalog.resource_runtime_id_for_id(name), Some(id));
         }
-        assert_eq!(catalog.unit_price_for_resource(8), Some(8.0));
-        assert_eq!(catalog.unit_price_for_resource(9), Some(16.0));
+        assert_eq!(catalog.unit_price_for_resource(8), Some(3.2));
+        assert_eq!(catalog.unit_price_for_resource(9), Some(6.4));
         let mut duplicate = project.resources.clone();
         duplicate[0].runtime_id = duplicate[1].runtime_id;
         assert!(

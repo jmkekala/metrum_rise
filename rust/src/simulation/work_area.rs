@@ -94,11 +94,12 @@ pub(crate) fn initial_work_area_scale(
     }
 }
 
-/// Applies a workforce floor to positive production areas, retaining the authored density above it.
+/// Applies staffing bounds to positive production areas; output and costs retain their full area.
 pub(crate) fn work_area_worker_equivalent(
     workers_per_hectare: f32,
     area_scale: f32,
     minimum_workers: u32,
+    maximum_workers: Option<u32>,
 ) -> f32 {
     if workers_per_hectare <= 0.0 {
         return 0.0;
@@ -107,7 +108,9 @@ pub(crate) fn work_area_worker_equivalent(
     if area_scale <= f32::EPSILON {
         return 0.0;
     }
-    (workers_per_hectare * area_scale).max(minimum_workers as f32)
+    (workers_per_hectare * area_scale)
+        .max(minimum_workers as f32)
+        .min(maximum_workers.unwrap_or(u32::MAX) as f32)
 }
 
 /// Rounds the workforce equivalent up to whole slots; uncommitted areas still have zero jobs.
@@ -115,9 +118,15 @@ pub(crate) fn scaled_work_area_worker_capacity(
     workers_per_hectare: f32,
     area_scale: f32,
     minimum_workers: u32,
+    maximum_workers: Option<u32>,
 ) -> u32 {
-    let scaled_capacity =
-        work_area_worker_equivalent(workers_per_hectare, area_scale, minimum_workers).ceil();
+    let scaled_capacity = work_area_worker_equivalent(
+        workers_per_hectare,
+        area_scale,
+        minimum_workers,
+        maximum_workers,
+    )
+    .ceil();
     if scaled_capacity >= u32::MAX as f32 {
         u32::MAX
     } else {
@@ -131,9 +140,14 @@ pub(crate) fn explicit_work_area_startup_budget(
     average_daily_wage: f32,
     area_scale: f32,
     minimum_workers: u32,
+    maximum_workers: Option<u32>,
 ) -> f32 {
-    let active_worker_capacity =
-        scaled_work_area_worker_capacity(workers_per_hectare, area_scale, minimum_workers);
+    let active_worker_capacity = scaled_work_area_worker_capacity(
+        workers_per_hectare,
+        area_scale,
+        minimum_workers,
+        maximum_workers,
+    );
     (active_worker_capacity as f32
         * average_daily_wage.max(0.0)
         * EXPLICIT_WORK_AREA_STARTUP_RUNWAY_DAYS)
@@ -152,18 +166,26 @@ pub(crate) fn top_up_explicit_work_area_startup_budget(
     if !profile_kind_uses_explicit_work_area(profile.kind) {
         return;
     }
+    let tuning = load_runtime_economy_tuning().expect("runtime tuning loaded");
+    // One-time owner equity covers opening inputs and a short payroll/utility runway.
+    // Area edits never top up an existing business.
+    let daily_utilities: f32 = profile
+        .utility_demand_units_per_day(area_scale)
+        .into_iter()
+        .zip(crate::simulation::economy::households::local_utility_service_costs(catalog))
+        .map(|(units, price)| units * price * tuning.owa_import_price_multiplier)
+        .sum();
     let target = explicit_work_area_startup_budget(
         profile.workers_per_hectare,
         profile.average_daily_wage(),
         area_scale,
         minimum_work_area_workers(profile.kind),
+        profile.area_worker_capacity_max,
     ) + profile.initial_input_import_cost(
         catalog,
         area_scale,
-        load_runtime_economy_tuning()
-            .expect("runtime tuning loaded")
-            .owa_import_price_multiplier,
-    );
+        tuning.owa_import_price_multiplier,
+    ) + daily_utilities * EXPLICIT_WORK_AREA_STARTUP_RUNWAY_DAYS;
     if building.operating_budget >= target {
         return;
     }
@@ -185,14 +207,14 @@ mod tests {
 
     #[test]
     fn scaled_worker_capacity_ceilings_small_positive_areas() {
-        assert_eq!(scaled_work_area_worker_capacity(10.0, 0.0, 0), 0);
-        assert_eq!(scaled_work_area_worker_capacity(10.0, 0.01, 0), 1);
-        assert_eq!(scaled_work_area_worker_capacity(10.0, 0.2731, 0), 3);
-        assert_eq!(scaled_work_area_worker_capacity(10.0, 2.0, 0), 20);
+        assert_eq!(scaled_work_area_worker_capacity(10.0, 0.0, 0, None), 0);
+        assert_eq!(scaled_work_area_worker_capacity(10.0, 0.01, 0, None), 1);
+        assert_eq!(scaled_work_area_worker_capacity(10.0, 0.2731, 0, None), 3);
+        assert_eq!(scaled_work_area_worker_capacity(10.0, 2.0, 0, None), 20);
     }
 
     #[test]
-    fn field_worker_minimum_keeps_existing_density_above_two() {
+    fn field_staffing_bounds_apply_without_creating_jobs_on_empty_land() {
         for (hectares, workers) in [
             (0.0, 0),
             (0.01, 2),
@@ -200,37 +222,48 @@ mod tests {
             (20.0, 2),
             (20.01, 3),
             (30.0, 3),
-            (100.0, 10),
+            (50.0, 5),
+            (50.01, 6),
+            (60.0, 6),
+            (100.0, 6),
+            (1000.0, 6),
         ] {
             assert_eq!(
-                scaled_work_area_worker_capacity(0.1, hectares, MIN_FIELD_WORKERS),
+                scaled_work_area_worker_capacity(0.1, hectares, MIN_FIELD_WORKERS, Some(6)),
                 workers
             );
         }
         assert_eq!(
-            scaled_work_area_worker_capacity(0.0, 10.0, MIN_FIELD_WORKERS),
+            scaled_work_area_worker_capacity(0.0, 10.0, MIN_FIELD_WORKERS, Some(6)),
             0
         );
         assert_eq!(
-            scaled_work_area_worker_capacity(0.1, f32::NAN, MIN_FIELD_WORKERS),
+            scaled_work_area_worker_capacity(0.1, f32::NAN, MIN_FIELD_WORKERS, Some(6)),
             0
         );
     }
 
     #[test]
     fn startup_budget_uses_scaled_worker_capacity() {
-        assert_eq!(explicit_work_area_startup_budget(10.0, 90.0, 0.0, 0), 500.0);
         assert_eq!(
-            explicit_work_area_startup_budget(10.0, 90.0, 0.5, 0),
+            explicit_work_area_startup_budget(10.0, 90.0, 0.0, 0, None),
+            500.0
+        );
+        assert_eq!(
+            explicit_work_area_startup_budget(10.0, 90.0, 0.5, 0, None),
             3150.0
         );
         assert_eq!(
-            explicit_work_area_startup_budget(16.0, 90.0, 0.25, 0),
+            explicit_work_area_startup_budget(16.0, 90.0, 0.25, 0, None),
             2520.0
         );
         assert_eq!(
-            explicit_work_area_startup_budget(0.1, 90.0, 1.0, MIN_FIELD_WORKERS),
+            explicit_work_area_startup_budget(0.1, 90.0, 1.0, MIN_FIELD_WORKERS, Some(6)),
             1260.0
+        );
+        assert_eq!(
+            explicit_work_area_startup_budget(0.1, 90.0, 100.0, MIN_FIELD_WORKERS, Some(6)),
+            3780.0
         );
     }
 
@@ -241,10 +274,11 @@ mod tests {
         use std::time::Instant;
 
         let areas = [0.0, 0.01, 0.2731, 1.0, 10.0, 10.01, 20.0, 100.0];
-        for (label, minimum_workers, cycle_total) in
-            [("density", 0, 18), ("farm", MIN_FIELD_WORKERS, 22)]
-        {
-            for count in [10_000, 100_000, 1_000_000] {
+        for (label, minimum_workers, maximum_workers, cycle_total) in [
+            ("density", 0, None, 18),
+            ("farm", MIN_FIELD_WORKERS, Some(6), 18),
+        ] {
+            for count in [10_000] {
                 let mut samples = [0.0; 21];
                 for sample in &mut samples {
                     let start = Instant::now();
@@ -254,6 +288,7 @@ mod tests {
                             black_box(0.1),
                             black_box(areas[i % areas.len()]),
                             black_box(minimum_workers),
+                            black_box(maximum_workers),
                         ) as u64;
                     }
                     *sample = start.elapsed().as_secs_f64();

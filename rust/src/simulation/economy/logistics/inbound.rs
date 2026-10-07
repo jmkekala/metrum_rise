@@ -101,7 +101,7 @@ impl ShipmentSystem {
                     dest_idx,
                     desired_amount,
                     allow_emergency,
-                    profile.min_shipment_units,
+                    input_port.shipment_batch_kg,
                     input_port.resource_runtime_id,
                     allocator,
                     transit_network,
@@ -113,8 +113,9 @@ impl ShipmentSystem {
                     freight_profile,
                     minute_of_day,
                     &catalog,
-                    tuning.logistics.truck_load_units,
+                    &tuning.logistics,
                     planning.max_freight_speed,
+                    tuning.operational_clock.seconds_per_day,
                     treasury_balance,
                 ) {
                     self.clear_request_failure(request_key);
@@ -128,7 +129,7 @@ impl ShipmentSystem {
                     dest_idx,
                     desired_amount,
                     allow_emergency,
-                    profile.min_shipment_units,
+                    input_port.shipment_batch_kg,
                     import_unit_price,
                     input_port.resource_runtime_id,
                     allocator,
@@ -141,6 +142,7 @@ impl ShipmentSystem {
                     minute_of_day,
                     &catalog,
                     &tuning.logistics,
+                    tuning.operational_clock.seconds_per_day,
                     treasury_balance,
                 ) {
                     self.clear_request_failure(request_key);

@@ -4,6 +4,7 @@
 
 use super::support::*;
 use super::*;
+use crate::simulation::economy::agents::{ACTIVITY_HOME, ACTIVITY_SHOPPING};
 
 #[test]
 fn household_replenishment_uses_one_visible_shopper_trip() {
@@ -62,15 +63,21 @@ fn household_replenishment_uses_one_visible_shopper_trip() {
     assert_eq!(households.households[0].stock, 0.0);
     assert!((allocator.buildings[1].revenue - 250.0).abs() < 0.001);
     assert_eq!(agents.planned_target_building[shopper], 0);
-    assert_eq!(agents.planned_activity[shopper], 0);
+    assert_eq!(agents.planned_activity[shopper], ACTIVITY_SHOPPING);
 
-    arrive_agent_at_building(&mut agents, shopper, 0, 0);
+    arrive_agent_at_building(&mut agents, shopper, 0, ACTIVITY_SHOPPING);
+    // An hourly return reminder may still be queued when the physical arrival completes.
+    agents.planned_target_building[shopper] = 0;
+    agents.planned_activity[shopper] = ACTIVITY_SHOPPING;
     households.run_household_replenishment(&mut agents, &mut allocator, &network, &graph, 0);
     assert_eq!(
         households.households[0].replenishment_state,
         REPLENISHMENT_FULFILLED
     );
     assert_eq!(households.households[0].stock, 10.0);
+    assert_eq!(agents.activity[shopper], ACTIVITY_HOME);
+    assert_eq!(agents.planned_target_building[shopper], usize::MAX);
+    assert_eq!(agents.planned_activity[shopper], ACTIVITY_HOME);
 }
 
 #[test]
@@ -728,6 +735,52 @@ fn canceled_shopping_to_store_restores_reserved_store_inventory() {
         5.0
     );
     assert_eq!(agents.planned_target_building[0], usize::MAX);
+}
+
+#[test]
+fn shopping_deadlines_allow_physical_travel_before_bounded_delay() {
+    let household = make_household(0, 1, 30.0, 0.0);
+    let (mut households, mut allocator, mut agents, network, graph) =
+        setup_replenishment_world(household, "travel_home", "travel_store", 50.0, 900.0);
+    agents.has_car[0] = false;
+    let allowance = load_runtime_economy_tuning()
+        .unwrap()
+        .operational_clock
+        .household_shopping_leg_timeout_hours;
+    households.run_household_replenishment(&mut agents, &mut allocator, &network, &graph, 0);
+    assert_eq!(
+        households.households[0].replenishment_state,
+        REPLENISHMENT_SHOPPING_TO_STORE
+    );
+    assert!(households.households[0].shopping_timeout_hours_remaining > allowance);
+    for _ in 0..allowance {
+        households.run_household_replenishment(&mut agents, &mut allocator, &network, &graph, 0);
+    }
+    assert_eq!(
+        households.households[0].replenishment_state,
+        REPLENISHMENT_SHOPPING_TO_STORE
+    );
+    arrive_agent_at_building(&mut agents, 0, 1, 2);
+    households.run_household_replenishment(&mut agents, &mut allocator, &network, &graph, 0);
+    assert_eq!(
+        households.households[0].replenishment_state,
+        REPLENISHMENT_SHOPPING_RETURNING
+    );
+    assert!(households.households[0].shopping_timeout_hours_remaining > allowance);
+    for _ in 0..allowance {
+        households.run_household_replenishment(&mut agents, &mut allocator, &network, &graph, 0);
+    }
+    assert_eq!(
+        households.households[0].replenishment_state,
+        REPLENISHMENT_SHOPPING_RETURNING
+    );
+    arrive_agent_at_building(&mut agents, 0, 0, 0);
+    households.run_household_replenishment(&mut agents, &mut allocator, &network, &graph, 0);
+    assert_eq!(
+        households.households[0].replenishment_state,
+        REPLENISHMENT_FULFILLED
+    );
+    assert!(households.households[0].stock > 0.0);
 }
 
 #[test]

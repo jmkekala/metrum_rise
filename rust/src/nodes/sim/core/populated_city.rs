@@ -185,6 +185,8 @@ impl PopulatedCity {
                     &mut core.agents,
                     &core.transit_network,
                     &core.region_graph,
+                    // This fixture explicitly prepopulates a city outside demand admission.
+                    |_, _, _| true,
                 );
             // Carriers arrive at once instead of driving in from the border; the next hour
             // materializes them as households.

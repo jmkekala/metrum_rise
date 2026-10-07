@@ -47,6 +47,7 @@ pub(crate) struct HouseholdAdmissionDiagnostics {
     pub(crate) candidate_transfer_claim_per_day: f32,
     pub(crate) total_transfer_claim_per_day: f32,
     pub(crate) expected_transfer_income_per_day: f32,
+    pub(crate) recurring_income_per_day: f32,
     pub(crate) starter_savings: f32,
     pub(crate) daily_essential_cost: f32,
     pub(crate) daily_deficit: f32,

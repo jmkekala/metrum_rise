@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Headless one-year growth runs of the starter town (`ECON-12`).
+//! Headless growth, recurring business income and municipal funding checks (`ECON-12`, `ECON-14`).
 //!
-//! `cargo test --test growth_scenario -- --ignored` also runs the `ECON-14` growth target and
-//! reports the town's accounting and first failures. Set `METRUM_GROWTH_REPORT` to a text-file
-//! path to save every daily observation. See `docs/economy.md#econ-12-growth-scenario`.
+//! Set `METRUM_GROWTH_REPORT` and `METRUM_GROWTH_LONG_REPORT` to text-file paths for the
+//! one- and two-year daily accounting. See `docs/economy.md#econ-12-growth-scenario`.
 
 use metrum_rise::nodes::sim::core::{GrowthDayRecord, GrowthReport, GrowthScenario};
 
@@ -87,31 +86,69 @@ fn read_only_observer_preserves_growth() {
 }
 
 #[test]
-fn starter_grocery_pays_its_way_after_startup_through_two_years() {
+fn starter_town_funds_industry_services_households_and_city_for_two_years() {
     let report = GrowthScenario::starter_town().run_diagnosed_days(2 * DAYS_PER_YEAR);
-    let all = report.business_cash_flow("grocery_basic", usize::MAX);
-    let last_year = report.business_cash_flow("grocery_basic", DAYS_PER_YEAR as usize);
+    let year_days = DAYS_PER_YEAR as usize;
     if let Ok(path) = std::env::var("METRUM_GROWTH_LONG_REPORT") {
         std::fs::write(path, report.daily_report()).expect("write requested two-year report");
     }
-    assert_eq!(all.bankruptcies, 0, "{report}");
-    assert_eq!(last_year.startup_cash, 0.0, "{report}");
-    assert!(
-        last_year.payroll > 0.0 && last_year.sales > last_year.payroll,
+    for profile in [
+        "grocery_basic",
+        "food_processor_basic",
+        "machinery_factory_basic",
+        "personal_service_small",
+        "health_essentials_small",
+    ] {
+        let all = report.business_cash_flow(profile, usize::MAX);
+        let last_year = report.business_cash_flow(profile, year_days);
+        let last_quarter = report.business_cash_flow(profile, 90);
+        assert_eq!(all.bankruptcies, 0, "{profile}: {report}");
+        assert_eq!(all.replacement_startup_cash, 0.0, "{profile}: {report}");
+        // New sites may receive declared owner equity while the city grows. Operating
+        // cash excludes that equity; replacement capital and bankruptcies remain failures.
+        assert!(
+            last_year.payroll > 0.0 && last_year.sales > last_year.payroll,
+            "{profile}: {report}"
+        );
+        assert!(last_year.operating_cash_change > 0.0, "{profile}: {report}");
+        assert!(
+            last_quarter.operating_cash_change > 0.0,
+            "{profile}: {report}"
+        );
+        if matches!(profile, "food_processor_basic" | "machinery_factory_basic") {
+            assert!(
+                last_year.export_sales > 0.0 && last_year.input_purchases > 0.0,
+                "{profile}: {report}"
+            );
+            assert!(
+                (last_year.sales - last_year.local_sales - last_year.export_sales).abs() < 0.1,
+                "industrial receipts must come from delivered sales: {profile}: {report}"
+            );
+        }
+    }
+    assert_eq!(report.empty_household_days(year_days), 0, "{report}");
+    assert_eq!(
+        report.unpaid_household_transfers(usize::MAX),
+        0.0,
         "{report}"
     );
-    assert!(last_year.operating_cash_change > 0.0, "{report}");
-    assert_eq!(report.empty_household_days(DAYS_PER_YEAR as usize), 0, "{report}");
-}
-
-#[test]
-#[ignore = "ECON-14: healthy growth and solvency remain an unmet target"]
-fn starter_town_keeps_growing_and_solvent_through_year_one() {
-    let year = run_year();
-    let half = &year.days[year.days.len() / 2];
-    let end = year.days.last().unwrap();
+    let last_year_balance = report.recurring_city_balance(year_days);
+    assert!(last_year_balance > 0.0, "{report}");
     assert!(
-        end.households > half.households && year.days.iter().all(|day| day.treasury > 0.0),
-        "growth stalled or treasury ran out:\n{year}"
+        report.recurring_city_balance(usize::MAX) - last_year_balance > 0.0,
+        "{report}"
+    );
+    assert!(report.recurring_city_balance(90) > 0.0, "{report}");
+    assert!(report.days.iter().all(|day| day.treasury > 0.0), "{report}");
+    let established = &report.days[year_days - 1];
+    let end = report.days.last().unwrap();
+    // Paid employment must sustain the established population while export-led growth continues.
+    assert!(
+        established.residents > report.days[0].residents && established.employed > 0,
+        "{report}"
+    );
+    assert!(
+        end.residents >= established.residents && end.employed >= established.employed,
+        "{report}"
     );
 }

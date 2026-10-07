@@ -143,8 +143,11 @@ pub struct Shipment {
     pub status: ShipmentStatus,
     /// Agent index for the active physical carrier; `usize::MAX` means not dispatched yet.
     pub carrier_agent_id: usize,
-    /// Reserved payment held by the destination until completion or failure.
+    /// Input buyer's reserved goods-plus-freight payment, or gross OWA export sale value.
     pub total_cost: f32,
+    /// Fixed carrier quote. Settled once on delivery; included in input reservations,
+    /// deducted from export proceeds, and fully refunded with failed input orders.
+    pub freight_cost: f32,
     /// Estimated trip duration used for capacity and timeout bounds; arrival is physical.
     pub eta_hours: u16,
     /// Operational hours spent in the current active logistics state.
@@ -187,8 +190,6 @@ pub struct ShipmentSystem {
     pub(super) freight_route_cache_entrance_revision: u64,
     /// CCH graph generation captured when the freight cache was last validated.
     pub(super) freight_route_cache_cch_generation: u32,
-    /// Recent exported units by runtime resource id, used to soften repeated `OWA` export prices.
-    pub(super) owa_export_saturation_by_resource: Vec<f32>,
 }
 
 /// Freight records removed when one building is bulldozed.
@@ -210,7 +211,6 @@ impl ShipmentSystem {
             freight_route_cache_building_revision: u64::MAX,
             freight_route_cache_entrance_revision: u64::MAX,
             freight_route_cache_cch_generation: u32::MAX,
-            owa_export_saturation_by_resource: Vec::new(),
         }
     }
 
@@ -289,34 +289,12 @@ impl ShipmentSystem {
         self.next_shipment_id = 0;
         self.request_failures.clear();
         self.invalidate_route_cache();
-        self.owa_export_saturation_by_resource.clear();
     }
 
     pub(super) fn allocate_shipment_id(&mut self) -> u64 {
         let id = self.next_shipment_id;
         self.next_shipment_id = self.next_shipment_id.saturating_add(1);
         id
-    }
-
-    /// Returns recent exported units by resource slot for save/load persistence.
-    pub(crate) fn owa_export_saturation_units(&self) -> &[f32] {
-        &self.owa_export_saturation_by_resource
-    }
-
-    /// Restores recent exported units for one runtime resource id.
-    pub(crate) fn set_owa_export_saturation_units(
-        &mut self,
-        resource_runtime_id: ResourceRuntimeId,
-        units: f32,
-    ) {
-        if resource_runtime_id == 0 {
-            return;
-        }
-        let slot = resource_runtime_id as usize - 1;
-        if self.owa_export_saturation_by_resource.len() <= slot {
-            self.owa_export_saturation_by_resource.resize(slot + 1, 0.0);
-        }
-        self.owa_export_saturation_by_resource[slot] = units.max(0.0);
     }
 
     /// Rebuilds the next stable shipment id after loading persisted shipment rows.

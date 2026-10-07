@@ -14,7 +14,7 @@ use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::TransitFlags;
 use rayon::prelude::*;
 
-use super::quantization::fills_one_load;
+use super::quantization::fills_one_batch;
 use super::reservations::ReservationViews;
 use super::resource::building_outputs_can_supply_local_inputs;
 
@@ -27,7 +27,7 @@ impl SupplierCandidateIndex {
     /// Builds a resource-keyed supplier index over freight-reachable component chunks.
     ///
     /// Lists a supplier under a resource only while its unreserved saleable stock fills one
-    /// truckload: a smaller stock quantizes to nothing for every request. Planning only adds
+    /// resource batch: a smaller stock quantizes to nothing for every request. Planning only adds
     /// reservations and never adds stock, so an index built at the start of the pass stays a
     /// superset of the shippable suppliers and the scan sees them in the same order. Without
     /// the filter a request no supplier can fill scans every supplier of the resource.
@@ -37,7 +37,7 @@ impl SupplierCandidateIndex {
         catalog: &RuntimeEconomyCatalog,
         freight_components: &ModeComponentIndex,
         reservations: &ReservationViews,
-        truck_load_units: f32,
+        truck_payload_kg: f32,
     ) -> Self {
         let entries: Vec<(ResourceRuntimeId, ReachableBucketEntry)> = allocator
             .buildings
@@ -83,7 +83,10 @@ impl SupplierCandidateIndex {
                     let available = (saleable_output_stock(catalog, building, profile, resource)
                         - reservations.reserved_outbound_amount(idx, resource))
                     .max(0.0);
-                    fills_one_load(available, truck_load_units)
+                    let batch = catalog
+                        .resource_measure(resource)
+                        .map_or(0.0, |r| r.shipment_batch_kg);
+                    fills_one_batch(available, batch, truck_payload_kg)
                 };
                 profile
                     .outputs

@@ -36,6 +36,7 @@ struct MoveInAcceptance {
     total_transfer_claim_per_day: f32,
     transfer_reliability: f32,
     expected_transfer_income_per_day: f32,
+    recurring_income_per_day: f32,
     starter_savings: f32,
     daily_essential_cost: f32,
     daily_deficit: f32,
@@ -133,6 +134,7 @@ impl DemandSystem {
             candidate_transfer_claim_per_day: move_in.candidate_transfer_claim_per_day,
             total_transfer_claim_per_day: move_in.total_transfer_claim_per_day,
             expected_transfer_income_per_day: move_in.expected_transfer_income_per_day,
+            recurring_income_per_day: move_in.recurring_income_per_day,
             starter_savings: move_in.starter_savings,
             daily_essential_cost: move_in.daily_essential_cost,
             daily_deficit: move_in.daily_deficit,
@@ -264,10 +266,9 @@ fn compute_move_in_acceptance(
     let candidate_adult_count = snapshot.candidate_adult_count;
     let candidate_elder_count = snapshot.candidate_elder_count;
     let candidate_effective_workers = f32::from(candidate_adult_count);
-    let move_in_job_equivalent_slots = snapshot
-        .move_in_job_equivalent_slots
-        .max(snapshot.move_in_job_slots as f32)
-        .max(0.0);
+    // Integer staffing can round a fraction of recurring sales up to one physical
+    // vacancy. That vacancy does not turn the fraction into a full funded wage.
+    let move_in_job_equivalent_slots = snapshot.move_in_job_equivalent_slots.max(0.0);
     let expected_employed_members = candidate_effective_workers.min(move_in_job_equivalent_slots);
     let expected_unemployed_members =
         (candidate_effective_workers - expected_employed_members).max(0.0);
@@ -304,6 +305,9 @@ fn compute_move_in_acceptance(
     };
     let expected_transfer_income_per_day = candidate_transfer_claim_per_day * transfer_reliability;
     let expected_daily_income = expected_wage_income_per_day + expected_transfer_income_per_day;
+    let recurring_income_per_day = expected_wage_income_per_day
+        + (candidate_pension_claim_per_day + candidate_child_support_claim_per_day)
+            * transfer_reliability;
 
     let starter_savings = snapshot.immigrant_starter_savings_per_household.max(0.0);
     let daily_essential_cost = snapshot.candidate_daily_essential_cost.max(0.0);
@@ -322,7 +326,12 @@ fn compute_move_in_acceptance(
         starter_savings / daily_deficit
     };
     let runway_span = (target_days - min_days).max(EPSILON);
-    let runway_factor = clamp01((search_runway_days - min_days) / runway_span);
+    // Search support and immigrant savings are finite; neither funds a permanent household.
+    let runway_factor = if recurring_income_per_day + EPSILON >= daily_essential_cost {
+        clamp01((search_runway_days - min_days) / runway_span)
+    } else {
+        0.0
+    };
 
     MoveInAcceptance {
         candidate_household_size,
@@ -342,6 +351,7 @@ fn compute_move_in_acceptance(
         total_transfer_claim_per_day,
         transfer_reliability,
         expected_transfer_income_per_day,
+        recurring_income_per_day,
         starter_savings,
         daily_essential_cost,
         daily_deficit,

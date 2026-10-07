@@ -697,6 +697,7 @@ impl BuildingAllocator {
             agents,
             transit_network,
             graph,
+            |_, _, _| true,
         )
     }
 
@@ -708,6 +709,11 @@ impl BuildingAllocator {
         agents: &mut crate::simulation::economy::agents::AgentSystem,
         transit_network: &crate::simulation::network::TransitNetwork,
         graph: &RegionGraph,
+        claim_income: impl FnMut(
+            crate::simulation::economy::agents::HouseholdAgeComposition,
+            u16,
+            u8,
+        ) -> bool,
     ) -> u32 {
         self.admit_households_from_demand(
             households_to_admit_today as usize,
@@ -716,6 +722,7 @@ impl BuildingAllocator {
             agents,
             transit_network,
             graph,
+            claim_income,
         ) as u32
     }
 

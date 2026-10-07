@@ -116,6 +116,8 @@ impl SimCore {
     }
 
     fn refresh_loaded_demand_state_and_log(&mut self) {
+        self.demand
+            .set_admission_candidate_hour(self.time.day_index, self.time.minute_of_day);
         let persisted_residential = self.demand.net_residential_pressure();
         let persisted_commercial = self.demand.net_commercial_pressure();
         let persisted_industrial = self.demand.net_industrial_pressure();

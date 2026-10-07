@@ -182,6 +182,7 @@ func _process(_delta: float) -> void:
 		_hide_preview_visuals()
 		_update_polygon_mesh()
 		_update_polygon_cursor_marker()
+		_project_preview_price_label()
 
 func _unhandled_input(event) -> void:
 	if not active:
@@ -557,6 +558,8 @@ func _build_preview_mesh(corners: PackedVector3Array, is_valid: bool) -> Mesh:
 func _update_polygon_mesh() -> void:
 	if not polygon_mesh:
 		return
+	if _price_label:
+		_price_label.hide()
 	var point_count := _polygon_points.size()
 	_update_first_polygon_marker(point_count)
 	if point_count == 0:
@@ -569,6 +572,19 @@ func _update_polygon_mesh() -> void:
 		polygon_mesh.mesh = null
 		return
 	var preview_invalid := _preview_current_click_invalid()
+	if preview_points.size() >= 3:
+		var quote: Dictionary = simulation_node.get_industry_area_quote(_pending_building_id, PackedVector2Array(preview_points))
+		if bool(quote.get("ok", false)):
+			_price_label.text = "Area %.2f ha: setup %s; utilities %s/day if imported" % [
+				float(quote["area_hectares"]), _money(float(quote["build_cost"])),
+				_money(float(quote["imported_utilities_per_day"]))]
+			_label_world_pos = _polygon_vertex(preview_points[preview_points.size() - 1])
+			_price_label.show()
+		elif not bool(quote.get("pending", false)):
+			preview_invalid = true
+			_price_label.text = str(quote.get("error", "Invalid production area"))
+			_label_world_pos = _polygon_vertex(preview_points[preview_points.size() - 1])
+			_price_label.show()
 	var im := ImmediateMesh.new()
 	var fill_color := Color(0.42, 0.82, 1.0, 0.18)
 	var line_color := Color(0.62, 0.90, 1.0, 0.88)

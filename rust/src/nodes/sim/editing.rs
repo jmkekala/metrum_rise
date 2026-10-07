@@ -350,8 +350,10 @@ impl SimCore {
     ) -> Option<bool> {
         self.prepare_bulldoze_target_indices();
         let current = self.resolve_bulldoze_target(target.center.x, target.center.z)?;
-        if current.kind != target.kind || current.id != target.id
-            || current.vegetation != target.vegetation {
+        if current.kind != target.kind
+            || current.id != target.id
+            || current.vegetation != target.vegetation
+        {
             return None;
         }
         let road_deleted = current.kind == BulldozeTargetKind::Road;
@@ -363,7 +365,8 @@ impl SimCore {
         match target.kind {
             BulldozeTargetKind::Building => self.bulldoze_building(target.id),
             BulldozeTargetKind::Road => self.bulldoze_road_edge(target.id),
-            BulldozeTargetKind::Vegetation => target.vegetation
+            BulldozeTargetKind::Vegetation => target
+                .vegetation
                 .is_some_and(|plant| vegetation_api::remove_target(self, plant)),
         }
     }
@@ -1580,12 +1583,82 @@ impl SimCore {
         building_idx: usize,
         polygon_world: Vec<Vector2>,
     ) -> Result<crate::simulation::extraction::ExtractorSiteSummary, String> {
-        self.resource_extraction.commit_site(
+        let previous_area = self
+            .resource_extraction
+            .site_for_building(building_idx)
+            .map_or(0.0, |site| site.area_m2);
+        let summary = self.resource_extraction.commit_site(
             building_idx,
             polygon_world,
             &self.resource_deposits,
             &mut self.allocator,
-        )
+        )?;
+        self.charge_industry_area_expansion(building_idx, previous_area, summary.area_m2);
+        Ok(summary)
+    }
+
+    /// Quotes the extra construction charge and all-import daily utilities for a valid area.
+    /// The footprint is paid separately; reshaping/shrinking an existing area gives no refund.
+    pub(crate) fn industry_area_quote_internal(
+        &self,
+        building_idx: usize,
+        area_m2: f32,
+    ) -> Result<(f64, f32), String> {
+        if !area_m2.is_finite() || area_m2 < 0.0 {
+            return Err("production area must be finite and nonnegative".to_owned());
+        }
+        let building = self
+            .allocator
+            .buildings
+            .get(building_idx)
+            .ok_or_else(|| "industry building does not exist".to_owned())?;
+        let catalog = self.demand.runtime_catalog();
+        let profile = catalog
+            .profile_by_runtime_id(building.economy_profile_runtime_id)
+            .filter(|p| crate::simulation::work_area::profile_kind_uses_explicit_work_area(p.kind))
+            .ok_or_else(|| "building does not use a production area".to_owned())?;
+        profile.validate_field_area(area_m2)?;
+        let previous_area = self
+            .agriculture
+            .site_for_building(building_idx)
+            .map(|site| site.area_m2)
+            .or_else(|| {
+                self.resource_extraction
+                    .site_for_building(building_idx)
+                    .map(|site| site.area_m2)
+            })
+            .unwrap_or(0.0);
+        let tuning = load_runtime_economy_tuning().expect("runtime tuning loaded");
+        let utilities = profile
+            .utility_demand_units_per_day(area_m2 / 10_000.0)
+            .into_iter()
+            .zip(crate::simulation::economy::households::local_utility_service_costs(catalog))
+            .map(|(units, price)| units * price * tuning.owa_import_price_multiplier)
+            .sum();
+        Ok((
+            profile.area_expansion_cost(previous_area, area_m2),
+            utilities,
+        ))
+    }
+
+    fn charge_industry_area_expansion(
+        &mut self,
+        building_idx: usize,
+        previous_area: f32,
+        area: f32,
+    ) {
+        if self.benchmark_mode {
+            return;
+        }
+        let profile = self
+            .demand
+            .runtime_catalog()
+            .profile_by_runtime_id(
+                self.allocator.buildings[building_idx].economy_profile_runtime_id,
+            )
+            .expect("committed area has a resolved economy profile");
+        self.treasury
+            .deduct_build_cost(profile.area_expansion_cost(previous_area, area));
     }
 
     fn prepare_field_polygon_validation(&mut self) -> Result<(), String> {
@@ -1649,6 +1722,10 @@ impl SimCore {
         polygon_world: Vec<Vector2>,
     ) -> Result<crate::simulation::agriculture::FieldSiteSummary, String> {
         self.prepare_field_polygon_validation()?;
+        let previous_area = self
+            .agriculture
+            .site_for_building(building_idx)
+            .map_or(0.0, |site| site.area_m2);
         // Captured before the commit: a resize has to give back the ground the old polygon
         // covered as well as take the ground the new one covers.
         let previous = self
@@ -1663,6 +1740,7 @@ impl SimCore {
             &self.zoning,
             &self.transit_network.road_surface,
         )?;
+        self.charge_industry_area_expansion(building_idx, previous_area, summary.area_m2);
         for bounds in [previous, committed].into_iter().flatten() {
             self.zoning.mark_cell_lots_dirty(
                 crate::simulation::zoning::cells::CellBounds::from_points(
@@ -2964,6 +3042,7 @@ mod tests {
                 status: ShipmentStatus::InTransit,
                 carrier_agent_id: usize::MAX,
                 total_cost: 800.0,
+                freight_cost: 0.0,
                 eta_hours: 1,
                 queued_hours: 0,
             });
@@ -3088,18 +3167,35 @@ mod tests {
 
     #[test]
     fn bulldoze_coincident_classes_removes_one_and_rejects_stale_target() {
-        use crate::simulation::vegetation::edits::{AuthoredPlant, VegetationCell, VegetationLayer};
+        use crate::simulation::vegetation::edits::{
+            AuthoredPlant, VegetationCell, VegetationLayer,
+        };
         let mut core = test_core();
         core.vegetation.config.enabled = false;
         core.prepare_bulldoze_target_indices();
-        let cell = VegetationCell { layer: VegetationLayer::Canopy, x: 0, z: 0 };
+        let cell = VegetationCell {
+            layer: VegetationLayer::Canopy,
+            x: 0,
+            z: 0,
+        };
         for species in [2, 0] {
-            core.vegetation_edits.add(cell, AuthoredPlant {
-                x: 1.0, z: 1.0, yaw: 0.0, scale: 1.0, species, variant: 0,
-            });
+            core.vegetation_edits.add(
+                cell,
+                AuthoredPlant {
+                    x: 1.0,
+                    z: 1.0,
+                    yaw: 0.0,
+                    scale: 1.0,
+                    species,
+                    variant: 0,
+                },
+            );
         }
         let target = core.resolve_bulldoze_target(1.0, 1.0).unwrap();
-        assert_eq!(core.bulldoze_prepared_target_internal(target.clone()), Some(false));
+        assert_eq!(
+            core.bulldoze_prepared_target_internal(target.clone()),
+            Some(false)
+        );
         assert_eq!(core.vegetation_edits.cell(cell).1.len(), 1);
         assert_eq!(core.bulldoze_prepared_target_internal(target), None);
         assert!(core.undo_action_internal());

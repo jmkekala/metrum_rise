@@ -2,7 +2,7 @@
 
 //! Authored TOML schema for economy resources, profiles, and runtime tuning.
 
-use super::runtime::RuntimeEconomyTuning;
+use super::runtime::{QuantityUnit, RuntimeEconomyTuning};
 use super::serde_helpers::{deserialize_u16_from_number, deserialize_u32_from_number};
 use crate::simulation::work_area::EXPLICIT_WORK_AREA_BASE_M2;
 use serde::{Deserialize, Serialize};
@@ -56,6 +56,11 @@ pub(super) struct EconomyResource {
     /// Explicit, contiguous one-based identity, independent of name or file ordering.
     #[serde(deserialize_with = "deserialize_u16_from_number")]
     pub(super) runtime_id: u16,
+    /// Canonical measure used by every recipe, inventory and price for this resource.
+    pub(super) quantity_unit: QuantityUnit,
+    /// Minimum ordinary freight batch in kg, independent of vehicle payload; zero for services.
+    #[serde(default)]
+    pub(super) shipment_batch_kg: f32,
     /// Reference price for import-only goods that have no producing profile yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) import_unit_price_currency: Option<f32>,
@@ -74,6 +79,18 @@ pub(super) struct EconomyProfile {
     /// Field/extraction area receiving the authored worker count; output stays per hectare.
     #[serde(default = "default_worker_capacity_area_m2")]
     pub(super) worker_capacity_area_m2: f32,
+    /// Optional whole-site staffing ceiling for area-backed producers; land rates remain uncapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) area_worker_capacity_max: Option<u32>,
+    /// Minimum area accepted by field placement and edits; zero imposes no economic floor.
+    #[serde(default)]
+    pub(super) minimum_field_area_m2: f32,
+    /// Initial preparation cost for each added hectare of field or extraction area.
+    #[serde(default)]
+    pub(super) area_build_cost_per_hectare: f32,
+    /// Additional electricity (MJ), water (m³), sewage (m³) per operational hectare/day.
+    #[serde(default)]
+    pub(super) area_utility_units_per_hectare: [f32; 3],
     #[serde(default)]
     pub(super) base_rate_units_per_day: f32,
     #[serde(default)]
@@ -89,13 +106,13 @@ pub(super) struct EconomyProfile {
     #[serde(default)]
     pub(super) critical_threshold_days: f32,
     #[serde(default)]
-    pub(super) min_shipment_units: f32,
-    #[serde(default)]
     pub(super) consumption_rate_per_resident: f32,
     #[serde(default)]
     pub(super) starting_inventory_days: f32,
     #[serde(default)]
     pub(super) utility_service: Option<String>,
+    #[serde(default)]
+    pub(super) utility_quantity_unit: Option<QuantityUnit>,
     #[serde(default)]
     pub(super) work_schedule_profile: Option<String>,
     #[serde(default)]

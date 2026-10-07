@@ -152,6 +152,23 @@ fn test_demand_building_spawn_plan_executes_from_hourly_budget() {
         "b.res.house",
         ZoneClass::Residential,
     );
+    let employer_asset = register_test_asset(
+        &mut allocator,
+        "base",
+        "b.ind.factory",
+        ZoneClass::Industrial,
+    );
+    let mut employer = indexed_test_building(employer_asset, ZoneType::Industrial, 0);
+    employer.center_x = 100.0;
+    employer.operating_budget = 10_000.0;
+    employer.economy_profile_runtime_id =
+        crate::simulation::economy::definitions::load_runtime_economy_catalog()
+            .unwrap()
+            .profile_for_id("food_processor_basic")
+            .unwrap()
+            .runtime_id;
+    allocator.buildings.push(employer);
+    allocator.rebuild_zone_index();
     let mut zoning = crate::simulation::zoning::ZoningSystem::new(&WorldConfig::default());
     let mut graph = RegionGraph::new();
     let mut network = crate::simulation::network::TransitNetwork::new();
@@ -188,7 +205,7 @@ fn test_demand_building_spawn_plan_executes_from_hourly_budget() {
     }
     assert!(
         !demand.building_actions.residential.spawns.is_empty(),
-        "pioneer demand and legal zoning should produce at least one residential spawn action across hourly demand credit"
+        "funded jobs and legal zoning should produce a residential spawn across hourly demand credit"
     );
 
     let terrain = compiled_flat_test_terrain(&mut network, &graph);
