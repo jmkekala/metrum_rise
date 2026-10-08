@@ -170,7 +170,7 @@ fn grocery_production_and_inputs_follow_demand_below_rounded_worker_capacity() {
         (targets.0 - 100.0).abs() < 0.001,
         "90 kg for three days retain the two-batch minimum, not 120 kg for rounded staffing"
     );
-    assert!((operating_input_demand_scale(&catalog, &grocery, profile) - 0.15).abs() < 0.001);
+    assert!((funded_input_demand_scale(&grocery, profile, 0.15) - 0.15).abs() < 0.001);
 }
 
 #[test]
@@ -319,8 +319,8 @@ fn explicit_work_area_activity_requires_owa_gateway_or_local_demand() {
 #[test]
 fn grain_farm_density_preserves_area_yield_and_startup_runway() {
     use crate::simulation::agriculture::{AgricultureSystem, FieldSite};
-    use crate::simulation::economy::households::metrics::active_worker_capacity_equivalent_for_profile_with_floor_scale;
     use crate::simulation::work_area::top_up_explicit_work_area_startup_budget;
+    use crate::simulation::work_area::{minimum_work_area_workers, work_area_worker_equivalent};
 
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
     let tuning = load_runtime_economy_tuning().expect("runtime economy tuning");
@@ -367,8 +367,11 @@ fn grain_farm_density_preserves_area_yield_and_startup_runway() {
             workers
         );
         assert!(
-            (active_worker_capacity_equivalent_for_profile_with_floor_scale(
-                &catalog, farm, profile, 1.0
+            (work_area_worker_equivalent(
+                profile.workers_per_hectare,
+                farm.work_area_scale,
+                minimum_work_area_workers(profile.kind),
+                profile.area_worker_capacity_max,
             ) - if hectares > 0.0 {
                 (hectares * 0.1).clamp(2.0, 6.0)
             } else {

@@ -113,32 +113,13 @@ pub(crate) struct LoadedSimulation {
 }
 
 struct DemandStateRow {
-    residential: f32,
-    commercial: f32,
-    industrial: f32,
     households_to_admit_today: i64,
     households_to_remove_today: i64,
-    admission_action_credit: f32,
-    removal_action_credit: f32,
     persistent_exit_action_credit: f32,
-    spawn_action_credit: [f32; 3],
     upgrade_action_credit: [f32; 3],
     downgrade_action_credit: [f32; 3],
     despawn_action_credit: [f32; 3],
-    spawn_hysteresis_active: [bool; 3],
-    upgrade_hysteresis_active: [bool; 3],
-    downgrade_hysteresis_active: [bool; 3],
-    despawn_hysteresis_active: [bool; 3],
-    recent_household_failure_pressure: f32,
     cheat_max_demands_enabled: bool,
-}
-
-fn demand_bool_triplet(row: &rusqlite::Row<'_>, start: usize) -> rusqlite::Result<[bool; 3]> {
-    Ok([
-        row.get::<_, i64>(start)? != 0,
-        row.get::<_, i64>(start + 1)? != 0,
-        row.get::<_, i64>(start + 2)? != 0,
-    ])
 }
 
 fn sqlite_table_exists(conn: &Connection, table_name: &str) -> SaveLoadResult<bool> {
@@ -564,49 +545,27 @@ pub(crate) fn load_from_sqlite(
     let water = world::load_water(&conn, &config, terrain.width, terrain.height)?;
     let resource_deposits = world::load_resource_deposits(&conn, &config)?;
     let demand_row = conn.query_row(
-        "SELECT residential, commercial, industrial, households_to_admit_today, households_to_remove_today, admission_action_credit, removal_action_credit, persistent_exit_action_credit, spawn_action_credit_residential, spawn_action_credit_commercial, spawn_action_credit_industrial, upgrade_action_credit_residential, upgrade_action_credit_commercial, upgrade_action_credit_industrial, downgrade_action_credit_residential, downgrade_action_credit_commercial, downgrade_action_credit_industrial, despawn_action_credit_residential, despawn_action_credit_commercial, despawn_action_credit_industrial, spawn_hysteresis_active_residential, spawn_hysteresis_active_commercial, spawn_hysteresis_active_industrial, upgrade_hysteresis_active_residential, upgrade_hysteresis_active_commercial, upgrade_hysteresis_active_industrial, downgrade_hysteresis_active_residential, downgrade_hysteresis_active_commercial, downgrade_hysteresis_active_industrial, despawn_hysteresis_active_residential, despawn_hysteresis_active_commercial, despawn_hysteresis_active_industrial, recent_household_failure_pressure, cheat_max_demands_enabled FROM demand_state LIMIT 1",
+        "SELECT households_to_admit_today, households_to_remove_today, persistent_exit_action_credit, upgrade_action_credit_residential, upgrade_action_credit_commercial, upgrade_action_credit_industrial, downgrade_action_credit_residential, downgrade_action_credit_commercial, downgrade_action_credit_industrial, despawn_action_credit_residential, despawn_action_credit_commercial, despawn_action_credit_industrial, cheat_max_demands_enabled FROM demand_state LIMIT 1",
         [],
         |r| {
             Ok(DemandStateRow {
-                residential: r.get(0)?,
-                commercial: r.get(1)?,
-                industrial: r.get(2)?,
-                households_to_admit_today: r.get(3)?,
-                households_to_remove_today: r.get(4)?,
-                admission_action_credit: r.get(5)?,
-                removal_action_credit: r.get(6)?,
-                persistent_exit_action_credit: r.get(7)?,
-                spawn_action_credit: [r.get(8)?, r.get(9)?, r.get(10)?],
-                upgrade_action_credit: [r.get(11)?, r.get(12)?, r.get(13)?],
-                downgrade_action_credit: [r.get(14)?, r.get(15)?, r.get(16)?],
-                despawn_action_credit: [r.get(17)?, r.get(18)?, r.get(19)?],
-                spawn_hysteresis_active: demand_bool_triplet(r, 20)?,
-                upgrade_hysteresis_active: demand_bool_triplet(r, 23)?,
-                downgrade_hysteresis_active: demand_bool_triplet(r, 26)?,
-                despawn_hysteresis_active: demand_bool_triplet(r, 29)?,
-                recent_household_failure_pressure: r.get(32)?,
-                cheat_max_demands_enabled: r.get::<_, i64>(33)? != 0,
+                households_to_admit_today: r.get(0)?,
+                households_to_remove_today: r.get(1)?,
+                persistent_exit_action_credit: r.get(2)?,
+                upgrade_action_credit: [r.get(3)?, r.get(4)?, r.get(5)?],
+                downgrade_action_credit: [r.get(6)?, r.get(7)?, r.get(8)?],
+                despawn_action_credit: [r.get(9)?, r.get(10)?, r.get(11)?],
+                cheat_max_demands_enabled: r.get::<_, i64>(12)? != 0,
             })
         },
     )?;
     let demand = DemandSystem::with_persisted_state(
-        demand_row.residential,
-        demand_row.commercial,
-        demand_row.industrial,
         i64_to_u32(demand_row.households_to_admit_today)?,
         i64_to_u32(demand_row.households_to_remove_today)?,
-        demand_row.admission_action_credit,
-        demand_row.removal_action_credit,
         demand_row.persistent_exit_action_credit,
-        demand_row.spawn_action_credit,
         demand_row.upgrade_action_credit,
         demand_row.downgrade_action_credit,
         demand_row.despawn_action_credit,
-        demand_row.spawn_hysteresis_active,
-        demand_row.upgrade_hysteresis_active,
-        demand_row.downgrade_hysteresis_active,
-        demand_row.despawn_hysteresis_active,
-        demand_row.recent_household_failure_pressure,
         demand_row.cheat_max_demands_enabled,
     );
     let mut pending_demand_spawns = world::load_pending_demand_spawns(&conn)?;
@@ -702,7 +661,7 @@ pub(crate) fn load_from_sqlite(
         version,
         &mut agents,
         &graph,
-        &transit_network,
+        &mut transit_network,
         &allocator,
     )?;
     world::repaint_building_occupancy(&mut zoning, &allocator)?;
@@ -739,6 +698,7 @@ pub(crate) fn load_from_sqlite(
     };
     let fiscal_policy = load_fiscal_policy(&conn)?;
     let budget_history = load_budget_history(&conn, version)?;
+    households.rebuild_household_shopping_access(&agents);
 
     Ok(LoadedSimulation {
         vegetation,

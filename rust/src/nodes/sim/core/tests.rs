@@ -6,6 +6,7 @@ mod building_lod_fixture;
 mod building_site_terrain;
 mod cold_node_edit_latency;
 mod commute_bounds;
+mod construction_throughput;
 pub(super) mod fields;
 mod road_plan_scaling;
 mod road_terrain_plan;
@@ -1362,7 +1363,7 @@ fn max_demand_cheat_runtime_queues_and_executes_rci_spawns() {
     place_test_parcel_run(&mut core, ZoneType::Industrial, 110.0, 150.0);
 
     core.apply_money_and_max_demand_cheat(1_000_000.0);
-    core.execute_hourly_demand_pass(1, 0, &[]);
+    core.execute_hourly_demand_pass(1, 0);
 
     assert!(
         core.pending_demand_spawns
@@ -1406,6 +1407,481 @@ fn max_demand_cheat_runtime_queues_and_executes_rci_spawns() {
             .buildings
             .iter()
             .any(|building| building.zone_type == ZoneType::Industrial)
+    );
+}
+
+#[test]
+fn hourly_planning_does_not_queue_the_same_parcel_twice() {
+    let mut core = test_core();
+    add_test_border_road(&mut core);
+    register_test_asset(
+        &mut core.allocator,
+        "queued_residential",
+        ZoneType::Residential,
+    );
+    register_test_asset(
+        &mut core.allocator,
+        "queued_industrial",
+        ZoneType::Industrial,
+    );
+    place_test_parcel_run(&mut core, ZoneType::Residential, 10.0, 50.0);
+    place_test_parcel_run(&mut core, ZoneType::Industrial, 110.0, 150.0);
+    core.apply_money_and_max_demand_cheat(1_000_000.0);
+    core.execute_hourly_demand_pass(1, 0);
+    assert!(!core.pending_demand_spawns.is_empty());
+    // Keep the first batch queued while another hour plans. Other parcels may still grow.
+    for pending in &mut core.pending_demand_spawns {
+        pending.due_minute += 120;
+    }
+    core.execute_hourly_demand_pass(1, 60);
+    let mut parcels: Vec<_> = core
+        .pending_demand_spawns
+        .iter()
+        .map(|pending| pending.action.parcel_id)
+        .collect();
+    parcels.sort_unstable();
+    assert!(parcels.windows(2).all(|pair| pair[0] != pair[1]));
+}
+
+fn construction_execution_fixture() -> (SimCore, Vec<DemandSpawnAction>, Vec<DemandSpawnAction>) {
+    let mut core = test_core();
+    add_test_border_road(&mut core);
+    let home = register_test_asset(&mut core.allocator, "execution_home", ZoneType::Residential);
+    let factory = register_test_asset(
+        &mut core.allocator,
+        "execution_factory",
+        ZoneType::Industrial,
+    );
+    place_test_parcel_run(&mut core, ZoneType::Residential, 10.0, 90.0);
+    place_test_parcel_run(&mut core, ZoneType::Industrial, 110.0, 170.0);
+    core.allocator
+        .prepare_building_site_query_index(core.config.zone_cell_m);
+    let mut homes = Vec::new();
+    let mut factories = Vec::new();
+    for parcel in core.zoning.parcels() {
+        let zone = core
+            .zoning
+            .profiles
+            .profile_by_runtime_id(parcel.zone_profile_runtime_id())
+            .unwrap()
+            .zone_type;
+        let (actions, asset) = if zone == ZoneType::Residential {
+            (&mut homes, &home)
+        } else {
+            (&mut factories, &factory)
+        };
+        actions.push(DemandSpawnAction {
+            parcel_id: parcel.id().raw(),
+            asset_id: asset.clone(),
+        });
+    }
+    assert!(homes.len() >= 2 && factories.len() >= 2);
+    (core, homes, factories)
+}
+
+fn execute_test_construction(
+    core: &mut SimCore,
+    action: &DemandSpawnAction,
+    zone: ZoneType,
+    minute: u16,
+) {
+    core.pending_demand_spawns
+        .push_back(super::state::PendingDemandSpawnAction {
+            due_minute: u64::from(minute),
+            zone_type: zone,
+            action: action.clone(),
+            planned_day_index: 1,
+            planned_minute_of_day: 0,
+        });
+    assert_eq!(core.execute_pending_demand_spawns_for_minute(1, minute), 1);
+}
+
+#[test]
+fn completed_homes_rehouse_existing_residents_before_hourly_arrivals() {
+    use crate::simulation::economy::agents::{AGE_ADULT, HouseholdAgeComposition};
+    use crate::simulation::economy::definitions::load_runtime_economy_tuning;
+
+    let (mut core, homes, _) = construction_execution_fixture();
+    execute_test_construction(&mut core, &homes[0], ZoneType::Residential, 1);
+    let slots = core
+        .allocator
+        .registry
+        .household_capacity(&homes[0].asset_id);
+    core.allocator.buildings[0].construction_remaining_hours = 1;
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let tuning = load_runtime_economy_tuning().unwrap();
+    for _ in 0..slots {
+        let household = core.households.admit_immigrant_household(
+            &catalog,
+            &tuning,
+            usize::MAX,
+            1,
+            HouseholdAgeComposition {
+                adult_count: 1,
+                ..Default::default()
+            },
+        );
+        // Existing displaced residents have savings; immigrant seed cash alone need not
+        // meet the ordinary relocation reserve requirement.
+        core.households.households[household].budget = 1_000.0;
+        let agent = core
+            .agents
+            .spawn_housed_agent_with_age_group(usize::MAX, 0.0, 0.0, AGE_ADULT);
+        core.agents.assign_household_id(agent, household);
+    }
+    core.simulate_operational_hour_internal(1, 60);
+    assert!(!core.allocator.buildings[0].is_under_construction());
+    assert_eq!(core.allocator.buildings[0].occupancy, slots);
+    assert!(
+        core.households
+            .households
+            .iter()
+            .all(|household| household.home_building_id == 0)
+    );
+    assert!(core.agents.home_building.iter().all(|&home| home == 0));
+    assert_eq!(core.households.pending_arrivals.households, 0);
+}
+
+#[test]
+fn future_homes_rehouse_nonworkers_before_funding_factory_construction() {
+    use crate::simulation::economy::agents::HouseholdAgeComposition;
+    use crate::simulation::economy::definitions::load_runtime_economy_tuning;
+
+    let (mut core, homes, factories) = construction_execution_fixture();
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let tuning = load_runtime_economy_tuning().unwrap();
+    for _ in 0..4 {
+        let household = core.households.admit_immigrant_household(
+            &catalog, &tuning, usize::MAX, 1,
+            HouseholdAgeComposition { elder_count: 1, ..Default::default() },
+        );
+        core.households.households[household].budget = 10_000.0;
+    }
+    execute_test_construction(&mut core, &homes[0], ZoneType::Residential, 1);
+    execute_test_construction(&mut core, &homes[1], ZoneType::Residential, 2);
+    execute_test_construction(&mut core, &factories[0], ZoneType::Industrial, 3);
+    assert_eq!(core.allocator.buildings.len(), 2,
+        "four displaced nonworker households leave only eight prospective workers");
+    assert!(core.allocator.buildings.iter().all(|building| building.operating_budget == 0.0));
+    execute_test_construction(&mut core, &homes[2], ZoneType::Residential, 4);
+    execute_test_construction(&mut core, &factories[0], ZoneType::Industrial, 5);
+    assert_eq!(core.allocator.buildings.len(), 4);
+    assert_eq!(core.allocator.buildings[3].worker_count, 0);
+    assert!(core.allocator.buildings[3].operating_budget > 0.0);
+}
+
+#[test]
+fn failed_supporting_housing_prevents_owner_funding_and_labor_is_not_reused() {
+    let (mut core, homes, factories) = construction_execution_fixture();
+    let mut failed_home = homes[1].clone();
+    failed_home.asset_id = "missing:home".to_owned();
+    execute_test_construction(&mut core, &failed_home, ZoneType::Residential, 1);
+    execute_test_construction(&mut core, &homes[0], ZoneType::Residential, 2);
+    assert_eq!(core.allocator.buildings.len(), 1);
+    execute_test_construction(&mut core, &factories[0], ZoneType::Industrial, 3);
+    assert_eq!(
+        core.allocator.buildings.len(),
+        1,
+        "six housed workers cannot staff ten jobs"
+    );
+    assert_eq!(
+        core.allocator
+            .buildings
+            .iter()
+            .map(|b| b.operating_budget)
+            .sum::<f32>(),
+        0.0
+    );
+
+    execute_test_construction(&mut core, &homes[1], ZoneType::Residential, 4);
+    execute_test_construction(&mut core, &factories[0], ZoneType::Industrial, 5);
+    assert_eq!(core.allocator.buildings.len(), 3);
+    execute_test_construction(&mut core, &factories[1], ZoneType::Industrial, 6);
+    let industry: Vec<_> = core
+        .allocator
+        .buildings
+        .iter()
+        .filter(|b| b.zone_type == ZoneType::Industrial)
+        .collect();
+    assert_eq!(
+        industry.len(),
+        1,
+        "a second factory cannot reuse the first factory's workforce"
+    );
+    let catalog = core.demand.runtime_catalog();
+    let profile = catalog.profile_for_id("food_processor_basic").unwrap();
+    assert_eq!(
+        industry[0].operating_budget,
+        profile.zoned_startup_budget(
+            catalog,
+            core.demand.runtime_tuning().owa_import_price_multiplier
+        )
+    );
+}
+
+#[test]
+fn independent_factories_can_start_together_when_each_has_its_own_workforce() {
+    let (mut core, homes, factories) = construction_execution_fixture();
+    assert!(homes.len() >= 4);
+    for (index, home) in homes.iter().take(4).enumerate() {
+        execute_test_construction(&mut core, home, ZoneType::Residential, index as u16 + 1);
+    }
+    execute_test_construction(&mut core, &factories[0], ZoneType::Industrial, 5);
+    execute_test_construction(&mut core, &factories[1], ZoneType::Industrial, 6);
+    let industry: Vec<_> = core
+        .allocator
+        .buildings
+        .iter()
+        .filter(|building| building.zone_type == ZoneType::Industrial)
+        .collect();
+    assert_eq!(
+        industry.len(),
+        2,
+        "the first unfinished factory cannot veto an independent entrant"
+    );
+    assert!(
+        industry
+            .iter()
+            .all(|building| building.is_under_construction()
+                && building.worker_count == 0
+                && building.revenue == 0.0)
+    );
+}
+
+#[test]
+fn business_planning_prices_the_actual_freight_route() {
+    for expensive in [false, true] {
+        let (mut core, _, _) = construction_execution_fixture();
+        if expensive {
+            for lane in &mut core.transit_network.lane_system.lanes {
+                lane.frontage_delay_penalty_s = 1_000_000.0;
+            }
+            core.transit_network.frontage_delay_revision += 1;
+        }
+        core.execute_hourly_demand_pass(1, 0);
+        let factories = core
+            .pending_demand_spawns
+            .iter()
+            .filter(|pending| pending.zone_type == ZoneType::Industrial)
+            .count();
+        if expensive {
+            assert_eq!(
+                factories, 0,
+                "exports cannot fund the proposed site's freight bill"
+            );
+        } else {
+            assert!(
+                factories > 0,
+                "a reachable, profitable site must still grow"
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "manual release locality of queued-project validation; setup and census timed separately"]
+fn benchmark_queued_project_validation() {
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    for background in [0, 2_048, 16_384, 131_072] {
+        let (mut core, homes, factories) = construction_execution_fixture();
+        execute_test_construction(&mut core, &homes[0], ZoneType::Residential, 1);
+        execute_test_construction(&mut core, &homes[1], ZoneType::Residential, 2);
+        // Only the census consumes these background records. Do not run physical placement,
+        // agent movement or indexed building queries on this deliberately isolated fixture.
+        let background_home = core.allocator.buildings[0].clone();
+        core.allocator
+            .buildings
+            .resize(background + 2, background_home);
+        let prepare = |core: &mut SimCore, index: usize| {
+            core.demand.prepare_queued_spawn(
+                &factories[index % factories.len()],
+                ZoneType::Industrial,
+                &core.allocator,
+                &core.households,
+                &core.region_graph,
+                3,
+                &core.transit_network,
+                &mut core.logistics,
+                &core.zoning,
+                core.treasury.balance,
+                &core.fiscal_policy,
+            )
+        };
+        let balance = core.treasury.balance;
+        let mut samples = [[0.0_f64; 2]; 9];
+        for round in 0..12 {
+            core.demand.invalidate_construction_execution();
+            let start = Instant::now();
+            assert!(black_box(prepare(&mut core, 0)).is_ok());
+            let cold_ms = start.elapsed().as_secs_f64() * 1_000.0;
+            let start = Instant::now();
+            for index in 0..1_024 {
+                // Uncommitted permits model placement rejection: repeat checks must neither
+                // spend owner money nor claim workers/customers nor rebuild the city census.
+                assert!(black_box(prepare(&mut core, index)).is_ok());
+            }
+            let warm_ms = start.elapsed().as_secs_f64() * 1_000.0;
+            assert_eq!(core.treasury.balance, balance);
+            assert_eq!(core.allocator.buildings.len(), background + 2);
+            if round >= 3 {
+                samples[round - 3] = [cold_ms, warm_ms];
+            }
+        }
+        let median = |column| {
+            let mut values = samples.map(|sample| sample[column]);
+            values.sort_by(f64::total_cmp);
+            values[4]
+        };
+        eprintln!(
+            "queued_validation background={background} checks=1024 census_and_first_check_ms={:.3} warm_checks_ms={:.3}",
+            median(0),
+            median(1)
+        );
+    }
+}
+
+#[test]
+fn queued_business_reprices_freight_before_owner_funding() {
+    let (mut core, homes, factories) = construction_execution_fixture();
+    execute_test_construction(&mut core, &homes[0], ZoneType::Residential, 1);
+    execute_test_construction(&mut core, &homes[1], ZoneType::Residential, 2);
+    let action = &factories[0];
+    let prepare = |core: &mut SimCore| {
+        core.demand.prepare_queued_spawn(
+            action,
+            ZoneType::Industrial,
+            &core.allocator,
+            &core.households,
+            &core.region_graph,
+            3,
+            &core.transit_network,
+            &mut core.logistics,
+            &core.zoning,
+            core.treasury.balance,
+            &core.fiscal_policy,
+        )
+    };
+    assert!(prepare(&mut core).is_ok());
+    let before = core.allocator.buildings.len();
+    for lane in &mut core.transit_network.lane_system.lanes {
+        lane.frontage_delay_penalty_s = 1_000_000.0;
+    }
+    core.transit_network.frontage_delay_revision += 1;
+    assert!(matches!(
+        prepare(&mut core),
+        Err("market-cannot-fund-operation")
+    ));
+    execute_test_construction(&mut core, action, ZoneType::Industrial, 3);
+    assert_eq!(core.allocator.buildings.len(), before);
+    assert!(
+        core.allocator
+            .buildings
+            .iter()
+            .all(|b| b.operating_budget == 0.0)
+    );
+    for lane in &mut core.transit_network.lane_system.lanes {
+        lane.frontage_delay_penalty_s = 0.0;
+    }
+    core.transit_network.frontage_delay_revision += 1;
+    let edge = core
+        .zoning
+        .parcel_by_raw_id(action.parcel_id)
+        .unwrap()
+        .edge_idx();
+    core.region_graph.edge_mut(edge).allowed_types = TransitFlags::FOOT;
+    // This isolated access probe bypasses the normal topology-edit revision updates.
+    core.demand.invalidate_construction_execution();
+    assert!(
+        matches!(prepare(&mut core), Err("market-cannot-fund-operation")),
+        "a gateway elsewhere cannot supply an entrance without vehicle access"
+    );
+    core.region_graph.edge_mut(edge).allowed_types = TransitFlags::FOOT | TransitFlags::CAR;
+    core.demand.invalidate_construction_execution();
+    let entrance = core
+        .allocator
+        .demand_site_entrance(
+            action.parcel_id,
+            &action.asset_id,
+            &core.zoning,
+            &core.region_graph,
+            &core.transit_network.lane_system,
+        )
+        .unwrap();
+    let borders = [0]; // add_test_border_road marks its first endpoint as the gateway.
+    let quote = core
+        .logistics
+        .site_carrier_quote(
+            &entrance,
+            &core.transit_network,
+            &core.region_graph,
+            &borders,
+            core.demand.runtime_tuning(),
+        )
+        .unwrap();
+    execute_test_construction(&mut core, action, ZoneType::Industrial, 4);
+    assert_eq!(core.allocator.buildings.len(), before + 1);
+    let placed = &core.allocator.entrances[before];
+    assert_eq!(entrance.door_pos, placed.door_pos);
+    assert_eq!(entrance.car_lane_fwd, placed.car_lane_fwd);
+    assert_eq!(entrance.car_lane_bkw, placed.car_lane_bkw);
+    let mut quotes = vec![None; core.allocator.buildings.len()];
+    core.logistics.write_border_carrier_quotes(
+        &core.allocator,
+        &core.transit_network,
+        &core.region_graph,
+        &borders,
+        core.demand.runtime_catalog(),
+        core.demand.runtime_tuning(),
+        &mut quotes,
+    );
+    assert_eq!(
+        quotes[before],
+        Some(quote),
+        "the proposed price must equal live hiring/dispatch"
+    );
+}
+
+#[test]
+fn construction_execution_revalidates_after_a_supporting_home_is_bulldozed() {
+    let (mut core, homes, factories) = construction_execution_fixture();
+    execute_test_construction(&mut core, &homes[0], ZoneType::Residential, 1);
+    execute_test_construction(&mut core, &homes[1], ZoneType::Residential, 2);
+    assert!(
+        core.demand
+            .prepare_queued_spawn(
+                &factories[0],
+                ZoneType::Industrial,
+                &core.allocator,
+                &core.households,
+                &core.region_graph,
+                3,
+                &core.transit_network,
+                &mut core.logistics,
+                &core.zoning,
+                core.treasury.balance,
+                &core.fiscal_policy,
+            )
+            .is_ok()
+    );
+    assert!(core.allocator.remove_building_for_bulldoze(
+        0,
+        &mut core.zoning,
+        &mut core.agents,
+        &mut core.households,
+        &mut core.logistics,
+        &mut core.treasury.balance,
+    ));
+    execute_test_construction(&mut core, &factories[0], ZoneType::Industrial, 3);
+    assert_eq!(core.allocator.buildings.len(), 1);
+    assert_eq!(core.allocator.buildings[0].zone_type, ZoneType::Residential);
+    execute_test_construction(&mut core, &homes[0], ZoneType::Residential, 4);
+    execute_test_construction(&mut core, &factories[0], ZoneType::Industrial, 5);
+    assert_eq!(
+        core.allocator.buildings.len(),
+        3,
+        "replacement housing restores the independent opportunity"
     );
 }
 

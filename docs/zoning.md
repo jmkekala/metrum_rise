@@ -99,7 +99,8 @@ rust/src/simulation/zoning/parcels/placement/run/spacing.rs
 - `profiles.rs`: profile module routing and public re-exports
 - `profiles/runtime.rs`: density and runtime profile value types
 - `profiles/registry.rs`: public registry API and built-in registry cache
-- `profiles/authored.rs`: TOML loading for zoning and demand growth profiles
+- `profiles/authored.rs`: TOML loading for zoning profiles; growth thresholds and
+  `growth_profile_id` references were removed with demand format 81
 - `profiles/compile.rs`: deterministic profile validation and runtime-id assignment
 - `parcels.rs`: parcel module routing and public re-exports
 - `types.rs`: ids, parcel structs, projected geometry, placement errors

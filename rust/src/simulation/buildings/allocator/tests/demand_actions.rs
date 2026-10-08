@@ -197,6 +197,22 @@ fn test_demand_building_spawn_plan_executes_from_hourly_budget() {
     );
 
     let mut demand = DemandSystem::new();
+    network.rebuild_pathing_if_dirty(&mut graph);
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    households.job_funding.refresh(
+        &allocator,
+        &households.households,
+        &mut logistics,
+        &network,
+        &graph,
+        demand.runtime_catalog(),
+        demand.runtime_tuning(),
+        &crate::simulation::economy::fiscal::CityFiscalPolicy::from_runtime_tuning(
+            demand.runtime_tuning(),
+        ),
+        &[],
+        100_000.0, 420,
+    );
     for _ in 0..24 {
         demand.run_hourly_pass(&allocator, &households, &graph, &zoning, 1_000.0);
         if !demand.building_actions.residential.spawns.is_empty() {
@@ -316,6 +332,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         building.side_offset = 1.0;
         building.level = level;
         building.occupancy = occupancy;
+        building.is_deserted = parcel_slot == 2;
         building.operating_budget = 0.0;
         building.profit_tax_budget_baseline = 0.0;
         assert!(zoning.occupy_parcel(building.parcel_id, allocator.buildings.len()));

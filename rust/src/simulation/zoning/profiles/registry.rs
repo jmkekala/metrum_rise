@@ -2,7 +2,7 @@
 
 //! Public zoning-profile registry API.
 
-use super::authored::{load_authored_zone_profiles, load_builtin_growth_profile_ids};
+use super::authored::load_authored_zone_profiles;
 use super::compile::compile_registry;
 use super::runtime::{ZoneDensity, ZoneProfileRuntime};
 use crate::simulation::zoning::ZoneType;
@@ -126,8 +126,7 @@ pub fn load_builtin_profile_registry() -> Result<Arc<ZoningProfileRegistry>, Str
 
 fn load_registry_from_disk() -> Result<ZoningProfileRegistry, String> {
     let authored_profiles = load_authored_zone_profiles()?;
-    let growth_profile_ids = load_builtin_growth_profile_ids()?;
-    compile_registry(authored_profiles, &growth_profile_ids)
+    compile_registry(authored_profiles)
 }
 
 #[cfg(test)]

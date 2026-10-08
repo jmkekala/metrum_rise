@@ -178,10 +178,9 @@ impl PopulatedCity {
                 .div_ceil(RESIDENTS_PER_HOUSEHOLD);
             let launched = core
                 .allocator
-                .execute_demand_household_admission_with_preference(
+                .execute_demand_household_admission_with_income(
                     wanted,
                     core.households.households.len(),
-                    false,
                     &mut core.agents,
                     &core.transit_network,
                     &core.region_graph,

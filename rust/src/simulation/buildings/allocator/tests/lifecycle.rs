@@ -585,11 +585,59 @@ fn test_immigration_claims_vacant_home() {
         &mut network,
         &mut graph,
     );
-    let expected_household_size = allocator
-        .next_household_admission_candidate()
-        .expect("vacant residential admission candidate")
-        .1;
-    allocator.execute_demand_household_admission(1, &mut agents, &network, &graph);
+    let mut rejected = 0;
+    assert_eq!(
+        allocator.execute_demand_household_admission_with_income(
+            1,
+            0,
+            &mut agents,
+            &network,
+            &graph,
+            |_, _, _| {
+                rejected += 1;
+                false
+            }
+        ),
+        0
+    );
+    assert_eq!(
+        rejected, 16,
+        "unaffordable applicants must not trigger an unbounded search"
+    );
+    assert!(agents.is_empty());
+    assert_eq!(allocator.buildings[0].occupancy, 0);
+    let mut examined = 0;
+    let mut expected_household_size = 0;
+    let mut accepted_composition = Default::default();
+    let launched = allocator.execute_demand_household_admission_with_income(
+        1,
+        0,
+        &mut agents,
+        &network,
+        &graph,
+        |composition, size, _| {
+            examined += 1;
+            if examined == 1 {
+                return false;
+            }
+            expected_household_size = size;
+            accepted_composition = composition;
+            true
+        },
+    );
+    assert_eq!(
+        examined, 2,
+        "a rejected applicant must not end the same hourly batch"
+    );
+    assert_eq!(launched, 1);
+    assert_eq!(
+        allocator.buildings[0].occupancy, 1,
+        "the rejected applicant must not reserve a home"
+    );
+    assert_eq!(
+        agents.pending_household_composition(0),
+        accepted_composition
+    );
 
     assert_eq!(
         agents.len(),
@@ -752,9 +800,7 @@ fn test_hourly_startup_admission_avoids_zero_rounding() {
     }
     assert!(
         demand.households_to_admit_today > 0,
-        "hourly demand credit should accumulate into a household-admission output from open-job pull; credit={:.3} residential={:.3}",
-        demand.admission_action_credit,
-        demand.residential,
+        "live jobs should permit an admission batch",
     );
     allocator.execute_demand_household_admission(
         demand.households_to_admit_today,

@@ -2,6 +2,7 @@
 
 //! Demand diagnostics snapshots and debug logging.
 
+use super::snapshot::DailyDemandSnapshot;
 use super::system::DemandSystem;
 use super::types::DemandUse;
 use crate::debug_log;
@@ -12,61 +13,21 @@ pub(crate) struct HouseholdAdmissionDiagnostics {
     pub(crate) total_household_count: u32,
     pub(crate) vacant_household_slots: u32,
     pub(crate) connected_border_count: u32,
-    pub(crate) housing_availability: f32,
     pub(crate) incoming_household_need: f32,
-    pub(crate) open_job_household_pull: f32,
-    pub(crate) marginal_commercial_job_household_pull: f32,
-    pub(crate) regional_growth_household_pull: f32,
-    pub(crate) household_affordability: f32,
-    pub(crate) move_in_acceptance: f32,
-    pub(crate) residential_construction_viability: f32,
-    pub(crate) move_in_search_runway_days: f32,
-    pub(crate) candidate_household_size: f32,
-    pub(crate) candidate_child_count: u16,
-    pub(crate) candidate_adult_count: u16,
-    pub(crate) candidate_elder_count: u16,
-    pub(crate) candidate_effective_workers: f32,
     pub(crate) open_job_slots: u32,
-    pub(crate) marginal_commercial_job_slots: u32,
-    pub(crate) marginal_commercial_job_equivalent_slots: f32,
     pub(crate) move_in_job_slots: u32,
-    pub(crate) move_in_job_equivalent_slots: f32,
     pub(crate) physical_worker_capacity: u32,
     pub(crate) funded_worker_capacity: u32,
     pub(crate) open_jobs_unfunded: u32,
     pub(crate) existing_unemployed_member_count: u32,
-    pub(crate) expected_employed_members: f32,
-    pub(crate) expected_unemployed_members: f32,
-    pub(crate) expected_entry_wage_per_day: f32,
-    pub(crate) expected_wage_income_per_day: f32,
-    pub(crate) transfer_reliability: f32,
-    pub(crate) existing_transfer_claim_per_day: f32,
-    pub(crate) candidate_unemployment_claim_per_day: f32,
-    pub(crate) candidate_pension_claim_per_day: f32,
-    pub(crate) candidate_child_support_claim_per_day: f32,
-    pub(crate) candidate_transfer_claim_per_day: f32,
-    pub(crate) total_transfer_claim_per_day: f32,
-    pub(crate) expected_transfer_income_per_day: f32,
-    pub(crate) recurring_income_per_day: f32,
-    pub(crate) starter_savings: f32,
-    pub(crate) daily_essential_cost: f32,
-    pub(crate) daily_deficit: f32,
-    pub(crate) unhoused_household_ratio: f32,
-    pub(crate) unhoused_factor: f32,
-    pub(crate) zero_budget_household_ratio: f32,
-    pub(crate) zero_budget_factor: f32,
-    pub(crate) failure_factor: f32,
-    pub(crate) recent_failure_pressure: f32,
-    pub(crate) recent_failure_factor: f32,
-    pub(crate) base_pressure: f32,
-    pub(crate) pressure: f32,
-    pub(crate) threshold: f32,
-    pub(crate) normalized_action_pressure: f32,
-    pub(crate) credit_before: f32,
-    pub(crate) credit_after: f32,
-    pub(crate) max_actionable_households: u32,
     pub(crate) planned_households: u32,
     pub(crate) launched_households: u32,
+    /// Actual applicants checked against the batch's remaining recurring income.
+    pub(crate) examined_candidates: u32,
+    /// Applicants rejected without consuming wages, transfers or a home.
+    pub(crate) income_rejections: u32,
+    /// Nonworker applicants that would consume housing already promised to a workforce.
+    pub(crate) worker_housing_rejections: u32,
 }
 
 /// Inputs and execution counts from the latest daily removal pass.
@@ -79,15 +40,7 @@ pub(crate) struct HouseholdRemovalDiagnostics {
     pub(crate) persistent_exit_eligible_household_count: u32,
     pub(crate) unhoused_household_ratio: f32,
     pub(crate) zero_budget_household_ratio: f32,
-    pub(crate) failure_pressure: f32,
     pub(crate) removed_household_ratio: f32,
-    pub(crate) recent_failure_before: f32,
-    pub(crate) recent_failure_after: f32,
-    pub(crate) pressure: f32,
-    pub(crate) threshold: f32,
-    pub(crate) normalized_action_pressure: f32,
-    pub(crate) credit_before: f32,
-    pub(crate) credit_after: f32,
     pub(crate) persistent_exit_credit_before: f32,
     pub(crate) persistent_exit_credit_after: f32,
     pub(crate) persistent_exit_planned_households: u32,
@@ -122,38 +75,41 @@ impl BuildingActionDiagnosticsByUse {
     }
 }
 
-/// Candidate, pressure, credit and absorption decisions for one zone.
+/// Candidate, pacing, reservation and absorption decisions for one zone.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct BuildingActionDiagnostics {
-    pub(crate) pressure: f32,
     pub(crate) spawn_candidates: usize,
-    pub(crate) spawn_profile_missing: usize,
-    pub(crate) spawn_normalized_pressure: f32,
-    pub(crate) spawn_need_buildings: f32,
-    pub(crate) spawn_credit_before: f32,
-    pub(crate) spawn_credit_after: f32,
+    /// Whether an hourly planner has produced this record since world creation/load.
+    pub(crate) assessed: bool,
+    /// Legal asset and free-lot availability before economic decisions.
+    pub(crate) sites: super::actions::SpawnSiteAvailability,
+    /// Projects already physically under construction at assessment time.
+    pub(crate) constructing: u32,
+    /// Earlier projects still waiting in the placement queue at assessment time.
+    pub(crate) queued: u32,
+    /// Missing household places before this pass selects actual residential capacities.
+    pub(crate) housing_needed_slots: u32,
     pub(crate) spawn_planned: usize,
     pub(crate) spawn_selected: usize,
     pub(crate) spawn_rejected_absorption: usize,
     /// Service candidates whose remaining market cannot fund the first worker and overhead.
     pub(crate) spawn_rejected_viability: usize,
-    pub(crate) spawn_skipped_budget: usize,
+    /// Candidates whose workforce cannot be reserved by their construction completion.
+    pub(crate) spawn_rejected_workforce: usize,
+    pub(crate) spawn_not_needed: usize,
     pub(crate) upgrade_candidates: usize,
-    pub(crate) upgrade_normalized_pressure: f32,
     pub(crate) upgrade_budget_units: f32,
     pub(crate) upgrade_credit_before: f32,
     pub(crate) upgrade_credit_after: f32,
     pub(crate) upgrade_planned: usize,
     pub(crate) upgrade_selected: usize,
     pub(crate) downgrade_candidates: usize,
-    pub(crate) downgrade_normalized_pressure: f32,
     pub(crate) downgrade_budget_units: f32,
     pub(crate) downgrade_credit_before: f32,
     pub(crate) downgrade_credit_after: f32,
     pub(crate) downgrade_planned: usize,
     pub(crate) downgrade_selected: usize,
     pub(crate) despawn_candidates: usize,
-    pub(crate) despawn_normalized_pressure: f32,
     pub(crate) despawn_budget_units: f32,
     pub(crate) despawn_credit_before: f32,
     pub(crate) despawn_credit_after: f32,
@@ -177,112 +133,42 @@ impl DemandSystem {
         )
     }
 
-    /// Returns the compact admission diagnostics needed to explain load-time recomputation.
-    pub(crate) fn last_admission_debug_summary(
-        &self,
-    ) -> (u32, u32, u32, f32, f32, f32, f32, f32, f32, f32) {
-        let diagnostics = self.last_admission_diagnostics;
-        (
-            diagnostics.vacant_household_slots,
-            diagnostics.open_job_slots,
-            diagnostics.move_in_job_slots,
-            diagnostics.move_in_job_equivalent_slots,
-            diagnostics.regional_growth_household_pull,
-            diagnostics.open_job_household_pull,
-            diagnostics.marginal_commercial_job_household_pull,
-            diagnostics.incoming_household_need,
-            diagnostics.move_in_acceptance,
-            diagnostics.failure_factor,
-        )
+    /// Returns the current admission opportunities without evaluating a hypothetical family.
+    pub(crate) fn last_admission_debug_summary(&self) -> &HouseholdAdmissionDiagnostics {
+        &self.last_admission_diagnostics
     }
 
-    /// Emits the most recent household-admission pressure and credit breakdown.
+    /// Emits actual batch capacity and applicant decisions from the most recent hour.
     pub(crate) fn log_hourly_household_action_diagnostics(
         &self,
         day_index: u32,
         minute_of_day: u16,
     ) {
-        let diagnostics = self.last_admission_diagnostics;
+        let d = self.last_admission_diagnostics;
         debug_log!(
             "economy",
-            "household admission diagnostics: day={} minute={} pressure={:.3} base={:.3} \
-             vacancy={:.2} vacant_slots={} households={} border_nodes={} \
-             incoming_need={:.2} job_pull={:.2} marginal_com_pull={:.2} regional_pull={:.2} \
-             afford={:.2} accept={:.2} runway={:.2} \
-             build_viability={:.2} \
-             candidate_size={:.1} candidate=(children:{} adults:{} elders:{}) workers={:.1} open_jobs={} marginal_com_jobs={} marginal_com_job_equiv={:.2} move_in_jobs={} move_in_job_equiv={:.2} physical_worker_capacity={} \
-             funded_worker_capacity={} open_jobs_unfunded={} existing_unemployed={} \
-             expected_employed={:.1} expected_unemployed={:.1} entry_wage={:.1} wage_income={:.1} \
-             transfer_rel={:.2} existing_transfer_claim={:.1} candidate_unemployment_claim={:.1} \
-             candidate_pension_claim={:.1} candidate_child_support_claim={:.1} \
-             candidate_transfer_claim={:.1} total_transfer_claim={:.1} transfer_income={:.1} starter={:.1} daily_cost={:.1} \
-             daily_deficit={:.1} unhoused_ratio={:.2} unhoused_factor={:.2} \
-             zero_budget_ratio={:.2} zero_budget_factor={:.2} failure_factor={:.2} \
-             recent_failure={:.2} recent_failure_factor={:.2} \
-             threshold={:.2} norm={:.3} credit={:.3}->{:.3} cap={} plan={} launched={}",
+            "household admission: day={} minute={} border_nodes={} homes={} open_jobs={} \
+             available_jobs={} local_unemployed={} funded_capacity={} physical_capacity={} \
+             unfunded_jobs={} plan={} examined={} income_rejected={} worker_housing_rejected={} launched={}",
             day_index,
             minute_of_day,
-            diagnostics.pressure,
-            diagnostics.base_pressure,
-            diagnostics.housing_availability,
-            diagnostics.vacant_household_slots,
-            diagnostics.total_household_count,
-            diagnostics.connected_border_count,
-            diagnostics.incoming_household_need,
-            diagnostics.open_job_household_pull,
-            diagnostics.marginal_commercial_job_household_pull,
-            diagnostics.regional_growth_household_pull,
-            diagnostics.household_affordability,
-            diagnostics.move_in_acceptance,
-            diagnostics.move_in_search_runway_days,
-            diagnostics.residential_construction_viability,
-            diagnostics.candidate_household_size,
-            diagnostics.candidate_child_count,
-            diagnostics.candidate_adult_count,
-            diagnostics.candidate_elder_count,
-            diagnostics.candidate_effective_workers,
-            diagnostics.open_job_slots,
-            diagnostics.marginal_commercial_job_slots,
-            diagnostics.marginal_commercial_job_equivalent_slots,
-            diagnostics.move_in_job_slots,
-            diagnostics.move_in_job_equivalent_slots,
-            diagnostics.physical_worker_capacity,
-            diagnostics.funded_worker_capacity,
-            diagnostics.open_jobs_unfunded,
-            diagnostics.existing_unemployed_member_count,
-            diagnostics.expected_employed_members,
-            diagnostics.expected_unemployed_members,
-            diagnostics.expected_entry_wage_per_day,
-            diagnostics.expected_wage_income_per_day,
-            diagnostics.transfer_reliability,
-            diagnostics.existing_transfer_claim_per_day,
-            diagnostics.candidate_unemployment_claim_per_day,
-            diagnostics.candidate_pension_claim_per_day,
-            diagnostics.candidate_child_support_claim_per_day,
-            diagnostics.candidate_transfer_claim_per_day,
-            diagnostics.total_transfer_claim_per_day,
-            diagnostics.expected_transfer_income_per_day,
-            diagnostics.starter_savings,
-            diagnostics.daily_essential_cost,
-            diagnostics.daily_deficit,
-            diagnostics.unhoused_household_ratio,
-            diagnostics.unhoused_factor,
-            diagnostics.zero_budget_household_ratio,
-            diagnostics.zero_budget_factor,
-            diagnostics.failure_factor,
-            diagnostics.recent_failure_pressure,
-            diagnostics.recent_failure_factor,
-            diagnostics.threshold,
-            diagnostics.normalized_action_pressure,
-            diagnostics.credit_before,
-            diagnostics.credit_after,
-            diagnostics.max_actionable_households,
-            diagnostics.planned_households,
-            diagnostics.launched_households,
+            d.connected_border_count,
+            d.vacant_household_slots,
+            d.open_job_slots,
+            d.move_in_job_slots,
+            d.existing_unemployed_member_count,
+            d.funded_worker_capacity,
+            d.physical_worker_capacity,
+            d.open_jobs_unfunded,
+            d.planned_households,
+            d.examined_candidates,
+            d.income_rejections,
+            d.worker_housing_rejections,
+            d.launched_households,
         );
     }
 
-    /// Emits the most recent private-building pressure, candidate, credit, and gate breakdown.
+    /// Emits the most recent private-building candidate, credit, and gate breakdown.
     pub(crate) fn log_hourly_building_action_diagnostics(
         &self,
         day_index: u32,
@@ -296,48 +182,41 @@ impl DemandSystem {
             };
             debug_log!(
                 "economy",
-                "building action diagnostics: day={} minute={} use={} pressure={:.3} \
-                 spawn_candidates={} spawn_profile_missing={} spawn_norm={:.3} \
-                 spawn_need={:.3} spawn_credit={:.3}->{:.3} spawn_plan={} \
+                "building action diagnostics: day={} minute={} use={} \
+                 spawn_candidates={} \
+                 housing_needed_slots={} spawn_plan={} \
                  spawn_selected={} spawn_reject_absorption={} spawn_reject_viability={} \
-                 spawn_skip_budget={} \
-                 upgrade_candidates={} upgrade_norm={:.3} upgrade_budget={:.3} \
+                 spawn_reject_workforce={} spawn_not_needed={} \
+                 upgrade_candidates={} upgrade_budget={:.3} \
                  upgrade_credit={:.3}->{:.3} upgrade_plan={} upgrade_selected={} \
-                 downgrade_candidates={} downgrade_norm={:.3} downgrade_budget={:.3} \
+                 downgrade_candidates={} downgrade_budget={:.3} \
                  downgrade_credit={:.3}->{:.3} downgrade_plan={} downgrade_selected={} \
-                 despawn_candidates={} despawn_norm={:.3} despawn_budget={:.3} \
+                 despawn_candidates={} despawn_budget={:.3} \
                  despawn_credit={:.3}->{:.3} despawn_plan={} despawn_selected={}",
                 day_index,
                 minute_of_day,
                 use_label,
-                diagnostics.pressure,
                 diagnostics.spawn_candidates,
-                diagnostics.spawn_profile_missing,
-                diagnostics.spawn_normalized_pressure,
-                diagnostics.spawn_need_buildings,
-                diagnostics.spawn_credit_before,
-                diagnostics.spawn_credit_after,
+                diagnostics.housing_needed_slots,
                 diagnostics.spawn_planned,
                 diagnostics.spawn_selected,
                 diagnostics.spawn_rejected_absorption,
                 diagnostics.spawn_rejected_viability,
-                diagnostics.spawn_skipped_budget,
+                diagnostics.spawn_rejected_workforce,
+                diagnostics.spawn_not_needed,
                 diagnostics.upgrade_candidates,
-                diagnostics.upgrade_normalized_pressure,
                 diagnostics.upgrade_budget_units,
                 diagnostics.upgrade_credit_before,
                 diagnostics.upgrade_credit_after,
                 diagnostics.upgrade_planned,
                 diagnostics.upgrade_selected,
                 diagnostics.downgrade_candidates,
-                diagnostics.downgrade_normalized_pressure,
                 diagnostics.downgrade_budget_units,
                 diagnostics.downgrade_credit_before,
                 diagnostics.downgrade_credit_after,
                 diagnostics.downgrade_planned,
                 diagnostics.downgrade_selected,
                 diagnostics.despawn_candidates,
-                diagnostics.despawn_normalized_pressure,
                 diagnostics.despawn_budget_units,
                 diagnostics.despawn_credit_before,
                 diagnostics.despawn_credit_after,
@@ -347,40 +226,58 @@ impl DemandSystem {
         }
     }
 
-    /// Emits the most recent household-removal pressure and credit breakdown.
+    /// Reports household-specific exit eligibility and the remaining pacing credit.
     pub(crate) fn log_daily_household_action_diagnostics(&self, day_index: u32) {
-        let diagnostics = self.last_removal_diagnostics;
+        let d = self.last_removal_diagnostics;
         debug_log!(
             "economy",
-            "household removal diagnostics: day={} pressure={:.3} failure_pressure={:.3} \
-             households={} housed={} unhoused={} zero_budget={} unhoused_ratio={:.2} \
-             zero_budget_ratio={:.2} persistent_exit_eligible={} threshold={:.2} \
-             norm={:.3} credit={:.3}->{:.3} persistent_credit={:.3}->{:.3} \
-             persistent_plan={} \
-             cap={} plan={} removed={} removed_ratio={:.3} recent_failure={:.3}->{:.3}",
+            "household removal: day={} households={} housed={} unhoused={} zero_budget={} eligible={} credit={:.3}->{:.3} plan={} removed={}",
             day_index,
-            diagnostics.pressure,
-            diagnostics.failure_pressure,
-            diagnostics.total_household_count,
-            diagnostics.housed_household_count,
-            diagnostics.unhoused_household_count,
-            diagnostics.zero_budget_household_count,
-            diagnostics.unhoused_household_ratio,
-            diagnostics.zero_budget_household_ratio,
-            diagnostics.persistent_exit_eligible_household_count,
-            diagnostics.threshold,
-            diagnostics.normalized_action_pressure,
-            diagnostics.credit_before,
-            diagnostics.credit_after,
-            diagnostics.persistent_exit_credit_before,
-            diagnostics.persistent_exit_credit_after,
-            diagnostics.persistent_exit_planned_households,
-            diagnostics.max_actionable_households,
-            diagnostics.planned_households,
-            diagnostics.removed_households,
-            diagnostics.removed_household_ratio,
-            diagnostics.recent_failure_before,
-            diagnostics.recent_failure_after,
+            d.total_household_count,
+            d.housed_household_count,
+            d.unhoused_household_count,
+            d.zero_budget_household_count,
+            d.persistent_exit_eligible_household_count,
+            d.persistent_exit_credit_before,
+            d.persistent_exit_credit_after,
+            d.planned_households,
+            d.removed_households,
         );
+    }
+}
+
+impl HouseholdAdmissionDiagnostics {
+    /// Copies the concrete opportunity/eligibility inputs without advancing decisions.
+    pub(super) fn from_snapshot(snapshot: &DailyDemandSnapshot) -> Self {
+        HouseholdAdmissionDiagnostics {
+            total_household_count: snapshot.total_household_count,
+            vacant_household_slots: snapshot.vacant_household_slots,
+            connected_border_count: snapshot.connected_border_count,
+            incoming_household_need: snapshot.incoming_household_need,
+            open_job_slots: snapshot.open_job_slots,
+            move_in_job_slots: snapshot.move_in_job_slots,
+            physical_worker_capacity: snapshot.physical_worker_capacity,
+            funded_worker_capacity: snapshot.funded_worker_capacity,
+            open_jobs_unfunded: snapshot.open_jobs_unfunded,
+            existing_unemployed_member_count: snapshot.existing_unemployed_member_count,
+            ..HouseholdAdmissionDiagnostics::default()
+        }
+    }
+}
+
+impl HouseholdRemovalDiagnostics {
+    /// Copies the concrete opportunity/eligibility inputs without advancing decisions.
+    pub(super) fn from_snapshot(snapshot: &DailyDemandSnapshot) -> Self {
+        HouseholdRemovalDiagnostics {
+            total_household_count: snapshot.total_household_count,
+            housed_household_count: snapshot.housed_household_count,
+            unhoused_household_count: snapshot.unhoused_household_count,
+            zero_budget_household_count: snapshot.zero_budget_household_count,
+            unhoused_household_ratio: snapshot.unhoused_household_ratio,
+            zero_budget_household_ratio: snapshot.zero_budget_household_ratio,
+            persistent_exit_eligible_household_count: snapshot
+                .persistent_exit_eligible_household_count,
+            ..HouseholdRemovalDiagnostics::default()
+        }
     }
 }

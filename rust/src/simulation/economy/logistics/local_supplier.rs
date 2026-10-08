@@ -47,6 +47,8 @@ impl ShipmentSystem {
         allocator: &mut BuildingAllocator,
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
+        border_nodes: &[u32],
+        import_unit_price: f32,
         reservations: &mut ReservationViews,
         supplier_index: &SupplierCandidateIndex,
         freight_components: &ModeComponentIndex,
@@ -82,6 +84,27 @@ impl ShipmentSystem {
         );
 
         if let Some(choice) = best_choice {
+            // Funding and dispatch both retain the outside option when its delivered
+            // price is lower. A congested/full gateway is not an executable alternative.
+            let imported_price =
+                adjusted_unit_price(import_unit_price, freight_profile, minute_of_day);
+            let cheaper_import = border_nodes.iter().any(|&border| {
+                let available = reservations.border_active_job_count(border)
+                    < usize::from(logistics_tuning.border_active_jobs_per_node)
+                    || reservations.border_queued_job_count(border)
+                        < usize::from(logistics_tuning.border_queued_jobs_per_node);
+                available
+                    && route_cache
+                        .from_border(border, dest_idx, allocator, transit_network, graph)
+                        .is_some_and(|seconds| {
+                            choice.amount * imported_price
+                                + freight_cost(seconds, seconds_per_day, logistics_tuning)
+                                < choice.total_cost
+                        })
+            });
+            if cheaper_import {
+                return false;
+            }
             reserve_input_payment(allocator, treasury_balance, dest_idx, choice.total_cost);
             let shipment_id = self.allocate_shipment_id();
             let eta_hours = eta_hours_from_travel_seconds(

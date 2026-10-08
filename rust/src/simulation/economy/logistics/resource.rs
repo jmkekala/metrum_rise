@@ -52,9 +52,16 @@ pub(super) fn freight_profile_for_building<'a>(
     tuning: &'a RuntimeEconomyTuning,
     building: &Building,
 ) -> Option<&'a FreightTimingProfile> {
-    if let Some(profile_id) = catalog
-        .profile_by_runtime_id(building.economy_profile_runtime_id)
-        .and_then(|profile| profile.freight_timing_profile.as_deref())
+    freight_profile_for_operation(tuning,
+        catalog.profile_by_runtime_id(building.economy_profile_runtime_id), building.zone_type)
+}
+
+fn freight_profile_for_operation<'a>(
+    tuning: &'a RuntimeEconomyTuning,
+    operation: Option<&EconomyProfileRuntime>,
+    zone: ZoneType,
+) -> Option<&'a FreightTimingProfile> {
+    if let Some(profile_id) = operation.and_then(|profile| profile.freight_timing_profile.as_deref())
         && let Some(profile) = tuning
             .operational_clock
             .freight_profiles
@@ -65,11 +72,24 @@ pub(super) fn freight_profile_for_building<'a>(
     }
     tuning
         .operational_clock
-        .freight_profile_for_zone_type(match building.zone_type {
+        .freight_profile_for_zone_type(match zone {
             ZoneType::Commercial => "commercial",
             ZoneType::Industrial => "industrial",
             _ => return None,
         })
+}
+
+/// Current goods-price factor shared by live and proposed input purchases. Carrier charges
+/// do not receive this factor. Missing freight timing means no executable material order.
+/// O(authored freight profiles + preferred windows), independent of city size, allocation-free.
+pub(crate) fn freight_goods_multiplier(
+    profile: &EconomyProfileRuntime,
+    zone: ZoneType,
+    tuning: &RuntimeEconomyTuning,
+    minute_of_day: u16,
+) -> f32 {
+    freight_profile_for_operation(tuning, Some(profile), zone)
+        .map_or(f32::INFINITY, |freight| super::timing::adjusted_unit_price(1.0, freight, minute_of_day))
 }
 
 pub(super) fn building_accepts_input_resource(
@@ -97,7 +117,7 @@ pub(super) fn building_outputs_can_supply_local_inputs(
         ))
 }
 
-pub(super) fn building_outputs_can_export_to_owa(
+pub(crate) fn building_outputs_can_export_to_owa(
     building: &Building,
     profile: &EconomyProfileRuntime,
 ) -> bool {

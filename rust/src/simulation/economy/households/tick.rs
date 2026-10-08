@@ -39,6 +39,7 @@ impl HouseholdSystem {
         let validate_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
         self.rebuild_household_and_worker_counts(agents, allocator);
+        self.rehouse_unhoused_before_growth(agents, allocator);
         let counts_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
         let owa_exports_available = has_connected_border_node(graph);
@@ -75,6 +76,9 @@ impl HouseholdSystem {
             graph,
             service_funding_by_building,
             owa_exports_available,
+            logistics,
+            fiscal_policy,
+            *treasury_balance, minute_of_day,
         );
         let workplace_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
@@ -116,7 +120,7 @@ impl HouseholdSystem {
         &mut self,
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
-        logistics: &ShipmentSystem,
+        logistics: &mut ShipmentSystem,
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
         treasury_balance: &mut f64,
@@ -195,6 +199,9 @@ impl HouseholdSystem {
             graph,
             service_funding_by_building,
             owa_exports_available,
+            logistics,
+            fiscal_policy,
+            *treasury_balance, 0,
         );
         let workplace_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();

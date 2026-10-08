@@ -57,7 +57,7 @@ Supported live behavior:
 
 ## Core State
 
-Traffic state is stored in the agent SoA. The traffic-owned transient fields are:
+Traffic state is stored in the agent SoA. The traffic-owned continuation fields are:
 
 - `current_lane_id`: the lane currently governing longitudinal movement
 - `lane_distance`: metres travelled along `current_lane_id`
@@ -68,8 +68,9 @@ Traffic state is stored in the agent SoA. The traffic-owned transient fields are
 - `overtake_blocked_time_s`: time spent held below free-flow speed by lane traffic
 - `overtake_cooldown_s`: cooldown before another discretionary overtake / return lane change
 
-`lane_change_*` and `overtake_*` are transient runtime state. Save/load and benchmark setup reset
-them to inactive defaults rather than preserving an in-progress visual maneuver.
+Save format 75 preserves speed, `lane_change_*` and `overtake_*`: they affect occupied lanes,
+arrival times and later transactions. Active lane-change origins are remapped through saved lane
+identities. New benchmark agents may still start with inactive defaults.
 
 ## Lane Buckets
 
@@ -93,6 +94,8 @@ Removing the last agent also retires dirty lane occupancy and road-edge congesti
 empty-agent tick returns (`AUDIT-01-A5`). Cleanup reuses the existing dirty-lane/edge lists and
 buffers. Once these are empty, later empty ticks skip the occupancy rebuild. The separate
 low-frequency frontage-delay cache continues its existing decay from live agent speeds.
+Save format 75 preserves that smoothed delay and its fractional update clock, restoring lane
+values through saved lane identities; see [frontage delay persistence](entrance_and_exit.md#exact-frontage-congestion-penalty-cache).
 
 Claim preparation classifies each agent independently into the retained byte per agent
 (`AUDIT-01-A4`, `AUDIT-01-A12`). Large collections use contiguous 4,096-agent Rayon batches; smaller collections

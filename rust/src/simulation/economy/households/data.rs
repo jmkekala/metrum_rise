@@ -120,6 +120,12 @@ pub struct Household {
     pub child_count: u16,
     /// Cached number of adult residents. Rebuilt from resident agents every economy pass.
     pub adult_count: u16,
+    /// Assigned adults at the latest membership pass; distinct from funded vacancies.
+    pub(crate) employed_adults: u16,
+    /// Expected gross daily wages at that pass; unpaid or inactive jobs contribute nothing.
+    pub(crate) gross_daily_wages: f32,
+    /// Whether an adult/elder member can shop by car; rebuilt from saved resident agents.
+    pub(crate) shopping_has_car: bool,
     /// Cached number of elder residents. Rebuilt from resident agents every economy pass.
     pub elder_count: u16,
     /// Baseline daily consumption in `household_supplies / day / resident`.
@@ -178,13 +184,17 @@ pub struct HouseholdSystem {
     pub households: Vec<Household>,
     /// Derived before each hourly demand pass; rebuilt from persisted arrival carriers.
     pub(crate) pending_arrivals: PendingHouseholdArrivals,
+    pub(crate) job_funding: crate::simulation::economy::hiring::JobFunding,
     pub(super) member_count_scratch: Vec<AtomicU32>,
     pub(super) child_count_scratch: Vec<AtomicU32>,
     pub(super) adult_count_scratch: Vec<AtomicU32>,
     pub(super) elder_count_scratch: Vec<AtomicU32>,
+    pub(super) shopping_car_scratch: Vec<AtomicU32>,
     pub(super) worker_count_scratch: Vec<AtomicU32>,
     pub(super) household_member_heads_scratch: Vec<usize>,
     pub(super) household_member_next_scratch: Vec<usize>,
+    pub(super) has_unhoused_households: bool,
+    pub(super) removal_candidates_scratch: Vec<(usize, f32, f32)>,
     pub(super) removal_selected_flags_scratch: Vec<bool>,
     pub(super) removal_agent_indices_scratch: Vec<usize>,
     pub(super) shopper_candidate_scratch: Vec<AtomicUsize>,
@@ -215,13 +225,17 @@ impl HouseholdSystem {
         Self {
             households: Vec::new(),
             pending_arrivals: PendingHouseholdArrivals::default(),
+            job_funding: Default::default(),
             member_count_scratch: Vec::new(),
             child_count_scratch: Vec::new(),
             adult_count_scratch: Vec::new(),
             elder_count_scratch: Vec::new(),
+            shopping_car_scratch: Vec::new(),
             worker_count_scratch: Vec::new(),
             household_member_heads_scratch: Vec::new(),
             household_member_next_scratch: Vec::new(),
+            has_unhoused_households: false,
+            removal_candidates_scratch: Vec::new(),
             removal_selected_flags_scratch: Vec::new(),
             removal_agent_indices_scratch: Vec::new(),
             shopper_candidate_scratch: Vec::new(),
@@ -298,6 +312,7 @@ impl HouseholdSystem {
     /// Clears all households.
     pub fn clear(&mut self) {
         self.households.clear();
+        self.job_funding.clear();
         self.pending_arrivals = PendingHouseholdArrivals::default();
         self.member_count_scratch.clear();
         self.child_count_scratch.clear();
@@ -306,6 +321,8 @@ impl HouseholdSystem {
         self.worker_count_scratch.clear();
         self.household_member_heads_scratch.clear();
         self.household_member_next_scratch.clear();
+        self.has_unhoused_households = false;
+        self.removal_candidates_scratch.clear();
         self.removal_selected_flags_scratch.clear();
         self.removal_agent_indices_scratch.clear();
         self.shopper_candidate_scratch.clear();
@@ -321,6 +338,7 @@ impl HouseholdSystem {
 
     /// Remaps building references after a building swap-remove.
     pub fn remap_building_indices(&mut self, mapping: &std::collections::HashMap<usize, usize>) {
+        self.job_funding.remap_buildings(mapping);
         self.ensure_daily_ledger_len();
         for household in &mut self.households {
             if let Some(&new_id) = mapping.get(&household.home_building_id) {
@@ -338,6 +356,7 @@ impl HouseholdSystem {
         removed_building: usize,
         allocator: &mut BuildingAllocator,
     ) {
+        self.job_funding.invalidate_building(removed_building);
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let tuning = load_runtime_economy_tuning()
@@ -482,6 +501,12 @@ impl HouseholdSystem {
     pub(super) fn reset_member_count_scratch(&mut self) -> &[AtomicU32] {
         resize_atomic_scratch(&mut self.member_count_scratch, self.households.len());
         &self.member_count_scratch
+    }
+
+    /// Returns zeroed per-household car-eligibility flags for the resident census.
+    pub(super) fn reset_shopping_car_scratch(&mut self) -> &[AtomicU32] {
+        resize_atomic_scratch(&mut self.shopping_car_scratch, self.households.len());
+        &self.shopping_car_scratch
     }
 
     /// Returns zeroed per-household child counters for deterministic parallel reductions.

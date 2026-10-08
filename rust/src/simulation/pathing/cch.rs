@@ -65,6 +65,8 @@ pub struct CchGraph {
     pub bwd_up: Vec<Vec<usize>>,
     /// Monotonically incremented each time the graph is rebuilt; used to reset per-build debug counters.
     pub build_generation: u32,
+    /// Revision of customized base costs within this topology, for derived cost caches.
+    pub(crate) metric_revision: u64,
     // One arc per endpoint/boundary-edge/mode state, with all lower-triangle alternatives.
     // Retaining choices avoids both exponential path expansion and first-seen-path pruning.
     shortcut_alternatives: Vec<Vec<(usize, usize)>>,
@@ -81,6 +83,7 @@ impl CchGraph {
             fwd_up: vec![Vec::new(); n_nodes],
             bwd_up: vec![Vec::new(); n_nodes],
             build_generation: 0,
+            metric_revision: 0,
             shortcut_alternatives: Vec::new(),
             customization_order: Vec::new(),
             node_order: Vec::new(),
@@ -498,15 +501,18 @@ impl CchGraph {
         }
     }
 
-    /// Re-evaluates all retained lower-triangle alternatives for current dynamic edge costs.
+    /// Re-evaluates retained alternatives for current free-flow edge costs.
     ///
     /// O(base edges + shortcuts + alternatives), allocation-free. Alternatives are evaluated in
     /// increasing lower-endpoint rank, so every child is finalized before its parent.
     pub fn customize(&mut self, graph: &RegionGraph) {
+        self.metric_revision = self.metric_revision.wrapping_add(1);
         for &idx in &self.customization_order {
             if self.shortcuts[idx].base_edge != usize::MAX {
                 let edge = graph.edge(self.shortcuts[idx].base_edge);
-                self.shortcuts[idx].cost = edge.base_cost * (1.0 + edge.current_congestion);
+                // Live congestion belongs to frontage estimates. Sampling it here would
+                // change all network quotes merely because a save rebuilds the hierarchy.
+                self.shortcuts[idx].cost = edge.base_cost;
                 self.shortcuts[idx].dist = edge.physical_length;
             } else {
                 let mut best = (f32::INFINITY, usize::MAX, usize::MAX);

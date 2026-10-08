@@ -28,7 +28,7 @@ use crate::simulation::economy::definitions::{
     EconomyProfileRuntime, EconomyProfileRuntimeKind, RuntimeEconomyCatalog, RuntimeEconomyTuning,
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
-use crate::simulation::economy::fiscal::tax_amount;
+use crate::simulation::economy::fiscal::{CityFiscalPolicy, tax_amount};
 use crate::simulation::economy::logistics::ShipmentSystem;
 #[cfg(test)]
 use crate::simulation::economy::logistics::has_connected_border_node;
@@ -191,6 +191,9 @@ impl HouseholdSystem {
             graph,
             &[],
             has_connected_border_node(graph),
+            &mut ShipmentSystem::new(),
+            &CityFiscalPolicy::from_runtime_tuning(&load_runtime_economy_tuning().unwrap()),
+            0.0, 420,
         );
     }
 
@@ -202,6 +205,10 @@ impl HouseholdSystem {
         graph: &RegionGraph,
         service_funding_by_building: &[f32],
         owa_exports_available: bool,
+        logistics: &mut ShipmentSystem,
+        fiscal_policy: &CityFiscalPolicy,
+        treasury_balance: f64,
+        minute_of_day: u16,
     ) {
         let timing_enabled = debug::category_enabled("economy");
         let total_start = Instant::now();
@@ -217,6 +224,18 @@ impl HouseholdSystem {
             &self.households,
             allocator,
             owa_exports_available,
+        );
+        self.job_funding.refresh(
+            allocator,
+            &self.households,
+            logistics,
+            transit_network,
+            graph,
+            &catalog,
+            &tuning,
+            fiscal_policy,
+            service_funding_by_building,
+            treasury_balance, minute_of_day,
         );
         let profile = household_demand_profile(&catalog);
         let target_days = profile.stock_target_days;
@@ -250,7 +269,7 @@ impl HouseholdSystem {
         phase_start = Instant::now();
 
         let has_job_supply =
-            has_potential_job_supply(allocator, &catalog, service_funding_by_building);
+            has_potential_job_supply(allocator, &catalog, &self.job_funding.capacities);
         let supply_prefilter_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         if !has_job_supply {
             if timing_enabled {
@@ -288,7 +307,7 @@ impl HouseholdSystem {
             &catalog,
             &foot_components,
             &car_components,
-            service_funding_by_building,
+            &self.job_funding.capacities,
         );
         let job_supply_count = job_supply.entries.len();
         let supply_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
@@ -334,7 +353,7 @@ impl HouseholdSystem {
             &agents.pathfind_count,
             max_walk_commute_speed,
             max_car_commute_speed,
-            service_funding_by_building,
+            &self.job_funding.capacities,
         );
         let home_option_count = home_job_options.len();
         let current_option_count = current_job_options.len();
@@ -381,7 +400,7 @@ impl HouseholdSystem {
                 agents,
                 allocator,
                 &catalog,
-                service_funding_by_building,
+                &self.job_funding.capacities,
             );
         }
         relock_settled_workers(
@@ -838,7 +857,7 @@ fn apply_workplace_plan(
     agents: &mut AgentSystem,
     allocator: &mut BuildingAllocator,
     catalog: &RuntimeEconomyCatalog,
-    service_funding_by_building: &[f32],
+    job_capacities: &[u32],
 ) {
     if plan.agent_idx >= agents.len()
         || agents.transit[plan.agent_idx] != TRANSIT_IN_BUILDING
@@ -883,13 +902,7 @@ fn apply_workplace_plan(
             continue;
         }
 
-        let effective_capacity = effective_job_capacity(
-            allocator,
-            catalog,
-            job,
-            economy_profile,
-            service_funding_by_building,
-        );
+        let effective_capacity = job_capacities.get(job).copied().unwrap_or(0);
         if effective_capacity.saturating_sub(building.worker_count) == 0 {
             continue;
         }
@@ -1011,7 +1024,8 @@ fn enforce_worker_capacities(
     }
 }
 
-fn active_work_profile<'a>(
+/// Returns the recipe of a live workplace eligible to pay its assigned employees.
+pub(super) fn active_work_profile<'a>(
     catalog: &'a RuntimeEconomyCatalog,
     building: &Building,
 ) -> Option<&'a EconomyProfileRuntime> {
@@ -1070,35 +1084,10 @@ fn building_offers_work(building: &Building, profile: &EconomyProfileRuntime) ->
     )
 }
 
-fn effective_job_capacity(
-    allocator: &BuildingAllocator,
-    catalog: &RuntimeEconomyCatalog,
-    building_idx: usize,
-    profile: &EconomyProfileRuntime,
-    service_funding_by_building: &[f32],
-) -> u32 {
-    let building = &allocator.buildings[building_idx];
-    let active_capacity = active_worker_capacity_for_profile(catalog, building, profile);
-    let funded_capacity = service_funded_worker_capacity(
-        active_capacity,
-        profile,
-        building_idx,
-        service_funding_by_building,
-    );
-    let average_daily_wage = profile.average_daily_wage();
-    if allocator.is_city_service_building(building) || average_daily_wage <= 0.1 {
-        funded_capacity
-    } else {
-        let budget_capacity =
-            (building.operating_budget.max(0.0) / average_daily_wage).floor() as u32;
-        funded_capacity.min(budget_capacity)
-    }
-}
-
 fn has_potential_job_supply(
     allocator: &BuildingAllocator,
     catalog: &RuntimeEconomyCatalog,
-    service_funding_by_building: &[f32],
+    job_capacities: &[u32],
 ) -> bool {
     allocator
         .buildings
@@ -1120,14 +1109,11 @@ fn has_potential_job_supply(
             if !building_offers_work(building, profile) {
                 return false;
             }
-            effective_job_capacity(
-                allocator,
-                catalog,
-                idx,
-                profile,
-                service_funding_by_building,
-            )
-            .saturating_sub(building.worker_count)
+            job_capacities
+                .get(idx)
+                .copied()
+                .unwrap_or(0)
+                .saturating_sub(building.worker_count)
                 > 0
         })
 }
@@ -1140,7 +1126,7 @@ impl JobSupplySnapshot {
         catalog: &RuntimeEconomyCatalog,
         foot_components: &ModeComponentIndex,
         car_components: &ModeComponentIndex,
-        service_funding_by_building: &[f32],
+        job_capacities: &[u32],
     ) -> Self {
         let entries: Vec<_> = allocator
             .buildings
@@ -1160,13 +1146,7 @@ impl JobSupplySnapshot {
                     return None;
                 }
                 let average_daily_wage = profile.average_daily_wage();
-                let effective_capacity = effective_job_capacity(
-                    allocator,
-                    catalog,
-                    idx,
-                    profile,
-                    service_funding_by_building,
-                );
+                let effective_capacity = job_capacities.get(idx).copied().unwrap_or(0);
                 let open_slots = effective_capacity.saturating_sub(building.worker_count);
                 if open_slots == 0 {
                     return None;
@@ -1293,7 +1273,7 @@ fn build_home_job_options(
     pathfind_count: &AtomicU32,
     max_walk_commute_speed: f32,
     max_car_commute_speed: f32,
-    service_funding_by_building: &[f32],
+    job_capacities: &[u32],
 ) -> (
     BTreeMap<HomeJobOptionsKey, HomeJobOptions>,
     BTreeMap<CurrentJobOptionKey, HomeJobOption>,
@@ -1365,7 +1345,7 @@ fn build_home_job_options(
                 exact_entrance_cache_available,
                 &mut route_entries,
                 &mut route_entry_count,
-                service_funding_by_building,
+                job_capacities,
             );
             CurrentJobOptionBuild {
                 key,
@@ -1638,7 +1618,7 @@ fn build_current_job_option_for_key(
     exact_entrance_cache_available: bool,
     new_route_entries: &mut [WorkplaceRouteCacheEntry; JOB_ROUTE_SCAN_CANDIDATES],
     new_route_entry_count: &mut usize,
-    service_funding_by_building: &[f32],
+    job_capacities: &[u32],
 ) -> Option<HomeJobOption> {
     let (home_key, work_idx) = key;
     let work = allocator.buildings.get(work_idx)?;
@@ -1657,13 +1637,7 @@ fn build_current_job_option_for_key(
         new_route_entry_count,
     )?;
     let average_daily_wage = profile.average_daily_wage();
-    let effective_capacity = effective_job_capacity(
-        allocator,
-        catalog,
-        work_idx,
-        profile,
-        service_funding_by_building,
-    );
+    let effective_capacity = job_capacities.get(work_idx).copied().unwrap_or(0);
     Some(HomeJobOption {
         building_idx: work_idx,
         commute_penalty: normalized_commute_penalty_seconds(commute_seconds as f32),

@@ -13,6 +13,43 @@ fn run_year() -> GrowthReport {
     GrowthScenario::starter_town().run_diagnosed_days(DAYS_PER_YEAR)
 }
 
+fn assert_individual_firms_reconcile(report: &GrowthReport) {
+    let mut profiles = std::collections::BTreeSet::new();
+    let mut capital = 0.0;
+    let mut operating = 0.0;
+    let mut bankruptcies = 0;
+    for firm in report.business_outcomes() {
+        profiles.insert(firm.profile_id.as_str());
+        assert!(
+            (firm.opening_cash + firm.startup_cash + firm.operating_cash_change - firm.ending_cash)
+                .abs()
+                < 0.01,
+            "individual firm's cash must exclude its owner grant: {firm:?}"
+        );
+        capital += firm.startup_cash;
+        operating += firm.operating_cash_change;
+        bankruptcies += u32::from(firm.bankrupt);
+    }
+    let flows: Vec<_> = profiles
+        .into_iter()
+        .map(|profile| report.business_cash_flow(profile, usize::MAX))
+        .collect();
+    assert!((capital - flows.iter().map(|flow| flow.startup_cash).sum::<f64>()).abs() < 0.01);
+    assert!(
+        (operating
+            - flows
+                .iter()
+                .map(|flow| flow.operating_cash_change)
+                .sum::<f64>())
+        .abs()
+            < 0.01
+    );
+    assert_eq!(
+        bankruptcies,
+        flows.iter().map(|flow| flow.bankruptcies).sum::<u32>()
+    );
+}
+
 fn monthly_trajectory(year: &[GrowthDayRecord]) -> String {
     year.iter()
         .step_by(30)
@@ -32,6 +69,7 @@ fn monthly_trajectory(year: &[GrowthDayRecord]) -> String {
 fn concurrent_runs_record_identical_years() {
     // Concurrent runs share the Rayon pool, so any dependence on scheduling diverges here.
     let (first, second) = rayon::join(run_year, run_year);
+    assert_individual_firms_reconcile(&first);
     assert_eq!(first.days.len(), DAYS_PER_YEAR as usize);
     assert!(
         first.days.iter().any(|day| day.households > 0),
@@ -78,6 +116,7 @@ fn read_only_observer_preserves_growth() {
             let report = scenario.run_diagnosed_days(DAYS_PER_YEAR - 40);
             assert!(report.max_city_cash_residual() < 0.1, "{report}");
             assert!(report.max_business_cash_residual() < 0.1, "{report}");
+            assert_individual_firms_reconcile(&report);
             days.extend(report.days);
             days
         },
@@ -88,6 +127,7 @@ fn read_only_observer_preserves_growth() {
 #[test]
 fn starter_town_funds_industry_services_households_and_city_for_two_years() {
     let report = GrowthScenario::starter_town().run_diagnosed_days(2 * DAYS_PER_YEAR);
+    assert_individual_firms_reconcile(&report);
     let year_days = DAYS_PER_YEAR as usize;
     if let Ok(path) = std::env::var("METRUM_GROWTH_LONG_REPORT") {
         std::fs::write(path, report.daily_report()).expect("write requested two-year report");

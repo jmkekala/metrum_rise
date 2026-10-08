@@ -2,220 +2,65 @@
 
 //! Demand spawn-need accounting and hard spawn gates.
 
-use super::actions::DemandSpawnCandidate;
+use super::actions::{DemandSpawnAction, DemandSpawnCandidate};
 use super::snapshot::DailyDemandSnapshot;
-use super::types::{DemandUse, EPSILON, RESIDENTIAL_SPAWN_VACANT_SLOT_RESERVE_RATIO};
-use crate::simulation::buildings::allocator::BuildingAllocator;
+use super::types::{EPSILON, RESIDENTIAL_SPAWN_VACANT_SLOT_RESERVE_RATIO};
+use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::economy::definitions::{
-    EconomyProfileRuntime, EconomyProfileRuntimeKind, LogisticsRuntimeTuning, ResourceRuntimeId,
-    RuntimeEconomyCatalog,
+    EconomyProfileRuntime, EconomyProfileRuntimeKind, ResourceRuntimeId, RuntimeEconomyCatalog,
 };
 
-use crate::simulation::economy::resource_totals::{add_resource_amount, resource_amount};
+use crate::simulation::economy::operation::{
+    InputRequirement, InputSupplyCosts, OperatingCosts, OperationPlan, OperationPrices,
+    working_capital_assets_at_prices,
+};
 
-fn add_resource_count(
-    counts: &mut Vec<(ResourceRuntimeId, u32)>,
-    resource_runtime_id: ResourceRuntimeId,
-) {
-    if let Some((_, existing)) = counts
-        .iter_mut()
-        .find(|(resource, _)| *resource == resource_runtime_id)
-    {
-        *existing = existing.saturating_add(1);
-    } else {
-        counts.push((resource_runtime_id, 1));
-    }
-}
-
-fn resource_count(
-    counts: &[(ResourceRuntimeId, u32)],
-    resource_runtime_id: ResourceRuntimeId,
-) -> u32 {
-    counts
-        .iter()
-        .find_map(|(resource, count)| (*resource == resource_runtime_id).then_some(*count))
-        .unwrap_or(0)
-}
-
-pub(super) fn spawn_need_buildings_for_use(
-    use_kind: DemandUse,
-    allocator: &BuildingAllocator,
-    catalog: &RuntimeEconomyCatalog,
-    snapshot: &DailyDemandSnapshot,
-    candidates: &[DemandSpawnCandidate],
-) -> f32 {
-    if candidates.is_empty() {
-        return 0.0;
-    }
-    match use_kind {
-        DemandUse::Residential => residential_spawn_need_buildings(allocator, snapshot, candidates),
-        DemandUse::Commercial => {
-            commercial_spawn_need_buildings(allocator, catalog, snapshot, candidates)
-        }
-        DemandUse::Industrial => {
-            industrial_spawn_need_buildings(allocator, catalog, snapshot, candidates)
-        }
-    }
-}
-
-pub(super) fn residential_spawn_need_buildings(
-    allocator: &BuildingAllocator,
-    snapshot: &DailyDemandSnapshot,
-    candidates: &[DemandSpawnCandidate],
-) -> f32 {
-    let incoming_slots = snapshot.incoming_household_need.ceil();
-    let reserve_slots = if snapshot.total_household_count == 0 {
-        0.0
-    } else {
-        (snapshot.total_household_count as f32 * RESIDENTIAL_SPAWN_VACANT_SLOT_RESERVE_RATIO)
-            .ceil()
-            .max(1.0)
-    };
-    let desired_vacant_slots = incoming_slots + reserve_slots;
-    let committed_slots =
-        snapshot.vacant_household_slots + snapshot.under_construction_household_slots;
-    let missing_household_slots = (desired_vacant_slots - committed_slots as f32).max(0.0);
-    if missing_household_slots <= EPSILON {
-        return 0.0;
-    }
-    let average_household_slots =
-        average_residential_candidate_household_slots(allocator, candidates);
-    if average_household_slots <= EPSILON {
-        0.0
-    } else {
-        (missing_household_slots / average_household_slots).ceil()
-    }
-}
-
-pub(super) fn commercial_spawn_need_buildings(
-    allocator: &BuildingAllocator,
-    catalog: &RuntimeEconomyCatalog,
-    snapshot: &DailyDemandSnapshot,
-    candidates: &[DemandSpawnCandidate],
-) -> f32 {
-    if snapshot
-        .committed_unmet_commercial_consumer_demand_by_resource
-        .is_empty()
-    {
-        return 0.0;
-    }
-    let average_output_units_by_resource =
-        average_candidate_output_units_by_resource_for_household_demand(
-            allocator, catalog, candidates,
-        );
+/// Household capacity still needed after ready and committed homes are counted.
+pub(super) fn residential_missing_household_slots(snapshot: &DailyDemandSnapshot) -> u32 {
+    let incoming_slots = snapshot.incoming_household_need.ceil() as u32;
+    let reserve_slots = residential_vacancy_reserve(snapshot.total_household_count);
     snapshot
-        .committed_unmet_commercial_consumer_demand_by_resource
-        .iter()
-        .filter_map(|&(resource_runtime_id, unmet_units)| {
-            let output_units =
-                resource_amount(&average_output_units_by_resource, resource_runtime_id);
-            (unmet_units > EPSILON && output_units > EPSILON)
-                .then(|| (unmet_units / output_units).ceil())
-        })
-        .fold(0.0, f32::max)
+        .unhoused_household_count
+        .saturating_add(incoming_slots)
+        .saturating_add(reserve_slots)
+        .saturating_sub(
+            snapshot
+                .vacant_household_slots
+                .saturating_add(snapshot.under_construction_household_slots),
+        )
 }
 
-pub(super) fn industrial_spawn_need_buildings(
-    allocator: &BuildingAllocator,
-    catalog: &RuntimeEconomyCatalog,
-    snapshot: &DailyDemandSnapshot,
-    candidates: &[DemandSpawnCandidate],
-) -> f32 {
-    candidates
-        .iter()
-        .filter_map(|candidate| {
-            candidate_economy_profile(allocator, catalog, &candidate.action.asset_id)
-        })
-        .map(|profile| {
-            profile
-                .outputs
-                .iter()
-                .map(|port| {
-                    let net_output = profile.net_output_units_per_day(port);
-                    let gap = snapshot
-                        .output_absorption
-                        .unmet_units(port.resource_runtime_id);
-                    if net_output > EPSILON {
-                        (gap / net_output).ceil()
-                    } else {
-                        0.0
-                    }
-                })
-                .fold(0.0, f32::max)
-        })
-        .fold(0.0, f32::max)
-        .max(if snapshot.output_absorption.export_expansion_available() {
-            1.0
-        } else {
-            0.0
-        })
+/// Vacant household places retained by both housing construction and downsizing.
+pub(super) fn residential_vacancy_reserve(households: u32) -> u32 {
+    (households as f32 * RESIDENTIAL_SPAWN_VACANT_SLOT_RESERVE_RATIO).ceil() as u32
 }
 
-fn average_residential_candidate_household_slots(
+/// Selects actual homes in attachment order, stopping when their capacity covers the need.
+/// Unselected offers remain available for coordinated workforce planning. O(candidates), with
+/// buffers reserved before iteration and no per-candidate allocation or city scan.
+pub(super) fn select_residential_spawns(
     allocator: &BuildingAllocator,
-    candidates: &[DemandSpawnCandidate],
-) -> f32 {
-    let mut total_slots = 0.0_f32;
-    let mut candidate_count = 0_u32;
+    candidates: Vec<DemandSpawnCandidate>,
+    mut missing_slots: u32,
+    optional_homes: &mut Vec<DemandSpawnAction>,
+) -> Vec<DemandSpawnAction> {
+    let mut selected = Vec::with_capacity(candidates.len().min(missing_slots as usize));
+    optional_homes.reserve(candidates.len());
     for candidate in candidates {
-        let capacity = allocator
+        let slots = allocator
             .registry
             .household_capacity(&candidate.action.asset_id);
-        if capacity == 0 {
+        if slots == 0 {
             continue;
         }
-        total_slots += capacity as f32;
-        candidate_count = candidate_count.saturating_add(1);
-    }
-    if candidate_count == 0 {
-        0.0
-    } else {
-        total_slots / candidate_count as f32
-    }
-}
-
-fn average_candidate_output_units_by_resource_for_household_demand(
-    allocator: &BuildingAllocator,
-    catalog: &RuntimeEconomyCatalog,
-    candidates: &[DemandSpawnCandidate],
-) -> Vec<(ResourceRuntimeId, f32)> {
-    let mut total_output_units_by_resource = Vec::new();
-    let mut output_candidate_count_by_resource = Vec::new();
-    for candidate in candidates {
-        let Some(profile) =
-            candidate_economy_profile(allocator, catalog, &candidate.action.asset_id)
-        else {
-            continue;
-        };
-        for port in &profile.outputs {
-            if !resource_has_household_demand(catalog, port.resource_runtime_id) {
-                continue;
-            }
-            let units = port.units_per_day.max(0.0);
-            if units <= EPSILON {
-                continue;
-            }
-            add_resource_amount(
-                &mut total_output_units_by_resource,
-                port.resource_runtime_id,
-                units,
-            );
-            add_resource_count(
-                &mut output_candidate_count_by_resource,
-                port.resource_runtime_id,
-            );
+        if missing_slots > 0 {
+            missing_slots = missing_slots.saturating_sub(slots);
+            selected.push(candidate.action);
+        } else {
+            optional_homes.push(candidate.action);
         }
     }
-    if output_candidate_count_by_resource.is_empty() {
-        return Vec::new();
-    }
-    for (resource_runtime_id, units) in &mut total_output_units_by_resource {
-        let divisor = resource_count(&output_candidate_count_by_resource, *resource_runtime_id);
-        if divisor > 0 {
-            *units /= divisor as f32;
-        }
-    }
-    total_output_units_by_resource
+    selected
 }
 
 pub(super) fn candidate_economy_profile<'a>(
@@ -227,25 +72,99 @@ pub(super) fn candidate_economy_profile<'a>(
     catalog.profile_for_id(profile_id)
 }
 
-pub(super) fn resource_has_household_demand(
-    catalog: &RuntimeEconomyCatalog,
-    resource_runtime_id: ResourceRuntimeId,
-) -> bool {
-    catalog.all_profiles().iter().any(|profile| {
-        profile.kind == EconomyProfileRuntimeKind::DemandSink
-            && profile.consumption_rate_per_resident > EPSILON
-            && profile.input_port(resource_runtime_id).is_some()
-    })
-}
-
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub(super) struct OutputAbsorptionContext {
     placed_output_units_by_resource: Vec<f32>,
     demand_units_by_resource: Vec<f32>,
     export_expansion_available: bool,
 }
 
+/// Read-only market after optionally releasing the capacity of one replaced building.
+/// Rejected proposals do not mutate shared totals or introduce subtract/add rounding drift.
+#[derive(Clone, Copy)]
+pub(super) struct OutputMarket<'a> {
+    context: &'a OutputAbsorptionContext,
+    replaced: Option<(&'a EconomyProfileRuntime, f32)>,
+}
+
+impl OutputMarket<'_> {
+    fn unmet_units(&self, resource: ResourceRuntimeId) -> f32 {
+        let released = self.replaced.map_or(0.0, |(profile, scale)| {
+            profile
+                .output_port(resource)
+                .map_or(0.0, |port| profile.net_output_units_per_day(port) * scale)
+        });
+        (self.context.consumer_demand(resource)
+            - (self.context.placed_capacity(resource) - released).max(0.0))
+        .max(0.0)
+    }
+
+    fn export_expansion_available(&self) -> bool {
+        self.context.export_expansion_available
+    }
+
+    /// Target workforce supported by customers, including the replaced building's customers.
+    pub(super) fn candidate_workers(&self, profile: &EconomyProfileRuntime) -> u32 {
+        self.context.market_workers(profile, |resource, output| {
+            self.unmet_units(resource) / output
+        })
+    }
+
+    fn attainable_sales(&self, resource: ResourceRuntimeId, output: f32, exports: f32) -> f32 {
+        let local = output.min(self.unmet_units(resource));
+        local
+            + if self.export_expansion_available() {
+                (output - local) * exports
+            } else {
+                0.0
+            }
+    }
+}
+
 impl OutputAbsorptionContext {
+    /// Copies resource totals into reusable replay storage in O(resources), retaining capacity.
+    pub(super) fn copy_from(&mut self, source: &Self) {
+        self.placed_output_units_by_resource
+            .clone_from(&source.placed_output_units_by_resource);
+        self.demand_units_by_resource
+            .clone_from(&source.demand_units_by_resource);
+        self.export_expansion_available = source.export_expansion_available;
+    }
+
+    /// Staffing for the remaining market; factories require their full viable operation.
+    pub(super) fn candidate_workers(&self, profile: &EconomyProfileRuntime) -> u32 {
+        self.market_workers(profile, |resource, output| {
+            self.unmet_units(resource) / output
+        })
+    }
+
+    /// Staffing for a placed shop's share of demand, including constructing competitors.
+    pub(super) fn committed_workers(&self, profile: &EconomyProfileRuntime) -> u32 {
+        self.market_workers(profile, |resource, output| {
+            self.consumer_demand(resource) / self.placed_capacity(resource).max(output)
+        })
+    }
+
+    fn market_workers(
+        &self,
+        profile: &EconomyProfileRuntime,
+        share: impl Fn(ResourceRuntimeId, f32) -> f32,
+    ) -> u32 {
+        if !matches!(
+            profile.kind,
+            EconomyProfileRuntimeKind::Store | EconomyProfileRuntimeKind::ServiceStore
+        ) {
+            return profile.worker_capacity;
+        }
+        let scale = profile
+            .outputs
+            .iter()
+            .filter(|port| port.units_per_day > EPSILON)
+            .map(|port| share(port.resource_runtime_id, port.units_per_day).clamp(0.0, 1.0))
+            .fold(0.0, f32::max);
+        (profile.worker_capacity as f32 * scale).ceil() as u32
+    }
+
     pub(super) fn empty(resource_count: usize) -> Self {
         Self {
             placed_output_units_by_resource: vec![0.0; resource_count + 1],
@@ -286,49 +205,74 @@ impl OutputAbsorptionContext {
         (self.consumer_demand(resource) - self.placed_capacity(resource)).max(0.0)
     }
 
-    /// A single export-led opening, granted only after previous industry has settled.
+    /// Whether outside buyers are available independently of existing firms' cash balances.
     /// Outside buyers themselves impose no quantity limit and never enter local demand totals.
     pub(super) fn set_export_expansion_available(&mut self, available: bool) {
         self.export_expansion_available = available;
     }
 
-    /// Whether one further export-led opening can be considered in this pass.
+    /// Whether export-led openings can be considered in this pass.
     pub(super) fn export_expansion_available(&self) -> bool {
         self.export_expansion_available
     }
 
-    fn attainable_sales(
-        &self,
-        resource: ResourceRuntimeId,
-        output: f32,
-        export_multiplier: f32,
-    ) -> f32 {
-        let local_sales = output.min(self.unmet_units(resource));
-        let export_sales = if self.export_expansion_available {
-            output - local_sales
-        } else {
-            0.0
-        };
-        local_sales + export_sales * export_multiplier
+    /// Reads the current market without releasing any incumbent capacity.
+    pub(super) fn market(&self) -> OutputMarket<'_> {
+        OutputMarket {
+            context: self,
+            replaced: None,
+        }
+    }
+
+    /// Credits only the incumbent's exact snapshot capacity while assessing a replacement.
+    pub(super) fn replacement_market<'a>(
+        &'a self,
+        previous: &'a EconomyProfileRuntime,
+        scale: f32,
+    ) -> OutputMarket<'a> {
+        OutputMarket {
+            context: self,
+            replaced: Some((previous, scale)),
+        }
+    }
+
+    /// Replaces one selected building's commitment without changing any other firm's customers.
+    pub(super) fn reserve_replacement(
+        &mut self,
+        previous: &EconomyProfileRuntime,
+        scale: f32,
+        target: &EconomyProfileRuntime,
+    ) {
+        self.release_candidate(previous, scale);
+        self.reserve_candidate(target);
+    }
+
+    /// Releases a committed capacity in a private replay market before ordered reconstruction.
+    /// Ordinary rejected proposals use read-only replacement views and never call this mutator.
+    pub(super) fn release_candidate(&mut self, previous: &EconomyProfileRuntime, scale: f32) {
+        for port in &previous.outputs {
+            let slot = &mut self.placed_output_units_by_resource[port.resource_runtime_id as usize];
+            *slot = (*slot - previous.net_output_units_per_day(port) * scale).max(0.0);
+        }
     }
 
     /// Reserve selected output immediately; a new factory cannot justify its own customers.
     pub(super) fn reserve_candidate(&mut self, profile: &EconomyProfileRuntime) {
-        if matches!(
-            profile.kind,
-            EconomyProfileRuntimeKind::Processor | EconomyProfileRuntimeKind::Producer
-        ) {
-            self.export_expansion_available = false;
-        }
+        self.reserve_scaled_candidate(profile, 1.0);
+    }
+
+    /// Restores the exact full output commitment of an existing construction site.
+    pub(super) fn reserve_scaled_candidate(&mut self, profile: &EconomyProfileRuntime, scale: f32) {
         for port in &profile.outputs {
             self.add_placed_capacity(
                 port.resource_runtime_id,
-                profile.net_output_units_per_day(port),
+                profile.net_output_units_per_day(port) * scale,
             );
         }
     }
 
-    fn add_demand_units(&mut self, resource_runtime_id: ResourceRuntimeId, units: f32) {
+    /// Adds financed consumer purchases or independent business input demand.
+    pub(super) fn add_demand_units(&mut self, resource_runtime_id: ResourceRuntimeId, units: f32) {
         if let Some(slot) = self
             .demand_units_by_resource
             .get_mut(resource_runtime_id as usize)
@@ -361,111 +305,303 @@ impl OutputAbsorptionContext {
     }
 }
 
-pub(super) fn service_market_covers_first_worker(
+/// Applies recurring profitability and quoted working-capital valuation to a replacement.
+pub(super) fn replacement_market_covers_operation(
+    profile: &EconomyProfileRuntime,
+    catalog: &RuntimeEconomyCatalog,
+    market: OutputMarket<'_>,
+    prices: OperationPrices,
+    exports: f32,
+    building: &Building,
+    paid_cargo: f64,
+    supply: &mut impl super::supply::ProjectSupply,
+) -> bool {
+    let Some(costs) = market_operation_costs(
+        profile,
+        catalog,
+        market,
+        prices,
+        exports,
+        building.worker_count,
+        |input| supply.quote(input, catalog, prices),
+    ) else {
+        return false;
+    };
+    let capital = working_capital_assets_at_prices(
+        building,
+        profile,
+        paid_cargo,
+        |resource| supply.input_price(resource, catalog, prices),
+        |resource| {
+            let output = profile
+                .output_port(resource)
+                .map_or(0.0, |port| profile.net_output_units_per_day(port));
+            if output <= EPSILON {
+                return 0.0;
+            }
+            let exports = if matches!(
+                profile.kind,
+                EconomyProfileRuntimeKind::Processor | EconomyProfileRuntimeKind::Producer
+            ) {
+                exports
+            } else {
+                0.0
+            };
+            catalog.unit_price_for_resource(resource).unwrap_or(0.0)
+                * market.attainable_sales(resource, output, exports)
+                / output
+        },
+    );
+    capital >= f64::from(costs.working_capital)
+}
+
+/// Evaluates one candidate against source-specific finite quotes without committing its claims.
+/// The caller commits only after customer, workforce, and placement checks also succeed.
+pub(super) fn market_covers_operation_with_input_quotes(
+    profile: &EconomyProfileRuntime,
+    catalog: &RuntimeEconomyCatalog,
+    market: OutputMarket<'_>,
+    prices: OperationPrices,
+    exports: f32,
+    input_quote: impl FnMut(InputRequirement) -> InputSupplyCosts,
+) -> bool {
+    // Opening equity pays inventory and settlement timing; it never enters sales.
+    market_operation_costs(profile, catalog, market, prices, exports, 0, input_quote).is_some_and(
+        |costs| profile.zoned_startup_budget(catalog, prices.imports) >= costs.working_capital,
+    )
+}
+
+fn market_operation_costs(
+    profile: &EconomyProfileRuntime,
+    catalog: &RuntimeEconomyCatalog,
+    market: OutputMarket<'_>,
+    prices: OperationPrices,
+    exports: f32,
+    minimum_workers: u32,
+    input_quote: impl FnMut(InputRequirement) -> InputSupplyCosts,
+) -> Option<OperatingCosts> {
+    match profile.kind {
+        EconomyProfileRuntimeKind::Store | EconomyProfileRuntimeKind::ServiceStore => {
+            commercial_operation_in_market(
+                profile,
+                catalog,
+                market,
+                prices,
+                minimum_workers,
+                input_quote,
+            )
+        }
+        EconomyProfileRuntimeKind::Processor | EconomyProfileRuntimeKind::Producer => {
+            industrial_operation_in_market(profile, catalog, market, prices, exports, input_quote)
+        }
+        _ => Some(OperatingCosts::default()),
+    }
+}
+
+#[cfg(test)]
+pub(super) fn commercial_market_covers_operation(
     profile: &EconomyProfileRuntime,
     catalog: &RuntimeEconomyCatalog,
     absorption: &OutputAbsorptionContext,
-    daily_overhead: f32,
-    import_multiplier: f32,
+    prices: OperationPrices,
 ) -> bool {
-    if profile.kind != EconomyProfileRuntimeKind::ServiceStore {
-        return true;
+    commercial_operation_in_market(profile, catalog, absorption.market(), prices, 0, |input| {
+        input.imported(catalog, prices)
+    })
+    .is_some()
+}
+
+fn commercial_operation_in_market(
+    profile: &EconomyProfileRuntime,
+    catalog: &RuntimeEconomyCatalog,
+    absorption: OutputMarket<'_>,
+    prices: OperationPrices,
+    minimum_workers: u32,
+    input_quote: impl FnMut(InputRequirement) -> InputSupplyCosts,
+) -> Option<OperatingCosts> {
+    if !matches!(
+        profile.kind,
+        EconomyProfileRuntimeKind::Store | EconomyProfileRuntimeKind::ServiceStore
+    ) {
+        return Some(OperatingCosts::default());
     }
-    if profile.worker_capacity == 0 {
-        return false;
+    let workers = absorption.candidate_workers(profile).max(minimum_workers);
+    if workers == 0 {
+        return None;
     }
-    let first_worker_scale = 1.0 / profile.worker_capacity as f32;
+    let activity = profile
+        .outputs
+        .iter()
+        .filter(|port| port.units_per_day > EPSILON)
+        .map(|port| {
+            (absorption.unmet_units(port.resource_runtime_id) / port.units_per_day).clamp(0.0, 1.0)
+        })
+        .fold(0.0, f32::max);
     let revenue: f32 = profile
         .outputs
         .iter()
         .map(|port| {
             absorption
                 .unmet_units(port.resource_runtime_id)
-                .min(profile.net_output_units_per_day(port) * first_worker_scale)
+                .min(profile.net_output_units_per_day(port) * activity)
                 * catalog
                     .unit_price_for_resource(port.resource_runtime_id)
                     .unwrap_or(0.0)
         })
         .sum();
-    let inputs: f32 = profile
-        .inputs
-        .iter()
-        .map(|port| {
-            port.units_per_day.max(0.0)
-                * first_worker_scale
-                * catalog
-                    .unit_price_for_resource(port.resource_runtime_id)
-                    .unwrap_or(0.0)
-                * import_multiplier
-        })
-        .sum();
-    // Necessary break-even market, independent of owner startup cash. The existing
-    // capacity reservation prevents another selected shop from counting these buyers.
-    revenue > profile.average_daily_wage() + daily_overhead + inputs
+    let costs = OperatingCosts::for_plan_with_input_quotes(
+        profile,
+        OperationPlan {
+            workers,
+            activity,
+            area: 1.0,
+        },
+        prices,
+        |_, _| 0.0,
+        input_quote,
+    );
+    (revenue > costs.total()).then_some(costs)
 }
 
-// Factories hire up to their full authored workforce. Permit construction only when
-// remaining customers can pay that payroll and overhead, assuming imported inputs.
+#[cfg(test)]
 pub(super) fn industrial_market_covers_operation(
     profile: &EconomyProfileRuntime,
     catalog: &RuntimeEconomyCatalog,
     absorption: &OutputAbsorptionContext,
-    overhead: f32,
-    imports: f32,
+    prices: OperationPrices,
     exports: f32,
-    logistics: &LogisticsRuntimeTuning,
 ) -> bool {
+    industrial_operation_in_market(
+        profile,
+        catalog,
+        absorption.market(),
+        prices,
+        exports,
+        |input| input.imported(catalog, prices),
+    )
+    .is_some()
+}
+
+fn industrial_operation_in_market(
+    profile: &EconomyProfileRuntime,
+    catalog: &RuntimeEconomyCatalog,
+    absorption: OutputMarket<'_>,
+    prices: OperationPrices,
+    exports: f32,
+    input_quote: impl FnMut(InputRequirement) -> InputSupplyCosts,
+) -> Option<OperatingCosts> {
     if !matches!(
         profile.kind,
         EconomyProfileRuntimeKind::Processor | EconomyProfileRuntimeKind::Producer
     ) {
-        return true;
+        return Some(OperatingCosts::default());
     }
+    industrial_operation_for_plan(
+        profile,
+        catalog,
+        absorption,
+        OperationPlan {
+            workers: profile.worker_capacity,
+            activity: 1.0,
+            area: 1.0,
+        },
+        prices,
+        exports,
+        input_quote,
+    )
+}
+
+/// Reserves a placed explicit producer's full operation using its actual area and capital.
+/// O(recipe ports² + source queries); no per-site storage or citywide lookup is needed.
+pub(super) fn constructing_area_covers_operation(
+    building: &Building,
+    profile: &EconomyProfileRuntime,
+    catalog: &RuntimeEconomyCatalog,
+    market: OutputMarket<'_>,
+    prices: OperationPrices,
+    exports: f32,
+    paid_cargo: f64,
+    supply: &mut impl super::supply::ProjectSupply,
+) -> bool {
+    let area =
+        crate::simulation::economy::households::output_area_scale_for_building(building, profile);
+    let workers = crate::simulation::economy::households::physical_worker_capacity_for_profile(
+        building, profile,
+    );
+    if workers == 0 || area <= 0.0 {
+        return false;
+    }
+    let Some(costs) = industrial_operation_for_plan(
+        profile,
+        catalog,
+        market,
+        OperationPlan {
+            workers,
+            activity: 1.0,
+            area,
+        },
+        prices,
+        exports,
+        |input| supply.quote(input, catalog, prices),
+    ) else {
+        return false;
+    };
+    let capital = working_capital_assets_at_prices(
+        building,
+        profile,
+        paid_cargo,
+        |resource| supply.input_price(resource, catalog, prices),
+        |resource| {
+            let units = profile
+                .output_port(resource)
+                .map_or(0.0, |port| profile.net_output_units_per_day(port) * area);
+            if units <= EPSILON {
+                return 0.0;
+            }
+            catalog.unit_price_for_resource(resource).unwrap_or(0.0)
+                * market.attainable_sales(resource, units, exports)
+                / units
+        },
+    );
+    capital >= f64::from(costs.working_capital)
+}
+
+fn industrial_operation_for_plan(
+    profile: &EconomyProfileRuntime,
+    catalog: &RuntimeEconomyCatalog,
+    absorption: OutputMarket<'_>,
+    plan: OperationPlan,
+    prices: OperationPrices,
+    exports: f32,
+    input_quote: impl FnMut(InputRequirement) -> InputSupplyCosts,
+) -> Option<OperatingCosts> {
     let revenue: f32 = profile
         .outputs
         .iter()
         .map(|port| {
             absorption.attainable_sales(
                 port.resource_runtime_id,
-                profile.net_output_units_per_day(port),
+                profile.net_output_units_per_day(port) * plan.area * plan.activity,
                 exports,
             ) * catalog
                 .unit_price_for_resource(port.resource_runtime_id)
                 .unwrap_or(0.0)
         })
         .sum();
-    let inputs: f32 = profile
-        .inputs
-        .iter()
-        .filter(|port| profile.output_port(port.resource_runtime_id).is_none())
-        .map(|port| {
-            port.units_per_day
-                * catalog
-                    .unit_price_for_resource(port.resource_runtime_id)
-                    .unwrap_or(0.0)
-                * imports
-        })
-        .sum();
-    // Necessary lower bound before a site has a route quote: at least enough paid dispatches
-    // for full production and external inputs. Actual route fees must be earned back before
-    // the next export-led opening; this check does not invent a prospective route.
-    let daily_loads: f32 = profile
-        .inputs
-        .iter()
-        .filter(|port| profile.output_port(port.resource_runtime_id).is_none())
-        .map(|port| port.units_per_day / logistics.truck_payload_kg)
-        .chain(
-            profile
-                .outputs
-                .iter()
-                .map(|port| profile.net_output_units_per_day(port) / logistics.truck_payload_kg),
-        )
-        .sum();
-    revenue
-        > inputs
-            + profile.worker_capacity as f32 * profile.average_daily_wage()
-            + overhead
-            + daily_loads * logistics.dispatch_fee_currency
+    let costs = OperatingCosts::for_plan_with_input_quotes(
+        profile,
+        plan,
+        prices,
+        |resource, units| {
+            if absorption.export_expansion_available() {
+                (units - absorption.unmet_units(resource)).max(0.0)
+            } else {
+                0.0
+            }
+        },
+        input_quote,
+    );
+    (revenue > costs.total()).then_some(costs)
 }
 
 pub(super) fn nonresidential_passes_absorption_gate(
@@ -483,10 +619,47 @@ pub(super) fn nonresidential_passes_absorption_gate(
     candidate_profile.outputs.iter().any(|port| {
         candidate_profile.net_output_units_per_day(port) > EPSILON
             && (absorption.unmet_units(port.resource_runtime_id) > EPSILON
-                || (absorption.export_expansion_available
+                || (absorption.export_expansion_available()
                     && matches!(
                         candidate_profile.kind,
                         EconomyProfileRuntimeKind::Processor | EconomyProfileRuntimeKind::Producer
                     )))
     })
+}
+
+#[cfg(test)]
+mod replacement_tests {
+    use super::*;
+    use crate::simulation::economy::definitions::load_runtime_economy_catalog;
+
+    #[test]
+    fn replacement_reuses_only_its_own_customers_without_mutating_rejected_quotes() {
+        let catalog = load_runtime_economy_catalog().unwrap();
+        let profile = catalog.profile_for_id("grocery_basic").unwrap();
+        let port = &profile.outputs[0];
+        let units = port.units_per_day;
+        let mut market = OutputAbsorptionContext::from_resource_amounts(
+            catalog.resource_count(),
+            &[(port.resource_runtime_id, units * 1.5)],
+            &[(port.resource_runtime_id, units * 1.75)],
+            1,
+            &[],
+        );
+        let before = market.placed_output_units_by_resource.clone();
+        // This shop accounts for half a unit of capacity; its competitor owns the rest.
+        for _ in 0..100 {
+            let quote = market.replacement_market(profile, 0.5);
+            assert_eq!(quote.unmet_units(port.resource_runtime_id), units * 0.75);
+        }
+        assert_eq!(market.placed_output_units_by_resource, before);
+        market.reserve_replacement(profile, 0.5, profile);
+        assert_eq!(market.unmet_units(port.resource_runtime_id), 0.0);
+        assert_eq!(
+            market
+                .replacement_market(profile, 1.0)
+                .unmet_units(port.resource_runtime_id),
+            units * 0.75,
+            "the next replacement cannot reuse the first one's new capacity"
+        );
+    }
 }

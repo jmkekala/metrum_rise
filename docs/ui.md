@@ -246,10 +246,16 @@ Gameplay HUD status widgets: the clock / simulation-speed panel remains anchored
 a compact city-status panel sits immediately to its right, and the R/C/I demand meter sits to
 the right of that. The city-status panel shows current treasury value plus live agent count,
 and refreshes continuously so paused-state edits such as road building still update the value
-immediately. The demand meter shows Residential / Commercial / Industrial net growth pressure
-as three vertical bars using the same green / blue / yellow palette as the zoning families.
-Each bar is centered on a zero baseline and spans `-100%..100%`. All four bottom-strip surfaces
-currently use the same white `HUD_TEXT_SIZE` typography for their primary labels.
+immediately. The growth meter shows exact Residential / Commercial / Industrial project counts
+from the last hourly assessment: newly selected, previously queued, and physically constructing.
+The green / blue / yellow bars share a scale whose maximum is the largest current count; they are
+not percentages. Compact colored `R n / C n / I n` labels expose the counts. Each label explains its
+zone; the meter tooltip combines all three. Rust supplies housing need, ready homes, live funded
+jobs, missing assets, free/unsuitable lots and customer/income/workforce rejections from recorded
+planner decisions. Reading the HUD never runs another city scan or changes a reservation. Until
+the first hourly assessment after creation/load, the tooltip explicitly says it is waiting.
+F12 enables the growth cheat; the tooltip labels bypassed economic checks rather than inventing
+100% demand. `growth_meter_test.gd` covers the bridge, bar scaling, zero counts and explanations.
 
 Zoning interaction rule: `Rect` and `Brush` are shared paint-mode controls, not their own
 submenu. Opening the Zoning tool shows only the lower row. Clicking `Residential`,
@@ -354,7 +360,7 @@ Current WorldEditor shortcuts:
 | Space      | Pause / unpause |
 | Escape     | Cancel active tool |
 | Ctrl+Z     | Undo |
-| F12        | Add 1,000,000 money and lock R/C/I demand at 100% |
+| F12        | Add 1,000,000 money and enable the private growth cheat |
 | 7 / 8 / 9 / 0 / - | Overlay modes |
 
 **Camera** (owned by `input_manager.gd`):
@@ -449,7 +455,7 @@ inspecting another building closes the previous window.
 | Mods | Options → Mods | `scripts/ui/pack_manager.gd` *(implemented)* | Embedded content-pack browser / manager panel. |
 | City Statistics | City → City Statistics | inline placeholder in `scripts/ui/top_menu.gd` | Placeholder window for future population, housed/unhoused counts, budget summary, and utility status. |
 | Economy Overview | City → Economy Overview | `scripts/ui/economy_overview.gd` *(implemented)* | Live fiscal budget, services, and policy overview with persisted window layout and split-panel offsets. |
-| Demand Overview | City → Demand Overview | inline placeholder in `scripts/ui/top_menu.gd` | Placeholder window for future residential/commercial/industrial demand pressure, spawn credit, and growth candidates. |
+| Demand Overview | City → Demand Overview | inline placeholder in `scripts/ui/top_menu.gd` | Placeholder window for a future expanded view of the HUD’s project counts and concrete growth constraints. |
 | Keyboard Shortcuts | Help → Keyboard Shortcuts | inline in `scripts/ui/top_menu.gd` *(implemented)* | Read-only shortcut reference. |
 
 Windows that display live simulation data call `SimulationNode` methods each time they are
@@ -743,7 +749,7 @@ ui/pack_manager.gd      Window — mod pack browser
 core/input_manager.gd   Tool state, keyboard shortcuts, camera, Ctrl+S/L save/load
 editors/world_editor.gd WorldEditor shell, tool UI, world load/save flow, camera policy owner
 editors/world_editor_camera_input.gd  WorldEditor camera input wrapper and UI-capture gating
-SimulationNode.get_demand_pressures  HUD-only R/C/I meter source, returns normalized -1.0..1.0 display pressures
+SimulationNode.get_growth_overview  Cached hourly project counts and decision explanations; O(1) in city size
 SimulationNode.get_treasury_balance  HUD treasury source, snapshot-backed for paused-state edits
 SimulationNode.get_agent_count       HUD live-agent source, snapshot-backed
 ```

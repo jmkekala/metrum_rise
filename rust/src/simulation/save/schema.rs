@@ -6,7 +6,10 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 73;
+pub const SAVE_VERSION: i64 = 83;
+
+/// Traffic smoothing and live agent decisions survive save/load.
+pub const CONTINUATION_SAVE_VERSION: i64 = 75;
 
 /// Electricity uses kWh and persists physical meters plus unpaid consumer bills.
 pub const ELECTRICITY_KWH_SAVE_VERSION: i64 = 73;
@@ -84,7 +87,12 @@ CREATE TABLE saved_lanes(
     lane_idx INTEGER NOT NULL,
     node_id INTEGER NOT NULL,
     from_lane_id INTEGER NOT NULL,
-    to_lane_id INTEGER NOT NULL
+    to_lane_id INTEGER NOT NULL,
+    frontage_delay_penalty_s REAL NOT NULL
+);
+CREATE TABLE network_runtime_state(
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    frontage_delay_elapsed_s REAL NOT NULL
 );
 CREATE TABLE world_config(
     width_m REAL NOT NULL,
@@ -139,17 +147,9 @@ CREATE TABLE resource_deposit_chunks(
     PRIMARY KEY(resource_id, chunk_x, chunk_z)
 );
 CREATE TABLE demand_state(
-    residential REAL NOT NULL,
-    commercial REAL NOT NULL,
-    industrial REAL NOT NULL,
     households_to_admit_today INTEGER NOT NULL,
     households_to_remove_today INTEGER NOT NULL,
-    admission_action_credit REAL NOT NULL,
-    removal_action_credit REAL NOT NULL,
     persistent_exit_action_credit REAL NOT NULL,
-    spawn_action_credit_residential REAL NOT NULL,
-    spawn_action_credit_commercial REAL NOT NULL,
-    spawn_action_credit_industrial REAL NOT NULL,
     upgrade_action_credit_residential REAL NOT NULL,
     upgrade_action_credit_commercial REAL NOT NULL,
     upgrade_action_credit_industrial REAL NOT NULL,
@@ -159,19 +159,6 @@ CREATE TABLE demand_state(
     despawn_action_credit_residential REAL NOT NULL,
     despawn_action_credit_commercial REAL NOT NULL,
     despawn_action_credit_industrial REAL NOT NULL,
-    spawn_hysteresis_active_residential INTEGER NOT NULL,
-    spawn_hysteresis_active_commercial INTEGER NOT NULL,
-    spawn_hysteresis_active_industrial INTEGER NOT NULL,
-    upgrade_hysteresis_active_residential INTEGER NOT NULL,
-    upgrade_hysteresis_active_commercial INTEGER NOT NULL,
-    upgrade_hysteresis_active_industrial INTEGER NOT NULL,
-    downgrade_hysteresis_active_residential INTEGER NOT NULL,
-    downgrade_hysteresis_active_commercial INTEGER NOT NULL,
-    downgrade_hysteresis_active_industrial INTEGER NOT NULL,
-    despawn_hysteresis_active_residential INTEGER NOT NULL,
-    despawn_hysteresis_active_commercial INTEGER NOT NULL,
-    despawn_hysteresis_active_industrial INTEGER NOT NULL,
-    recent_household_failure_pressure REAL NOT NULL,
     cheat_max_demands_enabled INTEGER NOT NULL
 );
 CREATE TABLE pending_demand_spawns(
@@ -372,7 +359,9 @@ CREATE TABLE households(
     power_consumption_cost REAL NOT NULL,
     water_consumption_cost REAL NOT NULL,
     sewage_consumption_cost REAL NOT NULL,
-    electricity_account TEXT NOT NULL
+    electricity_account TEXT NOT NULL,
+    gross_daily_wages REAL NOT NULL,
+    employed_adults INTEGER NOT NULL
 );
 CREATE TABLE city_treasury(
     balance REAL NOT NULL,
@@ -516,7 +505,18 @@ CREATE TABLE agents(
     cached_work_profile_index INTEGER NOT NULL,
     has_car INTEGER NOT NULL,
     vehicle_type INTEGER NOT NULL,
-    current_path_index INTEGER NOT NULL
+    current_path_index INTEGER NOT NULL,
+    speed REAL NOT NULL,
+    planned_target_building INTEGER NOT NULL,
+    planned_activity INTEGER NOT NULL,
+    network_replan_failures INTEGER NOT NULL,
+    lane_change_from_lane_id INTEGER NOT NULL,
+    lane_change_start_d REAL NOT NULL,
+    lane_change_length_m REAL NOT NULL,
+    overtake_blocked_time_s REAL NOT NULL,
+    overtake_cooldown_s REAL NOT NULL,
+    job_lock_days INTEGER NOT NULL,
+    consecutive_unpaid_days INTEGER NOT NULL
 );
 CREATE TABLE agent_path_nodes(
     agent_id INTEGER NOT NULL,

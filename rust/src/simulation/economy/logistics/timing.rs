@@ -55,10 +55,35 @@ pub(super) fn adjusted_unit_price(
     }
 }
 
+/// Identifies the current goods-price interval without invalidating quotes every minute.
+/// O(authored freight windows), no city scan or allocation; profiles with constant prices
+/// create no boundary. The same minute in another day has the same price interval.
+pub(crate) fn freight_price_phase(
+    tuning: &crate::simulation::economy::definitions::RuntimeEconomyTuning,
+    minute_of_day: u16,
+) -> u16 {
+    tuning.operational_clock.freight_profiles.iter()
+        .filter(|profile| profile.outside_window_cost_multiplier != 1.0)
+        .flat_map(|profile| &profile.preferred_windows)
+        .flat_map(|window| [window.start_minute, window.end_minute])
+        .filter(|&boundary| boundary <= minute_of_day)
+        .max().unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::simulation::economy::definitions::load_runtime_economy_tuning;
+
+    #[test]
+    fn price_phase_changes_only_at_authored_receiving_boundaries() {
+        let tuning = load_runtime_economy_tuning().unwrap();
+        assert_eq!(freight_price_phase(&tuning, 420), freight_price_phase(&tuning, 479));
+        assert_ne!(freight_price_phase(&tuning, 419), freight_price_phase(&tuning, 420));
+        assert_ne!(freight_price_phase(&tuning, 479), freight_price_phase(&tuning, 480));
+        assert_eq!(freight_price_phase(&tuning, 480), freight_price_phase(&tuning, 1079));
+        assert_ne!(freight_price_phase(&tuning, 1079), freight_price_phase(&tuning, 1080));
+    }
 
     #[test]
     fn carrier_quote_covers_dispatch_and_round_trip_vehicle_time() {

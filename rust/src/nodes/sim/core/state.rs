@@ -519,7 +519,7 @@ impl SimCore {
         // Capture receipts before demand can remove or replace their building.
         observer.hourly_economy(self);
         if minute_of_day != 0 {
-            self.execute_hourly_demand_pass(day_index, minute_of_day, &service_funding_by_building);
+            self.execute_hourly_demand_pass(day_index, minute_of_day);
             observer.buildings_changed(self);
         }
     }
@@ -610,6 +610,31 @@ impl SimCore {
         minute_of_day: u16,
     ) {
         let total_start = Instant::now();
+        let permit = match self.demand.prepare_queued_spawn(
+            &pending.action,
+            pending.zone_type,
+            &self.allocator,
+            &self.households,
+            &self.region_graph,
+            absolute_operational_minute(day_index, minute_of_day),
+            &self.transit_network,
+            &mut self.logistics,
+            &self.zoning,
+            self.treasury.balance,
+            &self.fiscal_policy,
+        ) {
+            Ok(permit) => permit,
+            Err(reason) => {
+                debug_log!(
+                    "economy",
+                    "queued demand spawn rejected before owner funding: parcel={} zone={:?} reason={}",
+                    pending.action.parcel_id,
+                    pending.zone_type,
+                    reason
+                );
+                return;
+            }
+        };
         let compile_start = Instant::now();
         self.transit_network.road_surface.compile_dirty_with_reason(
             &self.region_graph,
@@ -639,6 +664,10 @@ impl SimCore {
             ZoneType::Industrial => execution.industrial,
             _ => return,
         };
+        if use_execution.spawn_executed > 0 {
+            self.demand
+                .record_queued_spawn_placement(permit, &pending.action, &self.allocator);
+        }
         debug_log!(
             "economy",
             "queued demand spawn execution: planned_day={} planned_minute={} executed_day={} executed_minute={} zone={:?} attempted={} placed={} failed={} pending_remaining={} compile_ms={:.3} execute_ms={:.3} total_ms={:.3}",
@@ -711,7 +740,7 @@ impl SimCore {
         let fiscal_revenue = self.households.daily_settlement_tick(
             &mut self.agents,
             &mut self.allocator,
-            &self.logistics,
+            &mut self.logistics,
             &self.transit_network,
             &self.region_graph,
             &mut self.treasury.balance,
@@ -732,16 +761,11 @@ impl SimCore {
             .sum();
         self.treasury
             .settle_daily_upkeep(road_length_m * ROAD_UPKEEP_PER_METER_PER_DAY);
-        self.demand.run_daily_pass_with_service_funding(
-            &self.allocator,
-            &self.households,
-            &self.region_graph,
-            self.treasury.balance,
-            &service_funding_by_building,
-            &self.fiscal_policy,
-        );
+        self.demand
+            .run_daily_pass(&self.allocator, &self.households);
         let removed_households = self.households.execute_demand_household_removal(
             self.demand.households_to_remove_today,
+            self.demand.household_exit_policy(),
             &mut self.agents,
             &mut self.allocator,
             &mut self.logistics,
@@ -750,7 +774,7 @@ impl SimCore {
             .record_household_removal_execution(removed_households);
         self.demand
             .log_daily_household_action_diagnostics(day_index);
-        self.execute_hourly_demand_pass(day_index, 0, &service_funding_by_building);
+        self.execute_hourly_demand_pass(day_index, 0);
         // Minute 0 is the deterministic closing boundary: operational-hour work,
         // daily settlement, and midnight demand all post before the daily tax
         // buckets roll into the report.
@@ -766,7 +790,7 @@ impl SimCore {
         self.allocator.reset_daily_input_accumulators();
         debug_log!(
             "economy",
-            "daily tick end: buildings={} households={} agents={} demand=(R {:+.0}%, C {:+.0}%, I {:+.0}%) admit={} remove={} planned_spawns=({}/{}/{}) upgrades=({}/{}/{}) downgrades=({}/{}/{}) despawns=({}/{}/{}) treasury={:.0}",
+            "daily tick end: buildings={} households={} agents={} admit={} remove={} planned_spawns=({}/{}/{}) upgrades=({}/{}/{}) downgrades=({}/{}/{}) despawns=({}/{}/{}) treasury={:.0}",
             self.allocator.buildings.len(),
             self.households
                 .households
@@ -774,9 +798,6 @@ impl SimCore {
                 .filter(|h| h.member_count > 0)
                 .count(),
             self.agents.len(),
-            self.demand.net_residential_pressure() * 100.0,
-            self.demand.net_commercial_pressure() * 100.0,
-            self.demand.net_industrial_pressure() * 100.0,
             self.demand.households_to_admit_today,
             self.demand.households_to_remove_today,
             self.demand.building_actions.residential.spawns.len(),
@@ -801,12 +822,7 @@ impl SimCore {
         self.last_tick_duration = tick_start.elapsed().as_secs_f64() * 1000.0;
     }
 
-    pub(super) fn execute_hourly_demand_pass(
-        &mut self,
-        day_index: u32,
-        minute_of_day: u16,
-        service_funding_by_building: &[f32],
-    ) {
+    pub(super) fn execute_hourly_demand_pass(&mut self, day_index: u32, minute_of_day: u16) {
         self.prepare_cell_lots_internal();
         self.allocator
             .prepare_building_site_query_index(self.config.zone_cell_m);
@@ -817,35 +833,49 @@ impl SimCore {
         );
         self.demand
             .set_admission_candidate_hour(day_index, minute_of_day);
-        self.demand.run_hourly_pass_with_service_funding(
+        self.demand.set_queued_construction_with_entrances(
+            &self.allocator,
+            &self.zoning,
+            absolute_operational_minute(day_index, minute_of_day),
+            self.pending_demand_spawns
+                .iter()
+                .map(|pending| (pending.due_minute, pending.zone_type, &pending.action)),
+            |action| self.allocator.demand_site_entrance(action.parcel_id, &action.asset_id,
+                &self.zoning, &self.region_graph, &self.transit_network.lane_system),
+        );
+        self.demand.run_hourly_pass_with_policy(
             &self.allocator,
             &self.households,
             &self.region_graph,
             &self.zoning,
             self.treasury.balance,
-            service_funding_by_building,
             &self.fiscal_policy,
+            &self.transit_network,
+            &mut self.logistics,
             crate::simulation::buildings::allocator::BuildingSiteEnvironment {
                 road_surface: &self.transit_network.road_surface,
                 terrain: &self.heightmap,
-            },
+            }, minute_of_day,
         );
         let launched_households = self
             .allocator
-            .execute_demand_household_admission_with_preference(
+            .execute_demand_household_admission_with_income(
                 self.demand.households_to_admit_today,
                 self.demand.admission_candidate_seed,
-                self.demand.prefer_worker_capable_admission(),
                 &mut self.agents,
                 &self.transit_network,
                 &self.region_graph,
                 |composition, members, home_level| {
-                    self.demand.claim_household_admission(
+                    let accepted = self.demand.claim_household_admission(
                         composition,
                         members,
                         home_level,
                         &self.fiscal_policy,
-                    )
+                    );
+                    if accepted {
+                        self.households.record_pending_arrival(composition);
+                    }
+                    accepted
                 },
             );
         self.debug_household_admissions_since_daily = self
@@ -914,12 +944,9 @@ impl SimCore {
         }
         debug_log!(
             "economy",
-            "hourly demand: day={} minute={} demand=(R {:+.0}%, C {:+.0}%, I {:+.0}%) admit={} planned_spawns=({}/{}/{}) queued_spawns={} pending_spawns={} placed_spawns=({}/{}/{}) upgrades=({}/{}/{}) downgrades=({}/{}/{}) despawns=({}/{}/{})",
+            "hourly demand: day={} minute={} admit={} planned_spawns=({}/{}/{}) queued_spawns={} pending_spawns={} placed_spawns=({}/{}/{}) upgrades=({}/{}/{}) downgrades=({}/{}/{}) despawns=({}/{}/{})",
             day_index,
             minute_of_day,
-            self.demand.net_residential_pressure() * 100.0,
-            self.demand.net_commercial_pressure() * 100.0,
-            self.demand.net_industrial_pressure() * 100.0,
             self.demand.households_to_admit_today,
             self.demand.building_actions.residential.spawns.len(),
             self.demand.building_actions.commercial.spawns.len(),

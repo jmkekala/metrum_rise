@@ -209,22 +209,12 @@ pub(crate) struct BuildingViabilityRuntimeTuning {
     pub residential_min_occupancy_ratio_for_upgrade: Vec<f32>,
     /// Maximum occupancy ratio below which residential downgrade becomes viable for each level.
     pub residential_max_occupancy_ratio_for_downgrade: Vec<f32>,
-    /// Minimum operating-buffer days required to upgrade into each non-residential target level.
-    pub nonresidential_min_buffer_days_by_level: Vec<f32>,
-    /// Maximum operating-buffer days below which downgrade becomes viable for each level.
-    pub nonresidential_max_buffer_days_for_downgrade: Vec<f32>,
     /// Minimum staffing ratio required for non-residential upgrades.
     pub nonresidential_min_staffing_ratio_for_upgrade: f32,
-    /// Maximum staffing ratio below which non-residential downgrade becomes viable.
-    pub nonresidential_max_staffing_ratio_for_downgrade: f32,
     /// Minimum industrial input coverage required for industrial upgrades.
     pub industrial_min_input_coverage_for_upgrade: f32,
     /// Minimum industrial output headroom required for industrial upgrades.
     pub industrial_min_output_headroom_for_upgrade: f32,
-    /// Maximum industrial input coverage below which industrial downgrade becomes viable.
-    pub industrial_max_input_coverage_for_downgrade: f32,
-    /// Maximum industrial output headroom below which industrial downgrade becomes viable.
-    pub industrial_max_output_headroom_for_downgrade: f32,
 }
 
 /// Compact runtime resource id resolved from authored resource names.
@@ -553,9 +543,26 @@ pub(crate) struct RuntimeEconomyCatalog {
     pub(super) resource_id_by_runtime_id: Vec<String>,
     pub(super) price_by_resource: BTreeMap<ResourceRuntimeId, f32>,
     pub(super) resource_measures: Vec<ResourceMeasure>,
+    /// Supplier-before-buyer phases of the authored net-input dependency graph.
+    pub(super) funding_phases: Vec<usize>,
+    /// Number of dependency phases, including mutually dependent recipes as one phase.
+    pub(super) funding_phase_count: usize,
 }
 
 impl RuntimeEconomyCatalog {
+    /// Stable local-funding phase; mutually dependent recipes share a phase, while
+    /// downstream recipes follow all their suppliers. Invalid/non-economic ids use phase zero.
+    pub(crate) fn funding_phase(&self, runtime_id: u16) -> usize {
+        runtime_id.checked_sub(1)
+            .and_then(|index| self.funding_phases.get(index as usize))
+            .copied().unwrap_or(0)
+    }
+
+    /// Number of authored dependency phases, independent of placed city size.
+    pub(crate) fn funding_phase_count(&self) -> usize {
+        self.funding_phase_count.max(1)
+    }
+
     /// Returns immutable quantity and batching metadata in O(1) by stable resource id.
     pub(crate) fn resource_measure(&self, resource: ResourceRuntimeId) -> Option<ResourceMeasure> {
         resource

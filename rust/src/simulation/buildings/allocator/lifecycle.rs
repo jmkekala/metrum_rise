@@ -15,7 +15,9 @@ use crate::simulation::economy::definitions::{RuntimeEconomyCatalog, RuntimeEcon
 use crate::simulation::economy::demand::{
     DemandBuildingActionKey, DemandBuildingActionPlan, DemandLevelChangeAction, DemandSpawnAction,
 };
-use crate::simulation::economy::households::HouseholdSystem;
+use crate::simulation::economy::households::{
+    HouseholdSystem, candidate_immigrant_household_size_for_vacancy,
+};
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
@@ -226,6 +228,7 @@ impl BuildingAllocator {
                     }
                 }
             };
+            let was_pending_redevelopment = self.buildings[i].pending_redevelopment;
             let remove = match compatibility {
                 None => true,
                 Some(true) => {
@@ -248,6 +251,12 @@ impl BuildingAllocator {
                     }
                 }
             };
+
+            if !self.dirty_index
+                && was_pending_redevelopment != self.buildings[i].pending_redevelopment
+            {
+                self.admission_occupancy_changed(i);
+            }
 
             if remove {
                 let b = &self.buildings[i];
@@ -318,7 +327,6 @@ impl BuildingAllocator {
         &mut self,
         households_to_spawn: usize,
         next_household_id: usize,
-        prefer_worker_capable: bool,
         agents: &mut AgentSystem,
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
@@ -326,6 +334,12 @@ impl BuildingAllocator {
     ) -> usize {
         if households_to_spawn == 0 {
             return 0;
+        }
+        let Some(residential_slot) = baseline_private_zone_slot(ZoneType::Residential) else {
+            return 0;
+        };
+        if self.dirty_index {
+            self.rebuild_zone_index();
         }
         for category in ["economy", "spawn"] {
             debug_log!(
@@ -336,20 +350,29 @@ impl BuildingAllocator {
         }
         let mut launched = 0;
         let mut arrival = None;
-        for _ in 0..households_to_spawn {
-            let Some((home_idx, household_size)) = self
-                .next_household_admission_candidate_for_household(
-                    next_household_id.saturating_add(launched),
-                    prefer_worker_capable,
-                )
-            else {
-                for category in ["economy", "spawn"] {
-                    debug_log!(
-                        category,
-                        "demand-owned household admission stopped early: could not claim a home from vacancy index"
-                    );
-                }
+        // Four offers per requested arrival, with at least sixteen for a small town.
+        // Each lookup is O(1) over the existing vacancy index; rejection neither
+        // reserves income nor prevents another home/family from being considered.
+        let attempt_limit = households_to_spawn.saturating_mul(4).max(16);
+        let mut cursor = next_household_id;
+        for attempt in 0..attempt_limit {
+            if launched == households_to_spawn {
                 break;
+            }
+            let vacancies = &self.vacancy_index[residential_slot];
+            if vacancies.is_empty() {
+                break;
+            }
+            let position = cursor % vacancies.len();
+            let home_idx = vacancies[position];
+            cursor = position + 1;
+            let household_seed = next_household_id.saturating_add(attempt);
+            let Some(household_size) = candidate_immigrant_household_size_for_vacancy(
+                self.flat_size_m2(home_idx),
+                home_idx,
+                household_seed as u32,
+            ) else {
+                continue;
             };
             let arrival =
                 arrival.get_or_insert_with(|| BorderArrivalCosts::new(transit_network, graph));
@@ -363,15 +386,16 @@ impl BuildingAllocator {
                         home_idx
                     );
                 }
-                break;
+                continue;
             };
-            let household_seed = next_household_id.saturating_add(launched);
             let composition = household_age_composition(home_idx, household_seed, household_size);
             if !claim_income(composition, household_size, self.buildings[home_idx].level) {
-                break;
+                continue;
             }
             // One household consumes 1 slot of household_capacity regardless of size.
             self.claim_vacancy(home_idx);
+            // A full home may swap-remove its vacancy; consider the moved entry next.
+            cursor = position;
             let border_pos = graph.node(border_node).pos;
             let carrier_idx = agents.spawn_household_arrival_carrier(
                 home_idx,
@@ -978,6 +1002,7 @@ impl BuildingAllocator {
     ///
     /// Picks the smallest `(worker rank, offered size, vacancy position)` through the admission
     /// order (`ALLOC-03`). A stale index may list moved buildings, so it is scanned as before.
+    #[cfg(test)]
     pub(crate) fn next_household_admission_candidate_for_household(
         &self,
         next_household_id: usize,
@@ -998,6 +1023,7 @@ impl BuildingAllocator {
     }
 
     // The admission rule as a walk over every vacancy. O(V).
+    #[cfg(test)]
     pub(super) fn scan_household_admission_candidate(
         &self,
         vacancies: &[usize],
@@ -1056,7 +1082,10 @@ impl BuildingAllocator {
         let Some(building) = self.buildings.get(building_idx) else {
             return false;
         };
-        !building.broken
+        building.is_deserted
+            && !building.broken
+            && !building.economy_broken
+            && !building.is_under_construction()
             && !building.pending_redevelopment
             && building.occupancy == 0
             && building.worker_count == 0
@@ -1220,5 +1249,34 @@ impl BuildingAllocator {
             logistics,
             treasury_balance,
         )
+    }
+}
+
+#[cfg(test)]
+mod clearance_tests {
+    use super::*;
+    use crate::simulation::buildings::allocator::indexed_test_building;
+
+    #[test]
+    fn clearance_execution_rechecks_abandonment_occupancy_and_construction() {
+        let mut allocator = BuildingAllocator::new();
+        let mut building = indexed_test_building("test:home".to_owned(), ZoneType::Residential, 0);
+        building.is_deserted = true;
+        allocator.buildings.push(building);
+        assert!(allocator.can_demand_despawn(0));
+        allocator.buildings[0].is_deserted = false;
+        assert!(
+            !allocator.can_demand_despawn(0),
+            "a recovered site must survive a stale plan"
+        );
+        allocator.buildings[0].is_deserted = true;
+        allocator.buildings[0].occupancy = 1;
+        assert!(!allocator.can_demand_despawn(0));
+        allocator.buildings[0].occupancy = 0;
+        allocator.buildings[0].worker_count = 1;
+        assert!(!allocator.can_demand_despawn(0));
+        allocator.buildings[0].worker_count = 0;
+        allocator.buildings[0].construction_remaining_hours = 1;
+        assert!(!allocator.can_demand_despawn(0));
     }
 }

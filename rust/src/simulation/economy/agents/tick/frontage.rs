@@ -49,18 +49,22 @@ impl AgentSystem {
 
         let smoothing_retain = 0.75_f32.powi(update_steps);
         let smoothing_gain = 1.0 - smoothing_retain;
+        let mut changed = false;
         for (lane_id, lane) in transit_network.lane_system.lanes.iter_mut().enumerate() {
             if lane.lane_type != LaneType::Vehicle {
+                changed |= lane.frontage_delay_penalty_s != 0.0;
                 lane.frontage_delay_penalty_s = 0.0;
                 continue;
             }
             if lane.edge_id == usize::MAX || lane.edge_id >= graph.edge_count() {
+                changed |= lane.frontage_delay_penalty_s != 0.0;
                 lane.frontage_delay_penalty_s = 0.0;
                 continue;
             }
 
             let edge = graph.edge(lane.edge_id);
             if edge.speed_limit <= 1e-6 || lane.length <= 1e-6 {
+                changed |= lane.frontage_delay_penalty_s != 0.0;
                 lane.frontage_delay_penalty_s = 0.0;
                 continue;
             }
@@ -74,8 +78,13 @@ impl AgentSystem {
                 let observed_lane_time = lane.length / observed_speed;
                 (observed_lane_time - free_flow_lane_time).clamp(0.0, 30.0)
             };
-            lane.frontage_delay_penalty_s = smoothing_retain * lane.frontage_delay_penalty_s
+            let delay = smoothing_retain * lane.frontage_delay_penalty_s
                 + smoothing_gain * raw_lane_delay_penalty_s;
+            changed |= delay != lane.frontage_delay_penalty_s;
+            lane.frontage_delay_penalty_s = delay;
         }
+        transit_network.frontage_delay_revision = transit_network
+            .frontage_delay_revision
+            .wrapping_add(u64::from(changed));
     }
 }

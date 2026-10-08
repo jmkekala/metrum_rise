@@ -96,7 +96,7 @@ fn mine_upkeep_is_charged_once_and_only_for_remaining_reserve() {
     }]);
     extraction.apply_work_area_scales(&mut allocator);
     assert_eq!(
-        operating_input_demand_scale(&catalog, &allocator.buildings[0], profile),
+        funded_input_demand_scale(&allocator.buildings[0], profile, 1.0),
         2.0
     );
     HouseholdSystem::new().run_building_economy(&mut allocator, true);
@@ -119,7 +119,7 @@ fn mine_upkeep_is_charged_once_and_only_for_remaining_reserve() {
         0
     );
     assert_eq!(
-        operating_input_demand_scale(&catalog, &allocator.buildings[0], profile),
+        funded_input_demand_scale(&allocator.buildings[0], profile, 1.0),
         0.0
     );
     assert_eq!(

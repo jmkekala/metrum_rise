@@ -17,6 +17,14 @@ struct RuntimeDefinitions {
 
 static BUILTIN_RUNTIME: OnceLock<Result<RuntimeDefinitions, String>> = OnceLock::new();
 
+/// Compiles an isolated authored catalog for market tests without changing cached definitions.
+#[cfg(test)]
+pub(crate) fn compile_test_catalog(source: &str) -> Result<RuntimeEconomyCatalog, String> {
+    let profiles: ProfilesFile = toml::from_str(source).map_err(|error| error.to_string())?;
+    validate_runtime_tuning(&profiles.runtime_tuning)?;
+    compile_runtime_catalog(&profiles.profiles, &profiles.resources, &profiles.runtime_tuning)
+}
+
 /// Loads the shipped economy-side runtime tuning from `economy/profiles.toml`.
 pub(crate) fn load_runtime_economy_tuning() -> Result<Arc<RuntimeEconomyTuning>, String> {
     Ok(Arc::clone(&runtime_definitions()?.tuning))

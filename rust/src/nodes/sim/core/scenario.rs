@@ -17,7 +17,7 @@ use std::time::Instant;
 #[cfg(test)]
 mod balance_cases;
 mod diagnostics;
-pub use diagnostics::{GrowthBusinessCashFlow, GrowthReport};
+pub use diagnostics::{GrowthBusinessCashFlow, GrowthBusinessOutcome, GrowthReport};
 
 use glam::DVec2;
 use godot::prelude::Vector3;

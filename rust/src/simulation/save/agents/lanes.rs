@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Snapshot lane identities and restoration against the rebuilt lane graph.
+//! Snapshot lane identities and smoothed traffic state against the rebuilt lane graph.
 
 use super::*;
 use crate::simulation::economy::agents::MODE_WALK;
 use crate::simulation::network::lanes::{LaneSystem, LaneType};
+use crate::simulation::save::schema::CONTINUATION_SAVE_VERSION;
 
 #[cfg(test)]
 mod tests;
@@ -16,7 +17,11 @@ pub(super) fn save_lane_references(
     network: &TransitNetwork,
     maps: &SnapshotMaps,
 ) -> SaveLoadResult<()> {
-    let mut stmt = tx.prepare("INSERT INTO saved_lanes(lane_id, edge_id, is_fwd, lane_idx, node_id, from_lane_id, to_lane_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)")?;
+    tx.execute(
+        "INSERT INTO network_runtime_state(singleton, frontage_delay_elapsed_s) VALUES (1, ?1)",
+        [network.frontage_delay_elapsed_s],
+    )?;
+    let mut stmt = tx.prepare("INSERT INTO saved_lanes(lane_id, edge_id, is_fwd, lane_idx, node_id, from_lane_id, to_lane_id, frontage_delay_penalty_s) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)")?;
     // Visit only live indexed lanes; incremental rebuilds leave tombstones in storage.
     // Each connector has one incoming road lane and one outgoing road lane.
     for edge_id in 0..graph.edge_count() {
@@ -32,7 +37,8 @@ pub(super) fn save_lane_references(
                 lane.lane_idx,
                 -1_i64,
                 -1_i64,
-                -1_i64
+                -1_i64,
+                lane.frontage_delay_penalty_s
             ])?;
             for &conn_id in &lane.next_lanes {
                 let conn = &network.lane_system.lanes[conn_id];
@@ -51,7 +57,8 @@ pub(super) fn save_lane_references(
                     conn.lane_idx,
                     optional_node_to_db(graph, conn.node_id as u32, maps)?,
                     usize_to_i64(id)?,
-                    usize_to_i64(to_id)?
+                    usize_to_i64(to_id)?,
+                    conn.frontage_delay_penalty_s
                 ])?;
             }
         }
@@ -65,7 +72,7 @@ pub(in crate::simulation::save) fn restore_lane_references(
     version: i64,
     agents: &mut AgentSystem,
     graph: &RegionGraph,
-    network: &TransitNetwork,
+    network: &mut TransitNetwork,
     allocator: &BuildingAllocator,
 ) -> SaveLoadResult<()> {
     if version == 57 {
@@ -126,6 +133,13 @@ pub(in crate::simulation::save) fn restore_lane_references(
             validate_current_lane(agents, i, id, graph, lanes)?;
             agents.current_lane_id[i] = id;
         }
+        let changing_from = agents.lane_change_from_lane_id[i];
+        if changing_from != u32::MAX {
+            agents.lane_change_from_lane_id[i] = *remap
+                .get(&(changing_from as usize))
+                .ok_or_else(|| SaveLoadError::custom("unknown saved lane-change origin"))?
+                as u32;
+        }
         agents.planned_attach_lane_id[i] = remap
             .get(&(agents.planned_attach_lane_id[i] as usize))
             .copied()
@@ -138,6 +152,28 @@ pub(in crate::simulation::save) fn restore_lane_references(
             .unwrap_or(u32::MAX);
     }
     validate_loaded_planned_lane_ids(agents, lanes.lanes.len());
+    if version >= CONTINUATION_SAVE_VERSION {
+        network.frontage_delay_elapsed_s = conn.query_row(
+            "SELECT frontage_delay_elapsed_s FROM network_runtime_state WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        let mut delays = conn.prepare(
+            "SELECT lane_id, frontage_delay_penalty_s FROM saved_lanes ORDER BY lane_id",
+        )?;
+        let mut rows = delays.query([])?;
+        while let Some(row) = rows.next()? {
+            let old = i64_to_usize(row.get(0)?)?;
+            let delay: f32 = row.get(1)?;
+            if !delay.is_finite() || delay < 0.0 {
+                return Err(SaveLoadError::custom("invalid saved frontage delay"));
+            }
+            network.lane_system.lanes[remap[&old]].frontage_delay_penalty_s = delay;
+        }
+        if !network.frontage_delay_elapsed_s.is_finite() || network.frontage_delay_elapsed_s < 0.0 {
+            return Err(SaveLoadError::custom("invalid saved frontage delay clock"));
+        }
+    }
     Ok(())
 }
 

@@ -97,6 +97,9 @@ impl ShipmentSystem {
                     continue;
                 };
 
+                let import_unit_price =
+                    required_unit_price(&catalog, input_port.resource_runtime_id, &profile.id)
+                        * tuning.owa_import_price_multiplier;
                 if self.try_local_supplier_for_resource(
                     dest_idx,
                     desired_amount,
@@ -106,6 +109,8 @@ impl ShipmentSystem {
                     allocator,
                     transit_network,
                     graph,
+                    &planning.border_nodes,
+                    import_unit_price,
                     &mut planning.reservations,
                     &planning.supplier_index,
                     &planning.freight_components,
@@ -122,9 +127,6 @@ impl ShipmentSystem {
                     continue;
                 }
 
-                let import_unit_price =
-                    required_unit_price(&catalog, input_port.resource_runtime_id, &profile.id)
-                        * tuning.owa_import_price_multiplier;
                 if self.try_owa_fallback_for_resource(
                     dest_idx,
                     desired_amount,

@@ -16,7 +16,7 @@ use crate::simulation::economy::resource_totals::{
 };
 use crate::simulation::work_area::{
     minimum_work_area_workers, profile_kind_uses_explicit_work_area, sanitize_work_area_scale,
-    scaled_work_area_worker_capacity, work_area_worker_equivalent,
+    scaled_work_area_worker_capacity,
 };
 use crate::simulation::zoning::ZoneType;
 use rayon::prelude::*;
@@ -46,8 +46,6 @@ pub(crate) struct CommercialActivitySignal {
     pub(crate) household_supply_resource_runtime_id: ResourceRuntimeId,
     pub(crate) demand_units_per_day: f32,
     pub(crate) activity_floor_scale: f32,
-    /// Daily consumption without the temporary work needed to fill household pantries.
-    pub(crate) recurring_demand_units_per_day: f32,
     /// Share of authored output supported by ongoing consumption alone.
     pub(crate) recurring_activity_floor_scale: f32,
 }
@@ -105,6 +103,114 @@ pub(super) fn household_supply_unit_price(catalog: &RuntimeEconomyCatalog) -> f3
                 HOUSEHOLD_SUPPLY_RESOURCE_ID
             )
         })
+}
+
+/// Household-sized recurring baskets financed by wages and permanent transfers.
+/// Each family's desired category shares scale together within its own disposable income.
+/// Savings and temporary benefits are bridges, not recurring sales promised to a new employer.
+/// O(households + profile ports), allocation-free. The ordered pass is deliberate: households
+/// share a finite treasury in the same unemployment/pension/child-support order as settlement.
+pub(crate) fn affordable_consumer_residents(
+    households: &[Household],
+    allocator: &BuildingAllocator,
+    catalog: &RuntimeEconomyCatalog,
+    tuning: &RuntimeEconomyTuning,
+    policy: &crate::simulation::economy::fiscal::CityFiscalPolicy,
+    treasury_balance: f64,
+) -> f64 {
+    let basket = consumer_basket_cost(catalog, policy.household_vat_rate);
+    let mut equivalent_residents = 0.0;
+    visit_consumer_budgets(households, allocator, catalog, tuning, policy, treasury_balance,
+        |_, members, spending| {
+            equivalent_residents += if basket > 0.0 {
+                (spending / basket).min(f64::from(members))
+            } else {
+                f64::from(members)
+            };
+        });
+    equivalent_residents
+}
+
+/// Gross cost of one resident's authored daily consumer basket at catalog prices.
+/// The value includes household VAT and excludes utilities and property taxes.
+pub(crate) fn consumer_basket_cost(catalog: &RuntimeEconomyCatalog, vat: f32) -> f64 {
+    let mut basket = 0.0_f64;
+    for profile in catalog.all_profiles() {
+        if profile.kind == EconomyProfileRuntimeKind::DemandSink {
+            for input in &profile.inputs {
+                basket += f64::from(profile.consumption_rate_per_resident)
+                    * f64::from(
+                        catalog
+                            .unit_price_for_resource(input.resource_runtime_id)
+                            .unwrap_or(0.0),
+                    );
+            }
+        }
+    }
+    basket *= f64::from(1.0 + vat);
+    basket
+}
+
+/// Visits each housed family's recurring goods budget after taxes, utilities and property.
+/// The callback receives household index, desired resident count and gross spending including
+/// VAT. Savings and temporary benefits do not enter the budget. O(households + profile ports),
+/// allocation-free; finite benefit claims preserve settlement's deterministic household order.
+pub(crate) fn visit_consumer_budgets(
+    households: &[Household],
+    allocator: &BuildingAllocator,
+    catalog: &RuntimeEconomyCatalog,
+    tuning: &RuntimeEconomyTuning,
+    policy: &crate::simulation::economy::fiscal::CityFiscalPolicy,
+    treasury_balance: f64,
+    mut visitor: impl FnMut(usize, u16, f64),
+) {
+    use crate::simulation::economy::fiscal::{daily_property_tax, tax_amount};
+    let base_utility = household_daily_utility_allowance(catalog, tuning, 0.0)
+        * tuning.owa_import_price_multiplier;
+    let member_utility = household_daily_utility_allowance(catalog, tuning, 1.0)
+        * tuning.owa_import_price_multiplier
+        - base_utility;
+    let mut treasury = treasury_balance.max(0.0);
+    for (index, household) in households.iter().enumerate() {
+        if household.member_count == 0 {
+            continue;
+        }
+        let housed = household_is_housed(household, allocator);
+        let unemployed = household
+            .adult_count
+            .saturating_sub(household.employed_adults);
+        if housed && household.unemployment_days_elapsed < policy.unemployment_max_days {
+            super::benefits::pay_transfer_claim(
+                &mut treasury,
+                f32::from(unemployed) * policy.unemployment_benefit_per_adult_per_day.max(0.0),
+            );
+        }
+        let pension = super::benefits::pay_transfer_claim(
+            &mut treasury,
+            f32::from(household.elder_count) * policy.pension_per_elder_per_day.max(0.0),
+        );
+        let child_support = super::benefits::pay_transfer_claim(
+            &mut treasury,
+            f32::from(household.child_count) * policy.child_support_per_child_per_day.max(0.0),
+        );
+        if !housed {
+            continue;
+        }
+        let members = f64::from(household.member_count);
+        let gross = household.gross_daily_wages.max(0.0);
+        let income = f64::from(gross - tax_amount(gross, policy.income_tax_rate))
+            + f64::from(pension)
+            + f64::from(child_support);
+        let home = &allocator.buildings[household.home_building_id];
+        let bills = f64::from(base_utility)
+            + members * f64::from(member_utility)
+            + f64::from(daily_property_tax(
+                ZoneType::Residential,
+                home.level,
+                policy,
+            ));
+        visitor(index, household.member_count, (income - bills).max(0.0));
+    }
 }
 
 pub(super) fn demand_sink_cash_cost_per_resident_excluding_resource(
@@ -249,7 +355,6 @@ pub(crate) fn commercial_activity_signal_for_city(
         household_supply_resource_runtime_id: household_supply_resource,
         demand_units_per_day,
         activity_floor_scale,
-        recurring_demand_units_per_day: daily_consumption,
         recurring_activity_floor_scale: if live_output_units_per_day <= MIN_POSITIVE_VALUE {
             0.0
         } else {
@@ -648,35 +753,6 @@ pub(crate) fn active_worker_capacity_for_profile_with_floor_scale(
     scaled_capacity.clamp(1, worker_capacity)
 }
 
-/// Returns demand-responsive worker capacity before integer staffing slots are rounded.
-pub(crate) fn active_worker_capacity_equivalent_for_profile_with_floor_scale(
-    catalog: &RuntimeEconomyCatalog,
-    building: &Building,
-    profile: &EconomyProfileRuntime,
-    floor_scale: f32,
-) -> f32 {
-    let worker_capacity = profile.worker_capacity;
-    if worker_capacity == 0 {
-        return 0.0;
-    }
-    if profile_kind_uses_explicit_work_area(profile.kind) {
-        return work_area_worker_equivalent(
-            profile.workers_per_hectare,
-            building.work_area_scale,
-            minimum_work_area_workers(profile.kind),
-            profile.area_worker_capacity_max,
-        ) * floor_scale.clamp(0.0, 1.0);
-    }
-    if is_service_scaled_commercial_store(building, profile) {
-        return worker_capacity as f32 * floor_scale.clamp(0.0, 1.0);
-    }
-    if !is_sales_scaled_commercial_store(building, profile) {
-        return worker_capacity as f32;
-    }
-    worker_capacity as f32
-        * commercial_activity_scale_with_floor(catalog, building, profile, floor_scale)
-}
-
 /// Returns one output port's daily rate after explicit work-area scaling.
 pub(crate) fn scaled_output_units_per_day_for_building(
     building: &Building,
@@ -700,7 +776,11 @@ pub(crate) fn scaled_output_buffer_capacity_units_for_building(
     }
 }
 
-fn output_area_scale_for_building(building: &Building, profile: &EconomyProfileRuntime) -> f32 {
+/// Physical recipe scale, independent of current staffing, stock and customer activity.
+pub(crate) fn output_area_scale_for_building(
+    building: &Building,
+    profile: &EconomyProfileRuntime,
+) -> f32 {
     if profile_kind_uses_explicit_work_area(profile.kind) {
         sanitize_work_area_scale(building.work_area_scale)
     } else {
@@ -819,28 +899,16 @@ pub(crate) fn building_operation_factors_with_floor_scale(
     }
 }
 
-/// Sustained input demand from staffed operation, independent of input shortages/imports.
-/// Full output stores stop creating upstream demand until the goods find a customer.
-pub(crate) fn operating_input_demand_scale(
-    catalog: &RuntimeEconomyCatalog,
+/// Recurring purchases for an accepted operation, capped by current staff and explicit area.
+/// The caller supplies a financially validated activity; staff or stock alone cannot create it.
+pub(crate) fn funded_input_demand_scale(
     building: &Building,
     profile: &EconomyProfileRuntime,
+    funded_activity: f32,
 ) -> f32 {
-    let capacity = physical_worker_capacity_for_profile(building, profile);
-    if capacity == 0 {
-        return 0.0;
-    }
-    let effective_workers = building
-        .worker_count
-        .min(active_worker_capacity_for_profile(
-            catalog, building, profile,
-        ));
-    let mut staffing = (effective_workers as f32 / capacity as f32).clamp(0.0, 1.0);
-    if is_sales_scaled_commercial_store(building, profile) {
-        staffing = staffing.min(building.commercial_activity_floor_scale.clamp(0.0, 1.0));
-    }
-    let area = output_area_scale_for_building(building, profile);
-    staffing * area * hourly_output_headroom_factor(profile, building, staffing, area)
+    let capacity = physical_worker_capacity_for_profile(building, profile).max(1);
+    funded_activity.min(building.worker_count as f32 / capacity as f32).clamp(0.0, 1.0)
+        * output_area_scale_for_building(building, profile)
 }
 
 /// Consumes recipe inputs exactly once for the realized hourly production scale.
@@ -1136,28 +1204,6 @@ pub(crate) fn level_tuning_value(values: &[f32], level: u8) -> f32 {
         .unwrap_or(0.0)
 }
 
-fn owa_utility_cost_for_building(
-    catalog: &RuntimeEconomyCatalog,
-    tuning: &RuntimeEconomyTuning,
-    building: &Building,
-    profile: &EconomyProfileRuntime,
-) -> f32 {
-    let private_zone = matches!(
-        building.zone_type,
-        ZoneType::Commercial | ZoneType::Office | ZoneType::Mixed | ZoneType::Industrial
-    );
-    let explicit_area_business = profile_kind_uses_explicit_work_area(profile.kind);
-    if !private_zone && !explicit_area_business {
-        return 0.0;
-    }
-    profile
-        .utility_demand_units_per_day(building.work_area_scale)
-        .iter()
-        .zip(local_utility_service_costs(catalog))
-        .map(|(units, price)| units * price * tuning.owa_import_price_multiplier.max(0.0))
-        .sum()
-}
-
 /// Authored daily unit prices in the shared power, water, sewage order.
 pub(crate) fn local_utility_service_costs(catalog: &RuntimeEconomyCatalog) -> [f32; 3] {
     let mut costs = [0.0f32; 3];
@@ -1177,23 +1223,6 @@ pub(super) fn utility_service_index(service: Option<&str>) -> Option<usize> {
     UTILITY_SERVICES
         .iter()
         .position(|candidate| *candidate == service)
-}
-
-pub(crate) fn building_operating_buffer_days(
-    catalog: &RuntimeEconomyCatalog,
-    tuning: &RuntimeEconomyTuning,
-    building: &Building,
-) -> f32 {
-    let Some(profile) = economy_profile_for_building(catalog, building) else {
-        return 0.0;
-    };
-    let daily_operating_cost = building.worker_count as f32 * profile.average_daily_wage()
-        + owa_utility_cost_for_building(catalog, tuning, building, profile);
-    if daily_operating_cost <= 0.0 {
-        0.0
-    } else {
-        (building.operating_budget.max(0.0) / daily_operating_cost).max(0.0)
-    }
 }
 
 pub(crate) fn building_staffing_ratio(catalog: &RuntimeEconomyCatalog, building: &Building) -> f32 {
@@ -1341,6 +1370,9 @@ mod tests {
             member_count: 2,
             child_count: 0,
             adult_count: 2,
+            employed_adults: 0,
+            gross_daily_wages: 0.0,
+            shopping_has_car: false,
             elder_count: 0,
             consumption_rate: 1.0,
             stock_days: 0.0,

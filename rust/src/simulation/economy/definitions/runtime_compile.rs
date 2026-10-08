@@ -127,6 +127,8 @@ pub(super) fn compile_runtime_catalog(
     }
 
     validate_required_runtime_catalog(&catalog)?;
+    (catalog.funding_phases, catalog.funding_phase_count) =
+        super::supply_order::compile_phases(&catalog);
     Ok(catalog)
 }
 

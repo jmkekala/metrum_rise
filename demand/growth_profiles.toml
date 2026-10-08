@@ -1,27 +1,10 @@
-# Base-game demand growth-profile registry.
-#
-# This file is the shipped source of truth for private-building growth tuning.
-# In v0.1, the shipped set is intentionally small and closed: one default
-# GrowthProfile per shipped baseline private-use family and density.
-[signal_normalization]
-household_affordability_target_reserve_days = 7.0
-household_stock_stability_target_days = 3.0
-
+# Base-game demand pacing and household eligibility.
+# Project viability does not use citywide pressure thresholds.
 [action_budget]
-max_households_per_day = 48
+max_household_removals_per_day = 48
 
 [household_action]
-admission_threshold = 0.10
-regional_growth_household_pull = 0.45
-regional_growth_soft_households = 600.0
-admission_unhoused_ratio_penalty = 0.75
-admission_zero_budget_penalty = 0.75
-admission_recent_failure_penalty = 0.85
-move_in_min_search_runway_days = 2.0
-move_in_target_search_runway_days = 6.0
 move_in_benefit_treasury_coverage_days = 7.0
-recent_failure_daily_decay = 0.50
-removal_threshold = 0.55
 persistent_exit_destitute_stock_days = 0.25
 persistent_exit_destitute_unhoused_days = 2
 persistent_exit_max_unhoused_days = 7
@@ -41,84 +24,3 @@ industrial = 0.25
 residential = 0.50
 commercial = 0.50
 industrial = 0.50
-
-[[profiles]]
-id = "residential_low_default"
-demand_channel = "ResidentialGrowth"
-spawn_threshold = 0.55    # net inflow desire > 10%  (net_residential_demand > +0.10)
-despawn_threshold = 0.45  # net outflow desire > 10% (net_residential_demand < -0.10)
-upgrade_threshold = 0.80
-downgrade_threshold = 0.30
-hysteresis_margin = 0.05
-
-[[profiles]]
-id = "residential_medium_default"
-demand_channel = "ResidentialGrowth"
-spawn_threshold = 0.58    # net inflow desire > 16%
-despawn_threshold = 0.42  # net outflow desire > 16%
-upgrade_threshold = 0.82
-downgrade_threshold = 0.32
-hysteresis_margin = 0.05
-
-[[profiles]]
-id = "residential_high_default"
-demand_channel = "ResidentialGrowth"
-spawn_threshold = 0.62    # net inflow desire > 24%
-despawn_threshold = 0.38  # net outflow desire > 24%
-upgrade_threshold = 0.84
-downgrade_threshold = 0.35
-hysteresis_margin = 0.05
-
-[[profiles]]
-id = "commercial_low_default"
-demand_channel = "CommercialGrowth"
-spawn_threshold = 0.07
-despawn_threshold = 0.01
-upgrade_threshold = 0.18
-downgrade_threshold = 0.04
-hysteresis_margin = 0.05
-
-[[profiles]]
-id = "commercial_medium_default"
-demand_channel = "CommercialGrowth"
-spawn_threshold = 0.15
-despawn_threshold = 0.04
-upgrade_threshold = 0.25
-downgrade_threshold = 0.08
-hysteresis_margin = 0.05
-
-[[profiles]]
-id = "commercial_high_default"
-demand_channel = "CommercialGrowth"
-spawn_threshold = 0.20
-despawn_threshold = 0.07
-upgrade_threshold = 0.30
-downgrade_threshold = 0.11
-hysteresis_margin = 0.05
-
-[[profiles]]
-id = "industrial_low_default"
-demand_channel = "IndustrialGrowth"
-spawn_threshold = 0.15
-despawn_threshold = 0.03
-upgrade_threshold = 0.30
-downgrade_threshold = 0.08
-hysteresis_margin = 0.05
-
-[[profiles]]
-id = "industrial_medium_default"
-demand_channel = "IndustrialGrowth"
-spawn_threshold = 0.22
-despawn_threshold = 0.06
-upgrade_threshold = 0.38
-downgrade_threshold = 0.12
-hysteresis_margin = 0.05
-
-[[profiles]]
-id = "industrial_high_default"
-demand_channel = "IndustrialGrowth"
-spawn_threshold = 0.28
-despawn_threshold = 0.08
-upgrade_threshold = 0.45
-downgrade_threshold = 0.15
-hysteresis_margin = 0.05

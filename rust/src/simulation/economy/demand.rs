@@ -8,26 +8,30 @@ mod building_actions;
 mod config;
 mod credits;
 mod diagnostics;
-mod pressure;
+mod display;
+mod execution;
+mod queued;
 mod snapshot;
 mod spawn_need;
+mod supply;
 mod system;
 #[cfg(test)]
 mod tests;
 mod types;
 mod viability;
+mod workforce;
 
 #[cfg(test)]
 pub(crate) use actions::demand_building_action_key;
 pub(crate) use actions::{
     DemandBuildingActionKey, DemandBuildingActionPlan, DemandLevelChangeAction, DemandSpawnAction,
-    DemandSpawnCandidate, DemandSpawnCandidatesByUse,
+    DemandSpawnCandidate, DemandSpawnCandidatesByUse, SpawnSiteAvailability, private_zone_index,
 };
 pub(crate) use diagnostics::{
     BuildingActionDiagnosticsByUse, HouseholdAdmissionDiagnostics, HouseholdRemovalDiagnostics,
 };
 pub use system::DemandSystem;
-pub(crate) use types::{UseTuningBool, UseTuningF32};
+pub(crate) use types::UseTuningF32;
 
 #[cfg(test)]
 use crate::simulation::economy::definitions::{
@@ -42,7 +46,4 @@ use config::load_builtin_demand_config;
 #[cfg(test)]
 use snapshot::{DailyDemandSnapshot, ResidentialOccupantSnapshot};
 #[cfg(test)]
-use spawn_need::{
-    commercial_spawn_need_buildings, industrial_spawn_need_buildings,
-    residential_spawn_need_buildings,
-};
+use spawn_need::{residential_missing_household_slots, select_residential_spawns};

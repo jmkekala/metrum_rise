@@ -270,8 +270,16 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
 - **Entrance-aware movement**: the building entrance/exit rewrite is implemented through the exact-plan system described in [`entrance_and_exit.md`](entrance_and_exit.md), including the Phase 1–6 and Phase 8 slices already verified against the live code. Cars and pedestrians share road/pad/graded-terrain height ownership in both access directions; source terrain no longer overrides cut or filled yards. Off-lane cars now use mesh-sized rigid footprint support, including after interpolation, so grade breaks cannot bury the sampled bottom contacts despite a correctly grounded centre. The shared Rust solver preserves horizontal heading and remains level on wholly flat pads; lane/access handoffs do not blend across height owners.
 - **Benchmark coverage**: Criterion covers live agent access and isolated road kernels; the chunk suite measures generation and fixed-payload Godot upload. Release gameplay measurements separate paired flat layouts, remote-grid scaling, pointer interaction, and pinned saved-city edits; authored Kuopio replays and Samply runs provide diagnostics. Comparisons require matched inputs, complete generation-matched output, and independent process pairs. See [`roads.md`](roads.md).
 - **Economy foundation**: household records, building-centric daily economy, physical truck freight jobs, `OWA` fallback, exact entrance-side freight routing/ETA, household transfer disbursement (unemployment, pension, and child support), two-day building bankruptcy, short private-building construction timers, baseline fiscal revenue (income tax, household VAT, business profit tax, and daily property tax), live `CityFiscalPolicy` controls/save state, first city-owned service-building placement/funding, explicit field-backed grain farms, aggregate `service_store` commercial services, and the starter `grain -> packaged_food -> household_supplies` chain are all live. See [`economy.md`](economy.md).
-- **Demand foundation**: the live `DemandSystem` now fully owns immigration and building growth pressure, except for the explicit gameplay cheat mode documented in [`demand.md`](demand.md). RCI telemetry, household admission, and private building actions refresh hourly, while household removal remains daily. Private spawning now uses deterministic missing-building need; legal parcels cap placement rather than scaling the spawn rate. Household admission is driven by incoming household pull from bootstrap entry, budget-backed open jobs after existing unemployed adults are counted first, continuous forecast-only marginal commercial worker-equivalents from one candidate household after that same local labour pool is counted, and authored regional migration pressure; vacant homes only cap actual move-in execution. Job-driven admission prefers an adult-capable claimable household over a workerless front candidate. Regional migration requires an external road connection and is damped by household affordability, stock stability, failure state, and a soft household target. Residential construction reads that same incoming pressure plus move-in viability and failure-memory damping before creating more home capacity. Non-residential spawning is not hard-blocked by pre-existing full staffing; placed workplaces create budget-backed open jobs that pull households only for the remaining workforce shortfall, while output absorption prevents ordinary oversupply. Move-in acceptance now previews the exact candidate child/adult/elder composition and estimates candidate search runway from starter savings, budget-backed current jobs plus integer or fractional forecast-only marginal commercial worker-equivalents after existing unemployed adults are counted, unemployment/pension/child-support transfer reliability, and daily essential cost. Household removal now combines a crisis-ratio outflow rule with persistent exit for households that remain unhoused and destitute long enough. Daily city-flow diagnostics now summarize net household flow, active and theoretical job openings, resident employment, household failure state, vacant homes, and treasury in one economy log line. The static R/C/I pioneer demand floor has been removed entirely — real household transfers provide early-city solvency instead. Commercial demand now anticipates missing shop capacity before household stock collapses using short-run household buying power, and industrial demand uses business and utility input coverage, including Machinery upkeep. See [`demand.md`](demand.md).
-- **Persistence and runtime**: SQLite save/load, background simulation thread, render snapshots, debug flags, and the asset editor are live; the developer economy editor was removed (`ECON-10`). The asset editor now supports multi-part building assets, driveway/parking/loading-bay site anchors, WYSIWYG flat lot preview, and authored polygon yard surfaces for textured asphalt and concrete. Runtime building placement registers required flat support footprints at construction start, clips visual terrain through the shared terrain/CDT path, and keeps zoning terrain-neutral. Vehicle parking / freight stop behavior remain later runtime hooks.
+- **Demand foundation**: Rust owns hourly admission and private development, with daily household
+  departures. Admission checks bounded actual applicants against ready homes and live,
+  revenue-backed jobs; construction jobs drive housing planning, not arrivals. Independent
+  businesses reserve customers and workers, including households that can be housed before the
+  workplace finishes. Queued placement revalidates those claims before spending owner equity.
+  Housing counts actual asset capacity; citywide pressure no longer gates growth or decline.
+  Failed-site clearance preserves healthy vacant buildings; departures use individual eligibility.
+  The HUD shows actual project counts and concrete constraints. Candidate-site freight,
+  local buyer affordability/connectivity and full growth/performance acceptance remain
+  open under `DEM-02`; see [the current contract](demand.md#implementation-contract-and-progress).
 
 - **Asset editor ground**: the preview now has flat terrain with a 10 m × 10 m grid
   continuing beyond the lot, using the game's terrain shader and shared grass textures.
@@ -308,8 +316,205 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   Pre-73 saves retain cash and convert generation, but lack the new meters for their first partial day;
   see [validation and limitations](economy.md#electricity-validation-econ-14).
 
-- **Healthy city growth (`ECON-11`–`ECON-12` done; `ECON-13`–`ECON-14` in progress; `DEM-02` open)**:
-  failed-business recovery, grocery viability and regional industrial markets repaired 2026-10-06;
+- **Healthy city growth (`ECON-11`–`ECON-12` done; `ECON-13`–`ECON-14` and `DEM-02` in progress)**:
+  The original saved-town replay stayed at seven residents through day 32 despite empty homes
+  and high industrial pressure. Independent entry now removes the global startup-cash recovery
+  dependency; the same save grows from 7 to 85 residents, with 69 employed, over 30 days.
+  See the [saved-town diagnosis and redesign](demand.md#growth-redesign-dem-02).
+  The [critical demand review](demand.md#critical-demand-review-2026-10-07) also identifies category
+  dilution, repeated distress penalties and size-independent admission pacing. Fresh checks:
+  the pre-change build passed 93 demand-related tests and all three growth scenarios; the two
+  tracked startup tests failed and the saved-town stall reproduced. The first admission edit now
+  evaluates bounded actual applicants without a preview veto and excludes prospective marginal
+  jobs from their income. Completion-time workforce reservations now pair needed homes with
+  workplaces and reject projects that would reuse workers or depend on homes finishing too late.
+  Project operating costs now include authored electricity and real freight batch sizes, and
+  grocery entry also requires operating income. Queued projects now reserve parcels, homes,
+  workforce and output customers using their delayed completion dates. Employment and admission
+  now share revenue-backed hiring with stock/freight working capital; nonworker arrivals preserve
+  homes reserved for workers. Placement revalidates labour and customers before owner funding,
+  including failed or bulldozed supporting homes. Commerce uses recurring unmet sales value,
+  and spawn percentages no longer veto viable construction need. Rejected businesses now expose
+  viable alternatives on the same lot, and shared reservations replace the single-export-project
+  quota. The mass-zoning regression passes with five additional staffed, profitable factories and
+  34,600 owner equity within the observed labour bound. Selection validation passes 2,165 library
+  tests and all three growth scenarios; that run retained the utility and cash-continuation failures.
+  Its matched 10k timing comparison detects no significant change. The admission preview/runway,
+  marginal shop job forecast, regional cutoff and repeated distress penalties are now deleted,
+  including their unused config and saved failure memory (format 74). Cleanup verification passes
+  2,161 library tests and all three growth scenarios; the existing utility quantity failure remains.
+  The matched incremental 10k benchmark shows no significant timing change. Queued save/reload
+  and developed-town replays now pass 30 days with sub-cent cash tolerance and exact discrete
+  outcomes. Format 75 preserves traffic smoothing and live agent decisions, while freight quotes
+  reevaluate current frontage delays over stable free-flow network costs. All 35 focused save
+  checks pass, and the final run passes 2,169 library tests and all three growth scenarios, with
+  only the pre-existing utility quantity failure. The matched 10k reload-fix comparison detects
+  no significant hourly/daily timing change. The cash-continuation issue is resolved.
+  Housing selection now counts actual household capacity, removes averaged building quotas and
+  accumulated spawn credits (format 76), and retains optional homes for viable workplaces.
+  Fresh validation passes 2,165 library tests and all three growth scenarios, including both
+  reload continuations; the sole failure remains the existing utility quantity assertion.
+  The matched 10k capacity-cleanup comparison detects no performance regression.
+  The HUD now reads actual hourly project counts and housing, site, asset, income and labour
+  constraints; unused spawn thresholds and saved hysteresis are removed (format 77).
+  This revision passes 2,167 library tests, all three growth scenarios and isolated headless/rendered
+  Godot meter checks; only the pre-existing utility quantity assertion fails.
+  The reversed 10k performance comparison records +0.126 ms per hourly tick (about 5.3%);
+  daily timing is unchanged statistically, and performance acceptance remains open.
+  Clearance now removes only deserted empty sites, preserving healthy vacant homes and workplaces;
+  its pressure thresholds and saved hysteresis are removed (format 78). Worker reservations now
+  follow actual employment: losing funding cannot release a still-assigned employee to a new project.
+  The grocery-failure regression now replaces the shop without rezoning and retains positive
+  operating cash and 96% lifetime staffing over 180 days. Fresh verification passes 2,171 library
+  tests and all three growth scenarios, including both cash continuations; only the existing utility
+  assertion fails. The latest combined HUD/clearance 10k comparison detects no significant change,
+  but does not close full-redesign performance acceptance or the earlier HUD timing concern.
+  Household departures now use one eligibility policy in planning and execution; recently displaced
+  and recovered households are protected, and unused departure slots cannot remove housed families.
+  Format 79 removes the citywide crisis-removal credit. Departure and housing regressions pass;
+  all three growth scenarios and both cash continuations pass, with the existing utility failure
+  still tracked. A fresh year of the original stalled save grows from 7 to 80 residents, with all
+  15 firms earning positive operating cash. Matched departure execution improves at every measured
+  size (65,536 households: 3.688 to 0.862 ms); full-redesign performance remains open.
+  Instant business upgrades now share workforce/customer reservations with new projects, credit
+  incumbent jobs once, and cannot use unfinished homes. Target recurring costs include retained
+  employees and target-level property tax. Fresh validation passes 2,173 library tests and all three
+  growth scenarios, including both cash continuations; only the existing utility assertion fails.
+  The saved-town year still retains 80 residents and all 15 firms with positive operating cash.
+  The combined exit/upgrade 10k comparison matches city outcomes; hourly +4.8% (p=0.10) and daily
+  timing differences are not significant. Active-project scaling and performance acceptance remain open.
+  Upgrades now proceed independently of citywide pressure; format 80 removes their saved
+  hysteresis and authored thresholds. Shared target working-capital valuation counts cash,
+  usable inventory and paid cargo, replacing the duplicate four/eight-day cash-only reserve.
+  Fresh verification passes 2,174 library tests and all three growth scenarios, including both
+  cash continuations; only the existing utility quantity assertion fails. The saved-town year
+  retains 80 residents / 66 employed and all 15 firms with positive operating cash.
+  Business downgrades now preserve supportable incumbents and require a viable replacement with
+  shared worker/customer claims. Fresh verification passes the eight-case planner regression,
+  2,175 library tests and all three growth scenarios; only the existing utility assertion fails.
+  Matched 10k hourly timing rises 16.3% initially and 4.4% in reversed order (the latter not
+  significant); the timing concern and active-level-change scaling remain open.
+  Format 81 removes downgrade thresholds, saved hysteresis and zoning growth-profile references.
+  Downsizing now protects ready homes reserved for workers, vacancy space and unhoused households;
+  lower tiers cannot hide viable upgrades. Fresh verification passes 90 demand tests, 2,178 library
+  tests and all three growth scenarios, including both cash continuations; only the existing utility
+  assertion fails. The incremental matched 10k comparison detects no significant timing change;
+  active level-change planning takes 0.577 / 4.173 / 30.727 ms at 2k / 16k / 131k buildings.
+  This does not establish active-queue scaling. Business proposals and queued execution now use
+  actual outside-route freight prices, including the proposed asset's door. Fresh verification
+  passes 2,181 library tests and all three growth scenarios, including both cash continuations;
+  only the existing utility assertion fails. The matched 10k comparison detects no significant
+  incremental timing change. Consumer forecasts now use each household's recurring disposable
+  income, shared by hiring and project reservations; format 82 preserves that census on reload.
+  Fresh verification passes 2,185 library tests and all three growth scenarios, including both cash
+  continuations; only the existing utility assertion fails. The 10k hourly estimate rises 12%,
+  with different admissions, so matched performance acceptance remains open. Full net capacity now
+  stays reserved across construction completion and staffing searches, matching live hiring;
+  replacement credits and maintenance demand use the same net accounting. The adapted saved-town
+  year avoids the unstaffed second health shop and its 3,465 owner grant while retaining 80 residents
+  and all 15 operating-cash-positive firms. Fresh verification passes 2,188 library tests and all
+  three growth scenarios, with only the existing utility failure; the matched 10k comparison
+  detects no significant incremental timing change. Format 83 removes the obsolete R/C/I pressure
+  values, their normalization work and saved columns. Daily departures now reuse only the parallel
+  household census; the saved-town year remains byte-for-byte identical to the previous report.
+  Fresh verification passes 2,181 library tests and all three growth scenarios, including both
+  cash continuations, with only the existing utility assertion failing. Matched 10k hourly cost
+  decreases 9.95%; daily timing shows no significant change. New isolated queue measurements
+  reserve 65,536 projects in 11.161 ms and make 32,768 new claims in 2.791 ms. Repeated project
+  validation stays near 0.32 ms per 1,024 checks as background buildings grow to 131,072;
+  88 demand and 11 queue regressions pass. The shared operating calculator now accepts per-resource
+  supply quotes and matching stock replacement prices. Fresh verification passes 2,184 library
+  tests and all three growth scenarios, including both cash continuations; only the existing
+  utility assertion fails. All growth and saved-town reports are unchanged; the matched 10k
+  comparison detects no incremental regression. Live callers retain import quotes until finite
+  local supplier reservations are connected. Housing construction now includes existing unhoused
+  households in its capacity target, even without new jobs or an outside connection; ready and
+  committed homes offset that need once. Both new regressions reproduce the omission before the
+  fix and pass afterward; the full run passes 2,186 library tests and all three growth scenarios,
+  with only the existing utility assertion failing and unchanged long-run reports. The initial
+  10k timing increase does not reproduce in three balanced-order repeats; all city records match.
+  Existing residents now claim affordable ready homes before hourly job and arrival planning,
+  using level ordering in the existing vacancy index and the census's member links. Daily eviction
+  clocks are unchanged, and moving out of a broken home now releases its old occupancy. Fresh
+  verification passes 2,189 library tests and all three growth scenarios, including both cash
+  continuations; only the existing utility assertion fails. Long-run and saved-town reports are
+  unchanged. Matched 10k timing shows no significant change; 128 rehousing claims stay near
+  0.02 ms through 65,536 unrelated vacant homes. Future-home reservations now match displaced
+  households by completion time and individual affordability, using actual unemployed adults and
+  preserving physical places for nonworkers. Post-employment counts exclude unhoused employees
+  from housed labour totals. Fresh verification passes 2,195 library tests and all three growth
+  scenarios, including both continuations; only the existing utility assertion fails, and all
+  growth/saved-town reports remain identical. At 65,536 homes, displaced-household matching takes
+  2.42 ms; 512 prepared worker claims stay near 0.02 ms. The initial matched 10k hourly increase
+  does not reproduce in reversed order; all city records match. Live hiring now stages finite local
+  production claims using actual supplier prices and directed routes; rejected operations release
+  their claims exactly, and dispatch can choose a cheaper executable import. The construction-stage
+  full release run passes 2,204 library tests, all three growth scenarios and both cash continuations, with
+  only the existing utility assertion failing. The saved-town year retains 80 residents and all
+  15 operating-cash-positive firms; optimization preserves all growth and saved-town reports.
+  The earlier matched 10k hourly increase from 2.69 → 5.79 ms remains unresolved.
+  Construction integration adds no detected regression (5.672 → 5.655 ms hourly), with identical
+  city records. Successful placement of 1,024 factories takes 113.36 ms, excluding setup/first
+  check, and verifies 13,414,400 owner equity. Zoned construction shares residual inputs across queued/new
+  projects, requotes the selected alternative, and commits only after physical placement. Ordered
+  replay retains full output reservations without understating unfinished shops' inputs.
+  Live services also reserve finite inputs while retaining fiscal payroll limits; the service
+  follow-up passes 129 household tests, 99 demand tests, both continuations, all growth scenarios,
+  expansion and recovery, with reports unchanged. Upgrades/downgrades now release only the
+  incumbent's finite input claims and value retained stock at quoted prices. The subsequent full
+  run passes 2,207 library tests, all growth scenarios and both continuations, with the same known
+  utility failure and unchanged reports. Matched hourly timing is unchanged (5.547 → 5.581 ms).
+  Constructing farms/extractors and services now reserve finite inputs using actual work areas,
+  private capital and separate future fiscal ceilings, including placement, undo and remapping.
+  The final release run passes 2,211 library tests, all growth scenarios and both continuations;
+  only the known utility assertion fails, with all five reports unchanged. The small initial
+  hourly increase does not reproduce in reversed order (5.667 ms baseline / 5.661 ms current).
+  Private snapshot input demand and supplier quantities now use exact funded recipe activity,
+  capped by current staff; rounded jobs cannot inflate production. Local repricing retains a
+  valid import alternative when needed to preserve funded staffing and releases rejected claims.
+  Fresh verification passes 2,213 library tests, all growth scenarios and both continuations;
+  only the known utility assertion fails, and all five reports match. The first 4% hourly increase
+  does not reproduce in reversed order (5.608 ms baseline / 5.503 ms current). Fresh physical
+  placement verifies 1,024 factories and exact owner equity in 115.45 ms, excluding preparation.
+  Equal-route recurring quotes now prefer the cheaper supplier before building index; cached
+  search, rollback and proposed-door coverage pass with all 419 economy tests.
+  Matched hourly timing detects no incremental change (5.710 → 5.669 ms), with identical city records.
+  Recurring quotes now include receiving-window goods prices, with boundary revalidation and
+  planning snapshots built from the matching refreshed funding view. Fresh verification passes
+  2,216 library tests, all growth integrations and both continuations; only the known utility
+  assertion fails, with all five long-run reports unchanged.
+  The initial 8% hourly timing increase does not reproduce in reverse order (5.628 / 5.657 ms);
+  discrete benchmark counts match, while current treasury ends 54 currency lower. Physical
+  execution verifies 1,024 placements in 110.62 ms; warm queue checks remain flat with background size.
+  Accepted local funding now publishes additional staffed output into the shared supply book;
+  compiled dependency phases place suppliers before downstream buyers. Fresh verification passes
+  424 economy tests, 2,219 library tests, all growth integrations and both continuations. Only the
+  known utility assertion fails; all five long-run reports remain unchanged.
+  The initial hourly increase does not reproduce in reverse order (5.663 / 5.565 ms, p = 0.23);
+  discrete benchmark counts match, with current treasury 54 currency higher.
+  Live consumer firms now reserve individual recurring family budgets and desired quantities at
+  seller prices, with directed shopping round trips and exact rejected-quote rollback. Household
+  car access shares the existing census and is reconstructed on load. Construction customer-book
+  sharing and route-query performance acceptance remain unfinished. The preceding build passed
+  2,224 library tests and all three growth integrations, with only the known utility assertion failing.
+  After owner receipts and cached pedestrian proofs, final checks pass 430 economy, 23 pathing,
+  25 save tests, both continuations and the saved-town year; its report is unchanged.
+  Matched 10k hourly timing regresses 5.7515 → 6.4500 ms (+12.1%); discrete counts match,
+  treasury differs. The [fresh AI handoff](demand.md#ai-continuation-handoff--2026-10-08)
+  records exact next steps, validation boundaries and artifacts.
+  Funded-buyer closure, cyclic local chains, replacement output publication, construction buyer reachability, populated
+  execution with changing frontage prices and full growth/performance acceptance remain open. See the
+  [implementation contract](demand.md#implementation-contract-and-progress).
+  The preceding independent-entry full run passes 2,164 library tests and all three growth scenarios,
+  including two years with all five business profiles operating. The scarce-labour expansion
+  test then passes separately after correcting its capital bound to count actual arriving adults:
+  46 added industrial lots produce three factories, each above 95% staffing and operating cash
+  positive, spending 26,940 in owner equity. The pre-existing utility-machinery expectation still
+  fails. The saved-town replay retains its population after a year, and all 14 firms have positive
+  cumulative operating cash with no bankruptcy/removal. Candidate-site freight, local buyer
+  affordability/connectivity and full-redesign performance acceptance remain open. This revision is not accepted
+  or deployed.
+  Failed-business recovery, grocery viability and regional industrial markets repaired 2026-10-06;
   existing village services, area-based producer costs and explicit resource units extend that foundation.
   Production/freight economics now replace fixed outside buying caps; validation is in progress. Next resolve varied-town affordability,
   define funded activities and simplify demand around unmet capacity.

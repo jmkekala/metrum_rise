@@ -364,6 +364,65 @@ fn squared_distance_to_building(origin_x: f32, origin_y: f32, building: &Buildin
 }
 
 impl HouseholdSystem {
+    /// Rehouses existing residents before hourly job and arrival planning can claim their homes.
+    /// Called immediately after the membership census, reusing its member links. Shared vacancy
+    /// claims are serial in household order: O(H + U*(levels + log V) + moved members), with no
+    /// vacancy scan or new scratch allocation. The common fully housed case returns in O(1).
+    pub(super) fn rehouse_unhoused_before_growth(
+        &mut self,
+        agents: &mut AgentSystem,
+        allocator: &mut BuildingAllocator,
+    ) {
+        if !self.has_unhoused_households {
+            return;
+        }
+        if allocator.dirty_index {
+            allocator.rebuild_zone_index();
+        }
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        let tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        let heads = std::mem::take(&mut self.household_member_heads_scratch);
+        let next = std::mem::take(&mut self.household_member_next_scratch);
+        for household_id in 0..self.households.len() {
+            let household = &self.households[household_id];
+            if household.member_count == 0
+                || !household_has_independent_member(household)
+                || household_is_housed(household, allocator)
+            {
+                continue;
+            }
+            let reserves = household_reserve_days(&catalog, &tuning, household);
+            let old_home = household.home_building_id;
+            let target = allocator.first_rehousing_vacancy(|level| {
+                reserves + f32::EPSILON
+                    >= level_tuning_value(
+                        &tuning
+                            .households
+                            .residential_move_in_min_reserve_days_by_level,
+                        level,
+                    )
+            });
+            if let Some(home) = target {
+                if old_home < allocator.buildings.len() {
+                    allocator.release_vacancy(old_home);
+                }
+                self.occupy_household_home(
+                    household_id,
+                    old_home,
+                    home,
+                    agents,
+                    allocator,
+                    &heads,
+                    &next,
+                );
+            }
+        }
+        self.household_member_heads_scratch = heads;
+        self.household_member_next_scratch = next;
+    }
+
     pub(super) fn resolve_household_housing(
         &mut self,
         agents: &mut AgentSystem,
@@ -431,7 +490,7 @@ impl HouseholdSystem {
                 ) {
                     self.relocate_household(
                         household_id,
-                        usize::MAX,
+                        current_home,
                         target_home,
                         agents,
                         allocator,
@@ -569,6 +628,27 @@ impl HouseholdSystem {
             allocator.release_vacancy(old_home);
             vacancy_planner.release_home(allocator, old_home);
         }
+        self.occupy_household_home(
+            household_id,
+            old_home,
+            new_home,
+            agents,
+            allocator,
+            household_member_heads,
+            household_member_next,
+        );
+    }
+
+    fn occupy_household_home(
+        &mut self,
+        household_id: usize,
+        old_home: usize,
+        new_home: usize,
+        agents: &mut AgentSystem,
+        allocator: &mut BuildingAllocator,
+        household_member_heads: &[usize],
+        household_member_next: &[usize],
+    ) {
         allocator.claim_vacancy(new_home);
 
         self.households[household_id].home_building_id = new_home;
@@ -631,7 +711,8 @@ impl HouseholdSystem {
     }
 }
 
-fn build_household_member_index(
+/// Reuses linked-list storage for deterministic member order without per-household allocations.
+pub(super) fn build_household_member_index(
     agents: &AgentSystem,
     household_count: usize,
     mut household_member_heads: Vec<usize>,

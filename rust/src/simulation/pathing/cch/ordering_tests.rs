@@ -159,7 +159,7 @@ fn assert_all_pairs_costs(cch: &CchGraph, graph: &RegionGraph, mode: u8) {
     {
         let a = edge.start_node as usize;
         let b = edge.end_node as usize;
-        let cost = edge.base_cost * (1.0 + edge.current_congestion);
+        let cost = edge.base_cost;
         if mode == TransitFlags::FOOT || edge.fwd_lanes > 0 {
             costs[a][b] = costs[a][b].min(cost);
         }
@@ -200,7 +200,7 @@ fn assert_all_pairs_costs(cch: &CchGraph, graph: &RegionGraph, mode: u8) {
                                 edge.bkw_lanes > 0
                             }
                     );
-                    reconstructed_cost += edge.base_cost * (1.0 + edge.current_congestion);
+                    reconstructed_cost += edge.base_cost;
                 }
                 assert!(
                     (reconstructed_cost - cost).abs() < 0.001,
@@ -235,7 +235,8 @@ fn shortcut_alternatives_survive_recustomization_modes_and_one_way_edits() {
     for phase in 0..3 {
         if phase > 0 {
             for (id, edge) in graph.edges_iter_mut().enumerate() {
-                edge.current_congestion = if (id + phase) % 3 == 0 { 8.0 } else { 0.0 };
+                edge.base_cost =
+                    (2.0 + (id % 7) as f32) * if (id + phase) % 3 == 0 { 9.0 } else { 1.0 };
             }
             cch.customize(&graph);
         }
@@ -262,7 +263,8 @@ fn cheaper_lower_triangle_survives_a_direct_arc_and_metric_changes() {
             .0,
         12.0
     );
-    graph.edge_mut(0).current_congestion = 100.0;
+    let original_cost = graph.edge(0).base_cost;
+    graph.edge_mut(0).base_cost = 1000.0;
     cch.customize(&graph);
     assert_eq!(
         cch.find_path(1, 2, usize::MAX, &graph, TransitFlags::CAR)
@@ -270,7 +272,7 @@ fn cheaper_lower_triangle_survives_a_direct_arc_and_metric_changes() {
             .0,
         100.0
     );
-    graph.edge_mut(0).current_congestion = 0.0;
+    graph.edge_mut(0).base_cost = original_cost;
     cch.customize(&graph);
     assert_eq!(
         cch.find_path(1, 2, usize::MAX, &graph, TransitFlags::CAR)
@@ -278,6 +280,27 @@ fn cheaper_lower_triangle_survives_a_direct_arc_and_metric_changes() {
             .0,
         12.0
     );
+}
+
+#[test]
+fn rebuilding_with_live_congestion_preserves_free_flow_costs() {
+    let mut graph = grid(3);
+    let mut original = CchGraph::build(&graph);
+    let expected = original.find_path(0, 8, usize::MAX, &graph, TransitFlags::CAR);
+    for edge in graph.edges_iter_mut() {
+        edge.current_congestion = 100.0;
+    }
+    let restored = CchGraph::build(&graph);
+    assert_eq!(
+        restored.find_path(0, 8, usize::MAX, &graph, TransitFlags::CAR),
+        expected
+    );
+    original.customize(&graph);
+    assert_eq!(
+        original.find_path(0, 8, usize::MAX, &graph, TransitFlags::CAR),
+        expected
+    );
+    assert_costs_from_match_queries(&restored, &graph, TransitFlags::CAR);
 }
 
 fn turn_aware_dijkstra(
@@ -316,7 +339,7 @@ fn turn_aware_dijkstra(
             {
                 continue;
             }
-            let cost = state.cost + edge.base_cost * (1.0 + edge.current_congestion);
+            let cost = state.cost + edge.base_cost;
             let key = (next, id);
             if cost < costs.get(&key).copied().unwrap_or(f32::INFINITY) {
                 costs.insert(key, cost);
@@ -376,7 +399,7 @@ fn vehicle_whitelists_preserve_pedestrian_routes_and_origin_context() {
     for phase in 0..2 {
         if phase == 1 {
             for (id, edge) in graph.edges_iter_mut().enumerate() {
-                edge.current_congestion = if id % 3 == 0 { 4.0 } else { 0.0 };
+                edge.base_cost *= if id % 3 == 0 { 5.0 } else { 1.0 };
             }
             cch.customize(&graph);
         }
@@ -465,7 +488,8 @@ fn costs_from_each_match_point_queries() {
     for phase in 0..3 {
         if phase > 0 {
             for (id, edge) in graph.edges_iter_mut().enumerate() {
-                edge.current_congestion = if (id + phase) % 3 == 0 { 8.0 } else { 0.0 };
+                edge.base_cost =
+                    (2.0 + (id % 7) as f32) * if (id + phase) % 3 == 0 { 9.0 } else { 1.0 };
             }
             cch.customize(&graph);
         }

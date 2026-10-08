@@ -53,8 +53,6 @@ pub struct ZoneProfileRuntime {
     pub density: ZoneDensity,
     /// Secondary required asset tags for legality filtering.
     pub required_asset_tags: Vec<String>,
-    /// Matching demand-side growth profile id.
-    pub growth_profile_id: String,
     /// Parsed RGB colour used by the UI and overlay LUT.
     pub ui_color_rgb: [u8; 3],
     /// Stable UI icon key.

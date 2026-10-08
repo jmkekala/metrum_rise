@@ -401,7 +401,7 @@ fn active_budget_backed_worker_capacity(
 }
 
 impl SimCore {
-    /// Applies the gameplay cheat grant and pins all demand channels to maximum pressure.
+    /// Applies the gameplay cheat grant and enables private-construction viability bypass.
     pub(crate) fn apply_money_and_max_demand_cheat(&mut self, money_amount: f64) -> f64 {
         if money_amount.is_finite() && money_amount > 0.0 {
             self.treasury.balance += money_amount;
@@ -448,12 +448,12 @@ impl SimCore {
             .control(policy_id)
             .unwrap_or(previous_control);
         let service_funding_by_building = self.electricity_funding_by_building();
-        self.demand.refresh_pressure_channels_with_service_funding(
+        self.refresh_job_funding(&service_funding_by_building);
+        self.demand.refresh_household_diagnostics(
             &self.allocator,
             &self.households,
             &self.region_graph,
             self.treasury.balance,
-            &service_funding_by_building,
             &self.fiscal_policy,
         );
         self.log_fiscal_policy_change(policy_id, previous_control.value, value, new_control.value);
@@ -519,6 +519,39 @@ impl SimCore {
             &mut self.allocator,
             &funding,
             has_connected_border_node(&self.region_graph),
+        );
+        self.refresh_job_funding(&funding);
+    }
+
+    /// Restores one placed service's fiscal input ceiling without rebuilding citywide jobs.
+    pub(crate) fn register_service_input_capacity(&mut self, building_idx: usize) {
+        let building = &self.allocator.buildings[building_idx];
+        if self.allocator.is_city_service_building(building)
+            && let Some(profile) = self.demand.runtime_catalog()
+                .profile_by_runtime_id(building.economy_profile_runtime_id)
+        {
+            let funding = self.effective_electricity_funding_for_building(building_idx);
+            self.households.job_funding.register_pending_service(
+                building_idx, building, profile, funding,
+            );
+            self.demand.invalidate_construction_execution();
+        }
+    }
+
+    // Loading and immediate policy changes also refresh the derived jobs shown by demand.
+    fn refresh_job_funding(&mut self, funding: &[f32]) {
+        self.demand.invalidate_construction_execution();
+        self.households.job_funding.refresh(
+            &self.allocator,
+            &self.households.households,
+            &mut self.logistics,
+            &self.transit_network,
+            &self.region_graph,
+            self.demand.runtime_catalog(),
+            self.demand.runtime_tuning(),
+            &self.fiscal_policy,
+            funding,
+            self.treasury.balance, self.time.minute_of_day,
         );
     }
 
@@ -787,13 +820,10 @@ impl SimCore {
         let minutes = minute_of_day % 60;
 
         println!(
-            "[SIM_DEBUG] Day {} {:02}:{:02} demand=(R {:+.0}%, C {:+.0}%, I {:+.0}%) admit={} remove={} buildings={} households={} agents={} states=(home={}, work={}, shopping={}, travelling={}, other={}) actions=spawn({}/{}/{}) upgrade({}/{}/{}) downgrade({}/{}/{}) despawn({}/{}/{})",
+            "[SIM_DEBUG] Day {} {:02}:{:02} admit={} remove={} buildings={} households={} agents={} states=(home={}, work={}, shopping={}, travelling={}, other={}) actions=spawn({}/{}/{}) upgrade({}/{}/{}) downgrade({}/{}/{}) despawn({}/{}/{})",
             day_index,
             hours,
             minutes,
-            self.demand.net_residential_pressure() * 100.0,
-            self.demand.net_commercial_pressure() * 100.0,
-            self.demand.net_industrial_pressure() * 100.0,
             self.demand.households_to_admit_today,
             self.demand.households_to_remove_today,
             self.allocator.buildings.len(),

@@ -97,7 +97,7 @@ pub struct Agent {
     pub access_flags: u8,
     /// Earliest simulation time at which trip planning or replanning may be attempted again.
     pub next_replan_time: f32,
-    /// Consecutive failed live network/access replans. Transient watchdog state, not persisted.
+    /// Consecutive failed live network/access replans, preserved so reload cannot reset recovery.
     pub network_replan_failures: u8,
 
     /// Index into `RegionGraph::edges` for the edge the agent is currently traversing.

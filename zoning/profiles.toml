@@ -10,7 +10,6 @@ ui_order = 10
 zone_type = "residential"
 density = "low"
 required_asset_tags = []
-growth_profile_id = "residential_low_default"
 
 [profiles.ui]
 color = "#2DBE60"
@@ -24,7 +23,6 @@ ui_order = 20
 zone_type = "residential"
 density = "medium"
 required_asset_tags = []
-growth_profile_id = "residential_medium_default"
 
 [profiles.ui]
 color = "#239454"
@@ -38,7 +36,6 @@ ui_order = 30
 zone_type = "residential"
 density = "high"
 required_asset_tags = []
-growth_profile_id = "residential_high_default"
 
 [profiles.ui]
 color = "#187442"
@@ -52,7 +49,6 @@ ui_order = 10
 zone_type = "commercial"
 density = "low"
 required_asset_tags = []
-growth_profile_id = "commercial_low_default"
 
 [profiles.ui]
 color = "#2F7DF6"
@@ -66,7 +62,6 @@ ui_order = 20
 zone_type = "commercial"
 density = "medium"
 required_asset_tags = []
-growth_profile_id = "commercial_medium_default"
 
 [profiles.ui]
 color = "#265FD2"
@@ -80,7 +75,6 @@ ui_order = 30
 zone_type = "commercial"
 density = "high"
 required_asset_tags = []
-growth_profile_id = "commercial_high_default"
 
 [profiles.ui]
 color = "#1D46A8"
@@ -94,7 +88,6 @@ ui_order = 10
 zone_type = "industrial"
 density = "low"
 required_asset_tags = []
-growth_profile_id = "industrial_low_default"
 
 [profiles.ui]
 color = "#D8B22B"
@@ -108,7 +101,6 @@ ui_order = 20
 zone_type = "industrial"
 density = "medium"
 required_asset_tags = []
-growth_profile_id = "industrial_medium_default"
 
 [profiles.ui]
 color = "#BE8E14"
@@ -122,7 +114,6 @@ ui_order = 30
 zone_type = "industrial"
 density = "high"
 required_asset_tags = []
-growth_profile_id = "industrial_high_default"
 
 [profiles.ui]
 color = "#915F0D"

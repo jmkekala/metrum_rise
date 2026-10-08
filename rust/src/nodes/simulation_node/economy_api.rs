@@ -6,18 +6,24 @@ use super::*;
 
 #[godot_api(secondary)]
 impl SimulationNode {
-    /// Returns normalized residential, commercial, and industrial demand pressures.
+    /// Returns cached hourly R/C/I construction opportunities and their concrete constraints.
     #[func]
-    pub fn get_demand_pressures(&self) -> Vector3 {
+    pub fn get_growth_overview(&self) -> VarDictionary {
         let core = self.lock_core();
-        Vector3::new(
-            core.demand.net_residential_pressure().clamp(-1.0, 1.0),
-            core.demand.net_commercial_pressure().clamp(-1.0, 1.0),
-            core.demand.net_industrial_pressure().clamp(-1.0, 1.0),
-        )
+        let mut result = VarDictionary::new();
+        for (key, (projects, detail)) in ["residential", "commercial", "industrial"]
+            .into_iter()
+            .zip(core.demand.growth_display())
+        {
+            let mut entry = VarDictionary::new();
+            entry.set("projects", projects as i64);
+            entry.set("detail", GString::from(&detail));
+            result.set(key, entry);
+        }
+        result
     }
 
-    /// Grants cheat money and permanently pins R/C/I demand display and planning pressure to 100%.
+    /// Grants cheat money and bypasses economic entry checks for private construction.
     #[func]
     pub fn apply_money_and_max_demand_cheat(&mut self) -> f64 {
         let balance = {

@@ -51,13 +51,74 @@ pub(crate) enum ReachableBucketScanEvent {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ReachableBucketIndex {
     by_component: BTreeMap<u32, ComponentBuckets>,
+    available: usize,
 }
 
 #[derive(Clone, Debug)]
 struct ComponentBuckets {
-    by_chunk: BTreeMap<(i32, i32), Vec<usize>>,
+    by_chunk: BTreeMap<(i32, i32), BucketItems>,
     min_chunk: (i32, i32),
     max_chunk: (i32, i32),
+    available: usize,
+}
+
+#[derive(Clone, Debug, Default)]
+struct BucketItems {
+    items: Vec<usize>,
+    // Empty for ordinary immutable indices. Finite reservation users opt into an
+    // availability tree, avoiding a linear walk over depleted suppliers on every query.
+    available: Vec<usize>,
+    leaves: usize,
+}
+
+impl BucketItems {
+    fn enable_reservations(&mut self) {
+        self.leaves = self.items.len().max(1).next_power_of_two();
+        self.available.resize(self.leaves * 2, 0);
+        self.available.fill(0);
+        self.available[self.leaves..self.leaves + self.items.len()].fill(1);
+        for node in (1..self.leaves).rev() {
+            self.available[node] = self.available[node * 2] + self.available[node * 2 + 1];
+        }
+    }
+
+    fn set_available(&mut self, item: usize, available: bool) -> isize {
+        let Ok(position) = self.items.binary_search(&item) else {
+            return 0;
+        };
+        let mut node = self.leaves + position;
+        let previous = self.available[node];
+        let next = usize::from(available);
+        if previous == next {
+            return 0;
+        }
+        self.available[node] = next;
+        node /= 2;
+        while node > 0 {
+            self.available[node] = self.available[node * 2] + self.available[node * 2 + 1];
+            node /= 2;
+        }
+        next as isize - previous as isize
+    }
+
+    fn visit(&self, mut visitor: impl FnMut(usize) -> bool) -> bool {
+        if self.available.is_empty() {
+            return self.items.iter().all(|&item| visitor(item));
+        }
+        self.visit_available(1, &mut visitor)
+    }
+
+    fn visit_available(&self, node: usize, visitor: &mut impl FnMut(usize) -> bool) -> bool {
+        if self.available[node] == 0 {
+            return true;
+        }
+        if node >= self.leaves {
+            return visitor(self.items[node - self.leaves]);
+        }
+        // O(K) for a full bucket, O(log K) for one survivor. Prune empty subtrees
+        // instead of walking exhausted candidates or selecting every live leaf by rank.
+        self.visit_available(node * 2, visitor) && self.visit_available(node * 2 + 1, visitor)
+    }
 }
 
 impl Default for BuildingModeComponents {
@@ -121,12 +182,14 @@ impl ReachableBucketIndex {
         entries.retain(|entry| entry.component != NO_COMPONENT);
         entries.sort_unstable();
         entries.dedup();
+        let available = entries.len();
 
         let mut by_component = BTreeMap::new();
         for entry in entries {
             by_component
                 .entry(entry.component)
                 .and_modify(|buckets: &mut ComponentBuckets| {
+                    buckets.available += 1;
                     buckets.min_chunk.0 = buckets.min_chunk.0.min(entry.chunk.0);
                     buckets.min_chunk.1 = buckets.min_chunk.1.min(entry.chunk.1);
                     buckets.max_chunk.0 = buckets.max_chunk.0.max(entry.chunk.0);
@@ -135,16 +198,74 @@ impl ReachableBucketIndex {
                         .by_chunk
                         .entry(entry.chunk)
                         .or_default()
+                        .items
                         .push(entry.item_idx);
                 })
                 .or_insert_with(|| ComponentBuckets {
-                    by_chunk: BTreeMap::from([(entry.chunk, vec![entry.item_idx])]),
+                    by_chunk: BTreeMap::from([(
+                        entry.chunk,
+                        BucketItems {
+                            items: vec![entry.item_idx],
+                            ..Default::default()
+                        },
+                    )]),
                     min_chunk: entry.chunk,
                     max_chunk: entry.chunk,
+                    available: 1,
                 });
         }
 
-        Self { by_component }
+        Self {
+            by_component,
+            available,
+        }
+    }
+
+    /// Whether any indexed entry remains eligible, in O(1).
+    pub(crate) fn has_available(&self) -> bool {
+        self.available > 0
+    }
+
+    /// Enables allocation-free availability updates for finite reservation users.
+    /// Immutable indices retain their existing flat traversal without tree overhead.
+    pub(crate) fn enable_reservations(&mut self) {
+        for buckets in self.by_component.values_mut() {
+            for items in buckets.by_chunk.values_mut() {
+                items.enable_reservations();
+            }
+        }
+    }
+
+    /// Refills a prepared reservation tree in O(indexed entries), retaining all allocations.
+    /// The predicate is evaluated once per entry, before dependent parent counts are summed.
+    pub(crate) fn reset_available(&mut self, mut eligible: impl FnMut(usize) -> bool) {
+        self.available = 0;
+        for buckets in self.by_component.values_mut() {
+            buckets.available = 0;
+            for items in buckets.by_chunk.values_mut() {
+                debug_assert!(items.leaves > 0);
+                for (index, &item) in items.items.iter().enumerate() {
+                    items.available[items.leaves + index] = usize::from(eligible(item));
+                }
+                for node in (1..items.leaves).rev() {
+                    items.available[node] = items.available[node * 2] + items.available[node * 2 + 1];
+                }
+                buckets.available += items.available[1];
+            }
+            self.available += buckets.available;
+        }
+    }
+
+    /// Toggles one candidate in O(log chunks + log candidates-in-chunk), without allocation.
+    /// Requires `enable_reservations`; membership and spatial bounds remain unchanged.
+    pub(crate) fn set_available(&mut self, entry: ReachableBucketEntry, available: bool) {
+        if let Some(buckets) = self.by_component.get_mut(&entry.component)
+            && let Some(items) = buckets.by_chunk.get_mut(&entry.chunk)
+        {
+            let change = items.set_available(entry.item_idx, available);
+            buckets.available = buckets.available.checked_add_signed(change).unwrap();
+            self.available = self.available.checked_add_signed(change).unwrap();
+        }
     }
 
     /// Scans reachable chunks outward from an origin without a fixed radius.
@@ -173,11 +294,10 @@ impl ReachableBucketIndex {
                     let Some(items) = buckets.by_chunk.get(&chunk) else {
                         continue;
                     };
-                    for &item_idx in items {
-                        if !visitor(ReachableBucketScanEvent::Item { item_idx }) {
-                            should_continue = false;
-                            return;
-                        }
+                    if !items.visit(|item_idx| visitor(ReachableBucketScanEvent::Item { item_idx }))
+                    {
+                        should_continue = false;
+                        return;
                     }
                 }
             });
@@ -207,6 +327,9 @@ impl ReachableBucketIndex {
             let Some(buckets) = self.by_component.get(&component) else {
                 continue;
             };
+            if buckets.available == 0 {
+                continue;
+            }
             let component_ring = [
                 (origin_chunk.0 - buckets.min_chunk.0).abs(),
                 (origin_chunk.1 - buckets.min_chunk.1).abs(),
@@ -278,6 +401,16 @@ impl ModeComponentIndex {
             return BuildingModeComponents::default();
         }
         let entrance = &allocator.entrances[building_idx];
+        self.entrance_components(entrance, graph, transit_flag)
+    }
+
+    /// Broad-phase components for an actual or proposed door; callers still verify directed routes.
+    pub(crate) fn entrance_components(
+        &self,
+        entrance: &crate::simulation::buildings::allocator::BuildingEntrance,
+        graph: &RegionGraph,
+        transit_flag: u8,
+    ) -> BuildingModeComponents {
         if !entrance_supports_mode(entrance, transit_flag) {
             return BuildingModeComponents::default();
         }
@@ -415,5 +548,84 @@ fn unite(i: usize, j: usize, parent: &mut [usize]) {
     let root_j = find(j, parent);
     if root_i != root_j {
         parent[root_i] = root_j;
+    }
+}
+
+#[cfg(test)]
+mod reservation_tests {
+    use super::*;
+
+    #[test]
+    fn depleted_candidates_skip_and_restore_without_changing_stable_order() {
+        let entries: Vec<_> = (0..4096)
+            .map(|item| ReachableBucketEntry::new(0, (0, 0), item))
+            .collect();
+        let mut index = ReachableBucketIndex::from_entries(entries.clone());
+        index.enable_reservations();
+        assert!(index.has_available());
+        let mut components = BuildingModeComponents::default();
+        components.push(0);
+        for &entry in &entries {
+            index.set_available(entry, false);
+        }
+        let scan = |index: &ReachableBucketIndex| {
+            let mut found = Vec::new();
+            index.scan_nearest(components, 0.0, 0.0, |event| {
+                if let ReachableBucketScanEvent::Item { item_idx } = event {
+                    found.push(item_idx);
+                }
+                true
+            });
+            found
+        };
+        assert!(scan(&index).is_empty());
+        assert!(!index.has_available());
+        for item in [4095, 23, 100] {
+            index.set_available(entries[item], true);
+        }
+        assert_eq!(scan(&index), [23, 100, 4095]);
+        assert!(index.has_available());
+        index.set_available(entries[23], false);
+        index.set_available(entries[100], true);
+        assert_eq!(scan(&index), [100, 4095]);
+    }
+
+    #[test]
+    #[ignore = "manual release locality of finite supplier availability in one dense chunk"]
+    fn benchmark_depleted_supplier_bucket() {
+        use std::{hint::black_box, time::Instant};
+        for count in [1_024, 8_192, 65_536] {
+            let entries: Vec<_> = (0..count)
+                .map(|item| ReachableBucketEntry::new(0, (0, 0), item))
+                .collect();
+            let mut index = ReachableBucketIndex::from_entries(entries.clone());
+            index.enable_reservations();
+            for &entry in &entries[..count - 1] {
+                index.set_available(entry, false);
+            }
+            let mut components = BuildingModeComponents::default();
+            components.push(0);
+            let mut samples = [0.0; 11];
+            for sample in &mut samples {
+                let start = Instant::now();
+                let mut visited = 0;
+                for _ in 0..4096 {
+                    index.scan_nearest(components, 0.0, 0.0, |event| {
+                        if let ReachableBucketScanEvent::Item { item_idx } = event {
+                            assert_eq!(black_box(item_idx), count - 1);
+                            visited += 1;
+                        }
+                        true
+                    });
+                }
+                *sample = start.elapsed().as_secs_f64() * 1000.0;
+                assert_eq!(visited, 4096);
+            }
+            samples.sort_by(f64::total_cmp);
+            eprintln!(
+                "depleted_supplier_bucket suppliers={count} active=1 queries=4096 median_ms={:.4}",
+                samples[5]
+            );
+        }
     }
 }

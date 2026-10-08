@@ -19,6 +19,7 @@ use super::reservations::ReservationViews;
 use super::resource::building_outputs_can_supply_local_inputs;
 
 /// Resource-compatible supplier candidates grouped by freight-reachable component.
+#[derive(Clone, Debug, Default)]
 pub(super) struct SupplierCandidateIndex {
     by_resource: BTreeMap<ResourceRuntimeId, ReachableBucketIndex>,
 }
@@ -39,15 +40,48 @@ impl SupplierCandidateIndex {
         reservations: &ReservationViews,
         truck_payload_kg: f32,
     ) -> Self {
+        Self::build_filtered(
+            allocator,
+            graph,
+            catalog,
+            freight_components,
+            true,
+            |idx, resource| {
+                let building = &allocator.buildings[idx];
+                let profile = catalog
+                    .profile_by_runtime_id(building.economy_profile_runtime_id)
+                    .unwrap();
+                let available = (saleable_output_stock(catalog, building, profile, resource)
+                    - reservations.reserved_outbound_amount(idx, resource))
+                .max(0.0);
+                let batch = catalog
+                    .resource_measure(resource)
+                    .map_or(0.0, |r| r.shipment_batch_kg);
+                fills_one_batch(available, batch, truck_payload_kg)
+            },
+        )
+    }
+
+    /// Builds the same component/chunk index with caller-owned resource eligibility.
+    /// Recurring forecasts must test production; dispatch continues to test physical stock.
+    pub(super) fn build_filtered(
+        allocator: &BuildingAllocator,
+        graph: &RegionGraph,
+        catalog: &RuntimeEconomyCatalog,
+        freight_components: &ModeComponentIndex,
+        operational_only: bool,
+        eligible: impl Fn(usize, ResourceRuntimeId) -> bool + Sync,
+    ) -> Self {
         let entries: Vec<(ResourceRuntimeId, ReachableBucketEntry)> = allocator
             .buildings
             .par_iter()
             .enumerate()
             .filter_map(|(idx, building)| {
-                if building.broken
-                    || building.economy_broken
-                    || building.is_deserted
-                    || building.is_under_construction()
+                if (operational_only
+                    && (building.broken
+                        || building.economy_broken
+                        || building.is_deserted
+                        || building.is_under_construction()))
                     || building.edge_idx == usize::MAX
                 {
                     return None;
@@ -77,21 +111,13 @@ impl SupplierCandidateIndex {
                     profile,
                 ))
             })
-            .flat_map_iter(|(idx, chunk, components, building, profile)| {
+            .flat_map_iter(|(idx, chunk, components, _building, profile)| {
                 let (component_values, component_count) = components.raw_parts();
-                let shippable = move |resource| {
-                    let available = (saleable_output_stock(catalog, building, profile, resource)
-                        - reservations.reserved_outbound_amount(idx, resource))
-                    .max(0.0);
-                    let batch = catalog
-                        .resource_measure(resource)
-                        .map_or(0.0, |r| r.shipment_batch_kg);
-                    fills_one_batch(available, batch, truck_payload_kg)
-                };
+                let eligible = &eligible;
                 profile
                     .outputs
                     .iter()
-                    .filter(move |output| shippable(output.resource_runtime_id))
+                    .filter(move |output| eligible(idx, output.resource_runtime_id))
                     .flat_map(move |output| {
                         (0..component_count).map(move |component_idx| {
                             let component = component_values[component_idx];
@@ -130,5 +156,30 @@ impl SupplierCandidateIndex {
         resource_runtime_id: ResourceRuntimeId,
     ) -> Option<&ReachableBucketIndex> {
         self.by_resource.get(&resource_runtime_id)
+    }
+
+    /// Whether any resource still has an eligible supplier, in O(resource kinds).
+    pub(super) fn has_offers(&self) -> bool {
+        self.by_resource
+            .values()
+            .any(ReachableBucketIndex::has_available)
+    }
+    /// Enables finite-quantity updates while preserving the shared spatial grouping.
+    pub(super) fn enable_reservations(&mut self) {
+        for buckets in self.by_resource.values_mut() {
+            buckets.enable_reservations();
+        }
+    }
+
+    /// Toggles a resource supplier after a claim or rollback without rebuilding its index.
+    pub(super) fn set_available(
+        &mut self,
+        resource: ResourceRuntimeId,
+        entry: ReachableBucketEntry,
+        available: bool,
+    ) {
+        if let Some(buckets) = self.by_resource.get_mut(&resource) {
+            buckets.set_available(entry, available);
+        }
     }
 }

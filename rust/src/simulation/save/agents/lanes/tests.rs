@@ -136,7 +136,20 @@ fn snapshot_remaps_all_lane_roles_after_incremental_rebuild_and_edge_compaction(
     let mut agents = AgentSystem::new();
     for &id in &ids {
         add_agent(&mut agents, id, &graph, &network.lane_system);
+        let i = agents.len() - 1;
+        agents.speed[i] = 2.75;
+        agents.planned_activity[i] = 2;
+        agents.network_replan_failures[i] = 1;
+        agents.lane_change_from_lane_id[i] = id as u32;
+        agents.lane_change_start_d[i] = 1.5;
+        agents.lane_change_length_m[i] = 8.0;
+        agents.overtake_blocked_time_s[i] = 0.75;
+        agents.overtake_cooldown_s[i] = 1.25;
+        agents.job_lock_days[i] = 2;
+        agents.consecutive_unpaid_days[i] = 1;
+        network.lane_system.lanes[id].frontage_delay_penalty_s = id as f32 * 0.125;
     }
+    network.frontage_delay_elapsed_s = 0.375;
     let allocator = BuildingAllocator::new();
     let maps = crate::simulation::save::build_snapshot_maps(&graph, &allocator, &agents).unwrap();
     let mut conn = Connection::open_in_memory().unwrap();
@@ -155,13 +168,17 @@ fn snapshot_remaps_all_lane_roles_after_incremental_rebuild_and_edge_compaction(
     new_network.lane_system.rebuild(&mut new_graph);
     restore_lane_references(
         &conn,
-        58,
+        crate::simulation::save::schema::SAVE_VERSION,
         &mut restored,
         &new_graph,
-        &new_network,
+        &mut new_network,
         &allocator,
     )
     .unwrap();
+    assert_eq!(
+        network.frontage_delay_elapsed_s,
+        new_network.frontage_delay_elapsed_s
+    );
     validate_loaded_agents(&mut restored, &new_graph, &allocator).unwrap();
     assert!(
         ids.iter()
@@ -171,6 +188,10 @@ fn snapshot_remaps_all_lane_roles_after_incremental_rebuild_and_edge_compaction(
     for i in 0..agents.len() {
         for (old_id, new_id) in [
             (agents.current_lane_id[i], restored.current_lane_id[i]),
+            (
+                agents.lane_change_from_lane_id[i] as usize,
+                restored.lane_change_from_lane_id[i] as usize,
+            ),
             (
                 agents.planned_attach_lane_id[i] as usize,
                 restored.planned_attach_lane_id[i] as usize,
@@ -185,7 +206,32 @@ fn snapshot_remaps_all_lane_roles_after_incremental_rebuild_and_edge_compaction(
             assert_eq!(old.geometry, new.geometry);
             assert_eq!(old.is_fwd, new.is_fwd);
             assert_eq!(old.lane_type, new.lane_type);
+            assert_eq!(old.frontage_delay_penalty_s, new.frontage_delay_penalty_s);
         }
+        assert_eq!(
+            (
+                agents.speed[i],
+                agents.planned_activity[i],
+                agents.network_replan_failures[i],
+                agents.lane_change_start_d[i],
+                agents.lane_change_length_m[i],
+                agents.overtake_blocked_time_s[i],
+                agents.overtake_cooldown_s[i],
+                agents.job_lock_days[i],
+                agents.consecutive_unpaid_days[i]
+            ),
+            (
+                restored.speed[i],
+                restored.planned_activity[i],
+                restored.network_replan_failures[i],
+                restored.lane_change_start_d[i],
+                restored.lane_change_length_m[i],
+                restored.overtake_blocked_time_s[i],
+                restored.overtake_cooldown_s[i],
+                restored.job_lock_days[i],
+                restored.consecutive_unpaid_days[i]
+            ),
+        );
         assert_eq!(agents.lane_distance[i], restored.lane_distance[i]);
         assert_eq!(
             (agents.pos_x[i], agents.pos_y[i]),

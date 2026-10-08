@@ -12,6 +12,8 @@ use crate::simulation::zoning::ZoneType;
 /// Scalar budget reused for every candidate in a bounded admission batch.
 #[derive(Default)]
 pub(super) struct HouseholdAdmissionBudget {
+    unreserved_homes: u32,
+    worker_homes: u32,
     remaining_job_equivalents: f32,
     net_wage_per_day: f32,
     essentials_per_member: f32,
@@ -36,6 +38,7 @@ mod tests {
         let mut policy = policy();
         policy.child_support_per_child_per_day = 0.0;
         let mut budget = HouseholdAdmissionBudget {
+            unreserved_homes: 2,
             remaining_job_equivalents: 1.0,
             net_wage_per_day: 80.0,
             essentials_per_member: 30.0,
@@ -68,6 +71,7 @@ mod tests {
         let mut policy = policy();
         policy.pension_per_elder_per_day = 50.0;
         let mut budget = HouseholdAdmissionBudget {
+            unreserved_homes: 3,
             essentials_per_member: 40.0,
             treasury: 100.0,
             transfer_coverage_days: 1.0,
@@ -83,10 +87,55 @@ mod tests {
     }
 
     #[test]
+    fn worker_housing_reservations_survive_rejected_and_nonworker_applicants() {
+        let mut policy = policy();
+        policy.child_support_per_child_per_day = 0.0;
+        policy.pension_per_elder_per_day = 100.0;
+        let mut budget = HouseholdAdmissionBudget {
+            unreserved_homes: 3,
+            remaining_job_equivalents: 2.0,
+            net_wage_per_day: 80.0,
+            essentials_per_member: 30.0,
+            treasury: 100_000.0,
+            transfer_coverage_days: 30.0,
+            ..Default::default()
+        };
+        budget.reserve_worker_homes(1);
+        let worker = HouseholdAgeComposition {
+            adult_count: 1,
+            ..Default::default()
+        };
+        let elder = HouseholdAgeComposition {
+            elder_count: 1,
+            ..Default::default()
+        };
+        assert!(!budget.claim(
+            HouseholdAgeComposition {
+                child_count: 3,
+                ..worker
+            },
+            4,
+            1,
+            &policy,
+        ));
+        assert_eq!(budget.worker_homes, 2);
+        assert!(budget.claim(worker, 1, 1, &policy));
+        assert_eq!(
+            budget.unreserved_homes, 1,
+            "workers use reserved homes first"
+        );
+        assert!(budget.claim(elder, 1, 1, &policy));
+        assert!(!budget.claim(elder, 1, 1, &policy));
+        assert!(budget.claim(worker, 1, 1, &policy));
+        assert!(!budget.can_house(worker));
+    }
+
+    #[test]
     fn arrival_budget_charges_home_electricity_once_per_household() {
         let policy = policy();
         let property = daily_property_tax(ZoneType::Residential, 1, &policy);
         let mut budget = HouseholdAdmissionBudget {
+            unreserved_homes: 1,
             remaining_job_equivalents: 2.0,
             net_wage_per_day: (60.0 + 0.25 + property) / 2.0,
             essentials_per_member: 30.0,
@@ -111,6 +160,8 @@ impl HouseholdAdmissionBudget {
     /// Reserves existing residents and pending arrivals before considering this batch.
     pub(super) fn from_snapshot(snapshot: &DailyDemandSnapshot, config: &DemandConfig) -> Self {
         Self {
+            unreserved_homes: snapshot.vacant_household_slots,
+            worker_homes: 0,
             remaining_job_equivalents: snapshot.move_in_job_equivalent_slots,
             net_wage_per_day: snapshot.average_move_in_job_wage_per_day,
             essentials_per_member: snapshot.daily_essential_cost_per_resident,
@@ -128,6 +179,17 @@ impl HouseholdAdmissionBudget {
         }
     }
 
+    /// Keeps ready homes already claimed by workplace planning available to incoming workers.
+    pub(super) fn reserve_worker_homes(&mut self, unreserved_ready_homes: u32) {
+        self.worker_homes = self.unreserved_homes.saturating_sub(unreserved_ready_homes);
+        self.unreserved_homes -= self.worker_homes;
+    }
+
+    /// Whether this composition preserves the planner's promised labour supply.
+    pub(super) fn can_house(&self, composition: HouseholdAgeComposition) -> bool {
+        self.unreserved_homes > 0 || (composition.adult_count > 0 && self.worker_homes > 0)
+    }
+
     /// Claims wages and transfer headroom only for an affordable, physically launchable household.
     /// The arithmetic is O(1); no building or routing lookup occurs here.
     pub(super) fn claim(
@@ -137,6 +199,9 @@ impl HouseholdAdmissionBudget {
         home_level: u8,
         policy: &CityFiscalPolicy,
     ) -> bool {
+        if !self.can_house(composition) {
+            return false;
+        }
         let adults = f32::from(composition.adult_count);
         let employed = adults.min(self.remaining_job_equivalents.max(0.0));
         let permanent_transfers = f32::from(composition.elder_count)
@@ -161,6 +226,11 @@ impl HouseholdAdmissionBudget {
         // an adult initially supported by another member's wage or pension.
         self.remaining_job_equivalents = (self.remaining_job_equivalents - adults).max(0.0);
         self.transfer_claim_per_day = total_claim;
+        if composition.adult_count > 0 && self.worker_homes > 0 {
+            self.worker_homes -= 1;
+        } else {
+            self.unreserved_homes -= 1;
+        }
         true
     }
 }

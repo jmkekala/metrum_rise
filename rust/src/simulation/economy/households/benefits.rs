@@ -137,7 +137,8 @@ impl HouseholdSystem {
     }
 }
 
-fn pay_transfer_claim(treasury_balance: &mut f64, claim: f32) -> f32 {
+/// Claims a payment from the remaining city cash; shared with the recurring-market forecast.
+pub(super) fn pay_transfer_claim(treasury_balance: &mut f64, claim: f32) -> f32 {
     if claim <= 0.0 || *treasury_balance <= 0.0 {
         return 0.0;
     }

@@ -7,6 +7,7 @@
 //! after any structural road-network change or metric update.
 
 pub mod cch;
+pub(crate) mod components;
 pub mod cost;
 pub mod flow_field;
 

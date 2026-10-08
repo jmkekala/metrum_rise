@@ -6,7 +6,8 @@
 //! parcel and build generation, since allocator indices move. Serial ordered accumulation is
 //! deliberate here: this opt-in village report needs reproducible floating-point totals.
 //! Sampling costs O((H + B) log B) per economy/lifecycle boundary and O(A + H) per settlement;
-//! retained history is O(days × profiles), with O(B + A) current identities/shortage details.
+//! retained history is O(days × profiles + all observed firms), with O(B + A) live snapshots
+//! and shortage details. Removed firms retain their final capital and operating outcomes.
 //! This opt-in diagnostic is not a scaling fixture.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -148,6 +149,7 @@ pub struct GrowthReport {
     details: Vec<DayDiagnostics>,
     current: DayDiagnostics,
     businesses: BTreeMap<BusinessIdentity, BusinessSnapshot>,
+    business_outcomes: BTreeMap<BusinessIdentity, GrowthBusinessOutcome>,
     profile_names: BTreeMap<u16, String>,
     opening_treasury: f64,
     opening_build_cost: f64,
@@ -157,6 +159,37 @@ pub struct GrowthReport {
     unrecorded_opening_build_cost: f64,
     support_days: u32,
     stranded_members: String,
+}
+
+/// Per-firm results over the observed run, retained after bankruptcy and removal.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GrowthBusinessOutcome {
+    /// Authored economy profile; firms sharing a profile retain separate outcomes.
+    pub profile_id: String,
+    /// Parcel identity; zero denotes an explicitly placed site.
+    pub parcel_id: u64,
+    /// Construction generation distinguishes replacement businesses on the same site.
+    pub generation: u32,
+    /// Site centre in world metres, also identifying explicit sites.
+    pub centre: [f32; 2],
+    /// Initial cash already present when the observer was attached.
+    pub opening_cash: f64,
+    /// Owner capital provided after attachment, including replacements.
+    pub startup_cash: f64,
+    /// Cash earned or lost after expenses, excluding owner capital and removal.
+    pub operating_cash_change: f64,
+    /// Latest cash balance, retained at removal for closed sites.
+    pub ending_cash: f64,
+    /// Sum of assigned workers sampled each live operational hour.
+    pub staffed_worker_hours: f64,
+    /// Sum of demand-responsive worker capacity over the same live hours.
+    pub capacity_worker_hours: f64,
+    /// Number of live operational hours sampled; excludes construction and desertion.
+    pub operating_hours: u32,
+    /// Whether this firm became deserted during observation.
+    pub bankrupt: bool,
+    /// Whether its building was removed during observation.
+    pub removed: bool,
 }
 
 /// Observed cash flows for one business profile over a requested trailing period.
@@ -196,6 +229,7 @@ impl GrowthReport {
             details: Vec::new(),
             current: DayDiagnostics::default(),
             businesses: BTreeMap::new(),
+            business_outcomes: BTreeMap::new(),
             profile_names: BTreeMap::new(),
             opening_treasury: core.treasury.balance,
             opening_build_cost: core.treasury.lifetime_build_cost,
@@ -209,6 +243,10 @@ impl GrowthReport {
         };
         report.sample_businesses(core, false);
         report.opening_business_cash = report.businesses.values().map(|b| b.cash).sum();
+        for outcome in report.business_outcomes.values_mut() {
+            outcome.opening_cash = outcome.startup_cash;
+            outcome.startup_cash = 0.0;
+        }
         report.current = DayDiagnostics::default();
         report
     }
@@ -270,11 +308,24 @@ impl GrowthReport {
                     .unwrap_or_else(|| "unresolved".into())
             });
             let day = self.current.businesses.entry(now.profile).or_default();
+            let outcome =
+                self.business_outcomes
+                    .entry(key)
+                    .or_insert_with(|| GrowthBusinessOutcome {
+                        profile_id: self.profile_names[&now.profile].clone(),
+                        parcel_id: building.parcel_id,
+                        generation: building.build_generation,
+                        centre: [building.center_x, building.center_y],
+                        ..Default::default()
+                    });
+            outcome.ending_cash = now.cash;
             if let Some(before) = self.businesses.insert(key, now) {
                 let sales = now.revenue - before.revenue;
                 let cash_change = now.cash - before.cash;
                 day.sales += sales;
                 day.cash_change += cash_change;
+                outcome.operating_cash_change += cash_change;
+                outcome.bankrupt |= now.deserted && !before.deserted;
                 day.inputs_received += now.inputs_received - before.inputs_received;
                 if hourly {
                     day.input_purchases += sales - cash_change;
@@ -283,14 +334,18 @@ impl GrowthReport {
                         && let Some(profile) = profile
                     {
                         day.staffed_hours += f64::from(building.worker_count);
-                        day.capacity_hours +=
+                        let capacity =
                             f64::from(active_worker_capacity_for_profile_with_floor_scale(
                                 catalog,
                                 building,
                                 profile,
                                 building.commercial_activity_floor_scale,
                             ));
+                        day.capacity_hours += capacity;
                         day.sample_hours += 1;
+                        outcome.staffed_worker_hours += f64::from(building.worker_count);
+                        outcome.capacity_worker_hours += capacity;
+                        outcome.operating_hours += 1;
                     }
                     if let Some(profile) = catalog.profile_by_runtime_id(now.profile)
                         && profile.kind == EconomyProfileRuntimeKind::Store
@@ -306,6 +361,7 @@ impl GrowthReport {
             } else {
                 // Placement is observed before the first production/freight tick.
                 day.startup_cash += now.cash;
+                outcome.startup_cash += now.cash;
                 // Parcel generation advances on demolition. This subset identifies
                 // fresh capital at rebuilt sites, including after observer attachment.
                 if building.build_generation > 0 {
@@ -322,9 +378,15 @@ impl GrowthReport {
                 let day = self.current.businesses.entry(before.profile).or_default();
                 day.removals += 1;
                 day.removed_cash += before.cash;
+                self.business_outcomes.get_mut(key).unwrap().removed = true;
                 false
             }
         });
+    }
+
+    /// Returns individual firms in stable site order, including failed and removed firms.
+    pub fn business_outcomes(&self) -> impl Iterator<Item = &GrowthBusinessOutcome> {
+        self.business_outcomes.values()
     }
 
     /// Largest daily mismatch between measured treasury movement and the observed flow buckets.
@@ -424,6 +486,7 @@ impl GrowthReport {
     pub fn has_same_accounting(&self, other: &Self) -> bool {
         self.days == other.days
             && self.details == other.details
+            && self.business_outcomes == other.business_outcomes
             && self.stranded_members == other.stranded_members
             && self.opening_treasury == other.opening_treasury
             && self.opening_build_cost == other.opening_build_cost
@@ -433,6 +496,13 @@ impl GrowthReport {
     pub fn daily_report(&self) -> String {
         let mut text = String::new();
         self.write_header(&mut text).unwrap();
+        for firm in self.business_outcomes() {
+            writeln!(text, "Firm {} parcel {}/{} at {:?}: operating-hours {} staffing {:.0}/{:.0} worker-hours; cash {:.2}, operating-change {:+.2}, opening-capital {:.2}, owner-startup {:.2}, bankrupt {} removed {}",
+                firm.profile_id, firm.parcel_id, firm.generation, firm.centre,
+                firm.operating_hours, firm.staffed_worker_hours, firm.capacity_worker_hours,
+                firm.ending_cash, firm.operating_cash_change, firm.opening_cash, firm.startup_cash,
+                firm.bankrupt, firm.removed).unwrap();
+        }
         text.push_str(&self.stranded_members);
         for index in 0..self.days.len() {
             self.write_day(&mut text, index).unwrap();
@@ -453,7 +523,7 @@ impl GrowthReport {
         )?;
         writeln!(
             out,
-            "Flows are per completed day; the initial fixture starts 07:30. City counts are after departures; HH accounting/counts are before departures. Launch counts are carriers, not arrivals."
+            "Flows end at each daily settlement; the first observation may start partway through a day. City counts are after departures; HH accounting/counts are before departures. Launch counts are carriers, not arrivals."
         )?;
         writeln!(
             out,
@@ -573,12 +643,10 @@ impl GrowthReport {
         let r = &d.removal;
         writeln!(
             out,
-            "  exits unhoused {} cash-zero {} persistent-eligible {} pressure {:.3}/{:.3} planned/removed {}/{}",
+            "  exits unhoused {} cash-zero {} eligible {} planned/removed {}/{}",
             r.unhoused_household_count,
             r.zero_budget_household_count,
             r.persistent_exit_eligible_household_count,
-            r.pressure,
-            r.threshold,
             r.planned_households,
             r.removed_households
         )?;
@@ -666,14 +734,12 @@ impl GrowthReport {
             "no-border"
         } else if a.vacant_household_slots == 0 {
             "no-vacant-home"
-        } else if a.incoming_household_need <= 0.0001 {
-            "no-incoming-need"
-        } else if a.move_in_acceptance <= 0.0001 {
-            "candidate-affordability"
-        } else if a.normalized_action_pressure <= 0.0001 {
-            "pressure-below-threshold"
         } else if a.planned_households == 0 {
-            "admission-credit/cap"
+            "no-execution-capacity"
+        } else if a.examined_candidates > 0 && a.income_rejections == a.examined_candidates {
+            "applicant-income"
+        } else if a.launched_households == 0 && a.worker_housing_rejections > 0 {
+            "homes-reserved-for-workers"
         } else if a.launched_households == 0 {
             "carrier-launch"
         } else {
@@ -681,23 +747,16 @@ impl GrowthReport {
         };
         writeln!(
             out,
-            "  admission {gate}: vacancy {} funded/physical {}/{} unfunded {} local-unemployed {} need {:.3} acceptance {:.3} runway {:.2} candidate-income {:.2} recurring-income {:.2} cost-estimate {:.2} failure-factor {:.3} pressure {:.3}/{:.3} credit {:.3}->{:.3} planned/launched {}/{}",
+            "  admission {gate}: vacancy {} funded/physical {}/{} unfunded {} local-unemployed {} live-job-slots {} examined/income-rejected {}/{} worker-housing-rejected {} planned/launched {}/{}",
             a.vacant_household_slots,
             a.funded_worker_capacity,
             a.physical_worker_capacity,
             a.open_jobs_unfunded,
             a.existing_unemployed_member_count,
-            a.incoming_household_need,
-            a.move_in_acceptance,
-            a.move_in_search_runway_days,
-            a.expected_wage_income_per_day + a.expected_transfer_income_per_day,
-            a.recurring_income_per_day,
-            a.daily_essential_cost,
-            a.failure_factor,
-            a.pressure,
-            a.threshold,
-            a.credit_before,
-            a.credit_after,
+            a.move_in_job_slots,
+            a.examined_candidates,
+            a.income_rejections,
+            a.worker_housing_rejections,
             a.planned_households,
             a.launched_households
         )?;
@@ -708,34 +767,29 @@ impl GrowthReport {
         ] {
             let gate = if b.spawn_candidates == 0 {
                 "no-placement-candidate"
-            } else if b.spawn_profile_missing == b.spawn_candidates {
-                "missing-growth-profile"
-            } else if b.spawn_normalized_pressure <= 0.0001 {
-                "pressure-below-threshold"
-            } else if b.spawn_need_buildings <= 0.0001 {
-                "no-unmet-capacity"
-            } else if b.spawn_planned == 0 {
-                "spawn-credit"
+            } else if b.spawn_selected > 0 {
+                "selected"
             } else if b.spawn_selected == 0 && b.spawn_rejected_absorption > 0 {
                 "output-absorption"
             } else if b.spawn_selected == 0 && b.spawn_rejected_viability > 0 {
                 "market-cannot-fund-operation"
+            } else if b.spawn_selected == 0 && b.spawn_rejected_workforce > 0 {
+                "workforce-unavailable-by-completion"
+            } else if zone == "R" && b.housing_needed_slots == 0 {
+                "committed-housing-sufficient"
             } else {
-                "selected"
+                "no-new-project"
             };
             writeln!(
                 out,
-                "  build {zone} {gate}: candidates {} pressure {:.3} normalized {:.3} need {:.3} credit {:.3}->{:.3} planned/selected {}/{} absorption-rejected {} viability-rejected {}; despawn candidates {} credit {:.3}->{:.3} selected {}",
+                "  build {zone} {gate}: candidates {} housing-needed-slots {} planned/selected {}/{} absorption-rejected {} viability-rejected {} workforce-rejected {}; despawn candidates {} credit {:.3}->{:.3} selected {}",
                 b.spawn_candidates,
-                b.pressure,
-                b.spawn_normalized_pressure,
-                b.spawn_need_buildings,
-                b.spawn_credit_before,
-                b.spawn_credit_after,
+                b.housing_needed_slots,
                 b.spawn_planned,
                 b.spawn_selected,
                 b.spawn_rejected_absorption,
                 b.spawn_rejected_viability,
+                b.spawn_rejected_workforce,
                 b.despawn_candidates,
                 b.despawn_credit_before,
                 b.despawn_credit_after,

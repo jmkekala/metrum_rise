@@ -1511,6 +1511,8 @@ impl SimCore {
             &tuning,
         )?;
 
+        self.register_service_input_capacity(building_idx);
+
         if !self.benchmark_mode {
             if let Some(building) = self.allocator.buildings.get(building_idx) {
                 let lot_cells = f64::from(building.width_cells) * f64::from(building.depth_cells);
@@ -2272,6 +2274,7 @@ impl SimCore {
             node_id as u32,
             crate::simulation::network::types::NodeType::Border,
         );
+        self.demand.invalidate_construction_execution();
         debug_log!(
             "economy",
             "border connection created at node_id={} pos=({:.1}, {:.1}, {:.1})",

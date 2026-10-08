@@ -2,9 +2,8 @@
 
 ## Compact R/C/I demand meter for the gameplay HUD.
 ##
-## Displays normalized residential, commercial, and industrial demand pressures
-## as vertical bars around a zero baseline. Values are expected in the range
-## -1.0..1.0 and are rendered as -100%..100% in bar height.
+## Displays selected, queued and constructing project counts from the last hourly
+## assessment. Rust supplies the explanations; the HUD only scales and draws counts.
 extends VBoxContainer
 
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
@@ -16,26 +15,33 @@ const BAR_COLORS := {
 	"industrial": UIStyle.ZONE_INDUSTRIAL,
 }
 
-var _title_label: Label
 var _chart: Control
 var _baseline: ColorRect
 var _bars: Dictionary = {}
-var _pressures := {
-	"residential": 0.0,
-	"commercial": 0.0,
-	"industrial": 0.0,
+var _counts: Dictionary = {}
+var _details: Dictionary = {}
+var _projects := {
+	"residential": 0,
+	"commercial": 0,
+	"industrial": 0,
 }
 
 func _ready() -> void:
-	mouse_filter = Control.MOUSE_FILTER_IGNORE
+	mouse_filter = Control.MOUSE_FILTER_STOP
 	add_theme_constant_override("separation", 6)
 
-	_title_label = Label.new()
-	_title_label.text = "RCI"
-	_title_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	UIStyle.set_font_size(_title_label, UIStyle.HUD_TEXT_SIZE)
-	_title_label.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
-	add_child(_title_label)
+	var counts := HBoxContainer.new()
+	counts.add_theme_constant_override("separation", 2)
+	add_child(counts)
+	for key in BAR_ORDER:
+		var label := Label.new()
+		label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		label.mouse_filter = Control.MOUSE_FILTER_PASS
+		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		UIStyle.set_font_size(label, 12)
+		label.add_theme_color_override("font_color", _meter_bar_color(key))
+		counts.add_child(label)
+		_counts[key] = label
 
 	var chart_shell := PanelContainer.new()
 	chart_shell.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -76,10 +82,11 @@ func _ready() -> void:
 	_layout_chart()
 	_update_tooltip()
 
-func set_pressures(residential: float, commercial: float, industrial: float) -> void:
-	_pressures["residential"] = clampf(residential, -1.0, 1.0)
-	_pressures["commercial"] = clampf(commercial, -1.0, 1.0)
-	_pressures["industrial"] = clampf(industrial, -1.0, 1.0)
+func set_growth(growth: Dictionary) -> void:
+	for key in BAR_ORDER:
+		var entry: Dictionary = growth.get(key, {})
+		_projects[key] = maxi(0, int(entry.get("projects", 0)))
+		_details[key] = str(entry.get("detail", "Waiting for the next hourly growth assessment."))
 	_layout_chart()
 	_update_tooltip()
 
@@ -91,8 +98,8 @@ func _layout_chart() -> void:
 	if chart_size.x <= 0.0 or chart_size.y <= 0.0:
 		return
 
-	var baseline_y := floorf(chart_size.y * 0.5)
-	_baseline.position = Vector2(0.0, baseline_y - 1.0)
+	var baseline_y := chart_size.y - 2.0
+	_baseline.position = Vector2(0, baseline_y - 1.0)
 	_baseline.size = Vector2(chart_size.x, 2.0)
 
 	var gap := 6.0
@@ -100,33 +107,29 @@ func _layout_chart() -> void:
 	bar_width = maxf(bar_width, 8.0)
 	var used_width := bar_width * float(BAR_ORDER.size()) + gap * float(BAR_ORDER.size() - 1)
 	var left := floorf((chart_size.x - used_width) * 0.5)
-	var max_up := maxf(1.0, baseline_y - 2.0)
-	var max_down := maxf(1.0, chart_size.y - baseline_y - 2.0)
+	var max_height := maxf(1.0, baseline_y - 2.0)
+	var scale := 1
+	for key in BAR_ORDER:
+		scale = maxi(scale, int(_projects[key]))
 
 	for i in range(BAR_ORDER.size()):
 		var key: String = BAR_ORDER[i]
 		var bar: ColorRect = _bars[key]
-		var value: float = _pressures[key]
-		var magnitude := absf(value)
-		if magnitude < 0.01:
-			bar.visible = false
-			continue
-
-		bar.visible = true
-		var height := (max_up if value >= 0.0 else max_down) * magnitude
-		var x := left + float(i) * (bar_width + gap)
-		if value >= 0.0:
-			bar.position = Vector2(x, baseline_y - height)
-		else:
-			bar.position = Vector2(x, baseline_y)
+		var count: int = _projects[key]
+		bar.visible = count > 0
+		var height := max_height * float(count) / float(scale)
+		bar.position = Vector2(left + float(i) * (bar_width + gap), baseline_y - height)
 		bar.size = Vector2(bar_width, maxf(1.0, height))
 
 func _update_tooltip() -> void:
-	tooltip_text = "Residential %+.0f%%\nCommercial %+.0f%%\nIndustrial %+.0f%%" % [
-		_pressures["residential"] * 100.0,
-		_pressures["commercial"] * 100.0,
-		_pressures["industrial"] * 100.0,
-	]
+	var sections: PackedStringArray = []
+	for key in BAR_ORDER:
+		var detail := str(_details.get(key, "Waiting for the next hourly growth assessment."))
+		sections.append("%s — %d projects\n%s" % [key.capitalize(), int(_projects[key]), detail])
+		if _counts.has(key):
+			_counts[key].text = "%s %d" % [key.left(1).to_upper(), int(_projects[key])]
+			_counts[key].tooltip_text = key.capitalize() + "\n" + detail
+	tooltip_text = "Growth: selected, queued and constructing projects. Bars share a scale.\n\n" + "\n\n".join(sections)
 
 func _meter_bar_color(key: String) -> Color:
 	var base: Color = BAR_COLORS[key]

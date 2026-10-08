@@ -233,20 +233,6 @@ pub(in crate::simulation::economy::definitions) fn validate_runtime_tuning(
         0.0,
         1.0,
     )?;
-    validate_nonempty_level_array(
-        &tuning.viability.nonresidential_min_buffer_days_by_level,
-        "runtime_tuning.viability.nonresidential_min_buffer_days_by_level",
-        0.0,
-        f32::INFINITY,
-    )?;
-    validate_nonempty_level_array(
-        &tuning
-            .viability
-            .nonresidential_max_buffer_days_for_downgrade,
-        "runtime_tuning.viability.nonresidential_max_buffer_days_for_downgrade",
-        0.0,
-        f32::INFINITY,
-    )?;
     validate_range(
         tuning
             .viability
@@ -254,14 +240,6 @@ pub(in crate::simulation::economy::definitions) fn validate_runtime_tuning(
         0.0,
         1.0,
         "runtime_tuning.viability.nonresidential_min_staffing_ratio_for_upgrade",
-    )?;
-    validate_range(
-        tuning
-            .viability
-            .nonresidential_max_staffing_ratio_for_downgrade,
-        0.0,
-        1.0,
-        "runtime_tuning.viability.nonresidential_max_staffing_ratio_for_downgrade",
     )?;
     validate_range(
         tuning.viability.industrial_min_input_coverage_for_upgrade,
@@ -274,20 +252,6 @@ pub(in crate::simulation::economy::definitions) fn validate_runtime_tuning(
         0.0,
         1.0,
         "runtime_tuning.viability.industrial_min_output_headroom_for_upgrade",
-    )?;
-    validate_range(
-        tuning.viability.industrial_max_input_coverage_for_downgrade,
-        0.0,
-        1.0,
-        "runtime_tuning.viability.industrial_max_input_coverage_for_downgrade",
-    )?;
-    validate_range(
-        tuning
-            .viability
-            .industrial_max_output_headroom_for_downgrade,
-        0.0,
-        1.0,
-        "runtime_tuning.viability.industrial_max_output_headroom_for_downgrade",
     )?;
     validate_range(
         tuning.owa_import_price_multiplier,

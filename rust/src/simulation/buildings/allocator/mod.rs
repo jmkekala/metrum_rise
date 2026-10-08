@@ -24,6 +24,7 @@ pub(crate) use tests::support::indexed_test_building;
 pub(crate) use entrance::building_local_xz_basis;
 pub(crate) use placement::BuildingSiteEnvironment;
 pub(crate) use placement::ExplicitServicePlacementPreview;
+pub(crate) use placement::construction_duration_hours;
 pub(crate) use site::BuildingSiteGradingRequest;
 pub(crate) use site::{BuildingSiteSurfaceClient, SitePavingPartition};
 
@@ -697,10 +698,9 @@ impl BuildingAllocator {
         transit_network: &crate::simulation::network::TransitNetwork,
         graph: &RegionGraph,
     ) -> u32 {
-        self.execute_demand_household_admission_with_preference(
+        self.execute_demand_household_admission_with_income(
             households_to_admit_today,
             0,
-            false,
             agents,
             transit_network,
             graph,
@@ -708,11 +708,11 @@ impl BuildingAllocator {
         )
     }
 
-    pub(crate) fn execute_demand_household_admission_with_preference(
+    /// Tries a bounded deterministic applicant batch, claiming income before reserving homes.
+    pub(crate) fn execute_demand_household_admission_with_income(
         &mut self,
         households_to_admit_today: u32,
         next_household_id: usize,
-        prefer_worker_capable: bool,
         agents: &mut crate::simulation::economy::agents::AgentSystem,
         transit_network: &crate::simulation::network::TransitNetwork,
         graph: &RegionGraph,
@@ -725,7 +725,6 @@ impl BuildingAllocator {
         self.admit_households_from_demand(
             households_to_admit_today as usize,
             next_household_id,
-            prefer_worker_capable,
             agents,
             transit_network,
             graph,

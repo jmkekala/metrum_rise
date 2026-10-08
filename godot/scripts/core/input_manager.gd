@@ -403,7 +403,7 @@ func _handle_money_and_demand_cheat() -> void:
 	if not simulation_node or not simulation_node.has_method("apply_money_and_max_demand_cheat"):
 		return
 	var balance: float = simulation_node.apply_money_and_max_demand_cheat()
-	print("Cheat applied: +1000000 money, R/C/I demand locked at 100%. Treasury: ", balance)
+	print("Cheat applied: +1000000 money, private growth checks bypassed. Treasury: ", balance)
 	get_viewport().set_input_as_handled()
 
 func _default_save_name() -> String:

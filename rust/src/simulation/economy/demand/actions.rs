@@ -72,12 +72,13 @@ impl DemandBuildingActionPlan {
 #[derive(Clone, Debug)]
 pub(crate) struct DemandSpawnCandidate {
     pub(crate) action: DemandSpawnAction,
-    pub(crate) density: String,
 }
 
 /// Spawn candidates grouped by the three demand-owned private zone families.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct DemandSpawnCandidatesByUse {
+    /// Site-discovery evidence, ordered residential/commercial/industrial.
+    pub(crate) availability: [SpawnSiteAvailability; 3],
     /// Legal residential build sites in allocator build-site order.
     pub(crate) residential: Vec<DemandSpawnCandidate>,
     /// Legal commercial build sites in allocator build-site order.
@@ -118,5 +119,38 @@ pub(crate) fn demand_building_action_key(building: &Building) -> DemandBuildingA
         depth_cells: building.depth_cells,
         level: building.level,
         asset_id: building.asset_id.clone(),
+    }
+}
+
+/// Maps private zone families to the fixed R/C/I reporting order.
+pub(crate) fn private_zone_index(zone: ZoneType) -> Option<usize> {
+    match zone {
+        ZoneType::Residential => Some(0),
+        ZoneType::Commercial => Some(1),
+        ZoneType::Industrial => Some(2),
+        _ => None,
+    }
+}
+
+/// Placement evidence collected with the existing parallel parcel discovery pass.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SpawnSiteAvailability {
+    /// At least one authored initial asset is legal for this use's zoning profiles.
+    pub(crate) has_assets: bool,
+    /// Unoccupied parcels with a known private zoning profile, before site checks.
+    pub(crate) free_lots: usize,
+    /// Free parcels with no eligible initial asset for their particular profile.
+    pub(crate) missing_asset_lots: usize,
+    /// Free parcels whose roads, size, access or terrain prevent a legal placement.
+    pub(crate) unusable_lots: usize,
+}
+
+impl SpawnSiteAvailability {
+    /// Combines independent discovery partitions without allocating.
+    pub(crate) fn merge(&mut self, other: Self) {
+        self.has_assets |= other.has_assets;
+        self.free_lots += other.free_lots;
+        self.missing_asset_lots += other.missing_asset_lots;
+        self.unusable_lots += other.unusable_lots;
     }
 }

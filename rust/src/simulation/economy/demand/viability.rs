@@ -11,8 +11,8 @@ use crate::simulation::buildings::allocator::{
 };
 use crate::simulation::economy::definitions::{RuntimeEconomyCatalog, RuntimeEconomyTuning};
 use crate::simulation::economy::households::{
-    building_operating_buffer_days, building_staffing_ratio, building_total_output_inventory,
-    industrial_input_coverage_factor, industrial_output_headroom_factor, level_tuning_value,
+    building_staffing_ratio, building_total_output_inventory, industrial_input_coverage_factor,
+    industrial_output_headroom_factor, level_tuning_value,
 };
 use crate::simulation::zoning::ZoneType;
 
@@ -38,27 +38,18 @@ pub(super) fn building_is_viable_for_upgrade(
             building_idx,
             target_asset_id,
         ),
-        ZoneType::Commercial => nonresidential_upgrade_viable(
-            allocator,
-            catalog,
-            economy_tuning,
-            building_idx,
-            target_asset_id,
-        ),
-        ZoneType::Industrial => industrial_upgrade_viable(
-            allocator,
-            catalog,
-            economy_tuning,
-            building_idx,
-            target_asset_id,
-        ),
+        ZoneType::Commercial => {
+            nonresidential_upgrade_viable(allocator, catalog, economy_tuning, building_idx)
+        }
+        ZoneType::Industrial => {
+            industrial_upgrade_viable(allocator, catalog, economy_tuning, building_idx)
+        }
         _ => false,
     }
 }
 
 pub(super) fn building_is_viable_for_downgrade(
     allocator: &BuildingAllocator,
-    catalog: &RuntimeEconomyCatalog,
     economy_tuning: &RuntimeEconomyTuning,
     residential_occupants: &ResidentialOccupantSnapshot,
     building_idx: usize,
@@ -76,12 +67,8 @@ pub(super) fn building_is_viable_for_downgrade(
             residential_occupants,
             building_idx,
         ),
-        ZoneType::Commercial => {
-            nonresidential_downgrade_viable(allocator, catalog, economy_tuning, building_idx)
-        }
-        ZoneType::Industrial => {
-            industrial_downgrade_viable(allocator, catalog, economy_tuning, building_idx)
-        }
+        // Finances and customer/workforce claims are checked against the replacement during selection.
+        ZoneType::Commercial | ZoneType::Industrial => true,
         _ => false,
     }
 }
@@ -173,7 +160,6 @@ pub(super) fn nonresidential_upgrade_viable(
     catalog: &RuntimeEconomyCatalog,
     economy_tuning: &RuntimeEconomyTuning,
     building_idx: usize,
-    target_asset_id: &str,
 ) -> bool {
     let Some(building) = allocator.buildings.get(building_idx) else {
         return false;
@@ -181,14 +167,6 @@ pub(super) fn nonresidential_upgrade_viable(
     if building.is_deserted {
         return false;
     }
-    let Some(target_level) = allocator
-        .registry
-        .get(target_asset_id)
-        .and_then(|entry| entry.manifest.building.as_ref())
-        .map(|target| target.level)
-    else {
-        return false;
-    };
     let staffing_ratio = building_staffing_ratio(catalog, building);
     if staffing_ratio + EPSILON
         < economy_tuning
@@ -197,16 +175,7 @@ pub(super) fn nonresidential_upgrade_viable(
     {
         return false;
     }
-    let min_buffer_days = level_tuning_value(
-        &economy_tuning
-            .viability
-            .nonresidential_min_buffer_days_by_level,
-        target_level,
-    );
-    if building_operating_buffer_days(catalog, economy_tuning, building) + EPSILON < min_buffer_days
-    {
-        return false;
-    }
+    // Target working capital is checked once during selection, including stock and paid cargo.
     if matches!(building.zone_type, ZoneType::Commercial)
         && building_total_output_inventory(catalog, building) <= EPSILON
     {
@@ -215,85 +184,24 @@ pub(super) fn nonresidential_upgrade_viable(
     true
 }
 
-pub(super) fn nonresidential_downgrade_viable(
-    allocator: &BuildingAllocator,
-    catalog: &RuntimeEconomyCatalog,
-    economy_tuning: &RuntimeEconomyTuning,
-    building_idx: usize,
-) -> bool {
-    let Some(building) = allocator.buildings.get(building_idx) else {
-        return false;
-    };
-    if building.is_deserted {
-        return false;
-    }
-    let staffing_ratio = building_staffing_ratio(catalog, building);
-    let buffer_days = building_operating_buffer_days(catalog, economy_tuning, building);
-    let max_buffer_days = level_tuning_value(
-        &economy_tuning
-            .viability
-            .nonresidential_max_buffer_days_for_downgrade,
-        building.level,
-    );
-    staffing_ratio
-        <= economy_tuning
-            .viability
-            .nonresidential_max_staffing_ratio_for_downgrade
-            + EPSILON
-        || buffer_days <= max_buffer_days + EPSILON
-        || matches!(building.zone_type, ZoneType::Commercial)
-            && building_total_output_inventory(catalog, building) <= EPSILON
-}
-
 pub(super) fn industrial_upgrade_viable(
     allocator: &BuildingAllocator,
     catalog: &RuntimeEconomyCatalog,
     economy_tuning: &RuntimeEconomyTuning,
     building_idx: usize,
-    target_asset_id: &str,
 ) -> bool {
     let Some(building) = allocator.buildings.get(building_idx) else {
         return false;
     };
-    nonresidential_upgrade_viable(
-        allocator,
-        catalog,
-        economy_tuning,
-        building_idx,
-        target_asset_id,
-    ) && industrial_input_coverage_factor(catalog, building) + EPSILON
-        >= economy_tuning
-            .viability
-            .industrial_min_input_coverage_for_upgrade
+    nonresidential_upgrade_viable(allocator, catalog, economy_tuning, building_idx)
+        && industrial_input_coverage_factor(catalog, building) + EPSILON
+            >= economy_tuning
+                .viability
+                .industrial_min_input_coverage_for_upgrade
         && industrial_output_headroom_factor(catalog, building) + EPSILON
             >= economy_tuning
                 .viability
                 .industrial_min_output_headroom_for_upgrade
-}
-
-pub(super) fn industrial_downgrade_viable(
-    allocator: &BuildingAllocator,
-    catalog: &RuntimeEconomyCatalog,
-    economy_tuning: &RuntimeEconomyTuning,
-    building_idx: usize,
-) -> bool {
-    let Some(building) = allocator.buildings.get(building_idx) else {
-        return false;
-    };
-    if building.is_deserted {
-        return false;
-    }
-    nonresidential_downgrade_viable(allocator, catalog, economy_tuning, building_idx)
-        || industrial_input_coverage_factor(catalog, building)
-            <= economy_tuning
-                .viability
-                .industrial_max_input_coverage_for_downgrade
-                + EPSILON
-        || industrial_output_headroom_factor(catalog, building)
-            <= economy_tuning
-                .viability
-                .industrial_max_output_headroom_for_downgrade
-                + EPSILON
 }
 
 pub(super) fn level_change_is_compatible(

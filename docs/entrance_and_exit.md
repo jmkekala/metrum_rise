@@ -570,7 +570,7 @@ Purpose:
 - `planned_detach_lane_d`: exact lane distance where the agent leaves the destination frontage lane and enters short ingress
 - `access_flags`: compact authoritative trip metadata for plan validity, zero-hop routing, flow-field provenance, immigration-origin handling, and freight border destinations
 - `next_replan_time`: absolute `sim_time` gate; the planner may only build or rebuild a trip when `sim_time >= next_replan_time`
-- `network_replan_failures`: transient watchdog counter for consecutive failed live network/access replans; reset on successful planning, trip completion, recovery, road-edit route invalidation, and load
+- `network_replan_failures`: watchdog counter for consecutive failed live network/access replans; reset on successful planning, trip completion, recovery and road-edit route invalidation; preserved by format-75 save/load
 
 This is the minimum set that turns building access into exact planned legs, while also preventing failed trips from calling pathfinding every tick.
 
@@ -1241,6 +1241,33 @@ Use this exact rule:
 10. `network_path_time_s` remains the exact CCH or accepted flow-field node-path cost in seconds with no dynamic congestion multiplier.
 
 This keeps dynamic traffic influence cheap and stable: full-network routing stays free-flow and deterministic, while building-adjacent car choices still see a low-frequency congestion signal.
+
+Save format 75 preserves each live lane's smoothed delay and the network's fractional delay-update
+clock. Restore delays through the existing directed-lane/connector identity remap, after rebuilding
+lanes. The smoothing history and clock are continuation state: recreating them as zero shifts
+traffic sampling and therefore freight quotes even when road geometry and current traffic agree.
+Older saves lack this history and initialize it to zero. Save/load remains O(live lanes).
+The existing delay update advances a quote revision only when a smoothed value changes, without
+another traffic scan or allocation. Hiring refreshes its border quotes on that revision.
+
+CCH customization uses `edge.base_cost` alone, matching flow-field costs and the free-flow
+contract above. Freight caches border sweeps and node-to-node costs. Complete quotes carry the
+traffic revision at which they were priced: unchanged traffic reuses them in O(log cached quotes),
+while a changed revision lazily reprices only requested quotes, without clearing or reallocating
+the whole cache. A warmed cache and a cache rebuilt after load therefore price the same current
+traffic. Repricing a local quote evaluates at most four entrance combinations,
+with O(log cached node pairs) lookups; border quotes use the existing sweep plus at most two
+entrance options. Network searches occur only for missing node pairs or border sweeps. Base-cost
+customization invalidates those tables through a separate CCH metric revision.
+
+Format 75 also preserves each agent's speed, planned target/activity, network-replan failure
+count, active lane-change origin/distance/length, overtaking timers and employment lock/unpaid
+day counters. These affect arrival or employment decisions and are continuation state. Replacing
+them with initial defaults changes shopping completion and freight timing after load. Lane-change
+origins use the same lane identity remap as current/attach/detach lanes; building targets use the
+existing snapshot building map. This adds O(agents) scalar save/load work and no simulation-tick
+work. Exact continuation is validated for freshly written format-75 saves; older saves do not
+contain the missing history.
 
 ### Path planning strategy
 

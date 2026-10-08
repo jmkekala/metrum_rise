@@ -5,6 +5,447 @@
 use super::*;
 use godot::prelude::Vector2;
 
+#[test]
+#[ignore = "manual saved-city diagnosis; requires METRUM_DIAG_SAVE, METRUM_DIAG_MODS and METRUM_DIAG_REPORT"]
+fn diagnose_saved_city_growth() {
+    let source = std::env::var("METRUM_DIAG_SAVE").expect("input save path");
+    let mods = std::env::var("METRUM_DIAG_MODS").expect("matching asset pack directory");
+    let destination = std::env::var("METRUM_DIAG_REPORT").expect("output text report path");
+    assert_ne!(Path::new(&source), Path::new(&destination));
+    let days: u32 = std::env::var("METRUM_DIAG_DAYS")
+        .unwrap_or_else(|_| "30".into())
+        .parse()
+        .unwrap();
+    assert!(days > 0);
+    let mut core = SimCore::new(WorldConfig::new(WORLD_SIZE_M, WORLD_SIZE_M, 40.0, 10.0));
+    let scan = scan_pack_dir(Path::new(&mods));
+    assert!(!scan.packs.is_empty(), "{:?}", scan.warnings);
+    core.replace_asset_registry(scan.packs.into_iter().flat_map(|pack| {
+        let pack_id = pack.pack.pack_id;
+        pack.assets
+            .into_iter()
+            .map(move |(manifest, dir)| (pack_id.clone(), manifest, dir))
+    }));
+    core.load_game_internal(&source).unwrap();
+    assert!(
+        core.allocator
+            .buildings
+            .iter()
+            .all(|b| !b.broken && !b.economy_broken)
+    );
+    // Resume the loaded world without changing balances, zoning, staffing or demand rules.
+    core.time.speed_multiplier = *SIMULATION_SPEED_STEPS.last().unwrap();
+    let mut scenario = GrowthScenario { core };
+    let initial = scenario.record();
+    let report = scenario.run_diagnosed_days(days);
+    std::fs::write(
+        destination,
+        format!("Initial: {initial:?}\n{}", report.daily_report()),
+    )
+    .unwrap();
+    eprintln!("Saved-city replay: {initial:?} -> {:?}", scenario.record());
+}
+
+#[test]
+fn bankrupt_grocery_is_cleared_and_replaced_without_rezoning() {
+    let mut scenario = GrowthScenario::starter_town();
+    scenario.run_days(365);
+    let catalog = scenario.core.demand.runtime_catalog();
+    let grocery_profile = catalog.profile_for_id("grocery_basic").unwrap().runtime_id;
+    let failed = scenario
+        .core
+        .allocator
+        .buildings
+        .iter()
+        .position(|building| {
+            building.economy_profile_runtime_id == grocery_profile && !building.is_deserted
+        })
+        .unwrap();
+    let building = &mut scenario.core.allocator.buildings[failed];
+    let identity = (building.parcel_id, building.build_generation);
+    // A one-off uninsured loss makes this firm insolvent. Ordinary settlement, bankruptcy,
+    // employment, clearance and private entry must recover the category without player edits.
+    building.operating_budget = -1_000_000.0;
+    building.budget_distress = true;
+    let report = scenario.run_diagnosed_days(180);
+    if let Ok(path) = std::env::var("METRUM_GROWTH_RECOVERY_REPORT") {
+        std::fs::write(path, report.daily_report()).unwrap();
+    }
+    let failed_firm = report
+        .business_outcomes()
+        .find(|firm| (firm.parcel_id, firm.generation) == identity)
+        .unwrap();
+    assert!(
+        failed_firm.bankrupt && failed_firm.removed,
+        "{failed_firm:?}"
+    );
+    let replacements: Vec<_> = report
+        .business_outcomes()
+        .filter(|firm| firm.profile_id == "grocery_basic" && firm.startup_cash > 0.0)
+        .collect();
+    assert_eq!(
+        replacements.len(),
+        1,
+        "replacement capacity must not be duplicated: {replacements:?}"
+    );
+    let replacement = replacements[0];
+    assert!(
+        !replacement.bankrupt && !replacement.removed,
+        "{replacement:?}"
+    );
+    assert!(replacement.operating_hours >= 90 * 24, "{replacement:?}");
+    assert!(replacement.operating_cash_change > 0.0, "{replacement:?}");
+    assert!(
+        replacement.staffed_worker_hours >= replacement.capacity_worker_hours * 0.95,
+        "{replacement:?}"
+    );
+    assert!(scenario.record().residents > 100, "{:?}", scenario.record());
+}
+
+#[test]
+fn queued_growth_continues_identically_after_save_load() {
+    let mut source = GrowthScenario::starter_town();
+    // Save after supporting construction has started, while further placements remain queued.
+    while source.core.pending_demand_spawns.is_empty()
+        || !source
+            .core
+            .allocator
+            .buildings
+            .iter()
+            .any(|building| building.is_under_construction())
+    {
+        assert!(
+            source.core.time.day_index < 3,
+            "startup must offer queued construction"
+        );
+        source.core.step_frame(FRAME_DT_S);
+    }
+    assert_growth_continues_after_reload(source);
+}
+
+#[test]
+fn busy_city_continues_identically_after_save_load() {
+    let mut source = GrowthScenario::starter_town();
+    source.run_days(10);
+    assert!(!source.core.logistics.shipments.is_empty());
+    assert!(
+        source
+            .core
+            .transit_network
+            .lane_system
+            .lanes
+            .iter()
+            .any(|lane| lane.frontage_delay_penalty_s > 0.0)
+    );
+    assert_growth_continues_after_reload(source);
+}
+
+fn assert_growth_continues_after_reload(mut source: GrowthScenario) {
+    let path = std::env::temp_dir().join(format!(
+        "metrum-demand-continuation-{}-{}.sqlite",
+        std::process::id(),
+        source.core.time.day_index
+    ));
+    source
+        .core
+        .save_game_internal(path.to_str().unwrap(), None)
+        .unwrap();
+    let mut loaded = GrowthScenario::starter_town();
+    loaded
+        .core
+        .load_game_internal(path.to_str().unwrap())
+        .unwrap();
+    loaded.core.time.speed_multiplier = source.core.time.speed_multiplier;
+    assert_eq!(
+        source.core.transit_network.frontage_delay_elapsed_s,
+        loaded.core.transit_network.frontage_delay_elapsed_s,
+    );
+    let queued = |scenario: &GrowthScenario| -> Vec<_> {
+        scenario
+            .core
+            .pending_demand_spawns
+            .iter()
+            .map(|pending| {
+                (
+                    pending.due_minute,
+                    pending.zone_type,
+                    pending.action.parcel_id,
+                    pending.action.asset_id.clone(),
+                    pending.planned_day_index,
+                    pending.planned_minute_of_day,
+                )
+            })
+            .collect()
+    };
+    assert_eq!(queued(&source), queued(&loaded));
+    let target_day = source.core.time.day_index + 30;
+    while source.core.time.day_index < target_day {
+        source.core.step_frame(FRAME_DT_S);
+        loaded.core.step_frame(FRAME_DT_S);
+        assert_eq!(
+            source.core.transit_network.frontage_delay_elapsed_s,
+            loaded.core.transit_network.frontage_delay_elapsed_s,
+        );
+        // Cash is checked to cent-level precision; discrete simulation outcomes remain exact.
+        let mut source_record = source.record();
+        let mut loaded_record = loaded.record();
+        assert!(
+            (source_record.treasury - loaded_record.treasury).abs() < 0.01,
+            "treasury differs after reload at minute {}: {source_record:?} vs {loaded_record:?}",
+            source.core.time.minute_of_day
+        );
+        source_record.treasury = 0.0;
+        loaded_record.treasury = 0.0;
+        assert_eq!(source_record, loaded_record);
+        assert_eq!(queued(&source), queued(&loaded));
+        assert_eq!(
+            source.core.households.households.len(),
+            loaded.core.households.households.len()
+        );
+        for (a, b) in source
+            .core
+            .households
+            .households
+            .iter()
+            .zip(&loaded.core.households.households)
+        {
+            assert!(
+                (a.budget - b.budget).abs() < 0.01,
+                "household cash differs: {} vs {}",
+                a.budget,
+                b.budget
+            );
+            assert_eq!(a.replenishment_state, b.replenishment_state);
+        }
+        let left = &source.core.allocator.buildings;
+        let right = &loaded.core.allocator.buildings;
+        assert_eq!(left.len(), right.len());
+        for (a, b) in left.iter().zip(right) {
+            assert_eq!(a.parcel_id, b.parcel_id);
+            assert_eq!(a.asset_id, b.asset_id);
+            assert_eq!(a.center_x, b.center_x);
+            assert_eq!(a.center_y, b.center_y);
+            assert_eq!(a.worker_count, b.worker_count);
+            assert!(
+                (a.operating_budget - b.operating_budget).abs() < 0.01,
+                "firm cash differs after reload at day {} minute {} ({}): {} vs {}",
+                source.core.time.day_index,
+                source.core.time.minute_of_day,
+                a.asset_id,
+                a.operating_budget,
+                b.operating_budget
+            );
+            assert_eq!(a.resource_inventory, b.resource_inventory);
+            assert_eq!(
+                a.construction_remaining_hours,
+                b.construction_remaining_hours
+            );
+        }
+    }
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn many_new_industrial_lots_respect_scarce_labor_and_earn_their_owner_capital() {
+    use crate::simulation::buildings::allocator::BuildingSiteEnvironment;
+    use crate::simulation::economy::agents::age_group_can_work;
+    use crate::simulation::economy::definitions::load_runtime_economy_catalog;
+    use crate::simulation::network::surface::RoadSurfaceCompileReason;
+
+    let mut scenario = GrowthScenario::starter_town();
+    scenario.run_days(365);
+    let before = scenario.record();
+    assert!(before.residents > 20 && before.employed > 0);
+    let core = &mut scenario.core;
+    let industrial_lots = |core: &SimCore| {
+        core.zoning
+            .parcels()
+            .iter()
+            .filter(|parcel| {
+                core.zoning
+                    .profiles
+                    .profile_by_runtime_id(parcel.zone_profile_runtime_id())
+                    .is_some_and(|profile| profile.zone_type == ZoneType::Industrial)
+            })
+            .count()
+    };
+    let lots_before = industrial_lots(core);
+    commit_road(core, (MAIN_STREET_END_X_M, 0.0), (600.0, 0.0));
+    commit_road(core, (400.0, -250.0), (400.0, 250.0));
+    // A whole industrial street arrives in one player expansion, while only a short
+    // extension supplies new homes. Old vacant homes and unemployed adults also count.
+    paint_cross_street(core, 400.0, ZoneType::Industrial);
+    commit_road(core, (0.0, 250.0), (0.0, 390.0));
+    paint(
+        core,
+        ZoneType::Residential,
+        ZONE_BRUSH,
+        &[DVec2::new(0.0, 280.0), DVec2::new(0.0, 360.0)],
+    );
+    core.prepare_cell_lots_internal();
+    core.allocator
+        .prepare_building_site_query_index(core.config.zone_cell_m);
+    core.transit_network.road_surface.compile_dirty_with_reason(
+        &core.region_graph,
+        &core.heightmap,
+        RoadSurfaceCompileReason::SimCommit,
+    );
+    let new_lots = industrial_lots(core) - lots_before;
+    assert!(
+        new_lots >= 20,
+        "the expansion must offer many industrial lots, got {new_lots}"
+    );
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let candidates = core.allocator.collect_demand_spawn_candidates_by_use(
+        &core.zoning,
+        &core.region_graph,
+        &catalog,
+        &[],
+        BuildingSiteEnvironment {
+            road_surface: &core.transit_network.road_surface,
+            terrain: &core.heightmap,
+        },
+    );
+    let possible_new_homes: u32 = candidates
+        .residential
+        .iter()
+        .map(|candidate| {
+            core.allocator
+                .registry
+                .household_capacity(&candidate.action.asset_id)
+        })
+        .sum();
+    let standing_home_slots: u32 = core
+        .allocator
+        .buildings
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| b.zone_type == ZoneType::Residential && !b.is_deserted && !b.broken)
+        .map(|(index, b)| {
+            if b.is_under_construction() {
+                core.allocator.registry.household_capacity(&b.asset_id)
+            } else {
+                core.allocator
+                    .household_capacity(index)
+                    .saturating_sub(b.occupancy)
+            }
+        })
+        .sum();
+    let unemployed = (0..core.agents.len())
+        .filter(|&agent| {
+            core.agents.pending_household_size[agent] == 0
+                && age_group_can_work(core.agents.age_group[agent])
+                && core.agents.home_building[agent] < core.allocator.buildings.len()
+                && core.agents.work_building[agent] >= core.allocator.buildings.len()
+        })
+        .count() as u32;
+    let labor_bound = unemployed
+        + core.households.pending_arrivals.adults
+        + standing_home_slots
+        + possible_new_homes;
+    let housed_adults = |core: &SimCore| -> u32 {
+        core.households
+            .households
+            .iter()
+            .filter(|household| {
+                crate::simulation::economy::households::household_is_housed(
+                    household,
+                    &core.allocator,
+                )
+            })
+            .map(|household| u32::from(household.adult_count))
+            .sum()
+    };
+    let initial_adults = housed_adults(core);
+    assert_eq!(
+        core.households.pending_arrivals.adults, 0,
+        "start from a settled town"
+    );
+    let import_multiplier = core.demand.runtime_tuning().owa_import_price_multiplier;
+    let profiles = ["food_processor_basic", "machinery_factory_basic"];
+    let min_workers = profiles
+        .iter()
+        .map(|id| catalog.profile_for_id(id).unwrap().worker_capacity)
+        .min()
+        .unwrap();
+    assert!(
+        labor_bound > 0 && labor_bound < new_lots as u32 * min_workers,
+        "the expansion must have a real but scarce workforce: {labor_bound} workers, {new_lots} lots"
+    );
+    let max_owner_per_worker = profiles
+        .iter()
+        .map(|id| {
+            let profile = catalog.profile_for_id(id).unwrap();
+            f64::from(profile.zoned_startup_budget(
+                &catalog,
+                core.demand.runtime_tuning().owa_import_price_multiplier,
+            )) / f64::from(profile.worker_capacity)
+        })
+        .fold(0.0, f64::max);
+
+    let report = scenario.run_diagnosed_days(270);
+    // Planning promises one adult per future home. After arrival, actual second adults
+    // legitimately permit more projects; the long-run equity bound uses observed workers.
+    let supplied_workers =
+        unemployed + housed_adults(&scenario.core).saturating_sub(initial_adults);
+    assert!(supplied_workers > 0 && supplied_workers < new_lots as u32 * min_workers);
+    if let Ok(path) = std::env::var("METRUM_GROWTH_EXPANSION_REPORT") {
+        std::fs::write(path, format!(
+            "Before expansion: {before:?}; new industrial lots {new_lots}; unemployed {unemployed}; standing home slots {standing_home_slots}; possible new homes {possible_new_homes}; prospective workers {labor_bound}; observed workforce supplied {supplied_workers}; owner capital upper bound {:.2}\n{}",
+            f64::from(supplied_workers) * max_owner_per_worker, report.daily_report(),
+        )).unwrap();
+    }
+    verify_accounting(&report);
+    let entrants: Vec<_> = report
+        .business_outcomes()
+        .filter(|firm| profiles.contains(&firm.profile_id.as_str()) && firm.startup_cash > 0.0)
+        .collect();
+    assert!(
+        !entrants.is_empty(),
+        "new viable industrial opportunity must actually open: {report}"
+    );
+    let owner_spent: f64 = entrants.iter().map(|firm| firm.startup_cash).sum();
+    assert!(
+        owner_spent <= f64::from(supplied_workers) * max_owner_per_worker + 0.01,
+        "entry spent {owner_spent} owner capital for only {supplied_workers} supplied workers: {report}"
+    );
+    assert!(
+        entrants.len() < new_lots,
+        "zoning is not permission to fund every factory"
+    );
+    for firm in report
+        .business_outcomes()
+        .filter(|firm| profiles.contains(&firm.profile_id.as_str()))
+    {
+        assert!(
+            firm.operating_cash_change > 0.0,
+            "expansion must not hide an incumbent or entrant's losses: {firm:?}"
+        );
+    }
+    for firm in entrants {
+        let profile = catalog.profile_for_id(&firm.profile_id).unwrap();
+        assert_eq!(
+            firm.startup_cash,
+            f64::from(profile.zoned_startup_budget(&catalog, import_multiplier)),
+            "each entrant receives only its declared opening equity: {firm:?}"
+        );
+        assert!(!firm.bankrupt && !firm.removed, "{firm:?}");
+        assert!(
+            firm.operating_hours >= 90 * 24,
+            "the new project must open promptly: {firm:?}"
+        );
+        assert!(
+            firm.capacity_worker_hours > 0.0
+                && firm.staffed_worker_hours >= firm.capacity_worker_hours * 0.95,
+            "reserved workers must become actual sustained staffing: {firm:?}"
+        );
+        assert!(
+            firm.operating_cash_change > 0.0,
+            "survival on unspent owner capital is not acceptance: {firm:?}"
+        );
+    }
+}
+
 fn place_producer(scenario: &mut GrowthScenario, mine: bool, hectares: f32, x: f32) -> usize {
     let core = &mut scenario.core;
     let construction_before = core.treasury.lifetime_build_cost;
@@ -136,6 +577,34 @@ fn coal_power_balance_matrix() {
             assert_eq!(report.empty_household_days(90), 0, "{summary}");
             assert!(report.recurring_city_balance(90) > 0.0, "{summary}");
         }
+    }
+}
+
+#[test]
+fn service_placement_and_undo_register_fiscal_capacity_before_the_hourly_census() {
+    for fraction in [0.0, 0.5, 1.0] {
+        let mut scenario = GrowthScenario::starter_town();
+        let core = &mut scenario.core;
+        assert!(core.set_service_funding("electricity", fraction));
+        let plant = core
+            .place_service_building_internal("kenney:building.power.coal_power_plant", -700.0, 8.0)
+            .unwrap();
+        assert_eq!(core.allocator.buildings[plant].worker_count, 0);
+        assert_eq!(core.households.job_funding.service_capacities[plant], (20.0 * fraction).ceil() as u32);
+        assert_eq!(core.households.job_funding.capacities.get(plant).copied().unwrap_or(0), 0);
+        assert!(core.push_building_removal_undo(plant));
+        let before = core.treasury.balance;
+        assert!(core.allocator.remove_building_for_bulldoze(
+            plant, &mut core.zoning, &mut core.agents, &mut core.households,
+            &mut core.logistics, &mut core.treasury.balance,
+        ));
+        core.publish_pending_building_site_changes();
+        core.seal_building_removal_undo(core.treasury.balance - before);
+        assert!(core.set_service_funding("electricity", 1.0 - fraction));
+        assert!(core.undo_action_internal());
+        assert_eq!(core.households.job_funding.service_capacities[plant], (20.0 * (1.0 - fraction)).ceil() as u32,
+            "undo uses current fiscal policy before the next hourly pass");
+        assert_eq!(core.households.job_funding.capacities.get(plant).copied().unwrap_or(0), 0);
     }
 }
 
@@ -373,10 +842,20 @@ fn hundred_hectare_start_distinguishes_mechanized_farm_from_labor_intensive_mine
         let all = report.business_cash_flow(profile, usize::MAX);
         if mine {
             assert!(all.operating_cash_change < 0.0, "{report}");
-            assert_eq!(
-                all.bankruptcies, 1,
-                "oversized mine must not be rescued: {report}"
+            let firm = report
+                .business_outcomes()
+                .find(|firm| firm.profile_id == profile)
+                .unwrap();
+            assert!(
+                firm.ending_cash < firm.opening_cash,
+                "mine must spend its owner's capital: {firm:?}"
             );
+            assert!(
+                firm.staffed_worker_hours < firm.capacity_worker_hours,
+                "unprofitable full staffing must not be advertised against startup equity: {firm:?}"
+            );
+            // Withdrawing unfunded jobs can extend the owner's cash runway. Losses and
+            // zero subsequent equity, rather than an arbitrary 90-day failure, prove no rescue.
         } else {
             assert!(all.operating_cash_change > 0.0, "{report}");
             assert_eq!(

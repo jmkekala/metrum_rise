@@ -190,6 +190,22 @@ impl TripEnd {
         Some(self.local_time_s + self.frontage_time_s?)
     }
 
+    pub(super) fn has_proven_walk_to(&self, destination: &Self,
+        reachability: &super::reachability::PedestrianReachability) -> bool {
+        self.network_departure_s().is_some_and(f32::is_finite)
+            && destination.network_departure_s().is_some_and(f32::is_finite)
+            // At a shared node the ordinary planner requires the direct connector;
+            // a longer cycle in this component is not a substitute for that check.
+            && self.node != destination.node
+            && reachability.proves(self.lane_id, destination.lane_id)
+    }
+
+    pub(super) fn walking_group(&self, reachability: &super::reachability::PedestrianReachability) -> usize {
+        if self.network_departure_s().is_some_and(f32::is_finite) {
+            reachability.cyclic_group(self.lane_id)
+        } else { usize::MAX }
+    }
+
     /// Network node this end attaches to or detaches from.
     pub(super) fn node_pos(&self) -> (f32, f32) {
         (self.node_x, self.node_z)

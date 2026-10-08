@@ -107,7 +107,8 @@ impl ShipmentSystem {
         });
     }
 
-    fn refresh_freight_route_cache(
+    /// Invalidates dispatch and forecast route tables together after topology changes.
+    pub(super) fn refresh_freight_route_cache(
         &mut self,
         allocator: &BuildingAllocator,
         transit_network: &TransitNetwork,
@@ -115,11 +116,19 @@ impl ShipmentSystem {
         let building_revision = allocator.building_ref_revision();
         let entrance_revision = allocator.entrance_ref_revision();
         let cch_generation = transit_network.cch_graph.build_generation;
+        let metric_revision = transit_network.cch_graph.metric_revision;
         if self.freight_route_cache_building_revision != building_revision
             || self.freight_route_cache_entrance_revision != entrance_revision
             || self.freight_route_cache_cch_generation != cch_generation
         {
-            self.freight_route_cache.clear();
+            if self.freight_route_cache_cch_generation != cch_generation
+                || self.freight_route_cache_metric_revision != metric_revision
+            {
+                self.freight_route_cache.clear();
+            } else {
+                // Site edits invalidate indexed entrances, not the unchanged road network.
+                self.freight_route_cache.clear_buildings();
+            }
             if !self.request_failures.is_empty() {
                 debug_log!(
                     "economy",
@@ -131,6 +140,11 @@ impl ShipmentSystem {
             self.freight_route_cache_building_revision = building_revision;
             self.freight_route_cache_entrance_revision = entrance_revision;
             self.freight_route_cache_cch_generation = cch_generation;
+            self.freight_route_cache_metric_revision = metric_revision;
+        } else if self.freight_route_cache_metric_revision != metric_revision {
+            // A speed/cost edit invalidates prices, not the request's failure history.
+            self.freight_route_cache.clear();
+            self.freight_route_cache_metric_revision = metric_revision;
         }
     }
 }

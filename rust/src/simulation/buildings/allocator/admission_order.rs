@@ -5,6 +5,7 @@
 //! vacancy list would pick, in O(log V) instead of O(V).
 
 use crate::simulation::buildings::allocator::{BuildingAllocator, baseline_private_zone_slot};
+#[cfg(test)]
 use crate::simulation::economy::agents::household_age_composition;
 use crate::simulation::economy::households::candidate_immigrant_household_size_for_vacancy;
 use crate::simulation::zoning::ZoneType;
@@ -19,6 +20,9 @@ pub(crate) struct AdmissionOrder {
     sizes: Vec<u16>,
     // Positions by offered size; group 0 stays empty.
     by_size: Vec<BTreeSet<u32>>,
+    // Rehousing uses the same vacancy lifecycle, ordered by level then stable building ID.
+    homes: Vec<Option<(u8, usize)>>,
+    by_level: Vec<BTreeSet<usize>>,
 }
 
 impl AdmissionOrder {
@@ -27,9 +31,27 @@ impl AdmissionOrder {
         self.sizes.len() == vacancies
     }
 
-    fn push(&mut self, size: u16) {
+    fn push(&mut self, size: u16, home: Option<(u8, usize)>) {
         self.sizes.push(0);
+        self.homes.push(None);
         self.set(self.sizes.len() - 1, size);
+        self.set_home(self.homes.len() - 1, home);
+    }
+
+    fn set_home(&mut self, position: usize, home: Option<(u8, usize)>) {
+        let previous = std::mem::replace(&mut self.homes[position], home);
+        if previous == home {
+            return;
+        }
+        if let Some((level, building)) = previous {
+            self.by_level[usize::from(level)].remove(&building);
+        }
+        if let Some((level, building)) = home {
+            let level = usize::from(level);
+            self.by_level
+                .resize_with(self.by_level.len().max(level + 1), BTreeSet::new);
+            self.by_level[level].insert(building);
+        }
     }
 
     fn set(&mut self, position: usize, size: u16) {
@@ -60,10 +82,14 @@ impl AdmissionOrder {
         }
         let last = self.sizes.len() - 1;
         let moved = self.sizes[last];
+        let moved_home = self.homes[last];
         self.set(last, 0);
+        self.set_home(last, None);
         self.sizes.pop();
+        self.homes.pop();
         if position != last {
             self.set(position, moved);
+            self.set_home(position, moved_home);
         }
     }
 
@@ -74,6 +100,7 @@ impl AdmissionOrder {
     /// With it, worker rank 0 needs an adult. Every household of two or more has one, so each
     /// such group's first position is taken; a single is a lone elder one time in five, so the
     /// size-1 walk checks 1.25 positions on average and k positions with probability 5^-(k-1).
+    #[cfg(test)]
     pub(super) fn pick(
         &self,
         vacancies: &[usize],
@@ -102,6 +129,28 @@ impl AdmissionOrder {
 }
 
 impl BuildingAllocator {
+    fn rehousing_key(&self, building_idx: usize) -> Option<(u8, usize)> {
+        let building = self.buildings.get(building_idx)?;
+        (!building.pending_redevelopment
+            && self.household_capacity(building_idx) > building.occupancy)
+            .then_some((building.level, building_idx))
+    }
+
+    /// Finds the highest eligible residential level and then the lowest building ID.
+    /// Uses the existing vacancy lifecycle; O(levels + log V), without scanning vacant homes.
+    pub(crate) fn first_rehousing_vacancy(&self, eligible: impl Fn(u8) -> bool) -> Option<usize> {
+        self.admission_order
+            .by_level
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(level, homes)| {
+                eligible(level as u8)
+                    .then(|| homes.first().copied())
+                    .flatten()
+            })
+    }
+
     /// The starter household size admission offers at `building_idx`, or `None` where it skips
     /// the building: missing, full, or a flat too small for any household.
     pub(super) fn admission_size(&self, building_idx: usize) -> Option<u16> {
@@ -140,7 +189,13 @@ impl BuildingAllocator {
         self.admission_order = AdmissionOrder {
             sizes,
             by_size: by_size.into_iter().map(BTreeSet::from_iter).collect(),
+            homes: vec![None; self.vacancy_index[slot].len()],
+            by_level: Vec::new(),
         };
+        for position in 0..self.vacancy_index[slot].len() {
+            let home = self.rehousing_key(self.vacancy_index[slot][position]);
+            self.admission_order.set_home(position, home);
+        }
     }
 
     pub(super) fn clear_admission_order(&mut self) {
@@ -157,7 +212,8 @@ impl BuildingAllocator {
             .covers(self.vacancy_index[slot].len() - 1)
         {
             let size = self.admission_size(building_idx).unwrap_or(0);
-            self.admission_order.push(size);
+            let home = self.rehousing_key(building_idx);
+            self.admission_order.push(size, home);
         }
     }
 
@@ -189,6 +245,8 @@ impl BuildingAllocator {
         }
         let size = self.admission_size(building_idx).unwrap_or(0);
         self.admission_order.set(position, size);
+        let home = self.rehousing_key(building_idx);
+        self.admission_order.set_home(position, home);
     }
 
     fn is_residential_slot(&self, slot: usize) -> bool {

@@ -4,7 +4,7 @@
 ##
 ## Rust methods called: set_simulation_speed(), undo_action(),
 ##   get_pollution_image_data(), get_noise_image_data(), get_desirability_image_data(),
-##   get_demand_pressures(), get_treasury_balance(), get_agent_count(),
+##   get_growth_overview(), get_treasury_balance(), get_agent_count(),
 ##   get_service_building_assets()
 ##   get_industry_building_assets()
 ## No scene file for the UI; every control is created in _ready() and helper functions.
@@ -1451,9 +1451,8 @@ func _refresh_clock_display(force: bool):
 func _refresh_demand_display() -> void:
 	if not demand_meter or not simulation_node:
 		return
-	var demand: Vector3 = simulation_node.get_demand_pressures()
-	if demand_meter.has_method("set_pressures"):
-		demand_meter.set_pressures(demand.x, demand.y, demand.z)
+	var growth: Dictionary = simulation_node.get_growth_overview()
+	demand_meter.set_growth(growth)
 
 func _refresh_city_status_display() -> void:
 	if not city_status_panel or not simulation_node:

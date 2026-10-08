@@ -14,6 +14,7 @@ mod runtime_compile;
 mod runtime_loader;
 mod schema;
 mod serde_helpers;
+mod supply_order;
 #[cfg(test)]
 mod tests;
 mod validation;
@@ -25,6 +26,8 @@ pub(crate) use runtime::{
     WorkTimingProfile,
 };
 pub(crate) use runtime_loader::{load_runtime_economy_catalog, load_runtime_economy_tuning};
+#[cfg(test)]
+pub(crate) use runtime_loader::compile_test_catalog;
 pub(crate) use serde_helpers::deserialize_unsigned_from_number;
 
 /// Required demand-sink profile that owns household supply consumption and stock targets.

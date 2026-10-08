@@ -2,13 +2,11 @@
 
 //! Demand system state and pass orchestration.
 
+use super::UseTuningF32;
 use super::actions::DemandBuildingActionPlan;
 use super::admission::HouseholdAdmissionBudget;
 use super::config::{DemandConfig, load_builtin_demand_config};
-use super::credits::{
-    advance_household_action_credit, advance_persistent_exit_credit, clamp01,
-    normalized_positive_pressure,
-};
+use super::credits::{advance_persistent_exit_credit, clamp01};
 use super::diagnostics::{
     BuildingActionDiagnosticsByUse, HouseholdAdmissionDiagnostics, HouseholdRemovalDiagnostics,
 };
@@ -16,15 +14,16 @@ use super::snapshot::{
     DailyDemandSnapshot, ResidentialOccupantScratch, ResidentialOccupantSnapshot,
 };
 use super::types::DEMAND_HOURLY_CADENCE_FRACTION;
-use super::{UseTuningBool, UseTuningF32};
+use super::supply::SiteSupply;
 use crate::simulation::buildings::allocator::{BuildingAllocator, BuildingSiteEnvironment};
 use crate::simulation::economy::definitions::{
     RuntimeEconomyCatalog, RuntimeEconomyTuning, load_runtime_economy_catalog,
     load_runtime_economy_tuning,
 };
 use crate::simulation::economy::fiscal::CityFiscalPolicy;
-use crate::simulation::economy::households::HouseholdSystem;
-use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::economy::households::{HouseholdExitPolicy, HouseholdSystem};
+use crate::simulation::economy::logistics::{ShipmentSystem, collect_connected_border_nodes};
+use crate::simulation::network::{TransitNetwork, graph::RegionGraph};
 use crate::simulation::zoning::ZoningSystem;
 use std::sync::Arc;
 
@@ -34,29 +33,24 @@ pub struct DemandSystem {
     pub(super) runtime_catalog: Arc<RuntimeEconomyCatalog>,
     pub(super) runtime_tuning: Arc<RuntimeEconomyTuning>,
     pub(crate) cheat_max_demands_enabled: bool,
-    pub(crate) residential: f32,
-    pub(crate) commercial: f32,
-    pub(crate) industrial: f32,
     pub(crate) households_to_admit_today: u32,
     pub(crate) households_to_remove_today: u32,
-    pub(crate) admission_action_credit: f32,
-    pub(crate) removal_action_credit: f32,
     pub(crate) persistent_exit_action_credit: f32,
-    pub(crate) spawn_action_credit: UseTuningF32,
     pub(crate) upgrade_action_credit: UseTuningF32,
     pub(crate) downgrade_action_credit: UseTuningF32,
     pub(crate) despawn_action_credit: UseTuningF32,
-    pub(crate) spawn_hysteresis_active: UseTuningBool,
-    pub(crate) upgrade_hysteresis_active: UseTuningBool,
-    pub(crate) downgrade_hysteresis_active: UseTuningBool,
-    pub(crate) despawn_hysteresis_active: UseTuningBool,
-    pub(crate) recent_household_failure_pressure: f32,
     pub(crate) building_actions: DemandBuildingActionPlan,
     pub(super) last_admission_diagnostics: HouseholdAdmissionDiagnostics,
     pub(super) last_removal_diagnostics: HouseholdRemovalDiagnostics,
     pub(super) last_building_action_diagnostics: BuildingActionDiagnosticsByUse,
     pub(super) residential_occupant_scratch: ResidentialOccupantScratch,
+    pub(super) workforce_reservations: super::workforce::WorkforceReservations,
+    pub(super) construction_execution: super::execution::ConstructionExecution,
+    pub(super) queued_construction: Vec<super::queued::QueuedConstruction>,
+    pub(super) queued_supply_order: Vec<usize>,
+    pub(super) next_construction_start_hour: u64,
     admission_budget: HouseholdAdmissionBudget,
+    freight_border_nodes: Vec<u32>,
     /// Current outside applicant seed, derived from simulation time rather than accepted arrivals.
     pub(crate) admission_candidate_seed: usize,
 }
@@ -75,29 +69,24 @@ impl DemandSystem {
             runtime_catalog,
             runtime_tuning,
             cheat_max_demands_enabled: false,
-            residential: 0.0,
-            commercial: 0.0,
-            industrial: 0.0,
             households_to_admit_today: 0,
             households_to_remove_today: 0,
-            admission_action_credit: 0.0,
-            removal_action_credit: 0.0,
             persistent_exit_action_credit: 0.0,
-            spawn_action_credit: UseTuningF32::default(),
             upgrade_action_credit: UseTuningF32::default(),
             downgrade_action_credit: UseTuningF32::default(),
             despawn_action_credit: UseTuningF32::default(),
-            spawn_hysteresis_active: UseTuningBool::default(),
-            upgrade_hysteresis_active: UseTuningBool::default(),
-            downgrade_hysteresis_active: UseTuningBool::default(),
-            despawn_hysteresis_active: UseTuningBool::default(),
-            recent_household_failure_pressure: 0.0,
             building_actions: DemandBuildingActionPlan::default(),
             last_admission_diagnostics: HouseholdAdmissionDiagnostics::default(),
             last_removal_diagnostics: HouseholdRemovalDiagnostics::default(),
             last_building_action_diagnostics: BuildingActionDiagnosticsByUse::default(),
             residential_occupant_scratch: ResidentialOccupantScratch::default(),
+            workforce_reservations: super::workforce::WorkforceReservations::default(),
+            construction_execution: super::execution::ConstructionExecution::default(),
+            queued_construction: Vec::new(),
+            queued_supply_order: Vec::new(),
+            next_construction_start_hour: 0,
             admission_budget: HouseholdAdmissionBudget::default(),
+            freight_border_nodes: Vec::new(),
             admission_candidate_seed: 0,
         }
     }
@@ -110,10 +99,6 @@ impl DemandSystem {
     /// Returns the cached economy runtime tuning used by demand planning and execution.
     pub(crate) fn runtime_tuning(&self) -> &RuntimeEconomyTuning {
         self.runtime_tuning.as_ref()
-    }
-
-    pub(crate) fn prefer_worker_capable_admission(&self) -> bool {
-        self.last_admission_diagnostics.move_in_job_equivalent_slots > 0.001
     }
 
     /// Advances the deterministic outside applicant stream even when a household is rejected.
@@ -129,11 +114,21 @@ impl DemandSystem {
         home_level: u8,
         fiscal_policy: &CityFiscalPolicy,
     ) -> bool {
-        self.admission_budget
-            .claim(composition, members, home_level, fiscal_policy)
+        self.last_admission_diagnostics.examined_candidates += 1;
+        if !self.admission_budget.can_house(composition) {
+            self.last_admission_diagnostics.worker_housing_rejections += 1;
+            return false;
+        }
+        let accepted = self
+            .admission_budget
+            .claim(composition, members, home_level, fiscal_policy);
+        if !accepted {
+            self.last_admission_diagnostics.income_rejections += 1;
+        }
+        accepted
     }
 
-    /// Refreshes RCI telemetry and advances hourly household and building demand outputs.
+    /// Advances hourly household and building demand outputs.
     #[cfg(test)]
     pub(crate) fn run_hourly_pass(
         &mut self,
@@ -147,37 +142,68 @@ impl DemandSystem {
         let terrain = crate::simulation::terrain::TerrainSystem::new(4, 4);
         let mut road_surface = crate::simulation::network::surface::RoadSurfaceSystem::new(512.0);
         road_surface.compile_dirty(graph, &terrain);
-        self.run_hourly_pass_with_service_funding(
+        let mut routing_graph = graph.clone();
+        let mut network = TransitNetwork::new();
+        network.lane_system.rebuild(&mut routing_graph);
+        let graph = &routing_graph;
+        network.rebuild_cch_and_check(graph);
+        self.run_hourly_pass_with_policy(
             allocator,
             households,
             graph,
             zoning,
             treasury_balance,
-            &[],
             &fiscal_policy,
+            &network,
+            &mut ShipmentSystem::new(),
             BuildingSiteEnvironment {
                 road_surface: &road_surface,
                 terrain: &terrain,
-            },
+            }, 420,
         );
     }
 
-    /// Refreshes RCI telemetry and advances hourly demand using the supplied service funding state.
-    pub(crate) fn run_hourly_pass_with_service_funding(
+    /// Advances hourly demand using the current fiscal policy and prepared live hiring.
+    pub(crate) fn run_hourly_pass_with_policy(
         &mut self,
         allocator: &BuildingAllocator,
         households: &HouseholdSystem,
         graph: &RegionGraph,
         zoning: &ZoningSystem,
         treasury_balance: f64,
-        service_funding_by_building: &[f32],
         fiscal_policy: &CityFiscalPolicy,
+        network: &TransitNetwork,
+        logistics: &mut ShipmentSystem,
         environment: BuildingSiteEnvironment<'_>,
+        minute_of_day: u16,
     ) {
+        self.invalidate_construction_execution();
         self.building_actions = DemandBuildingActionPlan::default();
         let catalog = Arc::clone(&self.runtime_catalog);
         let economy_tuning = Arc::clone(&self.runtime_tuning);
-        let snapshot = DailyDemandSnapshot::from_runtime_with_catalog(
+        // Move reusable gateway scratch out while the planner mutates the other demand state.
+        let mut borders = std::mem::take(&mut self.freight_border_nodes);
+        collect_connected_border_nodes(graph, &mut borders);
+        logistics.prepare_site_carrier_quotes(allocator, network, graph, &borders);
+        let mut funding = std::mem::take(&mut self.construction_execution.funding);
+        let reuse_funding = households.job_funding.has_current_input_supply(allocator, network, &borders,
+            crate::simulation::economy::logistics::freight_price_phase(&economy_tuning, minute_of_day));
+        if reuse_funding {
+            funding.input_supply.copy_reservations_from(&households.job_funding.input_supply, allocator, &catalog, graph);
+            funding.service_capacities.clone_from(&households.job_funding.service_capacities);
+            funding.freight_capital.clone_from(&households.job_funding.freight_capital);
+        } else {
+            // Placement/removal or frontage prices can change after the employment pass.
+            // Rebuild once after such edits before reusing its funded sources.
+            funding.refresh_with_service_capacity(allocator, &households.households, logistics, network, graph,
+                &catalog, &economy_tuning, fiscal_policy, treasury_balance,
+                |index, physical, _| households.job_funding.service_capacities.get(index).copied().unwrap_or(0).min(physical), minute_of_day);
+        }
+        // Move only the mutable reservation book; the planner reads the matching
+        // funding columns without copying them or borrowing the whole owner mutably.
+        let mut inputs = std::mem::take(&mut funding.input_supply);
+        let funded_jobs = if reuse_funding { &households.job_funding } else { &funding };
+        let mut snapshot = DailyDemandSnapshot::from_runtime_with_funding(
             allocator,
             households,
             graph,
@@ -186,9 +212,9 @@ impl DemandSystem {
             economy_tuning.as_ref(),
             fiscal_policy,
             treasury_balance,
-            service_funding_by_building,
-            self.admission_candidate_seed,
+            funded_jobs,
         );
+        snapshot.reserve_queued_construction(catalog.as_ref(), &self.queued_construction);
         let residential_occupants = ResidentialOccupantSnapshot::from_runtime_with_catalog(
             allocator,
             households,
@@ -197,53 +223,53 @@ impl DemandSystem {
             &mut self.residential_occupant_scratch,
         );
 
-        let pressures = self.update_pressure_channels_from_snapshot(&snapshot);
         self.admission_budget = HouseholdAdmissionBudget::from_snapshot(&snapshot, &self.config);
-        self.apply_cheat_max_demands_if_enabled();
-        let admission_threshold = self.config.household_action.admission_threshold;
-        let admission_credit_before = self.admission_action_credit;
-        let normalized_admission_pressure =
-            normalized_positive_pressure(pressures.admission_pressure, admission_threshold);
-        self.households_to_admit_today = advance_household_action_credit(
-            &mut self.admission_action_credit,
-            pressures.admission_pressure,
-            admission_threshold,
-            self.config.action_budget.max_households_per_day,
-            snapshot.vacant_household_slots,
-            DEMAND_HOURLY_CADENCE_FRACTION,
-        );
-        let mut admission_diagnostics = pressures.admission_diagnostics;
-        admission_diagnostics.threshold = admission_threshold;
-        admission_diagnostics.normalized_action_pressure = normalized_admission_pressure;
-        admission_diagnostics.credit_before = admission_credit_before;
-        admission_diagnostics.credit_after = self.admission_action_credit;
-        admission_diagnostics.max_actionable_households = snapshot.vacant_household_slots;
+        // This is execution capacity, not approval of the preview household. Each actual
+        // applicant claims its own income below. A jobless town can consider pension-funded
+        // applicants too; temporary benefits cannot pay recurring essentials.
+        self.households_to_admit_today = if snapshot.connected_border_count == 0 {
+            0
+        } else {
+            snapshot
+                .vacant_household_slots
+                .min(snapshot.move_in_job_slots.div_ceil(24).max(1))
+        };
+        let mut admission_diagnostics = HouseholdAdmissionDiagnostics::from_snapshot(&snapshot);
         admission_diagnostics.planned_households = self.households_to_admit_today;
         admission_diagnostics.launched_households = 0;
         self.last_admission_diagnostics = admission_diagnostics;
+        let mut supply = SiteSupply::new(&mut inputs, allocator, zoning, network, graph,
+            logistics, &economy_tuning, &borders, &catalog, minute_of_day);
+        supply.reserve_projects(self.queued_supply_order.iter().map(|&index| &self.queued_construction[index]),
+            &catalog, &snapshot.output_absorption, &mut self.construction_execution.replay_market, fiscal_policy, &funding.service_capacities, &funding.freight_capital);
         self.plan_private_building_actions(
             allocator,
             graph,
             zoning,
             &snapshot,
+            funded_jobs,
             catalog.as_ref(),
             economy_tuning.as_ref(),
             fiscal_policy,
             &residential_occupants,
             DEMAND_HOURLY_CADENCE_FRACTION,
-            "hourly_pass",
             environment,
+            supply,
         );
+        funding.input_supply = inputs;
+        self.construction_execution.funding = funding;
+        self.freight_border_nodes = borders;
+        self.admission_budget
+            .reserve_worker_homes(self.workforce_reservations.unreserved_ready_homes());
     }
 
-    /// Rebuilds derived pressure telemetry from runtime state without advancing action budgets.
-    pub(crate) fn refresh_pressure_channels_with_service_funding(
+    /// Rebuilds household diagnostics from runtime state without advancing action budgets.
+    pub(crate) fn refresh_household_diagnostics(
         &mut self,
         allocator: &BuildingAllocator,
         households: &HouseholdSystem,
         graph: &RegionGraph,
         treasury_balance: f64,
-        service_funding_by_building: &[f32],
         fiscal_policy: &CityFiscalPolicy,
     ) {
         self.building_actions = DemandBuildingActionPlan::default();
@@ -258,71 +284,34 @@ impl DemandSystem {
             economy_tuning.as_ref(),
             fiscal_policy,
             treasury_balance,
-            service_funding_by_building,
-            self.admission_candidate_seed,
         );
-        let pressures = self.update_pressure_channels_from_snapshot(&snapshot);
-        self.apply_cheat_max_demands_if_enabled();
 
-        let admission_threshold = self.config.household_action.admission_threshold;
-        let mut admission_diagnostics = pressures.admission_diagnostics;
-        admission_diagnostics.threshold = admission_threshold;
-        admission_diagnostics.normalized_action_pressure =
-            normalized_positive_pressure(pressures.admission_pressure, admission_threshold);
-        admission_diagnostics.credit_before = self.admission_action_credit;
-        admission_diagnostics.credit_after = self.admission_action_credit;
-        admission_diagnostics.max_actionable_households = snapshot.vacant_household_slots;
+        let mut admission_diagnostics = HouseholdAdmissionDiagnostics::from_snapshot(&snapshot);
         admission_diagnostics.planned_households = self.households_to_admit_today;
         self.last_admission_diagnostics = admission_diagnostics;
 
-        let removal_threshold = self.config.household_action.removal_threshold;
-        let mut removal_diagnostics = pressures.removal_diagnostics;
-        removal_diagnostics.threshold = removal_threshold;
-        removal_diagnostics.normalized_action_pressure =
-            normalized_positive_pressure(pressures.removal_pressure, removal_threshold);
-        removal_diagnostics.credit_before = self.removal_action_credit;
-        removal_diagnostics.credit_after = self.removal_action_credit;
+        let mut removal_diagnostics = HouseholdRemovalDiagnostics::from_snapshot(&snapshot);
         removal_diagnostics.persistent_exit_credit_before = self.persistent_exit_action_credit;
         removal_diagnostics.persistent_exit_credit_after = self.persistent_exit_action_credit;
-        removal_diagnostics.max_actionable_households = snapshot.total_household_count;
+        removal_diagnostics.max_actionable_households =
+            snapshot.persistent_exit_eligible_household_count;
         removal_diagnostics.planned_households = self.households_to_remove_today;
         self.last_removal_diagnostics = removal_diagnostics;
     }
 
     pub(crate) fn with_persisted_state(
-        residential: f32,
-        commercial: f32,
-        industrial: f32,
         households_to_admit_today: u32,
         households_to_remove_today: u32,
-        admission_action_credit: f32,
-        removal_action_credit: f32,
         persistent_exit_action_credit: f32,
-        spawn_action_credit: [f32; 3],
         upgrade_action_credit: [f32; 3],
         downgrade_action_credit: [f32; 3],
         despawn_action_credit: [f32; 3],
-        spawn_hysteresis_active: [bool; 3],
-        upgrade_hysteresis_active: [bool; 3],
-        downgrade_hysteresis_active: [bool; 3],
-        despawn_hysteresis_active: [bool; 3],
-        recent_household_failure_pressure: f32,
         cheat_max_demands_enabled: bool,
     ) -> Self {
         let mut system = Self::new();
-        system.residential = residential;
-        system.commercial = commercial;
-        system.industrial = industrial;
         system.households_to_admit_today = households_to_admit_today;
         system.households_to_remove_today = households_to_remove_today;
-        system.admission_action_credit = admission_action_credit;
-        system.removal_action_credit = removal_action_credit;
         system.persistent_exit_action_credit = persistent_exit_action_credit.max(0.0);
-        system.spawn_action_credit = UseTuningF32 {
-            residential: spawn_action_credit[0],
-            commercial: spawn_action_credit[1],
-            industrial: spawn_action_credit[2],
-        };
         system.upgrade_action_credit = UseTuningF32 {
             residential: upgrade_action_credit[0],
             commercial: upgrade_action_credit[1],
@@ -338,51 +327,25 @@ impl DemandSystem {
             commercial: despawn_action_credit[1],
             industrial: despawn_action_credit[2],
         };
-        system.spawn_hysteresis_active = UseTuningBool {
-            residential: spawn_hysteresis_active[0],
-            commercial: spawn_hysteresis_active[1],
-            industrial: spawn_hysteresis_active[2],
-        };
-        system.upgrade_hysteresis_active = UseTuningBool {
-            residential: upgrade_hysteresis_active[0],
-            commercial: upgrade_hysteresis_active[1],
-            industrial: upgrade_hysteresis_active[2],
-        };
-        system.downgrade_hysteresis_active = UseTuningBool {
-            residential: downgrade_hysteresis_active[0],
-            commercial: downgrade_hysteresis_active[1],
-            industrial: downgrade_hysteresis_active[2],
-        };
-        system.despawn_hysteresis_active = UseTuningBool {
-            residential: despawn_hysteresis_active[0],
-            commercial: despawn_hysteresis_active[1],
-            industrial: despawn_hysteresis_active[2],
-        };
-        system.recent_household_failure_pressure = clamp01(recent_household_failure_pressure);
         if cheat_max_demands_enabled {
             system.enable_max_demand_cheat();
         }
         system
     }
 
-    /// Enables the persistent cheat override that pins every R/C/I demand channel to maximum.
+    /// Enables the persistent cheat override that bypasses private construction viability checks.
     pub(crate) fn enable_max_demand_cheat(&mut self) {
         self.cheat_max_demands_enabled = true;
-        self.apply_cheat_max_demands_if_enabled();
-    }
-
-    fn apply_cheat_max_demands_if_enabled(&mut self) {
-        if !self.cheat_max_demands_enabled {
-            return;
-        }
-        self.residential = 1.0;
-        self.commercial = 1.0;
-        self.industrial = 1.0;
     }
 
     /// Records how many planned household arrivals actually launched as carriers.
     pub(crate) fn record_household_admission_execution(&mut self, launched_households: u32) {
         self.last_admission_diagnostics.launched_households = launched_households;
+    }
+
+    /// Shares the exact departure conditions with execution's live-state recheck.
+    pub(crate) fn household_exit_policy(&self) -> HouseholdExitPolicy {
+        self.config.household_action.exit_policy
     }
 
     /// Records how many planned household removals actually left the city.
@@ -397,115 +360,41 @@ impl DemandSystem {
             )
         };
         self.last_removal_diagnostics.removed_household_ratio = removed_household_ratio;
-        self.recent_household_failure_pressure = self
-            .recent_household_failure_pressure
-            .max(removed_household_ratio);
-        self.last_removal_diagnostics.recent_failure_after = self.recent_household_failure_pressure;
     }
 
-    /// Rebuilds the daily settled household-removal output from the post-settlement snapshot.
-    #[cfg(test)]
+    /// Plans household-specific departures without rebuilding the business market.
+    /// O(households), using the same parallel census and exit policy as hourly diagnostics.
     pub(crate) fn run_daily_pass(
         &mut self,
         allocator: &BuildingAllocator,
         households: &HouseholdSystem,
-        graph: &RegionGraph,
-        treasury_balance: f64,
-    ) {
-        let fiscal_policy = CityFiscalPolicy::from_runtime_tuning(self.runtime_tuning.as_ref());
-        self.run_daily_pass_with_service_funding(
-            allocator,
-            households,
-            graph,
-            treasury_balance,
-            &[],
-            &fiscal_policy,
-        );
-    }
-
-    /// Rebuilds daily household-removal output using the supplied service funding state.
-    pub(crate) fn run_daily_pass_with_service_funding(
-        &mut self,
-        allocator: &BuildingAllocator,
-        households: &HouseholdSystem,
-        graph: &RegionGraph,
-        treasury_balance: f64,
-        service_funding_by_building: &[f32],
-        fiscal_policy: &CityFiscalPolicy,
     ) {
         self.building_actions = DemandBuildingActionPlan::default();
-        let catalog = Arc::clone(&self.runtime_catalog);
-        let economy_tuning = Arc::clone(&self.runtime_tuning);
-        let snapshot = DailyDemandSnapshot::from_runtime_with_catalog(
+        let mut removal_diagnostics = super::snapshot::collect_household_removal_diagnostics(
             allocator,
             households,
-            graph,
+            &self.runtime_catalog,
+            &self.runtime_tuning,
             &self.config,
-            catalog.as_ref(),
-            economy_tuning.as_ref(),
-            fiscal_policy,
-            treasury_balance,
-            service_funding_by_building,
-            self.admission_candidate_seed,
         );
-        let pressures = self.update_pressure_channels_from_snapshot(&snapshot);
-        self.apply_cheat_max_demands_if_enabled();
         self.households_to_admit_today = 0;
-        let recent_failure_before = self.recent_household_failure_pressure;
-        let decayed_recent_failure =
-            recent_failure_before * self.config.household_action.recent_failure_daily_decay;
-        self.recent_household_failure_pressure =
-            clamp01(decayed_recent_failure.max(pressures.removal_diagnostics.failure_pressure));
-
-        // Removal pressure: households emigrate when they have no home. Shared between
-        // the household-action removal output and the residential demand channel.
-        // Future: will be extended with an evacuation system when implemented.
-        let removal_threshold = self.config.household_action.removal_threshold;
-        let removal_credit_before = self.removal_action_credit;
+        // Eligibility is local to each household; the shared daily budget only paces exits.
         let persistent_exit_credit_before = self.persistent_exit_action_credit;
-        let normalized_removal_pressure =
-            normalized_positive_pressure(pressures.removal_pressure, removal_threshold);
-        let crisis_removals = advance_household_action_credit(
-            &mut self.removal_action_credit,
-            pressures.removal_pressure,
-            removal_threshold,
-            self.config.action_budget.max_households_per_day,
-            snapshot.total_household_count,
-            1.0,
-        );
-        let persistent_exit_capacity = self
-            .config
-            .action_budget
-            .max_households_per_day
-            .saturating_sub(crisis_removals)
-            .min(
-                snapshot
-                    .total_household_count
-                    .saturating_sub(crisis_removals),
-            );
         let persistent_exit_removals = advance_persistent_exit_credit(
             &mut self.persistent_exit_action_credit,
-            snapshot.persistent_exit_eligible_household_count,
+            removal_diagnostics.persistent_exit_eligible_household_count,
             self.config.household_action.persistent_exit_daily_fraction,
-            persistent_exit_capacity,
+            self.config.action_budget.max_household_removals_per_day,
         );
-        self.households_to_remove_today = crisis_removals
-            .saturating_add(persistent_exit_removals)
-            .min(snapshot.total_household_count);
-        let mut removal_diagnostics = pressures.removal_diagnostics;
-        removal_diagnostics.threshold = removal_threshold;
-        removal_diagnostics.normalized_action_pressure = normalized_removal_pressure;
-        removal_diagnostics.credit_before = removal_credit_before;
-        removal_diagnostics.credit_after = self.removal_action_credit;
+        self.households_to_remove_today = persistent_exit_removals;
         removal_diagnostics.persistent_exit_credit_before = persistent_exit_credit_before;
         removal_diagnostics.persistent_exit_credit_after = self.persistent_exit_action_credit;
         removal_diagnostics.persistent_exit_planned_households = persistent_exit_removals;
-        removal_diagnostics.max_actionable_households = snapshot.total_household_count;
+        removal_diagnostics.max_actionable_households =
+            removal_diagnostics.persistent_exit_eligible_household_count;
         removal_diagnostics.planned_households = self.households_to_remove_today;
         removal_diagnostics.removed_households = 0;
         removal_diagnostics.removed_household_ratio = 0.0;
-        removal_diagnostics.recent_failure_before = recent_failure_before;
-        removal_diagnostics.recent_failure_after = self.recent_household_failure_pressure;
         self.last_removal_diagnostics = removal_diagnostics;
     }
 }

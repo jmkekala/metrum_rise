@@ -15,11 +15,14 @@
 
 pub(crate) mod accessibility;
 pub mod agents;
+pub(crate) mod customers;
 pub mod definitions;
 pub mod demand;
 pub(crate) mod electricity;
 pub(crate) mod fiscal;
+pub(crate) mod hiring;
 pub mod households;
 pub mod logistics;
+pub(crate) mod operation;
 mod reduction;
 mod resource_totals;

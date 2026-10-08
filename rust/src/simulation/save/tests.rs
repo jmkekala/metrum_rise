@@ -395,14 +395,8 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     let mut noise = NoiseSystem::new(&config);
     noise.grid.data[0] = 7.0;
     let mut demand = DemandSystem::new();
-    demand.residential = 0.12;
-    demand.commercial = 0.08;
-    demand.industrial = 0.04;
     demand.households_to_admit_today = 2;
-    demand.admission_action_credit = 1.25;
-    demand.removal_action_credit = 0.50;
     demand.persistent_exit_action_credit = 0.75;
-    demand.recent_household_failure_pressure = 0.75;
     demand.enable_max_demand_cheat();
     let mut allocator = BuildingAllocator::new();
     let residential_asset = register_test_asset(
@@ -466,6 +460,9 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         member_count: 2,
         child_count: 0,
         adult_count: 2,
+        employed_adults: 1,
+        gross_daily_wages: 137.125,
+        shopping_has_car: false,
         elder_count: 0,
         consumption_rate: 1.0,
         stock_days: 1.5,
@@ -638,6 +635,8 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             walk_phase: 0.0,
         },
     );
+    agents_sys.planned_target_building[0] = 0;
+    agents_sys.planned_activity[0] = 1;
     let mut treasury = CityTreasury::new(1_000.0);
     treasury.lifetime_tax_revenue = 250.0;
     treasury.last_daily_business_profit_tax = 12.5;
@@ -806,6 +805,8 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         "invalid depletion replaced the previous save"
     );
     let loaded = load_from_sqlite(&path, &allocator.registry).expect("load");
+    assert_eq!(loaded.agents.planned_target_building[0], 0);
+    assert_eq!(loaded.agents.planned_activity[0], 1);
     assert_eq!(loaded.camera, Some(camera));
     assert_eq!(loaded.vegetation, vegetation);
     let (_, loaded_plants) = loaded.vegetation_edits.cell(planted);
@@ -1109,28 +1110,13 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         loaded.resource_deposits.clone_coal_richness_dense(),
         resource_deposits.clone_coal_richness_dense()
     );
-    assert_eq!(loaded.demand.residential, demand.residential);
-    assert_eq!(loaded.demand.commercial, demand.commercial);
-    assert_eq!(loaded.demand.industrial, demand.industrial);
     assert_eq!(
         loaded.demand.households_to_admit_today,
         demand.households_to_admit_today
     );
     assert_eq!(
-        loaded.demand.admission_action_credit,
-        demand.admission_action_credit
-    );
-    assert_eq!(
-        loaded.demand.removal_action_credit,
-        demand.removal_action_credit
-    );
-    assert_eq!(
         loaded.demand.persistent_exit_action_credit,
         demand.persistent_exit_action_credit
-    );
-    assert_eq!(
-        loaded.demand.recent_household_failure_pressure,
-        demand.recent_household_failure_pressure
     );
     assert!(loaded.demand.cheat_max_demands_enabled);
     assert_eq!(loaded.pending_demand_spawns.len(), 1);
@@ -1207,6 +1193,10 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     assert_eq!(loaded.households.households[0].unhoused_days_elapsed, 0);
     assert_eq!(loaded.households.households[0].child_count, 0);
     assert_eq!(loaded.households.households[0].adult_count, 2);
+    assert_eq!(loaded.households.households[0].employed_adults, 1);
+    assert_eq!(loaded.households.households[0].gross_daily_wages, 137.125);
+    assert!(loaded.households.households[0].shopping_has_car,
+        "shopping car eligibility is rebuilt from the persisted adult agents");
     assert_eq!(loaded.households.households[0].elder_count, 0);
     assert_eq!(loaded.agents.len(), 2);
     assert_eq!(loaded.agents.age_group[0], AGE_ADULT);

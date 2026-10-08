@@ -110,55 +110,106 @@ impl BuildingAllocator {
         lanes: &LaneSystem,
         registry: &crate::assets::AssetRegistry,
     ) -> BuildingEntrance {
+        Self::derive_site_entrance(
+            Vector2::new(building.center_x, building.center_y),
+            building.facing_dir,
+            building.edge_idx,
+            building.side,
+            &building.asset_id,
+            graph,
+            lanes,
+            registry,
+        )
+    }
+
+    /// Uses the placement transform and actual asset door without allocating a temporary building.
+    /// Work is bounded by the candidate asset's anchors and its frontage lane geometry.
+    pub(crate) fn demand_site_entrance(
+        &self,
+        parcel_id: u64,
+        asset_id: &str,
+        zoning: &crate::simulation::zoning::ZoningSystem,
+        graph: &RegionGraph,
+        lanes: &LaneSystem,
+    ) -> Option<BuildingEntrance> {
+        let parcel = zoning.parcel_by_raw_id(parcel_id)?;
+        let authored = self.registry.get(asset_id)?.manifest.building.as_ref()?;
+        let (center, facing) = if let Some(index) = parcel.occupied_building() {
+            let building = self.buildings.get(index)?;
+            (
+                Vector2::new(building.center_x, building.center_y),
+                building.facing_dir,
+            )
+        } else {
+            let depth = authored.lot_depth_cells as f32 * zoning.config.zone_cell_m;
+            (
+                parcel.front_center() + parcel.normal() * (depth * 0.5),
+                -parcel.normal(),
+            )
+        };
+        Some(Self::derive_site_entrance(
+            center,
+            facing,
+            parcel.edge_idx(),
+            parcel.side(),
+            asset_id,
+            graph,
+            lanes,
+            &self.registry,
+        ))
+    }
+
+    fn derive_site_entrance(
+        center: Vector2,
+        facing: Vector2,
+        edge_idx: usize,
+        side: i8,
+        asset_id: &str,
+        graph: &RegionGraph,
+        lanes: &LaneSystem,
+        registry: &crate::assets::AssetRegistry,
+    ) -> BuildingEntrance {
         let mut entrance = BuildingEntrance {
-            edge_idx: building.edge_idx,
-            side: building.side,
+            edge_idx,
+            side,
             ..BuildingEntrance::default()
         };
-
-        let Some(asset_entry) = registry.get(&building.asset_id) else {
+        let Some(asset_entry) = registry.get(asset_id) else {
             return entrance;
         };
         let Some(anchor) = main_entrance_anchor(asset_entry.manifest.anchors.as_slice()) else {
             return entrance;
         };
-
-        entrance.door_pos = world_door_pos(
-            building,
-            anchor.position,
-            asset_entry.manifest.building_frontage_forward(),
-        );
+        let (basis_x, basis_z) =
+            building_local_xz_basis(facing, asset_entry.manifest.building_frontage_forward());
+        entrance.door_pos = center + basis_x * anchor.position[0] + basis_z * anchor.position[2];
         entrance.curb_pos = entrance.door_pos;
-
-        if building.edge_idx >= graph.edge_count() {
+        let Some(edge) = graph.get_edge(edge_idx) else {
             return entrance;
-        }
-
-        let edge = graph.edge(building.edge_idx);
+        };
         entrance.vehicle_frontage_access = edge.vehicle_frontage_access;
         if edge.deleted || edge.physical_geometry.len() < 2 || edge.physical_length <= 1e-6 {
             return entrance;
         }
-
         entrance.entrance_s_m =
             Self::project_point_to_polyline_s(&edge.physical_geometry, entrance.door_pos);
         let entrance_t = entrance.entrance_s_m / edge.physical_length;
-        let edge_pos = Self::sample_pos_on_edge(graph, building.edge_idx, entrance_t);
-
-        derive_foot_lanes(&mut entrance, edge, building.side, lanes);
-        derive_car_lanes(&mut entrance, edge, building.side, lanes);
+        let edge_pos = Self::sample_pos_on_edge(graph, edge_idx, entrance_t);
+        derive_foot_lanes(&mut entrance, edge, side, lanes);
+        derive_car_lanes(&mut entrance, edge, side, lanes);
         derive_flags(&mut entrance);
         derive_curb_pos(&mut entrance, edge_pos, lanes);
-
         entrance
     }
 
+    /// Reprices live frontage delays while the caller caches stable node-to-node costs.
     pub(crate) fn freight_car_eta_between_buildings(
         &self,
         source_idx: usize,
         destination_idx: usize,
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
+        network_time_s: impl FnMut(u32, u32) -> Option<f32>,
     ) -> Option<f32> {
         if source_idx >= self.buildings.len()
             || destination_idx >= self.buildings.len()
@@ -170,6 +221,20 @@ impl BuildingAllocator {
 
         let origin_entrance = &self.entrances[source_idx];
         let destination_entrance = &self.entrances[destination_idx];
+        Self::freight_car_eta_between_entrances(
+            origin_entrance, destination_entrance, transit_network, graph, network_time_s,
+        )
+    }
+
+    /// Quotes directed freight between real or proposed doors using the dispatch geometry.
+    /// Node costs are caller-cached; no temporary building or index mutation is required.
+    pub(crate) fn freight_car_eta_between_entrances(
+        origin_entrance: &BuildingEntrance,
+        destination_entrance: &BuildingEntrance,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+        mut network_time_s: impl FnMut(u32, u32) -> Option<f32>,
+    ) -> Option<f32> {
         let origin_edge = graph.get_edge(origin_entrance.edge_idx)?;
         let destination_edge = graph.get_edge(destination_entrance.edge_idx)?;
         if origin_edge.deleted || destination_edge.deleted {
@@ -191,6 +256,7 @@ impl BuildingAllocator {
                     destination_entrance,
                     transit_network,
                     graph,
+                    &mut network_time_s,
                 ) else {
                     continue;
                 };
@@ -216,67 +282,28 @@ impl BuildingAllocator {
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
     ) -> Option<f32> {
-        self.freight_car_eta_from_border(
+        Self::freight_car_eta_to_entrance(
             border_node,
-            destination_idx,
+            self.entrances.get(destination_idx)?,
+            costs,
             transit_network,
             graph,
-            |node| costs.cost_to(node),
         )
     }
 
-    // `network_time_s` gives the car travel time from `border_node` to a node.
-    fn freight_car_eta_from_border(
-        &self,
+    /// Quotes an existing or proposed entrance from a prepared border sweep in O(1).
+    pub(crate) fn freight_car_eta_to_entrance(
         border_node: u32,
-        destination_idx: usize,
+        destination_entrance: &BuildingEntrance,
+        costs: &CchCostsFrom,
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
-        network_time_s: impl Fn(u32) -> Option<f32>,
     ) -> Option<f32> {
-        if destination_idx >= self.buildings.len() || destination_idx >= self.entrances.len() {
-            crate::debug_log!(
-                "spawn",
-                "border admission route rejected: border_node={} home_building={} reason=destination_out_of_range buildings={} entrances={}",
-                border_node,
-                destination_idx,
-                self.buildings.len(),
-                self.entrances.len()
-            );
+        let edge = graph.get_edge(destination_entrance.edge_idx)?;
+        if edge.deleted || !entrance_has_car_access(destination_entrance) {
             return None;
         }
-
-        let destination_entrance = &self.entrances[destination_idx];
-        let Some(destination_edge) = graph.get_edge(destination_entrance.edge_idx) else {
-            crate::debug_log!(
-                "spawn",
-                "border admission route rejected: border_node={} home_building={} dest_edge={} reason=destination_edge_missing edge_count={}",
-                border_node,
-                destination_idx,
-                destination_entrance.edge_idx,
-                graph.edge_count()
-            );
-            return None;
-        };
-        if destination_edge.deleted || !entrance_has_car_access(destination_entrance) {
-            crate::debug_log!(
-                "spawn",
-                "border admission route rejected: border_node={} home_building={} dest_edge={} reason={} car_fwd={} car_bkw={} edge_deleted={}",
-                border_node,
-                destination_idx,
-                destination_entrance.edge_idx,
-                if destination_edge.deleted {
-                    "destination_edge_deleted"
-                } else {
-                    "destination_has_no_car_access"
-                },
-                destination_entrance.car_lane_fwd,
-                destination_entrance.car_lane_bkw,
-                destination_edge.deleted
-            );
-            return None;
-        }
-
+        let network_time_s = |node| costs.cost_to(node);
         let mut best: Option<FreightBorderCandidate> = None;
         for destination_rank in [0_u8, 1_u8] {
             let Some(candidate) = freight_candidate_from_border(
@@ -413,14 +440,6 @@ pub(crate) fn main_entrance_anchor(
         }
     }
     match_idx.map(|idx| &anchors[idx])
-}
-
-fn world_door_pos(
-    building: &Building,
-    anchor_position: [f32; 3],
-    anchor_forward: [f32; 3],
-) -> Vector2 {
-    building_local_xz_pos(building, anchor_position, anchor_forward)
 }
 
 pub(crate) fn building_local_xz_pos(
@@ -833,6 +852,7 @@ fn freight_candidate_between_entrances(
     destination_entrance: &BuildingEntrance,
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
+    network_time_s: &mut impl FnMut(u32, u32) -> Option<f32>,
 ) -> Option<FreightCarCandidate> {
     if origin_entrance.edge_idx >= graph.edge_count()
         || destination_entrance.edge_idx >= graph.edge_count()
@@ -928,16 +948,7 @@ fn freight_candidate_between_entrances(
         let network_path_time_s = if planned_attach_node == planned_detach_node {
             0.0
         } else {
-            transit_network
-                .cch_graph
-                .find_path(
-                    planned_attach_node,
-                    planned_detach_node,
-                    usize::MAX,
-                    graph,
-                    TransitFlags::CAR,
-                )
-                .map(|(travel_seconds, _, _)| travel_seconds)?
+            network_time_s(planned_attach_node, planned_detach_node)?
         };
         egress_local_time_s
             + origin_frontage_time_s

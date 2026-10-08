@@ -118,44 +118,20 @@ impl SimCore {
     fn refresh_loaded_demand_state_and_log(&mut self) {
         self.demand
             .set_admission_candidate_hour(self.time.day_index, self.time.minute_of_day);
-        let persisted_residential = self.demand.net_residential_pressure();
-        let persisted_commercial = self.demand.net_commercial_pressure();
-        let persisted_industrial = self.demand.net_industrial_pressure();
-        let persisted_households_to_admit = self.demand.households_to_admit_today;
-        let service_funding_by_building = self.electricity_funding_by_building();
-        self.demand.refresh_pressure_channels_with_service_funding(
+        self.demand.refresh_household_diagnostics(
             &self.allocator,
             &self.households,
             &self.region_graph,
             self.treasury.balance,
-            &service_funding_by_building,
             &self.fiscal_policy,
         );
         if !crate::debug::category_enabled("spawn") {
             return;
         }
-        let (
-            vacant_household_slots,
-            open_job_slots,
-            move_in_job_slots,
-            move_in_job_equivalent_slots,
-            regional_growth_household_pull,
-            open_job_household_pull,
-            marginal_commercial_job_household_pull,
-            incoming_household_need,
-            move_in_acceptance,
-            failure_factor,
-        ) = self.demand.last_admission_debug_summary();
+        let admission = self.demand.last_admission_debug_summary();
         debug_log!(
             "spawn",
-            "load demand refresh: persisted=(R {:+.0}%, C {:+.0}%, I {:+.0}%, admit={}) refreshed=(R {:+.0}%, C {:+.0}%, I {:+.0}%, admit={}) service_funding=electricity:{:.2} buildings={} households={} vacant_slots={} open_jobs={} move_in_jobs={} move_in_job_equiv={:.2} regional_pull={:.2} job_pull={:.2} marginal_com_pull={:.2} incoming_need={:.2} move_in={:.2} failure={:.2}",
-            persisted_residential * 100.0,
-            persisted_commercial * 100.0,
-            persisted_industrial * 100.0,
-            persisted_households_to_admit,
-            self.demand.net_residential_pressure() * 100.0,
-            self.demand.net_commercial_pressure() * 100.0,
-            self.demand.net_industrial_pressure() * 100.0,
+            "load growth diagnostics: admit={} service_funding=electricity:{:.2} buildings={} households={} vacant_slots={} open_jobs={} move_in_jobs={} incoming_need={:.2}",
             self.demand.households_to_admit_today,
             self.service_policy.electricity_funding,
             self.allocator.buildings.len(),
@@ -164,16 +140,10 @@ impl SimCore {
                 .iter()
                 .filter(|household| household.member_count > 0)
                 .count(),
-            vacant_household_slots,
-            open_job_slots,
-            move_in_job_slots,
-            move_in_job_equivalent_slots,
-            regional_growth_household_pull,
-            open_job_household_pull,
-            marginal_commercial_job_household_pull,
-            incoming_household_need,
-            move_in_acceptance,
-            failure_factor,
+            admission.vacant_household_slots,
+            admission.open_job_slots,
+            admission.move_in_job_slots,
+            admission.incoming_household_need,
         );
     }
 }

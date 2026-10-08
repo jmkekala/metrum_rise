@@ -803,6 +803,7 @@ impl SimCore {
 
         self.households.restore_building_undo(undo.households);
         self.logistics.restore_building_undo(undo.logistics);
+        self.register_service_input_capacity(building_idx);
         if let Some(lot) = undo.cell_lot {
             self.zoning.restore_cell_lot_removal_undo(lot);
         }

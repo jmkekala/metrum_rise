@@ -768,6 +768,455 @@ fn simple_graph_with_border() -> (RegionGraph, TransitNetwork, usize, usize, u32
     graph_with_border_to(100.0)
 }
 
+#[test]
+fn recurring_receiving_windows_price_local_and_imported_goods_without_markup_on_carriers() {
+    use crate::simulation::economy::accessibility::{ModeComponentIndex, max_speed_for_modes};
+    use crate::simulation::economy::operation::InputRequirement;
+    let (graph, network, source_edge, buyer_edge, border) = simple_graph_with_border();
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let mut tuning = (*load_runtime_economy_tuning().unwrap()).clone();
+    tuning.owa_import_price_multiplier = 2.0;
+    let source_profile = catalog.profile_for_id("food_processor_basic").unwrap();
+    let buyer_profile = catalog.profile_for_id("grocery_basic").unwrap();
+    let resource = source_profile.outputs[0].resource_runtime_id;
+    let mut allocator = BuildingAllocator::new();
+    let source_asset = register_test_asset(&mut allocator, "test", "window_source", ZoneClass::Industrial);
+    let buyer_asset = register_test_asset(&mut allocator, "test", "window_buyer", ZoneClass::Commercial);
+    let mut source = make_building(&allocator, -50.0, ZoneType::Industrial, source_edge,
+        &source_asset, 1_000.0, 100_000.0);
+    source.worker_count = source_profile.worker_capacity;
+    allocator.buildings.push(source);
+    allocator.buildings.push(make_building(&allocator, 50.0, ZoneType::Commercial, buyer_edge,
+        &buyer_asset, 0.0, 100_000.0));
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    let mut logistics = ShipmentSystem::new();
+    let mut outside = [None; 2];
+    logistics.write_border_carrier_quotes(&allocator, &network, &graph, &[border],
+        &catalog, &tuning, &mut outside);
+    assert!(outside[1].is_some());
+    let reservations = logistics.build_reservation_views(catalog.resource_count());
+    let components = ModeComponentIndex::build(&graph, TransitFlags::CAR);
+    let index = super::supplier_index::SupplierCandidateIndex::build(&allocator, &graph,
+        &catalog, &components, &reservations, tuning.logistics.truck_payload_kg);
+    let mut routes = super::route_cache::FreightRouteCache::default();
+    let mut supply = RecurringSupply::default();
+    let mut carrier = None;
+    for (minute, factor) in [(419, 1.1), (420, 1.0), (1079, 1.0), (1080, 1.1)] {
+        let multiplier = freight_goods_multiplier(buyer_profile, ZoneType::Commercial, &tuning, minute);
+        assert_eq!(multiplier, factor);
+        let freight_profile = super::resource::freight_profile_for_building(&catalog, &tuning,
+            &allocator.buildings[1]).unwrap();
+        let physical = super::local_supplier::find_local_supplier(1, 200.0, false,
+            source_profile.outputs[0].shipment_batch_kg, resource, 100_000.0, &allocator,
+            &network, &graph, &reservations, &index, &components, &mut routes, freight_profile,
+            minute, &catalog, &tuning.logistics, max_speed_for_modes(&graph, TransitFlags::CAR),
+            tuning.operational_clock.seconds_per_day).unwrap();
+        let quote = |supply: &mut RecurringSupply, logistics: &mut ShipmentSystem, units| {
+            logistics.quote_recurring_input(supply, InputRequirement { resource,
+                daily_units: units, buffer_units: units * 4.0, replenishment_batch_units: Some(200.0) },
+                Some(1), &allocator.entrances[1], outside[1], &allocator, &catalog, &tuning,
+                &network, &graph, multiplier)
+        };
+        supply.reset(&allocator, &graph, &network, &catalog, &[1.0, 0.0]);
+        let local = quote(&mut supply, &mut logistics, 200.0);
+        assert_eq!(local.goods + local.freight, physical.total_cost);
+        if let Some(previous) = carrier { assert_eq!(local.freight, previous); }
+        carrier = Some(local.freight);
+        supply.retry(&allocator, &graph);
+        let mixed = quote(&mut supply, &mut logistics, 250.0);
+        assert!((mixed.goods - 3_600.0 * factor).abs() < 0.001);
+        assert!((mixed.buffer - 14_400.0 * factor).abs() < 0.01);
+        assert!((supply.input_price(resource) - 14.4 * factor).abs() < 0.001);
+        supply.reject(&allocator, &graph);
+        assert_eq!(quote(&mut supply, &mut logistics, 250.0).goods, mixed.goods);
+        supply.reject(&allocator, &graph);
+        supply.reset(&allocator, &graph, &network, &catalog, &[0.0, 0.0]);
+        let imported = quote(&mut supply, &mut logistics, 250.0);
+        assert!((imported.goods - 6_000.0 * factor).abs() < 0.001);
+        supply.reject(&allocator, &graph);
+    }
+}
+
+#[test]
+fn recurring_publication_preserves_claims_and_caps_new_supply_by_actual_staff() {
+    use crate::simulation::economy::operation::InputRequirement;
+    let (graph, network, source_edge, buyer_edge, _) = simple_graph_with_border();
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let tuning = load_runtime_economy_tuning().unwrap();
+    let profile = catalog.profile_for_id("food_processor_basic").unwrap();
+    let resource = profile.outputs[0].resource_runtime_id;
+    let mut allocator = BuildingAllocator::new();
+    let asset = register_test_asset(&mut allocator, "test", "published_food", ZoneClass::Industrial);
+    for (x, edge) in [(-50.0, source_edge), (25.0, buyer_edge), (75.0, buyer_edge)] {
+        allocator.buildings.push(make_building(&allocator, x, ZoneType::Industrial,
+            edge, &asset, 0.0, 100_000.0));
+    }
+    allocator.buildings[0].worker_count = 5;
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    let mut logistics = ShipmentSystem::new();
+    let quote = |book: &mut RecurringSupply, logistics: &mut ShipmentSystem, buyer, units| {
+        logistics.quote_recurring_input(book, InputRequirement { resource,
+            daily_units: units, buffer_units: units * 4.0,
+            replenishment_batch_units: Some(200.0) }, Some(buyer), &allocator.entrances[buyer],
+            None, &allocator, &catalog, &tuning, &network, &graph, 1.0)
+    };
+    let mut book = RecurringSupply::default();
+    book.reset(&allocator, &graph, &network, &catalog, &[0.1, 0.0, 0.0]);
+    assert_eq!(quote(&mut book, &mut logistics, 1, 20.0).goods, 240.0);
+    book.accept_for(1);
+    assert!(!book.has_offers());
+    book.publish_funded_increase(0, 0.1, 1.0, &allocator, &catalog, &graph);
+    assert!(quote(&mut book, &mut logistics, 2, 81.0).goods.is_infinite());
+    book.reject(&allocator, &graph);
+    assert_eq!(quote(&mut book, &mut logistics, 2, 80.0).goods, 960.0);
+    book.accept_for(2);
+    assert!(!book.has_offers());
+    let mut fork = RecurringSupply::default();
+    fork.copy_reservations_from(&book, &allocator, &catalog, &graph);
+    for book in [&mut book, &mut fork] {
+        book.release_owner(1, &allocator, &graph);
+        assert_eq!(quote(book, &mut logistics, 1, 20.0).goods, 240.0);
+        book.retry(&allocator, &graph);
+        assert!(quote(book, &mut logistics, 1, 21.0).goods.is_infinite());
+        book.reject(&allocator, &graph);
+        assert!(!book.has_offers());
+        book.release_owner(2, &allocator, &graph);
+        assert_eq!(quote(book, &mut logistics, 2, 80.0).goods, 960.0);
+        book.reject(&allocator, &graph);
+        assert!(!book.has_offers());
+    }
+}
+
+#[test]
+fn recurring_equal_route_quotes_match_dispatch_price_order_after_cached_search_and_retry() {
+    use crate::simulation::economy::accessibility::{ModeComponentIndex, max_speed_for_modes};
+    use crate::simulation::economy::definitions::compile_test_catalog;
+    use crate::simulation::economy::operation::InputRequirement;
+    let authored = include_str!("../../../../../economy/profiles.toml");
+    let first = authored.find("[[profiles]]\nid = \"food_processor_basic\"").unwrap();
+    let end = first + authored[first + 1..].find("\n[[profiles]]").unwrap() + 1;
+    let recipe = &authored[first..end];
+    let cheap = recipe.replace("food_processor_basic", "cheaper_food")
+        .replace("unit_price_currency = 12.0", "unit_price_currency = 6.0");
+    let middle = recipe.replace("food_processor_basic", "middle_food")
+        .replace("unit_price_currency = 12.0", "unit_price_currency = 8.0");
+    let catalog = compile_test_catalog(&format!("{authored}\n{cheap}\n{middle}")).unwrap();
+    let tuning = load_runtime_economy_tuning().unwrap();
+    let profile = catalog.profile_for_id("food_processor_basic").unwrap();
+    let resource = profile.outputs[0].resource_runtime_id;
+    let (graph, network, source_edge, buyer_edge, _) = simple_graph_with_border();
+    let mut allocator = BuildingAllocator::new();
+    let asset = register_test_asset(&mut allocator, "test", "price_ties", ZoneClass::Industrial);
+    for id in ["food_processor_basic", "cheaper_food", "middle_food"] {
+        // Identical doors guarantee identical directed routes and carrier costs.
+        let mut source = make_building(&allocator, -50.0, ZoneType::Industrial,
+            source_edge, &asset, 1_000.0, 100_000.0);
+        source.economy_profile_runtime_id = catalog.profile_for_id(id).unwrap().runtime_id;
+        source.worker_count = profile.worker_capacity;
+        allocator.buildings.push(source);
+    }
+    allocator.buildings.push(make_building(&allocator, 50.0, ZoneType::Industrial,
+        buyer_edge, &asset, 0.0, 100_000.0));
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    let mut logistics = ShipmentSystem::new();
+    let reservations = logistics.build_reservation_views(catalog.resource_count());
+    let components = ModeComponentIndex::build(&graph, TransitFlags::CAR);
+    let index = super::supplier_index::SupplierCandidateIndex::build(&allocator, &graph,
+        &catalog, &components, &reservations, tuning.logistics.truck_payload_kg);
+    let mut routes = super::route_cache::FreightRouteCache::default();
+    let physical = super::local_supplier::find_local_supplier(3, 200.0, false,
+        profile.outputs[0].shipment_batch_kg, resource, 100_000.0, &allocator, &network,
+        &graph, &reservations, &index, &components, &mut routes,
+        &tuning.operational_clock.freight_profiles[0], 0, &catalog, &tuning.logistics,
+        max_speed_for_modes(&graph, TransitFlags::CAR), tuning.operational_clock.seconds_per_day).unwrap();
+    assert_eq!(physical.supplier_idx, 1);
+    let mut supply = RecurringSupply::default();
+    for buyer in [Some(3), None] {
+        let quote = |supply: &mut RecurringSupply, logistics: &mut ShipmentSystem, units| {
+            logistics.quote_recurring_input(supply,
+                InputRequirement { resource, daily_units: units, buffer_units: units * 2.0,
+                    replenishment_batch_units: Some(200.0) },
+                buyer, &allocator.entrances[3], None, &allocator, &catalog, &tuning, &network, &graph, 1.0)
+        };
+        supply.reset(&allocator, &graph, &network, &catalog, &[1.0, 0.0, 0.0, 0.0]);
+        assert_eq!(quote(&mut supply, &mut logistics, 200.0).goods, 2_400.0);
+        supply.reject(&allocator, &graph);
+        // The cached incumbent is the expensive supplier. Equal-time candidates must
+        // still be visited and compared by price, even when their index is larger.
+        supply.reset(&allocator, &graph, &network, &catalog, &[1.0, 1.0, 1.0, 0.0]);
+        let cheapest = quote(&mut supply, &mut logistics, 200.0);
+        assert_eq!(cheapest.goods, 1_200.0);
+        assert_eq!(cheapest.goods + cheapest.freight, physical.total_cost);
+        supply.retry(&allocator, &graph);
+        let mixed = quote(&mut supply, &mut logistics, 250.0);
+        assert_eq!(mixed.goods, 1_600.0);
+        supply.reject(&allocator, &graph);
+        assert_eq!(quote(&mut supply, &mut logistics, 250.0).goods, mixed.goods);
+        supply.accept();
+        assert_eq!(quote(&mut supply, &mut logistics, 150.0).goods, 1_200.0);
+        supply.accept();
+        assert_eq!(quote(&mut supply, &mut logistics, 200.0).goods, 2_400.0);
+        supply.reject(&allocator, &graph);
+    }
+}
+
+#[test]
+fn recurring_owner_replacement_restores_rejection_and_retires_only_its_own_claims() {
+    use crate::simulation::economy::operation::InputRequirement;
+    let (graph, network, source_edge, buyer_edge, _) = simple_graph_with_border();
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let tuning = load_runtime_economy_tuning().unwrap();
+    let profile = catalog.profile_for_id("food_processor_basic").unwrap();
+    let resource = profile.outputs[0].resource_runtime_id;
+    let mut allocator = BuildingAllocator::new();
+    let asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "owner_inputs",
+        ZoneClass::Industrial,
+    );
+    for (x, edge) in [(-50.0, source_edge), (25.0, buyer_edge), (75.0, buyer_edge)] {
+        allocator.buildings.push(make_building(
+            &allocator,
+            x,
+            ZoneType::Industrial,
+            edge,
+            &asset,
+            0.0,
+            100_000.0,
+        ));
+    }
+    allocator.buildings[0].worker_count = profile.worker_capacity;
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    let mut live = RecurringSupply::default();
+    live.reset(
+        &allocator,
+        &graph,
+        &network,
+        &catalog,
+        &[1.0, 0.0, 0.0],
+    );
+    let mut logistics = ShipmentSystem::new();
+    let quote = |book: &mut RecurringSupply, logistics: &mut ShipmentSystem, units| {
+        logistics.quote_recurring_input(
+            book,
+            InputRequirement {
+                resource,
+                daily_units: units,
+                buffer_units: units * 2.0,
+                replenishment_batch_units: Some(40.0),
+            },
+            Some(1),
+            &allocator.entrances[1],
+            None,
+            &allocator,
+            &catalog,
+            &tuning,
+            &network,
+            &graph, 1.0,
+        )
+    };
+    for (owner, units) in [(1, 120.0), (2, 80.0)] {
+        assert!(quote(&mut live, &mut logistics, units).goods.is_finite());
+        live.accept_for(owner);
+    }
+    assert!(!live.has_offers());
+    let mut projected = RecurringSupply::default();
+    for _ in 0..2 {
+        // Exercise both initial geometry copying and the warm receipt/quantity copy.
+        projected.copy_reservations_from(&live, &allocator, &catalog, &graph);
+        for _ in 0..32 {
+            projected.release_owner(1, &allocator, &graph);
+            assert!(
+                !quote(&mut projected, &mut logistics, 121.0)
+                    .goods
+                    .is_finite(),
+                "an incumbent cannot reclaim the other owner's 80 units"
+            );
+            projected.reject(&allocator, &graph);
+            assert!(
+                !projected.has_offers(),
+                "rollback must restore depleted index entries too"
+            );
+        }
+        projected.release_owner(1, &allocator, &graph);
+        assert!(
+            quote(&mut projected, &mut logistics, 100.0)
+                .goods
+                .is_finite()
+        );
+        projected.retry(&allocator, &graph);
+        assert!(
+            quote(&mut projected, &mut logistics, 100.0)
+                .goods
+                .is_finite()
+        );
+        projected.accept();
+        projected.release_owner(1, &allocator, &graph);
+        assert!(
+            !quote(&mut projected, &mut logistics, 21.0)
+                .goods
+                .is_finite(),
+            "an accepted replacement retires the old receipt exactly once"
+        );
+        projected.reject(&allocator, &graph);
+        assert!(
+            quote(&mut projected, &mut logistics, 20.0)
+                .goods
+                .is_finite()
+        );
+        projected.reject(&allocator, &graph);
+    }
+    assert!(
+        !live.has_offers(),
+        "project probes cannot alter live commitments"
+    );
+}
+
+#[test]
+fn recurring_input_quotes_reserve_production_not_stock_and_roll_back_rejection() {
+    use crate::simulation::economy::operation::InputRequirement;
+    let (graph, network, source_edge, buyer_edge, _) = simple_graph_with_border();
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let tuning = load_runtime_economy_tuning().unwrap();
+    let profile = catalog.profile_for_id("food_processor_basic").unwrap();
+    let resource = profile.outputs[0].resource_runtime_id;
+    let mut allocator = BuildingAllocator::new();
+    let asset = register_test_asset(&mut allocator, "test", "recurring", ZoneClass::Industrial);
+    for (x, edge) in [(-50.0, source_edge), (50.0, buyer_edge)] {
+        allocator.buildings.push(make_building(&allocator, x, ZoneType::Industrial, edge,
+            &asset, 1_000_000.0, 100_000.0));
+    }
+    allocator.buildings[0].worker_count = profile.worker_capacity;
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    let mut supply = RecurringSupply::default();
+    supply.reset(&allocator, &graph, &network, &catalog, &[1.0, 0.0]);
+    let mut logistics = ShipmentSystem::new();
+    let quote = |supply: &mut RecurringSupply, logistics: &mut ShipmentSystem, units| {
+        logistics.quote_recurring_input(supply,
+            InputRequirement { resource, daily_units: units, buffer_units: units * 2.0,
+                replenishment_batch_units: Some(40.0) },
+            Some(1), &allocator.entrances[1], None, &allocator, &catalog, &tuning, &network, &graph, 1.0)
+    };
+    let first = quote(&mut supply, &mut logistics, 150.0);
+    assert_eq!(first.goods, 150.0 * profile.unit_price_currency);
+    assert!(first.freight.is_finite() && first.freight > 0.0);
+    assert_eq!(first.buffer, 300.0 * profile.unit_price_currency);
+    supply.retry(&allocator, &graph);
+    let smaller = quote(&mut supply, &mut logistics, 100.0);
+    assert_eq!(smaller.goods, 100.0 * profile.unit_price_currency);
+    assert_eq!(smaller.buffer, 200.0 * profile.unit_price_currency);
+    supply.reject(&allocator, &graph);
+    assert_eq!(quote(&mut supply, &mut logistics, 150.0).goods.to_bits(), first.goods.to_bits());
+    supply.accept();
+    assert!(!quote(&mut supply, &mut logistics, 100.0).goods.is_finite());
+    supply.retry(&allocator, &graph);
+    assert!(quote(&mut supply, &mut logistics, 50.0).goods.is_finite());
+    supply.accept();
+    assert!(!quote(&mut supply, &mut logistics, 1.0).goods.is_finite());
+    supply.reject(&allocator, &graph);
+    supply.reset(&allocator, &graph, &network, &catalog, &[0.0, 0.0]);
+    assert!(!quote(&mut supply, &mut logistics, 1.0).goods.is_finite(),
+        "large physical stock cannot manufacture funded recurring production");
+}
+
+#[test]
+fn recurring_supply_requires_directed_route_even_inside_one_weak_component() {
+    use crate::simulation::economy::operation::InputRequirement;
+    let (mut graph, mut network, first, second, _) = simple_graph_with_border();
+    // Both roads point east. A source on the eastern road cannot supply a western buyer.
+    graph.edge_mut(first).bkw_lanes = 0;
+    graph.edge_mut(second).bkw_lanes = 0;
+    network.lane_system.rebuild(&mut graph);
+    network.rebuild_cch_and_check(&graph);
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let tuning = load_runtime_economy_tuning().unwrap();
+    let profile = catalog.profile_for_id("food_processor_basic").unwrap();
+    let mut allocator = BuildingAllocator::new();
+    let asset = register_test_asset(&mut allocator, "test", "directed_recurring", ZoneClass::Industrial);
+    for (x, edge) in [(50.0, second), (-50.0, first)] {
+        allocator.buildings.push(make_building(&allocator, x, ZoneType::Industrial, edge,
+            &asset, 1_000.0, 100_000.0));
+    }
+    allocator.buildings[0].worker_count = profile.worker_capacity;
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    let mut supply = RecurringSupply::default();
+    supply.reset(&allocator, &graph, &network, &catalog, &[1.0, 0.0]);
+    let mut logistics = ShipmentSystem::new();
+    let input = InputRequirement { resource: profile.outputs[0].resource_runtime_id,
+        daily_units: 1.0, buffer_units: 2.0, replenishment_batch_units: Some(40.0) };
+    let quote = logistics.quote_recurring_input(&mut supply, input, Some(1), &allocator.entrances[1],
+        None, &allocator, &catalog, &tuning, &network, &graph, 1.0);
+    assert!(!quote.goods.is_finite());
+    supply.reject(&allocator, &graph);
+    let proposed = logistics.quote_recurring_input(&mut supply, input, None, &allocator.entrances[1],
+        None, &allocator, &catalog, &tuning, &network, &graph, 1.0);
+    assert!(!proposed.goods.is_finite());
+}
+
+#[test]
+fn warm_freight_quotes_follow_live_frontage_and_metric_edits() {
+    use super::route_cache::FreightRouteCache;
+
+    let (mut graph, mut network, source_edge, destination_edge, border) =
+        simple_graph_with_border();
+    let mut allocator = BuildingAllocator::new();
+    let asset = register_test_asset(&mut allocator, "test", "quote", ZoneClass::Industrial);
+    for (x, edge) in [(-50.0, source_edge), (50.0, destination_edge)] {
+        allocator.buildings.push(make_building(
+            &allocator,
+            x,
+            ZoneType::Industrial,
+            edge,
+            &asset,
+            100.0,
+            1_000.0,
+        ));
+    }
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    let quote = |cache: &mut FreightRouteCache, network: &TransitNetwork| {
+        (
+            cache
+                .between_buildings(0, 1, &allocator, network, &graph)
+                .unwrap(),
+            cache
+                .from_border(border, 1, &allocator, network, &graph)
+                .unwrap(),
+        )
+    };
+    let mut warm = FreightRouteCache::default();
+    let before = quote(&mut warm, &network);
+    for lane in &mut network.lane_system.lanes {
+        lane.frontage_delay_penalty_s = 20.0;
+    }
+    // Publish the direct fixture edit just as the live traffic update does.
+    network.frontage_delay_revision += 1;
+    let after = quote(&mut warm, &network);
+    assert!(after.0 > before.0 && after.1 > before.1);
+    assert_eq!(after, quote(&mut FreightRouteCache::default(), &network));
+    for lane in &mut network.lane_system.lanes {
+        lane.frontage_delay_penalty_s = 0.0;
+    }
+    network.frontage_delay_revision += 1;
+    assert_eq!(before, quote(&mut warm, &network));
+
+    let mut logistics = ShipmentSystem::new();
+    logistics.refresh_freight_route_cache(&allocator, &network);
+    logistics.freight_route_cache = warm;
+    graph.edge_mut(source_edge).base_cost += 30.0;
+    network.cch_graph.customize(&graph);
+    logistics.refresh_freight_route_cache(&allocator, &network);
+    let changed = logistics
+        .freight_route_cache
+        .from_border(border, 1, &allocator, &network, &graph)
+        .unwrap();
+    assert!(changed > before.1);
+    assert_eq!(
+        Some(changed),
+        FreightRouteCache::default().from_border(border, 1, &allocator, &network, &graph)
+    );
+}
+
 fn graph_with_border_to(end_x: f32) -> (RegionGraph, TransitNetwork, usize, usize, u32) {
     let mut graph = RegionGraph::new();
     let n0 = graph.add_node(Vector3::new(-100.0, 0.0, 0.0), NodeType::Border);
@@ -1141,6 +1590,38 @@ fn local_supplier_creates_and_delivers_shipment() {
     );
     assert_eq!(shipments.shipments[0].status, ShipmentStatus::Fulfilled);
     assert_eq!(agents.len(), 0);
+}
+
+#[test]
+fn dispatch_uses_cheaper_import_only_when_gateway_has_capacity() {
+    let (graph, network, source_edge, buyer_edge, border) = simple_graph_with_border();
+    for gateway_available in [true, false] {
+        let mut allocator = BuildingAllocator::new();
+        let source_asset = register_test_asset(&mut allocator, "test", "price_source", ZoneClass::Industrial);
+        let buyer_asset = register_test_asset(&mut allocator, "test", "price_buyer", ZoneClass::Commercial);
+        allocator.buildings.push(make_building(&allocator, -50.0, ZoneType::Industrial,
+            source_edge, &source_asset, 300.0, 0.0));
+        allocator.buildings.push(make_building(&allocator, 50.0, ZoneType::Commercial,
+            buyer_edge, &buyer_asset, 100.0, 2_000.0));
+        allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+        allocator.rebuild_zone_index();
+        let mut shipments = ShipmentSystem::new();
+        let mut planning = super::planning::FreightPlanningContext::build(&mut shipments, &allocator, &graph);
+        let tuning = std::sync::Arc::make_mut(&mut planning.tuning);
+        tuning.owa_import_price_multiplier = 0.1;
+        if !gateway_available {
+            tuning.logistics.border_active_jobs_per_node = 0;
+            tuning.logistics.border_queued_jobs_per_node = 0;
+        }
+        shipments.create_profile_input_shipments(&mut allocator, &network, &graph, 480,
+            &mut planning, &mut 0.0);
+        assert_eq!(shipments.shipments.len(), 1);
+        assert_eq!(shipments.shipments[0].source, if gateway_available {
+            ShipmentEndpoint::OwaBorder(border)
+        } else {
+            ShipmentEndpoint::Building(0)
+        });
+    }
 }
 
 #[test]

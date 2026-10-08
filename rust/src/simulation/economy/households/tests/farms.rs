@@ -204,7 +204,10 @@ fn unhoused_family_can_claim_farm_but_not_a_second_household() {
 #[test]
 fn farm_family_works_on_site_and_larger_fields_hire_commuters() {
     let mut allocator = farm_allocator();
+    // A viable mechanized field and a real outside route support the reserved jobs.
+    allocator.buildings[0].set_work_area_scale(20.0);
     let (mut graph, mut network) = simple_work_graph();
+    graph.set_node_type(0, NodeType::Border);
     let home = register_test_asset(
         &mut allocator,
         "test",
@@ -249,6 +252,9 @@ fn farm_family_works_on_site_and_larger_fields_hire_commuters() {
         &graph,
         &[],
         true,
+        &mut ShipmentSystem::new(),
+        &policy,
+        100_000.0, 420,
     );
     assert_eq!(allocator.buildings[0].worker_count, 2);
     assert_eq!(agents.work_building[1], 0);
@@ -284,6 +290,9 @@ fn farm_family_works_on_site_and_larger_fields_hire_commuters() {
         &graph,
         &[],
         true,
+        &mut ShipmentSystem::new(),
+        &policy,
+        100_000.0, 420,
     );
     assert_eq!(agents.work_building[commuter], 0);
     assert_eq!(allocator.buildings[0].worker_count, 3);

@@ -25,6 +25,14 @@ pub(super) struct MaterializedHouseholdCarriers {
 }
 
 impl HouseholdSystem {
+    /// Publishes a successfully admitted carrier's claim before the next hourly recount.
+    pub(crate) fn record_pending_arrival(&mut self, composition: HouseholdAgeComposition) {
+        self.pending_arrivals.households += 1;
+        self.pending_arrivals.adults += u32::from(composition.adult_count);
+        self.pending_arrivals.elders += u32::from(composition.elder_count);
+        self.pending_arrivals.children += u32::from(composition.child_count);
+    }
+
     pub(crate) fn admit_immigrant_household(
         &mut self,
         catalog: &RuntimeEconomyCatalog,
@@ -51,6 +59,9 @@ impl HouseholdSystem {
             member_count,
             child_count: age_composition.child_count,
             adult_count: age_composition.adult_count,
+            employed_adults: 0,
+            gross_daily_wages: 0.0,
+            shopping_has_car: false,
             elder_count: age_composition.elder_count,
             consumption_rate,
             stock_days: starting_stock_days,
@@ -103,10 +114,7 @@ impl HouseholdSystem {
             let composition = agents.pending_household_composition(i);
             if agents.transit[i] != TRANSIT_IN_BUILDING || agents.current_building[i] != home {
                 // Reuse this pass: pending adults cannot back another admission's wages.
-                self.pending_arrivals.households += 1;
-                self.pending_arrivals.adults += u32::from(composition.adult_count);
-                self.pending_arrivals.elders += u32::from(composition.elder_count);
-                self.pending_arrivals.children += u32::from(composition.child_count);
+                self.record_pending_arrival(composition);
                 i += 1;
                 continue;
             }

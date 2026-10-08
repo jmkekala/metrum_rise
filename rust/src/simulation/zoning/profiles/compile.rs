@@ -6,11 +6,10 @@ use super::authored::AuthoredZoneProfile;
 use super::registry::ZoningProfileRegistry;
 use super::runtime::{ZoneDensity, ZoneProfileRuntime};
 use crate::simulation::zoning::ZoneType;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 
 pub(super) fn compile_registry(
     authored_profiles: Vec<AuthoredZoneProfile>,
-    growth_profile_ids: &HashSet<String>,
 ) -> Result<ZoningProfileRegistry, String> {
     if authored_profiles.len() > u16::MAX as usize {
         return Err(format!(
@@ -47,13 +46,7 @@ pub(super) fn compile_registry(
                 authored.id, authored.density
             )
         })?;
-        validate_profile_ids(
-            &authored,
-            zone_type,
-            density,
-            &mut seen_ids,
-            growth_profile_ids,
-        )?;
+        validate_profile_ids(&authored, &mut seen_ids)?;
         let ui_color_rgb = parse_hex_rgb(&authored.ui.color).ok_or_else(|| {
             format!(
                 "zoning profile '{}': invalid ui.color '{}'",
@@ -79,7 +72,6 @@ pub(super) fn compile_registry(
             zone_type,
             density,
             required_asset_tags,
-            growth_profile_id: authored.growth_profile_id,
             ui_color_rgb,
             ui_icon: authored.ui.icon.trim().to_owned(),
             ui_description: authored.ui.description.trim().to_owned(),
@@ -126,26 +118,10 @@ fn validate_authored_profile_text(authored: &AuthoredZoneProfile) -> Result<(), 
 
 fn validate_profile_ids(
     authored: &AuthoredZoneProfile,
-    zone_type: ZoneType,
-    density: ZoneDensity,
     seen_ids: &mut BTreeSet<String>,
-    growth_profile_ids: &HashSet<String>,
 ) -> Result<(), String> {
     if !seen_ids.insert(authored.id.clone()) {
         return Err(format!("duplicate zoning profile id '{}'", authored.id));
-    }
-    if !growth_profile_ids.contains(&authored.growth_profile_id) {
-        return Err(format!(
-            "zoning profile '{}': unknown growth_profile_id '{}'",
-            authored.id, authored.growth_profile_id
-        ));
-    }
-    let expected_growth_profile_id = format!("{}_{}_default", zone_type.as_str(), density.as_str());
-    if authored.growth_profile_id != expected_growth_profile_id {
-        return Err(format!(
-            "zoning profile '{}': baseline growth_profile_id must be '{}', found '{}'",
-            authored.id, expected_growth_profile_id, authored.growth_profile_id
-        ));
     }
     Ok(())
 }
@@ -193,7 +169,6 @@ mod tests {
             zone_type: "residential".to_owned(),
             density: "low".to_owned(),
             required_asset_tags: Vec::new(),
-            growth_profile_id: "residential_low_default".to_owned(),
             ui: AuthoredZoneProfileUi {
                 color: color.to_owned(),
                 icon: "home".to_owned(),
@@ -205,25 +180,23 @@ mod tests {
     #[test]
     fn zoning_profile_colors_validate_without_utf8_panics() {
         assert_eq!(parse_hex_rgb(" #Aa09fF "), Some([170, 9, 255]));
-        let growth_ids = HashSet::from(["residential_low_default".to_owned()]);
         for invalid in ["#a€ab", "#000é0", "#é0000", "#gg0000", "#abc", "0000000"] {
-            let error = compile_registry(vec![profile(0, invalid)], &growth_ids).unwrap_err();
+            let error = compile_registry(vec![profile(0, invalid)]).unwrap_err();
             assert!(error.contains("invalid ui.color"), "{invalid}: {error}");
         }
     }
 
     #[test]
     fn zoning_profile_runtime_ids_preserve_the_u16_boundary() {
-        let growth_ids = HashSet::from(["residential_low_default".to_owned()]);
         let max = u16::MAX as usize;
         let authored = |count| (0..count).map(|index| profile(index, "#112233")).collect();
-        let registry = compile_registry(authored(max), &growth_ids).unwrap();
+        let registry = compile_registry(authored(max)).unwrap();
         assert_eq!(registry.len(), max);
         assert_eq!(
             registry.profile_by_runtime_id(u16::MAX).unwrap().id,
             format!("profile_{}", max - 1)
         );
         assert!(registry.profile_by_runtime_id(0).is_none());
-        assert!(compile_registry(authored(max + 1), &growth_ids).is_err());
+        assert!(compile_registry(authored(max + 1)).is_err());
     }
 }

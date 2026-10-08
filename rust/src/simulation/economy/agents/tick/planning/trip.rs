@@ -17,7 +17,7 @@ use super::candidate::{
     price_trip_without_network,
 };
 use super::types::BuiltTripPlan;
-use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::buildings::allocator::{BuildingAllocator, BuildingEntrance};
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::TransitFlags;
@@ -351,11 +351,22 @@ impl BuildingTripEnds {
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
     ) -> Self {
-        let mut ends = Self::default();
         if building >= allocator.buildings.len() || building >= allocator.entrances.len() {
-            return ends;
+            return Self::default();
         }
         let entrance = &allocator.entrances[building];
+        Self::at_entrance(entrance, origin, transit_network, graph)
+    }
+
+    /// Prepares an actual or proposed door using the ordinary trip planner's lane ends.
+    /// `origin` selects departure access; arrival access must be prepared separately.
+    pub(crate) fn at_entrance(
+        entrance: &BuildingEntrance,
+        origin: bool,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> Self {
+        let mut ends = Self::default();
         if entrance.edge_idx >= graph.edge_count() || graph.edge(entrance.edge_idx).deleted {
             return ends;
         }
@@ -370,6 +381,24 @@ impl BuildingTripEnds {
 
     fn get(&self, mode: u8, rank: u8) -> Option<&TripEnd> {
         self.ends[usize::from(mode)][usize::from(rank)].as_ref()
+    }
+
+    /// Proves a directed walking trip from a cached cyclic lane component in O(1).
+    /// False means unproven, not unreachable; callers must retain ordinary route fallback.
+    pub(crate) fn has_proven_walk_to(&self, destination: &Self,
+        reachability: &super::reachability::PedestrianReachability) -> bool {
+        NODE_RANK_PAIRS.into_iter().any(|(from, to)| {
+            self.get(MODE_WALK, from).zip(destination.get(MODE_WALK, to))
+                .is_some_and(|(from, to)| from.has_proven_walk_to(to, reachability))
+        })
+    }
+
+    /// Cyclic pedestrian groups for the two validated lane ends; MAX means unproven.
+    /// Caching these two ids avoids rebuilding door geometry for each family quote.
+    pub(crate) fn walking_groups(&self,
+        reachability: &super::reachability::PedestrianReachability) -> [usize; 2] {
+        NODE_RANKS.map(|rank| self.get(MODE_WALK, rank)
+            .map_or(usize::MAX, |end| end.walking_group(reachability)))
     }
 
     fn present(&self) -> impl Iterator<Item = &TripEnd> {

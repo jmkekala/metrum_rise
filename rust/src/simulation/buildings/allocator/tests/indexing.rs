@@ -332,6 +332,7 @@ fn test_admission_order_matches_vacancy_scan() {
         let mut building =
             indexed_test_building(residential_asset.clone(), ZoneType::Residential, i);
         building.parcel_id = 0;
+        building.level = 1 + (i % 3) as u8;
         allocator.buildings.push(building);
     }
     allocator.rebuild_zone_index();
@@ -356,13 +357,34 @@ fn test_admission_order_matches_vacancy_scan() {
                     idx as i32,
                 );
                 building.parcel_id = 0;
+                building.level = 1 + (idx % 3) as u8;
                 allocator.buildings.push(building);
                 assert!(allocator.index_appended_building(idx));
             }
             _ if step % 200 == 0 => allocator.rebuild_zone_index(),
-            _ => {}
+            _ => {
+                allocator.buildings[building_idx].pending_redevelopment ^= true;
+                allocator.admission_occupancy_changed(building_idx);
+            }
         }
         assert!(!allocator.dirty_index);
+        for max_level in 1..=3 {
+            let scanned = allocator.vacancy_index[residential]
+                .iter()
+                .copied()
+                .filter(|&idx| {
+                    let home = &allocator.buildings[idx];
+                    home.level <= max_level
+                        && !home.pending_redevelopment
+                        && allocator.household_capacity(idx) > home.occupancy
+                })
+                .min_by_key(|&idx| (std::cmp::Reverse(allocator.buildings[idx].level), idx));
+            assert_eq!(
+                allocator.first_rehousing_vacancy(|level| level <= max_level),
+                scanned,
+                "rehousing after mutation {step}"
+            );
+        }
         assert!(
             allocator
                 .admission_order

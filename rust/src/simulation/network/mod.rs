@@ -142,6 +142,8 @@ pub struct TransitNetwork {
     pub flow_fields: FlowFieldSystem,
     /// Fixed-cadence accumulator for the frontage delay cache used by exact access planning.
     pub frontage_delay_elapsed_s: f32,
+    /// Derived quote invalidation epoch; advances only when a smoothed lane delay changes.
+    pub(crate) frontage_delay_revision: u64,
     /// Phase 1 road-surface ownership shell for compiled roadbed data and dirty tracking.
     pub road_surface: RoadSurfaceSystem,
 }
@@ -185,6 +187,7 @@ impl TransitNetwork {
             recorded_road_splits: None,
             flow_fields: FlowFieldSystem::new(),
             frontage_delay_elapsed_s: 0.0,
+            frontage_delay_revision: 0,
             road_surface: RoadSurfaceSystem::new_with_chunk_grid(
                 chunk_span_m,
                 chunk_origin_x_m,
@@ -229,6 +232,7 @@ impl TransitNetwork {
         self.metric_dirty = false;
         self.lane_system.clear();
         self.frontage_delay_elapsed_s = 0.0;
+        self.frontage_delay_revision = self.frontage_delay_revision.wrapping_add(1);
         self.road_surface.clear();
         self.profile_authored_edges.clear();
         zoning.clear();

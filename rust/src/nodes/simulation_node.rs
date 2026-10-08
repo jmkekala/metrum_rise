@@ -17,7 +17,7 @@
 //! | | `get_perf_stats` | `debug_panel.gd` |
 //! | | `get_economy_overview` | `economy_overview.gd` |
 //! | | `set_economy_service_funding` | `economy_overview.gd` |
-//! | | `get_demand_pressures` | `main_ui.gd` |
+//! | | `get_growth_overview` | `main_ui.gd` |
 //! | | `apply_money_and_max_demand_cheat` | `input_manager.gd` |
 //! | | `get_treasury_balance` | `main_ui.gd` |
 //! | | `get_agent_count` | `main_ui.gd` |

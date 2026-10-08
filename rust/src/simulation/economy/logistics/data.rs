@@ -190,6 +190,8 @@ pub struct ShipmentSystem {
     pub(super) freight_route_cache_entrance_revision: u64,
     /// CCH graph generation captured when the freight cache was last validated.
     pub(super) freight_route_cache_cch_generation: u32,
+    /// Customized network metric captured by the cached free-flow costs.
+    pub(super) freight_route_cache_metric_revision: u64,
 }
 
 /// Freight records removed when one building is bulldozed.
@@ -211,6 +213,7 @@ impl ShipmentSystem {
             freight_route_cache_building_revision: u64::MAX,
             freight_route_cache_entrance_revision: u64::MAX,
             freight_route_cache_cch_generation: u32::MAX,
+            freight_route_cache_metric_revision: u64::MAX,
         }
     }
 
@@ -281,6 +284,7 @@ impl ShipmentSystem {
         self.freight_route_cache_building_revision = u64::MAX;
         self.freight_route_cache_entrance_revision = u64::MAX;
         self.freight_route_cache_cch_generation = u32::MAX;
+        self.freight_route_cache_metric_revision = u64::MAX;
     }
 
     /// Clears all active shipments and freight request diagnostics.

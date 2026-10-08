@@ -46,6 +46,28 @@ fn startup_residential_selection(mut allocator: BuildingAllocator) -> (String, u
         ZoneType::Commercial,
     );
 
+    // Funded construction supplies the housing need. An empty shop cannot promise
+    // wages from the spending of households which have not arrived yet.
+    let factory_asset = register_test_asset(
+        &mut allocator,
+        "base",
+        "b.ind.factory",
+        ZoneClass::Industrial,
+    );
+    let catalog = crate::simulation::economy::definitions::load_runtime_economy_catalog().unwrap();
+    let tuning = crate::simulation::economy::definitions::load_runtime_economy_tuning().unwrap();
+    let profile = catalog.profile_for_id("food_processor_basic").unwrap();
+    let mut factory = indexed_test_building(factory_asset, ZoneType::Industrial, 0);
+    factory.center_x = 90.0;
+    factory.center_y = -20.0;
+    factory.economy_profile_runtime_id = profile.runtime_id;
+    factory.operating_budget =
+        profile.zoned_startup_budget(&catalog, tuning.owa_import_price_multiplier);
+    factory.construction_total_hours = 12;
+    factory.construction_remaining_hours = 12;
+    allocator.buildings.push(factory);
+    allocator.rebuild_zone_index();
+
     execute_startup_demand_building_pass(
         &mut allocator,
         &mut zoning,

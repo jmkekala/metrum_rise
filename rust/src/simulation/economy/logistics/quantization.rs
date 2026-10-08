@@ -6,7 +6,7 @@ const MIN_POSITIVE_AMOUNT: f32 = 0.000_1;
 
 /// Accumulate one production day's net output, rounded up to a legal batch and
 /// capped at the largest legal load. A small producer need not fill an entire truck.
-pub(super) fn export_dispatch_target_kg(
+pub(crate) fn export_dispatch_target_kg(
     daily_net_output: f32,
     shipment_batch_kg: f32,
     truck_payload_kg: f32,
@@ -15,7 +15,8 @@ pub(super) fn export_dispatch_target_kg(
     ((daily_net_output / shipment_batch_kg).ceil().max(1.0) * shipment_batch_kg).min(full_load)
 }
 
-pub(super) fn quantize_requested_amount(
+/// Fits a requested input load to stock, cash, batch quantum and physical payload limits.
+pub(crate) fn quantize_requested_amount(
     desired_amount: f32,
     available_amount: f32,
     affordable_amount: f32,

@@ -178,28 +178,15 @@ pub(super) fn save_world(
     save_resource_deposits(tx, resource_deposits)?;
 
     // Demand
-    let spawn_action_credit = demand.spawn_action_credit.as_array();
     let upgrade_action_credit = demand.upgrade_action_credit.as_array();
     let downgrade_action_credit = demand.downgrade_action_credit.as_array();
     let despawn_action_credit = demand.despawn_action_credit.as_array();
-    let spawn_hysteresis_active = demand.spawn_hysteresis_active.as_array();
-    let upgrade_hysteresis_active = demand.upgrade_hysteresis_active.as_array();
-    let downgrade_hysteresis_active = demand.downgrade_hysteresis_active.as_array();
-    let despawn_hysteresis_active = demand.despawn_hysteresis_active.as_array();
     tx.execute(
-        "INSERT INTO demand_state(residential, commercial, industrial, households_to_admit_today, households_to_remove_today, admission_action_credit, removal_action_credit, persistent_exit_action_credit, spawn_action_credit_residential, spawn_action_credit_commercial, spawn_action_credit_industrial, upgrade_action_credit_residential, upgrade_action_credit_commercial, upgrade_action_credit_industrial, downgrade_action_credit_residential, downgrade_action_credit_commercial, downgrade_action_credit_industrial, despawn_action_credit_residential, despawn_action_credit_commercial, despawn_action_credit_industrial, spawn_hysteresis_active_residential, spawn_hysteresis_active_commercial, spawn_hysteresis_active_industrial, upgrade_hysteresis_active_residential, upgrade_hysteresis_active_commercial, upgrade_hysteresis_active_industrial, downgrade_hysteresis_active_residential, downgrade_hysteresis_active_commercial, downgrade_hysteresis_active_industrial, despawn_hysteresis_active_residential, despawn_hysteresis_active_commercial, despawn_hysteresis_active_industrial, recent_household_failure_pressure, cheat_max_demands_enabled) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34)",
+        "INSERT INTO demand_state(households_to_admit_today, households_to_remove_today, persistent_exit_action_credit, upgrade_action_credit_residential, upgrade_action_credit_commercial, upgrade_action_credit_industrial, downgrade_action_credit_residential, downgrade_action_credit_commercial, downgrade_action_credit_industrial, despawn_action_credit_residential, despawn_action_credit_commercial, despawn_action_credit_industrial, cheat_max_demands_enabled) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
-            demand.residential,
-            demand.commercial,
-            demand.industrial,
             i64::from(demand.households_to_admit_today),
             i64::from(demand.households_to_remove_today),
-            demand.admission_action_credit,
-            demand.removal_action_credit,
             demand.persistent_exit_action_credit,
-            spawn_action_credit[0],
-            spawn_action_credit[1],
-            spawn_action_credit[2],
             upgrade_action_credit[0],
             upgrade_action_credit[1],
             upgrade_action_credit[2],
@@ -209,19 +196,6 @@ pub(super) fn save_world(
             despawn_action_credit[0],
             despawn_action_credit[1],
             despawn_action_credit[2],
-            bool_to_db(spawn_hysteresis_active[0]),
-            bool_to_db(spawn_hysteresis_active[1]),
-            bool_to_db(spawn_hysteresis_active[2]),
-            bool_to_db(upgrade_hysteresis_active[0]),
-            bool_to_db(upgrade_hysteresis_active[1]),
-            bool_to_db(upgrade_hysteresis_active[2]),
-            bool_to_db(downgrade_hysteresis_active[0]),
-            bool_to_db(downgrade_hysteresis_active[1]),
-            bool_to_db(downgrade_hysteresis_active[2]),
-            bool_to_db(despawn_hysteresis_active[0]),
-            bool_to_db(despawn_hysteresis_active[1]),
-            bool_to_db(despawn_hysteresis_active[2]),
-            demand.recent_household_failure_pressure,
             bool_to_db(demand.cheat_max_demands_enabled),
         ],
     )?;
@@ -369,7 +343,7 @@ pub(super) fn save_world(
         [serde_json::to_string(&households.removed_electricity)
             .map_err(|err| SaveLoadError::custom(err.to_string()))?],
     )?;
-    let mut household_stmt = tx.prepare("INSERT INTO households(household_id, home_building, budget, stock, member_count, child_count, adult_count, elder_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, replenishment_failure_count, reserved_store_building_id, reserved_amount, reserved_total_cost, shopping_agent_id, shopping_agent_schedule_seed, shopping_timeout_hours_remaining, replenishment_search_cursor, stay_failure_days, unhoused_days_elapsed, replenishment_offset_hours, unemployment_days_elapsed, power_consumption_cost, water_consumption_cost, sewage_consumption_cost, electricity_account) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)")?;
+    let mut household_stmt = tx.prepare("INSERT INTO households(household_id, home_building, budget, stock, member_count, child_count, adult_count, elder_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, replenishment_failure_count, reserved_store_building_id, reserved_amount, reserved_total_cost, shopping_agent_id, shopping_agent_schedule_seed, shopping_timeout_hours_remaining, replenishment_search_cursor, stay_failure_days, unhoused_days_elapsed, replenishment_offset_hours, unemployment_days_elapsed, power_consumption_cost, water_consumption_cost, sewage_consumption_cost, electricity_account, gross_daily_wages, employed_adults) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)")?;
     for (hid, household) in households.households.iter().enumerate() {
         let ledger = households
             .daily_ledgers()
@@ -377,6 +351,9 @@ pub(super) fn save_world(
             .copied()
             .unwrap_or_default();
         validate_electricity_usage(ledger.electricity)?;
+        if !household.gross_daily_wages.is_finite() || household.gross_daily_wages < 0.0 {
+            return Err(SaveLoadError::custom("invalid household wage forecast"));
+        }
         if [
             household.power_arrears.local,
             household.power_arrears.imported,
@@ -429,6 +406,8 @@ pub(super) fn save_world(
                 ledger.power_local_payment
             ))
             .map_err(|err| SaveLoadError::custom(err.to_string()))?,
+            household.gross_daily_wages,
+            i64::from(household.employed_adults),
         ])?;
     }
 
@@ -1170,7 +1149,7 @@ pub(super) fn load_households(conn: &Connection, version: i64) -> SaveLoadResult
     } else {
         "NULL"
     };
-    let mut stmt = conn.prepare(&format!("SELECT household_id, home_building, budget, stock, member_count, child_count, adult_count, elder_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, replenishment_failure_count, reserved_store_building_id, reserved_amount, reserved_total_cost, shopping_agent_id, shopping_agent_schedule_seed, shopping_timeout_hours_remaining, replenishment_search_cursor, stay_failure_days, unhoused_days_elapsed, replenishment_offset_hours, unemployment_days_elapsed, {utility_columns}, {electricity_column} FROM households ORDER BY household_id"))?;
+    let mut stmt = conn.prepare(&format!("SELECT household_id, home_building, budget, stock, member_count, child_count, adult_count, elder_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, replenishment_failure_count, reserved_store_building_id, reserved_amount, reserved_total_cost, shopping_agent_id, shopping_agent_schedule_seed, shopping_timeout_hours_remaining, replenishment_search_cursor, stay_failure_days, unhoused_days_elapsed, replenishment_offset_hours, unemployment_days_elapsed, {utility_columns}, {electricity_column}, gross_daily_wages, employed_adults FROM households ORDER BY household_id"))?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let hid = i64_to_usize(row.get(0)?)?;
@@ -1199,6 +1178,9 @@ pub(super) fn load_households(conn: &Connection, version: i64) -> SaveLoadResult
             child_count,
             adult_count,
             elder_count,
+            gross_daily_wages: row.get(28)?,
+            shopping_has_car: false,
+            employed_adults: i64_to_u16(row.get(29)?)?,
             consumption_rate: row.get(8)?,
             stock_days: row.get(9)?,
             replenishment_state: i64_to_u8(row.get(10)?)?,
@@ -1216,6 +1198,11 @@ pub(super) fn load_households(conn: &Connection, version: i64) -> SaveLoadResult
             replenishment_offset_hours: i64_to_u16(row.get(22)?)?,
             unemployment_days_elapsed: i64_to_u32(row.get(23)?)?,
         });
+        if !households.households[hid].gross_daily_wages.is_finite()
+            || households.households[hid].gross_daily_wages < 0.0
+        {
+            return Err(SaveLoadError::custom("invalid household wage forecast"));
+        }
         let paid: [f32; 3] = [row.get(24)?, row.get(25)?, row.get(26)?];
         if paid
             .iter()
