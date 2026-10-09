@@ -4181,7 +4181,9 @@ harnesses for the shared reseed/commit steps; the `accounts` accessor is removed
 `claim` was the sole path that credited cheaper goods/freight to buyer financing; it is removed.
 Every business claim now debits only nonnegative price deltas (actual savings enter through
 repricing), so no offer can repair an infeasible buyer and the repair loop and its release-time
-exemption are gone. Remaining work includes
+exemption are gone. The previously known utility-machinery failure (540 versus 96) was a
+stale test expectation from the retired 1,200 MJ / 96 coal recipe; 1,200 of the current
+24,000 daily kWh burns 540 of 10,800 kg, and the fixture now expects that. Remaining work includes
 interdependent queued/cyclic replacement reloads,
 populated execution/scaling, broader financing cascade cost and the unresolved
 hourly/queue performance regressions. The original handoff below preserves the full scope and

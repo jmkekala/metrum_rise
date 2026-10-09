@@ -1582,7 +1582,8 @@ mod tests {
         assert_eq!(ledger.fuel_input_purchases, 122.5);
         assert_eq!(ledger.electricity_fuel_cost, 70.0);
         assert_eq!(ledger.coal_inventory, 10.0);
-        assert_eq!(ledger.coal_consumed, 96.0);
+        // 1,200 of 24,000 daily kWh (1,000 kW) burns that share of 10,800 kg coal.
+        assert_eq!(ledger.coal_consumed, 540.0);
         assert_eq!(ledger.expenses - before.expenses, 122.5);
         assert_eq!(ledger.net - before.net, -122.5);
         core.allocator
