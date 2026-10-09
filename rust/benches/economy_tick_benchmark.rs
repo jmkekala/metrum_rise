@@ -29,6 +29,7 @@ fn build(label: &str, residents: u32) -> PopulatedCity {
 }
 
 fn bench_economy_ticks(c: &mut Criterion) {
+    metrum_rise::debug::init();
     let mut group = c.benchmark_group("economy_tick");
     group
         .sampling_mode(SamplingMode::Flat)

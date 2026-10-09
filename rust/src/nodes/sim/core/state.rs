@@ -524,6 +524,21 @@ impl SimCore {
         }
     }
 
+    /// Rebuilds derived queue promises after planning or loading persisted pending actions.
+    pub(crate) fn refresh_demand_construction_queue(&mut self, day_index: u32, minute_of_day: u16) {
+        let now = absolute_operational_minute(day_index, minute_of_day);
+        self.demand.set_queued_construction_with_entrances(
+            &self.allocator,
+            &self.zoning,
+            now,
+            self.pending_demand_spawns
+                .iter()
+                .map(|pending| (pending.due_minute, pending.zone_type, &pending.action)),
+            |action| self.allocator.demand_site_entrance(action.parcel_id, &action.asset_id,
+                &self.zoning, &self.region_graph, &self.transit_network.lane_system),
+        );
+    }
+
     fn enqueue_hourly_demand_spawns(&mut self, day_index: u32, minute_of_day: u16) -> usize {
         let now = absolute_operational_minute(day_index, minute_of_day);
         let first_due_minute = self
@@ -625,6 +640,7 @@ impl SimCore {
         ) {
             Ok(permit) => permit,
             Err(reason) => {
+                self.demand.reject_queued_spawn(&pending.action, &self.allocator, &self.region_graph);
                 debug_log!(
                     "economy",
                     "queued demand spawn rejected before owner funding: parcel={} zone={:?} reason={}",
@@ -667,6 +683,8 @@ impl SimCore {
         if use_execution.spawn_executed > 0 {
             self.demand
                 .record_queued_spawn_placement(permit, &pending.action, &self.allocator);
+        } else {
+            self.demand.reject_queued_spawn(&pending.action, &self.allocator, &self.region_graph);
         }
         debug_log!(
             "economy",
@@ -833,16 +851,7 @@ impl SimCore {
         );
         self.demand
             .set_admission_candidate_hour(day_index, minute_of_day);
-        self.demand.set_queued_construction_with_entrances(
-            &self.allocator,
-            &self.zoning,
-            absolute_operational_minute(day_index, minute_of_day),
-            self.pending_demand_spawns
-                .iter()
-                .map(|pending| (pending.due_minute, pending.zone_type, &pending.action)),
-            |action| self.allocator.demand_site_entrance(action.parcel_id, &action.asset_id,
-                &self.zoning, &self.region_graph, &self.transit_network.lane_system),
-        );
+        self.refresh_demand_construction_queue(day_index, minute_of_day);
         self.demand.run_hourly_pass_with_policy(
             &self.allocator,
             &self.households,
@@ -887,8 +896,10 @@ impl SimCore {
         let immediate_building_plan = demand_plan_without_spawns(&self.demand.building_actions);
         let building_action_execution =
             if demand_plan_has_non_spawn_actions(&immediate_building_plan) {
-                self.allocator.execute_demand_building_actions(
+                self.refresh_demand_construction_queue(day_index, minute_of_day);
+                self.demand.execute_building_actions(
                     &immediate_building_plan,
+                    &mut self.allocator,
                     &mut self.zoning,
                     &mut self.agents,
                     &mut self.households,
@@ -897,8 +908,8 @@ impl SimCore {
                     &self.region_graph,
                     &self.transit_network,
                     &self.heightmap,
-                    self.demand.runtime_catalog(),
-                    self.demand.runtime_tuning(),
+                    absolute_operational_minute(day_index, minute_of_day),
+                    &self.fiscal_policy,
                 )
             } else {
                 Default::default()

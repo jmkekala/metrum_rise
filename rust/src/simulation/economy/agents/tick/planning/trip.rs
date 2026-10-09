@@ -13,14 +13,14 @@ use super::super::lane_nav::lane_terminal_node;
 use super::candidate::{
     NODE_RANK_PAIRS, NODE_RANKS, PlannedTripCandidate, TripEnd, TripLeg,
     best_trip_candidate_for_mode, build_exact_path_for_candidate, candidate_better,
-    candidate_lane_id, combine_trip_ends, entrance_pair_supports_mode, mode_choice_cost_for,
+    candidate_lane_id, entrance_pair_supports_mode, mode_choice_cost_for,
     price_trip_without_network,
 };
 use super::types::BuiltTripPlan;
+use super::candidate::TripQueryScratch;
 use crate::simulation::buildings::allocator::{BuildingAllocator, BuildingEntrance};
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::types::TransitFlags;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 const BOUND_ROUNDING_MARGIN: f32 = 1.0e-3;
@@ -36,6 +36,39 @@ pub(crate) fn plan_building_origin_trip(
     graph: &RegionGraph,
     pathfind_count: &AtomicU32,
 ) -> Option<BuiltTripPlan> {
+    let mut chosen = building_trip_candidate(current_building, target_building, has_car,
+        allocator, transit_network, graph, pathfind_count)?;
+
+    let target_zone = allocator.buildings[target_building].zone_type;
+    let (current_path, access_flags) = build_exact_path_for_candidate(
+        &mut chosen,
+        target_building,
+        target_zone,
+        transit_network,
+        graph,
+        pathfind_count,
+    )?;
+
+    Some(BuiltTripPlan {
+        mode: chosen.mode,
+        target_building,
+        activity,
+        planned_attach_node: chosen.planned_attach_node,
+        planned_detach_node: chosen.planned_detach_node,
+        planned_attach_lane_id: chosen.planned_attach_lane_id,
+        planned_detach_lane_id: chosen.planned_detach_lane_id,
+        planned_attach_lane_d: chosen.planned_attach_lane_d,
+        planned_detach_lane_d: chosen.planned_detach_lane_d,
+        current_path,
+        access_flags,
+    })
+}
+
+// Every returned candidate has an exact CCH/connector proof. Feasibility callers can
+// use that proof without allocating the persistent route that only a travelling agent needs.
+fn building_trip_candidate(current_building: usize, target_building: usize, has_car: bool,
+    allocator: &BuildingAllocator, transit_network: &TransitNetwork, graph: &RegionGraph,
+    pathfind_count: &AtomicU32) -> Option<PlannedTripCandidate> {
     if current_building >= allocator.buildings.len()
         || target_building >= allocator.buildings.len()
         || current_building >= allocator.entrances.len()
@@ -73,7 +106,7 @@ pub(crate) fn plan_building_origin_trip(
             None
         };
 
-    let mut chosen = match (best_walk, best_car) {
+    Some(match (best_walk, best_car) {
         (None, None) => return None,
         (Some(walk), None) => walk,
         (None, Some(car)) => car,
@@ -84,30 +117,6 @@ pub(crate) fn plan_building_origin_trip(
                 car
             }
         }
-    };
-
-    let target_zone = allocator.buildings[target_building].zone_type;
-    let (current_path, access_flags) = build_exact_path_for_candidate(
-        &mut chosen,
-        target_building,
-        target_zone,
-        transit_network,
-        graph,
-        pathfind_count,
-    )?;
-
-    Some(BuiltTripPlan {
-        mode: chosen.mode,
-        target_building,
-        activity,
-        planned_attach_node: chosen.planned_attach_node,
-        planned_detach_node: chosen.planned_detach_node,
-        planned_attach_lane_id: chosen.planned_attach_lane_id,
-        planned_detach_lane_id: chosen.planned_detach_lane_id,
-        planned_attach_lane_d: chosen.planned_attach_lane_d,
-        planned_detach_lane_d: chosen.planned_detach_lane_d,
-        current_path,
-        access_flags,
     })
 }
 
@@ -135,130 +144,103 @@ pub(crate) fn plan_building_to_border_trip(
     }
 
     let origin_edge = graph.edge(origin_entrance.edge_idx);
-    let mut best_candidate: Option<PlannedTripCandidate> = None;
-    for origin_rank in super::candidate::NODE_RANKS {
-        let planned_attach_node = if origin_rank == 0 {
-            origin_edge.start_node
-        } else {
-            origin_edge.end_node
-        };
-        let planned_attach_lane_id =
-            candidate_lane_id(MODE_CAR, origin_entrance, origin_rank == 0, true);
-        if planned_attach_lane_id == usize::MAX {
-            continue;
-        }
-        if lane_terminal_node(planned_attach_lane_id, transit_network, graph)?
-            != planned_attach_node
-        {
-            continue;
-        }
+    TripQueryScratch::with_routes(|scratch| {
+        let mut best_candidate: Option<PlannedTripCandidate> = None;
+        for origin_rank in super::candidate::NODE_RANKS {
+            let planned_attach_node = if origin_rank == 0 {
+                origin_edge.start_node
+            } else {
+                origin_edge.end_node
+            };
+            let planned_attach_lane_id =
+                candidate_lane_id(MODE_CAR, origin_entrance, origin_rank == 0, true);
+            if planned_attach_lane_id == usize::MAX {
+                continue;
+            }
+            if lane_terminal_node(planned_attach_lane_id, transit_network, graph)?
+                != planned_attach_node
+            {
+                continue;
+            }
 
-        let planned_attach_lane_d = projected_lane_distance_for_entrance(
-            origin_entrance,
-            planned_attach_lane_id,
-            transit_network,
-            graph,
-        )?;
-        let egress_local_time_s = local_access_time_s(
-            local_access_distance(
-                MODE_CAR,
+            let planned_attach_lane_d = projected_lane_distance_for_entrance(
                 origin_entrance,
                 planned_attach_lane_id,
-                planned_attach_lane_d,
                 transit_network,
                 graph,
-            )?,
-            MODE_CAR,
-        );
-        let origin_frontage_time_s = frontage_time_s(
-            MODE_CAR,
-            planned_attach_lane_id,
-            planned_attach_lane_d,
-            true,
-            transit_network,
-            graph,
-        )?;
-
-        let mut network_path = None;
-        let network_path_time_s = if planned_attach_node == border_node {
-            0.0
-        } else {
-            pathfind_count.fetch_add(1, Ordering::Relaxed);
-            let (travel_seconds, _, path) = transit_network.cch_graph.find_path(
-                planned_attach_node,
-                border_node,
-                usize::MAX,
-                graph,
-                TransitFlags::CAR,
             )?;
-            network_path = Some(path);
-            travel_seconds
-        };
-        let total_cost_s = egress_local_time_s + origin_frontage_time_s + network_path_time_s;
-        if !total_cost_s.is_finite() {
-            continue;
-        }
-
-        let candidate = PlannedTripCandidate {
-            total_cost_s,
-            mode_choice_cost_s: mode_choice_cost_for(MODE_CAR, total_cost_s),
-            origin_rank,
-            destination_rank: 0,
-            mode: MODE_CAR,
-            planned_attach_node,
-            planned_detach_node: border_node,
-            planned_attach_lane_id,
-            planned_detach_lane_id: usize::MAX,
-            planned_attach_lane_d,
-            planned_detach_lane_d: 0.0,
-            network_path,
-        };
-        if best_candidate
-            .as_ref()
-            .is_none_or(|best| candidate_better(&candidate, best))
-        {
-            best_candidate = Some(candidate);
-        }
-    }
-
-    let mut chosen = best_candidate?;
-    let current_path = if chosen.planned_attach_node == border_node {
-        Vec::new()
-    } else if let Some(path) = chosen.network_path.take() {
-        if path.len() < 2 {
-            return None;
-        }
-        path
-    } else {
-        pathfind_count.fetch_add(1, Ordering::Relaxed);
-        let path = transit_network
-            .cch_graph
-            .find_path(
-                chosen.planned_attach_node,
-                border_node,
-                usize::MAX,
+            let egress_local_time_s = local_access_time_s(
+                local_access_distance(
+                    MODE_CAR,
+                    origin_entrance,
+                    planned_attach_lane_id,
+                    planned_attach_lane_d,
+                    transit_network,
+                    graph,
+                )?,
+                MODE_CAR,
+            );
+            let origin_frontage_time_s = frontage_time_s(
+                MODE_CAR,
+                planned_attach_lane_id,
+                planned_attach_lane_d,
+                true,
+                transit_network,
                 graph,
-                TransitFlags::CAR,
-            )
-            .map(|(_, _, path)| path)?;
-        if path.len() < 2 {
-            return None;
-        }
-        path
-    };
+            )?;
 
-    Some(BuiltTripPlan {
-        mode: MODE_CAR,
-        target_building: usize::MAX,
-        activity: 2,
-        planned_attach_node: chosen.planned_attach_node,
-        planned_detach_node: border_node,
-        planned_attach_lane_id: chosen.planned_attach_lane_id,
-        planned_detach_lane_id: usize::MAX,
-        planned_attach_lane_d: chosen.planned_attach_lane_d,
-        planned_detach_lane_d: 0.0,
-        current_path,
-        access_flags: ACCESS_PLAN_VALID | ACCESS_FREIGHT_BORDER_DESTINATION,
+            let network_path_time_s = if planned_attach_node == border_node {
+                0.0
+            } else {
+                pathfind_count.fetch_add(1, Ordering::Relaxed);
+                scratch.cch_cost(planned_attach_node, border_node, usize::MAX, MODE_CAR, transit_network, graph)?
+            };
+            let total_cost_s = egress_local_time_s + origin_frontage_time_s + network_path_time_s;
+            if !total_cost_s.is_finite() {
+                continue;
+            }
+
+            let candidate = PlannedTripCandidate {
+                total_cost_s,
+                mode_choice_cost_s: mode_choice_cost_for(MODE_CAR, total_cost_s),
+                origin_rank,
+                destination_rank: 0,
+                mode: MODE_CAR,
+                planned_attach_node,
+                planned_detach_node: border_node,
+                planned_attach_lane_id,
+                planned_detach_lane_id: usize::MAX,
+                planned_attach_lane_d,
+                planned_detach_lane_d: 0.0,
+                #[cfg(test)]
+                network_path: None,
+            };
+            if best_candidate
+                .as_ref()
+                .is_none_or(|best| candidate_better(&candidate, best))
+            {
+                scratch.retain_network_path(planned_attach_node == border_node);
+                best_candidate = Some(candidate);
+            }
+        }
+
+        let chosen = best_candidate?;
+        let current_path = scratch.finish_path();
+        if chosen.planned_attach_node != border_node && current_path.len() < 2 { return None; }
+
+        Some(BuiltTripPlan {
+            mode: MODE_CAR,
+            target_building: usize::MAX,
+            activity: 2,
+            planned_attach_node: chosen.planned_attach_node,
+            planned_detach_node: border_node,
+            planned_attach_lane_id: chosen.planned_attach_lane_id,
+            planned_detach_lane_id: usize::MAX,
+            planned_attach_lane_d: chosen.planned_attach_lane_d,
+            planned_detach_lane_d: 0.0,
+            current_path,
+            access_flags: ACCESS_PLAN_VALID | ACCESS_FREIGHT_BORDER_DESTINATION,
+        })
     })
 }
 
@@ -266,24 +248,15 @@ pub(crate) fn plan_building_to_border_trip(
 pub(crate) fn building_origin_trip_is_feasible(
     current_building: usize,
     target_building: usize,
-    activity: u8,
+    _activity: u8,
     has_car: bool,
     allocator: &BuildingAllocator,
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
     pathfind_count: &AtomicU32,
 ) -> bool {
-    plan_building_origin_trip(
-        current_building,
-        target_building,
-        activity,
-        has_car,
-        allocator,
-        transit_network,
-        graph,
-        pathfind_count,
-    )
-    .is_some()
+    building_trip_candidate(current_building, target_building, has_car,
+        allocator, transit_network, graph, pathfind_count).is_some()
 }
 
 /// Estimates physical travel seconds, rounded up and saturated to the commute-cache range.
@@ -401,6 +374,30 @@ impl BuildingTripEnds {
             .map_or(usize::MAX, |end| end.walking_group(reachability)))
     }
 
+    /// Tests shopping feasibility with the ordinary direct-leg rules and exact network
+    /// reachability. Cost-only CCH and connector traversal reuse prepared search storage.
+    pub(crate) fn can_reach(&self, destination: &Self, has_car: bool,
+        network: &TransitNetwork, graph: &RegionGraph,
+        walking: &mut super::reachability::PedestrianReachability,
+        query: &mut crate::simulation::pathing::cch::CchQueryScratch) -> bool {
+        for mode in [MODE_WALK, MODE_CAR] {
+            if mode == MODE_CAR && !has_car { continue; }
+            for (from, to) in NODE_RANK_PAIRS {
+                let (Some(origin), Some(destination)) = (self.get(mode, from), destination.get(mode, to)) else { continue; };
+                match price_trip_without_network(mode, from, to, origin, destination,
+                    network, graph, f32::INFINITY) {
+                    TripLeg::Priced(Some(_)) => return true,
+                    TripLeg::Priced(None) => {},
+                    TripLeg::Network { .. } => {
+                        if super::candidate::network_leg_is_reachable(mode, origin, destination,
+                            network, graph, walking, query) { return true; }
+                    }
+                }
+            }
+        }
+        false
+    }
+
     fn present(&self) -> impl Iterator<Item = &TripEnd> {
         self.ends.iter().flatten().flatten()
     }
@@ -486,6 +483,23 @@ pub(crate) fn estimate_trip_seconds_between(
     network_speed_bound_ms: f32,
     budget_s: f32,
 ) -> TripEstimate {
+    super::candidate::TripQueryScratch::with(transit_network, graph, |scratch| {
+        estimate_trip_seconds_with_scratch(origin, destination, has_car, transit_network,
+            graph, pathfind_count, network_speed_bound_ms, budget_s, scratch)
+    })
+}
+
+fn estimate_trip_seconds_with_scratch(
+    origin: &BuildingTripEnds,
+    destination: &BuildingTripEnds,
+    has_car: bool,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    pathfind_count: &AtomicU32,
+    network_speed_bound_ms: f32,
+    budget_s: f32,
+    scratch: &mut super::candidate::TripQueryScratch,
+) -> TripEstimate {
     let mut best: Option<PlannedTripCandidate> = None;
     let mut networked = [(0.0_f32, MODE_WALK, 0_u8, 0_u8); 8];
     let mut networked_count = 0;
@@ -554,7 +568,7 @@ pub(crate) fn estimate_trip_seconds_between(
         ) else {
             continue;
         };
-        if let Some(candidate) = combine_trip_ends(
+        if let Some(candidate) = scratch.combine(
             mode,
             origin_rank,
             destination_rank,

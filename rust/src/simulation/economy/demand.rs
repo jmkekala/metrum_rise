@@ -31,6 +31,7 @@ pub(crate) use diagnostics::{
     BuildingActionDiagnosticsByUse, HouseholdAdmissionDiagnostics, HouseholdRemovalDiagnostics,
 };
 pub use system::DemandSystem;
+pub(crate) use execution::DemandLevelChangeGuard;
 pub(crate) use types::UseTuningF32;
 
 #[cfg(test)]

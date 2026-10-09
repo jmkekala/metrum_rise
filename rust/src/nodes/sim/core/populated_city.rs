@@ -343,6 +343,7 @@ fn fill_lots(core: &mut SimCore) {
             &core.heightmap,
             core.demand.runtime_catalog(),
             core.demand.runtime_tuning(),
+            &mut (),
         );
         core.publish_pending_building_site_changes();
         let placed = execution.residential.spawn_executed

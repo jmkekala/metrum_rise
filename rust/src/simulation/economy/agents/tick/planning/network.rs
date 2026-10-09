@@ -12,16 +12,11 @@ use super::super::access::{
     projected_lane_distance_for_entrance,
 };
 use super::super::lane_nav::lane_origin_node;
-use super::candidate::{
-    NODE_RANKS, candidate_lane_id, pedestrian_lane_connector_path_from_edge,
-    pedestrian_lane_connector_path_from_node, pedestrian_path_has_lane_connectors_from_edge,
-    pedestrian_path_has_lane_connectors_from_node, transit_flags_for_mode,
-};
+use super::candidate::{NODE_RANKS, RouteStart, TripQueryScratch, candidate_lane_id};
 use super::types::BuiltNetworkReplan;
 use crate::simulation::buildings::allocator::{BuildingAllocator, BuildingEntrance};
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::types::TransitFlags;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Rebuilds a destination-side network plan for an agent already in transit.
@@ -96,291 +91,188 @@ pub(in crate::simulation::economy::agents::tick) fn plan_network_replan(
         );
         return None;
     }
-    let search_incoming_edge = if incoming_edge_valid {
-        incoming_edge
-    } else {
-        usize::MAX
-    };
-
-    let mut best: Option<(f32, u8, usize, f32, u32, Vec<u32>)> = None;
-    for destination_rank in NODE_RANKS {
-        let planned_detach_node = if destination_rank == 0 {
-            destination_edge.start_node
-        } else {
-            destination_edge.end_node
-        };
-        let planned_detach_lane_id =
-            candidate_lane_id(mode, destination_entrance, destination_rank == 0, false);
-        if planned_detach_lane_id == usize::MAX {
-            record_replan_candidate_diagnostic(
-                &mut candidate_diagnostics,
-                destination_rank,
-                planned_detach_node,
-                planned_detach_lane_id,
-                "candidate_lane_missing",
-            );
-            continue;
-        }
-        let Some(detach_lane_origin) =
-            lane_origin_node(planned_detach_lane_id, transit_network, graph)
-        else {
-            record_replan_candidate_diagnostic(
-                &mut candidate_diagnostics,
-                destination_rank,
-                planned_detach_node,
-                planned_detach_lane_id,
-                "lane_origin_missing",
-            );
-            continue;
-        };
-        if detach_lane_origin != planned_detach_node {
-            record_replan_candidate_diagnostic(
-                &mut candidate_diagnostics,
-                destination_rank,
-                planned_detach_node,
-                planned_detach_lane_id,
-                "lane_origin_mismatch",
-            );
-            continue;
-        }
-        let Some(planned_detach_lane_d) = projected_lane_distance_for_entrance(
-            destination_entrance,
-            planned_detach_lane_id,
-            transit_network,
-            graph,
-        ) else {
-            record_replan_candidate_diagnostic(
-                &mut candidate_diagnostics,
-                destination_rank,
-                planned_detach_node,
-                planned_detach_lane_id,
-                "projection_failed",
-            );
-            continue;
-        };
-        let Some(ingress_local_distance) = local_access_distance(
-            mode,
-            destination_entrance,
-            planned_detach_lane_id,
-            planned_detach_lane_d,
-            transit_network,
-            graph,
-        ) else {
-            record_replan_candidate_diagnostic(
-                &mut candidate_diagnostics,
-                destination_rank,
-                planned_detach_node,
-                planned_detach_lane_id,
-                "local_access_failed",
-            );
-            continue;
-        };
-        let ingress_local_time_s = local_access_time_s(ingress_local_distance, mode);
-        let Some(destination_frontage_time_s) = frontage_time_s(
-            mode,
-            planned_detach_lane_id,
-            planned_detach_lane_d,
-            false,
-            transit_network,
-            graph,
-        ) else {
-            record_replan_candidate_diagnostic(
-                &mut candidate_diagnostics,
-                destination_rank,
-                planned_detach_node,
-                planned_detach_lane_id,
-                "frontage_failed",
-            );
-            continue;
-        };
-        let (network_time_s, current_path) = if start_node == planned_detach_node {
-            if mode == MODE_CAR {
-                (0.0, Vec::new())
-            } else if incoming_edge_valid {
-                if pedestrian_path_has_lane_connectors_from_edge(
-                    &[start_node],
-                    start_node,
-                    incoming_edge,
-                    planned_detach_lane_id,
-                    transit_network,
-                    graph,
-                ) {
-                    (0.0, Vec::new())
-                } else {
-                    record_replan_candidate_diagnostic(
-                        &mut candidate_diagnostics,
-                        destination_rank,
-                        planned_detach_node,
-                        planned_detach_lane_id,
-                        "zero_hop_connector_missing",
-                    );
-                    continue;
-                }
-            } else if pedestrian_path_has_lane_connectors_from_node(
-                &[start_node],
-                start_node,
-                planned_detach_lane_id,
-                transit_network,
-                graph,
-            ) {
-                (0.0, Vec::new())
+    TripQueryScratch::with_routes(|scratch| {
+        let route_start = if incoming_edge_valid { RouteStart::Edge(incoming_edge) } else { RouteStart::Node };
+        let mut best: Option<(f32, u8, usize, f32, u32)> = None;
+        for destination_rank in NODE_RANKS {
+            let planned_detach_node = if destination_rank == 0 {
+                destination_edge.start_node
             } else {
+                destination_edge.end_node
+            };
+            let planned_detach_lane_id =
+                candidate_lane_id(mode, destination_entrance, destination_rank == 0, false);
+            if planned_detach_lane_id == usize::MAX {
                 record_replan_candidate_diagnostic(
                     &mut candidate_diagnostics,
                     destination_rank,
                     planned_detach_node,
                     planned_detach_lane_id,
-                    "zero_hop_connector_missing",
+                    "candidate_lane_missing",
                 );
                 continue;
             }
-        } else {
-            pathfind_count.fetch_add(1, Ordering::Relaxed);
-            let Some((mut travel_seconds, _, mut path)) = transit_network.cch_graph.find_path(
-                start_node,
-                planned_detach_node,
-                search_incoming_edge,
+            let Some(detach_lane_origin) =
+                lane_origin_node(planned_detach_lane_id, transit_network, graph)
+            else {
+                record_replan_candidate_diagnostic(
+                    &mut candidate_diagnostics,
+                    destination_rank,
+                    planned_detach_node,
+                    planned_detach_lane_id,
+                    "lane_origin_missing",
+                );
+                continue;
+            };
+            if detach_lane_origin != planned_detach_node {
+                record_replan_candidate_diagnostic(
+                    &mut candidate_diagnostics,
+                    destination_rank,
+                    planned_detach_node,
+                    planned_detach_lane_id,
+                    "lane_origin_mismatch",
+                );
+                continue;
+            }
+            let Some(planned_detach_lane_d) = projected_lane_distance_for_entrance(
+                destination_entrance,
+                planned_detach_lane_id,
+                transit_network,
                 graph,
-                transit_flags_for_mode(mode),
             ) else {
                 record_replan_candidate_diagnostic(
                     &mut candidate_diagnostics,
                     destination_rank,
                     planned_detach_node,
                     planned_detach_lane_id,
-                    "cch_no_path",
+                    "projection_failed",
                 );
                 continue;
             };
-            if path.len() < 2 {
+            let Some(ingress_local_distance) = local_access_distance(
+                mode,
+                destination_entrance,
+                planned_detach_lane_id,
+                planned_detach_lane_d,
+                transit_network,
+                graph,
+            ) else {
                 record_replan_candidate_diagnostic(
                     &mut candidate_diagnostics,
                     destination_rank,
                     planned_detach_node,
                     planned_detach_lane_id,
-                    "path_too_short",
+                    "local_access_failed",
                 );
                 continue;
-            }
-            let pedestrian_path_valid = mode == MODE_CAR
-                || if incoming_edge_valid {
-                    pedestrian_path_has_lane_connectors_from_edge(
-                        &path,
-                        start_node,
-                        incoming_edge,
-                        planned_detach_lane_id,
-                        transit_network,
-                        graph,
-                    )
-                } else {
-                    pedestrian_path_has_lane_connectors_from_node(
-                        &path,
-                        start_node,
-                        planned_detach_lane_id,
-                        transit_network,
-                        graph,
-                    )
-                };
-            if !pedestrian_path_valid {
-                let Some(fallback) = (if incoming_edge_valid {
-                    pedestrian_lane_connector_path_from_edge(
-                        start_node,
-                        planned_detach_node,
-                        incoming_edge,
-                        planned_detach_lane_id,
-                        transit_network,
-                        graph,
-                    )
-                } else {
-                    pedestrian_lane_connector_path_from_node(
-                        start_node,
-                        planned_detach_node,
-                        planned_detach_lane_id,
-                        transit_network,
-                        graph,
-                    )
-                }) else {
-                    record_replan_candidate_diagnostic(
-                        &mut candidate_diagnostics,
-                        destination_rank,
-                        planned_detach_node,
-                        planned_detach_lane_id,
-                        "pedestrian_connector_fallback_missing",
-                    );
-                    continue;
-                };
-                travel_seconds = fallback.0;
-                path = fallback.1;
-            }
-            (travel_seconds, path)
-        };
-        let total_cost_s = network_time_s + destination_frontage_time_s + ingress_local_time_s;
-        let new_key = (
-            total_cost_s.to_bits(),
-            destination_rank,
-            planned_detach_lane_id,
-            planned_detach_lane_d.to_bits(),
-        );
-        let replace = match &best {
-            None => true,
-            Some((best_cost, best_rank, best_lane, best_d, _, _)) => {
-                new_key
-                    < (
-                        best_cost.to_bits(),
-                        *best_rank,
-                        *best_lane,
-                        best_d.to_bits(),
-                    )
-            }
-        };
-        if replace {
-            best = Some((
-                total_cost_s,
-                destination_rank,
+            };
+            let ingress_local_time_s = local_access_time_s(ingress_local_distance, mode);
+            let Some(destination_frontage_time_s) = frontage_time_s(
+                mode,
                 planned_detach_lane_id,
                 planned_detach_lane_d,
-                planned_detach_node,
-                current_path,
-            ));
+                false,
+                transit_network,
+                graph,
+            ) else {
+                record_replan_candidate_diagnostic(
+                    &mut candidate_diagnostics,
+                    destination_rank,
+                    planned_detach_node,
+                    planned_detach_lane_id,
+                    "frontage_failed",
+                );
+                continue;
+            };
+            let network_time_s = if start_node == planned_detach_node {
+                if mode == MODE_CAR || scratch.has_connectors(&[start_node], start_node, route_start,
+                    planned_detach_lane_id, transit_network, graph) {
+                    0.0
+                } else {
+                    record_replan_candidate_diagnostic(&mut candidate_diagnostics, destination_rank,
+                        planned_detach_node, planned_detach_lane_id, "zero_hop_connector_missing");
+                    continue;
+                }
+            } else {
+                pathfind_count.fetch_add(1, Ordering::Relaxed);
+                match scratch.network_path(mode, start_node, planned_detach_node, route_start,
+                    planned_detach_lane_id, transit_network, graph, |_| ()) {
+                    Ok((seconds, ())) => seconds,
+                    Err(reason) => {
+                        record_replan_candidate_diagnostic(&mut candidate_diagnostics, destination_rank,
+                            planned_detach_node, planned_detach_lane_id, reason);
+                        continue;
+                    }
+                }
+            };
+            let total_cost_s = network_time_s + destination_frontage_time_s + ingress_local_time_s;
+            let new_key = (
+                total_cost_s.to_bits(),
+                destination_rank,
+                planned_detach_lane_id,
+                planned_detach_lane_d.to_bits(),
+            );
+            let replace = match &best {
+                None => true,
+                Some((best_cost, best_rank, best_lane, best_d, _)) => {
+                    new_key
+                        < (
+                            best_cost.to_bits(),
+                            *best_rank,
+                            *best_lane,
+                            best_d.to_bits(),
+                        )
+                }
+            };
+            if replace {
+                scratch.retain_network_path(start_node == planned_detach_node);
+                best = Some((
+                    total_cost_s,
+                    destination_rank,
+                    planned_detach_lane_id,
+                    planned_detach_lane_d,
+                    planned_detach_node,
+                ));
+            }
         }
-    }
 
-    let Some((
-        _,
-        _,
-        planned_detach_lane_id,
-        planned_detach_lane_d,
-        planned_detach_node,
-        current_path,
-    )) = best
-    else {
-        emit_network_replan_diagnostics(
-            debug_context,
-            start_node,
-            incoming_edge,
-            incoming_edge_valid,
-            target_building,
-            mode,
-            preserve_flags,
-            "no_valid_destination_candidate",
-            Some(destination_entrance),
-            &candidate_diagnostics,
-            transit_network,
-            graph,
-        );
-        return None;
-    };
-    let mut access_flags = ACCESS_PLAN_VALID | (preserve_flags & ACCESS_IMMIGRATION_ORIGIN);
-    if current_path.is_empty() {
-        access_flags |= ACCESS_ZERO_HOP_NODE_PATH;
-    }
+        let Some((
+            _,
+            _,
+            planned_detach_lane_id,
+            planned_detach_lane_d,
+            planned_detach_node,
+        )) = best
+        else {
+            emit_network_replan_diagnostics(
+                debug_context,
+                start_node,
+                incoming_edge,
+                incoming_edge_valid,
+                target_building,
+                mode,
+                preserve_flags,
+                "no_valid_destination_candidate",
+                Some(destination_entrance),
+                &candidate_diagnostics,
+                transit_network,
+                graph,
+            );
+            return None;
+        };
+        let current_path = scratch.finish_path();
+        let mut access_flags = ACCESS_PLAN_VALID | (preserve_flags & ACCESS_IMMIGRATION_ORIGIN);
+        if current_path.is_empty() {
+            access_flags |= ACCESS_ZERO_HOP_NODE_PATH;
+        }
 
-    Some(BuiltNetworkReplan {
-        planned_detach_node,
-        planned_detach_lane_id,
-        planned_detach_lane_d,
-        current_path,
-        access_flags,
+        Some(BuiltNetworkReplan {
+            planned_detach_node,
+            planned_detach_lane_id,
+            planned_detach_lane_d,
+            current_path,
+            access_flags,
+        })
     })
 }
 
@@ -525,17 +417,11 @@ pub(in crate::simulation::economy::agents::tick) fn plan_border_network_replan(
                 usize::MAX
             };
         pathfind_count.fetch_add(1, Ordering::Relaxed);
-        let (_, _, path) = transit_network.cch_graph.find_path(
-            start_node,
-            border_node,
-            search_incoming_edge,
-            graph,
-            TransitFlags::CAR,
-        )?;
-        if path.len() < 2 {
-            return None;
-        }
-        path
+        TripQueryScratch::with_routes(|scratch| {
+            scratch.network_path(MODE_CAR, start_node, border_node,
+                RouteStart::Edge(search_incoming_edge), usize::MAX, transit_network, graph,
+                <[u32]>::to_vec).ok().map(|(_, path)| path)
+        })?
     };
 
     Some(BuiltNetworkReplan {

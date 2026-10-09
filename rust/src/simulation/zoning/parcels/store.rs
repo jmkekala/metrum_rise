@@ -70,6 +70,11 @@ impl ParcelStore {
         self.parcels.get(index)
     }
 
+    /// Dense scratch slot for a stable parcel id; invalidated by insertion/removal.
+    pub(crate) fn storage_index(&self, id: ParcelId) -> Option<usize> {
+        self.id_to_index.get(&id).copied()
+    }
+
     /// Returns a mutable parcel reference for one stable id.
     pub fn get_mut(&mut self, id: ParcelId) -> Option<&mut ZoningParcel> {
         let index = *self.id_to_index.get(&id)?;

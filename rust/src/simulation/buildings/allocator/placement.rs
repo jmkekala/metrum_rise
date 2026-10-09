@@ -2130,6 +2130,16 @@ pub(crate) struct SpawnProfileAssetCandidates {
     candidates: Vec<SpawnAssetCandidate>,
 }
 
+impl SpawnProfileAssetCandidates {
+    /// Legal authored alternatives fitting this parcel, in the prepared selection order.
+    /// Site preparation may index their doors; physical placement still checks obstructions.
+    pub(crate) fn fitting_assets<'a>(&'a self, parcel: &'a ZoningParcel,
+        zoning: &'a ZoningSystem) -> impl Iterator<Item = &'a str> {
+        self.candidates.iter().filter(|candidate| candidate.params.fits_zoned_parcel(parcel, zoning))
+            .map(|candidate| candidate.qualified_id.as_str())
+    }
+}
+
 struct ResolvedPlacement {
     replaced_building: Option<usize>,
     // Redevelopment generation of the claimed parcel, carried so the placed building and the

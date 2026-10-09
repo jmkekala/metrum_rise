@@ -494,15 +494,116 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   discrete benchmark counts match, with current treasury 54 currency higher.
   Live consumer firms now reserve individual recurring family budgets and desired quantities at
   seller prices, with directed shopping round trips and exact rejected-quote rollback. Household
-  car access shares the existing census and is reconstructed on load. Construction customer-book
-  sharing and route-query performance acceptance remain unfinished. The preceding build passed
+  car access shares the existing census and is reconstructed on load. Commercial construction now
+  forks that customer book for constructing/queued projects and replacement rollback; quotes carry
+  supported workers through selection, labour calendars and execution. Input-free services are
+  included. Fresh focused checks pass 431 economy and 24 pathing tests before the final bounded
+  route-cache follow-up. The subsequent current-source release run passes 2,227 library tests,
+  all growth integrations and both reload continuations; only the known utility assertion fails.
+  The saved-town year passes with an unchanged report and 15 operating-cash-positive firms.
+  Fresh matched hourly timing is 6.508 → 6.462 ms against the pre-consumer build (p = 0.88),
+  but 2.545 → 6.556 ms against ready-rehousing: the full regression remains. The daily workload
+  also changes final employment, so it does not establish equivalent outcomes.
+  Cost-only CCH queries and directed pedestrian traversal now reuse prepared search storage.
+  A subsequent seller-price correction and reusable commute-query storage pass 2,229 library
+  tests and all growth integrations, with only the known utility assertion failing; growth and
+  saved-town reports match the preceding build. Matched hourly/daily changes are not significant
+  (6.599 → 6.553 ms / 630.34 → 563.60 ms), and the full regression remains. Business financing
+  and replacement dependency work are still active. The business ledger/router now has focused
+  coverage for shared financing, directed delivery prices and exact replacement rollback.
+  Live funding now validates provisional business purchases jointly: both required financing
+  regressions pass, including local recipe cycles and unfunded-buyer withdrawal. Household
+  output cannot be promised again to business inputs (442 economy tests pass). Subsequent work
+  links business deliveries into owned input receipts, reserves current staff before expansion,
+  and forks financed business customers into construction, queues and execution. The first
+  construction integration passes 445 optimized economy tests. The preceding release passes 2,241
+  library tests, all growth integrations, both continuations and the unchanged saved-town year;
+  only the known utility assertion fails. Matched hourly timing regresses about 51%; reversing
+  run order still shows about 16% (7.0712 → 8.2182 ms). Daily differences are not significant.
+  The 10k benchmark ends with six fewer employed residents; each executable repeats its own
+  records exactly. Performance and equal-outcome acceptance remain open. Replacement output/dependency
+  revalidation, mixed-market closure and scaling remain open. Subsequent bounded complete freight caches,
+  combined household/business activity and customer reassignment after financing rejection pass
+  448 optimized economy tests. Fresh release checks pass 2,244 library tests, all three growth
+  integrations, both reload continuations and the saved-town year; only the known utility
+  assertion fails. All five long-run reports match the preceding build. The first matched
+  hourly increase (7.123 → 8.001 ms) does not reproduce in reversed order (7.497 / 7.584 ms,
+  p = 0.71); complete economic records match. Earlier regressions and outstanding runtime
+  requirements remain open.
+  Replacement probes now support exact enclosing rollback across several input/customer owners.
+  Output publication and affected-buyer traversal remain unfinished. A focused fragmentation
+  regression exposes receipt growth beyond the previous bound. Live matching now retries with
+  prepared storage (452 optimized economy tests pass); construction/replacement growth remains open.
+  Matched 10k timing detects no additional regression (7.165 → 6.815 ms hourly), with identical
+  economic records. Earlier regressions remain open.
+  The preceding rollback/numeric revision passes 2,247 release library tests, all growth integrations,
+  both reload continuations and the unchanged saved-town year, with only the known utility failure.
+  Prepared replacement sources now retain actual recipes, prices and doors through CCH metric
+  changes; 453 release economy tests pass. Their output transactions still need connection to
+  replacement admission and affected-buyer financing revalidation.
+  The small initial hourly increase is not significant in reversed order (6.641 / 6.742 ms,
+  p = 0.30); economic records match. Earlier performance regressions remain open.
+  Operation records now retain supported plans through construction; replacement payroll is
+  capped at target slots. Buyer-local business receipt withdrawal preserves exact enclosing
+  rollback, and retained prices include receiving-window charges (455 release economy tests pass).
+  Matched 10k timing detects no additional regression (6.882 → 6.962 ms hourly, p = 0.38),
+  with identical economic records. Runtime affected-operation integration and full performance
+  acceptance remain unfinished; details and evidence stay in `demand.md`.
+  Customer lookup now retains buyer/recipe-port geometry across financing changes. Fresh checks
+  pass 2,251 library tests, all growth integrations, both continuations and the unchanged saved-town
+  year; only the known utility assertion fails. Matched hourly time improves in both orders
+  (8.116 → 6.930 ms initially), with unchanged economic records. A subsequent exact stop after
+  the last active bucket entry passes 456 release economy tests and both locality benchmarks.
+  Its small initial hourly increase does not reproduce in reversed order (7.011 ms baseline /
+  6.940 ms current, p = 0.51), with unchanged economic records. Full runtime/performance
+  acceptance remains open.
+  Buyer input reseeding now reuses withdrawn account slots and restores appended/overwritten
+  rows and routing availability exactly on rejection (457 release economy tests pass).
+  The initial hourly timing increase does not reproduce in reversed order (6.955 ms baseline /
+  6.869 ms current, p = 0.29), with identical economic records. Runtime replacement integration
+  and full performance acceptance remain pending.
+  Household reservations now share the enclosing runtime replacement transaction, restoring
+  several accepted owner changes together and recycling old receipts. Fresh verification passes
+  2,254 release library tests, all growth integrations, both reload continuations and the unchanged
+  saved-town year; only the known utility assertion fails. The initial apparent timing gain does
+  not reproduce in reversed order (6.947 ms baseline / 6.951 ms current, p = 0.95), with identical
+  economic records. Output publication, affected-operation financing and full performance
+  acceptance remain open.
+  New, queued and constructing projects now publish input purchases backed by their own
+  supported operation. Placed construction uses actual cash/cargo/stock, and failed placement
+  proofs roll back future demand. Buyer doors use prepared existing resource buckets and
+  parcel identities. Selective downstream input repair now preserves unaffected supplier
+  tranches and exact rollback. Replacement selection now withdraws/publishes output and
+  revalidates affected buyers and suppliers in one transaction; 463 focused release economy
+  tests pass, including buyer/supplier insolvency rejection and storage replay. Broad checks
+  pass 2,259 library tests, all growth integrations, both reload continuations and the unchanged
+  saved-town year; only the known utility assertion fails. Matched hourly timing regresses
+  6.9024 → 7.1106 ms (+3.0%, p = 0.01). The physical execution guard subsequently passes
+  the same broad correctness checks and unchanged reports; hourly timing increases
+  6.9887 → 7.2055 ms (+3.1%, p = 0.01). Receipt-capacity preflight and full-proposal replay
+  pass 465 focused release economy tests, including forced arena growth and exact runtime
+  replacement rollback. Matched hourly timing shows no significant additional change
+  (7.2829 → 7.3068 ms, p = 0.78), with identical economic records. Subsequent queue execution
+  retains financed commitments backed by placed housing; 14 targeted queue tests pass,
+  including pending-customer reload. The final queue source passes 2,263 library tests, all
+  growth/reload checks and the unchanged saved-town year, with only the known utility assertion
+  failing. Its initial hourly increase does not reproduce in reversed order (7.2386 ms baseline /
+  7.2114 ms current, p = 0.74), with identical economic records. Profiling identifies CCH query
+  work as a major cost; direct road-end label indexing passes 25 pathing tests and the final build passes 2,264 library tests, all growth/reload checks and the unchanged saved-town year (only the known utility assertion fails). Matched hourly timing improves 7.1613 → 6.9396 ms; daily timing shows no significant change. The full regression remains. Prepared household bucket positions subsequently pass 466 economy tests, including four-regime populated-market isolation. The first timing run regresses; reversed and repeated comparisons improve, the latter 7.1301 → 6.7020 ms hourly, with identical economic records. That runtime build passes 2,265 library tests, all growth/reload checks and the unchanged saved-town year, with only the known utility assertion failing. Connected-market repricing now passes after correcting premature customer ceilings; 2,266 library tests, all three growth integrations and the saved-town year pass apart from the known utility assertion. Affected input repair passes 468 focused economy tests and restores mixed-market closure from five to three full passes (53.262 → 34.494 ms at 102,400 residents); matched whole-economy timing shows no significant change and identical economic records. Its broad run passes 2,267 library tests, all three growth integrations and the saved-town year apart from the known utility assertion, with all five reports unchanged. The failed-expansion receipt-loss fix passes 469 focused economy tests and 2,268 library tests plus all three growth integrations and the saved-town year, apart from the known utility assertion; all five reports match. Repeated mixed-market timings are closer, with middle-size increases still recorded. Exact household-quote prefix reuse passes 470 focused economy tests, including an uncached oracle and changed-prefix reconstruction, and improves the largest mixed-market diagnostic from 35.408 to 28.114 ms. Whole-economy timing has no significant change and identical records. Broad validation passes 2,269 library tests, all three growth integrations and the saved-town year apart from the known utility assertion; all five reports match. A fresh whole-workload profile points to daily commute routing and hourly entrance geometry; sample loss and incomplete stacks limit the diagnostic. Lazy freight geometry and indexed business-customer route reuse pass 472 focused economy tests. Matched whole-economy timing has no significant change and identical economic records; after temporary-quota recovery, 2,271 library tests, all three growth integrations and the saved-town year pass apart from the known utility assertion; all five reports match. Subsequent worker-local commute-leg reuse and job-query scratch retention pass 473 focused economy tests. Matched timing improves daily settlement 514.89 → 103.30 ms (−79.94%) with identical economic records; hourly 7.0818 → 7.0013 ms has no significant change. Broad validation passes 2,272 library tests, all three growth integrations and the saved-town year apart from the known utility assertion; all five reports match. Exact cross-census household quotation reuse now validates budget/access inputs and seller requests before retaining claims; changed prefixes reset prepared accounts without recalculating the census. Fresh validation passes 475 focused economy tests, 2,275 library tests, all three growth integrations and the saved-town year, with only the known utility assertion and all five reports unchanged. Matched hourly timing improves 6.4418 → 5.2694 ms (−18.2%) with identical economic records; daily timing shows no significant change. Mixed-market warm medians decrease at all five measured sizes in both run orders. Full-route selection now also reuses prepared scratch, eliminating discarded candidate paths and connector allocations. Fresh validation passes 476 focused economy tests, 2,276 library tests, all three growth integrations and the saved-town year, with only the known utility assertion; all five reports match. Exact route-product comparisons pass and warm route medians improve at all four sizes in both run orders. Whole-economy timing detects no significant change (5.3495 → 5.3587 ms hourly; 99.079 → 97.666 ms daily), with matching economic records. The replacement matrix now also passes five queued-buyer variants, with exact all-owner financing/input/household rollback, 15 supported workers and subsequent physical grocery placement. Its final build passes 476 focused economy tests, 2,276 library tests, all three growth integrations and the saved-town year, with only the known utility assertion and all five reports unchanged. Matched timing detects no significant change. Corrected retry attribution puts local funding at 3.352 ms versus import funding at 0.283 ms in the diagnostic profile. Globally absent-customer propagation now reduces the 64-link withdrawal case from about 30 ms to 1.1 ms and from 64 censuses to two. Buyer counting shares the parallel market census; retries scan staffed input buyers. Its final build passes 478 economy tests, 2,278 library tests, all three growth integrations and the saved-town year, with only the known utility assertion and all five reports unchanged. Whole-economy timing detects no significant change; the initial largest mixed-market penalty no longer appears. A subsequent stale projected-supplier handle fix validates current membership before owner lookup; its fresh broad checks retain these counts and reports, with no significant timing change. The per-buyer search-cache trial was removed without a whole-economy gain. Interdependent queued/cyclic replacement reloads, broader populated execution/scaling, partial/disconnected financing cascades and the remaining hourly/queue regressions stay open; `demand.md` owns the evidence.
+  Broader dependency and performance acceptance remain open; `demand.md`
+  owns the evidence and validation boundaries.
+  Preceding broad checks pass 2,238 library tests, all growth integrations, both continuations and
+  the unchanged saved-town year, with only the known utility failure. The joint funding pass
+  still adds 12.199% hourly cost in matched runs (7.0255 → 7.8825 ms); performance is not accepted.
+  The preceding build passed
   2,224 library tests and all three growth integrations, with only the known utility assertion failing.
   After owner receipts and cached pedestrian proofs, final checks pass 430 economy, 23 pathing,
   25 save tests, both continuations and the saved-town year; its report is unchanged.
   Matched 10k hourly timing regresses 5.7515 → 6.4500 ms (+12.1%); discrete counts match,
   treasury differs. The [fresh AI handoff](demand.md#ai-continuation-handoff--2026-10-08)
-  records exact next steps, validation boundaries and artifacts.
-  Funded-buyer closure, cyclic local chains, replacement output publication, construction buyer reachability, populated
+  records historical next steps, validation boundaries and artifacts; [continuation progress](demand.md#continuation-implementation--2026-10-08)
+  records the current changes and verification boundary.
+  Funded-buyer closure, cyclic local chains, replacement output publication, populated
   execution with changing frontage prices and full growth/performance acceptance remain open. See the
   [implementation contract](demand.md#implementation-contract-and-progress).
   The preceding independent-entry full run passes 2,164 library tests and all three growth scenarios,

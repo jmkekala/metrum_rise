@@ -166,6 +166,7 @@ impl WorkforceReservations {
         snapshot: &DailyDemandSnapshot,
         queued: &[QueuedConstruction],
         new_start_hour: u64,
+        reservations: Option<&super::supply::ProjectReservations>,
     ) {
         self.horizon = allocator
             .buildings
@@ -248,7 +249,9 @@ impl WorkforceReservations {
                             catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
                     {
                         jobs_by_hour[hour].fetch_add(
-                            snapshot.output_absorption.committed_workers(profile),
+                            reservations.map_or_else(
+                                || snapshot.output_absorption.committed_workers(profile),
+                                |claims| claims.building_workers.get(idx).copied().unwrap_or(0)),
                             Ordering::Relaxed,
                         );
                     }
@@ -276,6 +279,7 @@ impl WorkforceReservations {
                 },
             ));
         for project in queued {
+            if !project.active { continue; }
             let hour = self.hours.binary_search(&project.completion_hour).unwrap();
             if project.household_slots > 0 && !match_displaced {
                 if arrivals_possible {
@@ -293,7 +297,10 @@ impl WorkforceReservations {
             }
             if let Some(profile) = catalog.profile_by_runtime_id(project.profile_runtime_id) {
                 self.jobs_by_hour[hour].fetch_add(
-                    snapshot.output_absorption.committed_workers(profile),
+                    reservations.map_or_else(
+                        || snapshot.output_absorption.committed_workers(profile),
+                        |claims| claims.queued_workers.binary_search_by_key(&project.parcel_id, |&(parcel, _)| parcel)
+                            .ok().map_or(0, |index| claims.queued_workers[index].1)),
                     Ordering::Relaxed,
                 );
             }
@@ -374,49 +381,32 @@ impl WorkforceReservations {
         true
     }
 
+    /// Reserves a queued deadline against placed housing, including distant saved due dates.
+    /// The final prepared source bin covers later deadlines without allocating empty hours.
+    pub(super) fn claim_by_hour(&mut self, completion_hour: u64, workers: u32) -> bool {
+        let hour = self.hours.partition_point(|&hour| hour <= completion_hour) - 1;
+        if u64::from(self.unemployed) + self.committed.available(hour)
+            + self.optional.available(hour) < u64::from(workers) {
+            return false;
+        }
+        self.take(hour, workers);
+        true
+    }
+
     /// Immediate upgrades may claim only unemployed adults and homes that are already ready.
     /// Unlike queued construction, this does not inherit the next project's start-hour delay.
     pub(super) fn claim_ready(&mut self, workers: u32) -> bool {
-        if u64::from(self.unemployed) + self.committed.available(0) < u64::from(workers) {
+        if !self.can_claim_ready(workers) {
             return false;
         }
         self.take(0, workers);
         true
     }
 
-    /// Credits a placed home in O(log T) when no displaced residents require rematching.
-    /// Returns false when completion-order household matching must be rebuilt lazily.
-    pub(super) fn placed_home(
-        &mut self,
-        allocator: &BuildingAllocator,
-        tuning: &RuntimeEconomyTuning,
-        action: &DemandSpawnAction,
-    ) -> bool {
-        if !self.displaced.households.is_empty() {
-            return false;
-        }
-        if self.arrivals_possible {
-            let Some(authored) = allocator
-                .registry
-                .get(&action.asset_id)
-                .and_then(|entry| entry.manifest.building.as_ref())
-            else {
-                return false;
-            };
-            let hour = self.project_hour(construction_duration_hours(
-                ZoneType::Residential,
-                authored.level,
-                tuning,
-            ));
-            self.committed.add(
-                hour,
-                allocator.registry.household_capacity(&action.asset_id),
-            );
-            self.unfilled_existing -= self.take(self.horizon, self.unfilled_existing);
-        }
-        true
+    /// Checks immediate staffing without spending workers before physical placement succeeds.
+    pub(super) fn can_claim_ready(&self, workers: u32) -> bool {
+        u64::from(self.unemployed) + self.committed.available(0) >= u64::from(workers)
     }
-
     /// Ready vacancies left after all workplace claims; nonworker arrivals may use these.
     pub(super) fn unreserved_ready_homes(&self) -> u32 {
         self.committed.sums[self.committed.leaves] as u32

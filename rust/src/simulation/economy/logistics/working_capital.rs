@@ -9,6 +9,34 @@ use crate::simulation::network::{TransitNetwork, graph::RegionGraph};
 use rayon::prelude::*;
 
 impl ShipmentSystem {
+    /// Prices a live or proposed seller's directed delivery to a business customer.
+    /// Call `prepare_site_carrier_quotes` once before a batch. Each query reuses bounded
+    /// network search storage and applies live frontage delays, without temporary IDs.
+    pub(crate) fn customer_carrier_quote(
+        &mut self,
+        source: &BuildingEntrance,
+        destination: &BuildingEntrance,
+        source_building: Option<usize>,
+        destination_building: Option<usize>,
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+        tuning: &RuntimeEconomyTuning,
+    ) -> Option<f32> {
+        // Replacement owners retain their identity while quoting a different door. Only an
+        // exact live entrance may enter the allocator-indexed route/geometry caches.
+        let source_building = source_building.filter(|&index| allocator.entrances.get(index) == Some(source));
+        let destination_building = destination_building.filter(|&index| allocator.entrances.get(index) == Some(destination));
+        let seconds = match (source_building, destination_building) {
+            (Some(from), Some(to)) => self.freight_route_cache.between_buildings(from, to, allocator, network, graph),
+            (Some(from), None) => self.freight_route_cache.to_site(from, destination, allocator, network, graph),
+            (None, Some(to)) => self.freight_route_cache.from_site(source, to, allocator, network, graph),
+            (None, None) => self.freight_route_cache.between_entrances(source, destination, network, graph),
+        };
+        seconds.map(|seconds| super::timing::freight_cost(
+                seconds, tuning.operational_clock.seconds_per_day, &tuning.logistics))
+    }
+
     /// Stages a finite recurring input quote using the same revision-scoped freight routes.
     /// The caller commits the complete funded operation or rolls every local claim back.
     pub(crate) fn quote_recurring_input(
@@ -28,6 +56,7 @@ impl ShipmentSystem {
         supply.quote(
             input,
             buyer,
+            None,
             entrance,
             outside_quote,
             allocator,
@@ -40,8 +69,32 @@ impl ShipmentSystem {
         )
     }
 
+    /// Repairs only the missing part of an accepted buyer's input after source withdrawal.
+    /// Retained tranches keep their quantities/prices; the full requirement prices buffers.
+    /// Commit with `extend_inputs_for` inside the enclosing revalidation transaction.
+    pub(crate) fn quote_missing_recurring_input(
+        &mut self,
+        supply: &mut super::RecurringSupply,
+        input: crate::simulation::economy::operation::InputRequirement,
+        owner: usize,
+        buyer: Option<usize>,
+        entrance: &BuildingEntrance,
+        outside_quote: Option<f32>,
+        allocator: &BuildingAllocator,
+        catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+        goods_multiplier: f32,
+    ) -> crate::simulation::economy::operation::InputSupplyCosts {
+        supply.quote(input, buyer, Some(owner), entrance, outside_quote, allocator, catalog,
+            tuning, network, graph, &mut self.freight_route_cache, goods_multiplier)
+    }
+
     /// Prepares shared border sweeps once per road revision for prospective-site pricing.
-    /// Building placement retains these tables; warm preparation is O(K log K), where K is connected borders.
+    /// Building placement retains border tables and reserves geometry slots only for added buildings.
+    /// Warm preparation is O(K log K), where K is connected borders. Quotes lazily project
+    /// each requested door once per revision, without a city scan or query allocation.
     pub(crate) fn prepare_site_carrier_quotes(
         &mut self,
         allocator: &BuildingAllocator,
@@ -50,8 +103,9 @@ impl ShipmentSystem {
         borders: &[u32],
     ) {
         self.refresh_freight_route_cache(allocator, network);
+        self.freight_route_cache.prepare_buildings(allocator.buildings.len());
         self.freight_route_cache
-            .prepare_border_costs(borders, network, graph);
+            .prepare_border_costs(borders, allocator.buildings.len(), network, graph);
     }
 
     /// Prices a proposed door using the same physical route and fee as live dispatch.
@@ -89,8 +143,9 @@ impl ShipmentSystem {
         quotes: &mut [Option<f32>],
     ) {
         self.refresh_freight_route_cache(allocator, network);
+        self.freight_route_cache.prepare_buildings(allocator.buildings.len());
         self.freight_route_cache
-            .prepare_border_costs(borders, network, graph);
+            .prepare_border_costs(borders, allocator.buildings.len(), network, graph);
         quotes
             .par_iter_mut()
             .enumerate()

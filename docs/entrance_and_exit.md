@@ -1252,13 +1252,79 @@ another traffic scan or allocation. Hiring refreshes its border quotes on that r
 
 CCH customization uses `edge.base_cost` alone, matching flow-field costs and the free-flow
 contract above. Freight caches border sweeps and node-to-node costs. Complete quotes carry the
-traffic revision at which they were priced: unchanged traffic reuses them in O(log cached quotes),
+traffic revision at which they were priced: unchanged traffic reuses them in expected O(1),
 while a changed revision lazily reprices only requested quotes, without clearing or reallocating
 the whole cache. A warmed cache and a cache rebuilt after load therefore price the same current
 traffic. Repricing a local quote evaluates at most four entrance combinations,
-with O(log cached node pairs) lookups; border quotes use the existing sweep plus at most two
-entrance options. Network searches occur only for missing node pairs or border sweeps. Base-cost
+with expected O(1) cached node-pair lookups; border quotes use the existing sweep plus at most two
+entrance options. Node-pair retention is bounded by O(roads + nodes) prepared storage. Missing
+pairs, including misses after that cache fills, use the exact cost-only CCH search with reusable
+generation-stamped labels and heaps; no unused node path is built. Complete building/building and
+border/building maps likewise have prepared O(roads + nodes + buildings) capacity; saturation
+computes an exact uncached quote. Entrance/index invalidation advances their generation in O(1),
+with a storage clear only on generation wrap. Border sweeps are prepared before the quotation
+loop, including physical dispatch, rather than allocated by a border quote. The saturation
+regression compares every directed fixture pair with independent CCH/border costs across
+invalidation and changing frontage delays, while all map capacities stay fixed.
+Recurring supply distinguishes geometry revisions from CCH metric revisions: price changes
+retain source/resource/component buckets and prepared replacement doors, but still invalidate
+quote freshness and refresh the maximum-speed search bound. Proposed suppliers use their own
+directed door route and current frontage delays through the same prepared node-cost scratch;
+their private supply handles never enter allocator-ID route caches. Exact rollback restores
+their quantity eligibility. The 453-test release economy run includes different proposed doors,
+unreachable variants, changing frontage delay and warm reuse across a CCH metric change
+(`/tmp/metrum-dem02-projected-sources-metric-tests.log`). Runtime replacement admission still
+requires its affected-buyer proof before activating these projected sources.
+Clearing query labels is O(1),
+not a scan over the prepared city capacity. Household customer feasibility preserves the ordinary
+direct frontage/node rules and checks directed pedestrian component reachability with a reusable
+stack when the existing constant-time cyclic-component proof does not apply. Base-cost
 customization invalidates those tables through a separate CCH metric revision.
+
+Freight delivery quotations also retain fixed lane projection and local access geometry in
+indexed, revision-stamped route-cache slots. Batch preparation reserves only added slots;
+quotations lazily prepare each requested entrance once per revision without allocation. Road
+or entrance invalidation advances the existing generation; it does not sweep building slots.
+Business-customer quotes reuse live building endpoints only when their supplied doors match
+exactly, so replacement owner IDs cannot alias proposed geometry. Frontage prices remain live.
+The same rank order, local access arithmetic and directed route checks price cached and proposed
+doors. `demand.md` owns the current tests, timing comparisons and remaining acceptance work.
+
+Commute quotations retain the ordinary planner's path and connector costs while reusing
+thread-local CCH search/reconstruction buffers and generation-stamped pedestrian lane labels.
+Cold sizing walks O(roads + CCH arcs + lanes/connectors) per caller/Rayon thread. Heap capacity
+additionally reflects boundary-edge states: its CCH bound is the sum over nodes of
+`(road degree + 1) * upward arc count`, rather than just the number of arcs. Subsequent
+queries reuse that storage, including the exact directed connector fallback; actual agent plans
+still own their returned path. Commute quotations additionally retain exact network-leg results
+in direct slots bounded by O(roads + nodes) per worker. Keys include mode, both nodes and both
+lanes; a collision or miss runs the ordinary exact query. Topology/CCH metric revisions clear
+these results, while door-local and frontage costs remain priced separately. Repeated job scans
+retain visited labels per worker instead of allocating them per Rayon task. Prepared-storage
+regressions compare paths/costs across metric changes and broken pedestrian connectors, test
+cached failures and changed door/frontage terms, and check that query buffers do not grow.
+Full trip selection now uses the same prepared exact quotations. Only the winning building
+trip reconstructs an owned route; border and network-replan candidates retain their winning
+path in worker scratch and copy it once after selection. Pedestrian fallback predecessors,
+connector frontiers and flow-field paths also reuse prepared buffers. Cost-only callers do not
+prepare these additional full-route buffers, and invalid/zero-hop requests avoid graph-sized
+preparation. Warm storage remains bounded by roads, nodes, lanes and connector links, alongside
+the existing degree-weighted CCH query bound. The final stored agent route remains an owned
+product. A test-only copy of the former allocating planner compares exact cost bits, ranks,
+paths and access flags; the current source audit finds owned query wrappers only in tests.
+`demand.md` records validation for the active follow-up; the figures below are historical.
+
+The current DEM-02 performance follow-up, with 25 passing pathing tests, indexes CCH labels directly
+by the original road endpoint. Each direction prepares two slots per road plus one slot for
+its exact query-origin context, including nonincident incoming edges. Generation stamps keep
+warm clearing and lookup O(1), with no hash lookup or allocation. Owned-path callers reuse
+thread-local search/reconstruction scratch as well; their returned node vector remains owned.
+Existing graph-generation checks rebuild this derived storage after topology changes. Invalid
+and same-node requests bypass city-sized preparation. The final build passes 2,264 library tests,
+all growth/reload checks and the unchanged saved-town year, with only the known utility assertion
+failing. Matched hourly timing improves 7.1613 → 6.9396 ms; daily timing shows no significant
+change. The larger DEM-02 performance regression remains open.
+`demand.md` owns the measured profile, correctness results and performance acceptance boundary.
 
 Format 75 also preserves each agent's speed, planned target/activity, network-replan failure
 count, active lane-change origin/distance/length, overtaking timers and employment lock/unpaid

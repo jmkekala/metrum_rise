@@ -145,6 +145,16 @@ struct HomeJobBuildScratch {
 }
 
 impl HomeJobBuildScratch {
+    fn with<T>(query: impl FnOnce(&mut Self) -> T) -> T {
+        thread_local! {
+            // Rayon may create many tasks per worker. Keep visited labels with the worker,
+            // advancing their query epoch instead of allocating for each task partition.
+            static JOB_QUERY: std::cell::RefCell<HomeJobBuildScratch> =
+                std::cell::RefCell::new(HomeJobBuildScratch::new());
+        }
+        JOB_QUERY.with_borrow_mut(query)
+    }
+
     fn new() -> Self {
         Self {
             seen_entries: Vec::new(),
@@ -1282,7 +1292,7 @@ fn build_home_job_options(
     let exact_entrance_cache_available = allocator.entrances.len() == allocator.buildings.len();
     let builds: Vec<_> = keys
         .par_iter()
-        .map_init(HomeJobBuildScratch::new, |scratch, &key| {
+        .map(|&key| HomeJobBuildScratch::with(|scratch| {
             let mut route_entries = [EMPTY_WORKPLACE_ROUTE_ENTRY; JOB_ROUTE_SCAN_CANDIDATES];
             let mut route_entry_count = 0usize;
             let options = build_home_job_options_for_key(
@@ -1311,7 +1321,7 @@ fn build_home_job_options(
                 route_entry_count: route_entry_count as u8,
                 route_entries,
             }
-        })
+        }))
         .collect();
 
     let mut home_options = BTreeMap::new();
@@ -1776,6 +1786,32 @@ fn cached_commute_seconds(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worker_job_scan_reuses_labels_between_tasks_and_after_epoch_wrap() {
+        let capacity = HomeJobBuildScratch::with(|scratch| {
+            scratch.begin_query(32);
+            assert!(scratch.mark_seen(7));
+            assert!(!scratch.mark_seen(7));
+            scratch.seen_entries.capacity()
+        });
+        for _ in 0..16 {
+            HomeJobBuildScratch::with(|scratch| {
+                scratch.begin_query(32);
+                assert!(scratch.mark_seen(7));
+                assert!(!scratch.mark_seen(7));
+                assert_eq!(scratch.seen_entries.capacity(), capacity);
+            });
+        }
+        HomeJobBuildScratch::with(|scratch| {
+            scratch.seen_epoch = u32::MAX;
+            scratch.begin_query(32);
+            assert_eq!(scratch.seen_epoch, 1);
+            assert!(scratch.mark_seen(7));
+            assert!(!scratch.mark_seen(7));
+            assert_eq!(scratch.seen_entries.capacity(), capacity);
+        });
+    }
 
     #[test]
     fn job_search_keeps_farther_candidates_that_can_win_a_capped_commute_tie() {

@@ -38,7 +38,7 @@ impl ShipmentSystem {
         self.decrement_building_cooldowns(allocator);
         let cooldowns_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
-        let mut planning = FreightPlanningContext::build(self, allocator, graph);
+        let mut planning = FreightPlanningContext::build(self, allocator, transit_network, graph);
         let planning_context_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
         self.create_profile_input_shipments(

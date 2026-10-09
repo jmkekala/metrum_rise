@@ -9,6 +9,8 @@ use crate::simulation::buildings::allocator::BuildingAllocator;
 use rayon::prelude::*;
 
 mod routing;
+mod revalidation;
+pub(crate) mod business;
 pub(crate) use routing::ConsumerMarket;
 
 #[derive(Clone, Copy, Debug)]
@@ -35,6 +37,7 @@ struct Claim {
 struct Receipt {
     slot: usize,
     acquired: Funds,
+    next: usize,
 }
 
 /// Reusable per-family consumer accounts; neither savings nor another family's income
@@ -42,25 +45,30 @@ struct Receipt {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ConsumerBudgets {
     categories: Vec<Category>,
+    previous_categories: Vec<Category>,
     category_by_resource: Vec<usize>,
     households: Vec<(u16, f64)>,
     funds: Vec<Funds>,
     staged: Vec<Claim>,
     staged_slots: Vec<usize>,
     committed: Vec<Receipt>,
-    owners: Vec<(usize, usize)>,
+    owners: Vec<usize>,
+    free_receipt: usize,
     releasing_owner: Option<usize>,
     affordable_residents: f64,
+    revalidation: revalidation::Revalidation,
 }
 
 impl ConsumerBudgets {
     /// Withdraws the census while retaining reusable allocations for the next refresh.
     pub(crate) fn clear(&mut self) {
+        debug_assert!(!self.revalidation.is_active());
         self.households.clear();
         self.funds.clear();
         self.staged.clear();
         self.staged_slots.clear();
         self.committed.clear();
+        self.free_receipt = usize::MAX;
         self.owners.clear();
         self.releasing_owner = None;
         self.affordable_residents = 0.0;
@@ -69,6 +77,7 @@ impl ConsumerBudgets {
     /// Prepares actual recurring family budgets in O(households * consumer categories +
     /// authored profile ports). Benefit claims are ordered; independent category accounts
     /// are filled with Rayon. All quote/journal storage is reserved before any claims.
+    #[cfg(test)]
     pub(crate) fn reset(
         &mut self,
         households: &[Household],
@@ -78,6 +87,23 @@ impl ConsumerBudgets {
         policy: &CityFiscalPolicy,
         treasury: f64,
     ) {
+        self.prepare_budgets(households, allocator, catalog, tuning, policy, treasury);
+        self.reset_claims();
+    }
+
+    // Refresh immutable account inputs before deciding whether an accepted book can survive.
+    // The existing ordered benefit traversal compares each row, including skipped families.
+    fn prepare_budgets(
+        &mut self,
+        households: &[Household],
+        allocator: &BuildingAllocator,
+        catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning,
+        policy: &CityFiscalPolicy,
+        treasury: f64,
+    ) -> bool {
+        debug_assert!(!self.revalidation.is_active());
+        self.previous_categories.clone_from(&self.categories);
         self.categories.clear();
         self.categories.reserve(catalog.resource_count());
         self.category_by_resource
@@ -116,10 +142,15 @@ impl ConsumerBudgets {
                 0.0
             };
         }
+        let mut unchanged = self.households.len() == households.len()
+            && self.categories.len() == self.previous_categories.len()
+            && self.categories.iter().zip(&self.previous_categories).all(|(a, b)| {
+                a.resource == b.resource
+                    && a.units_per_resident.to_bits() == b.units_per_resident.to_bits()
+                    && a.budget_share.to_bits() == b.budget_share.to_bits()
+            });
         self.households.resize(households.len(), (0, 0.0));
-        self.households
-            .par_iter_mut()
-            .for_each(|value| *value = (0, 0.0));
+        let mut next_household = 0;
         self.affordable_residents = 0.0;
         let gross_basket = consumer_basket_cost(catalog, policy.household_vat_rate);
         visit_consumer_budgets(
@@ -130,7 +161,14 @@ impl ConsumerBudgets {
             policy,
             treasury,
             |index, members, spending| {
+                for previous in &mut self.households[next_household..index] {
+                    unchanged &= previous.0 == 0 && previous.1.to_bits() == 0.0_f64.to_bits();
+                    *previous = (0, 0.0);
+                }
+                let previous = self.households[index];
+                unchanged &= previous.0 == members && previous.1.to_bits() == spending.to_bits();
                 self.households[index] = (members, spending);
+                next_household = index + 1;
                 self.affordable_residents += if gross_basket > 0.0 {
                     (spending / gross_basket).min(f64::from(members))
                 } else {
@@ -138,9 +176,18 @@ impl ConsumerBudgets {
                 };
             },
         );
+        for previous in &mut self.households[next_household..] {
+            unchanged &= previous.0 == 0 && previous.1.to_bits() == 0.0_f64.to_bits();
+            *previous = (0, 0.0);
+        }
+        unchanged
+    }
+
+    fn reset_claims(&mut self) {
+        debug_assert!(!self.revalidation.is_active());
         let count = self.categories.len();
         self.funds
-            .resize(households.len() * count, Funds::default());
+            .resize(self.households.len() * count, Funds::default());
         if count > 0 {
             self.funds
                 .par_chunks_mut(count)
@@ -157,7 +204,10 @@ impl ConsumerBudgets {
                         };
                         remainder -= budget;
                         *account = Funds {
-                            units: f64::from(members) * category.units_per_resident,
+                            // Match the physical f32 consumption product before keeping
+                            // an f64 reservation ledger. Promoting the authored rate first
+                            // can turn 1000 * 0.1 into 100.00000149 and an extra employee.
+                            units: f64::from(f32::from(members) * category.units_per_resident as f32),
                             gross_spending: budget,
                         };
                     }
@@ -168,20 +218,22 @@ impl ConsumerBudgets {
         self.staged_slots.resize(self.funds.len(), usize::MAX);
         self.staged_slots.fill(usize::MAX);
         self.committed.clear();
-        self.owners.fill((0, 0));
+        self.owners.fill(usize::MAX);
+        self.free_receipt = usize::MAX;
         self.releasing_owner = None;
     }
 
     fn prepare_owners(&mut self, owners: usize, output_ports: usize) {
-        self.owners.resize(owners, (0, 0));
-        // Each accepted quote exhausts an account or finishes one output port. A live
-        // owner can be replaced once per planning pass; anonymous new sites need no receipt.
+        self.owners.resize(owners, usize::MAX);
+        // Initial reservation estimate; replaced owners recycle their previous cells.
+        // General multi-owner fragmentation still needs capacity preparation between proofs.
         self.committed
             .reserve(2 * (self.funds.len() + output_ports));
     }
 
     fn copy_reservations_from(&mut self, source: &Self) {
         debug_assert!(source.staged.is_empty());
+        debug_assert!(!self.revalidation.is_active() && !source.revalidation.is_active());
         self.categories.clone_from(&source.categories);
         self.category_by_resource
             .clone_from(&source.category_by_resource);
@@ -198,11 +250,13 @@ impl ConsumerBudgets {
                 .saturating_sub(self.committed.len()),
         );
         self.owners.clone_from(&source.owners);
+        self.free_receipt = source.free_receipt;
         self.releasing_owner = None;
         self.affordable_residents = source.affordable_residents;
     }
 
     fn stage(&mut self, slot: usize) -> usize {
+        self.journal_funds(slot);
         if self.staged_slots[slot] == usize::MAX {
             self.staged_slots[slot] = self.staged.len();
             self.staged.push(Claim {
@@ -217,12 +271,13 @@ impl ConsumerBudgets {
     fn release_owner(&mut self, owner: usize) {
         debug_assert!(self.staged.is_empty());
         self.releasing_owner = Some(owner);
-        let (first, end) = self.owners.get(owner).copied().unwrap_or((0, 0));
-        for index in first..end {
+        let mut index = self.owners.get(owner).copied().unwrap_or(usize::MAX);
+        while index != usize::MAX {
             let receipt = self.committed[index];
             self.stage(receipt.slot);
             self.funds[receipt.slot].units += receipt.acquired.units;
             self.funds[receipt.slot].gross_spending += receipt.acquired.gross_spending;
+            index = receipt.next;
         }
     }
 
@@ -231,20 +286,83 @@ impl ConsumerBudgets {
             self.releasing_owner
                 .is_none_or(|released| released == owner)
         );
-        let first = self.committed.len();
-        for claim in &self.staged {
+        debug_assert!(self.owners[owner] == usize::MAX || self.releasing_owner == Some(owner));
+        self.retire(owner);
+        // Prepending in reverse preserves the original household/category quote order.
+        for staged in (0..self.staged.len()).rev() {
+            let claim = self.staged[staged];
             if claim.acquired.units > 0.0 {
-                self.committed.push(Receipt {
+                let receipt = Receipt {
                     slot: claim.slot,
                     acquired: claim.acquired,
-                });
+                    next: self.owners[owner],
+                };
+                let index = if self.free_receipt == usize::MAX {
+                    let index = self.committed.len();
+                    assert!(index < self.committed.capacity(), "household receipts require capacity preflight");
+                    self.committed.push(receipt);
+                    index
+                } else {
+                    let index = self.free_receipt;
+                    self.journal_receipt(index);
+                    self.free_receipt = self.committed[index].next;
+                    self.committed[index] = receipt;
+                    index
+                };
+                self.owners[owner] = index;
             }
         }
-        self.owners[owner] = (first, self.committed.len());
+        self.releasing_owner = None;
         self.accept();
     }
 
+    fn check_accept_capacity(&self, owner: usize) -> Result<(), usize> {
+        let mut missing = self.staged.iter().filter(|claim| claim.acquired.units > 0.0).count();
+        for first in [self.owners[owner], self.free_receipt] {
+            let mut index = first;
+            while index != usize::MAX && missing > 0 {
+                missing -= 1;
+                index = self.committed[index].next;
+            }
+        }
+        let required = self.committed.len() + missing;
+        if required > self.committed.capacity() { Err(required) } else { Ok(()) }
+    }
+
+    fn reserve_receipts(&mut self, required: usize) {
+        debug_assert!(!self.revalidation.is_active());
+        self.committed.reserve(required.saturating_sub(self.committed.len()));
+        self.revalidation.follow_receipts(self.committed.capacity());
+    }
+
+    fn retire(&mut self, owner: usize) {
+        self.journal_owner(owner);
+        let mut index = self.owners[owner];
+        while index != usize::MAX {
+            let next = self.committed[index].next;
+            self.journal_receipt(index);
+            self.committed[index].next = self.free_receipt;
+            self.free_receipt = index;
+            index = next;
+        }
+        self.owners[owner] = usize::MAX;
+    }
+
+    fn reserved_units(&self, owner: usize, resource: u16) -> f64 {
+        let Some(&category) = self.category_by_resource.get(resource as usize) else { return 0.0; };
+        if category == usize::MAX { return 0.0; }
+        let mut units = 0.0;
+        let mut index = self.owners.get(owner).copied().unwrap_or(usize::MAX);
+        while index != usize::MAX {
+            let receipt = self.committed[index];
+            if receipt.slot % self.categories.len() == category { units += receipt.acquired.units; }
+            index = receipt.next;
+        }
+        units
+    }
+
     /// Catalog-priced diagnostic total, calculated from the same per-family budget census.
+    #[cfg(test)]
     pub(crate) fn affordable_residents(&self) -> f64 {
         self.affordable_residents
     }
@@ -306,6 +424,7 @@ impl ConsumerBudgets {
 
     /// Commits a completely funded operation's customers in O(touched accounts).
     pub(crate) fn accept(&mut self) {
+        if let Some(owner) = self.releasing_owner.take() { self.retire(owner); }
         for claim in &self.staged {
             self.staged_slots[claim.slot] = usize::MAX;
         }

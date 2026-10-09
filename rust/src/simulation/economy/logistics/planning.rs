@@ -11,6 +11,7 @@ use crate::simulation::economy::definitions::{
     load_runtime_economy_tuning,
 };
 use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::types::TransitFlags;
 
 use super::data::ShipmentSystem;
@@ -44,6 +45,7 @@ impl FreightPlanningContext {
     pub(super) fn build(
         shipments: &mut ShipmentSystem,
         allocator: &BuildingAllocator,
+        network: &TransitNetwork,
         graph: &RegionGraph,
     ) -> Self {
         let tuning = load_runtime_economy_tuning()
@@ -63,7 +65,9 @@ impl FreightPlanningContext {
             &reservations,
             tuning.logistics.truck_payload_kg,
         );
-        let route_cache = std::mem::take(&mut shipments.freight_route_cache);
+        let mut route_cache = std::mem::take(&mut shipments.freight_route_cache);
+        route_cache.prepare_buildings(allocator.buildings.len());
+        route_cache.prepare_border_costs(&border_nodes, allocator.buildings.len(), network, graph);
 
         Self {
             catalog,

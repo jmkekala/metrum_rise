@@ -113,6 +113,7 @@ fn benchmark_demand_action_lookup() {
                 &terrain,
                 demand.runtime_catalog(),
                 demand.runtime_tuning(),
+                &mut (),
             ));
         };
         for _ in 0..3 {
@@ -237,6 +238,7 @@ fn test_demand_building_spawn_plan_executes_from_hourly_budget() {
         &terrain,
         demand.runtime_catalog(),
         demand.runtime_tuning(),
+        &mut (),
     );
 
     assert!(
@@ -426,6 +428,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         &terrain,
         demand.runtime_catalog(),
         demand.runtime_tuning(),
+        &mut (),
     );
 
     assert_eq!(
@@ -517,6 +520,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         &blocked_terrain,
         demand.runtime_catalog(),
         demand.runtime_tuning(),
+        &mut (),
     );
     let building = allocator
         .buildings
@@ -597,6 +601,7 @@ fn test_commercial_demand_spawn_startup_budget_includes_first_import_cost() {
         &terrain,
         demand.runtime_catalog(),
         demand.runtime_tuning(),
+        &mut (),
     );
 
     let building = allocator

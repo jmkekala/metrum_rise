@@ -15,7 +15,7 @@ use super::households::{
 };
 use super::logistics::{RecurringSupply, ShipmentSystem, building_outputs_can_export_to_owa, freight_goods_multiplier, freight_price_phase};
 use super::operation::{
-    OperatingCosts, OperationPlan, OperationPrices, working_capital_assets,
+    FundedOperation, OperatingCosts, OperationPlan, OperationPrices, working_capital_assets,
     working_capital_assets_at_prices,
 };
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
@@ -23,13 +23,41 @@ use crate::simulation::network::{TransitNetwork, graph::RegionGraph};
 
 const MARKET_CHUNK: usize = 256;
 
+mod closure;
+mod household_claims;
+
 /// Reused building/resource scratch. Employment and admission read the same funded capacities.
 #[derive(Default)]
 pub(crate) struct JobFunding {
     /// Maximum live employees supported by both recurring sales and working capital.
     pub(crate) capacities: Vec<u32>,
+    /// Complete closure attempts in the latest census, for exact scaling diagnostics.
+    #[cfg(test)]
+    pub(crate) closure_passes: usize,
     // Accepted recipe activity, which can be smaller than the rounded worker fraction.
     activities: Vec<f32>,
+    // Recurring profit and working-capital surplus of each accepted operation quote.
+    // These are financing limits, not additional sales; customer validation remains separate.
+    headroom: Vec<[f64; 2]>,
+    // Whether the current-staff quote replaced its import alternative. Only that
+    // accepted local operation can restore its receipts as an expansion fallback.
+    local_input_backing: Vec<bool>,
+    // Registry classification is immutable within one census, including closure retries.
+    service_flags: Vec<bool>,
+    // Provisional quotes remain private until the joint customer/source proof succeeds.
+    closure_ceilings: Vec<u32>,
+    // Joint customer limits retain fractional production independently of rounded payroll.
+    closure_activity: Vec<f32>,
+    // Necessary customer upper bounds propagate complete buyer withdrawal without a
+    // fresh city-wide quotation for every preceding link in a supplier chain.
+    potential_customers: closure::PotentialCustomers,
+    offered_activity: Vec<f32>,
+    // A physical repair touches only buyers of withdrawn provisional production.
+    input_repairs: Vec<usize>,
+    input_repair_seen: Vec<bool>,
+    input_repair_headroom: Vec<[f64; 2]>,
+    /// Jointly financed customer commitments, forked with the input book for projects.
+    pub(crate) business: super::customers::business::BusinessMarket,
     /// Fiscal staffing ceilings, including unfinished services; these are not live jobs.
     pub(crate) service_capacities: Vec<u32>,
     /// Paid goods and unsettled sales available to the corresponding building.
@@ -45,6 +73,10 @@ pub(crate) struct JobFunding {
     // Sparse output-port quotas; negative entries retain the non-household buyer path.
     customer_offsets: Vec<usize>,
     customer_units: Vec<f64>,
+    // Exact quote/outcome prefixes, retained only across matching budget/access/request inputs.
+    household_quotes: household_claims::HouseholdQuotes,
+    // Staffed output already promised to households, excluded from business input offers.
+    household_production: Vec<f64>,
     // Stable counting-sort scratch: authored supplier phases, then live building index.
     local_order: Vec<usize>,
     phase_offsets: Vec<usize>,
@@ -64,7 +96,7 @@ struct InputFunding<'a> {
     tuning: &'a RuntimeEconomyTuning,
     buyer: usize,
     outside: Option<f32>,
-    imported: (u32, f32),
+    retained: (u32, f32),
     goods_multiplier: f32,
 }
 
@@ -111,6 +143,47 @@ fn live(building: &Building) -> bool {
 }
 
 impl JobFunding {
+    /// Forces ordinary household quotation in tests comparing the exact closure outcomes.
+    #[cfg(test)]
+    pub(crate) fn disable_household_quote_replay(&mut self) {
+        self.household_quotes.disabled = true;
+    }
+
+    /// Uses ordinary full closure replay as the oracle for zero-customer propagation tests.
+    #[cfg(test)]
+    pub(crate) fn disable_customer_cascade(&mut self) {
+        self.potential_customers.disabled = true;
+    }
+
+    /// Latest census's reused requests and changed-prefix reconstructions, for regressions.
+    #[cfg(test)]
+    pub(crate) fn household_quote_replay_counts(&self) -> (usize, usize) {
+        (self.household_quotes.reused, self.household_quotes.rebuilt)
+    }
+
+    /// Requests replayed from the preceding census, excluding retries inside this census.
+    #[cfg(test)]
+    pub(crate) fn household_cross_census_replays(&self) -> usize {
+        self.household_quotes.census_reused
+    }
+
+    /// Retains one accepted live operation for affected-input repricing during construction.
+    /// O(1) apart from authored recipe-port area lookup; callers copy rows once per pass.
+    pub(crate) fn funded_operation(&self, index: usize, building: &Building,
+        profile: &EconomyProfileRuntime, utilities: [f32; 3], tuning: &RuntimeEconomyTuning,
+        fiscal: &CityFiscalPolicy, minute: u16) -> Option<FundedOperation> {
+        let workers = self.capacities.get(index).copied().unwrap_or(0);
+        if workers == 0 { return None; }
+        Some(FundedOperation {
+            profile: profile.runtime_id,
+            plan: OperationPlan { workers, activity: self.activities[index],
+                area: output_area_scale_for_building(building, profile) },
+            prices: closure::operation_prices(building, self.carrier_quotes[index],
+                freight_goods_multiplier(profile, building.zone_type, tuning, minute), utilities, tuning, fiscal),
+            headroom: self.headroom[index],
+        })
+    }
+
     /// Net-input multiplier for an established funded buyer, capped by its current staff.
     /// Public invoices use the fiscal ceiling independently of material availability; private
     /// buyers use their accepted recipe activity. O(1), including explicit work-area scaling.
@@ -182,6 +255,7 @@ impl JobFunding {
     pub(crate) fn clear(&mut self) {
         self.capacities.clear();
         self.activities.clear();
+        self.headroom.clear();
         self.service_capacities.clear();
         self.freight_capital.clear();
         self.quote_revision = None;
@@ -203,6 +277,7 @@ impl JobFunding {
         if let Some(capital) = self.freight_capital.get_mut(index) {
             *capital = 0.0;
         }
+        if let Some(headroom) = self.headroom.get_mut(index) { *headroom = [0.0; 2]; }
         self.quote_revision = None;
         self.input_supply.invalidate();
     }
@@ -210,6 +285,8 @@ impl JobFunding {
     /// Moves jobs and fiscal/cargo records in O(mapping size + new slots), including undo growth.
     /// Scratch is reused; unmoved buildings need no scan or copy.
     pub(crate) fn remap_buildings(&mut self, mapping: &std::collections::HashMap<usize, usize>) {
+        // A remap invalidates the complete input/customer quotation below.
+        self.headroom.clear();
         self.remapped_capacities.clear();
         let mut required = 0;
         for (&old, &new) in mapping {
@@ -324,10 +401,21 @@ impl JobFunding {
         service_capacity: impl Fn(usize, u32, &EconomyProfileRuntime) -> u32 + Sync,
         minute_of_day: u16,
     ) {
+        let timing = crate::debug::category_enabled("economy");
+        let mut phase = timing.then(std::time::Instant::now);
+        let mut times = [0.0; 7];
+        let mut lap = |slot: usize| {
+            if let Some(previous) = phase {
+                times[slot] += previous.elapsed().as_secs_f64() * 1000.0;
+                phase = Some(std::time::Instant::now());
+            }
+        };
         self.pricing_phase = freight_price_phase(tuning, minute_of_day);
         let count = allocator.buildings.len();
         self.capacities.resize(count, 0);
         self.activities.resize(count, 0.0);
+        self.headroom.resize(count, [0.0; 2]);
+        self.local_input_backing.resize(count, false);
         self.service_capacities.resize(count, 0);
         self.freight_capital.resize(count, 0.0);
         let revision = (
@@ -356,18 +444,23 @@ impl JobFunding {
             self.quoted_border_nodes.clone_from(&self.border_nodes);
         }
         logistics.write_freight_working_capital(&mut self.freight_capital);
+        lap(0);
         let resources = catalog.resource_count() + 1;
+        self.potential_customers.prepare(count);
         self.market.resize(resources, [0.0; 2]);
         self.market.fill([0.0; 2]);
         self.market_chunks
             .resize(count.div_ceil(MARKET_CHUNK) * resources, [0.0; 2]);
         self.market_chunks
             .par_chunks_mut(resources)
+            .zip(self.potential_customers.counted.par_chunks_mut(MARKET_CHUNK))
             .enumerate()
-            .for_each(|(chunk, totals)| {
+            .for_each(|(chunk, (totals, counted))| {
                 totals.fill([0.0; 2]);
                 let first = chunk * MARKET_CHUNK;
-                for building in &allocator.buildings[first..(first + MARKET_CHUNK).min(count)] {
+                for (building, counted) in allocator.buildings[first..(first + MARKET_CHUNK).min(count)]
+                    .iter().zip(counted) {
+                    *counted = false;
                     if !live(building) {
                         continue;
                     }
@@ -379,6 +472,7 @@ impl JobFunding {
                     let area = output_area_scale_for_building(building, profile);
                     let physical = physical_worker_capacity_for_profile(building, profile);
                     let activity = (building.worker_count as f32 / physical.max(1) as f32).min(1.0);
+                    *counted = building.worker_count > 0 && physical > 0 && !profile.inputs.is_empty();
                     for output in &profile.outputs {
                         totals[output.resource_runtime_id as usize][0] +=
                             f64::from(profile.net_output_units_per_day(output) * area);
@@ -403,7 +497,8 @@ impl JobFunding {
                     total[1] += chunk[resource][1];
                 }
             });
-        self.customers.reset(
+        lap(1);
+        let retained_customers = self.customers.refresh(
             households,
             allocator,
             catalog,
@@ -413,36 +508,102 @@ impl JobFunding {
             network,
             graph,
         );
-        let residents = self.customers.affordable_residents();
-        for profile in catalog.all_profiles() {
-            if profile.kind == EconomyProfileRuntimeKind::DemandSink {
-                for input in &profile.inputs {
-                    self.market[input.resource_runtime_id as usize][1] +=
-                        f64::from(profile.consumption_rate_per_resident) * residents;
+        lap(2);
+        self.customer_offsets.resize(count + 1, 0);
+        self.local_order.resize(count, 0);
+        self.phase_offsets.resize(catalog.funding_phase_count(), 0);
+        self.phase_offsets.fill(0);
+        let mut ports = 0;
+        let mut inputs = 0;
+        let mut consumer_firms = 0;
+        let mut consumer_ports = 0;
+        let mut maximum_consumer_ports = 0;
+        for (index, building) in allocator.buildings.iter().enumerate() {
+            self.customer_offsets[index] = ports;
+            self.phase_offsets[catalog.funding_phase(building.economy_profile_runtime_id)] += 1;
+            if let Some(profile) = catalog.profile_by_runtime_id(building.economy_profile_runtime_id) {
+                ports += profile.outputs.len();
+                inputs += profile.inputs.len();
+                if profile.outputs.iter().any(|port| self.customers.consumes(port.resource_runtime_id)) {
+                    consumer_firms += 1;
+                    consumer_ports += profile.outputs.len();
+                    maximum_consumer_ports = maximum_consumer_ports.max(profile.outputs.len());
                 }
             }
         }
-        self.customer_offsets.resize(count + 1, 0);
-        let mut ports = 0;
-        for (index, building) in allocator.buildings.iter().enumerate() {
-            self.customer_offsets[index] = ports;
-            ports += catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
-                .map_or(0, |profile| profile.outputs.len());
-        }
         self.customer_offsets[count] = ports;
+        // Immutable recipe order is prepared once, not once per closure attempt. Counts
+        // and scatter cursors are dependent; stable building order keeps claims deterministic.
+        let mut first = 0;
+        for offset in &mut self.phase_offsets {
+            let end = first + *offset;
+            *offset = first;
+            first = end;
+        }
+        self.potential_customers.reserve_inputs(inputs);
+        for (index, building) in allocator.buildings.iter().enumerate() {
+            if self.potential_customers.counted[index] { self.potential_customers.owners.push(index); }
+            let next = &mut self.phase_offsets[catalog.funding_phase(building.economy_profile_runtime_id)];
+            self.local_order[*next] = index;
+            *next += 1;
+        }
         self.customer_units.resize(ports, -1.0);
-        self.customer_units.par_iter_mut().for_each(|units| *units = -1.0);
+        let household_census = household_claims::Census::new(allocator, catalog, fiscal, network, graph);
+        #[cfg(test)]
+        let retained_customers = if self.household_quotes.disabled {
+            if retained_customers {
+                self.customers.reset(households, allocator, catalog, tuning, fiscal,
+                    treasury_balance, network, graph);
+            }
+            false
+        } else { retained_customers };
+        self.household_quotes.prepare(consumer_firms, consumer_ports, maximum_consumer_ports, retained_customers);
+        self.household_production.resize(ports, 0.0);
+        self.customer_units.par_iter_mut().zip(&mut self.household_production)
+            .with_min_len(MARKET_CHUNK).for_each(|(units, production)| {
+                *units = -1.0;
+                *production = 0.0;
+            });
         let utilities = local_utility_service_costs(catalog)
             .map(|price| price * tuning.owa_import_price_multiplier);
+        self.closure_ceilings.resize(count, 0);
+        self.closure_activity.resize(count, 1.0);
+        self.service_flags.resize(count, false);
+        self.offered_activity.resize(count, 1.0);
+        self.closure_ceilings.par_iter_mut().zip(&mut self.closure_activity)
+            .zip(&mut self.offered_activity).zip(&mut self.service_flags)
+            .zip(&allocator.buildings).with_min_len(MARKET_CHUNK)
+            .for_each(|((((ceiling, activity), offered), service), building)| {
+                *ceiling = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
+                    .map_or(0, |profile| physical_worker_capacity_for_profile(building, profile));
+                *activity = 1.0;
+                *offered = 1.0;
+                *service = allocator.is_city_service_building(building);
+            });
+        #[cfg(test)]
+        { self.closure_passes = 0; }
+        let mut first = true;
+        loop {
+        #[cfg(test)]
+        { self.closure_passes += 1; }
+        if !first {
+            self.household_quotes.restart(&mut self.customers, &household_census);
+            self.customer_units.fill(-1.0);
+        }
+        first = false;
         self.capacities
             .par_iter_mut()
             .zip(self.service_capacities.par_iter_mut())
             .zip(self.activities.par_iter_mut())
+            .zip(self.headroom.par_iter_mut())
+            .zip(self.local_input_backing.par_iter_mut())
             .enumerate()
-            .for_each(|(index, ((capacity, service), activity))| {
+            .for_each(|(index, ((((capacity, service), activity), headroom), local_backing))| {
                 *capacity = 0;
                 *service = 0;
                 *activity = 0.0;
+                *headroom = [0.0; 2];
+                *local_backing = false;
                 let building = &allocator.buildings[index];
                 let Some(profile) =
                     catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
@@ -458,7 +619,7 @@ impl JobFunding {
                     carrier_quote: self.carrier_quotes[index].filter(|_| goods_multiplier.is_finite()).unwrap_or(f32::INFINITY),
                     truck_payload: tuning.logistics.truck_payload_kg,
                 };
-                if allocator.is_city_service_building(building) {
+                if self.service_flags[index] {
                     *service = service_capacity(index, physical, profile).min(physical);
                     if live(building) {
                         *capacity = *service;
@@ -480,7 +641,7 @@ impl JobFunding {
                     }
                     return;
                 }
-                if !live(building) || physical == 0 {
+                if !live(building) || physical == 0 || self.closure_ceilings[index] == 0 {
                     return;
                 }
                 // Finite family claims commit serially below. Independent non-consumer
@@ -502,17 +663,20 @@ impl JobFunding {
                     self.freight_capital[index],
                     None,
                     None,
+                    headroom,
+                    self.closure_ceilings[index],
+                    self.closure_activity[index],
                 );
             });
+        lap(3);
         for (index, building) in allocator.buildings.iter().enumerate() {
-            if !live(building) || allocator.is_city_service_building(building) { continue; }
+            if !live(building) || self.service_flags[index] { continue; }
             let Some(profile) = catalog.profile_by_runtime_id(building.economy_profile_runtime_id) else { continue; };
             if !profile.outputs.iter().any(|port| self.customers.consumes(port.resource_runtime_id)) { continue; }
             let physical = physical_worker_capacity_for_profile(building, profile);
-            if physical == 0 { continue; }
+            if physical == 0 || self.closure_ceilings[index] == 0 { continue; }
             let units = &mut self.customer_units[self.customer_offsets[index]..self.customer_offsets[index + 1]];
-            reserve_consumer_outputs(&mut self.customers, units, index, building, profile,
-                fiscal, allocator, network, graph);
+            self.household_quotes.reserve(index, &mut self.customers, units, &household_census);
             let goods_multiplier = freight_goods_multiplier(profile, building.zone_type, tuning, minute_of_day);
             let prices = OperationPrices {
                 utilities,
@@ -526,127 +690,199 @@ impl JobFunding {
             (self.capacities[index], self.activities[index]) = funded_private_operation(
                 building, profile, catalog, physical, prices, &self.market,
                 exports.then_some(tuning.owa_export_price_multiplier), self.freight_capital[index],
-                None, Some(units));
-            if self.capacities[index] > 0 {
-                self.customers.accept_for(index);
-            } else {
-                self.customers.reject();
-            }
+                None, Some(units), &mut self.headroom[index], self.closure_ceilings[index],
+                self.closure_activity[index]);
+            self.household_quotes.finish(self.capacities[index] > 0,
+                &mut self.customers, &household_census);
         }
+        lap(4);
         self.input_supply
-            .reset(allocator, graph, network, catalog, &self.activities);
-        if !self.input_supply.has_offers() {
-            return;
-        }
-        // Stable counting sort is O(buildings + authored phases), with reusable scratch.
-        // Counts and scatter cursors are dependent; keeping each phase in building order
-        // makes finite acceptance deterministic without a comparison sort or citywide retry.
-        self.local_order.resize(count, 0);
-        self.phase_offsets.resize(catalog.funding_phase_count(), 0);
-        self.phase_offsets.fill(0);
-        for building in &allocator.buildings {
-            self.phase_offsets[catalog.funding_phase(building.economy_profile_runtime_id)] += 1;
-        }
-        let mut first = 0;
-        for offset in &mut self.phase_offsets {
-            let end = first + *offset;
-            *offset = first;
-            first = end;
-        }
-        for (index, building) in allocator.buildings.iter().enumerate() {
-            let next = &mut self.phase_offsets[catalog.funding_phase(building.economy_profile_runtime_id)];
-            self.local_order[*next] = index;
-            *next += 1;
-        }
-        // Finite source claims are dependent: suppliers precede downstream recipes;
-        // cyclic recipes and sibling buyers retain stable building priority.
-        // Independent import-funded ceilings above remain parallel; they establish which
-        // currently staffed sources can offer recurring production without owner-funded sales.
-        for &index in &self.local_order {
-            let building = &allocator.buildings[index];
-            if !live(building) {
-                continue;
-            }
-            let Some(profile) = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
-            else {
-                continue;
-            };
-            if !self.input_supply.offers_inputs(profile) {
-                continue;
-            }
-            let physical = physical_worker_capacity_for_profile(building, profile);
-            if physical == 0 {
-                continue;
-            }
-            let exports = building_outputs_can_export_to_owa(building, profile)
-                && self.carrier_quotes[index].is_some()
-                && tuning.owa_export_price_multiplier > 0.0;
-            let goods_multiplier = freight_goods_multiplier(profile, building.zone_type, tuning, minute_of_day);
-            let prices = OperationPrices {
-                utilities,
-                property_tax: daily_property_tax(building.zone_type, building.level, fiscal),
-                imports: tuning.owa_import_price_multiplier * if goods_multiplier.is_finite() { goods_multiplier } else { 1.0 },
-                carrier_quote: self.carrier_quotes[index].filter(|_| goods_multiplier.is_finite()).unwrap_or(f32::INFINITY),
-                truck_payload: tuning.logistics.truck_payload_kg,
-            };
-            let imported_activity = self.activities[index];
-            let consumer = profile.outputs.iter().any(|port| self.customers.consumes(port.resource_runtime_id));
-            let units = &mut self.customer_units[self.customer_offsets[index]..self.customer_offsets[index + 1]];
-            let new_customers = consumer && self.capacities[index] == 0;
-            if new_customers {
-                reserve_consumer_outputs(&mut self.customers, units, index, building, profile,
-                    fiscal, allocator, network, graph);
-            }
-            let input_funding = InputFunding {
-                supply: &mut self.input_supply,
-                logistics,
-                allocator,
-                network,
-                graph,
-                tuning,
-                buyer: index,
-                outside: self.carrier_quotes[index],
-                imported: (self.capacities[index], self.activities[index]),
-                goods_multiplier,
-            };
-            if allocator.is_city_service_building(building) {
-                // Public payroll follows fiscal policy even when material delivery limits
-                // production. Reserve only the feasible input-backed part of that operation.
-                self.activities[index] = reserve_service_inputs(
+            .reset(allocator, graph, network, catalog, &self.offered_activity);
+        self.reserve_household_production(allocator, catalog, graph, true);
+        lap(5);
+        // Reserve current operations before offering inputs to prospective employees.
+        // Supplier phases and building order remain stable within both dependent passes.
+        // Fully staffed operations already searched their complete range in the first pass.
+        for current_staff in [true, false] {
+            for &index in &self.local_order {
+                let building = &allocator.buildings[index];
+                if !live(building) {
+                    continue;
+                }
+                let Some(profile) = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
+                else {
+                    continue;
+                };
+                let physical = physical_worker_capacity_for_profile(building, profile);
+                let service = self.service_flags[index];
+                let full_ceiling = if service { self.capacities[index] } else { self.closure_ceilings[index] };
+                if physical == 0 || full_ceiling == 0
+                    || (current_staff && building.worker_count == 0)
+                    || (!current_staff && building.worker_count >= full_ceiling) {
+                    continue;
+                }
+                if !current_staff {
+                    // Only this operation's current claim is returned for its larger quote.
+                    // Other staffed buyers retain their inputs throughout the expansion search.
+                    self.input_supply.release_owner(index, allocator, graph);
+                    // A rejected expansion restores the receipts backing its retained plan.
+                    // A partial local quote that lost to imports has no such backing: its
+                    // cheaper inventory valuation cannot silently replace the import proof.
+                    if !self.local_input_backing[index] { self.input_supply.accept(); }
+                }
+                if !self.input_supply.offers_inputs(profile) {
+                    self.input_supply.reject(allocator, graph);
+                    continue;
+                }
+                let ceiling = if current_staff { full_ceiling.min(building.worker_count) } else { full_ceiling };
+                let exports = building_outputs_can_export_to_owa(building, profile)
+                    && self.carrier_quotes[index].is_some()
+                    && tuning.owa_export_price_multiplier > 0.0;
+                let goods_multiplier = freight_goods_multiplier(profile, building.zone_type, tuning, minute_of_day);
+                let prices = OperationPrices {
+                    utilities,
+                    property_tax: daily_property_tax(building.zone_type, building.level, fiscal),
+                    imports: tuning.owa_import_price_multiplier * if goods_multiplier.is_finite() { goods_multiplier } else { 1.0 },
+                    carrier_quote: self.carrier_quotes[index].filter(|_| goods_multiplier.is_finite()).unwrap_or(f32::INFINITY),
+                    truck_payload: tuning.logistics.truck_payload_kg,
+                };
+                let consumer = profile.outputs.iter().any(|port| self.customers.consumes(port.resource_runtime_id));
+                let units = &mut self.customer_units[self.customer_offsets[index]..self.customer_offsets[index + 1]];
+                let new_customers = consumer && self.capacities[index] == 0;
+                if new_customers {
+                    self.household_quotes.reserve(index, &mut self.customers, units, &household_census);
+                }
+                let input_funding = InputFunding {
+                    supply: &mut self.input_supply,
+                    logistics,
+                    allocator,
+                    network,
+                    graph,
+                    tuning,
+                    buyer: index,
+                    outside: self.carrier_quotes[index],
+                    retained: if current_staff { (0, 0.0) } else { (self.capacities[index], self.activities[index]) },
+                    goods_multiplier,
+                };
+                if service {
+                    // Public payroll follows fiscal policy even when material delivery limits
+                    // production. Reserve only the feasible input-backed part of that operation.
+                    let activity = reserve_service_inputs(
+                        profile,
+                        catalog,
+                        ceiling,
+                        physical,
+                        prices,
+                        input_funding,
+                    );
+                    self.activities[index] = if current_staff { self.activities[index].max(activity) } else { activity };
+                    continue;
+                }
+                let mut headroom = self.headroom[index];
+                let operation = funded_private_operation(
+                    building,
                     profile,
                     catalog,
-                    self.capacities[index],
                     physical,
                     prices,
-                    input_funding,
+                    &self.market,
+                    exports.then_some(tuning.owa_export_price_multiplier),
+                    self.freight_capital[index],
+                    Some(input_funding),
+                    consumer.then_some(units),
+                    &mut headroom,
+                    ceiling,
+                    self.closure_activity[index],
                 );
-                continue;
+                if !current_staff || operation.0 >= self.capacities[index] {
+                    (self.capacities[index], self.activities[index]) = operation;
+                    self.headroom[index] = headroom;
+                    if current_staff { self.local_input_backing[index] = operation.0 > 0; }
+                } else if building.worker_count >= full_ceiling {
+                    // The complete local search lost to the existing import alternative.
+                    self.input_supply.release_owner(index, allocator, graph);
+                    self.input_supply.accept();
+                }
+                if new_customers {
+                    self.household_quotes.finish(self.capacities[index] > 0,
+                        &mut self.customers, &household_census);
+                }
             }
-            (self.capacities[index], self.activities[index]) = funded_private_operation(
-                building,
-                profile,
-                catalog,
-                physical,
-                prices,
-                &self.market,
-                exports.then_some(tuning.owa_export_price_multiplier),
-                self.freight_capital[index],
-                Some(input_funding),
-                consumer.then_some(units),
-            );
-            if new_customers {
-                if self.capacities[index] > 0 { self.customers.accept_for(index); }
-                else { self.customers.reject(); }
-            }
-            self.input_supply.publish_funded_increase(index, imported_activity,
+        }
+        self.household_quotes.finish_pass(&mut self.customers, &household_census);
+        for index in 0..count {
+            self.input_supply.publish_funded_activity(index, self.offered_activity[index],
                 self.activities[index], allocator, catalog, graph);
         }
+        self.reserve_household_production(allocator, catalog, graph, false);
+        // Withdrawn provisional suppliers can still own input receipts until the next
+        // quotation. Those invalid purchases hide customers from alternative suppliers;
+        // using them to lower permanent worker ceilings can strand a fully financed chain.
+        // Requote physical claims first, then derive ceilings from a consistent input book.
+        if (!self.input_supply.has_overclaims()
+            || self.repair_provisional_inputs(allocator, logistics, network, graph,
+                catalog, tuning, fiscal, minute_of_day))
+            && !self.validate_business_customers(allocator, logistics, network, graph,
+                catalog, tuning, fiscal, minute_of_day, inputs) {
+            self.publish_business_deliveries(allocator, catalog, graph);
+            break;
+        }
+        self.propagate_impossible_customers(allocator, catalog, tuning);
+        self.offered_activity.clone_from(&self.activities);
+        // Attribute failed local proofs to this pass before the next import pass starts.
+        lap(6);
+        }
+        lap(6);
+        if timing { log_funding_times(count, minute_of_day, &times); }
     }
+}
+
+fn log_funding_times(buildings: usize, minute: u16, times: &[f64; 7]) {
+    crate::debug_log!("economy", "funding_detail buildings={} minute={} routes_ms={:.3} market_ms={:.3} customers_ms={:.3} import_funding_ms={:.3} household_claims_ms={:.3} sources_ms={:.3} local_funding_ms={:.3}",
+        buildings, minute, times[0], times[1], times[2], times[3], times[4], times[5], times[6]);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_business_sales_use_seller_prices_while_exports_use_the_outside_tariff() {
+        use crate::simulation::buildings::allocator::indexed_test_building;
+        use crate::simulation::economy::definitions::load_runtime_economy_catalog;
+        use crate::simulation::zoning::ZoneType;
+
+        let catalog = load_runtime_economy_catalog().unwrap();
+        let mut profile = catalog.profile_for_id("food_processor_basic").unwrap().clone();
+        let mut building = indexed_test_building(String::new(), ZoneType::Industrial, 0);
+        building.operating_budget = 1_000_000.0;
+        let physical = profile.worker_capacity;
+        let prices = OperationPrices {
+            utilities: [0.0; 3], property_tax: 0.0, imports: 1.0,
+            carrier_quote: 0.0, truck_payload: 20_000.0,
+        };
+        let mut market = vec![[0.0; 2]; catalog.resource_count() + 1];
+        for output in &profile.outputs {
+            let units = f64::from(profile.net_output_units_per_day(output));
+            market[output.resource_runtime_id as usize] = [units, units];
+        }
+        profile.unit_price_currency = 0.0;
+        let mut headroom = [0.0; 2];
+        assert_eq!(funded_private_operation(&building, &profile, &catalog, physical,
+            prices, &market, None, 0.0, None, None, &mut headroom, physical, 1.0), (0, 0.0));
+        assert_eq!(headroom, [0.0; 2]);
+        profile.unit_price_currency = 1_000.0;
+        assert_eq!(funded_private_operation(&building, &profile, &catalog, physical,
+            prices, &market, None, 0.0, None, None, &mut headroom, physical, 1.0), (physical, 1.0));
+        assert!(headroom[0] > 0.0 && headroom[1] >= 0.0);
+        market.iter_mut().for_each(|total| total[1] = 0.0);
+        let expensive = funded_private_operation(&building, &profile, &catalog, physical,
+            prices, &market, Some(1.0), 0.0, None, None, &mut headroom, physical, 1.0);
+        profile.unit_price_currency = 0.0;
+        assert_eq!(funded_private_operation(&building, &profile, &catalog, physical,
+            prices, &market, Some(1.0), 0.0, None, None, &mut headroom, physical, 1.0), expensive);
+        assert!(expensive.0 > 0);
+    }
 
     #[test]
     fn undo_remap_grows_prepared_funding_without_allocating_unprepared_views() {
@@ -761,17 +997,49 @@ fn reserve_consumer_outputs(
     }
 }
 
-fn local_output_price(
-    profile: &EconomyProfileRuntime,
-    catalog: &RuntimeEconomyCatalog,
-    consumer_units: Option<&[f64]>,
-    resource: u16,
-) -> f32 {
-    if profile.outputs.iter().position(|port| port.resource_runtime_id == resource)
-        .is_some_and(|port| consumer_units.is_some_and(|units| units[port] >= 0.0)) {
-        profile.unit_price_currency
-    } else {
-        catalog.unit_price_for_resource(resource).unwrap_or(0.0)
+// The same provisional sales and stock valuation support both a staffing search and
+// an unchanged operation whose withdrawn input supplier is being replaced.
+struct ProvisionalSales<'a> {
+    profile: &'a EconomyProfileRuntime,
+    catalog: &'a RuntimeEconomyCatalog,
+    area: f32,
+    market: &'a [[f64; 2]],
+    household: Option<&'a [f64]>,
+    export_multiplier: Option<f32>,
+}
+
+impl ProvisionalSales<'_> {
+    fn share(&self, resource: u16) -> f32 {
+        provisional_local_share(self.profile, self.area, resource, self.household, self.market)
+    }
+
+    fn local_units(&self, resource: u16, units: f32) -> f32 {
+        let quota = self.profile.output_port(resource).map_or(0.0, |output| {
+            self.profile.net_output_units_per_day(output) * self.area * self.share(resource)
+        });
+        units.min(quota)
+    }
+
+    fn export_units(&self, resource: u16, units: f32) -> f32 {
+        if self.export_multiplier.is_some() { units - self.local_units(resource, units) }
+        else { 0.0 }
+    }
+
+    fn output_price(&self, resource: u16) -> f64 {
+        let share = self.share(resource);
+        f64::from(self.profile.unit_price_currency) * f64::from(share)
+            + f64::from(self.catalog.unit_price_for_resource(resource).unwrap_or(0.0)
+                * self.export_multiplier.unwrap_or(0.0)) * f64::from(1.0 - share)
+    }
+
+    fn revenue(&self, activity: f32) -> f64 {
+        self.profile.outputs.iter().map(|output| {
+            let resource = output.resource_runtime_id;
+            let units = self.profile.net_output_units_per_day(output) * self.area * activity;
+            f64::from(self.profile.unit_price_currency) * f64::from(self.local_units(resource, units))
+                + f64::from(self.catalog.unit_price_for_resource(resource).unwrap_or(0.0)
+                    * self.export_multiplier.unwrap_or(0.0)) * f64::from(self.export_units(resource, units))
+        }).sum()
     }
 }
 
@@ -786,65 +1054,33 @@ fn funded_private_operation(
     freight_capital: f64,
     mut supply: Option<InputFunding<'_>>,
     consumer_units: Option<&[f64]>,
+    headroom: &mut [f64; 2],
+    ceiling: u32,
+    activity_ceiling: f32,
 ) -> (u32, f32) {
+    if supply.is_none() { *headroom = [0.0; 2]; }
     let area = output_area_scale_for_building(building, profile);
-    let local_share = |resource: u16| {
-        if let Some((port, output)) = profile.outputs.iter().enumerate()
-            .find(|(_, output)| output.resource_runtime_id == resource)
-            && let Some(units) = consumer_units.map(|units| units[port]).filter(|units| *units >= 0.0) {
-                let capacity = profile.net_output_units_per_day(output) * area;
-                return if capacity > 0.0 { (units / f64::from(capacity)).clamp(0.0, 1.0) as f32 } else { 0.0 };
-            }
-        let [capacity, demand] = market.get(resource as usize).copied().unwrap_or([0.0; 2]);
-        if capacity > 0.0 {
-            (demand / capacity).clamp(0.0, 1.0) as f32
-        } else {
-            0.0
-        }
-    };
-    let market_activity = if export_multiplier.is_some() {
+    let sales = ProvisionalSales { profile, catalog, area, market, household: consumer_units, export_multiplier };
+    let market_activity = (if export_multiplier.is_some() {
         1.0
     } else {
         profile
             .outputs
             .iter()
-            .map(|port| local_share(port.resource_runtime_id))
+            .map(|port| sales.share(port.resource_runtime_id))
             .fold(0.0, f32::max)
-    };
-    let desired = (physical as f32 * market_activity).ceil() as u32;
+    }).min(activity_ceiling);
+    let desired = ((physical as f32 * market_activity).ceil() as u32).min(ceiling);
     if desired == 0 {
         return (0, 0.0);
     }
-    let local_units = |resource, units: f32| {
-        let quota = profile.output_port(resource).map_or(0.0, |output| {
-            profile.net_output_units_per_day(output) * area * local_share(resource)
-        });
-        units.min(quota)
-    };
-    let export_units = |resource, units: f32| {
-        if export_multiplier.is_some() {
-            units - local_units(resource, units)
-        } else {
-            0.0
-        }
-    };
-    let output_price = |resource| {
-        let share = local_share(resource);
-        if consumer_units.is_none() {
-            return catalog.unit_price_for_resource(resource).unwrap_or(0.0)
-                * (share + (1.0 - share) * export_multiplier.unwrap_or(0.0));
-        }
-        local_output_price(profile, catalog, consumer_units, resource) * share
-            + catalog.unit_price_for_resource(resource).unwrap_or(0.0)
-                * (1.0 - share) * export_multiplier.unwrap_or(0.0)
-    };
     let imported_capital = working_capital_assets(
         building,
         profile,
         catalog,
         prices.imports,
         freight_capital,
-        output_price,
+        |resource| sales.output_price(resource),
     );
     let costs = |workers| {
         OperatingCosts::for_plan(
@@ -856,17 +1092,17 @@ fn funded_private_operation(
                 area,
             },
             prices,
-            export_units,
+            |resource, units| sales.export_units(resource, units),
         )
     };
     // Integer payroll, local sales quotas and quantized freight do not form a monotone
     // profitability test. Evaluate the largest feasible operation first, without allowing
     // an unprofitable full-capacity export plan to erase a profitable smaller business.
     // A cheaper source also lowers the replacement value of retained stock. Keep the
-    // already validated import plan when that repricing cannot finance equal staffing;
-    // the source book may already have promised its import-backed production to buyers.
-    let imported = supply.as_ref().map_or((0, 0.0), |context| context.imported);
-    for workers in (imported.0.max(1)..=desired).rev() {
+    // already validated plan when that repricing cannot finance equal staffing. The caller
+    // keeps a local plan's released receipts provisional until replacement is accepted.
+    let retained = supply.as_ref().map_or((0, 0.0), |context| context.retained);
+    for workers in (retained.0.max(1)..=desired).rev() {
         let costs = if let Some(context) = supply.as_mut() {
             let Some(costs) = context.costs(
                 profile,
@@ -877,7 +1113,7 @@ fn funded_private_operation(
                     area,
                 },
                 prices,
-                export_units,
+                |resource, units| sales.export_units(resource, units),
             ) else {
                 break;
             };
@@ -891,7 +1127,7 @@ fn funded_private_operation(
                 profile,
                 freight_capital,
                 |resource| context.supply.input_price(resource),
-                output_price,
+                |resource| sales.output_price(resource),
             )
         } else {
             imported_capital
@@ -900,24 +1136,10 @@ fn funded_private_operation(
             continue;
         }
         let activity = market_activity.min(workers as f32 / physical.max(1) as f32);
-        let revenue: f32 = profile
-            .outputs
-            .iter()
-            .map(|output| {
-                let units = profile.net_output_units_per_day(output) * area * activity;
-                let external = export_units(output.resource_runtime_id, units);
-                let local = local_units(output.resource_runtime_id, units);
-                if consumer_units.is_none() {
-                    return catalog.unit_price_for_resource(output.resource_runtime_id).unwrap_or(0.0)
-                        * (local + external * export_multiplier.unwrap_or(0.0));
-                }
-                local_output_price(profile, catalog, consumer_units, output.resource_runtime_id) * local + catalog
-                    .unit_price_for_resource(output.resource_runtime_id)
-                    .unwrap_or(0.0)
-                    * external * export_multiplier.unwrap_or(0.0)
-            })
-            .sum();
+        let revenue = sales.revenue(activity);
         if revenue > costs.total() {
+            *headroom = [f64::from(revenue) - f64::from(costs.total()),
+                capital - f64::from(costs.working_capital)];
             if let Some(context) = supply.as_mut() {
                 context.supply.accept_for(context.buyer);
             }
@@ -927,5 +1149,19 @@ fn funded_private_operation(
     if let Some(context) = supply.as_mut() {
         context.supply.reject(context.allocator, context.graph);
     }
-    imported
+    retained
+}
+
+// Household quotas and raw staffed business needs share an output. The business amount is
+// only an upper bound here: joint financing and reachability must prove it before publication.
+fn provisional_local_share(profile: &EconomyProfileRuntime, area: f32, resource: u16,
+    household: Option<&[f64]>, market: &[[f64; 2]]) -> f32 {
+    let Some((port, output)) = profile.outputs.iter().enumerate()
+        .find(|(_, output)| output.resource_runtime_id == resource) else { return 0.0; };
+    let capacity = f64::from(profile.net_output_units_per_day(output) * area);
+    if capacity <= 0.0 { return 0.0; }
+    let household = household.map_or(0.0, |units| units[port].max(0.0));
+    let business = if profile.kind == EconomyProfileRuntimeKind::ServiceStore { 0.0 }
+        else { market.get(resource as usize).map_or(0.0, |total| total[1]) };
+    ((household + business) / capacity).clamp(0.0, 1.0) as f32
 }

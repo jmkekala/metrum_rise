@@ -129,6 +129,11 @@ impl SupplierCandidateIndex {
                     })
             })
             .collect();
+        Self::from_entries(entries)
+    }
+
+    /// Groups prepared source identities using the same resource/component/chunk index.
+    pub(super) fn from_entries(entries: Vec<(ResourceRuntimeId, ReachableBucketEntry)>) -> Self {
         let mut grouped = BTreeMap::new();
         for (resource_runtime_id, entry) in entries {
             grouped
@@ -168,6 +173,15 @@ impl SupplierCandidateIndex {
     pub(super) fn enable_reservations(&mut self) {
         for buckets in self.by_resource.values_mut() {
             buckets.enable_reservations();
+        }
+    }
+
+    /// Clears only availability while retaining prepared geometry and storage.
+    pub(super) fn disable_all(&mut self) {
+        // Sparse catalogue keys are not a flat collection: Rayon would first collect this
+        // map into a temporary vector. Keep the existing allocation-free map traversal.
+        for buckets in self.by_resource.values_mut() {
+            buckets.reset_available(|_| false);
         }
     }
 

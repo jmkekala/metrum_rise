@@ -367,7 +367,7 @@ fn merged_open_endpoint_states_preserve_restricted_turn_routes() {
                 .node_adjacency(start)
                 .iter()
                 .copied()
-                .chain([usize::MAX])
+                .chain([usize::MAX, usize::MAX - 1, 0])
             {
                 let expected = turn_aware_dijkstra(&graph, start, end, start_edge);
                 let actual = cch.find_path(start, end, start_edge, &graph, TransitFlags::CAR);
@@ -774,5 +774,72 @@ fn benchmark_cch_build_storage() {
                 "build_median_us": build_samples[10], "cycle_median_us": cycle_samples[10],
             })
         );
+    }
+}
+
+
+#[test]
+fn owned_path_scratch_does_not_prepare_the_city_for_invalid_or_trivial_queries() {
+    let graph = grid(5);
+    let cch = CchGraph::build(&graph);
+    OWNED_PATH_SCRATCH.with_borrow_mut(|scratch| *scratch = CchPathScratch::default());
+    assert!(cch.find_path(0, 25, usize::MAX, &graph, TransitFlags::CAR).is_none());
+    assert_eq!(cch.find_path(0, 0, usize::MAX, &graph, TransitFlags::CAR),
+        Some((0.0, 0.0, vec![0])));
+    OWNED_PATH_SCRATCH.with_borrow(|scratch| {
+        assert_eq!(scratch.query.fwd_data.records.capacity(), 0);
+        assert_eq!(scratch.query.bwd_data.records.capacity(), 0);
+        assert_eq!(scratch.query.fwd_heap.capacity(), 0);
+        assert_eq!(scratch.query.bwd_heap.capacity(), 0);
+    });
+    assert!(cch.find_path(0, 24, usize::MAX, &graph, TransitFlags::CAR).is_some());
+}
+
+#[test]
+fn prepared_cost_queries_match_paths_without_growing_search_storage() {
+    let mut graph = grid(5);
+    let mut cch = CchGraph::build(&graph);
+    let mut scratch = CchQueryScratch::default();
+    scratch.prepare(&cch, &graph);
+    let capacities = |scratch: &CchQueryScratch| [scratch.fwd_heap.capacity(),
+        scratch.bwd_heap.capacity(), scratch.fwd_data.records.capacity(), scratch.bwd_data.records.capacity()];
+    let prepared = capacities(&scratch);
+    let mut paths = CchPathScratch::default();
+    paths.prepare(&cch, &graph);
+    let path_capacities = |paths: &CchPathScratch| [paths.edges.capacity(),
+        paths.shortcuts.capacity(), paths.nodes.capacity()];
+    let path_prepared = path_capacities(&paths);
+    for multiplier in [1.0, 2.0] {
+        for index in 0..graph.edge_count() { graph.edge_mut(index).base_cost *= multiplier; }
+        cch.customize(&graph);
+        for from in 0..graph.node_count() as u32 {
+            for to in 0..graph.node_count() as u32 {
+                for mode in [TransitFlags::CAR, TransitFlags::FOOT] {
+                    let expected = cch.find_path(from, to, usize::MAX, &graph, mode);
+                    assert_eq!(cch.find_cost(from, to, usize::MAX, &graph, mode, &mut scratch),
+                        expected.as_ref().map(|route| route.0));
+                    assert_eq!(cch.find_path_in(from, to, usize::MAX, &graph, mode, &mut paths),
+                        expected.as_ref().map(|route| (route.0, route.1, route.2.as_slice())));
+                    assert_eq!(path_capacities(&paths), path_prepared);
+                    assert_eq!(capacities(&paths.query), prepared);
+                    assert_eq!(capacities(&scratch), prepared,
+                        "prepared searches must retain their storage across distinct endpoint pairs");
+                }
+            }
+        }
+    }
+    let mut fork = scratch.clone();
+    assert_eq!(capacities(&fork), prepared);
+    assert_eq!(cch.find_cost(0, 24, usize::MAX, &graph, TransitFlags::CAR, &mut fork),
+        cch.find_path(0, 24, usize::MAX, &graph, TransitFlags::CAR).map(|route| route.0));
+    assert_eq!(capacities(&fork), prepared);
+    // Epoch rollover must clear old labels rather than making the first query's records
+    // visible again. Nonincident and invalid incoming edges retain the ordinary origin rule.
+    fork.fwd_data.epoch = u64::MAX;
+    fork.bwd_data.epoch = u64::MAX;
+    for incoming in [usize::MAX, usize::MAX - 1, 0] {
+        assert_eq!(cch.find_cost(24, 0, incoming, &graph, TransitFlags::CAR, &mut fork),
+            turn_aware_dijkstra(&graph, 24, 0, incoming));
+        assert_eq!(capacities(&fork), prepared);
     }
 }

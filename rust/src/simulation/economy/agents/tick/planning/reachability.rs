@@ -13,6 +13,10 @@ use rayon::prelude::*;
 pub(crate) struct PedestrianReachability {
     groups: Vec<usize>,
     cyclic: Vec<bool>,
+    outgoing: Vec<Vec<usize>>,
+    visited: Vec<u64>,
+    visit: u64,
+    pending: Vec<usize>,
 }
 
 impl PedestrianReachability {
@@ -78,7 +82,48 @@ impl PedestrianReachability {
                 cyclic[groups[lane]] = true;
             }
         }
-        Self { groups, cyclic }
+        let mut group_edges = vec![Vec::new(); count];
+        for (source, targets) in outgoing.iter().enumerate() {
+            for &target in targets {
+                if groups[source] != groups[target] {
+                    group_edges[groups[source]].push(groups[target]);
+                }
+            }
+        }
+        Self { groups, cyclic, outgoing: group_edges, visited: vec![0; count],
+            visit: 0, pending: Vec::with_capacity(count) }
+    }
+
+    /// Preserves the graph-bounded traversal reserve after a construction-market fork.
+    pub(crate) fn prepare_query(&mut self) {
+        self.pending.clear();
+        self.pending.reserve(self.outgoing.len());
+    }
+
+    /// Exact directed connector reachability. Shared cyclic groups are O(1); otherwise
+    /// visits only the reachable condensed graph, O(groups + connectors) worst case.
+    /// Mark-before-push bounds reusable stack storage by group count, without query allocations.
+    pub(super) fn reaches(&mut self, from: usize, to: usize) -> bool {
+        let (Some(&from), Some(&to)) = (self.groups.get(from), self.groups.get(to)) else { return false; };
+        if from == to { return self.cyclic[from]; }
+        self.visit = self.visit.wrapping_add(1);
+        if self.visit == 0 {
+            self.visited.fill(0);
+            self.visit = 1;
+        }
+        self.pending.clear();
+        self.pending.push(from);
+        self.visited[from] = self.visit;
+        while let Some(group) = self.pending.pop() {
+            for &target in &self.outgoing[group] {
+                if target == to { return true; }
+                if self.visited[target] != self.visit {
+                    self.visited[target] = self.visit;
+                    self.pending.push(target);
+                }
+            }
+        }
+        false
     }
 
     pub(super) fn proves(&self, from_lane: usize, to_lane: usize) -> bool {

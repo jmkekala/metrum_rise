@@ -6,8 +6,100 @@ use super::support::*;
 use super::*;
 
 #[test]
+fn failed_expansion_retains_the_input_backing_of_a_local_funded_operation() {
+    use crate::simulation::economy::definitions::compile_test_catalog;
+    use crate::simulation::economy::operation::{OperatingCosts, working_capital_assets_at_prices};
+    let authored = include_str!("../../../../../../economy/profiles.toml");
+    let start = authored.find("[[profiles]]\nid = \"grain_farm_basic\"").unwrap();
+    let end = start + authored[start + 1..].find("\n[[profiles]]").unwrap() + 1;
+    let cheap = authored[start..end].replace("grain_farm_basic", "cheap_grain")
+        .replace("wage_min_currency_per_day = 80.0", "wage_min_currency_per_day = 1.0")
+        .replace("wage_max_currency_per_day = 100.0", "wage_max_currency_per_day = 1.0")
+        .replace("unit_price_currency = 4.8", "unit_price_currency = 0.2")
+        .replace("idle_kwh_per_day = 2.0, operating_kwh_per_day = 3.0", "idle_kwh_per_day = 0.0, operating_kwh_per_day = 0.0")
+        .replace("area_utility_units_per_hectare = [0.555556, 1.0, 0.0]", "area_utility_units_per_hectare = [0.0, 0.0, 0.0]")
+        .replace("[[profiles.inputs]]\nresource = \"machinery\"\nunits_per_day = 0.1", "");
+    let start = authored.find("[[profiles]]\nid = \"food_processor_basic\"").unwrap();
+    let end = start + authored[start + 1..].find("\n[[profiles]]").unwrap() + 1;
+    let recipe = authored[start..end]
+        .replace("[[profiles.inputs]]\nresource = \"machinery\"\nunits_per_day = 2.0", "");
+    let premium = recipe.replace("food_processor_basic", "premium_processor")
+        .replace("unit_price_currency = 12.0", "unit_price_currency = 30.0")
+        .replace("\"packaged_food\"", "\"premium_food\"");
+    let ordinary = recipe.replace("food_processor_basic", "ordinary_processor");
+    let resource = "[[resources]]\nid = \"premium_food\"\nquantity_unit = \"kg\"\nshipment_batch_kg = 50.0\nruntime_id = 10\nimport_unit_price_currency = 30.0\n";
+    let catalog = compile_test_catalog(&format!("{authored}\n{resource}\n{cheap}\n{premium}\n{ordinary}")).unwrap();
+    let mut tuning = (*load_runtime_economy_tuning().unwrap()).clone();
+    tuning.owa_import_price_multiplier = 2.0;
+    tuning.owa_export_price_multiplier = 1.0;
+    let policy = crate::simulation::economy::fiscal::CityFiscalPolicy::from_runtime_tuning(&tuning);
+    let (mut graph, network) = simple_work_graph();
+    graph.set_node_type(0, NodeType::Border);
+    let mut allocator = BuildingAllocator::new();
+    let farm_asset = register_test_utility_asset(&mut allocator, "test", "fallback_grain", "grain_farm_basic");
+    let factory_asset = register_test_asset(&mut allocator, "test", "fallback_food", ZoneClass::Industrial);
+    for (id, x) in [("cheap_grain", 20.0), ("grain_farm_basic", 10.0),
+        ("premium_processor", 40.0), ("ordinary_processor", 60.0)] {
+        let farm = id.ends_with("grain") || id == "grain_farm_basic";
+        let profile = catalog.profile_for_id(id).unwrap();
+        let mut building = make_building(x, if farm { ZoneType::None } else { ZoneType::Industrial },
+            if farm { &farm_asset } else { &factory_asset }, 0.0);
+        building.economy_profile_runtime_id = profile.runtime_id;
+        building.work_area_scale = if farm { 5.0 } else { 1.0 };
+        building.worker_count = if farm { physical_worker_capacity_for_profile(&building, profile) } else { 5 };
+        building.operating_budget = if farm { 100_000.0 } else { 0.0 };
+        allocator.buildings.push(building);
+    }
+    allocator.rebuild_zone_index();
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    let grain = catalog.resource_runtime_id_for_id("grain").unwrap();
+    allocator.buildings[2].set_inventory_units(grain, 900.0);
+    let mut funding = crate::simulation::economy::hiring::JobFunding::default();
+    let mut logistics = ShipmentSystem::new();
+    let mut carriers = [None; 4];
+    logistics.write_border_carrier_quotes(&allocator, &network, &graph, &[0], &catalog, &tuning, &mut carriers);
+    let utilities = local_utility_service_costs(&catalog).map(|price| price * tuning.owa_import_price_multiplier);
+    let mut supported = 0;
+    // The first processor can fund imports but reject cheap inventory repricing during
+    // expansion. The second processor's current operation needs the other local supplier.
+    // Released cheap supply must not turn its rejected expansion into unbacked import jobs.
+    for cash in (400..=600).step_by(25) {
+        allocator.buildings[2].operating_budget = cash as f32;
+        for stock in (500..=800).step_by(5) {
+            allocator.buildings[3].set_inventory_units(grain, stock as f32);
+            funding.refresh(&allocator, &[], &mut logistics, &network, &graph,
+                &catalog, &tuning, &policy, &[], 100_000.0, 420);
+            let building = &allocator.buildings[3];
+            let profile = catalog.profile_for_id("ordinary_processor").unwrap();
+            let Some(operation) = funding.funded_operation(3, building, profile, utilities, &tuning, &policy, 420)
+                else { continue; };
+            supported += 1;
+            let mut input_prices = Vec::new();
+            let costs = OperatingCosts::for_plan_with_input_quotes(profile, operation.plan, operation.prices,
+                |_, units| units, |input| {
+                    let price = catalog.unit_price_for_resource(input.resource).unwrap() * operation.prices.imports;
+                    let quote = funding.input_supply.owner_input_costs(3, input, price, carriers[3]);
+                    input_prices.push((input.resource, quote.goods / f64::from(input.daily_units)));
+                    quote
+                });
+            let capital = working_capital_assets_at_prices(building, profile, 0.0,
+                |resource| input_prices.iter().find(|&&(id, _)| id == resource).unwrap().1,
+                |resource| f64::from(catalog.unit_price_for_resource(resource).unwrap()));
+            let revenue = profile.outputs.iter().map(|output|
+                f64::from(profile.net_output_units_per_day(output) * operation.plan.area * operation.plan.activity)
+                    * f64::from(catalog.unit_price_for_resource(output.resource_runtime_id).unwrap())).sum::<f64>();
+            assert!(revenue > costs.total() && capital >= costs.working_capital,
+                "cash={cash} stock={stock} workers={} activity={} revenue={revenue} costs={costs:?} capital={capital} capacities={:?}",
+                operation.plan.workers, operation.plan.activity, funding.capacities);
+        }
+    }
+    assert!(supported > 0, "the fixture must retain locally financed operations");
+}
+
+#[test]
 fn local_stock_repricing_preserves_the_funded_import_alternative() {
-    use crate::simulation::economy::operation::InputRequirement;
+    use crate::simulation::economy::operation::{InputRequirement, OperatingCosts, OperationPlan,
+        OperationPrices, working_capital_assets_at_prices};
     let catalog = load_runtime_economy_catalog().unwrap();
     let mut tuning = (*load_runtime_economy_tuning().unwrap()).clone();
     tuning.owa_import_price_multiplier = 1.2;
@@ -35,6 +127,8 @@ fn local_stock_repricing_preserves_the_funded_import_alternative() {
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
     let mut funding = crate::simulation::economy::hiring::JobFunding::default();
     let mut logistics = ShipmentSystem::new();
+    let mut carriers = [None; 2];
+    logistics.write_border_carrier_quotes(&allocator, &network, &graph, &[0], &catalog, &tuning, &mut carriers);
     let mut retained_import = false;
     // Sweep the narrow capital boundary: excess grain finances payroll, so cheaper
     // replacement prices can lower available assets more than opening requirements.
@@ -50,17 +144,45 @@ fn local_stock_repricing_preserves_the_funded_import_alternative() {
         assert!(funding.capacities[1] >= imported,
             "optional local supply erased funded jobs at {stock} grain units");
         if imported == factory_profile.worker_capacity {
+            let mut local_units = 0.0;
+            funding.input_supply.visit_dependents(0, |buyer, resource, units| {
+                if buyer == 1 && resource == grain { local_units += units; }
+            });
+            retained_import |= local_units < 200.0;
+            // A financed partial substitution may use part of the released source. Verify
+            // its actual mixed quote independently, including repricing retained inventory.
+            let prices = OperationPrices {
+                utilities: local_utility_service_costs(&catalog).map(|price| price * tuning.owa_import_price_multiplier),
+                property_tax: crate::simulation::economy::fiscal::daily_property_tax(ZoneType::Industrial, 1, &policy),
+                imports: tuning.owa_import_price_multiplier, carrier_quote: carriers[1].unwrap(),
+                truck_payload: tuning.logistics.truck_payload_kg,
+            };
+            let mut input_prices = Vec::new();
+            let costs = OperatingCosts::for_plan_with_input_quotes(factory_profile,
+                OperationPlan { workers: factory_profile.worker_capacity, activity: 1.0, area: 1.0 },
+                prices, |_, units| units, |input| {
+                    let costs = funding.input_supply.owner_input_costs(1, input,
+                        catalog.unit_price_for_resource(input.resource).unwrap_or(0.0) * prices.imports, carriers[1]);
+                    input_prices.push((input.resource, costs.goods / f64::from(input.daily_units)));
+                    costs
+                });
+            let capital = working_capital_assets_at_prices(&allocator.buildings[1], factory_profile, 0.0,
+                |resource| input_prices.iter().find(|&&(id, _)| id == resource).unwrap().1,
+                |resource| f64::from(catalog.unit_price_for_resource(resource).unwrap_or(0.0)));
+            assert!(capital >= f64::from(costs.working_capital),
+                "stock={stock} local={local_units}: capital={capital}, required={}", costs.working_capital);
+            funding.input_supply.release_owner(1, &allocator, &graph);
             let quote = logistics.quote_recurring_input(&mut funding.input_supply,
                 InputRequirement { resource: grain, daily_units: 200.0, buffer_units: 800.0,
                     replenishment_batch_units: Some(400.0) },
                 Some(1), &allocator.entrances[1], None, &allocator, &catalog, &tuning,
                 &network, &graph, 1.0);
-            retained_import |= quote.goods.is_finite();
+            assert!(quote.goods.is_finite(), "every new local receipt must remain owned and releasable");
             funding.input_supply.reject(&allocator, &graph);
         }
     }
     assert!(retained_import,
-        "the import alternative must release the rejected local claim in full");
+        "a rejected full local substitution must preserve a funded import remainder");
 }
 
 #[test]
@@ -393,6 +515,424 @@ fn locally_funded_staffed_processor_supplies_the_next_funded_shop() {
             households.job_funding.capacities[shop],
             shop_profile.worker_capacity
         );
+    }
+}
+
+#[test]
+fn staffed_buyer_without_financing_cannot_fund_its_supplier() {
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let mut tuning = (*load_runtime_economy_tuning().unwrap()).clone();
+    tuning.owa_export_price_multiplier = 0.0;
+    let policy = crate::simulation::economy::fiscal::CityFiscalPolicy::from_runtime_tuning(&tuning);
+    let (mut graph, network) = simple_work_graph();
+    graph.set_node_type(0, NodeType::Border);
+    let mut allocator = BuildingAllocator::new();
+    let farm_asset = register_test_utility_asset(&mut allocator, "test", "unpaid_grain", "grain_farm_basic");
+    let factory_asset = register_test_asset(&mut allocator, "test", "unpaid_food", ZoneClass::Industrial);
+    let farm_profile = catalog.profile_for_id("grain_farm_basic").unwrap();
+    let factory_profile = catalog.profile_for_id("food_processor_basic").unwrap();
+    let mut farm = make_building(20.0, ZoneType::None, &farm_asset, 0.0);
+    farm.economy_profile_runtime_id = farm_profile.runtime_id;
+    farm.work_area_scale = 10.0;
+    farm.operating_budget = 100_000.0;
+    farm.worker_count = physical_worker_capacity_for_profile(&farm, farm_profile);
+    let mut factory = make_building(40.0, ZoneType::Industrial, &factory_asset, 0.0);
+    factory.worker_count = factory_profile.worker_capacity;
+    factory.operating_budget = 0.0;
+    allocator.buildings.extend([farm, factory]);
+    allocator.rebuild_zone_index();
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    let mut funding = crate::simulation::economy::hiring::JobFunding::default();
+    funding.refresh(&allocator, &[], &mut ShipmentSystem::new(), &network, &graph,
+        &catalog, &tuning, &policy, &[], 100_000.0, 420);
+    assert_eq!(funding.capacities[1], 0);
+    assert_eq!(funding.capacities[0], 0,
+        "raw staffed grain requirements are not financed purchases");
+}
+
+#[test]
+fn household_sales_withdraw_staffed_output_from_business_input_offers() {
+    use crate::simulation::economy::operation::InputRequirement;
+
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let tuning = load_runtime_economy_tuning().unwrap();
+    let policy = crate::simulation::economy::fiscal::CityFiscalPolicy::from_runtime_tuning(&tuning);
+    let (mut graph, network) = simple_work_graph();
+    graph.set_node_type(0, NodeType::Border);
+    let mut allocator = BuildingAllocator::new();
+    let shop_asset = register_test_asset(&mut allocator, "test", "shared_output_shop", ZoneClass::Commercial);
+    let home_asset = register_test_asset(&mut allocator, "test", "shared_output_home", ZoneClass::Residential);
+    let profile = catalog.profile_for_id("grocery_basic").unwrap();
+    let resource = profile.outputs[0].resource_runtime_id;
+    let mut shop = make_building(20.0, ZoneType::Commercial, &shop_asset, 0.0);
+    shop.operating_budget = 100_000.0;
+    allocator.buildings.push(shop);
+    allocator.buildings.push(make_building(40.0, ZoneType::Residential, &home_asset, 0.0));
+    allocator.rebuild_zone_index();
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    let mut household = make_household(1, 200, 100_000.0, 1.0);
+    household.gross_daily_wages = 100_000.0;
+    let mut funding = crate::simulation::economy::hiring::JobFunding::default();
+    let mut logistics = ShipmentSystem::new();
+    for workers in [profile.worker_capacity, 5, 0, profile.worker_capacity] {
+        allocator.buildings[0].worker_count = workers;
+        funding.refresh(&allocator, std::slice::from_ref(&household), &mut logistics,
+            &network, &graph, &catalog, &tuning, &policy, &[], 100_000.0, 420);
+        assert_eq!(funding.capacities[0], profile.worker_capacity);
+        for _ in 0..2 {
+            let quote = logistics.quote_recurring_input(&mut funding.input_supply,
+                InputRequirement { resource, daily_units: 1.0, buffer_units: 4.0,
+                    replenishment_batch_units: Some(40.0) }, None, &allocator.entrances[1], None,
+                &allocator, &catalog, &tuning, &network, &graph, 1.0);
+            assert!(quote.goods.is_infinite(),
+                "{workers} staffed workers cannot promise their household output to a business too");
+            funding.input_supply.reject(&allocator, &graph);
+        }
+    }
+}
+
+#[test]
+fn household_and_business_customers_share_output_and_exact_recipe_activity() {
+    use crate::simulation::economy::definitions::compile_test_catalog;
+    let authored = include_str!("../../../../../../economy/profiles.toml");
+    let first = authored.find("[[profiles]]\nid = \"food_processor_basic\"").unwrap();
+    let end = first + authored[first + 1..].find("\n[[profiles]]").unwrap() + 1;
+    let recipe = authored[first..end].replace("food_processor_basic", "mixed_customer_processor")
+        .replace("[[profiles.inputs]]\nresource = \"grain\"\nunits_per_day = 200.0",
+            "[[profiles.inputs]]\nresource = \"household_supplies\"\nunits_per_day = 20.0");
+    // The extra outside feed preserves the main recipe's mass balance while allowing a
+    // business customer to buy the same resource that households consume.
+    let feed = "[[resources]]\nid = \"mixed_feed\"\nquantity_unit = \"kg\"\nshipment_batch_kg = 10.0\nruntime_id = 10\nimport_unit_price_currency = 0.01\n";
+    let catalog = compile_test_catalog(&format!("{authored}\n{feed}\n{recipe}\n[[profiles.inputs]]\nresource = \"mixed_feed\"\nunits_per_day = 180.0\n")).unwrap();
+    let tuning = load_runtime_economy_tuning().unwrap();
+    let policy = crate::simulation::economy::fiscal::CityFiscalPolicy::from_runtime_tuning(&tuning);
+    let (mut graph, network) = simple_work_graph();
+    graph.set_node_type(0, NodeType::Border);
+    let resource = catalog.resource_runtime_id_for_id("household_supplies").unwrap();
+    let shop_profile = catalog.profile_for_id("grocery_basic").unwrap();
+    let factory_profile = catalog.profile_for_id("mixed_customer_processor").unwrap();
+    for shop_first in [true, false] {
+        let mut allocator = BuildingAllocator::new();
+        let home_asset = register_test_asset(&mut allocator, "test", "mixed_home", ZoneClass::Residential);
+        let shop_asset = register_test_asset(&mut allocator, "test", "mixed_shop", ZoneClass::Commercial);
+        let factory_asset = register_test_asset(&mut allocator, "test", "mixed_factory", ZoneClass::Industrial);
+        allocator.buildings.push(make_building(20.0, ZoneType::Residential, &home_asset, 0.0));
+        let shop = if shop_first { 1 } else { 2 };
+        let factory = 3 - shop;
+        for index in 1..=2 {
+            let is_shop = index == shop;
+            let profile = if is_shop { shop_profile } else { factory_profile };
+            let mut building = make_building(20.0 + index as f32 * 20.0,
+                if is_shop { ZoneType::Commercial } else { ZoneType::Industrial },
+                if is_shop { &shop_asset } else { &factory_asset }, 0.0);
+            building.economy_profile_runtime_id = profile.runtime_id;
+            building.worker_count = profile.worker_capacity;
+            building.operating_budget = 100_000.0;
+            allocator.buildings.push(building);
+        }
+        allocator.rebuild_zone_index();
+        allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+        let mut family = make_household(0, 180, 0.0, 1.0);
+        family.gross_daily_wages = 100_000.0;
+        let mut funding = crate::simulation::economy::hiring::JobFunding::default();
+        let mut logistics = ShipmentSystem::new();
+        for financed in [true, false, true] {
+            allocator.buildings[factory].operating_budget = if financed { 100_000.0 } else { 0.0 };
+            funding.refresh(&allocator, std::slice::from_ref(&family), &mut logistics,
+                &network, &graph, &catalog, &tuning, &policy, &[], 0.0, 420);
+            assert_eq!(funding.capacities[factory], if financed { 10 } else { 0 });
+            assert_eq!(funding.capacities[shop], if financed { 15 } else { 14 },
+                "180 household units and 20 financed business units share one 200-unit operation");
+            assert_eq!(funding.input_demand_scale(shop, &allocator.buildings[shop], shop_profile, false),
+                if financed { 1.0 } else { 0.9 }, "rounded jobs must not overstate recipe activity");
+            let mut deliveries = 0.0;
+            funding.input_supply.visit_dependents(shop, |buyer, output, units| {
+                if buyer == factory && output == resource { deliveries += units; }
+            });
+            assert_eq!(deliveries, if financed { 20.0 } else { 0.0 });
+        }
+    }
+}
+
+#[test]
+fn withdrawn_business_sales_return_household_customers_to_a_viable_competitor() {
+    use crate::simulation::economy::definitions::compile_test_catalog;
+    let authored = include_str!("../../../../../../economy/profiles.toml");
+    let first = authored.find("[[profiles]]\nid = \"grocery_basic\"").unwrap();
+    let end = first + authored[first + 1..].find("\n[[profiles]]").unwrap() + 1;
+    // This shop needs both output markets to cover its unchanged 200-unit input recipe.
+    // A staffed but cashless processor supplies only an unproven demand for its grain.
+    let recipe = authored[first..end].replace("grocery_basic", "conditional_shop")
+        .replace("resource = \"household_supplies\"\nunits_per_day = 200.0",
+            "resource = \"household_supplies\"\nunits_per_day = 100.0\n\n[[profiles.outputs]]\nresource = \"grain\"\nunits_per_day = 100.0");
+    let catalog = compile_test_catalog(&format!("{authored}\n{recipe}")).unwrap();
+    let tuning = load_runtime_economy_tuning().unwrap();
+    let policy = crate::simulation::economy::fiscal::CityFiscalPolicy::from_runtime_tuning(&tuning);
+    let (mut graph, network) = simple_work_graph();
+    graph.set_node_type(0, NodeType::Border);
+    let mut allocator = BuildingAllocator::new();
+    let home_asset = register_test_asset(&mut allocator, "test", "returned_home", ZoneClass::Residential);
+    let shop_asset = register_test_asset(&mut allocator, "test", "returned_shop", ZoneClass::Commercial);
+    let factory_asset = register_test_asset(&mut allocator, "test", "returned_factory", ZoneClass::Industrial);
+    allocator.buildings.push(make_building(20.0, ZoneType::Residential, &home_asset, 0.0));
+    for (index, id) in ["conditional_shop", "grocery_basic", "food_processor_basic"].into_iter().enumerate() {
+        let industrial = index == 2;
+        let profile = catalog.profile_for_id(id).unwrap();
+        let mut building = make_building(40.0 + index as f32 * 20.0,
+            if industrial { ZoneType::Industrial } else { ZoneType::Commercial },
+            if industrial { &factory_asset } else { &shop_asset }, 0.0);
+        building.economy_profile_runtime_id = profile.runtime_id;
+        building.worker_count = profile.worker_capacity;
+        building.operating_budget = if industrial { 0.0 } else { 100_000.0 };
+        allocator.buildings.push(building);
+    }
+    allocator.rebuild_zone_index();
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    let mut family = make_household(0, 100, 0.0, 1.0);
+    family.gross_daily_wages = 100_000.0;
+    let mut funding = crate::simulation::economy::hiring::JobFunding::default();
+    let mut logistics = ShipmentSystem::new();
+    let mut rebuilt = false;
+    for members in [100, 150, 250] {
+        family.member_count = members;
+        for conditional_cash in [0.0, 100_000.0, 0.0, 100_000.0] {
+            allocator.buildings[1].operating_budget = conditional_cash;
+            funding.refresh(&allocator, std::slice::from_ref(&family), &mut logistics,
+                &network, &graph, &catalog, &tuning, &policy, &[], 0.0, 420);
+            rebuilt |= funding.household_quote_replay_counts().1 > 0;
+            assert_eq!(funding.capacities[1], 0, "households alone cannot finance both outputs");
+            assert_eq!(funding.capacities[3], 0);
+            let activity = (f32::from(members) / 200.0).min(1.0);
+            assert_eq!(funding.capacities[2], (15.0 * activity).ceil() as u32,
+                "withdrawn conditional sales must return household units in this census: {members} members");
+            assert_eq!(funding.input_demand_scale(2, &allocator.buildings[2],
+                catalog.profile_for_id("grocery_basic").unwrap(), false), activity);
+        }
+    }
+    assert!(rebuilt, "withdrawing a conditional seller must reconstruct the changed household prefix");
+}
+
+#[test]
+fn financed_business_sales_withdraw_output_from_later_project_inputs() {
+    use crate::simulation::economy::operation::InputRequirement;
+
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let mut tuning = (*load_runtime_economy_tuning().unwrap()).clone();
+    // The processor initially quotes the cheaper outside input. Its proven margin can
+    // also support the farm's more expensive local delivery when customers are matched.
+    tuning.owa_import_price_multiplier = 0.5;
+    tuning.owa_export_price_multiplier = 1.0;
+    let policy = crate::simulation::economy::fiscal::CityFiscalPolicy::from_runtime_tuning(&tuning);
+    let (mut graph, network) = simple_work_graph();
+    graph.set_node_type(0, NodeType::Border);
+    let mut allocator = BuildingAllocator::new();
+    let farm_asset = register_test_utility_asset(&mut allocator, "test", "promised_grain", "grain_farm_basic");
+    let factory_asset = register_test_asset(&mut allocator, "test", "promised_food", ZoneClass::Industrial);
+    let farm_profile = catalog.profile_for_id("grain_farm_basic").unwrap();
+    let factory_profile = catalog.profile_for_id("food_processor_basic").unwrap();
+    let grain = catalog.resource_runtime_id_for_id("grain").unwrap();
+    let mut farm = make_building(20.0, ZoneType::None, &farm_asset, 0.0);
+    farm.economy_profile_runtime_id = farm_profile.runtime_id;
+    farm.work_area_scale = 10.0;
+    farm.operating_budget = 100_000.0;
+    farm.worker_count = physical_worker_capacity_for_profile(&farm, farm_profile);
+    let mut factory = make_building(40.0, ZoneType::Industrial, &factory_asset, 0.0);
+    factory.worker_count = factory_profile.worker_capacity;
+    factory.operating_budget = 100_000.0;
+    allocator.buildings.extend([farm, factory]);
+    allocator.rebuild_zone_index();
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    let mut funding = crate::simulation::economy::hiring::JobFunding::default();
+    let mut logistics = ShipmentSystem::new();
+    funding.refresh(&allocator, &[], &mut logistics, &network, &graph,
+        &catalog, &tuning, &policy, &[], 100_000.0, 420);
+    assert_eq!(funding.capacities[0], allocator.buildings[0].worker_count);
+    assert_eq!(funding.capacities[1], factory_profile.worker_capacity);
+    let mut fork = crate::simulation::economy::logistics::RecurringSupply::default();
+    fork.copy_reservations_from(&funding.input_supply, &allocator, &catalog, &graph);
+    fork.copy_reservations_from(&funding.input_supply, &allocator, &catalog, &graph);
+    for book in [&mut funding.input_supply, &mut fork] {
+        let mut dependents = Vec::new();
+        book.visit_dependents(0, |buyer, resource, units| dependents.push((buyer, resource, units)));
+        assert_eq!(dependents, [(1, grain, 200.0)]);
+        let input = InputRequirement { resource: grain, daily_units: 200.0, buffer_units: 800.0,
+            replenishment_batch_units: Some(50.0) };
+        let expected_goods = 200.0 * f64::from(farm_profile.unit_price_currency);
+        let input_costs = book.owner_input_costs(1, input, 0.0, None);
+        assert_eq!(input_costs.goods, expected_goods);
+        for _ in 0..2 {
+            let quote = logistics.quote_recurring_input(book,
+                InputRequirement { daily_units: 1.0, ..input }, None, &allocator.entrances[1], None,
+                &allocator, &catalog, &tuning, &network, &graph, 1.0);
+            assert!(quote.goods.is_infinite(), "grain already promised to the financed processor cannot fund another project");
+            book.reject(&allocator, &graph);
+            book.release_owner(1, &allocator, &graph);
+            let quote = logistics.quote_recurring_input(book, input, Some(1), &allocator.entrances[1], None,
+                &allocator, &catalog, &tuning, &network, &graph, 1.0);
+            assert_eq!(quote.goods, expected_goods, "the customer owns its new input receipt");
+            book.reject(&allocator, &graph);
+            let restored = book.owner_input_costs(1, input, 0.0, None);
+            assert_eq!(restored.goods.to_bits(), input_costs.goods.to_bits());
+            assert_eq!(restored.freight.to_bits(), input_costs.freight.to_bits());
+            assert_eq!(restored.buffer.to_bits(), input_costs.buffer.to_bits());
+        }
+    }
+}
+
+#[test]
+fn staffed_buyers_keep_inputs_before_other_firms_reserve_expansion() {
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let mut tuning = (*load_runtime_economy_tuning().unwrap()).clone();
+    tuning.owa_import_price_multiplier = 1.2;
+    tuning.owa_export_price_multiplier = 1.0;
+    let policy = crate::simulation::economy::fiscal::CityFiscalPolicy::from_runtime_tuning(&tuning);
+    let (mut graph, network) = simple_work_graph();
+    graph.set_node_type(0, NodeType::Border);
+    let mut allocator = BuildingAllocator::new();
+    let farm_asset = register_test_utility_asset(&mut allocator, "test", "staffed_grain", "grain_farm_basic");
+    let factory_asset = register_test_asset(&mut allocator, "test", "staffed_food", ZoneClass::Industrial);
+    let farm_profile = catalog.profile_for_id("grain_farm_basic").unwrap();
+    let factory_profile = catalog.profile_for_id("food_processor_basic").unwrap();
+    let grain = catalog.resource_runtime_id_for_id("grain").unwrap();
+    let mut farm = make_building(20.0, ZoneType::None, &farm_asset, 0.0);
+    farm.economy_profile_runtime_id = farm_profile.runtime_id;
+    farm.work_area_scale = 10.0;
+    farm.operating_budget = 100_000.0;
+    farm.worker_count = physical_worker_capacity_for_profile(&farm, farm_profile);
+    allocator.buildings.push(farm);
+    for x in [40.0, 60.0] {
+        let mut factory = make_building(x, ZoneType::Industrial, &factory_asset, 0.0);
+        factory.worker_count = factory_profile.worker_capacity / 2;
+        factory.operating_budget = 100_000.0;
+        allocator.buildings.push(factory);
+    }
+    allocator.rebuild_zone_index();
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    let mut funding = crate::simulation::economy::hiring::JobFunding::default();
+    let mut logistics = ShipmentSystem::new();
+    for cash in [100_000.0, 0.0, 100_000.0] {
+        allocator.buildings[1].operating_budget = cash;
+        funding.refresh(&allocator, &[], &mut logistics, &network, &graph,
+            &catalog, &tuning, &policy, &[], 100_000.0, 420);
+        assert_eq!(funding.capacities[1], if cash > 0.0 { factory_profile.worker_capacity } else { 0 });
+        assert_eq!(funding.capacities[2], factory_profile.worker_capacity);
+        let mut claims = [0.0; 3];
+        funding.input_supply.visit_dependents(0, |buyer, resource, units| {
+            if resource == grain { claims[buyer] += units; }
+        });
+        if cash > 0.0 {
+            assert_eq!(claims, [0.0, 100.0, 100.0],
+                "each current operation precedes another buyer's prospective workers");
+        } else {
+            assert_eq!(claims[1], 0.0, "an unfunded current operation cannot retain inputs");
+            assert_eq!(claims[2], 200.0);
+        }
+    }
+    // A stock-rich buyer can fund imports but reject a complete cheap local substitution:
+    // repricing its inventory would remove the assets that bridge settlement. The first
+    // processor then reserves the farm for expansion; additional business matches must
+    // not sell that same prospective input commitment to the second processor again.
+    allocator.buildings[2].worker_count = factory_profile.worker_capacity;
+    allocator.buildings[2].operating_budget = 0.0;
+    let mut protected_expansion = false;
+    for stock in (1_300..=1_400).step_by(5) {
+        allocator.buildings[2].set_inventory_units(grain, stock as f32);
+        funding.refresh(&allocator, &[], &mut logistics, &network, &graph,
+            &catalog, &tuning, &policy, &[], 100_000.0, 420);
+        let mut claims = [0.0; 3];
+        funding.input_supply.visit_dependents(0, |buyer, resource, units| {
+            if resource == grain { claims[buyer] += units; }
+        });
+        if claims[1] == 200.0 {
+            protected_expansion = true;
+            let mut extra = 0.0;
+            funding.business.visit_additional_sales(|seller, _, resource, units, _| {
+                if seller == 0 && resource == grain { extra += units; }
+            });
+            assert_eq!(extra, 0.0, "all farm output already belongs to an accepted input plan");
+        }
+    }
+    assert!(protected_expansion, "the fixture must reach the import-backed alternative");
+}
+
+#[test]
+fn mutually_financed_local_recipes_close_without_an_import_funded_seed() {
+    use crate::simulation::economy::definitions::compile_test_catalog;
+    let authored = include_str!("../../../../../../economy/profiles.toml");
+    let first = authored.find("[[profiles]]\nid = \"food_processor_basic\"").unwrap();
+    let end = first + authored[first + 1..].find("\n[[profiles]]").unwrap() + 1;
+    let recipe = authored[first..end].replace("worker_capacity = 10", "worker_capacity = 1")
+        .replace("[[profiles.inputs]]\nresource = \"machinery\"\nunits_per_day = 2.0", "");
+    let a = recipe.replace("food_processor_basic", "cycle_a")
+        .replace("\"grain\"", "\"cycle_swap\"")
+        .replace("\"packaged_food\"", "\"grain\"")
+        .replace("\"cycle_swap\"", "\"packaged_food\"")
+        .replace("[[profiles.inputs]]\nresource = \"packaged_food\"\nunits_per_day = 200.0",
+            "[[profiles.inputs]]\nresource = \"packaged_food\"\nunits_per_day = 20.0");
+    let b = recipe.replace("food_processor_basic", "cycle_b")
+        .replace("unit_price_currency = 12.0", "unit_price_currency = 30.0");
+    // The outside feed balances the 180 kg exported from the cycle; no recipe creates mass.
+    let feed = "[[resources]]\nid = \"cycle_feed\"\nquantity_unit = \"kg\"\nshipment_batch_kg = 10.0\nruntime_id = 10\nimport_unit_price_currency = 0.01\n";
+    let a = format!("{a}\n[[profiles.inputs]]\nresource = \"cycle_feed\"\nunits_per_day = 180.0\n");
+    let catalog = compile_test_catalog(&format!("{authored}\n{feed}\n{a}\n{b}")).unwrap();
+    let mut tuning = (*load_runtime_economy_tuning().unwrap()).clone();
+    tuning.owa_import_price_multiplier = 10.0;
+    tuning.owa_export_price_multiplier = 1.0;
+    let policy = crate::simulation::economy::fiscal::CityFiscalPolicy::from_runtime_tuning(&tuning);
+    let (mut graph, network) = simple_work_graph();
+    graph.set_node_type(0, NodeType::Border);
+    for order in [["cycle_a", "cycle_b"], ["cycle_b", "cycle_a"]] {
+        let mut allocator = BuildingAllocator::new();
+        let asset = register_test_asset(&mut allocator, "test", "cycle", ZoneClass::Industrial);
+        for (index, id) in order.iter().enumerate() {
+            let profile = catalog.profile_for_id(id).unwrap();
+            let mut building = make_building(20.0 + index as f32 * 20.0, ZoneType::Industrial, &asset, 0.0);
+            building.economy_profile_runtime_id = profile.runtime_id;
+            building.worker_count = profile.worker_capacity;
+            building.operating_budget = 1_000_000.0;
+            allocator.buildings.push(building);
+        }
+        allocator.rebuild_zone_index();
+        allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+        let mut funding = crate::simulation::economy::hiring::JobFunding::default();
+        let mut logistics = ShipmentSystem::new();
+        // Independently prove that both complete operations can pay actual local quotes.
+        // This provisional book is fixture evidence, not publication of unproved live supply.
+        let mut supply = crate::simulation::economy::logistics::RecurringSupply::default();
+        supply.reset(&allocator, &graph, &network, &catalog, &[1.0; 2]);
+        let mut carriers = [None; 2];
+        logistics.write_border_carrier_quotes(&allocator, &network, &graph, &[0],
+            &catalog, &tuning, &mut carriers);
+        for (index, id) in order.iter().enumerate() {
+            use crate::simulation::economy::operation::{OperatingCosts, OperationPlan, OperationPrices};
+            let profile = catalog.profile_for_id(id).unwrap();
+            let costs = OperatingCosts::for_plan_with_input_quotes(profile,
+                OperationPlan { workers: 1, activity: 1.0, area: 1.0 },
+                OperationPrices {
+                    utilities: local_utility_service_costs(&catalog)
+                        .map(|price| price * tuning.owa_import_price_multiplier),
+                    property_tax: crate::simulation::economy::fiscal::daily_property_tax(
+                        ZoneType::Industrial, 1, &policy),
+                    imports: tuning.owa_import_price_multiplier,
+                    carrier_quote: carriers[index].unwrap(),
+                    truck_payload: tuning.logistics.truck_payload_kg,
+                },
+                |_, units| if *id == "cycle_b" { (units - 20.0).max(0.0) } else { 0.0 },
+                |input| logistics.quote_recurring_input(&mut supply, input, Some(index),
+                    &allocator.entrances[index], carriers[index], &allocator, &catalog,
+                    &tuning, &network, &graph, 1.0));
+            let revenue = if *id == "cycle_a" { 2_400.0 } else { 2_760.0 };
+            assert!(revenue > costs.total(), "{id}: revenue {revenue}, costs {costs:?}");
+            assert!(costs.working_capital < f64::from(allocator.buildings[index].operating_budget));
+            supply.accept_for(index);
+        }
+        funding.refresh(&allocator, &[], &mut logistics, &network, &graph,
+            &catalog, &tuning, &policy, &[], 100_000.0, 420);
+        assert_eq!(funding.capacities, [1, 1], "joint local financing, order {order:?}");
+        allocator.buildings[0].operating_budget = 0.0;
+        funding.refresh(&allocator, &[], &mut logistics, &network, &graph,
+            &catalog, &tuning, &policy, &[], 100_000.0, 420);
+        assert_eq!(funding.capacities, [0, 0], "a broken financing cycle cannot publish supply");
     }
 }
 
@@ -1606,6 +2146,30 @@ fn routed_consumer_claims_restore_eligibility_and_exclude_disconnected_money() {
     construction.copy_reservations_from(&customers);
     assert_eq!(quote(&mut construction), 0.0, "a warm fork must restore the live book");
     assert_eq!(quote(&mut customers), 0.0, "construction cannot mutate the live accounts");
+    construction.prepare_project_owners(4, 4);
+    for round in 0..32 {
+        construction.begin_revalidation();
+        construction.release_owner(1);
+        assert_eq!(construction.claim_reachable(&allocator.entrances[1], resource, 0.25, 50.0,
+            &allocator, &network, &graph), 0.25);
+        construction.accept_for(1);
+        assert_eq!(quote(&mut construction), 0.75);
+        construction.accept_for(3);
+        assert_eq!(construction.reserved_units(1, resource), 0.25);
+        assert_eq!(construction.reserved_units(3, resource), 0.75);
+        if round % 2 == 0 {
+            construction.release_owner(3);
+            assert_eq!(quote(&mut construction), 0.75);
+        }
+        construction.reject_revalidation();
+        assert_eq!(construction.reserved_units(1, resource), 1.0);
+        assert_eq!(construction.reserved_units(3, resource), 0.0);
+        assert_eq!(quote(&mut construction), 0.0);
+        construction.release_owner(1);
+        assert_eq!(quote(&mut construction), 1.0,
+            "outer rejection must restore receipt ownership and foot/car bucket eligibility");
+        construction.reject();
+    }
     customers.reset(&families, &allocator, &catalog, &tuning, &policy, 0.0, &network, &graph);
     assert_eq!(quote(&mut customers), 1.0, "warm census refills exhausted trees");
     customers.reject();
@@ -1688,14 +2252,22 @@ fn walking_component_proofs_follow_directed_lane_connectors() {
         allocator.buildings.push(building);
     }
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
-    let reachability = PedestrianReachability::build(&network, &graph);
+    let mut reachability = PedestrianReachability::build(&network, &graph);
     let queries = std::sync::atomic::AtomicU32::new(0);
+    let mut query = crate::simulation::pathing::cch::CchQueryScratch::default();
+    query.prepare(&network.cch_graph, &graph);
     let mut proven = 0;
     for from in 0..4 {
         for to in 0..4 {
             if from == to { continue; }
             let origin = BuildingTripEnds::origin(from, &allocator, &network, &graph);
             let destination = BuildingTripEnds::destination(to, &allocator, &network, &graph);
+            for has_car in [false, true] {
+                assert_eq!(origin.can_reach(&destination, has_car, &network, &graph,
+                    &mut reachability, &mut query),
+                    building_origin_trip_is_feasible(from, to, 0, has_car,
+                        &allocator, &network, &graph, &queries));
+            }
             if origin.has_proven_walk_to(&destination, &reachability) {
                 proven += 1;
                 assert!(building_origin_trip_is_feasible(from, to, 0, false,
@@ -1717,11 +2289,12 @@ fn walking_component_proofs_follow_directed_lane_connectors() {
             lane.next_lanes.clear();
         }
     }
-    let disconnected = PedestrianReachability::build(&network, &graph);
+    let mut disconnected = PedestrianReachability::build(&network, &graph);
     let origin = BuildingTripEnds::origin(0, &allocator, &network, &graph);
     let destination = BuildingTripEnds::destination(3, &allocator, &network, &graph);
     assert!(!origin.has_proven_walk_to(&destination, &disconnected),
         "weak road connectivity is insufficient after pedestrian connectors disappear");
+    assert!(!origin.can_reach(&destination, false, &network, &graph, &mut disconnected, &mut query));
     assert!(!building_origin_trip_is_feasible(0, 3, 0, false,
         &allocator, &network, &graph, &queries));
 }
@@ -1921,3 +2494,5 @@ fn benchmark_consumer_income_forecast() {
         );
     }
 }
+
+mod markets;

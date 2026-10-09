@@ -21,7 +21,8 @@ mod tests;
 #[cfg(test)]
 pub(crate) use tests::support::indexed_test_building;
 
-pub(crate) use entrance::building_local_xz_basis;
+pub(crate) use entrance::{FreightEntranceAccess, building_local_xz_basis};
+pub(crate) use lifecycle::DemandBuildingActionExecution;
 pub(crate) use placement::BuildingSiteEnvironment;
 pub(crate) use placement::ExplicitServicePlacementPreview;
 pub(crate) use placement::construction_duration_hours;
@@ -282,7 +283,7 @@ pub struct Building {
     pub rezone_grace_days_remaining: u8,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct BuildingEntrance {
     pub edge_idx: usize,
     pub side: i8,

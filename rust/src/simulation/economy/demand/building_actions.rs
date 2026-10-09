@@ -9,8 +9,7 @@ use super::credits::advance_building_action_credit;
 use super::diagnostics::BuildingActionDiagnostics;
 use super::snapshot::{DailyDemandSnapshot, ResidentialOccupantSnapshot};
 use super::spawn_need::{
-    OutputAbsorptionContext, candidate_economy_profile, market_covers_operation_with_input_quotes,
-    nonresidential_passes_absorption_gate,
+    OutputAbsorptionContext, candidate_economy_profile, project_covers_operation,
     replacement_market_covers_operation, residential_missing_household_slots,
     residential_vacancy_reserve, select_residential_spawns,
 };
@@ -78,17 +77,16 @@ fn nonresidential_spawn_rejection(
     exports: f32,
     supply: &mut impl ProjectSupply,
 ) -> Option<SpawnRejection> {
-    if !nonresidential_passes_absorption_gate(allocator, catalog, absorption, asset_id) {
+    let Some(profile) = candidate_economy_profile(allocator, catalog, asset_id) else {
         supply.reject();
         return Some(SpawnRejection::Customers);
-    }
-    let profile = candidate_economy_profile(allocator, catalog, asset_id)?;
-    if !market_covers_operation_with_input_quotes(profile, catalog, absorption.market(), prices, exports,
-        |input| supply.quote(input, catalog, prices)) {
+    };
+    if !project_covers_operation(profile, catalog, absorption.market(), prices, exports, supply) {
+        let no_customers = supply.supported_workers(absorption.candidate_workers(profile)) == 0;
         supply.reject();
-        return Some(SpawnRejection::OperatingIncome);
+        return Some(if no_customers { SpawnRejection::Customers } else { SpawnRejection::OperatingIncome });
     }
-    if !workforce.can_claim(completion_hour, absorption.candidate_workers(profile)) {
+    if !workforce.can_claim(completion_hour, supply.supported_workers(absorption.candidate_workers(profile))) {
         supply.reject();
         return Some(SpawnRejection::Workforce);
     }
@@ -169,9 +167,6 @@ fn reserve_business_level_change(
             .copied()
             .unwrap_or(0),
     );
-    let extra_workers = market
-        .candidate_workers(target)
-        .saturating_sub(reserved_workers);
     if !replacement_market_covers_operation(
         target,
         catalog,
@@ -195,7 +190,7 @@ fn reserve_business_level_change(
             0.0
         },
         supply,
-    ) || !workforce.claim_ready(extra_workers)
+    ) || !workforce.claim_ready(supply.supported_workers(market.candidate_workers(target)).saturating_sub(reserved_workers))
     {
         supply.reject();
         return false;
@@ -286,6 +281,7 @@ impl DemandSystem {
             snapshot,
             &self.queued_construction,
             self.next_construction_start_hour,
+            supply.reservations(),
         );
         let mut optional_homes = Vec::new();
         let mut downgrade_batches = Vec::with_capacity(3);
@@ -299,7 +295,7 @@ impl DemandSystem {
             spawn_candidates.retain(|candidate| {
                 self.queued_construction
                     .binary_search_by_key(&candidate.action.parcel_id, |project| project.parcel_id)
-                    .is_err()
+                    .map_or(true, |index| !self.queued_construction[index].active)
             });
             let existing_candidates = self.collect_existing_building_candidates(
                 allocator,
@@ -424,7 +420,7 @@ impl DemandSystem {
                         if !self.cheat_max_demands_enabled
                             && !self.workforce_reservations.claim(
                                 completion_hour,
-                                absorption_context.candidate_workers(profile),
+                                supply.supported_workers(absorption_context.candidate_workers(profile)),
                             )
                         {
                             spawn_rejected_workforce += 1;

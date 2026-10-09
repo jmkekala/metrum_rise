@@ -1151,12 +1151,19 @@ fn constructing_workplace_plans_homes_without_admission_income() {
     register_test_asset(&mut allocator, "future_homes", ZoneType::Residential);
     let asset = register_test_asset(&mut allocator, "future_jobs", ZoneType::Industrial);
     let mut factory = building(ZoneType::Industrial, 0.0, 0, 0, asset);
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let tuning = load_runtime_economy_tuning().unwrap();
+    factory.operating_budget = catalog.profile_for_id("food_processor_basic").unwrap()
+        .zoned_startup_budget(&catalog, tuning.owa_import_price_multiplier);
     factory.construction_total_hours = 12;
     factory.construction_remaining_hours = 12;
     allocator.buildings.push(factory);
     allocator.rebuild_zone_index();
     let households = HouseholdSystem::new();
-    let graph = graph_with_connected_border();
+    let mut graph = graph_with_connected_border();
+    let mut network = crate::simulation::network::TransitNetwork::new();
+    network.lane_system.rebuild(&mut graph);
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
     let zoning = residential_zoning_run(&graph);
     let mut demand = DemandSystem::new();
     demand.run_hourly_pass(&allocator, &households, &graph, &zoning, 100_000.0);
@@ -1181,7 +1188,10 @@ fn queued_workplace_reserves_homes_without_admitting_households() {
     register_test_asset(&mut allocator, "queued_homes", ZoneType::Residential);
     let factory = register_test_asset(&mut allocator, "queued_factory", ZoneType::Industrial);
     let households = HouseholdSystem::new();
-    let graph = graph_with_connected_border();
+    let mut graph = graph_with_connected_border();
+    let mut network = crate::simulation::network::TransitNetwork::new();
+    network.lane_system.rebuild(&mut graph);
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
     let mut zoning = residential_zoning_run(&graph);
     let industrial_profile = zoning
         .profiles
@@ -1212,7 +1222,7 @@ fn queued_workplace_reserves_homes_without_admitting_households() {
         asset_id: factory,
     };
     let mut demand = DemandSystem::new();
-    demand.set_queued_construction(
+    demand.set_queued_construction_with_entrances(
         &allocator,
         &zoning,
         0,
@@ -1220,6 +1230,7 @@ fn queued_workplace_reserves_homes_without_admitting_households() {
             (61, ZoneType::Industrial, &action),
             (62, ZoneType::Industrial, &action),
         ],
+        |action| allocator.demand_site_entrance(action.parcel_id, &action.asset_id, &zoning, &graph, &network.lane_system),
     );
     assert_eq!(
         demand.queued_construction.len(),
@@ -1245,7 +1256,7 @@ fn queued_workplace_reserves_homes_without_admitting_households() {
 
     // Reserving those houses in the next pass must not promise them again.
     let homes = demand.building_actions.residential.spawns.clone();
-    demand.set_queued_construction(
+    demand.set_queued_construction_with_entrances(
         &allocator,
         &zoning,
         0,
@@ -1255,6 +1266,7 @@ fn queued_workplace_reserves_homes_without_admitting_households() {
                 .enumerate()
                 .map(|(index, home)| (62 + index as u64, ZoneType::Residential, home)),
         ),
+        |action| allocator.demand_site_entrance(action.parcel_id, &action.asset_id, &zoning, &graph, &network.lane_system),
     );
     demand.run_hourly_pass(&allocator, &households, &graph, &zoning, 100_000.0);
     assert!(demand.building_actions.residential.spawns.is_empty());
@@ -1275,7 +1287,10 @@ fn pension_arrivals_preserve_homes_for_constructing_workplaces() {
     allocator.buildings.push(workplace);
     allocator.rebuild_zone_index();
     let households = HouseholdSystem::new();
-    let graph = graph_with_connected_border();
+    let mut graph = graph_with_connected_border();
+    let mut network = crate::simulation::network::TransitNetwork::new();
+    network.lane_system.rebuild(&mut graph);
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
     let mut demand = DemandSystem::new();
     demand.run_hourly_pass(&allocator, &households, &graph, &empty_zoning(), 100_000.0);
     assert_eq!(demand.last_admission_diagnostics.vacant_household_slots, 12);
@@ -1341,6 +1356,7 @@ fn queued_homes_obey_deadlines_and_are_claimed_only_once() {
         &snapshot,
         &demand.queued_construction,
         demand.next_construction_start_hour,
+                None,
     );
     workforce.reserve_existing();
     assert!(
@@ -1368,6 +1384,7 @@ fn queued_homes_obey_deadlines_and_are_claimed_only_once() {
         &snapshot,
         &demand.queued_construction,
         demand.next_construction_start_hour,
+                None,
     );
     assert!(!workforce.claim(12, 1));
     assert!(workforce.claim(24, slots));

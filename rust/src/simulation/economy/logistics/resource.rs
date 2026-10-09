@@ -92,6 +92,15 @@ pub(crate) fn freight_goods_multiplier(
         .map_or(f32::INFINITY, |freight| super::timing::adjusted_unit_price(1.0, freight, minute_of_day))
 }
 
+/// Prices imported goods in settlement order: catalogue price, outside tariff, then the
+/// receiving window. Combining the two factors first can change the f32 invoice bits.
+/// A missing window only permits valuation of internally replenished circulation stock.
+pub(crate) fn imported_input_unit_price(catalog: &RuntimeEconomyCatalog,
+    tuning: &RuntimeEconomyTuning, resource: ResourceRuntimeId, goods_multiplier: f32) -> f32 {
+    catalog.unit_price_for_resource(resource).unwrap_or(0.0) * tuning.owa_import_price_multiplier
+        * if goods_multiplier.is_finite() { goods_multiplier } else { 1.0 }
+}
+
 pub(super) fn building_accepts_input_resource(
     catalog: &RuntimeEconomyCatalog,
     building: &Building,
@@ -102,7 +111,8 @@ pub(super) fn building_accepts_input_resource(
         .is_some_and(|profile| profile.input_port(resource_runtime_id).is_some())
 }
 
-pub(super) fn building_outputs_can_supply_local_inputs(
+/// Whether this operation participates in local business deliveries.
+pub(crate) fn building_outputs_can_supply_local_inputs(
     building: &Building,
     profile: &EconomyProfileRuntime,
 ) -> bool {

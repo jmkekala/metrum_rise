@@ -14,6 +14,7 @@ use crate::simulation::economy::agents::{
 use crate::simulation::economy::definitions::{RuntimeEconomyCatalog, RuntimeEconomyTuning};
 use crate::simulation::economy::demand::{
     DemandBuildingActionKey, DemandBuildingActionPlan, DemandLevelChangeAction, DemandSpawnAction,
+    DemandLevelChangeGuard,
 };
 use crate::simulation::economy::households::{
     HouseholdSystem, candidate_immigrant_household_size_for_vacancy,
@@ -462,6 +463,7 @@ impl BuildingAllocator {
         terrain: &TerrainSystem,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
+        level_changes: &mut impl DemandLevelChangeGuard,
     ) -> DemandBuildingActionExecution {
         let road_surface = &network.road_surface;
         let mut mutated_any = false;
@@ -498,13 +500,21 @@ impl BuildingAllocator {
                 );
             }
 
+            // Despawns can remap entrances. Refresh once per zone batch, never per proposal;
+            // accepted replacements retain their prepared doors in the economic proof.
+            if (!use_plan.downgrades.is_empty() || !use_plan.upgrades.is_empty())
+                && self.entrances_dirty {
+                self.rebuild_entrance_cache(graph, &network.lane_system);
+            }
             for action in use_plan.downgrades.iter().chain(&use_plan.upgrades) {
                 let Some(building_idx) =
                     self.resolve_demand_building_action(&action.building, zoning)
                 else {
                     continue;
                 };
-                if self
+                let Some(permit) = level_changes.prepare(building_idx, action, self,
+                    households, logistics, zoning, *treasury_balance) else { continue; };
+                let applied = self
                     .apply_level_change_action(
                         building_idx,
                         action,
@@ -516,10 +526,9 @@ impl BuildingAllocator {
                             terrain,
                         },
                     )
-                    .is_some()
-                {
-                    mutated_any = true;
-                }
+                    .is_some();
+                level_changes.finish(permit, applied, self);
+                mutated_any |= applied;
             }
 
             for action in &use_plan.spawns {

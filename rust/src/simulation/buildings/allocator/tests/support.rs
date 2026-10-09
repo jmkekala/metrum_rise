@@ -314,6 +314,7 @@ pub(super) fn execute_startup_demand_building_pass(
             &terrain,
             demand.runtime_catalog(),
             demand.runtime_tuning(),
+            &mut (),
         );
         if allocator.buildings.len() > building_count_before {
             break;

@@ -20,6 +20,18 @@ use crate::simulation::economy::operation::{InputRequirement, InputSupplyCosts};
 use crate::simulation::network::{TransitNetwork, graph::RegionGraph, types::TransitFlags};
 use rayon::prelude::*;
 
+mod revalidation;
+mod projected;
+pub(crate) use projected::ProjectedSupplySource;
+
+type LayoutRevision = (u64, u64, u32, u64, usize);
+type GeometryRevision = (u64, u64, u32, usize);
+
+// Route prices change without changing resource membership, doors or weak components.
+fn geometry_revision(revision: Option<LayoutRevision>) -> Option<GeometryRevision> {
+    revision.map(|(buildings, entrances, topology, _, count)| (buildings, entrances, topology, count))
+}
+
 #[derive(Clone, Copy, Debug)]
 struct Claim {
     source: usize,
@@ -27,6 +39,12 @@ struct Claim {
     slot: usize,
     previous: f64,
     units: f64,
+    owner: usize,
+    next_from_owner: usize,
+    next_from_source: usize,
+    previous_from_source: usize,
+    unit_price: f32,
+    carrier_quote: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -52,18 +70,24 @@ struct InputOffers {
 pub(crate) struct RecurringSupply {
     offsets: Vec<usize>,
     active: Vec<bool>,
-    revision: Option<(u64, u64, u32, u64, usize)>,
+    revision: Option<LayoutRevision>,
     remaining: Vec<f64>,
+    // Net production after household commitments, before business input reservations.
+    production: Vec<f64>,
+    projected: projected::ProjectedSources,
     staged: Vec<Claim>,
-    // Only live owners need receipts: each incumbent can be replaced once in a planning pass.
-    // Each source can be exhausted at its import seed and again after its one local
-    // funding increase: at most twice the output ports plus accepted input ports.
+    // Live receipt links in both directions; retirement reuses slots rather than keeping
+    // replacement history. Dependency visits therefore follow only current commitments.
     committed: Vec<Claim>,
-    owner_ranges: Vec<(usize, usize)>,
+    owner_receipts: Vec<usize>,
+    owner_tails: Vec<usize>,
+    source_receipts: Vec<usize>,
+    free_receipt: usize,
+    revalidation: revalidation::Revalidation,
     released: Vec<Claim>,
     releasing_owner: Option<usize>,
     receipt_capacity: usize,
-    prices: Vec<(ResourceRuntimeId, f32)>,
+    prices: Vec<(ResourceRuntimeId, f64)>,
     // A staffing search retries one operation against exactly restored quantities.
     // Replay its already-ranked offers instead of repeating spatial/route searches.
     offers: Vec<Offer>,
@@ -75,6 +99,49 @@ pub(crate) struct RecurringSupply {
 }
 
 impl RecurringSupply {
+    /// Prepares temporary project owners outside input quotation loops.
+    pub(crate) fn prepare_owners(&mut self, owners: usize, input_ports: usize) {
+        if self.owner_receipts.len() < owners {
+            self.owner_receipts.resize(owners, usize::MAX);
+            self.owner_tails.resize(owners, usize::MAX);
+        }
+        let receipts = self.committed.len() + 2 * (self.remaining.len() + input_ports);
+        self.reserve_receipts(receipts);
+        self.revalidation.prepare(self.remaining.len(), self.owner_receipts.len(), self.committed.capacity());
+    }
+
+    /// Grows receipt and owner-withdrawal storage only between complete proposal attempts.
+    pub(crate) fn reserve_receipts(&mut self, required: usize) {
+        debug_assert!(!self.revalidation.is_active());
+        self.committed.reserve(required.saturating_sub(self.committed.len()));
+        self.released.reserve(self.committed.capacity().saturating_sub(self.released.len()));
+        self.revalidation.follow_receipts(self.committed.capacity());
+    }
+
+    /// Checks a pending full quote, counting the owner's retired cells before requesting growth.
+    /// O(staged claims + reusable cells), without mutation or unrelated-owner scans.
+    pub(crate) fn check_accept_capacity(&self, owner: usize) -> Result<(), usize> {
+        self.check_receipt_capacity(self.staged.len(), Some(owner))
+    }
+
+    /// Checks an input-gap extension while preserving the owner's existing supplier receipts.
+    pub(crate) fn check_extension_capacity(&self) -> Result<(), usize> {
+        self.check_receipt_capacity(self.staged.len(), None)
+    }
+
+    fn check_receipt_capacity(&self, added: usize, retired: Option<usize>) -> Result<(), usize> {
+        let mut missing = added;
+        for first in [retired.map_or(usize::MAX, |owner| self.owner_receipts[owner]), self.free_receipt] {
+            let mut index = first;
+            while index != usize::MAX && missing > 0 {
+                missing -= 1;
+                index = self.committed[index].next_from_owner;
+            }
+        }
+        let required = self.committed.len() + missing;
+        if required > self.committed.capacity() { Err(required) } else { Ok(()) }
+    }
+
     /// Invalidates the source view after job-state removal, remapping, or reload.
     pub(crate) fn invalidate(&mut self) {
         self.revision = None;
@@ -107,26 +174,38 @@ impl RecurringSupply {
         graph: &RegionGraph,
     ) {
         debug_assert!(source.staged.is_empty());
-        if self.revision != source.revision {
+        debug_assert!(!self.revalidation.is_active() && !source.revalidation.is_active());
+        debug_assert!(!source.projected_enabled(), "construction forks the live supply census");
+        if geometry_revision(self.revision) != geometry_revision(source.revision) {
             *self = source.clone();
             // Vec cloning preserves contents, not spare capacity. Prepare the empty quote
             // journals here so the first proposal does not allocate inside its port loop.
             self.staged.reserve(self.remaining.len());
             self.released.reserve(self.remaining.len());
             self.offers.reserve(self.remaining.len());
+            self.committed.reserve(self.receipt_capacity.saturating_sub(self.committed.len()));
             self.prices.reserve(catalog.resource_count());
             self.input_offers.reserve(catalog.resource_count());
             return;
         }
+        self.revision = source.revision;
+        self.max_speed = source.max_speed;
         self.staged.clear();
         self.released.clear();
         self.releasing_owner = None;
         self.committed.clone_from(&source.committed);
-        self.owner_ranges.clone_from(&source.owner_ranges);
+        self.committed.reserve(self.receipt_capacity.saturating_sub(self.committed.len()));
+        self.owner_receipts.clone_from(&source.owner_receipts);
+        self.owner_tails.clone_from(&source.owner_tails);
+        self.source_receipts.clone_from(&source.source_receipts);
+        self.free_receipt = source.free_receipt;
         self.prices.clear();
         self.offers.clear();
         self.input_offers.clear();
         self.remaining.clone_from(&source.remaining);
+        self.production.clone_from(&source.production);
+        self.clear_projected_sources();
+        self.active.truncate(source.active.len());
         for index in 0..source.offsets.len().saturating_sub(1) {
             let Some(profile) = catalog
                 .profile_by_runtime_id(allocator.buildings[index].economy_profile_runtime_id)
@@ -151,7 +230,7 @@ impl RecurringSupply {
 
     /// Whether any funded staffed source has a positive remaining production rate.
     pub(crate) fn has_offers(&self) -> bool {
-        self.index.has_offers()
+        self.index.has_offers() || self.projected_has_offers()
     }
 
     /// Whether this recipe can claim any remaining local offer, in O(input ports * log resources).
@@ -162,11 +241,19 @@ impl RecurringSupply {
                 .output_port(input.resource_runtime_id)
                 .map_or(0.0, |output| output.units_per_day);
             input.units_per_day > internal
-                && self
-                    .index
-                    .buckets_for_resource(input.resource_runtime_id)
-                    .is_some_and(|buckets| buckets.has_available())
+                && [self.index.buckets_for_resource(input.resource_runtime_id),
+                    self.projected_buckets(input.resource_runtime_id)].into_iter()
+                    .flatten().any(|buckets| buckets.has_available())
         })
+    }
+
+    /// Visits existing source membership for a resource/component, including depleted or
+    /// unfunded sources. Work follows that component's entries; no query storage is allocated.
+    pub(crate) fn visit_possible_sources(&self, resource: ResourceRuntimeId, component: u32,
+        visit: impl FnMut(usize)) {
+        if let Some(buckets) = self.index.buckets_for_resource(resource) {
+            buckets.visit_component_members(component, visit);
+        }
     }
 
     /// Prepares production rates and the existing resource/component/chunk index once per pass.
@@ -182,14 +269,19 @@ impl RecurringSupply {
         catalog: &RuntimeEconomyCatalog,
         funded_activity: &[f32],
     ) {
+        debug_assert!(!self.revalidation.is_active());
+        self.clear_projected_sources();
         self.staged.clear();
         self.committed.clear();
         self.released.clear();
         self.releasing_owner = None;
-        self.owner_ranges.resize(allocator.buildings.len(), (0, 0));
-        self.owner_ranges
+        self.owner_receipts.resize(allocator.buildings.len(), usize::MAX);
+        self.owner_receipts
             .par_iter_mut()
-            .for_each(|range| *range = (0, 0));
+            .for_each(|head| *head = usize::MAX);
+        self.owner_tails.resize(allocator.buildings.len(), usize::MAX);
+        self.owner_tails.par_iter_mut().for_each(|tail| *tail = usize::MAX);
+        self.free_receipt = usize::MAX;
         self.prices.clear();
         self.offers.clear();
         self.input_offers.clear();
@@ -202,7 +294,7 @@ impl RecurringSupply {
             network.cch_graph.metric_revision,
             allocator.buildings.len(),
         );
-        if self.revision != Some(revision) {
+        if geometry_revision(self.revision) != geometry_revision(Some(revision)) {
             self.nearest_incumbents
                 .resize(catalog.resource_count() + 1, None);
             self.nearest_incumbents.fill(None);
@@ -237,10 +329,16 @@ impl RecurringSupply {
             self.active.resize(self.remaining.len(), true);
             self.active.fill(true);
             self.components = Some(components);
+        }
+        if self.revision != Some(revision) {
+            // A metric update can include changed speed limits, so refresh the exact
+            // route-search bound even when resource/component geometry stays reusable.
             self.max_speed = max_speed_for_modes(graph, TransitFlags::CAR)
                 .max(crate::config::AGENT_DRIVEWAY_SPEED_MS);
             self.revision = Some(revision);
         }
+        self.remaining.resize(*self.offsets.last().unwrap(), 0.0);
+        self.active.truncate(self.remaining.len());
         fill_production_rates(
             allocator,
             catalog,
@@ -250,6 +348,7 @@ impl RecurringSupply {
             allocator.buildings.len(),
             &mut self.remaining,
         );
+        self.production.clone_from(&self.remaining);
         for source in 0..allocator.buildings.len() {
             let Some(profile) = catalog
                 .profile_by_runtime_id(allocator.buildings[source].economy_profile_runtime_id)
@@ -276,13 +375,14 @@ impl RecurringSupply {
         self.offers.reserve(self.remaining.len());
         self.committed.reserve(self.receipt_capacity);
         self.released.reserve(self.remaining.len());
+        self.source_receipts.resize(self.remaining.len(), usize::MAX);
+        self.source_receipts.fill(usize::MAX);
     }
 
-    /// Publishes one accepted live operation's increase over its import-funded seed.
-    /// Only currently staffed net production is added; stock and unfilled jobs add nothing.
-    /// Called once per source, between complete operation quotes. O(output ports plus
-    /// newly available ports * log bucket size), using the existing index and sparse slots.
-    pub(crate) fn publish_funded_increase(
+    /// Replaces a source's provisional production rate with its evaluated staffed activity.
+    /// A decrease may expose overcommitted inputs; `has_overclaims` prevents publication until
+    /// those buyers are requoted. O(output ports + changed eligibility * log bucket size).
+    pub(crate) fn publish_funded_activity(
         &mut self,
         source: usize,
         before: f32,
@@ -292,7 +392,6 @@ impl RecurringSupply {
         graph: &RegionGraph,
     ) {
         debug_assert!(self.staged.is_empty() && self.released.is_empty());
-        debug_assert!(after >= before);
         if after == before {
             return;
         }
@@ -310,11 +409,105 @@ impl RecurringSupply {
             let rate = profile.net_output_units_per_day(output) * output_area_scale_for_building(building, profile);
             let added = f64::from(rate * current) - f64::from(rate * previous);
             let slot = self.offsets[source] + port;
+            self.journal_source(source, output.resource_runtime_id, slot);
             self.remaining[slot] += added;
-            if !self.active[slot] && self.remaining[slot] > 0.0 {
-                self.active[slot] = true;
-                self.set_available(source, output.resource_runtime_id, true, allocator, graph);
+            self.production[slot] += added;
+            let available = self.remaining[slot] > 0.0;
+            if self.active[slot] != available {
+                self.active[slot] = available;
+                self.set_available(source, output.resource_runtime_id, available, allocator, graph);
             }
+        }
+    }
+
+    /// Whether any provisional owner inputs exceed the finally financed staffed source rate.
+    pub(crate) fn has_overclaims(&self) -> bool {
+        self.remaining.par_iter().any(|remaining| *remaining < 0.0)
+    }
+
+    /// Withdraws only excess deliveries, newest first, retaining earlier buyers and prices.
+    /// An outer journal restores exact quantities and both receipt chains on rejection.
+    /// Caller prepares one affected-owner slot/flag per owner and clears touched flags after
+    /// use. O(output slots + withdrawn flows + affected owners' flows), without allocation.
+    pub(crate) fn withdraw_overclaims(&mut self, owners: &mut Vec<usize>, seen: &mut [bool],
+        allocator: &BuildingAllocator, graph: &RegionGraph) {
+        debug_assert!(self.revalidation.is_active());
+        debug_assert!(owners.is_empty() && self.staged.is_empty() && self.released.is_empty());
+        for slot in 0..self.remaining.len() {
+            let mut index = self.source_receipts[slot];
+            while self.remaining[slot] < 0.0 && index != usize::MAX {
+                let receipt = self.committed[index];
+                self.journal_source(receipt.source, receipt.resource, slot);
+                self.journal_receipt(index);
+                let excess = -self.remaining[slot];
+                if receipt.units > excess {
+                    self.committed[index].units -= excess;
+                    self.remaining[slot] = 0.0;
+                } else {
+                    // Keep owner links until the second pass, so each affected chain is
+                    // traversed once even when several fragmented suppliers disappear.
+                    self.committed[index].units = 0.0;
+                    self.remaining[slot] += receipt.units;
+                }
+                if !seen[receipt.owner] {
+                    seen[receipt.owner] = true;
+                    assert!(owners.len() < owners.capacity(), "input repairs require owner preparation");
+                    owners.push(receipt.owner);
+                }
+                index = receipt.next_from_source;
+            }
+        }
+        for &owner in owners.iter() {
+            let mut index = self.owner_receipts[owner];
+            let mut previous = usize::MAX;
+            while index != usize::MAX {
+                let receipt = self.committed[index];
+                if receipt.units == 0.0 {
+                    self.journal_owner(owner);
+                    if previous == usize::MAX { self.owner_receipts[owner] = receipt.next_from_owner; }
+                    else {
+                        self.journal_receipt(previous);
+                        self.committed[previous].next_from_owner = receipt.next_from_owner;
+                    }
+                    if self.owner_tails[owner] == index { self.owner_tails[owner] = previous; }
+                    self.retire_receipt(index, receipt);
+                    if self.source_receipts[receipt.slot] == usize::MAX {
+                        self.remaining[receipt.slot] = self.production[receipt.slot];
+                    }
+                    let available = self.remaining[receipt.slot] > 0.0;
+                    if self.active[receipt.slot] != available {
+                        self.active[receipt.slot] = available;
+                        self.set_available(receipt.source, receipt.resource, available, allocator, graph);
+                    }
+                } else { previous = index; }
+                index = receipt.next_from_owner;
+            }
+        }
+    }
+
+    /// Replaces a household claim on staffed output in the shared supply ledger.
+    /// Negative availability exposes affected business inputs for revalidation; changes cost
+    /// O(source output ports + changed eligibility * log bucket size), with no allocation.
+    pub(crate) fn reserve_household_output(
+        &mut self,
+        source: usize,
+        resource: ResourceRuntimeId,
+        before: f64,
+        after: f64,
+        allocator: &BuildingAllocator,
+        catalog: &RuntimeEconomyCatalog,
+        graph: &RegionGraph,
+    ) {
+        debug_assert!(self.staged.is_empty() && self.released.is_empty());
+        if before == after { return; }
+        let Some(slot) = self.slot(allocator, catalog, source, resource) else { return; };
+        self.journal_source(source, resource, slot);
+        self.remaining[slot] += before - after;
+        self.production[slot] += before - after;
+        let available = self.remaining[slot] > 0.0;
+        if self.active[slot] != available {
+            self.active[slot] = available;
+            self.set_available(source, resource, available, allocator, graph);
         }
     }
 
@@ -325,13 +518,12 @@ impl RecurringSupply {
         source: usize,
         resource: ResourceRuntimeId,
     ) -> Option<usize> {
-        let building = allocator.buildings.get(source)?;
-        let profile = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)?;
+        let profile = self.source_profile(source, allocator, catalog)?;
         let port = profile
             .outputs
             .iter()
             .position(|port| port.resource_runtime_id == resource)?;
-        Some(*self.offsets.get(source)? + port)
+        Some(self.source_range(source)?.start + port)
     }
 
     fn set_available(
@@ -342,6 +534,10 @@ impl RecurringSupply {
         allocator: &BuildingAllocator,
         graph: &RegionGraph,
     ) {
+        if source >= self.offsets.len().saturating_sub(1) {
+            self.set_projected_available(source, resource, available, graph);
+            return;
+        }
         let Some(components) = &self.components else {
             return;
         };
@@ -386,7 +582,7 @@ impl RecurringSupply {
     /// Keeps accepted quantities reserved for all subsequent operations and projects.
     pub(crate) fn accept(&mut self) {
         if let Some(owner) = self.releasing_owner.take() {
-            self.owner_ranges[owner] = (0, 0);
+            self.retire_owner(owner);
         }
         self.released.clear();
         self.staged.clear();
@@ -396,6 +592,7 @@ impl RecurringSupply {
     }
 
     fn restore(&mut self, claim: Claim, allocator: &BuildingAllocator, graph: &RegionGraph) {
+        self.journal_source(claim.source, claim.resource, claim.slot);
         self.remaining[claim.slot] = claim.previous;
         let available = claim.previous > 0.0;
         if self.active[claim.slot] != available {
@@ -407,10 +604,166 @@ impl RecurringSupply {
     /// Records a live owner's accepted input flows for a later replacement quote.
     /// O(claims), using the pass's preallocated sparse receipt arena.
     pub(crate) fn accept_for(&mut self, owner: usize) {
-        let first = self.committed.len();
-        self.committed.extend_from_slice(&self.staged);
+        debug_assert!(self.owner_receipts[owner] == usize::MAX || self.releasing_owner == Some(owner));
+        self.retire_owner(owner);
+        self.releasing_owner = None;
+        for index in 0..self.staged.len() {
+            self.append_receipt(self.staged[index], owner);
+        }
         self.accept();
-        self.owner_ranges[owner] = (first, self.committed.len());
+    }
+
+    /// Commits a repaired input gap without retiring the owner's unaffected receipts.
+    /// The enclosing revalidation transaction owns rollback of both removal and extension.
+    /// O(new claims), using the same prepared receipt arena as full owner quotations.
+    pub(crate) fn extend_inputs_for(&mut self, owner: usize) {
+        debug_assert!(self.revalidation.is_active());
+        debug_assert!(self.releasing_owner.is_none() && self.released.is_empty());
+        for index in 0..self.staged.len() {
+            self.append_receipt(self.staged[index], owner);
+        }
+        self.accept();
+    }
+
+    fn append_receipt(&mut self, claim: Claim, owner: usize) {
+        self.journal_source(claim.source, claim.resource, claim.slot);
+        self.journal_owner(owner);
+        let next_from_source = self.source_receipts[claim.slot];
+        let receipt = Claim { owner, next_from_source, next_from_owner: usize::MAX,
+            previous_from_source: usize::MAX, ..claim };
+        let index = if self.free_receipt == usize::MAX {
+            let index = self.committed.len();
+            assert!(index < self.committed.capacity(), "input receipts require capacity preflight");
+            self.committed.push(receipt);
+            index
+        } else {
+            let index = self.free_receipt;
+            self.journal_receipt(index);
+            self.free_receipt = self.committed[index].next_from_owner;
+            self.committed[index] = receipt;
+            index
+        };
+        if next_from_source != usize::MAX {
+            self.journal_receipt(next_from_source);
+            self.committed[next_from_source].previous_from_source = index;
+        }
+        self.source_receipts[claim.slot] = index;
+        let last = self.owner_tails[owner];
+        if last == usize::MAX { self.owner_receipts[owner] = index; }
+        else {
+            self.journal_receipt(last);
+            self.committed[last].next_from_owner = index;
+        }
+        self.owner_tails[owner] = index;
+    }
+
+    /// Prepares at most one extra source receipt per matched customer before publication.
+    pub(crate) fn prepare_customer_deliveries(&mut self, receipts: usize) {
+        self.reserve_receipts(self.committed.len() + receipts);
+    }
+
+    /// Publishes the currently staffed part of a financed seller-to-buyer promise.
+    /// Earlier input claims retain priority; the business book retains any promised future
+    /// production. O(source ports + changed eligibility * log bucket size), no route query
+    /// or per-delivery allocation after `prepare_customer_deliveries`. A storage shortage
+    /// returns the exact required arena size before changing any source or receipt.
+    pub(crate) fn commit_customer_delivery(&mut self, source: usize, buyer: usize,
+        resource: ResourceRuntimeId, requested: f64, quote: [f32; 2],
+        allocator: &BuildingAllocator, catalog: &RuntimeEconomyCatalog, graph: &RegionGraph) -> Result<(), usize> {
+        debug_assert!(self.staged.is_empty() && self.released.is_empty());
+        let Some(slot) = self.slot(allocator, catalog, source, resource) else { return Ok(()); };
+        let previous = self.remaining[slot];
+        let units = requested.min(previous);
+        if units <= 0.0 { return Ok(()); }
+        self.check_receipt_capacity(1, None)?;
+        self.journal_source(source, resource, slot);
+        self.remaining[slot] -= units;
+        if self.remaining[slot] == 0.0 {
+            self.active[slot] = false;
+            self.set_available(source, resource, false, allocator, graph);
+        }
+        self.append_receipt(Claim { source, resource, slot, previous, units, owner: buyer,
+            next_from_owner: usize::MAX, next_from_source: usize::MAX,
+            previous_from_source: usize::MAX, unit_price: quote[0], carrier_quote: quote[1] }, buyer);
+        Ok(())
+    }
+
+    fn retire_owner(&mut self, owner: usize) {
+        self.journal_owner(owner);
+        let mut index = self.owner_receipts[owner];
+        while index != usize::MAX {
+            let receipt = self.committed[index];
+            self.retire_receipt(index, receipt);
+            index = receipt.next_from_owner;
+        }
+        self.owner_receipts[owner] = usize::MAX;
+        self.owner_tails[owner] = usize::MAX;
+    }
+
+    fn retire_receipt(&mut self, index: usize, receipt: Claim) {
+        self.journal_source(receipt.source, receipt.resource, receipt.slot);
+        self.journal_receipt(index);
+        if receipt.previous_from_source == usize::MAX {
+            self.source_receipts[receipt.slot] = receipt.next_from_source;
+        } else {
+            self.journal_receipt(receipt.previous_from_source);
+            self.committed[receipt.previous_from_source].next_from_source = receipt.next_from_source;
+        }
+        if receipt.next_from_source != usize::MAX {
+            self.journal_receipt(receipt.next_from_source);
+            self.committed[receipt.next_from_source].previous_from_source = receipt.previous_from_source;
+        }
+        self.committed[index].next_from_owner = self.free_receipt;
+        self.free_receipt = index;
+    }
+
+    /// Receipt arena occupancy/capacity for allocation regressions; not simulation state.
+    #[cfg(test)]
+    pub(crate) fn receipt_storage(&self) -> (usize, usize) {
+        (self.committed.len(), self.committed.capacity())
+    }
+
+    /// Removes spare capacity to exercise cold growth without corrupting any live receipt.
+    #[cfg(test)]
+    pub(crate) fn shrink_receipt_storage_for_test(&mut self) {
+        debug_assert!(!self.revalidation.is_active());
+        self.committed.shrink_to_fit();
+        self.revalidation.prepare(self.remaining.len(), self.owner_receipts.len(), self.committed.capacity());
+    }
+
+    /// Visits only this source's committed buyers, including each resource's exact quantity.
+    /// Cost is O(source ports + current input flows), without a citywide buyer scan,
+    /// replacement-history traversal or per-visit allocation.
+    pub(crate) fn visit_dependents(&self, source: usize,
+        mut visit: impl FnMut(usize, ResourceRuntimeId, f64)) {
+        let Some(range) = self.source_range(source) else {
+            return;
+        };
+        for slot in range {
+            let mut index = self.source_receipts[slot];
+            while index != usize::MAX {
+                let receipt = self.committed[index];
+                if Some(receipt.owner) != self.releasing_owner {
+                    visit(receipt.owner, receipt.resource, receipt.units);
+                }
+                index = receipt.next_from_source;
+            }
+        }
+    }
+
+    /// Output already promised to current or prospective workers of accepted buyers.
+    /// O(source output ports + that output's current receipts), without allocation.
+    pub(crate) fn committed_output(&self, source: usize, resource: ResourceRuntimeId,
+        allocator: &BuildingAllocator, catalog: &RuntimeEconomyCatalog) -> f64 {
+        let Some(slot) = self.slot(allocator, catalog, source, resource) else { return 0.0; };
+        let mut index = self.source_receipts[slot];
+        let mut units = 0.0;
+        while index != usize::MAX {
+            let receipt = self.committed[index];
+            if Some(receipt.owner) != self.releasing_owner { units += receipt.units; }
+            index = receipt.next_from_source;
+        }
+        units
     }
 
     /// Temporarily releases only this incumbent's accepted inputs. Rejection restores exact
@@ -423,31 +776,147 @@ impl RecurringSupply {
         graph: &RegionGraph,
     ) {
         debug_assert!(self.staged.is_empty() && self.released.is_empty());
-        let Some(&(first, end)) = self.owner_ranges.get(owner) else {
+        let Some(&first) = self.owner_receipts.get(owner) else {
             return;
         };
         self.releasing_owner = Some(owner);
-        for index in first..end {
+        let mut index = first;
+        while index != usize::MAX {
             let receipt = self.committed[index];
             let previous = self.remaining[receipt.slot];
+            self.journal_source(receipt.source, receipt.resource, receipt.slot);
             self.released.push(Claim {
                 previous,
                 ..receipt
             });
             self.remaining[receipt.slot] += receipt.units;
-            if previous == 0.0 && receipt.units > 0.0 {
+            if previous <= 0.0 && self.remaining[receipt.slot] > 0.0 {
                 self.active[receipt.slot] = true;
                 self.set_available(receipt.source, receipt.resource, true, allocator, graph);
             }
+            index = receipt.next_from_owner;
+        }
+    }
+
+    /// Removes only one source's deliveries to an affected buyer, retaining every other
+    /// input receipt and price. O(owner flows + changed flows * log bucket size), without
+    /// allocation or unrelated-owner scans. Requires outer revalidation for exact rollback.
+    pub(crate) fn release_source_from_owner(&mut self, owner: usize, source: usize,
+        allocator: &BuildingAllocator, graph: &RegionGraph) {
+        debug_assert!(self.revalidation.is_active());
+        debug_assert!(self.staged.is_empty() && self.released.is_empty());
+        debug_assert!(self.releasing_owner.is_none());
+        let mut index = self.owner_receipts[owner];
+        let mut previous = usize::MAX;
+        while index != usize::MAX {
+            let receipt = self.committed[index];
+            if receipt.source == source {
+                self.journal_owner(owner);
+                self.journal_source(source, receipt.resource, receipt.slot);
+                self.remaining[receipt.slot] += receipt.units;
+                if previous == usize::MAX {
+                    self.owner_receipts[owner] = receipt.next_from_owner;
+                } else {
+                    self.journal_receipt(previous);
+                    self.committed[previous].next_from_owner = receipt.next_from_owner;
+                }
+                if self.owner_tails[owner] == index { self.owner_tails[owner] = previous; }
+                self.retire_receipt(index, receipt);
+                if self.source_receipts[receipt.slot] == usize::MAX {
+                    // No claims remain. Restore the exact production quantity rather than
+                    // retaining subtraction/addition roundoff from fractional old receipts.
+                    self.remaining[receipt.slot] = self.production[receipt.slot];
+                }
+                let available = self.remaining[receipt.slot] > 0.0;
+                if self.active[receipt.slot] != available {
+                    self.active[receipt.slot] = available;
+                    self.set_available(source, receipt.resource, available, allocator, graph);
+                }
+            } else { previous = index; }
+            index = receipt.next_from_owner;
         }
     }
 
     /// Replacement price of an input in the staged operation, including finite source mixing.
-    pub(crate) fn input_price(&self, resource: ResourceRuntimeId) -> f32 {
+    pub(crate) fn input_price(&self, resource: ResourceRuntimeId) -> f64 {
         self.prices
             .iter()
             .find(|&&(id, _)| id == resource)
             .map_or(0.0, |&(_, price)| price)
+    }
+
+    /// Visits the retained local quote tranches and real outside residual of an input.
+    /// The callback receives source identity, daily units, goods price and carrier price.
+    /// O(owner flows), in original quote order; returns false for unavailable residual supply.
+    pub(crate) fn visit_input_sources(&self, owner: usize, input: InputRequirement,
+        imported_price: f32, outside: Option<f32>,
+        mut visit: impl FnMut(Option<usize>, f64, f32, f32)) -> bool {
+        let mut needed = f64::from(input.daily_units);
+        let mut index = self.owner_receipts.get(owner).copied().unwrap_or(usize::MAX);
+        while needed > 0.0 && index != usize::MAX {
+            let receipt = self.committed[index];
+            index = receipt.next_from_owner;
+            if receipt.resource != input.resource { continue; }
+            let units = needed.min(receipt.units);
+            needed -= units;
+            visit(Some(self.source_owner(receipt.source)), units, receipt.unit_price, receipt.carrier_quote);
+        }
+        if needed > 0.0 {
+            let Some(carrier) = outside else { return false; };
+            visit(None, needed, imported_price, carrier);
+        }
+        true
+    }
+
+    /// Shares the prepared car components with business customer queries without rebuilding roads.
+    pub(crate) fn freight_components(&self) -> Option<&ModeComponentIndex> {
+        self.components.as_ref()
+    }
+
+    /// Sparse input-account preparation bound: local receipts plus one outside tranche per input.
+    pub(crate) fn input_tranche_capacity(&self, input_ports: usize) -> usize {
+        self.committed.len() + input_ports
+    }
+
+    /// Preparation for new project buyers: each quote either fills an input or exhausts a
+    /// source, plus the retained input flows that replacements can release during this pass.
+    /// Revalidated existing buyers require their own exact capacity preflight.
+    pub(crate) fn project_input_tranche_capacity(&self, input_ports: usize) -> usize {
+        self.committed.len() + self.remaining.len() + input_ports
+    }
+
+    /// Reprices a retained owner's input requirement from its accepted supplier receipts.
+    /// Unclaimed units use the caller's real outside quote. O(owner input flows), without
+    /// allocating, searching the city, changing reservations or valuing freight as stock.
+    pub(crate) fn owner_input_costs(&self, owner: usize, input: InputRequirement,
+        imported_price: f32, outside: Option<f32>) -> InputSupplyCosts {
+        if input.daily_units <= 0.0 { return input.at_prices(imported_price, 0.0); }
+        if input.replenishment_batch_units.is_none() {
+            return InputSupplyCosts { goods: f64::INFINITY, ..Default::default() };
+        }
+        let (needed, mut costs) = self.retained_input_costs(owner, input);
+        if needed > 0.0 {
+            if let Some(carrier) = outside {
+                costs += input.at_prices_for_units(needed, imported_price, carrier);
+            } else { costs.goods = f64::INFINITY; }
+        }
+        costs
+    }
+
+    fn retained_input_costs(&self, owner: usize, input: InputRequirement) -> (f64, InputSupplyCosts) {
+        let mut needed = f64::from(input.daily_units);
+        let mut costs = InputSupplyCosts::default();
+        let mut index = self.owner_receipts.get(owner).copied().unwrap_or(usize::MAX);
+        while index != usize::MAX {
+            let receipt = self.committed[index];
+            index = receipt.next_from_owner;
+            if receipt.resource != input.resource { continue; }
+            let units = needed.min(receipt.units);
+            needed -= units;
+            costs += input.at_prices_for_units(units, receipt.unit_price, receipt.carrier_quote);
+            if needed == 0.0 { break; }
+        }
+        (needed, costs)
     }
 
     /// Quotes and stages one input using exact directed routes and actual supplier prices.
@@ -458,6 +927,7 @@ impl RecurringSupply {
         &mut self,
         input: InputRequirement,
         buyer: Option<usize>,
+        retained_owner: Option<usize>,
         entrance: &BuildingEntrance,
         outside_quote: Option<f32>,
         allocator: &BuildingAllocator,
@@ -468,33 +938,32 @@ impl RecurringSupply {
         routes: &mut FreightRouteCache,
         goods_multiplier: f32,
     ) -> InputSupplyCosts {
-        let imported_price = catalog
-            .unit_price_for_resource(input.resource)
-            .unwrap_or(0.0)
-            * tuning.owa_import_price_multiplier;
         if input.daily_units > 0.0 && !goods_multiplier.is_finite() {
-            return InputSupplyCosts { goods: f32::INFINITY, buffer: f32::INFINITY,
+            return InputSupplyCosts { goods: f64::INFINITY, buffer: f64::INFINITY,
                 ..Default::default() };
         }
-        let imported_price = imported_price
-            * if goods_multiplier.is_finite() { goods_multiplier } else { 1.0 };
+        let imported_price = super::imported_input_unit_price(catalog, tuning, input.resource, goods_multiplier);
         if input.daily_units <= 0.0 {
             // Internally replenished circulation stock needs valuation, not a recurring order.
-            self.prices.push((input.resource, imported_price));
+            self.prices.push((input.resource, f64::from(imported_price)));
             return input.at_prices(imported_price, 0.0);
         }
         let Some(batch) = input.replenishment_batch_units else {
             return InputSupplyCosts {
-                goods: f32::INFINITY,
+                goods: f64::INFINITY,
                 ..Default::default()
             };
         };
-        let mut needed = f64::from(input.daily_units);
-        let mut result = InputSupplyCosts::default();
+        // Keep f64 residuals: narrowing a fragmented remainder to f32 can invent or lose
+        // supply. Buffer/freight exposure continues to use the complete input requirement.
+        let (mut needed, mut result) = retained_owner.map_or_else(
+            || (f64::from(input.daily_units), InputSupplyCosts::default()),
+            |owner| self.retained_input_costs(owner, input));
         while needed > 0.0 {
             let choice = self.next_offer(
                 input.resource,
                 buyer,
+                self.releasing_owner.or(retained_owner),
                 entrance,
                 allocator,
                 catalog,
@@ -505,10 +974,7 @@ impl RecurringSupply {
             let Some((source, slot, seconds)) = choice else {
                 break;
             };
-            let supplier = &allocator.buildings[source];
-            let profile = catalog
-                .profile_by_runtime_id(supplier.economy_profile_runtime_id)
-                .unwrap();
+            let profile = self.source_profile(source, allocator, catalog).unwrap();
             let carrier = freight_cost(
                 seconds,
                 tuning.operational_clock.seconds_per_day,
@@ -524,6 +990,7 @@ impl RecurringSupply {
             let previous = self.remaining[slot];
             let units = needed.min(previous);
             needed -= units;
+            self.journal_source(source, input.resource, slot);
             self.remaining[slot] -= units;
             if self.remaining[slot] == 0.0 {
                 self.active[slot] = false;
@@ -535,29 +1002,28 @@ impl RecurringSupply {
                 slot,
                 previous,
                 units,
+                owner: usize::MAX,
+                next_from_owner: usize::MAX,
+                next_from_source: usize::MAX,
+                previous_from_source: usize::MAX,
+                unit_price: local_price,
+                carrier_quote: carrier,
             });
-            result.goods += units as f32 * local_price;
-            result.freight += units as f32 / batch * carrier;
-            result.buffer += input.buffer_units
-                * (units as f32 / input.daily_units)
-                * local_price;
+            result += input.at_prices_for_units(units, local_price, carrier);
         }
         if needed > 0.0 {
             if let Some(carrier) = outside_quote {
-                result.goods += needed as f32 * imported_price;
-                result.freight += needed as f32 / batch * carrier;
-                result.buffer +=
-                    input.buffer_units * (needed as f32 / input.daily_units) * imported_price;
+                result += input.at_prices_for_units(needed, imported_price, carrier);
             } else {
-                result.goods = f32::INFINITY;
+                result.goods = f64::INFINITY;
             }
         }
         self.prices.push((
             input.resource,
             if result.goods.is_finite() {
-                result.goods / input.daily_units
+                result.goods / f64::from(input.daily_units)
             } else {
-                imported_price
+                f64::from(imported_price)
             },
         ));
         result
@@ -567,6 +1033,7 @@ impl RecurringSupply {
         &mut self,
         resource: ResourceRuntimeId,
         buyer: Option<usize>,
+        excluded: Option<usize>,
         entrance: &BuildingEntrance,
         allocator: &BuildingAllocator,
         catalog: &RuntimeEconomyCatalog,
@@ -599,7 +1066,7 @@ impl RecurringSupply {
             return None;
         }
         let choice = self.nearest(
-            resource, buyer, entrance, allocator, catalog, network, graph, routes,
+            resource, buyer, excluded, entrance, allocator, catalog, network, graph, routes,
         );
         if let Some((source, slot, seconds)) = choice {
             let next = self.offers.len();
@@ -626,6 +1093,7 @@ impl RecurringSupply {
         &mut self,
         resource: ResourceRuntimeId,
         buyer: Option<usize>,
+        excluded: Option<usize>,
         entrance: &BuildingEntrance,
         allocator: &BuildingAllocator,
         catalog: &RuntimeEconomyCatalog,
@@ -633,7 +1101,6 @@ impl RecurringSupply {
         graph: &RegionGraph,
         routes: &mut FreightRouteCache,
     ) -> Option<(usize, usize, f32)> {
-        let buckets = self.index.buckets_for_resource(resource)?;
         let components =
             self.components
                 .as_ref()?
@@ -642,84 +1109,79 @@ impl RecurringSupply {
         // candidate that can beat it is still checked, so this changes search cost,
         // never route eligibility or deterministic route/price/index ordering.
         let incumbent = self.nearest_incumbents[resource as usize];
-        let excluded = self.releasing_owner;
         let mut best = incumbent
-            .filter(|&source| Some(source) != buyer && Some(source) != excluded)
             .and_then(|source| {
+                // Projected membership can shrink between forks. Validate the handle
+                // before reading its owner; a stale bound has no current supply slot.
                 let slot = self.slot(allocator, catalog, source, resource)?;
-                if self.remaining[slot] <= 0.0 {
+                if self.remaining[slot] <= 0.0 || Some(self.source_owner(source)) == buyer
+                    || Some(self.source_owner(source)) == excluded {
                     return None;
                 }
-                let seconds = if let Some(buyer) = buyer {
-                    routes.between_buildings(source, buyer, allocator, network, graph)
-                } else {
-                    routes.to_site(source, entrance, allocator, network, graph)
-                }?;
+                let seconds = self.source_route(source, buyer, entrance, allocator, network, graph, routes)?;
                 Some((source, slot, seconds))
             });
-        buckets.scan_nearest(
-            components,
-            entrance.door_pos.x,
-            entrance.door_pos.y,
-            |event| match event {
-                ReachableBucketScanEvent::Item { item_idx: source } => {
-                    if Some(source) == buyer
-                        || Some(source) == excluded
-                        || best.is_some_and(|best| best.0 == source)
-                    {
-                        return true;
-                    }
-                    let Some(slot) = self.slot(allocator, catalog, source, resource) else {
-                        return true;
-                    };
-                    if self.remaining[slot] <= 0.0 {
-                        return true;
-                    }
-                    if let Some((_, _, seconds)) = best {
-                        let Some(origin) = allocator.entrances.get(source) else {
+        for buckets in [self.index.buckets_for_resource(resource), self.projected_buckets(resource)]
+            .into_iter().flatten() {
+            buckets.scan_nearest(
+                components,
+                entrance.door_pos.x,
+                entrance.door_pos.y,
+                |event| match event {
+                    ReachableBucketScanEvent::Item { item_idx: source } => {
+                        if Some(self.source_owner(source)) == buyer
+                            || Some(self.source_owner(source)) == excluded
+                            || best.is_some_and(|best| best.0 == source)
+                        {
+                            return true;
+                        }
+                        let Some(slot) = self.slot(allocator, catalog, source, resource) else {
                             return true;
                         };
-                        // The complete door route cannot beat straight-line travel at
-                        // the fastest road/driveway speed. Avoid even a cached route
-                        // lookup when this candidate cannot improve the incumbent.
-                        let distance_sq = (origin.door_pos - entrance.door_pos).length_squared();
-                        if lower_bound_travel_seconds(distance_sq, self.max_speed) > seconds {
+                        if self.remaining[slot] <= 0.0 {
                             return true;
                         }
-                    }
-                    let seconds = if let Some(buyer) = buyer {
-                        routes.between_buildings(source, buyer, allocator, network, graph)
-                    } else {
-                        routes.to_site(source, entrance, allocator, network, graph)
-                    };
-                    if let Some(seconds) = seconds {
-                        // Equal routes have the same carrier fee. Only read prices on
-                        // a time tie; ordinary nearest-route searches need no extra lookup.
-                        if best.is_none_or(|current| {
-                            seconds.total_cmp(&current.2)
-                                .then_with(|| {
-                                    let price = |index: usize| {
-                                        catalog.profile_by_runtime_id(
-                                            allocator.buildings[index].economy_profile_runtime_id,
-                                        ).unwrap().unit_price_currency
-                                    };
-                                    price(source).total_cmp(&price(current.0))
-                                })
-                                .then_with(|| source.cmp(&current.0))
-                                .is_lt()
-                        }) {
-                            best = Some((source, slot, seconds));
+                        if let Some((_, _, seconds)) = best {
+                            let Some(origin) = self.source_entrance(source, allocator) else {
+                                return true;
+                            };
+                            // The complete door route cannot beat straight-line travel at
+                            // the fastest road/driveway speed. Avoid even a cached route
+                            // lookup when this candidate cannot improve the incumbent.
+                            let distance_sq = (origin.door_pos - entrance.door_pos).length_squared();
+                            if lower_bound_travel_seconds(distance_sq, self.max_speed) > seconds {
+                                return true;
+                            }
                         }
+                        let seconds = self.source_route(source, buyer, entrance, allocator, network, graph, routes);
+                        if let Some(seconds) = seconds {
+                            // Equal routes have the same carrier fee. Only read prices on
+                            // a time tie; ordinary nearest-route searches need no extra lookup.
+                            if best.is_none_or(|current| {
+                                seconds.total_cmp(&current.2)
+                                    .then_with(|| {
+                                        let price = |index: usize| {
+                                            self.source_profile(index, allocator, catalog).unwrap().unit_price_currency
+                                        };
+                                        price(source).total_cmp(&price(current.0))
+                                    })
+                                    .then_with(|| self.source_owner(source).cmp(&self.source_owner(current.0)))
+                                    .then_with(|| source.cmp(&current.0))
+                                    .is_lt()
+                            }) {
+                                best = Some((source, slot, seconds));
+                            }
+                        }
+                        true
                     }
-                    true
-                }
-                ReachableBucketScanEvent::RingComplete {
-                    next_min_distance_sq,
-                } => best.is_none_or(|(_, _, seconds)| {
-                    lower_bound_travel_seconds(next_min_distance_sq, self.max_speed) <= seconds
-                }),
-            },
-        );
+                    ReachableBucketScanEvent::RingComplete {
+                        next_min_distance_sq,
+                    } => best.is_none_or(|(_, _, seconds)| {
+                        lower_bound_travel_seconds(next_min_distance_sq, self.max_speed) <= seconds
+                    }),
+                },
+            );
+        }
         self.nearest_incumbents[resource as usize] = best.map(|(source, _, _)| source);
         best
     }

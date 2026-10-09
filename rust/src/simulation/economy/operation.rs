@@ -2,7 +2,7 @@
 
 //! Recurring operating costs and working capital, independent of owner startup equity.
 
-use super::definitions::{EconomyProfileRuntime, ResourceRuntimeId, RuntimeEconomyCatalog};
+use super::definitions::{EconomyProfileRuntime, ResourceRuntimeId, RuntimeEconomyCatalog, RuntimeResourcePort};
 use super::logistics::{export_dispatch_target_kg, quantize_requested_amount};
 use crate::simulation::buildings::allocator::Building;
 
@@ -32,6 +32,20 @@ pub(crate) struct OperationPrices {
     pub truck_payload: f32,
 }
 
+/// A quoted operation and its remaining recurring-profit/working-capital balances.
+/// Project records remain provisional until their shared customer/input transaction commits.
+#[derive(Clone, Copy)]
+pub(crate) struct FundedOperation {
+    /// Recipe whose material quantities, payroll and sales were evaluated.
+    pub(crate) profile: u16,
+    /// Exact supported activity, area and rounded paid workforce.
+    pub(crate) plan: OperationPlan,
+    /// Prices used to value outside input residuals and retained inventory in this proof.
+    pub(crate) prices: OperationPrices,
+    /// Recurring operating surplus followed by assets minus required working capital.
+    pub(crate) headroom: [f64; 2],
+}
+
 /// Net purchased input and circulation stock required by one proposed operation.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct InputRequirement {
@@ -46,14 +60,23 @@ pub(crate) struct InputRequirement {
 }
 
 /// Source-specific input costs; a quote may combine finite local supply and outside purchases.
+/// Money uses the customer ledger's f64 precision through quotation and asset revaluation.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct InputSupplyCosts {
     /// Recurring goods payments, excluding carriers and opening inventory.
-    pub goods: f32,
+    pub goods: f64,
     /// Recurring carrier payments amortized over the actual quoted deliveries.
-    pub freight: f32,
+    pub freight: f64,
     /// Replacement value of the complete required input buffer.
-    pub buffer: f32,
+    pub buffer: f64,
+}
+
+impl std::ops::AddAssign for InputSupplyCosts {
+    fn add_assign(&mut self, other: Self) {
+        self.goods += other.goods;
+        self.freight += other.freight;
+        self.buffer += other.buffer;
+    }
 }
 
 impl InputRequirement {
@@ -74,13 +97,22 @@ impl InputRequirement {
 
     /// Prices one source using the shared dispatch batch, without allocating or claiming stock.
     pub(crate) fn at_prices(self, unit_price: f32, carrier_quote: f32) -> InputSupplyCosts {
+        self.at_prices_for_units(f64::from(self.daily_units), unit_price, carrier_quote)
+    }
+
+    /// Prices a share of the requirement in the same monetary precision as customer accounts.
+    /// Physical recipe rates and shipment quanta retain their authored f32 representation.
+    pub(crate) fn at_prices_for_units(self, units: f64, unit_price: f32,
+        carrier_quote: f32) -> InputSupplyCosts {
         InputSupplyCosts {
-            goods: self.daily_units * unit_price,
-            buffer: self.buffer_units * unit_price,
+            goods: units * f64::from(unit_price),
+            buffer: f64::from(self.buffer_units) * if self.daily_units > 0.0 {
+                units / f64::from(self.daily_units)
+            } else { 1.0 } * f64::from(unit_price),
             freight: if self.daily_units > 0.0 {
                 self.replenishment_batch_units
-                    .map_or(f32::INFINITY, |batch| {
-                        self.daily_units / batch * carrier_quote
+                    .map_or(f64::INFINITY, |batch| {
+                        units / f64::from(batch) * f64::from(carrier_quote)
                     })
             } else {
                 0.0
@@ -97,13 +129,13 @@ pub(crate) fn working_capital_assets(
     catalog: &RuntimeEconomyCatalog,
     import_multiplier: f32,
     paid_cargo: f64,
-    output_price: impl Fn(ResourceRuntimeId) -> f32,
+    output_price: impl Fn(ResourceRuntimeId) -> f64,
 ) -> f64 {
     working_capital_assets_at_prices(
         building,
         profile,
         paid_cargo,
-        |resource| catalog.unit_price_for_resource(resource).unwrap_or(0.0) * import_multiplier,
+        |resource| f64::from(catalog.unit_price_for_resource(resource).unwrap_or(0.0) * import_multiplier),
         output_price,
     )
 }
@@ -115,38 +147,37 @@ pub(crate) fn working_capital_assets_at_prices(
     building: &Building,
     profile: &EconomyProfileRuntime,
     paid_cargo: f64,
-    input_price: impl Fn(ResourceRuntimeId) -> f32,
-    output_price: impl Fn(ResourceRuntimeId) -> f32,
+    input_price: impl Fn(ResourceRuntimeId) -> f64,
+    output_price: impl Fn(ResourceRuntimeId) -> f64,
 ) -> f64 {
     let mut capital = f64::from(building.operating_budget) + paid_cargo;
     for input in &profile.inputs {
         capital += f64::from(building.inventory_units(input.resource_runtime_id))
-            * f64::from(input_price(input.resource_runtime_id));
+            * input_price(input.resource_runtime_id);
     }
     for output in &profile.outputs {
         if profile.input_port(output.resource_runtime_id).is_none() {
-            capital += f64::from(
-                building.inventory_units(output.resource_runtime_id)
-                    * output_price(output.resource_runtime_id),
-            );
+            capital += f64::from(building.inventory_units(output.resource_runtime_id))
+                * output_price(output.resource_runtime_id);
         }
     }
     capital
 }
 
 /// Recurring expenses for one operation; opening equity never enters these quantities.
+/// Forecast money is f64; authored physical quantities and runtime cash storage are unchanged.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct OperatingCosts {
     /// Gross wages due each operational day.
-    pub payroll: f32,
+    pub payroll: f64,
     /// Purchased input goods consumed daily, excluding internally replenished resources.
-    pub inputs: f32,
+    pub inputs: f64,
     /// Utilities and property tax, including costs incurred while production is idle.
-    pub overhead: f32,
+    pub overhead: f64,
     /// Carrier charges amortized over actual replenishment/export batch quantities.
-    pub freight: f32,
+    pub freight: f64,
     /// Input buffers plus the next payroll/overhead payment, valued at replacement cost.
-    pub working_capital: f32,
+    pub working_capital: f64,
 }
 
 impl OperatingCosts {
@@ -192,11 +223,11 @@ impl OperatingCosts {
         let demand = profile.utility_demand_units_per_day(plan.area);
         let electricity = profile.electricity_demand_kwh_per_day(plan.area, activity, 0);
         let mut costs = Self {
-            payroll: plan.workers as f32 * profile.average_daily_wage(),
-            overhead: electricity * prices.utilities[0]
-                + demand[1] * prices.utilities[1]
-                + demand[2] * prices.utilities[2]
-                + prices.property_tax,
+            payroll: f64::from(plan.workers) * f64::from(profile.average_daily_wage()),
+            overhead: f64::from(electricity) * f64::from(prices.utilities[0])
+                + f64::from(demand[1]) * f64::from(prices.utilities[1])
+                + f64::from(demand[2]) * f64::from(prices.utilities[2])
+                + f64::from(prices.property_tax),
             ..Default::default()
         };
         for input in &profile.inputs {
@@ -230,35 +261,28 @@ impl OperatingCosts {
             let daily_units = profile.net_output_units_per_day(output) * production;
             let exported_units =
                 export_units(output.resource_runtime_id, daily_units).clamp(0.0, daily_units);
-            if exported_units > 0.0 {
-                // The dispatcher batches a production day, rounded up to the resource's
-                // legal shipment quantum. It does not require filling the entire truck.
-                // Ordinary factories retain a full authored day's batch even while
-                // understaffed; area producers dispatch their realized daily output.
-                let batch_output =
-                    if crate::simulation::work_area::profile_kind_uses_explicit_work_area(
-                        profile.kind,
-                    ) {
-                        daily_units
-                    } else {
-                        profile.net_output_units_per_day(output)
-                    };
-                let batch = export_dispatch_target_kg(
-                    batch_output,
-                    output.shipment_batch_kg,
-                    prices.truck_payload,
-                );
-                costs.freight += exported_units / batch * prices.carrier_quote;
-            }
+            costs.freight += export_freight(profile, output, daily_units, exported_units, prices);
         }
         costs.working_capital += costs.payroll + costs.overhead + costs.freight;
         costs
     }
 
     /// Daily sales must cover this amount without spending owner equity.
-    pub(crate) fn total(self) -> f32 {
+    pub(crate) fn total(self) -> f64 {
         self.payroll + self.inputs + self.overhead + self.freight
     }
+}
+
+/// Recurring export carrier cost at the dispatcher's actual shipment quantum. Ordinary
+/// factories retain an authored day's batch; area producers use realized daily output.
+pub(crate) fn export_freight(profile: &EconomyProfileRuntime, output: &RuntimeResourcePort,
+    daily_units: f32, exported_units: f32, prices: OperationPrices) -> f64 {
+    if exported_units <= 0.0 { return 0.0; }
+    let batch_output = if crate::simulation::work_area::profile_kind_uses_explicit_work_area(profile.kind) {
+        daily_units
+    } else { profile.net_output_units_per_day(output) };
+    let batch = export_dispatch_target_kg(batch_output, output.shipment_batch_kg, prices.truck_payload);
+    f64::from(exported_units) / f64::from(batch) * f64::from(prices.carrier_quote)
 }
 
 #[cfg(test)]
@@ -322,7 +346,7 @@ mod tests {
                         .unwrap()
             })
             .sum();
-        prices.property_tax = revenue - (imported.total() + local.total()) / 2.0;
+        prices.property_tax = (f64::from(revenue) - (imported.total() + local.total()) / 2.0) as f32;
         assert!(prices.property_tax > 0.0);
         let imported = OperatingCosts::for_plan(profile, &catalog, plan, prices, |_, n| n);
         let local = OperatingCosts::for_plan_with_input_quotes(
@@ -332,8 +356,8 @@ mod tests {
             |_, n| n,
             quoted_input,
         );
-        assert!(imported.total() > revenue);
-        assert!(local.total() < revenue);
+        assert!(imported.total() > f64::from(revenue));
+        assert!(local.total() < f64::from(revenue));
         assert!(local.working_capital < imported.working_capital);
         assert_eq!(local.payroll, imported.payroll);
         assert_eq!(local.overhead, imported.overhead);
@@ -370,9 +394,9 @@ mod tests {
         };
         let factory = catalog.profile_for_id("food_processor_basic").unwrap();
         let unavailable = |_| InputSupplyCosts {
-            goods: f32::INFINITY,
-            freight: f32::INFINITY,
-            buffer: f32::INFINITY,
+            goods: f64::INFINITY,
+            freight: f64::INFINITY,
+            buffer: f64::INFINITY,
         };
         let blocked = OperatingCosts::for_plan_with_input_quotes(
             factory,
@@ -461,6 +485,6 @@ mod tests {
         let expected = (30.0 * catalog.unit_price_for_resource(steel).unwrap()
             + 10.0 * catalog.unit_price_for_resource(metals).unwrap())
             * 1.25;
-        assert!((costs.inputs - expected).abs() < 0.001);
+        assert!((costs.inputs - f64::from(expected)).abs() < 0.001);
     }
 }

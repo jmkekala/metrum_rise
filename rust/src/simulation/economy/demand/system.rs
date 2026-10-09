@@ -48,6 +48,8 @@ pub struct DemandSystem {
     pub(super) construction_execution: super::execution::ConstructionExecution,
     pub(super) queued_construction: Vec<super::queued::QueuedConstruction>,
     pub(super) queued_supply_order: Vec<usize>,
+    /// Operational hour relative to which queued completion offsets were prepared.
+    pub(super) queued_reference_hour: u64,
     pub(super) next_construction_start_hour: u64,
     admission_budget: HouseholdAdmissionBudget,
     freight_border_nodes: Vec<u32>,
@@ -84,6 +86,7 @@ impl DemandSystem {
             construction_execution: super::execution::ConstructionExecution::default(),
             queued_construction: Vec::new(),
             queued_supply_order: Vec::new(),
+            queued_reference_hour: 0,
             next_construction_start_hour: 0,
             admission_budget: HouseholdAdmissionBudget::default(),
             freight_border_nodes: Vec::new(),
@@ -178,6 +181,7 @@ impl DemandSystem {
         minute_of_day: u16,
     ) {
         self.invalidate_construction_execution();
+        self.construction_execution.discard_project_proof_for_reset();
         self.building_actions = DemandBuildingActionPlan::default();
         let catalog = Arc::clone(&self.runtime_catalog);
         let economy_tuning = Arc::clone(&self.runtime_tuning);
@@ -202,7 +206,9 @@ impl DemandSystem {
         // Move only the mutable reservation book; the planner reads the matching
         // funding columns without copying them or borrowing the whole owner mutably.
         let mut inputs = std::mem::take(&mut funding.input_supply);
+        let mut reservations = std::mem::take(&mut self.construction_execution.reservations);
         let funded_jobs = if reuse_funding { &households.job_funding } else { &funding };
+        reservations.reset(funded_jobs, allocator, &catalog, &economy_tuning, fiscal_policy, minute_of_day);
         let mut snapshot = DailyDemandSnapshot::from_runtime_with_funding(
             allocator,
             households,
@@ -238,8 +244,8 @@ impl DemandSystem {
         admission_diagnostics.planned_households = self.households_to_admit_today;
         admission_diagnostics.launched_households = 0;
         self.last_admission_diagnostics = admission_diagnostics;
-        let mut supply = SiteSupply::new(&mut inputs, allocator, zoning, network, graph,
-            logistics, &economy_tuning, &borders, &catalog, minute_of_day);
+        let mut supply = SiteSupply::new(&mut inputs, &mut reservations, allocator, zoning, network, graph,
+            logistics, &economy_tuning, &borders, &catalog, minute_of_day, fiscal_policy.household_vat_rate);
         supply.reserve_projects(self.queued_supply_order.iter().map(|&index| &self.queued_construction[index]),
             &catalog, &snapshot.output_absorption, &mut self.construction_execution.replay_market, fiscal_policy, &funding.service_capacities, &funding.freight_capital);
         self.plan_private_building_actions(
@@ -257,6 +263,7 @@ impl DemandSystem {
             supply,
         );
         funding.input_supply = inputs;
+        self.construction_execution.reservations = reservations;
         self.construction_execution.funding = funding;
         self.freight_border_nodes = borders;
         self.admission_budget

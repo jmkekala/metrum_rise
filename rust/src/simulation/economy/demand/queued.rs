@@ -15,6 +15,8 @@ use crate::simulation::zoning::{ParcelId, ZoneType, ZoningSystem};
 /// A queued parcel's promised capacity and actual operational completion tick.
 #[derive(Clone)]
 pub(super) struct QueuedConstruction {
+    /// False after minute execution consumes the queue entry, even if placement failed.
+    pub(super) active: bool,
     pub(super) parcel_id: u64,
     pub(super) completion_hour: u64,
     pub(super) household_slots: u32,
@@ -44,6 +46,8 @@ impl DemandSystem {
         queued: impl IntoIterator<Item = (u64, ZoneType, &'a DemandSpawnAction)>,
         site_entrance: impl Fn(&DemandSpawnAction) -> Option<BuildingEntrance>,
     ) {
+        self.invalidate_construction_execution();
+        self.queued_reference_hour = now / 60;
         self.queued_construction.clear();
         let mut next_due = now.saturating_add(1);
         for (sequence, (due, zone, action)) in queued.into_iter().enumerate() {
@@ -65,6 +69,7 @@ impl DemandSystem {
                 continue;
             };
             self.queued_construction.push(QueuedConstruction {
+                active: true,
                 level: authored.level,
                 parcel_id: action.parcel_id,
                 completion_hour: start_hour_delay(now, due)
@@ -106,6 +111,16 @@ impl DemandSystem {
             .sort_unstable_by_key(|&index| self.queued_construction[index].sequence);
     }
 
+    /// Retires one consumed queue entry and returns its recipe without moving owner identities.
+    pub(super) fn retire_queued_construction(&mut self, parcel: u64) -> Option<u16> {
+        if let Ok(index) = self.queued_construction
+            .binary_search_by_key(&parcel, |project| project.parcel_id) {
+            let project = &mut self.queued_construction[index];
+            return std::mem::replace(&mut project.active, false).then_some(project.profile_runtime_id);
+        }
+        None
+    }
+
     /// Numeric reservation fixtures do not need road geometry; runtime queues always supply doors.
     #[cfg(test)]
     pub(crate) fn set_queued_construction<'a>(
@@ -126,6 +141,7 @@ impl DailyDemandSnapshot {
         queued: &[QueuedConstruction],
     ) {
         for project in queued {
+            if !project.active { continue; }
             let index = if project.household_slots > 0 {
                 0
             } else if project.commercial {

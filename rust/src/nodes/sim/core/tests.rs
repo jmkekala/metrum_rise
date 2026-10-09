@@ -1571,6 +1571,205 @@ fn future_homes_rehouse_nonworkers_before_funding_factory_construction() {
 }
 
 #[test]
+fn queued_customer_financing_requires_placed_homes_and_reserves_labour_once() {
+    let (mut core, homes, factories) = construction_execution_fixture();
+    core.demand.set_queued_construction_with_entrances(&core.allocator, &core.zoning, 0,
+        [(1, ZoneType::Residential, &homes[0]), (2, ZoneType::Residential, &homes[1]),
+         (3, ZoneType::Industrial, &factories[0]), (4, ZoneType::Industrial, &factories[1])],
+        |action| core.allocator.demand_site_entrance(action.parcel_id, &action.asset_id,
+            &core.zoning, &core.region_graph, &core.transit_network.lane_system));
+    let prepare = |core: &mut SimCore, index| core.demand.prepare_queued_spawn(
+        &factories[index], ZoneType::Industrial, &core.allocator, &core.households,
+        &core.region_graph, 3, &core.transit_network, &mut core.logistics,
+        &core.zoning, core.treasury.balance, &core.fiscal_policy);
+    assert!(matches!(prepare(&mut core, 0), Err("queued-operation-not-supported")),
+        "unplaced supporting homes cannot back a queued customer's payroll");
+    execute_test_construction(&mut core, &homes[0], ZoneType::Residential, 1);
+    execute_test_construction(&mut core, &homes[1], ZoneType::Residential, 2);
+    for _ in 0..3 {
+        assert!(prepare(&mut core, 0).is_ok(), "the first buyer already owns its workers");
+        assert!(matches!(prepare(&mut core, 1), Err("queued-operation-not-supported")),
+            "the second buyer cannot reuse the first buyer's workforce");
+    }
+    core.demand.reject_queued_spawn(&factories[0], &core.allocator, &core.region_graph);
+    assert!(prepare(&mut core, 1).is_ok(),
+        "failed placement withdraws the first customer and releases its workforce");
+    execute_test_construction(&mut core, &factories[1], ZoneType::Industrial, 4);
+    assert_eq!(core.allocator.buildings.len(), 3);
+    assert!(core.allocator.buildings[2].operating_budget > 0.0);
+    assert!(prepare(&mut core, 0).is_err(),
+        "placed construction keeps its labour after the old queue entry retires");
+}
+
+#[test]
+fn queued_customer_reservations_rebuild_before_post_load_minute_execution() {
+    let mut outcomes = Vec::new();
+    for reload in [false, true] {
+        let (mut core, homes, factories) = construction_execution_fixture();
+        execute_test_construction(&mut core, &homes[0], ZoneType::Residential, 1);
+        execute_test_construction(&mut core, &homes[1], ZoneType::Residential, 2);
+        for (index, action) in factories.iter().take(2).enumerate() {
+            core.pending_demand_spawns.push_back(super::state::PendingDemandSpawnAction {
+                due_minute: 3 + index as u64, zone_type: ZoneType::Industrial,
+                action: action.clone(), planned_day_index: 1, planned_minute_of_day: 0,
+            });
+        }
+        core.time.minute_of_day = 2;
+        core.refresh_demand_construction_queue(1, 2);
+        if reload {
+            let path = temp_save_path("queued_customer_reservations");
+            core.save_game_internal(path.to_str().unwrap(), None).unwrap();
+            let (mut loaded, _, _) = construction_execution_fixture();
+            loaded.load_game_internal(path.to_str().unwrap()).unwrap();
+            std::fs::remove_file(path).unwrap();
+            core = loaded;
+        }
+        // Inspect the second project first: preserving execution priority requires the
+        // earlier buyer's commitment even before the first minute action has run.
+        assert!(matches!(core.demand.prepare_queued_spawn(&factories[1], ZoneType::Industrial,
+            &core.allocator, &core.households, &core.region_graph, 3, &core.transit_network,
+            &mut core.logistics, &core.zoning, core.treasury.balance, &core.fiscal_policy),
+            Err("queued-operation-not-supported")));
+        assert_eq!(core.execute_pending_demand_spawns_for_minute(1, 3), 1);
+        assert_eq!(core.execute_pending_demand_spawns_for_minute(1, 4), 1);
+        assert!(core.pending_demand_spawns.is_empty());
+        assert_eq!(core.allocator.buildings.len(), 3);
+        let firm = &core.allocator.buildings[2];
+        outcomes.push((firm.parcel_id, firm.asset_id.clone(), firm.operating_budget.to_bits(),
+            firm.construction_remaining_hours, core.treasury.balance.to_bits()));
+    }
+    assert_eq!(outcomes[0], outcomes[1]);
+}
+
+#[test]
+fn queued_projects_revalidate_future_doors_and_prices_through_placement_and_reload() {
+    for edit in ["unchanged", "future-door", "frontage-policy", "frontage-recovery", "road-split"] {
+        let mut outcomes = Vec::new();
+        for reload in [false, true] {
+            let (mut core, mut homes, mut factories) = construction_execution_fixture();
+            core.transit_network.rebuild_cch_and_check(&core.region_graph);
+            assert!(homes.len() >= 4 && factories.len() >= 3);
+            factories[1].asset_id = register_test_asset(&mut core.allocator,
+                "execution_middle_factory", ZoneType::Industrial);
+            if edit == "road-split" {
+                use crate::simulation::zoning::cells::{CellBounds, CellSelectionShape};
+                use glam::DVec2;
+                // The numerical fixture's manual parcels keep authored attachments. Use
+                // gameplay cell lots for the road-edit attachment reconciliation contract.
+                core.benchmark_mode = false;
+                let home_asset = homes[0].asset_id.clone();
+                let factory_asset = factories[0].asset_id.clone();
+                let middle_asset = factories[1].asset_id.clone();
+                let removed = homes.iter().chain(&factories).map(|action| action.parcel_id).collect();
+                assert_eq!(core.zoning.remove_parcels_by_raw_ids(&removed), homes.len() + factories.len());
+                core.zoning.generate_cells(&core.region_graph, CellBounds {
+                    min: DVec2::new(0.0, -128.0), max: DVec2::new(256.0, 128.0),
+                }, |_| false);
+                for (zone, start, end) in [(ZoneType::Residential, 10.0, 90.0),
+                    (ZoneType::Industrial, 110.0, 179.0)] {
+                    let selection = core.zoning.cells.select(CellSelectionShape::Marquee,
+                        &[DVec2::new(start, -6.0), DVec2::new(end, -35.0)]);
+                    assert!(!selection.cells.is_empty());
+                    let profile = core.zoning.profiles.default_runtime_id_for_zone_type(zone).unwrap();
+                    core.zoning.paint_cells(&selection, profile, |_| false).unwrap();
+                }
+                core.prepare_cell_lots_internal();
+                homes.clear();
+                factories.clear();
+                for parcel in core.zoning.parcels() {
+                    assert!(parcel.cell_lot().is_some());
+                    let residential = core.zoning.profiles.profile_by_runtime_id(
+                        parcel.zone_profile_runtime_id()).unwrap().zone_type == ZoneType::Residential;
+                    let (actions, asset) = if residential { (&mut homes, &home_asset) }
+                        else { (&mut factories, &factory_asset) };
+                    actions.push(DemandSpawnAction { parcel_id: parcel.id().raw(), asset_id: asset.clone() });
+                }
+                assert_eq!(homes.len(), 4);
+                assert_eq!(factories.len(), 3);
+                factories[1].asset_id = middle_asset;
+            }
+            for (index, home) in homes.iter().take(4).enumerate() {
+                execute_test_construction(&mut core, home, ZoneType::Residential, index as u16 + 1);
+            }
+            for (index, action) in factories.iter().take(3).enumerate() {
+                core.pending_demand_spawns.push_back(super::state::PendingDemandSpawnAction {
+                    due_minute: 5 + index as u64, zone_type: ZoneType::Industrial,
+                    action: action.clone(), planned_day_index: 1, planned_minute_of_day: 0,
+                });
+            }
+            core.refresh_demand_construction_queue(1, 4);
+            if edit == "future-door" {
+                // Only the second project changes; the warm queue still holds its old door.
+                let mut manifest = core.allocator.registry.get(&factories[1].asset_id)
+                    .unwrap().manifest.clone();
+                manifest.anchors.clear();
+                core.allocator.registry.register("test", manifest, String::new());
+            } else if edit == "frontage-policy" {
+                let before = core.allocator.demand_site_entrance(factories[1].parcel_id,
+                    &factories[1].asset_id, &core.zoning, &core.region_graph,
+                    &core.transit_network.lane_system);
+                core.set_vehicle_frontage_access_internal(0, 0);
+                assert_ne!(before, core.allocator.demand_site_entrance(factories[1].parcel_id,
+                    &factories[1].asset_id, &core.zoning, &core.region_graph,
+                    &core.transit_network.lane_system));
+            } else if edit == "road-split" {
+                let before = core.zoning.parcel_by_raw_id(factories[1].parcel_id).unwrap().edge_idx();
+                road_terrain_plan::commit_ready(&mut core,
+                    vec![Vector3::new(100.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 90.0)]);
+                core.transit_network.lane_system.rebuild(&mut core.region_graph);
+                core.transit_network.rebuild_cch_and_check(&core.region_graph);
+                core.rebuild_building_entrances_internal();
+                assert_ne!(core.zoning.parcel_by_raw_id(factories[1].parcel_id).unwrap().edge_idx(),
+                    before, "the actual road edit must remap the future project's frontage");
+            }
+            let mut sequence = Vec::new();
+            for minute in 5..=7 {
+                if edit == "frontage-recovery" && minute >= 6 {
+                    for lane in &mut core.transit_network.lane_system.lanes {
+                        lane.frontage_delay_penalty_s = if minute == 6 { 1_000_000.0 } else { 0.0 };
+                    }
+                    core.transit_network.frontage_delay_revision += 1;
+                }
+                core.time.day_index = 1;
+                core.time.minute_of_day = minute - 1;
+                if reload {
+                    // Loading reconstructs every queue door and financial book from current
+                    // inputs. Compare that fresh census with ordinary in-order warm execution.
+                    let path = temp_save_path("queued_edits_and_recovery");
+                    core.save_game_internal(path.to_str().unwrap(), None).unwrap();
+                    let mut loaded = test_core();
+                    loaded.allocator.registry = core.allocator.registry.clone();
+                    loaded.load_game_internal(path.to_str().unwrap()).unwrap();
+                    std::fs::remove_file(path).unwrap();
+                    assert_eq!(loaded.allocator.buildings.len(), core.allocator.buildings.len(),
+                        "{edit}, minute={minute}: valid supporting homes and placed firms must survive reload");
+                    core = loaded;
+                }
+                assert_eq!(core.execute_pending_demand_spawns_for_minute(1, minute), 1);
+                sequence.push((core.allocator.buildings.iter().map(|building| (
+                    building.parcel_id, building.asset_id.clone(), building.operating_budget.to_bits(),
+                    building.construction_remaining_hours, building.worker_count,
+                )).collect::<Vec<_>>(), core.treasury.balance.to_bits()));
+            }
+            assert!(core.pending_demand_spawns.is_empty());
+            let firms: Vec<_> = core.allocator.buildings.iter()
+                .filter(|building| building.zone_type == ZoneType::Industrial).collect();
+            assert_eq!(firms.len(), 2, "{edit}, reload={reload}: 24 future workers fund only two factories");
+            let second = if matches!(edit, "future-door" | "frontage-recovery") { 2 } else { 1 };
+            assert_eq!([firms[0].parcel_id, firms[1].parcel_id],
+                [factories[0].parcel_id, factories[second].parcel_id], "{edit}, reload={reload}");
+            let profile = core.demand.runtime_catalog().profile_for_id("food_processor_basic").unwrap();
+            let capital = profile.zoned_startup_budget(core.demand.runtime_catalog(),
+                core.demand.runtime_tuning().owa_import_price_multiplier);
+            assert!(firms.iter().all(|firm| firm.operating_budget == capital
+                && firm.worker_count == 0 && firm.is_under_construction()));
+            outcomes.push(sequence);
+        }
+        assert_eq!(outcomes[0], outcomes[1], "{edit}: reload must preserve each placement and equity decision");
+    }
+}
+
+#[test]
 fn failed_supporting_housing_prevents_owner_funding_and_labor_is_not_reused() {
     let (mut core, homes, factories) = construction_execution_fixture();
     let mut failed_home = homes[1].clone();

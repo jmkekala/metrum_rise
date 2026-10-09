@@ -32,6 +32,66 @@ struct FreightCarCandidate {
     detach_lane_d: f32,
 }
 
+/// Fixed freight access geometry for a door, reusable until its entrance or lanes change.
+/// Traffic-dependent frontage times remain priced by the query.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct FreightEntranceAccess {
+    edge_idx: usize,
+    // Departure and arrival slots indexed by the existing deterministic node rank.
+    departure: [Option<FreightAccessEnd>; 2],
+    arrival: [Option<FreightAccessEnd>; 2],
+}
+
+#[derive(Clone, Copy, Debug)]
+struct FreightAccessEnd {
+    node: u32,
+    lane_id: usize,
+    lane_d: f32,
+    local_time_s: f32,
+}
+
+impl FreightEntranceAccess {
+    /// Projects each usable car lane once; storage is fixed and query-local allocation is absent.
+    pub(crate) fn new(entrance: &BuildingEntrance, network: &TransitNetwork, graph: &RegionGraph) -> Self {
+        let mut access = Self { edge_idx: entrance.edge_idx, ..Self::default() };
+        let Some(edge) = graph.get_edge(entrance.edge_idx).filter(|edge| !edge.deleted) else {
+            return access;
+        };
+        for (rank, lane_id) in [entrance.car_lane_fwd, entrance.car_lane_bkw].into_iter().enumerate() {
+            if lane_id == INVALID_LANE_ID { continue; }
+            let Some(lane_d) = projected_lane_distance_for_entrance(entrance, lane_id, network, graph) else { continue; };
+            let Some(distance) = local_access_distance_car(entrance, lane_id, lane_d, network, graph) else { continue; };
+            let arrival_node = if rank == 0 { edge.start_node } else { edge.end_node };
+            let departure_node = if rank == 0 { edge.end_node } else { edge.start_node };
+            let end = FreightAccessEnd { node: arrival_node, lane_id, lane_d,
+                local_time_s: local_access_time_s(distance) };
+            if lane_origin_node(lane_id, network, graph) == Some(arrival_node) {
+                access.arrival[rank] = Some(end);
+            }
+            if lane_terminal_node(lane_id, network, graph) == Some(departure_node) {
+                access.departure[1 - rank] = Some(FreightAccessEnd { node: departure_node, ..end });
+            }
+        }
+        access
+    }
+
+    /// Prices a directed delivery using prepared access and current frontage penalties.
+    pub(crate) fn eta_to(&self, destination: &Self, network: &TransitNetwork, graph: &RegionGraph,
+        mut network_time_s: impl FnMut(u32, u32) -> Option<f32>) -> Option<f32> {
+        let mut best: Option<FreightCarCandidate> = None;
+        for origin_rank in [0_u8, 1_u8] {
+            for destination_rank in [0_u8, 1_u8] {
+                let Some(candidate) = freight_candidate_between_access(origin_rank, destination_rank,
+                    self, destination, network, graph, &mut network_time_s) else { continue; };
+                if best.as_ref().is_none_or(|current| freight_candidate_better(&candidate, current)) {
+                    best = Some(candidate);
+                }
+            }
+        }
+        best.map(|candidate| candidate.total_time_s)
+    }
+}
+
 #[derive(Clone, Copy)]
 struct FreightBorderCandidate {
     total_time_s: f32,
@@ -202,7 +262,8 @@ impl BuildingAllocator {
         entrance
     }
 
-    /// Reprices live frontage delays while the caller caches stable node-to-node costs.
+    /// Uncached geometry oracle for the prepared freight quote regressions.
+    #[cfg(test)]
     pub(crate) fn freight_car_eta_between_buildings(
         &self,
         source_idx: usize,
@@ -235,41 +296,10 @@ impl BuildingAllocator {
         graph: &RegionGraph,
         mut network_time_s: impl FnMut(u32, u32) -> Option<f32>,
     ) -> Option<f32> {
-        let origin_edge = graph.get_edge(origin_entrance.edge_idx)?;
-        let destination_edge = graph.get_edge(destination_entrance.edge_idx)?;
-        if origin_edge.deleted || destination_edge.deleted {
-            return None;
-        }
-        if !entrance_has_car_access(origin_entrance)
-            || !entrance_has_car_access(destination_entrance)
-        {
-            return None;
-        }
-
-        let mut best: Option<FreightCarCandidate> = None;
-        for origin_rank in [0_u8, 1_u8] {
-            for destination_rank in [0_u8, 1_u8] {
-                let Some(candidate) = freight_candidate_between_entrances(
-                    origin_rank,
-                    destination_rank,
-                    origin_entrance,
-                    destination_entrance,
-                    transit_network,
-                    graph,
-                    &mut network_time_s,
-                ) else {
-                    continue;
-                };
-                if best
-                    .as_ref()
-                    .is_none_or(|current| freight_candidate_better(&candidate, current))
-                {
-                    best = Some(candidate);
-                }
-            }
-        }
-
-        best.map(|candidate| candidate.total_time_s)
+        FreightEntranceAccess::new(origin_entrance, transit_network, graph).eta_to(
+            &FreightEntranceAccess::new(destination_entrance, transit_network, graph),
+            transit_network, graph, &mut network_time_s,
+        )
     }
 
     /// Freight car ETA from `border_node` to a building, with the network leg read from `costs`,
@@ -845,79 +875,26 @@ fn freight_border_candidate_better(
             ))
 }
 
-fn freight_candidate_between_entrances(
+fn freight_candidate_between_access(
     origin_rank: u8,
     destination_rank: u8,
-    origin_entrance: &BuildingEntrance,
-    destination_entrance: &BuildingEntrance,
+    origin: &FreightEntranceAccess,
+    destination: &FreightEntranceAccess,
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
     network_time_s: &mut impl FnMut(u32, u32) -> Option<f32>,
 ) -> Option<FreightCarCandidate> {
-    if origin_entrance.edge_idx >= graph.edge_count()
-        || destination_entrance.edge_idx >= graph.edge_count()
-    {
-        return None;
-    }
-    let origin_edge = graph.edge(origin_entrance.edge_idx);
-    let destination_edge = graph.edge(destination_entrance.edge_idx);
-    if origin_edge.deleted || destination_edge.deleted {
-        return None;
-    }
-
-    let planned_attach_node = if origin_rank == 0 {
-        origin_edge.start_node
-    } else {
-        origin_edge.end_node
-    };
-    let planned_detach_node = if destination_rank == 0 {
-        destination_edge.start_node
-    } else {
-        destination_edge.end_node
-    };
-
-    let planned_attach_lane_id = freight_candidate_lane_id(origin_entrance, origin_rank == 0, true);
-    let planned_detach_lane_id =
-        freight_candidate_lane_id(destination_entrance, destination_rank == 0, false);
-    if planned_attach_lane_id == INVALID_LANE_ID || planned_detach_lane_id == INVALID_LANE_ID {
-        return None;
-    }
-    if lane_terminal_node(planned_attach_lane_id, transit_network, graph)? != planned_attach_node {
-        return None;
-    }
-    if lane_origin_node(planned_detach_lane_id, transit_network, graph)? != planned_detach_node {
-        return None;
-    }
-
-    let planned_attach_lane_d = projected_lane_distance_for_entrance(
-        origin_entrance,
-        planned_attach_lane_id,
-        transit_network,
-        graph,
-    )?;
-    let planned_detach_lane_d = projected_lane_distance_for_entrance(
-        destination_entrance,
-        planned_detach_lane_id,
-        transit_network,
-        graph,
-    )?;
-
-    let egress_local_time_s = local_access_time_s(local_access_distance_car(
-        origin_entrance,
-        planned_attach_lane_id,
-        planned_attach_lane_d,
-        transit_network,
-        graph,
-    )?);
-    let ingress_local_time_s = local_access_time_s(local_access_distance_car(
-        destination_entrance,
-        planned_detach_lane_id,
-        planned_detach_lane_d,
-        transit_network,
-        graph,
-    )?);
-
-    let same_lane_direct_frontage = origin_entrance.edge_idx == destination_entrance.edge_idx
+    let from = origin.departure[usize::from(origin_rank)]?;
+    let to = destination.arrival[usize::from(destination_rank)]?;
+    let planned_attach_node = from.node;
+    let planned_detach_node = to.node;
+    let planned_attach_lane_id = from.lane_id;
+    let planned_detach_lane_id = to.lane_id;
+    let planned_attach_lane_d = from.lane_d;
+    let planned_detach_lane_d = to.lane_d;
+    let egress_local_time_s = from.local_time_s;
+    let ingress_local_time_s = to.local_time_s;
+    let same_lane_direct_frontage = origin.edge_idx == destination.edge_idx
         && planned_attach_lane_id == planned_detach_lane_id
         && planned_attach_lane_d <= planned_detach_lane_d + 1e-6;
 

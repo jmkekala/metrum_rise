@@ -3,6 +3,7 @@
 //! Economy-side reachability helpers for candidate planning.
 
 use std::collections::BTreeMap;
+use rayon::prelude::*;
 
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::graph::RegionGraph;
@@ -50,20 +51,34 @@ pub(crate) enum ReachableBucketScanEvent {
 /// Candidate buckets grouped by reachability component and 512 m routing chunk.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ReachableBucketIndex {
-    by_component: BTreeMap<u32, ComponentBuckets>,
+    by_component: BTreeMap<u32, usize>,
+    components: Vec<ComponentBuckets>,
+    buckets: Vec<BucketItems>,
     available: usize,
+}
+
+/// Position in a prepared reservation index. Valid until membership is rebuilt; clones and
+/// indices built from identical entries preserve positions, independently of availability.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ReachableReservation {
+    // A niche keeps optional positions at two words in per-household access storage.
+    bucket: std::num::NonZeroUsize,
+    position: usize,
 }
 
 #[derive(Clone, Debug)]
 struct ComponentBuckets {
-    by_chunk: BTreeMap<(i32, i32), BucketItems>,
+    by_chunk: BTreeMap<(i32, i32), usize>,
     min_chunk: (i32, i32),
     max_chunk: (i32, i32),
     available: usize,
+    // Independent membership census; financial availability changes do not reset it.
+    counted: usize,
 }
 
 #[derive(Clone, Debug, Default)]
 struct BucketItems {
+    component: usize,
     items: Vec<usize>,
     // Empty for ordinary immutable indices. Finite reservation users opt into an
     // availability tree, avoiding a linear walk over depleted suppliers on every query.
@@ -82,10 +97,7 @@ impl BucketItems {
         }
     }
 
-    fn set_available(&mut self, item: usize, available: bool) -> isize {
-        let Ok(position) = self.items.binary_search(&item) else {
-            return 0;
-        };
+    fn set_available(&mut self, position: usize, available: bool) -> isize {
         let mut node = self.leaves + position;
         let previous = self.available[node];
         let next = usize::from(available);
@@ -185,40 +197,74 @@ impl ReachableBucketIndex {
         let available = entries.len();
 
         let mut by_component = BTreeMap::new();
+        let mut components = Vec::new();
+        let mut buckets = Vec::new();
         for entry in entries {
-            by_component
-                .entry(entry.component)
-                .and_modify(|buckets: &mut ComponentBuckets| {
-                    buckets.available += 1;
-                    buckets.min_chunk.0 = buckets.min_chunk.0.min(entry.chunk.0);
-                    buckets.min_chunk.1 = buckets.min_chunk.1.min(entry.chunk.1);
-                    buckets.max_chunk.0 = buckets.max_chunk.0.max(entry.chunk.0);
-                    buckets.max_chunk.1 = buckets.max_chunk.1.max(entry.chunk.1);
-                    buckets
-                        .by_chunk
-                        .entry(entry.chunk)
-                        .or_default()
-                        .items
-                        .push(entry.item_idx);
-                })
-                .or_insert_with(|| ComponentBuckets {
-                    by_chunk: BTreeMap::from([(
-                        entry.chunk,
-                        BucketItems {
-                            items: vec![entry.item_idx],
-                            ..Default::default()
-                        },
-                    )]),
+            let component = *by_component.entry(entry.component).or_insert_with(|| {
+                let index = components.len();
+                components.push(ComponentBuckets {
+                    by_chunk: BTreeMap::new(),
                     min_chunk: entry.chunk,
                     max_chunk: entry.chunk,
-                    available: 1,
+                    available: 0,
+                    counted: 0,
                 });
+                index
+            });
+            let group = &mut components[component];
+            group.available += 1;
+            group.min_chunk.0 = group.min_chunk.0.min(entry.chunk.0);
+            group.min_chunk.1 = group.min_chunk.1.min(entry.chunk.1);
+            group.max_chunk.0 = group.max_chunk.0.max(entry.chunk.0);
+            group.max_chunk.1 = group.max_chunk.1.max(entry.chunk.1);
+            let bucket = *group.by_chunk.entry(entry.chunk).or_insert_with(|| {
+                let index = buckets.len();
+                buckets.push(BucketItems { component, ..Default::default() });
+                index
+            });
+            buckets[bucket].items.push(entry.item_idx);
         }
 
         Self {
             by_component,
+            components,
+            buckets,
             available,
         }
+    }
+
+    /// Visits all prepared members of one component, including unavailable entries.
+    /// Cost is O(log components + component chunks + component entries), without allocation.
+    pub(crate) fn visit_component_members(&self, component: u32, mut visit: impl FnMut(usize)) {
+        let Some(&component) = self.by_component.get(&component) else { return; };
+        for &bucket in self.components[component].by_chunk.values() {
+            for &item in &self.buckets[bucket].items { visit(item); }
+        }
+    }
+
+    /// Counts an independent subset over existing membership in O(indexed entries).
+    /// Reservation updates preserve these counts until the caller starts another census.
+    pub(crate) fn reset_member_counts(&mut self, counted: impl Fn(usize) -> bool) {
+        for component in &mut self.components { component.counted = 0; }
+        for bucket in &self.buckets {
+            self.components[bucket.component].counted += bucket.items.iter()
+                .filter(|&&item| counted(item)).count();
+        }
+    }
+
+    /// Removes one previously counted membership in O(log components), returning true
+    /// only when its component becomes empty. The caller owns membership eligibility.
+    pub(crate) fn remove_counted_member(&mut self, component: u32) -> bool {
+        let Some(&component) = self.by_component.get(&component) else { return false; };
+        let count = &mut self.components[component].counted;
+        *count = count.checked_sub(1).unwrap();
+        *count == 0
+    }
+
+    /// Whether either entrance component retains counted members, in O(log components).
+    pub(crate) fn has_counted_members(&self, components: BuildingModeComponents) -> bool {
+        components.as_slice().iter().any(|component| self.by_component.get(component)
+            .is_some_and(|&component| self.components[component].counted > 0))
     }
 
     /// Whether any indexed entry remains eligible, in O(1).
@@ -229,41 +275,55 @@ impl ReachableBucketIndex {
     /// Enables allocation-free availability updates for finite reservation users.
     /// Immutable indices retain their existing flat traversal without tree overhead.
     pub(crate) fn enable_reservations(&mut self) {
-        for buckets in self.by_component.values_mut() {
-            for items in buckets.by_chunk.values_mut() {
-                items.enable_reservations();
-            }
-        }
+        self.buckets.par_iter_mut().for_each(BucketItems::enable_reservations);
     }
 
     /// Refills a prepared reservation tree in O(indexed entries), retaining all allocations.
     /// The predicate is evaluated once per entry, before dependent parent counts are summed.
     pub(crate) fn reset_available(&mut self, mut eligible: impl FnMut(usize) -> bool) {
         self.available = 0;
-        for buckets in self.by_component.values_mut() {
-            buckets.available = 0;
-            for items in buckets.by_chunk.values_mut() {
-                debug_assert!(items.leaves > 0);
-                for (index, &item) in items.items.iter().enumerate() {
-                    items.available[items.leaves + index] = usize::from(eligible(item));
-                }
-                for node in (1..items.leaves).rev() {
-                    items.available[node] = items.available[node * 2] + items.available[node * 2 + 1];
-                }
-                buckets.available += items.available[1];
+        self.components.iter_mut().for_each(|component| component.available = 0);
+        // Predicate calls and shared component totals retain their deterministic order.
+        for items in &mut self.buckets {
+            debug_assert!(items.leaves > 0);
+            for (index, &item) in items.items.iter().enumerate() {
+                items.available[items.leaves + index] = usize::from(eligible(item));
             }
-            self.available += buckets.available;
+            for node in (1..items.leaves).rev() {
+                items.available[node] = items.available[node * 2] + items.available[node * 2 + 1];
+            }
+            self.components[items.component].available += items.available[1];
+            self.available += items.available[1];
         }
     }
 
     /// Toggles one candidate in O(log chunks + log candidates-in-chunk), without allocation.
     /// Requires `enable_reservations`; membership and spatial bounds remain unchanged.
     pub(crate) fn set_available(&mut self, entry: ReachableBucketEntry, available: bool) {
-        if let Some(buckets) = self.by_component.get_mut(&entry.component)
-            && let Some(items) = buckets.by_chunk.get_mut(&entry.chunk)
-        {
-            let change = items.set_available(entry.item_idx, available);
-            buckets.available = buckets.available.checked_add_signed(change).unwrap();
+        if let Some(reservation) = self.reservation(entry) {
+            self.set_reserved_available(reservation, available);
+        }
+    }
+
+    /// Resolves immutable membership once in O(log components + log chunks + log bucket size).
+    /// Requires a prepared reservation tree; callers rebuild positions with the index.
+    pub(crate) fn reservation(&self, entry: ReachableBucketEntry) -> Option<ReachableReservation> {
+        let component = *self.by_component.get(&entry.component)?;
+        let bucket = *self.components[component].by_chunk.get(&entry.chunk)?;
+        let items = &self.buckets[bucket];
+        debug_assert!(items.leaves > 0);
+        Some(ReachableReservation { bucket: std::num::NonZeroUsize::new(bucket + 1)?,
+            position: items.items.binary_search(&entry.item_idx).ok()? })
+    }
+
+    /// Toggles prepared membership with an O(1) lookup and O(log bucket size) tree update.
+    /// Unchanged availability returns in O(1); no spatial lookup or allocation is performed.
+    pub(crate) fn set_reserved_available(&mut self, reservation: ReachableReservation, available: bool) {
+        let items = &mut self.buckets[reservation.bucket.get() - 1];
+        let change = items.set_available(reservation.position, available);
+        if change != 0 {
+            let component = &mut self.components[items.component];
+            component.available = component.available.checked_add_signed(change).unwrap();
             self.available = self.available.checked_add_signed(change).unwrap();
         }
     }
@@ -277,7 +337,7 @@ impl ReachableBucketIndex {
         mut visitor: impl FnMut(ReachableBucketScanEvent) -> bool,
     ) {
         let origin_chunk = chunk_for_point(origin_x, origin_y);
-        let Some(max_ring) = self.max_ring_for_components(components, origin_chunk) else {
+        let Some((max_ring, mut remaining)) = self.scan_extent(components, origin_chunk) else {
             return;
         };
 
@@ -288,13 +348,16 @@ impl ReachableBucketIndex {
                     return;
                 }
                 for &component in components.as_slice() {
-                    let Some(buckets) = self.by_component.get(&component) else {
+                    let Some(&component) = self.by_component.get(&component) else {
                         continue;
                     };
-                    let Some(items) = buckets.by_chunk.get(&chunk) else {
+                    let Some(&bucket) = self.components[component].by_chunk.get(&chunk) else {
                         continue;
                     };
-                    if !items.visit(|item_idx| visitor(ReachableBucketScanEvent::Item { item_idx }))
+                    if !self.buckets[bucket].visit(|item_idx| {
+                        remaining -= 1;
+                        visitor(ReachableBucketScanEvent::Item { item_idx }) && remaining > 0
+                    })
                     {
                         should_continue = false;
                         return;
@@ -317,19 +380,24 @@ impl ReachableBucketIndex {
         }
     }
 
-    fn max_ring_for_components(
+    // Counts include entries repeated across components, exactly as the bucket traversal does.
+    // Exhausting them avoids scanning distant inactive geometry after the final active item.
+    fn scan_extent(
         &self,
         components: BuildingModeComponents,
         origin_chunk: (i32, i32),
-    ) -> Option<i32> {
+    ) -> Option<(i32, usize)> {
         let mut max_ring = None::<i32>;
+        let mut available = 0;
         for &component in components.as_slice() {
-            let Some(buckets) = self.by_component.get(&component) else {
+            let Some(&component) = self.by_component.get(&component) else {
                 continue;
             };
+            let buckets = &self.components[component];
             if buckets.available == 0 {
                 continue;
             }
+            available += buckets.available;
             let component_ring = [
                 (origin_chunk.0 - buckets.min_chunk.0).abs(),
                 (origin_chunk.1 - buckets.min_chunk.1).abs(),
@@ -341,7 +409,7 @@ impl ReachableBucketIndex {
             .unwrap_or(0);
             max_ring = Some(max_ring.unwrap_or(0).max(component_ring));
         }
-        max_ring
+        max_ring.map(|ring| (ring, available))
     }
 }
 
@@ -556,17 +624,45 @@ mod reservation_tests {
     use super::*;
 
     #[test]
+    fn component_member_counts_are_independent_of_financial_availability() {
+        let mut index = ReachableBucketIndex::from_entries(vec![
+            ReachableBucketEntry::new(0, (0, 0), 0),
+            ReachableBucketEntry::new(0, (1, 0), 1),
+            ReachableBucketEntry::new(1, (2, 0), 1),
+            ReachableBucketEntry::new(1, (2, 0), 2),
+        ]);
+        index.enable_reservations();
+        let mut a = BuildingModeComponents::default(); a.push(0);
+        let mut b = BuildingModeComponents::default(); b.push(1);
+        index.reset_member_counts(|item| item < 2);
+        assert!(index.has_counted_members(a) && index.has_counted_members(b));
+        assert!(!index.remove_counted_member(0));
+        assert!(index.remove_counted_member(0));
+        assert!(!index.has_counted_members(a) && index.has_counted_members(b));
+        assert!(index.has_available());
+        index.reset_available(|_| false);
+        assert!(!index.has_available() && index.has_counted_members(b));
+        let mut members = Vec::new();
+        index.visit_component_members(1, |item| members.push(item));
+        assert_eq!(members, [1, 2]);
+        assert!(index.remove_counted_member(1));
+        index.reset_member_counts(|item| item == 2);
+        assert!(!index.has_counted_members(a) && index.has_counted_members(b));
+    }
+
+    #[test]
     fn depleted_candidates_skip_and_restore_without_changing_stable_order() {
         let entries: Vec<_> = (0..4096)
             .map(|item| ReachableBucketEntry::new(0, (0, 0), item))
             .collect();
         let mut index = ReachableBucketIndex::from_entries(entries.clone());
         index.enable_reservations();
+        let reservations: Vec<_> = entries.iter().map(|&entry| index.reservation(entry).unwrap()).collect();
         assert!(index.has_available());
         let mut components = BuildingModeComponents::default();
         components.push(0);
-        for &entry in &entries {
-            index.set_available(entry, false);
+        for &reservation in &reservations {
+            index.set_reserved_available(reservation, false);
         }
         let scan = |index: &ReachableBucketIndex| {
             let mut found = Vec::new();
@@ -588,6 +684,46 @@ mod reservation_tests {
         index.set_available(entries[23], false);
         index.set_available(entries[100], true);
         assert_eq!(scan(&index), [100, 4095]);
+        let mut fork = index.clone();
+        fork.reset_available(|_| false);
+        for item in [4095, 23, 100] {
+            fork.set_reserved_available(reservations[item], true);
+        }
+        assert_eq!(scan(&fork), [23, 100, 4095]);
+        assert_eq!(scan(&index), [100, 4095], "forked availability remains independent");
+    }
+
+    #[test]
+    fn inactive_background_does_not_extend_the_active_candidate_scan() {
+        let mut components = BuildingModeComponents::default();
+        components.push(0);
+        components.push(1);
+        for background in [0, 16, 256, 4_096] {
+            let near = [ReachableBucketEntry::new(0, (0, 0), 0),
+                ReachableBucketEntry::new(1, (0, 0), 0),
+                ReachableBucketEntry::new(1, (2, 0), 1)];
+            let entries = near.into_iter().chain((0..background)
+                .map(|i| ReachableBucketEntry::new((i % 2) as u32, (1_024 + i as i32, 0), i + 2)))
+                .collect();
+            let mut index = ReachableBucketIndex::from_entries(entries);
+            index.enable_reservations();
+            index.reset_available(|item| item < 2);
+            for remote_active in [true, false, true] {
+                index.set_available(near[2], remote_active);
+                let mut found = Vec::new();
+                let mut rings = 0;
+                index.scan_nearest(components, 0.0, 0.0, |event| {
+                    match event {
+                        ReachableBucketScanEvent::Item { item_idx } => found.push(item_idx),
+                        ReachableBucketScanEvent::RingComplete { .. } => rings += 1,
+                    }
+                    true
+                });
+                assert_eq!(found, if remote_active { vec![0, 0, 1] } else { vec![0, 0] });
+                assert_eq!(rings, if remote_active { 2 } else { 0 },
+                    "inactive entries may not make a completed scan visit empty outer rings");
+            }
+        }
     }
 
     #[test]
@@ -626,6 +762,41 @@ mod reservation_tests {
                 "depleted_supplier_bucket suppliers={count} active=1 queries=4096 median_ms={:.4}",
                 samples[5]
             );
+        }
+    }
+
+    #[test]
+    #[ignore = "manual release locality with fixed active neighborhood and distant inactive inputs"]
+    fn benchmark_inactive_supplier_extent() {
+        use std::{hint::black_box, time::Instant};
+        for count in [1_024, 8_192, 65_536] {
+            let entries = std::iter::once(ReachableBucketEntry::new(0, (0, 0), 0))
+                .chain((1..count).map(|item| ReachableBucketEntry::new(0,
+                    (4_096 + item as i32 / 1_024, 0), item))).collect();
+            let mut index = ReachableBucketIndex::from_entries(entries);
+            index.enable_reservations();
+            index.reset_available(|item| item == 0);
+            let mut components = BuildingModeComponents::default();
+            components.push(0);
+            let mut samples = [0.0; 11];
+            for sample in &mut samples {
+                let start = Instant::now();
+                let mut visited = 0;
+                for _ in 0..4_096 {
+                    index.scan_nearest(components, 0.0, 0.0, |event| {
+                        let ReachableBucketScanEvent::Item { item_idx } = event else {
+                            panic!("one local active entry must finish inside its own ring");
+                        };
+                        assert_eq!(black_box(item_idx), 0);
+                        visited += 1;
+                        true
+                    });
+                }
+                assert_eq!(visited, 4_096);
+                *sample = start.elapsed().as_secs_f64() * 1_000.0;
+            }
+            samples.sort_by(f64::total_cmp);
+            eprintln!("inactive_supplier_extent entries={count} active=1 queries=4096 median_ms={:.4}", samples[5]);
         }
     }
 }
