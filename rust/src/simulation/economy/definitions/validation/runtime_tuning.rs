@@ -90,15 +90,6 @@ pub(in crate::simulation::economy::definitions) fn validate_runtime_tuning(
             &format!("runtime_tuning.logistics.{name}"),
         )?;
     }
-    if tuning.logistics.border_active_jobs_per_node == 0 {
-        return Err("runtime_tuning.logistics.border_active_jobs_per_node must be > 0".to_owned());
-    }
-    if tuning.logistics.border_queued_jobs_per_node == 0 {
-        return Err("runtime_tuning.logistics.border_queued_jobs_per_node must be > 0".to_owned());
-    }
-    if tuning.logistics.queued_shipment_expiry_hours == 0 {
-        return Err("runtime_tuning.logistics.queued_shipment_expiry_hours must be > 0".to_owned());
-    }
     if tuning.logistics.terminal_failure_attempts == 0 {
         return Err("runtime_tuning.logistics.terminal_failure_attempts must be > 0".to_owned());
     }

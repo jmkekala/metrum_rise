@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Reservation views for active inbound, outbound, and border freight jobs.
-
-use std::collections::HashMap;
+//! Reservation views for active inbound and outbound freight jobs.
 
 use crate::simulation::economy::definitions::ResourceRuntimeId;
 
@@ -17,10 +15,6 @@ pub(super) struct ReservationViews {
     pub(super) reserved_inbound: Vec<f32>,
     /// Whether an inbound shipment is already open for a building/resource slot.
     pub(super) has_open_inbound: Vec<bool>,
-    /// Active dispatched `OWA` job counts indexed by border node id.
-    pub(super) border_active_job_counts: HashMap<u32, usize>,
-    /// Queued `OWA` job counts indexed by border node id.
-    pub(super) border_queued_job_counts: HashMap<u32, usize>,
 }
 
 impl ReservationViews {
@@ -54,20 +48,6 @@ impl ReservationViews {
             .unwrap_or(false)
     }
 
-    pub(super) fn border_active_job_count(&self, border_node: u32) -> usize {
-        self.border_active_job_counts
-            .get(&border_node)
-            .copied()
-            .unwrap_or(0)
-    }
-
-    pub(super) fn border_queued_job_count(&self, border_node: u32) -> usize {
-        self.border_queued_job_counts
-            .get(&border_node)
-            .copied()
-            .unwrap_or(0)
-    }
-
     pub(super) fn record_local_shipment(
         &mut self,
         source_idx: usize,
@@ -87,47 +67,23 @@ impl ReservationViews {
     pub(super) fn record_owa_import(
         &mut self,
         destination_idx: usize,
-        border_node: u32,
         resource_runtime_id: ResourceRuntimeId,
         amount: f32,
-        status: ShipmentStatus,
     ) {
         if let Some(slot) = self.ensure_slot(destination_idx, resource_runtime_id) {
             self.reserved_inbound[slot] += amount;
             self.has_open_inbound[slot] = true;
         }
-        self.record_border_job(border_node, status);
     }
 
     pub(super) fn record_owa_export(
         &mut self,
         source_idx: usize,
-        border_node: u32,
         resource_runtime_id: ResourceRuntimeId,
         amount: f32,
-        status: ShipmentStatus,
     ) {
         if let Some(slot) = self.ensure_slot(source_idx, resource_runtime_id) {
             self.reserved_outbound[slot] += amount;
-        }
-        self.record_border_job(border_node, status);
-    }
-
-    fn record_border_job(&mut self, border_node: u32, status: ShipmentStatus) {
-        match status {
-            ShipmentStatus::Queued => {
-                *self
-                    .border_queued_job_counts
-                    .entry(border_node)
-                    .or_insert(0) += 1;
-            }
-            ShipmentStatus::InTransit => {
-                *self
-                    .border_active_job_counts
-                    .entry(border_node)
-                    .or_insert(0) += 1;
-            }
-            _ => {}
         }
     }
 
@@ -197,8 +153,6 @@ impl ShipmentSystem {
         let mut reserved_outbound = vec![0.0; slot_count];
         let mut reserved_inbound = vec![0.0; slot_count];
         let mut has_open_inbound = vec![false; slot_count];
-        let mut border_active_job_counts = HashMap::new();
-        let mut border_queued_job_counts = HashMap::new();
 
         for shipment in &self.shipments {
             if shipment.status.reserves_cargo() {
@@ -219,21 +173,6 @@ impl ShipmentSystem {
             {
                 reserved_outbound[slot] += shipment.amount;
             }
-            if let Some(border_node) = shipment
-                .source
-                .border_node()
-                .or_else(|| shipment.destination.border_node())
-            {
-                match shipment.status {
-                    ShipmentStatus::Queued => {
-                        *border_queued_job_counts.entry(border_node).or_insert(0) += 1;
-                    }
-                    ShipmentStatus::InTransit => {
-                        *border_active_job_counts.entry(border_node).or_insert(0) += 1;
-                    }
-                    _ => {}
-                }
-            }
         }
 
         ReservationViews {
@@ -241,16 +180,13 @@ impl ShipmentSystem {
             reserved_outbound,
             reserved_inbound,
             has_open_inbound,
-            border_active_job_counts,
-            border_queued_job_counts,
         }
     }
 }
 
 fn source_reservation_slot(shipment: &Shipment, resource_count: usize) -> Option<usize> {
-    let reserves_source = shipment.status == ShipmentStatus::Queued
-        || (shipment.status == ShipmentStatus::InTransit
-            && shipment.carrier_agent_id == usize::MAX);
+    let reserves_source =
+        shipment.status == ShipmentStatus::InTransit && shipment.carrier_agent_id == usize::MAX;
     if !reserves_source {
         return None;
     }
@@ -294,7 +230,7 @@ mod tests {
             source: ShipmentEndpoint::Building(source),
             destination: ShipmentEndpoint::Building(destination),
             carrier_class: CarrierClass::Truck,
-            status: ShipmentStatus::Queued,
+            status: ShipmentStatus::InTransit,
             carrier_agent_id: usize::MAX,
             total_cost: 0.0,
             freight_cost: 0.0,
@@ -322,7 +258,6 @@ mod tests {
     fn outbound_projection_matches_full_reservations_across_cargo_states() {
         let mut shipments = ShipmentSystem::new();
         for (idx, (status, carrier)) in [
-            (ShipmentStatus::Queued, usize::MAX),
             (ShipmentStatus::InTransit, usize::MAX),
             (ShipmentStatus::InTransit, 3),
             (ShipmentStatus::Returning, 4),
@@ -340,7 +275,7 @@ mod tests {
         let outbound = shipments.reserved_outbound_view(2);
         for building in 0..=100 {
             let slot = reservation_slot(building, 2, 2).unwrap();
-            let expected = if building < 2 { 12.0 } else { 0.0 };
+            let expected = if building == 0 { 12.0 } else { 0.0 };
             assert_eq!(full.reserved_outbound_amount(building, 2), expected);
             assert_eq!(outbound.get(slot).copied().unwrap_or(0.0), expected);
         }

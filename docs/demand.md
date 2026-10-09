@@ -4322,7 +4322,10 @@ sales-scaled stores by the citywide activity floor; removing that layer remains 
   follows that census, so day-15 employment is **1,937** instead of 6,324; machinery factories
   lose staff on day 9 while holding about 4,500 cash each, because no operation size can be
   financed. The benchmark therefore measures a smaller workforce after day 8, and its timings
-  are not comparable to earlier records.
+  are not comparable to earlier records. Superseded by `ECON-18` (2026-10-09). The fixture never
+  moved agents, and the `OWA` border caps starved its industry. With both fixed, employment
+  holds at about 7,000; see the
+  [fixture record](economy.md#live-economy-fixture-econ-18-2026-10-09).
 - **Timing** (HEAD `bdf96e4d` → fix; eight alternating runs each, same setup as above): hourly
   5.0559 → 4.8591 ms (−3.89%, p = 0.21, not significant); daily 101.23 → 60.19 ms (−40.54%,
   p = 0.0002), mostly the smaller workforce and the removed churn rather than cheaper payroll.

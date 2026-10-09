@@ -85,7 +85,7 @@ pub(crate) struct OperationalClockRuntimeTuning {
     pub freight_profile_by_zone_type: BTreeMap<String, String>,
 }
 
-/// Runtime controls for batched freight and border-terminal behavior.
+/// Runtime controls for batched freight.
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub(crate) struct LogisticsRuntimeTuning {
     /// Maximum cargo mass carried by one physical freight vehicle, independent of batching.
@@ -94,15 +94,6 @@ pub(crate) struct LogisticsRuntimeTuning {
     pub dispatch_fee_currency: f32,
     /// Carrier price per operational vehicle-hour, including the return journey.
     pub vehicle_hour_cost_currency: f32,
-    /// Maximum active dispatched OWA freight jobs allowed at one border node.
-    #[serde(default, deserialize_with = "deserialize_u16_from_number")]
-    pub border_active_jobs_per_node: u16,
-    /// Maximum queued OWA freight jobs allowed at one border node.
-    #[serde(default, deserialize_with = "deserialize_u16_from_number")]
-    pub border_queued_jobs_per_node: u16,
-    /// Operational hours a queued border shipment may wait before expiring.
-    #[serde(default, deserialize_with = "deserialize_u16_from_number")]
-    pub queued_shipment_expiry_hours: u16,
     /// Failed request attempts before a building/resource request becomes terminal.
     #[serde(default, deserialize_with = "deserialize_u16_from_number")]
     pub terminal_failure_attempts: u16,

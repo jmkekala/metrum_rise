@@ -5,7 +5,8 @@
 use super::data::{DailyHouseholdLedger, Household, HouseholdSystem};
 use super::metrics::{
     OPERATIONAL_HOURS_PER_DAY, economy_profile_for_building, household_demand_profile,
-    household_supply_resource_runtime_id, household_supply_unit_price, stock_days,
+    household_supply_resource_runtime_id, household_supply_unit_price, stable_hash64,
+    stock_days,
 };
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
@@ -1629,12 +1630,15 @@ pub(super) fn squared_building_distance(origin_x: f32, origin_y: f32, building: 
     dx * dx + dy * dy
 }
 
-pub(super) fn stable_replenishment_offset_hours(
+/// Stable hour of day at which a household's routine stock checks fall (`ECON-19`).
+///
+/// The inputs are mixed through a full finalizer: a sum of odd multiples keeps the parity of
+/// `home + seed`, which put almost every sequentially admitted household in alternate hours.
+pub(crate) fn stable_replenishment_offset_hours(
     home_building_id: usize,
     household_seed: u32,
 ) -> u16 {
-    let mixed = (home_building_id as u64)
-        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
-        .wrapping_add(u64::from(household_seed).wrapping_mul(0xBF58_476D_1CE4_E5B9));
+    let mixed =
+        stable_hash64(home_building_id as u64 ^ u64::from(household_seed).rotate_left(32));
     (mixed % OPERATIONAL_HOURS_PER_DAY as u64) as u16
 }

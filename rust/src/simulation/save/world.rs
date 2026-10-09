@@ -12,7 +12,9 @@ use crate::simulation::economy::definitions::{
     QuantityUnit, load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
 use crate::simulation::economy::demand::{DemandSpawnAction, DemandSystem};
-use crate::simulation::economy::households::{Household, HouseholdSystem};
+use crate::simulation::economy::households::{
+    Household, HouseholdSystem, stable_replenishment_offset_hours,
+};
 use crate::simulation::economy::logistics::{
     CarrierClass, FreightRequestFailure, FreightRequestKey, Shipment, ShipmentEndpoint,
     ShipmentStatus, ShipmentSystem,
@@ -111,6 +113,9 @@ fn shipment_endpoint_from_db(
         _ => Err(SaveLoadError::custom("invalid shipment endpoint kind")),
     }
 }
+
+// Code 0 marked a border job waiting for gateway capacity, which `OWA` no longer limits.
+const RETIRED_QUEUED_SHIPMENT_CODE: i64 = 0;
 
 fn shipment_status_from_db(code: i64) -> SaveLoadResult<ShipmentStatus> {
     ShipmentStatus::from_code(code).ok_or_else(|| SaveLoadError::custom("invalid shipment status"))
@@ -1169,8 +1174,9 @@ pub(super) fn load_households(conn: &Connection, version: i64) -> SaveLoadResult
                 "household age counters do not match member count",
             ));
         }
+        let home_building_id = db_to_optional_usize(row.get(1)?)?;
         households.households.push(Household {
-            home_building_id: db_to_optional_usize(row.get(1)?)?,
+            home_building_id,
             power_arrears: Default::default(),
             budget: row.get(2)?,
             stock: row.get(3)?,
@@ -1195,7 +1201,12 @@ pub(super) fn load_households(conn: &Connection, version: i64) -> SaveLoadResult
             replenishment_search_cursor: i64_to_u32(row.get(19)?)?,
             stay_failure_days: i64_to_u32(row.get(20)?)?,
             unhoused_days_elapsed: i64_to_u32(row.get(21)?)?,
-            replenishment_offset_hours: i64_to_u16(row.get(22)?)?,
+            replenishment_offset_hours: if version >= REPLENISHMENT_OFFSET_SAVE_VERSION {
+                i64_to_u16(row.get(22)?)?
+            } else {
+                // Older offsets cluster in alternate hours; recompute them from the same inputs.
+                stable_replenishment_offset_hours(home_building_id, hid as u32)
+            },
             unemployment_days_elapsed: i64_to_u32(row.get(23)?)?,
         });
         if !households.households[hid].gross_daily_wages.is_finite()
@@ -1287,6 +1298,9 @@ pub(super) fn load_shipments(conn: &Connection, version: i64) -> SaveLoadResult<
                 "invalid saved freight contract price",
             ));
         }
+        // A job saved while queued at the border dispatches now, with a fresh carrier timeout.
+        let status_code: i64 = row.get(10)?;
+        let was_queued = status_code == RETIRED_QUEUED_SHIPMENT_CODE;
         logistics.shipments.push(Shipment {
             id: u64::try_from(row.get::<_, i64>(0)?)
                 .map_err(|_| SaveLoadError::custom("bad shipment id"))?,
@@ -1295,12 +1309,20 @@ pub(super) fn load_shipments(conn: &Connection, version: i64) -> SaveLoadResult<
             source: shipment_endpoint_from_db(row.get(3)?, row.get(4)?, row.get(5)?)?,
             destination: shipment_endpoint_from_db(row.get(6)?, row.get(7)?, row.get(8)?)?,
             carrier_class: carrier_class_from_db(row.get(9)?)?,
-            status: shipment_status_from_db(row.get(10)?)?,
+            status: if was_queued {
+                ShipmentStatus::InTransit
+            } else {
+                shipment_status_from_db(status_code)?
+            },
             carrier_agent_id: db_to_optional_usize(row.get(11)?)?,
             total_cost,
             freight_cost,
             eta_hours: i64_to_u16(row.get(13)?)?,
-            queued_hours: i64_to_u16(row.get(14)?)?,
+            queued_hours: if was_queued {
+                0
+            } else {
+                i64_to_u16(row.get(14)?)?
+            },
         });
     }
     logistics.rebuild_next_shipment_id();

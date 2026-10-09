@@ -61,10 +61,8 @@ impl ShipmentSystem {
             return false;
         };
 
-        let active_cap = usize::from(logistics_tuning.border_active_jobs_per_node);
-        let queued_cap = usize::from(logistics_tuning.border_queued_jobs_per_node);
-        let mut best_active: Option<(u32, f32)> = None;
-        let mut best_queued: Option<(u32, f32)> = None;
+        // `OWA` accepts every load; only the roads limit trade.
+        let mut best: Option<(u32, f32)> = None;
         for &border_node in border_nodes {
             let Some(travel_seconds) =
                 route_cache.from_border(border_node, dest_idx, allocator, transit_network, graph)
@@ -85,25 +83,13 @@ impl ShipmentSystem {
             {
                 continue;
             }
-            if reservations.border_active_job_count(border_node) < active_cap {
-                if best_active.is_none_or(|(_, best_cost)| travel_seconds < best_cost) {
-                    best_active = Some((border_node, travel_seconds));
-                }
-            } else if reservations.border_queued_job_count(border_node) < queued_cap
-                && best_queued.is_none_or(|(_, best_cost)| travel_seconds < best_cost)
-            {
-                best_queued = Some((border_node, travel_seconds));
+            if best.is_none_or(|(_, best_cost)| travel_seconds < best_cost) {
+                best = Some((border_node, travel_seconds));
             }
         }
-
-        let (best_border, best_cost, status) =
-            if let Some((border_node, travel_seconds)) = best_active {
-                (border_node, travel_seconds, ShipmentStatus::InTransit)
-            } else if let Some((border_node, travel_seconds)) = best_queued {
-                (border_node, travel_seconds, ShipmentStatus::Queued)
-            } else {
-                return false;
-            };
+        let Some((best_border, best_cost)) = best else {
+            return false;
+        };
 
         let freight_cost = freight_cost(best_cost, seconds_per_day, logistics_tuning);
         let Some(amount) = quantize_requested_amount(
@@ -133,17 +119,17 @@ impl ShipmentSystem {
             source: ShipmentEndpoint::OwaBorder(best_border),
             destination: ShipmentEndpoint::Building(dest_idx),
             carrier_class: CarrierClass::Truck,
-            status,
+            status: ShipmentStatus::InTransit,
             carrier_agent_id: usize::MAX,
             total_cost,
             freight_cost,
             eta_hours,
             queued_hours: 0,
         });
-        reservations.record_owa_import(dest_idx, best_border, resource_runtime_id, amount, status);
+        reservations.record_owa_import(dest_idx, resource_runtime_id, amount);
         crate::debug_log!(
             "economy",
-            "freight input initiated shipment_id={} source=owa border_node={} dest_idx={} dest_asset={} resource={} amount={:.1} cost={:.1} status={:?} eta={}h",
+            "freight input initiated shipment_id={} source=owa border_node={} dest_idx={} dest_asset={} resource={} amount={:.1} cost={:.1} eta={}h",
             shipment_id,
             best_border,
             dest_idx,
@@ -153,7 +139,6 @@ impl ShipmentSystem {
                 .unwrap_or("unknown"),
             amount,
             total_cost,
-            status,
             eta_hours
         );
         true

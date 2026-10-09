@@ -6,7 +6,10 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 83;
+pub const SAVE_VERSION: i64 = 84;
+
+/// Household stock-check offsets are well mixed; older saves recompute theirs on load (`ECON-19`).
+pub const REPLENISHMENT_OFFSET_SAVE_VERSION: i64 = 84;
 
 /// Traffic smoothing and live agent decisions survive save/load.
 pub const CONTINUATION_SAVE_VERSION: i64 = 75;

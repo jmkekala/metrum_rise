@@ -85,22 +85,17 @@ impl ShipmentSystem {
 
         if let Some(choice) = best_choice {
             // Funding and dispatch both retain the outside option when its delivered
-            // price is lower. A congested/full gateway is not an executable alternative.
+            // price is lower.
             let imported_price =
                 adjusted_unit_price(import_unit_price, freight_profile, minute_of_day);
             let cheaper_import = border_nodes.iter().any(|&border| {
-                let available = reservations.border_active_job_count(border)
-                    < usize::from(logistics_tuning.border_active_jobs_per_node)
-                    || reservations.border_queued_job_count(border)
-                        < usize::from(logistics_tuning.border_queued_jobs_per_node);
-                available
-                    && route_cache
-                        .from_border(border, dest_idx, allocator, transit_network, graph)
-                        .is_some_and(|seconds| {
-                            choice.amount * imported_price
-                                + freight_cost(seconds, seconds_per_day, logistics_tuning)
-                                < choice.total_cost
-                        })
+                route_cache
+                    .from_border(border, dest_idx, allocator, transit_network, graph)
+                    .is_some_and(|seconds| {
+                        choice.amount * imported_price
+                            + freight_cost(seconds, seconds_per_day, logistics_tuning)
+                            < choice.total_cost
+                    })
             });
             if cheaper_import {
                 return false;

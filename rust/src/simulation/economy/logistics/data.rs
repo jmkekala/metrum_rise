@@ -29,13 +29,6 @@ impl ShipmentEndpoint {
         }
     }
 
-    pub(crate) fn border_node(self) -> Option<u32> {
-        match self {
-            ShipmentEndpoint::Building(_) => None,
-            ShipmentEndpoint::OwaBorder(border_node) => Some(border_node),
-        }
-    }
-
     fn remap_building(&mut self, mapping: &HashMap<usize, usize>) {
         if let ShipmentEndpoint::Building(building_id) = self
             && let Some(&new_id) = mapping.get(building_id)
@@ -74,9 +67,7 @@ impl CarrierClass {
 /// Lifecycle state for one freight job.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShipmentStatus {
-    /// Waiting at a border terminal for active-job capacity.
-    Queued,
-    /// Travelling and consuming active freight capacity.
+    /// Awaiting or carrying its cargo; `OWA` dispatches every job at once.
     InTransit,
     /// Delivered and settled; the empty carrier is returning to its source/base.
     Returning,
@@ -84,14 +75,13 @@ pub enum ShipmentStatus {
     Fulfilled,
     /// Failed once and ready to be removed from the active job list.
     Failed,
-    /// Queued too long and was canceled.
+    /// Its carrier timed out and the job was canceled.
     Expired,
 }
 
 impl ShipmentStatus {
     pub(crate) fn code(self) -> i64 {
         match self {
-            ShipmentStatus::Queued => 0,
             ShipmentStatus::InTransit => 1,
             ShipmentStatus::Fulfilled => 2,
             ShipmentStatus::Failed => 3,
@@ -102,7 +92,6 @@ impl ShipmentStatus {
 
     pub(crate) fn from_code(code: i64) -> Option<Self> {
         match code {
-            0 => Some(ShipmentStatus::Queued),
             1 => Some(ShipmentStatus::InTransit),
             2 => Some(ShipmentStatus::Fulfilled),
             3 => Some(ShipmentStatus::Failed),
@@ -113,14 +102,11 @@ impl ShipmentStatus {
     }
 
     pub(crate) fn is_open(self) -> bool {
-        matches!(
-            self,
-            ShipmentStatus::Queued | ShipmentStatus::InTransit | ShipmentStatus::Returning
-        )
+        matches!(self, ShipmentStatus::InTransit | ShipmentStatus::Returning)
     }
 
     pub(crate) fn reserves_cargo(self) -> bool {
-        matches!(self, ShipmentStatus::Queued | ShipmentStatus::InTransit)
+        self == ShipmentStatus::InTransit
     }
 }
 

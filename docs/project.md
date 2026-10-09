@@ -676,6 +676,11 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
     determinism; both enabled economic targets failed. The starter scenario ends with 12
     households, no jobs and treasury −42,465. The 600-household regional-pull term is not a hard
     immigration cap and does not explain this early failure.
+  - The 10k timing fixture runs a live economy since 2026-10-09 (`ECON-18`): agents move and
+    `OWA` freight is uncapped, so only road traffic limits trade. The new baseline is 152.10 ms
+    hourly. About 104 ms of that is shopping route checks against stores sold out by the
+    `DEM-02` activity cap. See the
+    [fixture record](economy.md#live-economy-fixture-econ-18-2026-10-09).
   - Use matched **10k** hourly/daily performance checks. **The 1M run is deferred** and larger
     tiers do not block this work. Existing scaling fixes (`ECON-15`, `ALLOC-02`–`ALLOC-04`,
     `ROAD-44`–`ROAD-49`, `ROAD-52`, `ECON-16`) and their measurements remain recorded in the

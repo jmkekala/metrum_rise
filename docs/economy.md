@@ -1578,12 +1578,14 @@ This physical border-freight rule applies to ordinary imported and exported good
 Recommended `v0.1` rule:
 
 - imported goods enter the city only through explicit border connections
-- when an import request is accepted, the corresponding freight is created or queued at a border connection and must travel physically to its destination
+- when an import request is accepted, the corresponding freight starts at the fastest connected border connection and must travel physically to its destination
 - exported goods must be transported physically to a border connection before leaving the city
 - in `v0.1`, those border connections are the `OWA`'s border terminals
-- `OWA` border terminals use queueing, dispatch, and active-job limits rather than behaving like infinite instant-delivery portals
-- each border connection must cap queued external freight jobs and active dispatched external freight vehicles
-- congestion on the road network and border-terminal queues are the primary throughput limits for `v0.1`
+- `OWA` border terminals accept every load at once; there is no per-border job limit or queue
+- every load is still a physical freight vehicle, so road traffic is the only throughput limit for `v0.1`
+
+The former limit of four active and four queued jobs per border (removed 2026-10-09) let one
+border starve a 10k city's 900 industrial firms of all imports and exports.
 
 This keeps outside trade grounded in the same traffic and delivery logic as local freight.
 
@@ -1596,7 +1598,7 @@ The following describes the current sourcing/export rules. Their prices do not y
 Local supply chains should usually beat permanent `OWA` dependence through:
 
 - lower effective unit cost once production and labor are stable — enforced by `owa_import_price_multiplier`
-- less exposure to border congestion and border-terminal queueing
+- shorter freight routes than hauling through a border connection
 - less exposure to player tariffs and other trade penalties later
 - stronger local employment and tax base
 
@@ -3419,6 +3421,9 @@ Rules:
   store revenue
 - when household supplies fall below the household's replenishment threshold, the household creates a
   replenishment need
+- routine checks run every `household_replenishment_check_interval_hours` (6) at a stable per-household
+  hour offset. The offset is a full hash of home and household id, so a city's households fill every
+  check slot evenly (`ECON-19`); saves before version 84 recompute their offsets on load
 - when household supplies reach `0.0 days`, the household may bypass its normal staggered check offset if a
   valid commercial store currently has sellable household supply; reservation and cooldown guards
   still apply
@@ -3905,10 +3910,10 @@ Demand computes each profile's capacity scale once per building and reuses its o
 for the relevant resource totals. It reuses the existing parallel resource reduction and compact
 resource arrays; with a fixed catalog it remains O(buildings), plus candidate output-port checks. No agent traversal
 or additional spatial index is introduced. Freight uses the existing supplier/component indices,
-route cache, reservations and bounded border capacity; protecting additional customer types adds
+route cache and reservations; protecting additional customer types adds
 recipe-port work to its existing building pass.
 The outbound-only reservation query scans active shipments in O(S), retains only source inventory
-slots, and does not allocate inbound or border-job views. Its flattened storage ends at the last
+slots, and does not allocate inbound views. Its flattened storage ends at the last
 active source/resource slot, independently of destination IDs. Both views share source-cargo
 eligibility and reject resource IDs outside the catalog. A matched unprofiled release fixture with
 4,096 orders, 256 sources and destination IDs through 69,631 improves from `0.741` to `0.015 ms`
@@ -5610,8 +5615,8 @@ builds a square city sized for the requested residents (about 2,800 per km², pl
 - The treasury is effectively unlimited, so city services stay funded in every tier.
 - Two simulated days run before timing starts.
 
-The economy then runs on its real hourly cadence without agent movement, so trips the economy
-starts never finish.
+The city then runs frame by frame at maximum speed, as the growth scenario does, so agents move
+and shopping, service and freight trips finish. Only the economy ticks are timed.
 
 **Benchmark.** `rust/benches/economy_tick_benchmark.rs` builds each tier once, outside the timed
 region, and keeps advancing the city hour by hour. Only the tick under test is timed, and every
@@ -5626,6 +5631,56 @@ explicit 10k filter:
 `cd rust && cargo bench --bench economy_tick_benchmark -- /10k`. The unfiltered harness still
 includes larger tiers; those runs are deferred. Criterion warns that the target time is too short;
 that is intended.
+
+#### Live-economy fixture (`ECON-18`, 2026-10-09)
+
+Before 2026-10-09 the fixture ticked the economy without moving agents, and its one border took
+only four active and four queued freight jobs. No shopping, service or freight trip finished.
+Grocery imports held all eight border slots. About 1,190 firms sat on freight-retry cooldown,
+and the 459 food processors and 440 machinery factories (about 6,350 jobs) never bought inputs or
+exported. They paid wages from startup cash until the funding census ran out; once `ECON-17`
+payroll followed the census, employment fell from 7,260 to 55 by day 18. Timings recorded before
+this date measure that collapsing city and are not comparable with later records.
+
+The fixture now steps `SimCore::step_frame`, and `OWA` freight is uncapped
+([border connections](#border-connections-and-physical-freight)). Over days 4–19:
+
+- Employment stays between 6,945 and 7,261.
+- Processors and factories deliver 11,805 export loads and 6,230 import loads.
+- Groceries restock from local processors.
+- 36 food processors fail and are replaced.
+
+Two shortfalls remain:
+
+- Grocery output is capped by the citywide activity floor (`DEM-02`): about 3,400 units a day
+  against 10,625 consumed. About 3,500 of 5,320 households have empty pantries, most in terminal
+  replenishment failure.
+- In one benchmark run, 5,530 of 13,768 freight jobs timed out in transit. All border freight
+  shares one trunk road, but the cause has not been diagnosed.
+
+**Baseline.** `dc87e396` plus the `ECON-18` changes, release `bench` profile,
+`RAYON_NUM_THREADS=8`, `taskset -c 0,2,4,6,8,10,12,14`. Four sequential unprofiled runs of
+`cargo bench --bench economy_tick_benchmark -- /10k`, with identical city records in every run.
+The build took 18.0 s.
+
+| Benchmark | Mean of run means | Run-mean stdev | Sample median | Sample max |
+| --- | ---: | ---: | ---: | ---: |
+| `operational_hour` | 152.10 ms | 0.85 ms | 204–209 ms | 263–273 ms |
+| `daily_settlement` | 17.93 ms | 0.09 ms | 9.0–9.6 ms | 78–81 ms |
+
+**Where the hour goes.** One run with `METRUM_DEBUG=1 METRUM_DEBUG_FILTER=economy`:
+
+- The household hour takes 132 of the 151 ms. Logistics takes 11 ms, mostly shipment progress,
+  and the workplace pass 7 ms.
+- The household hour follows the number of grocery candidates examined (correlation 0.992, about
+  7.3 µs each). Candidates average 14,253 an hour and peak at 32,664.
+- Each candidate is route-checked out and back through the live trip planner before its stock
+  is tested. In one peak hour, 28,545 of 29,784 candidates were then rejected as sold out.
+
+Testing stock before routing, or skipping sold-out stores, is the next `ECON-13` candidate. Either
+changes which candidates are kept, so it needs its own equivalence and growth checks. Drivers,
+logs and the executable are in `rust/target/owa/` (`perf.py`, `perf/`,
+`diag/economy-debug.log`).
 
 #### Historical larger-city builds and initial timings
 

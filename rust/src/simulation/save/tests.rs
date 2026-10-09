@@ -961,6 +961,31 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     }
     conn.execute("UPDATE shipments SET freight_cost = 16", [])
         .unwrap();
+    // A border job saved while queued for gateway capacity dispatches on load.
+    conn.execute("UPDATE shipments SET status = 0, queued_hours = 5", [])
+        .unwrap();
+    let dispatched = load_from_sqlite(&path, &allocator.registry).expect("load queued border job");
+    assert_eq!(
+        dispatched.logistics.shipments[0].status,
+        ShipmentStatus::InTransit
+    );
+    assert_eq!(dispatched.logistics.shipments[0].queued_hours, 0);
+    conn.execute("UPDATE shipments SET status = 1, queued_hours = 0", [])
+        .unwrap();
+    // Offsets saved before version 84 cluster in alternate hours and are recomputed (`ECON-19`).
+    conn.execute("UPDATE households SET replenishment_offset_hours = 23", [])
+        .unwrap();
+    let current = load_from_sqlite(&path, &allocator.registry).expect("load current offsets");
+    assert_eq!(current.households.households[0].replenishment_offset_hours, 23);
+    conn.execute("UPDATE save_meta SET version = 83", [])
+        .unwrap();
+    let migrated = load_from_sqlite(&path, &allocator.registry).expect("load old offsets");
+    assert_eq!(
+        migrated.households.households[0].replenishment_offset_hours,
+        crate::simulation::economy::households::stable_replenishment_offset_hours(0, 0)
+    );
+    conn.execute("UPDATE save_meta SET version = ?1", [SAVE_VERSION])
+        .unwrap();
     // Version 69 stores food/grain bundles and larger raw-metal bundles. Convert quantities
     // once at the read boundary, retaining all money and unchanged household supply quantities.
     conn.execute("UPDATE save_meta SET version = 69", [])

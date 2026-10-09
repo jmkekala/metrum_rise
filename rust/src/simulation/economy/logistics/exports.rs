@@ -152,10 +152,8 @@ impl ShipmentSystem {
                 let export_unit_price = local_price * export_multiplier;
                 let total_revenue = export_amount * export_unit_price;
 
-                let active_cap = usize::from(tuning.logistics.border_active_jobs_per_node);
-                let queued_cap = usize::from(tuning.logistics.border_queued_jobs_per_node);
-                let mut best_active: Option<(u32, f32)> = None;
-                let mut best_queued: Option<(u32, f32)> = None;
+                // `OWA` accepts every load; only the roads limit trade.
+                let mut best: Option<(u32, f32)> = None;
                 for &border_node in &border_nodes {
                     // Reuse the import ETA helper: travel time border↔building is symmetric.
                     let Some(travel_seconds) = planning.route_cache.from_border(
@@ -176,25 +174,13 @@ impl ShipmentSystem {
                     {
                         continue;
                     }
-                    if planning.reservations.border_active_job_count(border_node) < active_cap {
-                        if best_active.is_none_or(|(_, best_eta)| travel_seconds < best_eta) {
-                            best_active = Some((border_node, travel_seconds));
-                        }
-                    } else if planning.reservations.border_queued_job_count(border_node)
-                        < queued_cap
-                        && best_queued.is_none_or(|(_, best_eta)| travel_seconds < best_eta)
-                    {
-                        best_queued = Some((border_node, travel_seconds));
+                    if best.is_none_or(|(_, best_eta)| travel_seconds < best_eta) {
+                        best = Some((border_node, travel_seconds));
                     }
                 }
-                let (best_border, best_eta, status) =
-                    if let Some((border_node, travel_seconds)) = best_active {
-                        (border_node, travel_seconds, ShipmentStatus::InTransit)
-                    } else if let Some((border_node, travel_seconds)) = best_queued {
-                        (border_node, travel_seconds, ShipmentStatus::Queued)
-                    } else {
-                        continue;
-                    };
+                let Some((best_border, best_eta)) = best else {
+                    continue;
+                };
                 let eta_hours = eta_hours_from_travel_seconds(
                     best_eta,
                     freight_profile,
@@ -210,7 +196,7 @@ impl ShipmentSystem {
                     source: ShipmentEndpoint::Building(src_idx),
                     destination: ShipmentEndpoint::OwaBorder(best_border),
                     carrier_class: CarrierClass::Truck,
-                    status,
+                    status: ShipmentStatus::InTransit,
                     carrier_agent_id: usize::MAX,
                     total_cost: total_revenue,
                     freight_cost: freight_cost(
@@ -223,10 +209,8 @@ impl ShipmentSystem {
                 });
                 planning.reservations.record_owa_export(
                     src_idx,
-                    best_border,
                     output_port.resource_runtime_id,
                     export_amount,
-                    status,
                 );
 
                 allocator.buildings[src_idx].shipment_cooldown_hours =

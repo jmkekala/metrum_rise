@@ -1205,3 +1205,22 @@ fn benchmark_shopping_candidate_selection() {
         );
     }
 }
+
+#[test]
+fn routine_stock_checks_spread_evenly_over_the_check_slots() {
+    // Admission hands out homes and household ids in step; the old offset kept the parity of
+    // their sum, so every household of one city fell in alternate hours (`ECON-19`).
+    for home_shift in [0, 1, 7, 1_000] {
+        let mut slots = [0u32; 6];
+        let mut hours = [false; 24];
+        for hid in 0..6_000u32 {
+            let offset = stable_replenishment_offset_hours(hid as usize + home_shift, hid);
+            slots[usize::from(offset % 6)] += 1;
+            hours[usize::from(offset)] = true;
+        }
+        assert!(hours.iter().all(|&used| used), "every hour of day hosts some checks");
+        for count in slots {
+            assert!((900..=1_100).contains(&count), "uneven check slots {slots:?}");
+        }
+    }
+}

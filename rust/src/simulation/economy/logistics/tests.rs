@@ -2528,35 +2528,25 @@ fn local_supplier_creates_and_delivers_shipment() {
 }
 
 #[test]
-fn dispatch_uses_cheaper_import_only_when_gateway_has_capacity() {
+fn dispatch_uses_cheaper_import() {
     let (graph, network, source_edge, buyer_edge, border) = simple_graph_with_border();
-    for gateway_available in [true, false] {
-        let mut allocator = BuildingAllocator::new();
-        let source_asset = register_test_asset(&mut allocator, "test", "price_source", ZoneClass::Industrial);
-        let buyer_asset = register_test_asset(&mut allocator, "test", "price_buyer", ZoneClass::Commercial);
-        allocator.buildings.push(make_building(&allocator, -50.0, ZoneType::Industrial,
-            source_edge, &source_asset, 300.0, 0.0));
-        allocator.buildings.push(make_building(&allocator, 50.0, ZoneType::Commercial,
-            buyer_edge, &buyer_asset, 100.0, 2_000.0));
-        allocator.rebuild_entrance_cache(&graph, &network.lane_system);
-        allocator.rebuild_zone_index();
-        let mut shipments = ShipmentSystem::new();
-        let mut planning = super::planning::FreightPlanningContext::build(&mut shipments, &allocator, &network, &graph);
-        let tuning = std::sync::Arc::make_mut(&mut planning.tuning);
-        tuning.owa_import_price_multiplier = 0.1;
-        if !gateway_available {
-            tuning.logistics.border_active_jobs_per_node = 0;
-            tuning.logistics.border_queued_jobs_per_node = 0;
-        }
-        shipments.create_profile_input_shipments(&mut allocator, &network, &graph, 480,
-            &mut planning, &mut 0.0);
-        assert_eq!(shipments.shipments.len(), 1);
-        assert_eq!(shipments.shipments[0].source, if gateway_available {
-            ShipmentEndpoint::OwaBorder(border)
-        } else {
-            ShipmentEndpoint::Building(0)
-        });
-    }
+    let mut allocator = BuildingAllocator::new();
+    let source_asset = register_test_asset(&mut allocator, "test", "price_source", ZoneClass::Industrial);
+    let buyer_asset = register_test_asset(&mut allocator, "test", "price_buyer", ZoneClass::Commercial);
+    allocator.buildings.push(make_building(&allocator, -50.0, ZoneType::Industrial,
+        source_edge, &source_asset, 300.0, 0.0));
+    allocator.buildings.push(make_building(&allocator, 50.0, ZoneType::Commercial,
+        buyer_edge, &buyer_asset, 100.0, 2_000.0));
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    allocator.rebuild_zone_index();
+    let mut shipments = ShipmentSystem::new();
+    let mut planning = super::planning::FreightPlanningContext::build(&mut shipments, &allocator, &network, &graph);
+    let tuning = std::sync::Arc::make_mut(&mut planning.tuning);
+    tuning.owa_import_price_multiplier = 0.1;
+    shipments.create_profile_input_shipments(&mut allocator, &network, &graph, 480,
+        &mut planning, &mut 0.0);
+    assert_eq!(shipments.shipments.len(), 1);
+    assert_eq!(shipments.shipments[0].source, ShipmentEndpoint::OwaBorder(border));
 }
 
 #[test]
@@ -3241,7 +3231,7 @@ fn supplier_index_lists_only_suppliers_with_an_unreserved_batch() {
         source: ShipmentEndpoint::Building(2),
         destination: ShipmentEndpoint::Building(3),
         carrier_class: CarrierClass::Truck,
-        status: ShipmentStatus::Queued,
+        status: ShipmentStatus::InTransit,
         carrier_agent_id: usize::MAX,
         total_cost: 0.0,
         freight_cost: 0.0,
@@ -3580,67 +3570,6 @@ fn deserted_local_source_releases_reserved_delivery() {
 }
 
 #[test]
-fn queued_owa_import_expires_and_refunds_destination() {
-    let (graph, network, _industrial_edge, commercial_edge, border_node) =
-        simple_graph_with_border();
-    let mut allocator = BuildingAllocator::new();
-    let commercial_asset = register_test_asset(
-        &mut allocator,
-        "test",
-        "queued_expiry_commercial",
-        ZoneClass::Commercial,
-    );
-    allocator.buildings.push(make_building(
-        &allocator,
-        50.0,
-        ZoneType::Commercial,
-        commercial_edge,
-        &commercial_asset,
-        0.0,
-        100.0,
-    ));
-    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
-    allocator.rebuild_zone_index();
-
-    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
-    let tuning = load_runtime_economy_tuning().expect("runtime economy tuning");
-    let packaged_food = catalog
-        .resource_runtime_id_for_id("packaged_food")
-        .expect("packaged food resource");
-    let mut shipments = ShipmentSystem::new();
-    shipments.shipments.push(Shipment {
-        id: 0,
-        resource_runtime_id: packaged_food,
-        amount: 40.0,
-        source: ShipmentEndpoint::OwaBorder(border_node),
-        destination: ShipmentEndpoint::Building(0),
-        carrier_class: CarrierClass::Truck,
-        status: ShipmentStatus::Queued,
-        carrier_agent_id: usize::MAX,
-        total_cost: 240.0,
-        freight_cost: 0.0,
-        eta_hours: 1,
-        queued_hours: tuning.logistics.queued_shipment_expiry_hours - 1,
-    });
-
-    let mut agents = AgentSystem::new();
-    progress_shipments_for_test(
-        &mut shipments,
-        &mut allocator,
-        &mut agents,
-        &network,
-        &graph,
-    );
-
-    assert_eq!(shipments.shipments[0].status, ShipmentStatus::Expired);
-    assert!((allocator.buildings[0].operating_budget - 340.0).abs() < f32::EPSILON);
-    assert_eq!(
-        allocator.buildings[0].shipment_cooldown_hours,
-        tuning.operational_clock.shipment_retry_cooldown_hours
-    );
-}
-
-#[test]
 fn stuck_in_transit_local_delivery_expires_and_restores_source_stock() {
     let (graph, network, industrial_edge, commercial_edge, _) = simple_graph_with_border();
     let mut allocator = BuildingAllocator::new();
@@ -3932,11 +3861,7 @@ fn building_removal_refunds_unsettled_city_freight_to_its_payer() {
             },
             destination: ShipmentEndpoint::Building(1),
             carrier_class: CarrierClass::Truck,
-            status: if imported {
-                ShipmentStatus::Queued
-            } else {
-                ShipmentStatus::InTransit
-            },
+            status: ShipmentStatus::InTransit,
             carrier_agent_id: usize::MAX,
             total_cost: 800.0,
             freight_cost: 0.0,
@@ -4079,7 +4004,7 @@ fn terminal_input_request_retries_after_budget_recovers() {
 }
 
 #[test]
-fn owa_imports_respect_border_cap_within_pass() {
+fn owa_imports_are_not_capped_per_border() {
     let (graph, network, _industrial_edge, commercial_edge, border_node) =
         simple_graph_with_border();
     let mut allocator = BuildingAllocator::new();
@@ -4089,7 +4014,8 @@ fn owa_imports_respect_border_cap_within_pass() {
         "cap_import_commercial",
         ZoneClass::Commercial,
     );
-    for idx in 0..5 {
+    // More buyers than the retired four active and four queued border jobs.
+    for idx in 0..9 {
         allocator.buildings.push(make_building(
             &allocator,
             30.0 + idx as f32 * 5.0,
@@ -4111,25 +4037,16 @@ fn owa_imports_respect_border_cap_within_pass() {
         .iter()
         .filter(|shipment| shipment.source == ShipmentEndpoint::OwaBorder(border_node))
         .collect();
-    assert_eq!(border_imports.len(), 5);
-    assert_eq!(
+    assert_eq!(border_imports.len(), 9);
+    assert!(
         border_imports
             .iter()
-            .filter(|shipment| shipment.status == ShipmentStatus::InTransit)
-            .count(),
-        4
-    );
-    assert_eq!(
-        border_imports
-            .iter()
-            .filter(|shipment| shipment.status == ShipmentStatus::Queued)
-            .count(),
-        1
+            .all(|shipment| shipment.status == ShipmentStatus::InTransit)
     );
 }
 
 #[test]
-fn owa_exports_respect_border_cap_within_pass() {
+fn owa_exports_are_not_capped_per_border() {
     let (graph, network, industrial_edge, _commercial_edge, border_node) =
         simple_graph_with_border();
     let mut allocator = BuildingAllocator::new();
@@ -4140,7 +4057,8 @@ fn owa_exports_respect_border_cap_within_pass() {
         ZoneClass::Industrial,
         Some("grain_farm_basic"),
     );
-    for idx in 0..5 {
+    // More sellers than the retired four active and four queued border jobs.
+    for idx in 0..9 {
         allocator.buildings.push(make_building(
             &allocator,
             -70.0 + idx as f32 * 5.0,
@@ -4169,20 +4087,11 @@ fn owa_exports_respect_border_cap_within_pass() {
         .iter()
         .filter(|shipment| shipment.destination == ShipmentEndpoint::OwaBorder(border_node))
         .collect();
-    assert_eq!(border_exports.len(), 5);
-    assert_eq!(
+    assert_eq!(border_exports.len(), 9);
+    assert!(
         border_exports
             .iter()
-            .filter(|shipment| shipment.status == ShipmentStatus::InTransit)
-            .count(),
-        4
-    );
-    assert_eq!(
-        border_exports
-            .iter()
-            .filter(|shipment| shipment.status == ShipmentStatus::Queued)
-            .count(),
-        1
+            .all(|shipment| shipment.status == ShipmentStatus::InTransit)
     );
 }
 

@@ -6,9 +6,9 @@
 //! every 400 m, and are zoned in repeating row districts with the player's brush. Every lot is
 //! filled through the demand spawn path with the repository's bootstrap pack, and households are
 //! admitted through the demand admission path; their carriers are placed at home instead of
-//! driving in, which is the only step that bypasses the game. The city then runs the hourly and
-//! daily ticks on their real cadence without agent movement, so trips the economy starts never
-//! finish. See `docs/economy.md#econ-13-economy-tick-baseline`.
+//! driving in, which is the only step that bypasses the game. The city then runs frame by frame
+//! at maximum speed, so agents move and the trips the economy starts finish as in the game. See
+//! `docs/economy.md#econ-13-economy-tick-baseline`.
 
 use std::time::{Duration, Instant};
 
@@ -16,10 +16,12 @@ use glam::DVec2;
 use godot::prelude::Vector3;
 
 use super::budget::CityTreasury;
+use super::frame::FRAME_DT_S;
 use super::scenario::{GrowthDayRecord, install_bootstrap_assets, paint};
 use super::state::SimCore;
 use crate::simulation::buildings::allocator::BuildingSiteEnvironment;
 use crate::simulation::core::config::WorldConfig;
+use crate::simulation::core::time::SIMULATION_SPEED_STEPS;
 use crate::simulation::economy::agents::TRANSIT_IN_BUILDING;
 use crate::simulation::economy::demand::DemandBuildingActionPlan;
 use crate::simulation::network::surface::RoadSurfaceCompileReason;
@@ -51,8 +53,6 @@ const DISTRICTS: [ZoneType; 8] = [
 // tier; solvency is the growth scenario's measure, not this one.
 const FUNDED_TREASURY: f64 = 1.0e15;
 const WARM_UP_DAYS: u32 = 2;
-const MINUTES_PER_HOUR: u16 = 60;
-const MINUTES_PER_DAY: u16 = 24 * MINUTES_PER_HOUR;
 
 /// Wall-clock cost of the economy ticks run by one [`PopulatedCity::advance_hour`] call.
 #[derive(Clone, Copy, Debug)]
@@ -83,14 +83,13 @@ pub struct PopulatedCityBuildTimes {
 /// A fully built, fully housed city whose economy ticks can be timed hour by hour.
 pub struct PopulatedCity {
     core: SimCore,
-    day: u32,
-    minute_of_day: u16,
 }
 
 impl PopulatedCity {
     /// Builds a street grid large enough for `residents`, fills every zoned lot, admits
     /// households until at least `residents` people live in the city, then runs two simulated
-    /// days so employment and inventories settle.
+    /// days so employment and inventories settle. The clock starts at day 1, 07:30, at maximum
+    /// speed.
     ///
     /// Panics if the grid holds too few homes for `residents`, which means the sizing constants
     /// no longer match the bootstrap pack.
@@ -110,11 +109,8 @@ impl PopulatedCity {
         let started = Instant::now();
         fill_lots(&mut core);
         times.lots = started.elapsed();
-        let mut city = Self {
-            core,
-            day: 1,
-            minute_of_day: 0,
-        };
+        core.time.speed_multiplier = SIMULATION_SPEED_STEPS[SIMULATION_SPEED_STEPS.len() - 1];
+        let mut city = Self { core };
         let started = Instant::now();
         city.admit_households(residents);
         times.admission = started.elapsed();
@@ -130,7 +126,7 @@ impl PopulatedCity {
     pub fn record(&self) -> GrowthDayRecord {
         let city = self.core.daily_city_flow_diagnostics();
         GrowthDayRecord {
-            day: self.day,
+            day: self.core.time.day_index,
             households: city.active_households,
             residents: city.resident_agents,
             employed: city.employed_agents,
@@ -142,27 +138,22 @@ impl PopulatedCity {
         }
     }
 
-    /// Advances the clock one hour and runs the economy ticks due then, as the sim thread does
-    /// at that hour boundary: the operational hour, then daily settlement at midnight.
+    /// Steps frames until the clock crosses the next whole hour and returns the cost of the
+    /// economy ticks run there: the operational hour, then daily settlement at midnight. Agent
+    /// movement and the other frame phases run but are not timed.
     pub fn advance_hour(&mut self) -> EconomyHourTimes {
-        self.minute_of_day += MINUTES_PER_HOUR;
-        if self.minute_of_day == MINUTES_PER_DAY {
-            self.minute_of_day = 0;
-            self.day += 1;
-        }
-        let started = Instant::now();
-        self.core
-            .simulate_operational_hour_internal(self.day, self.minute_of_day);
-        let hourly = started.elapsed();
-        let daily = (self.minute_of_day == 0).then(|| {
-            let started = Instant::now();
-            self.core.simulate_tick_internal(self.day);
-            started.elapsed()
-        });
-        EconomyHourTimes {
-            hourly,
-            daily,
-            demand_pass: self.minute_of_day != 0,
+        loop {
+            // One maximum-speed frame spans about half an authored minute, so it never crosses
+            // two hours.
+            let frame = self.core.step_frame(FRAME_DT_S);
+            if frame.hourly_ticks > 0 {
+                let midnight = frame.daily_ticks > 0;
+                return EconomyHourTimes {
+                    hourly: Duration::from_secs_f64(frame.hourly_ms / 1000.0),
+                    daily: midnight.then(|| Duration::from_secs_f64(frame.daily_ms / 1000.0)),
+                    demand_pass: !midnight,
+                };
+            }
         }
     }
 

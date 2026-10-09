@@ -2,8 +2,6 @@
 
 //! Shipment arrival, refund, and failure handling.
 
-use std::collections::HashMap;
-
 use crate::debug_log;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::{AgentSystem, TRANSIT_IN_BUILDING};
@@ -39,14 +37,6 @@ impl ShipmentSystem {
         let tuning = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
         let retry_cooldown_hours = tuning.operational_clock.shipment_retry_cooldown_hours;
-        dispatch_queued_shipments(
-            &mut self.shipments,
-            allocator,
-            treasury_balance,
-            usize::from(tuning.logistics.border_active_jobs_per_node),
-            tuning.logistics.queued_shipment_expiry_hours,
-            retry_cooldown_hours,
-        );
 
         self.dispatch_ready_carriers(
             allocator,
@@ -699,72 +689,4 @@ fn shipment_carrier_progress_to_endpoint(
     } else {
         CarrierProgress::Traveling
     }
-}
-
-fn dispatch_queued_shipments(
-    shipments: &mut [Shipment],
-    allocator: &mut BuildingAllocator,
-    treasury_balance: &mut f64,
-    active_cap: usize,
-    expiry_hours: u16,
-    retry_cooldown_hours: u16,
-) {
-    let mut active_counts = HashMap::new();
-    for shipment in shipments.iter() {
-        if shipment.status != ShipmentStatus::InTransit {
-            continue;
-        }
-        if let Some(border_node) = shipment
-            .source
-            .border_node()
-            .or_else(|| shipment.destination.border_node())
-        {
-            *active_counts.entry(border_node).or_insert(0usize) += 1;
-        }
-    }
-
-    for shipment in shipments.iter_mut() {
-        if shipment.status != ShipmentStatus::Queued {
-            continue;
-        }
-        shipment.queued_hours = shipment.queued_hours.saturating_add(1);
-        if shipment.queued_hours >= expiry_hours {
-            expire_queued_shipment(shipment, allocator, treasury_balance, retry_cooldown_hours);
-            continue;
-        }
-        let Some(border_node) = shipment
-            .source
-            .border_node()
-            .or_else(|| shipment.destination.border_node())
-        else {
-            shipment.status = ShipmentStatus::Failed;
-            continue;
-        };
-        let active_count = active_counts.entry(border_node).or_insert(0usize);
-        if *active_count < active_cap {
-            *active_count += 1;
-            shipment.status = ShipmentStatus::InTransit;
-            shipment.queued_hours = 0;
-        }
-    }
-}
-
-fn expire_queued_shipment(
-    shipment: &mut Shipment,
-    allocator: &mut BuildingAllocator,
-    treasury_balance: &mut f64,
-    retry_cooldown_hours: u16,
-) {
-    if let ShipmentEndpoint::Building(destination_idx) = shipment.destination
-        && destination_idx < allocator.buildings.len()
-    {
-        refund_input_payment(
-            allocator,
-            treasury_balance,
-            destination_idx,
-            shipment.total_cost,
-        );
-        allocator.buildings[destination_idx].shipment_cooldown_hours = retry_cooldown_hours;
-    }
-    shipment.status = ShipmentStatus::Expired;
 }

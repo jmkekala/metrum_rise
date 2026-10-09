@@ -427,9 +427,6 @@ child_support_daily_benefit_per_child = 10.0
 truck_payload_kg = 20000.0
 dispatch_fee_currency = 4.0
 vehicle_hour_cost_currency = 4.0
-border_active_jobs_per_node = 4
-border_queued_jobs_per_node = 4
-queued_shipment_expiry_hours = 12
 terminal_failure_attempts = 3
 
 [runtime_tuning.construction]

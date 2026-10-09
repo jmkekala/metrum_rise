@@ -213,7 +213,7 @@ mod tests {
             source,
             destination,
             carrier_class: CarrierClass::Truck,
-            status: ShipmentStatus::Queued,
+            status: ShipmentStatus::InTransit,
             carrier_agent_id: usize::MAX,
             total_cost: 108.0,
             freight_cost: 8.0,
@@ -230,9 +230,6 @@ mod tests {
             ShipmentEndpoint::Building(1),
         ));
         let mut capital = [0.0; 2];
-        logistics.write_freight_working_capital(&mut capital);
-        assert_eq!(capital, [0.0, 100.0]);
-        logistics.shipments[0].status = ShipmentStatus::InTransit;
         logistics.write_freight_working_capital(&mut capital);
         assert_eq!(
             capital,
