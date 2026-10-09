@@ -10,7 +10,7 @@
 //! - zone-type placement: all zoned-private building assets for a given zone
 //! - family upgrade chains: `(asset_set, level + 1) → qualified_id` for in-place upgrades
 
-use crate::assets::asset::{AssetManifest, PlacementMode, ZoneClass};
+use crate::assets::asset::{AssetManifest, BuildingData, PlacementMode, ZoneClass};
 use std::collections::HashMap;
 
 /// A single registered asset, combining its manifest with its pack origin.
@@ -33,8 +33,9 @@ pub struct AssetEntry {
 #[derive(Debug, Default, Clone)]
 pub struct AssetRegistry {
     revision: u64,
-    /// Primary store: qualified_id → entry.
-    entries: HashMap<String, AssetEntry>,
+    /// Primary store: qualified_id → entry. Hourly censuses look up every building's asset,
+    /// so the fixed fast hasher matters; iteration order was never stable and is not used.
+    entries: HashMap<String, AssetEntry, foldhash::fast::FixedState>,
     /// Secondary index: `by_zone[ZoneClass as usize]` = sorted list of qualified_ids for
     /// zoned-private building assets of that zone type. Sorted for deterministic placement selection.
     by_zone: [Vec<String>; 5],
@@ -207,11 +208,7 @@ impl AssetRegistry {
         self.entries
             .get(qualified_id)
             .and_then(|entry| entry.manifest.building.as_ref())
-            .and_then(|building| building.service_class.as_deref())
-            .filter(|service_class| {
-                let service_class = service_class.trim();
-                !service_class.is_empty() && service_class != "none"
-            })
+            .and_then(declared_service_class)
     }
 
     /// Returns the authored extractor resource id for an explicit industry building asset.
@@ -265,7 +262,7 @@ impl AssetRegistry {
             .and_then(|entry| entry.manifest.building.as_ref())
             .is_some_and(|building| {
                 building.placement_mode == PlacementMode::Explicit
-                    && self.service_class(qualified_id).is_some()
+                    && declared_service_class(building).is_some()
             })
     }
 
@@ -343,6 +340,14 @@ impl AssetRegistry {
     pub(crate) fn revision(&self) -> u64 {
         self.revision
     }
+}
+
+// A blank or `none` service class declares an ordinary building.
+fn declared_service_class(building: &BuildingData) -> Option<&str> {
+    building.service_class.as_deref().filter(|service_class| {
+        let service_class = service_class.trim();
+        !service_class.is_empty() && service_class != "none"
+    })
 }
 
 #[cfg(test)]

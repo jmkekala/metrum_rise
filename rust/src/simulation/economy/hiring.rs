@@ -34,6 +34,9 @@ pub(crate) struct JobFunding {
     /// Complete closure attempts in the latest census, for exact scaling diagnostics.
     #[cfg(test)]
     pub(crate) closure_passes: usize,
+    /// Positive customer-limit propagation rounds summed over the latest census.
+    #[cfg(test)]
+    pub(crate) propagation_rounds: usize,
     // Accepted recipe activity, which can be smaller than the rounded worker fraction.
     activities: Vec<f32>,
     // Recurring profit and working-capital surplus of each accepted operation quote.
@@ -572,16 +575,17 @@ impl JobFunding {
         self.offered_activity.resize(count, 1.0);
         self.closure_ceilings.par_iter_mut().zip(&mut self.closure_activity)
             .zip(&mut self.offered_activity).zip(&mut self.service_flags)
-            .zip(&allocator.buildings).with_min_len(MARKET_CHUNK)
-            .for_each(|((((ceiling, activity), offered), service), building)| {
+            .zip(&allocator.buildings).zip(&self.freight_capital).with_min_len(MARKET_CHUNK)
+            .for_each(|(((((ceiling, activity), offered), service), building), &cargo)| {
+                *service = allocator.is_city_service_building(building);
                 *ceiling = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
+                    .filter(|profile| *service || !cannot_fund_one_worker(building, profile, cargo))
                     .map_or(0, |profile| physical_worker_capacity_for_profile(building, profile));
                 *activity = 1.0;
                 *offered = 1.0;
-                *service = allocator.is_city_service_building(building);
             });
         #[cfg(test)]
-        { self.closure_passes = 0; }
+        { self.closure_passes = 0; self.propagation_rounds = 0; }
         let mut first = true;
         loop {
         #[cfg(test)]
@@ -1041,6 +1045,16 @@ impl ProvisionalSales<'_> {
                     * self.export_multiplier.unwrap_or(0.0)) * f64::from(self.export_units(resource, units))
         }).sum()
     }
+}
+
+// Every private plan's working capital holds at least one wage: input buffers, overhead and
+// freight are non-negative. Without stock, capital is cash plus paid cargo, fixed for the whole
+// census, so no later market change can fund a single worker. A zero closure ceiling states
+// that proof up front; financing would reject each plan anyway, so capacities are unchanged.
+fn cannot_fund_one_worker(building: &Building, profile: &EconomyProfileRuntime, cargo: f64) -> bool {
+    profile.inputs.iter().chain(&profile.outputs)
+        .all(|port| building.inventory_units(port.resource_runtime_id) == 0.0)
+        && f64::from(building.operating_budget) + cargo < f64::from(profile.average_daily_wage())
 }
 
 fn funded_private_operation(

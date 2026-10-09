@@ -48,6 +48,37 @@ pub(crate) enum ReachableBucketScanEvent {
     },
 }
 
+/// Event emitted by [`ReachableBucketIndex::scan_nearest_bounded`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum BoundedScanEvent {
+    /// A candidate item was found; `false` ends the scan.
+    Item {
+        /// Caller-owned candidate index.
+        item_idx: usize,
+    },
+    /// A subtree of one chunk bucket may follow; `false` skips it, never ending the scan.
+    Region {
+        /// Squared distance to the subtree's door bounds, never above any member's own.
+        min_distance_sq: f32,
+    },
+    /// A ring finished; the distance is a lower bound for every later ring.
+    RingComplete {
+        /// Squared world-space distance to the next ring's closest chunk bounds.
+        next_min_distance_sq: f32,
+    },
+}
+
+// One step of the shared outward chunk-ring traversal.
+enum RingStep<'a> {
+    Bucket(&'a BucketItems),
+    Complete(f32),
+}
+
+// Covers no position; parents of padding leaves keep their real children's bounds.
+const EMPTY_BOUNDS: [f32; 4] = [f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY];
+// A member without a door position must never be pruned spatially.
+const UNBOUNDED: [f32; 4] = [f32::NEG_INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::INFINITY];
+
 /// Candidate buckets grouped by reachability component and 512 m routing chunk.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ReachableBucketIndex {
@@ -87,6 +118,8 @@ struct BucketItems {
     // availability tree, avoiding a linear walk over depleted suppliers on every query.
     available: Vec<usize>,
     leaves: usize,
+    // Optional [min x, min y, max x, max y] door bounds per availability-tree node.
+    bounds: Vec<[f32; 4]>,
 }
 
 impl BucketItems {
@@ -114,6 +147,42 @@ impl BucketItems {
             node /= 2;
         }
         next as isize - previous as isize
+    }
+
+    fn enable_bounds(&mut self, door: &impl Fn(usize) -> Option<[f32; 2]>) {
+        debug_assert!(self.leaves > 0);
+        self.bounds.clear();
+        self.bounds.resize(self.leaves * 2, EMPTY_BOUNDS);
+        for (index, &item) in self.items.iter().enumerate() {
+            self.bounds[self.leaves + index] = door(item).map_or(UNBOUNDED, |[x, y]| [x, y, x, y]);
+        }
+        for node in (1..self.leaves).rev() {
+            let [a, b] = [self.bounds[node * 2], self.bounds[node * 2 + 1]];
+            self.bounds[node] = [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])];
+        }
+    }
+
+    // Same leaf order as `visit_available`. A rejected region drops its whole availability
+    // count from `remaining`, as visiting and rejecting each member would have done.
+    fn visit_bounded(&self, node: usize, origin: [f32; 2], remaining: &mut usize,
+        visitor: &mut impl FnMut(BoundedScanEvent) -> bool) -> bool {
+        let available = self.available[node];
+        if available == 0 {
+            return true;
+        }
+        if node >= self.leaves {
+            *remaining -= 1;
+            return visitor(BoundedScanEvent::Item { item_idx: self.items[node - self.leaves] })
+                && *remaining > 0;
+        }
+        if available > 1 && !visitor(BoundedScanEvent::Region {
+            min_distance_sq: min_distance_sq(self.bounds[node], origin),
+        }) {
+            *remaining -= available;
+            return *remaining > 0;
+        }
+        self.visit_bounded(node * 2, origin, remaining, visitor)
+            && self.visit_bounded(node * 2 + 1, origin, remaining, visitor)
     }
 
     fn visit(&self, mut visitor: impl FnMut(usize) -> bool) -> bool {
@@ -201,7 +270,7 @@ impl ReachableBucketIndex {
 
         let mut by_component = BTreeMap::new();
         let mut components = Vec::new();
-        let mut buckets = Vec::new();
+        let mut buckets: Vec<BucketItems> = Vec::new();
         for entry in entries {
             let component = *by_component.entry(entry.component).or_insert_with(|| {
                 let index = components.len();
@@ -318,6 +387,12 @@ impl ReachableBucketIndex {
         self.buckets.par_iter_mut().for_each(BucketItems::enable_reservations);
     }
 
+    /// Adds door bounds for [`Self::scan_nearest_bounded`] in O(indexed entries). Requires
+    /// `enable_reservations`; bounds are geometric, so availability updates keep them valid.
+    pub(crate) fn enable_spatial_bounds(&mut self, door: impl Fn(usize) -> Option<[f32; 2]> + Sync) {
+        self.buckets.par_iter_mut().for_each(|items| items.enable_bounds(&door));
+    }
+
     /// Refills a prepared reservation tree in O(indexed entries), retaining all allocations.
     /// The predicate is evaluated once per entry, before dependent parent counts are summed.
     pub(crate) fn reset_available(&mut self, mut eligible: impl FnMut(usize) -> bool) {
@@ -376,6 +451,47 @@ impl ReachableBucketIndex {
         origin_y: f32,
         mut visitor: impl FnMut(ReachableBucketScanEvent) -> bool,
     ) {
+        self.scan_rings(components, origin_x, origin_y, |step, remaining| match step {
+            RingStep::Bucket(items) => items.visit(|item_idx| {
+                *remaining -= 1;
+                visitor(ReachableBucketScanEvent::Item { item_idx }) && *remaining > 0
+            }),
+            RingStep::Complete(next_min_distance_sq) =>
+                visitor(ReachableBucketScanEvent::RingComplete { next_min_distance_sq }),
+        });
+    }
+
+    /// [`Self::scan_nearest`] that also offers each multi-member subtree of a chunk bucket
+    /// as a [`BoundedScanEvent::Region`] when `enable_spatial_bounds` prepared it. Items keep
+    /// their traversal order; a caller must reject a region only when every member's own
+    /// distance test would reject it. Unprepared buckets visit every available item.
+    pub(crate) fn scan_nearest_bounded(
+        &self,
+        components: BuildingModeComponents,
+        origin_x: f32,
+        origin_y: f32,
+        mut visitor: impl FnMut(BoundedScanEvent) -> bool,
+    ) {
+        self.scan_rings(components, origin_x, origin_y, |step, remaining| match step {
+            RingStep::Bucket(items) if !items.bounds.is_empty() =>
+                items.visit_bounded(1, [origin_x, origin_y], remaining, &mut visitor),
+            RingStep::Bucket(items) => items.visit(|item_idx| {
+                *remaining -= 1;
+                visitor(BoundedScanEvent::Item { item_idx }) && *remaining > 0
+            }),
+            RingStep::Complete(next_min_distance_sq) =>
+                visitor(BoundedScanEvent::RingComplete { next_min_distance_sq }),
+        });
+    }
+
+    // Outward ring traversal shared by both scans; a `false` step ends the scan.
+    fn scan_rings(
+        &self,
+        components: BuildingModeComponents,
+        origin_x: f32,
+        origin_y: f32,
+        mut step: impl FnMut(RingStep<'_>, &mut usize) -> bool,
+    ) {
         let origin_chunk = chunk_for_point(origin_x, origin_y);
         let Some((max_ring, mut remaining)) = self.scan_extent(components, origin_chunk) else {
             return;
@@ -394,11 +510,7 @@ impl ReachableBucketIndex {
                     let Some(&bucket) = self.components[component].by_chunk.get(&chunk) else {
                         continue;
                     };
-                    if !self.buckets[bucket].visit(|item_idx| {
-                        remaining -= 1;
-                        visitor(ReachableBucketScanEvent::Item { item_idx }) && remaining > 0
-                    })
-                    {
+                    if !step(RingStep::Bucket(&self.buckets[bucket]), &mut remaining) {
                         should_continue = false;
                         return;
                     }
@@ -411,9 +523,7 @@ impl ReachableBucketIndex {
             if ring < max_ring {
                 let next_min_distance_sq =
                     min_possible_ring_distance_sq(origin_x, origin_y, origin_chunk, ring + 1);
-                if !visitor(ReachableBucketScanEvent::RingComplete {
-                    next_min_distance_sq,
-                }) {
+                if !step(RingStep::Complete(next_min_distance_sq), &mut remaining) {
                     return;
                 }
             }
@@ -534,6 +644,14 @@ impl ModeComponentIndex {
         components.push(self.node_component(graph.get_valid_node(edge.end_node)));
         components
     }
+}
+
+// Each axis term rounds monotonically like a member's own `door - origin` component, so
+// this never exceeds a member's squared distance.
+fn min_distance_sq(bounds: [f32; 4], [x, y]: [f32; 2]) -> f32 {
+    let dx = (bounds[0] - x).max(x - bounds[2]).max(0.0);
+    let dy = (bounds[1] - y).max(y - bounds[3]).max(0.0);
+    dx * dx + dy * dy
 }
 
 /// Returns the routing chunk for a building or query point.
@@ -771,6 +889,61 @@ mod reservation_tests {
                     "inactive entries may not make a completed scan visit empty outer rings");
             }
         }
+    }
+
+    #[test]
+    fn bounded_nearest_matches_exhaustive_selection_with_fewer_visits() {
+        // Deterministic doors over three chunks; route time exceeds the straight-line bound.
+        let mut seed = 0x9e37_79b9_u32;
+        let mut next = || { seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223); seed };
+        let doors: Vec<[f32; 2]> = (0..600).map(|_| [(next() % 1_500) as f32 + 0.25,
+            (next() % 900) as f32 - 0.5]).collect();
+        let entries = doors.iter().enumerate()
+            .map(|(item, door)| ReachableBucketEntry::new(0, chunk_for_point(door[0], door[1]), item))
+            .collect();
+        let mut index = ReachableBucketIndex::from_entries(entries);
+        index.enable_reservations();
+        index.enable_spatial_bounds(|item| (item % 97 != 0).then_some(doors[item]));
+        let mut components = BuildingModeComponents::default();
+        components.push(0);
+        let speed = 13.0;
+        let seconds = |item: usize, origin: [f32; 2]| {
+            let distance_sq = (doors[item][0] - origin[0]).powi(2) + (doors[item][1] - origin[1]).powi(2);
+            lower_bound_travel_seconds(distance_sq, speed) * (1.0 + (item % 7) as f32 / 10.0)
+        };
+        let [mut exhaustive_visits, mut bounded_visits] = [0, 0];
+        for round in 0..64 {
+            index.reset_available(|item| (item + round) % 5 != 0);
+            let origin = [(next() % 1_500) as f32, (next() % 900) as f32];
+            let mut best: Option<(f32, usize)> = None;
+            let offer = |item: usize, best: &mut Option<(f32, usize)>| {
+                let candidate = (seconds(item, origin), item);
+                if best.is_none_or(|current| candidate.0.total_cmp(&current.0)
+                    .then(candidate.1.cmp(&current.1)).is_lt()) { *best = Some(candidate); }
+            };
+            index.scan_nearest(components, origin[0], origin[1], |event| {
+                if let ReachableBucketScanEvent::Item { item_idx } = event {
+                    exhaustive_visits += 1;
+                    offer(item_idx, &mut best);
+                }
+                true
+            });
+            let expected = best;
+            let mut best = None;
+            index.scan_nearest_bounded(components, origin[0], origin[1], |event| match event {
+                BoundedScanEvent::Item { item_idx } => {
+                    bounded_visits += 1;
+                    offer(item_idx, &mut best);
+                    true
+                }
+                BoundedScanEvent::Region { min_distance_sq }
+                | BoundedScanEvent::RingComplete { next_min_distance_sq: min_distance_sq } =>
+                    best.is_none_or(|(seconds, _)| lower_bound_travel_seconds(min_distance_sq, speed) <= seconds),
+            });
+            assert_eq!(best, expected, "round={round}");
+        }
+        assert!(bounded_visits * 4 < exhaustive_visits,
+            "bounds must prune most candidates: {bounded_visits} of {exhaustive_visits}");
     }
 
     #[test]

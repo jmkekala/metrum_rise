@@ -7,7 +7,7 @@ use super::supplier_index::SupplierCandidateIndex;
 use super::timing::freight_cost;
 use crate::simulation::buildings::allocator::{BuildingAllocator, BuildingEntrance};
 use crate::simulation::economy::accessibility::{
-    ModeComponentIndex, ReachableBucketEntry, ReachableBucketScanEvent, chunk_for_point,
+    BoundedScanEvent, ModeComponentIndex, ReachableBucketEntry, chunk_for_point,
     lower_bound_travel_seconds, max_speed_for_modes,
 };
 use crate::simulation::economy::definitions::{
@@ -96,6 +96,8 @@ pub(crate) struct RecurringSupply {
     offers: Vec<Offer>,
     input_offers: Vec<InputOffers>,
     nearest_incumbents: Vec<Option<usize>>,
+    // Placed source doors, packed for the straight-line prune of every scanned candidate.
+    doors: Vec<Option<godot::prelude::Vector2>>,
     index: SupplierCandidateIndex,
     components: Option<ModeComponentIndex>,
     max_speed: f32,
@@ -319,6 +321,9 @@ impl RecurringSupply {
             }
             self.remaining.resize(*self.offsets.last().unwrap(), 0.0);
             self.receipt_capacity += 2 * self.remaining.len();
+            self.doors.clear();
+            self.doors.extend((0..allocator.buildings.len())
+                .map(|source| allocator.entrances.get(source).map(|entrance| entrance.door_pos)));
             let components = ModeComponentIndex::build(graph, TransitFlags::CAR);
             // Inactive/unfinished sources remain geometrically indexed. Hourly quantities
             // enable them only when they have actual staffed, funded net production.
@@ -331,6 +336,9 @@ impl RecurringSupply {
                 |_, _| true,
             );
             self.index.enable_reservations();
+            let doors = &self.doors;
+            self.index.enable_spatial_bounds(|source|
+                doors.get(source).copied().flatten().map(|door| [door.x, door.y]));
             self.active.resize(self.remaining.len(), true);
             self.active.fill(true);
             self.components = Some(components);
@@ -1144,35 +1152,41 @@ impl RecurringSupply {
             });
         for buckets in [self.index.buckets_for_resource(resource), self.projected_buckets(resource)]
             .into_iter().flatten() {
-            buckets.scan_nearest(
+            buckets.scan_nearest_bounded(
                 components,
                 entrance.door_pos.x,
                 entrance.door_pos.y,
                 |event| match event {
-                    ReachableBucketScanEvent::Item { item_idx: source } => {
+                    BoundedScanEvent::Item { item_idx: source } => {
                         if Some(self.source_owner(source)) == buyer
                             || Some(self.source_owner(source)) == excluded
                             || best.is_some_and(|best| best.0 == source)
                         {
                             return true;
                         }
-                        let Some(slot) = self.slot(allocator, catalog, source, resource) else {
-                            return true;
-                        };
-                        if self.remaining[slot] <= 0.0 {
-                            return true;
-                        }
                         if let Some((_, _, seconds)) = best {
-                            let Some(origin) = self.source_entrance(source, allocator) else {
+                            let door = match self.doors.get(source) {
+                                Some(&door) => door,
+                                None => self.source_entrance(source, allocator).map(|origin| origin.door_pos),
+                            };
+                            let Some(door) = door else {
                                 return true;
                             };
                             // The complete door route cannot beat straight-line travel at
                             // the fastest road/driveway speed. Avoid even a cached route
                             // lookup when this candidate cannot improve the incumbent.
-                            let distance_sq = (origin.door_pos - entrance.door_pos).length_squared();
+                            // Every rejection here is pure, so pruning before the recipe
+                            // slot lookup changes search cost only.
+                            let distance_sq = (door - entrance.door_pos).length_squared();
                             if lower_bound_travel_seconds(distance_sq, self.max_speed) > seconds {
                                 return true;
                             }
+                        }
+                        let Some(slot) = self.slot(allocator, catalog, source, resource) else {
+                            return true;
+                        };
+                        if self.remaining[slot] <= 0.0 {
+                            return true;
                         }
                         let seconds = self.source_route(source, buyer, entrance, allocator, network, graph, routes);
                         if let Some(seconds) = seconds {
@@ -1195,11 +1209,12 @@ impl RecurringSupply {
                         }
                         true
                     }
-                    ReachableBucketScanEvent::RingComplete {
-                        next_min_distance_sq,
-                    } => best.is_none_or(|(_, _, seconds)| {
-                        lower_bound_travel_seconds(next_min_distance_sq, self.max_speed) <= seconds
-                    }),
+                    // Every member of a rejected region fails the item prune above.
+                    BoundedScanEvent::Region { min_distance_sq: next_min_distance_sq }
+                    | BoundedScanEvent::RingComplete { next_min_distance_sq } =>
+                        best.is_none_or(|(_, _, seconds)| {
+                            lower_bound_travel_seconds(next_min_distance_sq, self.max_speed) <= seconds
+                        }),
                 },
             );
         }

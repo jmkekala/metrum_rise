@@ -4194,6 +4194,111 @@ decompressed SHA-256 `c303e3816cda8c0fbd3bae5caa46840e65db2e887690c02b5832418f2a
 Broader populated execution/scaling, worst-case financing cascades, the hourly concern and full
 performance acceptance remain open. DEM-02 is not complete.
 
+The **performance follow-up (2026-10-09)** attributes the remaining hourly gap, explains the
+queue check and bounds the cascade combinations.
+
+- **Hourly attribution.** The ready-rehousing baseline and HEAD `10f6d2e7` now end the 10k
+  build with the same households, residents, employment (6,791), jobs and buildings; only the
+  treasury differs. Criterion's warm-up iteration takes each run's 1 am hour, so every measured
+  sample is an ordinary demand-pass hour (about 5.0–5.7 ms against 2.5 ms). A `perf record
+  -e cycles:u -F 15000 --call-graph lbr` capture enabled only while Criterion collects samples,
+  with the midnight hour/daily settlement window cut by its own stack markers, shows +43%
+  cycles over all threads but +255% on the simulation thread. The serial path, not the parallel
+  work, holds most of the wall-time gap: `JobFunding::refresh` accounts for about 1.6 ms of serial
+  work per hour, and its dependent supplier search (`RecurringSupply::nearest`) for about 1.1 ms.
+  That search visited 98,128 live candidates per census for 1,100 searches and rejected 87,882
+  (90%) on the straight-line bound inside the 512 m origin chunk. The remaining serial work is
+  the joint financing itself, spread over route lookups, operating-cost quotes and household
+  claims, plus about 0.3 ms of demand-pass work (planning and admission).
+- **Bounded supplier scan.** `ReachableBucketIndex::scan_nearest_bounded` offers each
+  multi-member subtree of the existing availability tree with its door bounds. A subtree whose
+  nearest possible door cannot beat the current route is skipped and its availability count
+  removed from the scan extent. Each axis rounds monotonically like a member's own
+  `door - origin` term, so no member's own distance test could pass; kept items retain their
+  order and the selection is unchanged. Bounds are geometric, built once per geometry revision
+  from packed source doors, and availability updates keep them valid; projected sites keep the
+  unbounded traversal. The candidate prune now also precedes the recipe-slot lookup. A
+  regression compares bounded and exhaustive selection over shifted origins and availability
+  and requires a four-fold visit reduction.
+- **Registry hashing.** Asset registry entries use the fixed `foldhash` hasher already used by
+  freight routes, and a city-service test reads its manifest once. Census code looks up every
+  building's asset; iteration order was never stable and is not used.
+- **Queue check.** Fresh runs reproduce the old figures: warm checks rise from 0.33–0.35 ms to
+  0.73–0.75 ms per 1,024 checks, and census plus first check at 131,072 background buildings from
+  8.8 to 13.2–13.7 ms. Warm checks remain independent of background. Per check (about 3,400
+  cycles), proposed-site door geometry costs about the same as before (about 650 cycles); the
+  increase is new required work: joint business-buyer seeding and rollback (about 810), source-
+  specific input quotes and operating costs (about 560), three-book revalidation and the site
+  carrier quote (about 500) and the funding search (about 200). The census increase is the new
+  O(buildings) financing census. Registry hashing removes about 2.3 ms of it at 131,072
+  buildings; `ProjectReservations::reset_sites` still rewrites one site record for every
+  building per census (about 180 cycles each) and could become lazy.
+- **Cascade combinations.** A staffed buyer whose own financing fails keeps its closure ceiling,
+  so it remained a possible buyer and held every zero or partial limit upstream open. A cashless
+  rival beside each link therefore returned the partial and zero-income chains to one census per
+  link (32 at length 32), as in replay. A private firm without stock whose cash plus paid cargo
+  is below one wage now starts the census with a zero ceiling: every plan's working capital
+  holds at least one wage (buffers, overhead and freight are non-negative) while that capital is
+  fixed for the census, so financing would reject each plan anyway and capacities are
+  unchanged. The rival combination, alongside a disconnected healthy chain, then needs at most
+  two censuses at lengths 2, 8 and 32 and matches full replay in capacities, recipe activity,
+  financing, deliveries and household accounts; disabling the proof fails the regression.
+  Profitability failures stay unbounded by propagation: a link that buys dearer goods than it
+  sells can recover when a rival fails, so no ceiling may assume its failure, and a dead
+  supplier cycle withdraws one link per census exactly as replay does (8 at length 8).
+  Mass conservation keeps a single-input material cycle's gain at or above one; a multi-input
+  link can lower it, so a loop whose links take 99.9% or 99.99% of their input from the
+  predecessor was tested at one uniform price that makes every link profitable at full
+  activity. The joint proof rejects the loop in two censuses with one propagation round, so
+  positive limits never step the decay towards zero. The resulting worst case is
+  O(depth of profitability-failing dependency chains) censuses, each O(buildings + quotes);
+  independent chains share censuses. A regression pins both cycle forms against replay, and
+  `benchmark_combined_financing_cascades` times both combinations.
+- **Payroll/hiring mismatch (`ECON-17`).** The 10k fixture never completes shopping trips, so
+  grocery sales stay at zero. Their funded hiring capacity is 15, while payroll pays only the
+  citywide sales-scaled active capacity (one worker). Unpaid workers quit at midnight with cash
+  still on hand (17,608 against a 90 wage), and 335 of 355 return to the same stores the next
+  hour. This churn adds daily commute routing and a slower 1 am hour; it is outside the timed
+  hourly samples and is tracked separately.
+
+Fresh release validation of the final source passes **2,286 library tests** (110 ignored, no
+failures) and **all three growth integrations**; all five year, two-year, expansion, recovery
+and saved-town reports are byte-identical to the Step-1 reports (the saved town still ends at
+80 residents), and no source identity changed. A test-only cycle case was added afterwards and
+the market regressions were rerun.
+
+Matched sequential unprofiled release timing alternates builds in both orders, four times each
+(eight runs per build), with eight Rayon workers on CPUs 0,2,4,6,8,10,12,14; significance is an
+exact permutation test over run means. Every run keeps identical economic records.
+
+- **10k hourly, HEAD `10f6d2e7` → final:** **5.9985 → 5.0895 ms (−15.15%, p = 0.0014)**; daily
+  107.87 → 106.76 ms (p = 0.47).
+- **The Step-1 flag, `874ec0f5` → HEAD:** hourly 6.3718 → 6.1459 ms (−3.55%, p = 0.25), daily
+  109.06 → 106.29 ms (p = 0.13). The earlier +12.9% hourly result is not reproduced; it was noise.
+- **Queue check (HEAD → final, two runs each):** census plus first check at 131,072 background
+  buildings 14.0 → 12.5–13.0 ms; warm checks 0.74 → 0.71–0.73 ms. Warm checks stay independent of
+  background.
+- **Cascades:** existing zero, disconnected and partial benchmarks keep two censuses with
+  unchanged timing (largest about 1.1–1.5 ms at 16,384 background buildings). Cashless-rival
+  combinations need two censuses at lengths 8/32/64 (warm medians 0.12/0.22/0.34 ms, and
+  1.04/1.16/1.34 ms with 16,384 background). Unprofitable cycles need one census per link:
+  4/16/64 censuses, warm medians 0.12/0.55/3.22 ms, and 1.70/5.73/23.15 ms with 16,384
+  background.
+- **Mixed market at 1,024 districts:** 14.10/14.40 → 13.01/13.30 ms, two censuses in both builds.
+
+The ready-rehousing comparison is not repeated: that binary has no source, and the attribution
+above replaces it. The remaining 10k hourly gap to it (about 2.5 ms) is the serial joint
+financing and supplier commitment work, the demand pass and parallel census work introduced by
+the redesign; no further unexplained regression remains in the matched comparisons. Drivers,
+logs and identities use `rust/target/step2-profile/{full-checks.py,perf.py,full-*,perf-*,perf/}`
+with `perf record` captures beside them. Timed executables are archived as
+`rust/target/goal-evidence/metrum-dem02-step2-final-{bench,tests}.gz`, decompressed SHA-256
+`808911d24093769a714053c2e3499a11df00be019e5554bb69d25ae2dd0e78f3` (benchmark) and
+`171f0a6fac680f4aa9b68463ca2e59ccbba8e6134e13f7f6b4489acfca18ac73` (tests).
+
+Remaining performance work: the profitability-failing cascade depth, lazy queue site records,
+`ECON-17`, and populated execution/scaling at larger tiers. DEM-02 is not complete.
+
 The following full-suite/timing figures describe the preceding consumer/freight-route build.
 
 Fresh focused release checks before that final cache follow-up pass **431 economy tests**
@@ -4258,9 +4363,10 @@ exemption are gone. The previously known utility-machinery failure (540 versus 9
 stale test expectation from the retired 1,200 MJ / 96 coal recipe; 1,200 of the current
 24,000 daily kWh burns 540 of 10,800 kg, and the fixture now expects that. Census receipt
 commits now preflight fragmentation exactly, and queued/cyclic replacement reloads are covered
-(correctness follow-up above). Remaining work includes
-populated execution/scaling, broader financing cascade cost and the unresolved
-hourly/queue performance regressions. The original handoff below preserves the full scope and
+(correctness follow-up above). The performance follow-up
+above attributes and reduces the hourly gap, explains the queue check and bounds cascade
+combinations. Remaining work includes populated execution/scaling, profitability-failing
+cascade depth and `ECON-17`. The original handoff below preserves the full scope and
 starting evidence; its statements about unwired call sites describe that earlier build.
 
 **The overall goal is unfinished. `DEM-02` remains `in_progress`.** The user requested this

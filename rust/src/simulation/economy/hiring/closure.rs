@@ -167,6 +167,8 @@ impl JobFunding {
                 });
             }
             if self.potential_customers.stale.is_empty() { break; }
+            #[cfg(test)]
+            { self.propagation_rounds += 1; }
             // Recount every stale total before reading any of them in this round. Totals
             // marked by this round's reductions stay stale-high until the next round.
             std::mem::swap(&mut self.potential_customers.stale, &mut self.potential_customers.round);

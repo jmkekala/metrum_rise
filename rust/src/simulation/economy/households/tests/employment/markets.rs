@@ -403,6 +403,15 @@ fn benchmark_populated_mixed_market_funding() {
 }
 
 fn financing_chain(length: usize, background: usize) -> MarketFixture {
+    financing_links(length, false, 200.0, None, background)
+}
+
+// Link i buys `units` of link i-1's goods and imports the rest of its 200 kg as feed. A cyclic
+// market closes the loop with business goods only, so every link sells only to its successor;
+// `units` below 200 gives each link a gain below one. Prices rise along the links unless one
+// uniform price makes every link profitable at full activity.
+fn financing_links(length: usize, cyclic: bool, units: f32, price: Option<u32>, background: usize)
+    -> MarketFixture {
     use crate::simulation::economy::definitions::compile_test_catalog;
     use std::fmt::Write;
     assert!(length >= 2);
@@ -413,16 +422,24 @@ fn financing_chain(length: usize, background: usize) -> MarketFixture {
         .replace("[[profiles.inputs]]\nresource = \"machinery\"\nunits_per_day = 2.0", "");
     let mut catalog = authored.to_owned();
     catalog.push_str("\n[[resources]]\nid = \"chain_feed\"\nquantity_unit = \"kg\"\nshipment_batch_kg = 50.0\nruntime_id = 10\nimport_unit_price_currency = 0.01\n");
-    for index in 0..length - 1 {
+    for index in 0..length - usize::from(!cyclic) {
         writeln!(catalog, "\n[[resources]]\nid = \"chain_goods_{index}\"\nquantity_unit = \"kg\"\nshipment_batch_kg = 50.0\nruntime_id = {}\nimport_unit_price_currency = {}.0", index + 11, 2 * (index + 1)).unwrap();
     }
     for index in 0..length {
-        let input = if index == 0 { "chain_feed".to_owned() } else { format!("chain_goods_{}", index - 1) };
-        let output = if index + 1 == length { "household_supplies".to_owned() } else { format!("chain_goods_{index}") };
-        catalog.push_str(&recipe.replace("food_processor_basic", &format!("chain_{index}"))
+        let input = if index > 0 { format!("chain_goods_{}", index - 1) }
+            else if cyclic { format!("chain_goods_{}", length - 1) } else { "chain_feed".to_owned() };
+        let output = if index + 1 == length && !cyclic { "household_supplies".to_owned() } else { format!("chain_goods_{index}") };
+        let mut link = recipe.replace("food_processor_basic", &format!("chain_{index}"))
             .replace("\"grain\"", &format!("\"{input}\""))
-            .replace("\"packaged_food\"", &format!("\"{output}\""))
-            .replace("unit_price_currency = 12.0", &format!("unit_price_currency = {}.0", 2 * (index + 1))));
+            .replace("\"packaged_food\"", &format!("\"{output}\""));
+        if cyclic {
+            link = link.replace(&format!("resource = \"{input}\"\nunits_per_day = 200.0"), &format!(
+                "resource = \"{input}\"\nunits_per_day = {units:?}\n\n[[profiles.inputs]]\nresource = \"chain_feed\"\nunits_per_day = {:?}",
+                200.0 - units));
+        }
+        catalog.push_str(&link
+            .replace("unit_price_currency = 12.0", &format!("unit_price_currency = {}.0",
+                price.unwrap_or(2 * (index as u32 + 1)))));
     }
     let catalog = std::sync::Arc::new(compile_test_catalog(&catalog).unwrap());
     let mut graph = RegionGraph::new();
@@ -705,5 +722,149 @@ fn benchmark_partial_financing_cascade_depth() {
         }
         samples.sort_by(f64::total_cmp);
         eprintln!("partial_financing_cascade length={length} background={background} setup_ms={setup_ms:.3} cold_ms={cold_ms:.3} warm_median_ms={:.3} warm_max_ms={:.3} passes={passes:?}", samples[7], samples[14]);
+    }
+}
+
+
+// Adds a cashless rival beside every link of the first chain, on the same road.
+fn with_cashless_rivals(mut market: MarketFixture, length: usize) -> MarketFixture {
+    for index in 0..length {
+        let mut rival = market.allocator.buildings[index].clone();
+        rival.center_x += 2.0;
+        rival.operating_budget = 0.0;
+        market.allocator.buildings.push(rival);
+    }
+    market.allocator.rebuild_zone_index();
+    market.allocator.rebuild_entrance_cache(&market.graph, &market.network.lane_system);
+    market
+}
+
+// Compares every published link quantity with full replay: workers, recipe activity,
+// financing and exact deliveries.
+fn assert_links_match_replay(market: &MarketFixture, replay: &MarketFixture, links: impl Iterator<Item = usize>) {
+    assert_eq!(market.funding.capacities, replay.funding.capacities);
+    market.funding.customers.assert_same_accounts_for_test(&replay.funding.customers);
+    for source in links {
+        let building = &market.allocator.buildings[source];
+        let profile = market.catalog.profile_by_runtime_id(building.economy_profile_runtime_id).unwrap();
+        assert_eq!(market.funding.input_demand_scale(source, building, profile, false).to_bits(),
+            replay.funding.input_demand_scale(source, building, profile, false).to_bits());
+        assert_eq!(market.funding.business.financing(source).map(f64::to_bits),
+            replay.funding.business.financing(source).map(f64::to_bits));
+        let [mut deliveries, mut expected] = [Vec::new(), Vec::new()];
+        market.funding.input_supply.visit_dependents(source, |buyer, _, units| deliveries.push((buyer, units.to_bits())));
+        replay.funding.input_supply.visit_dependents(source, |buyer, _, units| expected.push((buyer, units.to_bits())));
+        assert_eq!(deliveries, expected, "source={source}");
+    }
+}
+
+fn rival_cascade(length: usize, background: usize) -> MarketFixture {
+    with_cashless_rivals(with_disconnected_customer_chain(financing_chain(length, background), length), length)
+}
+
+#[test]
+fn cashless_rivals_do_not_hold_zero_or_partial_cascades_open() {
+    let mut tuning = (*load_runtime_economy_tuning().unwrap()).clone();
+    tuning.owa_import_price_multiplier = 10.0;
+    tuning.owa_export_price_multiplier = 0.0;
+    // A staffed rival without cash or stock stays a counted buyer unless its financing
+    // impossibility is proven; otherwise every link waits for one more census.
+    for (length, partial) in [(2, 7_750.0), (8, 11_250.0), (32, 25_000.0)] {
+        let mut market = rival_cascade(length, 0);
+        let mut replay = rival_cascade(length, 0);
+        replay.funding.disable_customer_cascade();
+        let links = market.allocator.buildings.len();
+        for income in [1_000_000.0, partial, 0.0, partial, 1_000_000.0] {
+            market.families[0].gross_daily_wages = income;
+            market.families[0].budget = income;
+            replay.families[0] = market.families[0].clone();
+            market.refresh(&tuning);
+            replay.refresh(&tuning);
+            assert!(market.funding.closure_passes <= 2, "length={length}, income={income}");
+            if income < 1_000_000.0 && length > 2 {
+                assert!(replay.funding.closure_passes >= length, "fixture must exercise the cascade");
+            }
+            // Both chains and every rival; the homes between them carry no recipe.
+            assert_links_match_replay(&market, &replay,
+                (0..length).chain(length + 1..2 * length + 1).chain(links - length..links));
+            assert!(market.funding.capacities[links - length..].iter().all(|&workers| workers == 0));
+            assert!(market.funding.capacities[length + 1..2 * length + 1].iter().all(|&workers| workers == 1),
+                "the disconnected healthy chain stays funded");
+        }
+    }
+}
+
+#[test]
+fn unprofitable_supplier_cycles_match_replay_within_their_depth() {
+    let mut tuning = (*load_runtime_economy_tuning().unwrap()).clone();
+    tuning.owa_import_price_multiplier = 10.0;
+    tuning.owa_export_price_multiplier = 0.0;
+    // Link 0 buys dearer goods than it sells; its failure is financial, not a demand limit.
+    // Profit can recover in a later census, so no ceiling may assume it. The withdrawal
+    // still moves one link per census, exactly as full replay does.
+    for length in [2, 8] {
+        for units in [160.0, 199.8] {
+            let mut market = financing_links(length, true, units, None, 0);
+            let mut replay = financing_links(length, true, units, None, 0);
+            replay.funding.disable_customer_cascade();
+            for _ in 0..2 {
+                market.refresh(&tuning);
+                replay.refresh(&tuning);
+                assert_links_match_replay(&market, &replay, 0..length);
+                assert_eq!(&market.funding.capacities[..length], vec![0; length]);
+                assert!(market.funding.closure_passes <= length.max(2), "length={length}");
+                assert_eq!(market.funding.propagation_rounds, 0, "an unprofitable cycle has no demand limit");
+            }
+        }
+    }
+    // With one high price every link is profitable at full activity, yet each link's sales
+    // decay by `units / 200` around the loop. The joint proof rejects the loop before positive
+    // limits can step that decay towards zero one round at a time.
+    for (length, units) in [(2, 199.8), (2, 199.98), (8, 199.8)] {
+        let mut market = financing_links(length, true, units, Some(1_000), 0);
+        let mut replay = financing_links(length, true, units, Some(1_000), 0);
+        replay.funding.disable_customer_cascade();
+        for _ in 0..2 {
+            market.refresh(&tuning);
+            replay.refresh(&tuning);
+            assert_links_match_replay(&market, &replay, 0..length);
+            assert!(market.funding.closure_passes <= 2 && market.funding.propagation_rounds <= 1,
+                "length={length}, units={units}");
+        }
+    }
+}
+
+#[test]
+#[ignore = "manual release cascade combinations: cashless rivals and unprofitable cycles; setup excluded"]
+fn benchmark_combined_financing_cascades() {
+    use std::time::Instant;
+    let mut tuning = (*load_runtime_economy_tuning().unwrap()).clone();
+    tuning.owa_import_price_multiplier = 10.0;
+    tuning.owa_export_price_multiplier = 0.0;
+    let incomes = |length| match length { 8 => 11_250.0, 32 => 25_000.0, _ => 0.0 };
+    for (case, length, background) in [("rivals", 8, 0), ("rivals", 32, 0), ("rivals", 64, 0),
+        ("rivals", 8, 16_384), ("rivals", 32, 16_384), ("rivals", 64, 16_384),
+        ("cycle", 4, 0), ("cycle", 16, 0), ("cycle", 64, 0), ("cycle", 4, 16_384), ("cycle", 16, 16_384),
+        ("cycle", 64, 16_384)] {
+        let setup = Instant::now();
+        let mut market = if case == "rivals" { rival_cascade(length, background) }
+            else { financing_links(length, true, 199.8, None, background) };
+        // Rival chains alternate partial or zero end income; 64 links use the zero cascade.
+        market.families[0].gross_daily_wages = incomes(length);
+        market.families[0].budget = incomes(length);
+        let setup_ms = setup.elapsed().as_secs_f64() * 1_000.0;
+        let cold = Instant::now();
+        market.refresh(&tuning);
+        let cold_ms = cold.elapsed().as_secs_f64() * 1_000.0;
+        let mut samples = [0.0_f64; 15];
+        let mut passes = [0; 15];
+        for round in 0..18 {
+            let start = Instant::now();
+            market.refresh(&tuning);
+            let elapsed = start.elapsed().as_secs_f64() * 1_000.0;
+            if round >= 3 { samples[round - 3] = elapsed; passes[round - 3] = market.funding.closure_passes; }
+        }
+        samples.sort_by(f64::total_cmp);
+        eprintln!("combined_financing_cascade case={case} length={length} background={background} setup_ms={setup_ms:.3} cold_ms={cold_ms:.3} warm_median_ms={:.3} warm_max_ms={:.3} passes={passes:?}", samples[7], samples[14]);
     }
 }

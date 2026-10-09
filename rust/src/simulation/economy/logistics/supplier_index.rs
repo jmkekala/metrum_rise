@@ -177,6 +177,13 @@ impl SupplierCandidateIndex {
         }
     }
 
+    /// Adds door bounds so nearest-source scans can skip regions that cannot beat a route.
+    pub(super) fn enable_spatial_bounds(&mut self, door: impl Fn(usize) -> Option<[f32; 2]> + Sync) {
+        for buckets in self.by_resource.values_mut() {
+            buckets.enable_spatial_bounds(&door);
+        }
+    }
+
     /// Clears only availability while retaining prepared geometry and storage.
     pub(super) fn disable_all(&mut self) {
         // Sparse catalogue keys are not a flat collection: Rayon would first collect this
