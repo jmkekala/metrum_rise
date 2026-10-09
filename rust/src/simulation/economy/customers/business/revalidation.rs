@@ -209,7 +209,7 @@ mod tests {
             for buyer in [0, 2, 0] {
                 let slot = book.push_input(buyer, InputRequirement { resource: 2, ..input },
                     12.0, 75.0, 20.0, 30.0, 1.25).unwrap();
-                assert_eq!(book.claim(slot, 30.0, 8.0, 50.0), 30.0);
+                assert_eq!(book.claim_opportunity(slot, 30.0, 8.0, 50.0), 30.0);
             }
             assert!(book.accept_for(1));
             assert_eq!(book.sales(1, 2, 100.0), (90.0, 900.0));
@@ -218,7 +218,7 @@ mod tests {
             book.seed_for(2, slot);
             if round % 2 == 0 {
                 book.release_owner(1);
-                book.claim(slot - 1, 10.0, 10.0, 50.0);
+                book.claim_opportunity(slot - 1, 10.0, 10.0, 50.0);
             }
             book.reject_revalidation();
             assert_eq!(capacities(&book), prepared);
@@ -332,9 +332,9 @@ mod tests {
                 buffer_units: 400.0, replenishment_batch_units: Some(50.0) },
                 10.0, 50.0, 0.0, 100.0, 1.0).unwrap());
         }
-        assert_eq!(book.claim(slots[0], 100.0, 8.0, 50.0), 100.0);
+        assert_eq!(book.claim_opportunity(slots[0], 100.0, 8.0, 50.0), 100.0);
         assert!(book.accept_for(0));
-        assert_eq!(book.claim(slots[1], 50.0, 12.0, 50.0), 50.0);
+        assert_eq!(book.claim_opportunity(slots[1], 50.0, 12.0, 50.0), 50.0);
         assert!(book.accept_for(1));
         book.prepare_revalidation();
         let original = book.clone();
@@ -348,16 +348,16 @@ mod tests {
         for _ in 0..128 {
             book.begin_revalidation();
             // Append a new owner's receipt, then recycle both existing owners' cells.
-            assert_eq!(book.claim(slots[1], 10.0, 10.0, 50.0), 10.0);
+            assert_eq!(book.claim_opportunity(slots[1], 10.0, 10.0, 50.0), 10.0);
             assert!(book.accept_for(2));
             book.release_owner(0);
-            assert_eq!(book.claim(slots[0], 100.0, 9.0, 50.0), 100.0);
+            assert_eq!(book.claim_opportunity(slots[0], 100.0, 9.0, 50.0), 100.0);
             assert!(book.accept_for(0));
             book.release_owner(1);
-            assert_eq!(book.claim(slots[1], 50.0, 13.0, 50.0), 50.0);
+            assert_eq!(book.claim_opportunity(slots[1], 50.0, 13.0, 50.0), 50.0);
             assert!(book.accept_for(1));
             book.release_owner(0);
-            assert!(book.claim(slots[0], 100.0, 100.0, 50.0) < 100.0);
+            assert!(book.claim_opportunity(slots[0], 100.0, 100.0, 50.0) < 100.0);
             book.reject_revalidation();
             assert_eq!(book.finance[0].map(f64::to_bits), original.finance[0].map(f64::to_bits));
             for (current, previous) in book.accounts.iter().zip(&original.accounts) {
@@ -372,13 +372,15 @@ mod tests {
                 book.revalidation.finance.saved.capacity(), book.revalidation.owners.saved.capacity(),
                 book.revalidation.receipts.saved.capacity()), capacities);
         }
+        // A dearer accepted replacement debits margin and capital; later rejection keeps it.
+        assert_eq!(book.finance[0], [200.0, 1_600.0]);
         book.begin_revalidation();
         book.release_owner(0);
-        assert_eq!(book.claim(slots[0], 100.0, 9.0, 50.0), 100.0);
+        assert_eq!(book.claim_opportunity(slots[0], 100.0, 11.0, 50.0), 100.0);
         assert!(book.accept_for(0));
         book.accept_revalidation();
-        assert_eq!(book.finance[0], [300.0, 2_000.0]);
+        assert_eq!(book.finance[0], [100.0, 1_200.0]);
         book.reject_revalidation();
-        assert_eq!(book.finance[0], [300.0, 2_000.0]);
+        assert_eq!(book.finance[0], [100.0, 1_200.0]);
     }
 }

@@ -4096,8 +4096,22 @@ deliveries and household accounts with full replay while keeping the other chain
 The baseline needs 4/16/64 complete censuses; its 64-link/16,384-background case takes
 **30.029 ms**. The initial changed release passes **480 economy tests**, including independent
 component-tally/financial-availability checks, and the same case takes **1.194 ms**, with two
-censuses at every measured depth. These are initial diagnostics; final matched timings and
-broad validation are pending under `/tmp/metrum-dem02-component-cascade-final-`.
+censuses at every measured depth.
+
+Final matched checks (2026-10-09) use sequential unprofiled release runs, eight Rayon workers
+and CPUs 0,2,4,6,8,10,12,14, in both run orders. The 64-link/16,384-background warm median falls
+from **29.975 / 30.218 ms** to **1.261 / 1.184 ms** (forward/reverse), with 64 censuses reduced to
+two; mixed-market medians stay comparable (largest 24.684 → 25.080 ms). Whole-economy 10k timing
+detects no significant change: hourly **5.4304 → 5.4566 ms** (p = 0.84), daily
+**99.290 → 98.567 ms** (p = 0.98), with identical starting and ending records. The full release
+run passes **2,280 library tests** (108 ignored) and **all three growth integrations**; the only
+failure is the known utility-machinery assertion (actual 540, expected 96). All five year,
+two-year, expansion, recovery and saved-town reports are byte-identical to the preceding build;
+the saved town still grows from 7 to 80 residents. No source identity changed during the run.
+Artifacts use `/tmp/metrum-dem02-component-cascade-final-`; the test and benchmark executables
+are archived as `rust/target/goal-evidence/metrum-dem02-component-cascade-final-{tests,bench}.gz`,
+SHA-256 `027ed2e92120bcd36d35fc45d8356ad60ef9286fcd2cdb53b4a251d0139255fb` /
+`4389a183daa34a1aecd07067f3418804b0169b99de2b575b2fe8cc0d1c24fdea`.
 The freshly compiled fixture baseline is archived as
 `rust/target/goal-evidence/metrum-dem02-component-cascade-baseline-tests.gz`, decompressed
 SHA-256 `776cb6131de21aca1ffbe19b39e3e23572d8b7e4430334070fbd48918dfb27c2`.
@@ -4156,8 +4170,18 @@ reports remain unchanged; whole-economy timing detects no significant change, an
 largest mixed-market penalty no longer appears. The subsequent projected-supplier removal
 fix validates retained handles before reading variant owners; fresh broad checks and timing
 retain those outcomes. The tested per-buyer supplier cache was removed without a whole-economy
-gain. Partial/disconnected cascades still need further work; the existing business-customer
-index already contains recipe input membership by freight component. Remaining work includes
+gain. Disconnected chains now use component-local buyer tallies (final checks above); positive
+partial-activity cascades still need further work. The nine methods behind the remaining
+unused-method warnings are not unwired runtime paths: three global `has_offers` probes are
+replaced by per-recipe `offers_inputs`; `BusinessBudgets::claim`/`accept_for` and
+`BusinessMarket::accept_for` by `claim_opportunity`, `try_extend_for` and `commit_joint_for`;
+`replace_buyer_inputs`/`replace_buyer_at_site` by `reprice_buyer_inputs` and
+`seed_new_buyer_inputs`, which preserve earlier seller promises. They remain `#[cfg(test)]`
+harnesses for the shared reseed/commit steps; the `accounts` accessor is removed. The test-only
+`claim` was the sole path that credited cheaper goods/freight to buyer financing; it is removed.
+Every business claim now debits only nonnegative price deltas (actual savings enter through
+repricing), so no offer can repair an infeasible buyer and the repair loop and its release-time
+exemption are gone. Remaining work includes
 interdependent queued/cyclic replacement reloads,
 populated execution/scaling, broader financing cascade cost and the unresolved
 hourly/queue performance regressions. The original handoff below preserves the full scope and

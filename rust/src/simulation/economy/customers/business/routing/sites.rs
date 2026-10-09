@@ -86,6 +86,8 @@ impl BusinessMarket {
 
     /// Replaces financed demand at the prepared candidate's actual door and recipe.
     /// The enclosing journal restores previous account-to-port mappings on rejection.
+    /// Test harness: runtime sites reseed through `reprice_buyer_inputs`/`seed_new_buyer_inputs`.
+    #[cfg(test)]
     pub(crate) fn replace_buyer_at_site(&mut self, site: usize, headroom: [f64; 2],
         input_tranches: usize, seed: impl FnOnce(&mut BusinessBudgets),
         affected: impl FnMut(usize, u16, f64, f64)) -> Result<(), usize> {

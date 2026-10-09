@@ -212,14 +212,6 @@ impl BusinessBudgets {
         Some(slot)
     }
 
-    /// Visits sparse account identities and remaining quantities without allocating.
-    pub(crate) fn accounts(&self) -> impl Iterator<Item = (usize, usize, u16, f64)> + '_ {
-        self.accounts
-            .iter()
-            .enumerate()
-            .map(|(slot, account)| (slot, account.buyer, account.resource, account.units))
-    }
-
     /// Prepares appended input tranches and their journals between complete operation proofs.
     pub(super) fn reserve_accounts(&mut self, required: usize) {
         debug_assert!(!self.revalidation.is_active() && self.staged.is_empty());
@@ -286,24 +278,14 @@ impl BusinessBudgets {
         self.staged_slots[slot]
     }
 
-    /// Stages an executable supplier offer against both shared financing constraints.
-    /// Price changes are affine in claimed units at the operation's already-quantized batch.
-    /// The result preserves positive recurring profit and nonnegative working-capital surplus.
-    pub(crate) fn claim(
-        &mut self,
-        slot: usize,
-        requested: f64,
-        seller_price: f32,
-        carrier_quote: f32,
-    ) -> f64 {
-        self.claim_priced(slot, requested, seller_price, carrier_quote, true, true)
-    }
-
-    /// Quotes a future seller without spending input savings before that delivery exists.
-    /// More expensive goods/freight and lost stock value still debit proven financing.
+    /// Stages a seller against both shared financing constraints, preserving positive
+    /// recurring profit and nonnegative working-capital surplus. Cheaper goods/freight never
+    /// credit savings before that delivery exists; actual prices enter through repricing.
+    /// More expensive goods/freight and lost stock value debit proven financing, affine in
+    /// claimed units at the operation's already-quantized batch.
     pub(crate) fn claim_opportunity(&mut self, slot: usize, requested: f64,
         seller_price: f32, carrier_quote: f32) -> f64 {
-        self.claim_priced(slot, requested, seller_price, carrier_quote, false, true)
+        self.claim_priced(slot, requested, seller_price, carrier_quote, true)
     }
 
     /// Reserves a coupled replacement's finite quantity before its complete-set proof.
@@ -311,11 +293,11 @@ impl BusinessBudgets {
     pub(super) fn claim_joint_opportunity(&mut self, slot: usize, requested: f64,
         seller_price: f32, carrier_quote: f32) -> f64 {
         debug_assert!(self.revalidation.is_active());
-        self.claim_priced(slot, requested, seller_price, carrier_quote, false, false)
+        self.claim_priced(slot, requested, seller_price, carrier_quote, false)
     }
 
     fn claim_priced(&mut self, slot: usize, requested: f64,
-        seller_price: f32, carrier_quote: f32, credit_savings: bool, require_finance: bool) -> f64 {
+        seller_price: f32, carrier_quote: f32, require_finance: bool) -> f64 {
         let account = self.accounts[slot];
         let goods = seller_price * account.goods_multiplier;
         if requested <= 0.0
@@ -327,39 +309,17 @@ impl BusinessBudgets {
             return 0.0;
         }
         let finance = self.finance[account.buyer];
-        if require_finance && !(finance[0] > 0.0 && finance[1] >= 0.0) && self.releasing_owner.is_none() {
+        // Price deltas are nonnegative, so no offer can repair an already infeasible buyer.
+        if require_finance && !(finance[0] > 0.0 && finance[1] >= 0.0) {
             return 0.0;
         }
         let goods_delta = f64::from(goods) - account.goods;
         let carrier_delta = f64::from(carrier_quote) / f64::from(account.batch) - account.carrier;
-        let margin_delta = goods_delta + carrier_delta;
-        let capital_delta = goods_delta * account.stock_exposure + carrier_delta;
-        let [margin_delta, capital_delta] = [margin_delta, capital_delta]
-            .map(|delta| if credit_savings { delta } else { delta.max(0.0) });
+        let margin_delta = (goods_delta + carrier_delta).max(0.0);
+        let capital_delta = (goods_delta * account.stock_exposure + carrier_delta).max(0.0);
         let quantity_limit = requested.min(account.units);
         let mut units = quantity_limit;
-        // Withdrawing an earlier cheap supplier can temporarily remove the savings that
-        // financed another input. Its replacement may restore those savings. A constraint
-        // that this offer cannot repair must reject before downward rounding (which would
-        // otherwise walk away from the feasible interval).
         if require_finance {
-            for (balance, delta, strict) in [
-                (finance[0], margin_delta, true),
-                (finance[1], capital_delta, false),
-            ] {
-                let remaining = balance - units * delta;
-                let feasible = if strict {
-                    remaining > 0.0
-                } else {
-                    remaining >= 0.0
-                };
-                if delta <= 0.0 && !feasible {
-                    return 0.0;
-                }
-                if delta > 0.0 && !(balance > 0.0) {
-                    return 0.0;
-                }
-            }
             if margin_delta > 0.0 && finance[0].is_finite() {
                 units = units.min((finance[0] / margin_delta).next_down());
             }
@@ -501,6 +461,8 @@ impl BusinessBudgets {
 
     /// Retains seller receipts only if every affected buyer remains financed. A rejected
     /// commit leaves the quote staged so the caller can restore it with `reject`.
+    /// Test harness: runtime proofs commit through `try_extend_for`/`commit_joint_for`.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn accept_for(&mut self, owner: usize) -> bool {
         if !self.can_accept() {
@@ -615,41 +577,6 @@ mod tests {
     }
 
     #[test]
-    fn replacement_restores_savings_that_finance_other_committed_inputs() {
-        let mut book = BusinessBudgets::default();
-        book.reset(1, 2, 2, 2);
-        book.set_finance(0, [100.0, 1_000.0]);
-        let a = input(1, 0.0, &mut book);
-        let b = input(2, 0.0, &mut book);
-        assert_eq!(book.claim(a, 100.0, 8.0, 50.0), 100.0);
-        assert!(book.accept_for(0));
-        assert_eq!(book.claim(b, 100.0, 12.0, 50.0), 100.0);
-        assert!(book.accept_for(1));
-        let original = book.finance[0].map(f64::to_bits);
-        for _ in 0..32 {
-            book.release_owner(0);
-            assert_eq!(book.finance[0], [-100.0, 200.0]);
-            assert!(
-                !book.accept_for(0),
-                "withdrawal cannot strand another input's financing"
-            );
-            assert_eq!(
-                book.claim(a, 25.0, 8.0, 50.0),
-                0.0,
-                "an insufficient price saving cannot repair this buyer"
-            );
-            assert_eq!(book.claim(a, 100.0, 8.0, 50.0), 100.0);
-            assert!(book.accept_for(0));
-            assert_eq!(book.finance[0].map(f64::to_bits), original);
-        }
-        book.release_owner(0);
-        assert!(!book.accept_for(0));
-        book.reject();
-        assert_eq!(book.finance[0].map(f64::to_bits), original);
-        assert!(book.accounts().all(|(_, _, _, units)| units == 0.0));
-    }
-
-    #[test]
     fn repeated_accepted_replacements_reuse_retired_receipts() {
         let mut book = BusinessBudgets::default();
         book.reset(1, 2, 1, 2);
@@ -657,24 +584,24 @@ mod tests {
         let a = input(1, 0.0, &mut book);
         let b = input(2, 0.0, &mut book);
         for slot in [a, b] {
-            assert_eq!(book.claim(slot, 100.0, 10.0, 50.0), 100.0);
+            assert_eq!(book.claim_opportunity(slot, 100.0, 10.0, 50.0), 100.0);
         }
         assert!(book.accept_for(0));
         let capacity = book.committed.capacity();
         for _ in 0..256 {
             book.release_owner(0);
             for slot in [a, b] {
-                assert_eq!(book.claim(slot, 100.0, 10.0, 50.0), 100.0);
+                assert_eq!(book.claim_opportunity(slot, 100.0, 10.0, 50.0), 100.0);
             }
             assert!(book.accept_for(0));
             assert_eq!(book.committed.len(), 2);
             assert_eq!(book.committed.capacity(), capacity);
-            assert!(book.accounts().all(|(_, _, _, units)| units == 0.0));
+            assert!(book.accounts.iter().all(|account| account.units == 0.0));
         }
         book.release_owner(0);
-        assert!(book.accounts().all(|(_, _, _, units)| units == 100.0));
+        assert!(book.accounts.iter().all(|account| account.units == 100.0));
         book.reject();
-        assert!(book.accounts().all(|(_, _, _, units)| units == 0.0));
+        assert!(book.accounts.iter().all(|account| account.units == 0.0));
     }
 
     #[test]
@@ -686,8 +613,8 @@ mod tests {
         let b = input(2, 0.0, &mut book);
         let capacities = (book.staged.capacity(), book.staged_finance.capacity());
         for _ in 0..100 {
-            assert_eq!(book.claim(a, 1.0, 11.0, 51.0), 1.0);
-            assert_eq!(book.claim(b, 1.0, 9.0, 49.0), 1.0);
+            assert_eq!(book.claim_opportunity(a, 1.0, 11.0, 51.0), 1.0);
+            assert_eq!(book.claim_opportunity(b, 1.0, 9.0, 49.0), 1.0);
         }
         assert_eq!((book.staged.len(), book.staged_finance.len()), (2, 1));
         assert_eq!(
@@ -696,7 +623,7 @@ mod tests {
         );
         book.reject();
         assert_eq!(book.finance[0], [1_000.0, 10_000.0]);
-        assert!(book.accounts().all(|(_, _, _, units)| units == 100.0));
+        assert!(book.accounts.iter().all(|account| account.units == 100.0));
     }
 
     #[test]
@@ -706,16 +633,16 @@ mod tests {
         book.set_finance(0, [100.0, 1_000.0]);
         let a = input(1, 0.0, &mut book);
         let b = input(2, 0.0, &mut book);
-        assert_eq!(book.claim(a, 40.0, 12.0, 50.0), 40.0);
+        assert_eq!(book.claim_opportunity(a, 40.0, 12.0, 50.0), 40.0);
         assert!(book.accept_for(0));
-        let remainder = book.claim(b, 100.0, 12.0, 50.0);
+        let remainder = book.claim_opportunity(b, 100.0, 12.0, 50.0);
         assert!(remainder < 10.0 && remainder > 9.99);
         assert!(book.finance[0][0] > 0.0);
         book.reject();
         assert_eq!(book.finance[0], [20.0, 680.0]);
         book.set_finance(0, [0.0, 1_000_000.0]);
         assert_eq!(
-            book.claim(b, 100.0, 12.0, 50.0),
+            book.claim_opportunity(b, 100.0, 12.0, 50.0),
             0.0,
             "capital alone never creates recurring purchasing power"
         );
@@ -728,17 +655,18 @@ mod tests {
         book.set_finance(0, [100.0, 120.0]);
         let a = input(1, 1_000.0, &mut book);
         let b = input(2, 0.0, &mut book);
-        // One cheaper unit loses ten currency of stock assets and saves four of buffer.
-        assert_eq!(book.claim(a, 100.0, 9.0, 50.0), 20.0);
+        // One cheaper unit loses ten currency of stock assets and saves four of buffer;
+        // its goods saving is not credited to recurring margin before delivery.
+        assert_eq!(book.claim_opportunity(a, 100.0, 9.0, 50.0), 20.0);
         assert!(book.accept_for(0));
-        assert_eq!(book.finance[0], [120.0, 0.0]);
-        assert_eq!(book.claim(b, 10.0, 11.0, 50.0), 0.0);
+        assert_eq!(book.finance[0], [100.0, 0.0]);
+        assert_eq!(book.claim_opportunity(b, 10.0, 11.0, 50.0), 0.0);
         let initial_units: Vec<_> = book.accounts.iter().map(|a| a.units.to_bits()).collect();
         let initial_finance = book.finance[0].map(f64::to_bits);
         for _ in 0..32 {
             book.release_owner(0);
-            assert_eq!(book.claim(a, 10.0, 9.5, 50.0), 10.0);
-            assert_eq!(book.claim(b, 10.0, 11.0, 50.0), 10.0);
+            assert_eq!(book.claim_opportunity(a, 10.0, 9.5, 50.0), 10.0);
+            assert_eq!(book.claim_opportunity(b, 10.0, 11.0, 50.0), 10.0);
             book.reject();
             assert_eq!(
                 book.accounts

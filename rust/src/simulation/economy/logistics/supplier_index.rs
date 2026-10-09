@@ -164,6 +164,7 @@ impl SupplierCandidateIndex {
     }
 
     /// Whether any resource still has an eligible supplier, in O(resource kinds).
+    #[cfg(test)]
     pub(super) fn has_offers(&self) -> bool {
         self.by_resource
             .values()

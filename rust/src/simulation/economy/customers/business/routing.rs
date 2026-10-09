@@ -506,6 +506,9 @@ impl BusinessMarket {
     /// for this buyer, including source-owned receipts from its evaluated input quote.
     /// Exhaustion leaves the book untouched; grow and replay the complete proof before retry.
     /// Cost follows this buyer's old/new tranches and receipts, with no spatial rebuild.
+    /// Test harness for the shared reseed step: runtime replacements must preserve earlier
+    /// seller promises and therefore use `reprice_buyer_inputs`/`seed_new_buyer_inputs`.
+    #[cfg(test)]
     pub(crate) fn replace_buyer_inputs(&mut self, buyer: usize, headroom: [f64; 2],
         input_tranches: usize, seed: impl FnOnce(&mut BusinessBudgets),
         affected: impl FnMut(usize, u16, f64, f64)) -> Result<(), usize> {
@@ -601,6 +604,8 @@ impl BusinessMarket {
     }
 
     /// Commits one seller's proven operation and keeps its customer receipts for replacement.
+    /// Test harness: runtime proofs commit through `try_extend_for`/`commit_joint_for`.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn accept_for(&mut self, seller: usize) -> bool {
         self.budgets.accept_for(seller)

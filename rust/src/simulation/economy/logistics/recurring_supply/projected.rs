@@ -147,6 +147,7 @@ impl RecurringSupply {
     pub(super) fn projected_enabled(&self) -> bool { self.projected.enabled }
 
     /// Whether any prepared variant currently has unreserved production.
+    #[cfg(test)]
     pub(super) fn projected_has_offers(&self) -> bool {
         self.projected.enabled && self.projected.index.has_offers()
     }

@@ -147,7 +147,7 @@ mod tests {
         for (seller, claims) in [(0, &[(0, 40.0), (1, 20.0)][..]),
             (1, &[(0, 60.0), (1, 80.0), (2, 100.0), (3, 100.0)][..]),
             (2, &[(4, 100.0)][..])] {
-            for &(slot, units) in claims { assert_eq!(book.claim(slot, units, 10.0, 50.0), units); }
+            for &(slot, units) in claims { assert_eq!(book.claim_opportunity(slot, units, 10.0, 50.0), units); }
             assert!(book.accept_for(seller));
         }
         assert_links(&book);
@@ -173,8 +173,8 @@ mod tests {
             assert_links(&book);
             // Recycle withdrawn cells in an inner accepted seller substitution.
             book.release_owner(1);
-            assert_eq!(book.claim(1, 80.0, 9.0, 50.0), 80.0);
-            assert_eq!(book.claim(3, 100.0, 9.0, 50.0), 100.0);
+            assert_eq!(book.claim_opportunity(1, 80.0, 9.0, 50.0), 80.0);
+            assert_eq!(book.claim_opportunity(3, 100.0, 9.0, 50.0), 100.0);
             assert!(book.accept_for(1));
             assert_links(&book);
             book.reject_revalidation();

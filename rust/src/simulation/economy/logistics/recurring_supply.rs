@@ -229,6 +229,8 @@ impl RecurringSupply {
     }
 
     /// Whether any funded staffed source has a positive remaining production rate.
+    /// Test harness: runtime funding asks per recipe through `offers_inputs`.
+    #[cfg(test)]
     pub(crate) fn has_offers(&self) -> bool {
         self.index.has_offers() || self.projected_has_offers()
     }
