@@ -154,14 +154,12 @@ impl HouseholdSystem {
         phase_start = Instant::now();
         // Step 2: pay wages (budget does not go negative from this step).
         let owa_exports_available = has_connected_border_node(graph);
-        let income_tax = self.pay_daily_wages_with_service_funding(
+        let income_tax = self.pay_funded_daily_wages(
             agents,
             allocator,
             fiscal_policy.income_tax_rate,
             treasury_balance,
-            service_funding_by_building,
             logistics,
-            owa_exports_available,
         );
         let wages_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         // Observe paid assignments before the later job search can replace them.

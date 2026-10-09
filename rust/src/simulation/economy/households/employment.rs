@@ -9,10 +9,11 @@ use std::sync::atomic::AtomicU32;
 use super::building_economy::liquidate_outputs_until_budget;
 use super::data::{Household, HouseholdSystem};
 use super::metrics::{
-    UTILITY_SERVICE_POWER, active_worker_capacity_for_profile,
+    UTILITY_SERVICE_POWER,
     demand_sink_cash_cost_per_resident_excluding_resource, household_demand_profile,
     household_supply_resource_runtime_id, household_supply_unit_price,
-    refresh_commercial_activity_floor, service_funded_worker_capacity,
+    physical_worker_capacity_for_profile, refresh_commercial_activity_floor,
+    service_funded_worker_capacity,
 };
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::economy::accessibility::{
@@ -478,7 +479,8 @@ impl HouseholdSystem {
                 if profile.utility_service.as_deref() != Some(UTILITY_SERVICE_POWER) {
                     return None;
                 }
-                let capacity = active_worker_capacity_for_profile(&catalog, building, profile);
+                // The same fiscal ceiling the funding census advertises to hiring (`ECON-17`).
+                let capacity = physical_worker_capacity_for_profile(building, profile);
                 Some(service_funded_worker_capacity(
                     capacity,
                     profile,
@@ -500,64 +502,47 @@ impl HouseholdSystem {
         treasury_balance: &mut f64,
     ) -> f32 {
         let empty_logistics = ShipmentSystem::new();
-        let tax = self.pay_daily_wages_with_service_funding(
+        let tax = self.pay_funded_daily_wages(
             agents,
             allocator,
             income_tax_rate,
             treasury_balance,
-            &[],
             &empty_logistics,
-            true,
         );
         self.sync_agent_money_from_households(agents);
         tax
     }
 
-    pub(crate) fn pay_daily_wages_with_service_funding(
+    /// Pays at most the funded live-job capacity that hiring advertised in the latest census,
+    /// including fiscal service ceilings; workers above it are released or stay unpaid
+    /// (`ECON-17`). O(buildings + agents), plus serial payment in agent order.
+    pub(crate) fn pay_funded_daily_wages(
         &mut self,
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
         income_tax_rate: f32,
         treasury_balance: &mut f64,
-        service_funding_by_building: &[f32],
         logistics: &ShipmentSystem,
-        owa_exports_available: bool,
     ) -> f32 {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let tuning = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
         let reserved_outbound = logistics.reserved_outbound_view(catalog.resource_count());
-        refresh_commercial_activity_floor(
-            &catalog,
-            &self.households,
-            allocator,
-            owa_exports_available,
-        );
         eject_inactive_work_assignments(agents, allocator, &catalog);
-        shed_overstaffed_active_capacity_workers(agents, allocator, &catalog);
+        shed_unfunded_workers(agents, allocator, &catalog, &self.job_funding.capacities);
         self.last_city_service_wages = super::data::CityServiceWages::default();
         let city_funded_by_building: Vec<bool> = allocator
             .buildings
             .iter()
             .map(|building| allocator.is_city_service_building(building))
             .collect();
-        let active_worker_capacity_by_building: Vec<u32> = allocator
+        let paid_capacity_by_building: Vec<u32> = allocator
             .buildings
             .par_iter()
             .enumerate()
             .map(|(building_idx, building)| {
-                active_work_profile(&catalog, building)
-                    .map(|profile| {
-                        let capacity =
-                            active_worker_capacity_for_profile(&catalog, building, profile);
-                        service_funded_worker_capacity(
-                            capacity,
-                            profile,
-                            building_idx,
-                            service_funding_by_building,
-                        )
-                    })
+                funded_worker_capacity(&catalog, &self.job_funding.capacities, building_idx, building)
                     .unwrap_or(0)
             })
             .collect();
@@ -590,10 +575,10 @@ impl HouseholdSystem {
         let mut income_tax_collected = 0.0;
         let mut paid_workers_by_building = vec![0u32; allocator.buildings.len()];
         for plan in plans {
-            let within_active_capacity = paid_workers_by_building[plan.work_building]
-                < active_worker_capacity_by_building[plan.work_building];
+            let within_paid_capacity = paid_workers_by_building[plan.work_building]
+                < paid_capacity_by_building[plan.work_building];
             let city_funded = city_funded_by_building[plan.work_building];
-            if within_active_capacity
+            if within_paid_capacity
                 && !city_funded
                 && allocator.buildings[plan.work_building].operating_budget < plan.wage
             {
@@ -607,7 +592,7 @@ impl HouseholdSystem {
                     plan.wage,
                 );
             }
-            if within_active_capacity
+            if within_paid_capacity
                 && (city_funded
                     || allocator.buildings[plan.work_building].operating_budget >= plan.wage)
             {
@@ -965,28 +950,46 @@ fn eject_inactive_work_assignments(
     }
 }
 
-fn shed_overstaffed_active_capacity_workers(
+// Hiring, payroll and shedding share the latest funding census (`ECON-17`). The current
+// physical workplace still bounds it if a work area shrank after that census.
+fn funded_worker_capacity(
+    catalog: &RuntimeEconomyCatalog,
+    job_capacities: &[u32],
+    building_idx: usize,
+    building: &Building,
+) -> Option<u32> {
+    let profile = active_work_profile(catalog, building)?;
+    Some(
+        job_capacities
+            .get(building_idx)
+            .copied()
+            .unwrap_or(0)
+            .min(physical_worker_capacity_for_profile(building, profile)),
+    )
+}
+
+fn shed_unfunded_workers(
     agents: &mut AgentSystem,
     allocator: &mut BuildingAllocator,
     catalog: &RuntimeEconomyCatalog,
+    job_capacities: &[u32],
 ) {
-    let active_capacity_by_building: Vec<Option<u32>> = allocator
+    let funded_capacity_by_building: Vec<Option<u32>> = allocator
         .buildings
         .par_iter()
-        .map(|building| {
+        .enumerate()
+        .map(|(building_idx, building)| {
             let profile = active_work_profile(catalog, building)?;
             if profile.kind == EconomyProfileRuntimeKind::ServiceStore
                 || profile_kind_uses_explicit_work_area(profile.kind)
             {
-                Some(active_worker_capacity_for_profile(
-                    catalog, building, profile,
-                ))
+                funded_worker_capacity(catalog, job_capacities, building_idx, building)
             } else {
                 None
             }
         })
         .collect();
-    enforce_worker_capacities(agents, allocator, &active_capacity_by_building);
+    enforce_worker_capacities(agents, allocator, &funded_capacity_by_building);
 }
 
 fn enforce_worker_capacities(

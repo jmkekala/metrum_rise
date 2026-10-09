@@ -4259,7 +4259,7 @@ queue check and bounds the cascade combinations.
   citywide sales-scaled active capacity (one worker). Unpaid workers quit at midnight with cash
   still on hand (17,608 against a 90 wage), and 335 of 355 return to the same stores the next
   hour. This churn adds daily commute routing and a slower 1 am hour; it is outside the timed
-  hourly samples and is tracked separately.
+  hourly samples. Fixed below.
 
 Fresh release validation of the final source passes **2,286 library tests** (110 ignored, no
 failures) and **all three growth integrations**; all five year, two-year, expansion, recovery
@@ -4296,8 +4296,40 @@ with `perf record` captures beside them. Timed executables are archived as
 `808911d24093769a714053c2e3499a11df00be019e5554bb69d25ae2dd0e78f3` (benchmark) and
 `171f0a6fac680f4aa9b68463ca2e59ccbba8e6134e13f7f6b4489acfca18ac73` (tests).
 
-Remaining performance work: the profitability-failing cascade depth, lazy queue site records,
-`ECON-17`, and populated execution/scaling at larger tiers. DEM-02 is not complete.
+Remaining performance work: the profitability-failing cascade depth, lazy queue site records
+and populated execution/scaling at larger tiers. DEM-02 is not complete.
+
+The **`ECON-17` fix (2026-10-09)** makes the funding census the one workforce limit. Daily
+payroll pays at most each employer's census capacity (`JobFunding::capacities`, which already
+holds the fiscal ceiling for city services), bounded by the current physical workplace in case a
+work area shrank after the census. Service stores and explicit work areas shed workers above
+that limit instead of above the citywide activity capacity, and power funding changes shed to
+the census's `funding × physical` ceiling. Other unpaid workers still leave after two days.
+Every hourly workplace pass rebuilds the census, and building removal and remapping keep it
+aligned, so payroll needs no extra census. Production still caps
+sales-scaled stores by the citywide activity floor; removing that layer remains `DEM-02` work.
+
+- **Correctness.** A regression keeps a fully funded grocery with no city sales activity staffed
+  and paid for three days; with the old active-capacity payroll it fails. Payroll tests now
+  provide their census capacities. Fresh release validation passes **2,287 library tests**
+  (110 ignored) and **all three growth integrations**; the year, two-year, expansion, recovery
+  and saved-town reports are byte-identical to Step 2, so payroll never limited those towns
+  below their census.
+- **10k fixture.** Same fixture, `METRUM_DEBUG_FILTER=economy`: unpaid quits fall **355 → 0** and
+  job acceptances **7,402 → 6,791** (each worker hired once) in the hourly benchmark. Every firm
+  in this fixture has zero revenue, so its census capacity also collapses at HEAD (6,523 to
+  about 450 funded jobs by day 15) while the old payroll kept paying from cash. Payroll now
+  follows that census, so day-15 employment is **1,937** instead of 6,324; machinery factories
+  lose staff on day 9 while holding about 4,500 cash each, because no operation size can be
+  financed. The benchmark therefore measures a smaller workforce after day 8, and its timings
+  are not comparable to earlier records.
+- **Timing** (HEAD `bdf96e4d` → fix; eight alternating runs each, same setup as above): hourly
+  5.0559 → 4.8591 ms (−3.89%, p = 0.21, not significant); daily 101.23 → 60.19 ms (−40.54%,
+  p = 0.0002), mostly the smaller workforce and the removed churn rather than cheaper payroll.
+  The payroll phase itself is 0.13/0.29/1.16 → 0.09–0.10/0.19–0.21/0.93–1.02 ms at 1k/8k/64k
+  workers, because it no longer refreshes the activity floor; funded staffing is unchanged.
+  Drivers, logs and executables are in `rust/target/econ17/` (`full-checks.py`, `perf.py`,
+  `perf/`, `dbg15-*.log`).
 
 The following full-suite/timing figures describe the preceding consumer/freight-route build.
 
@@ -4366,7 +4398,7 @@ commits now preflight fragmentation exactly, and queued/cyclic replacement reloa
 (correctness follow-up above). The performance follow-up
 above attributes and reduces the hourly gap, explains the queue check and bounds cascade
 combinations. Remaining work includes populated execution/scaling, profitability-failing
-cascade depth and `ECON-17`. The original handoff below preserves the full scope and
+cascade depth; `ECON-17` is fixed. The original handoff below preserves the full scope and
 starting evidence; its statements about unwired call sites describe that earlier build.
 
 **The overall goal is unfinished. `DEM-02` remains `in_progress`.** The user requested this

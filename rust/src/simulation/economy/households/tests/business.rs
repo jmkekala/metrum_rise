@@ -534,7 +534,7 @@ fn service_store_active_worker_slots_scale_from_aggregate_demand() {
 }
 
 #[test]
-fn service_store_wage_pass_sheds_workers_above_active_demand_capacity() {
+fn service_store_wage_pass_sheds_workers_above_funded_capacity() {
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
     let personal_service_profile = catalog
         .profile_for_id("personal_service_small")
@@ -582,6 +582,7 @@ fn service_store_wage_pass_sheds_workers_above_active_demand_capacity() {
         agents.assign_work_building(agent, 1, 0);
     }
 
+    households.job_funding.capacities = vec![0, 1];
     let mut treasury_balance = 0.0;
     households.pay_daily_wages(&mut agents, &mut allocator, 0.0, &mut treasury_balance);
 
@@ -638,6 +639,7 @@ fn service_store_fake_inventory_cannot_liquidate_for_payroll() {
     agents.current_building[agent] = 0;
     agents.assign_work_building(agent, 1, 0);
 
+    households.job_funding.capacities = vec![0, 1];
     let mut treasury_balance = 0.0;
     households.pay_daily_wages(&mut agents, &mut allocator, 0.0, &mut treasury_balance);
 
@@ -699,6 +701,7 @@ fn explicit_work_area_wages_keep_funded_workers_and_release_them_when_area_shrin
         workers.push(agent);
     }
 
+    households.job_funding.capacities = vec![0, 8];
     let mut treasury_balance = 0.0;
     households.pay_daily_wages(&mut agents, &mut allocator, 0.0, &mut treasury_balance);
 
@@ -1372,6 +1375,7 @@ fn city_service_wages_debit_treasury_not_building_budget() {
     agents.household_id[water_worker] = 0;
     agents.assign_work_building(water_worker, 2, 0);
 
+    households.job_funding.capacities = vec![0, 1, 1];
     let mut treasury_balance = 1_000.0;
     let wage = power_profile.average_daily_wage() + water_profile.average_daily_wage();
     let income_tax =

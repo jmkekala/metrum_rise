@@ -1269,17 +1269,17 @@ fn benchmark_payroll_phase() {
             agents.assign_work_building(agent, work, 0);
             allocator.buildings[work].worker_count += 1;
         }
+        households.job_funding.capacities = allocator.buildings.iter()
+            .map(|building| building.worker_count).collect();
         let logistics = ShipmentSystem::new();
         let mut treasury = 0.0;
         let mut phase = || {
-            black_box(households.pay_daily_wages_with_service_funding(
+            black_box(households.pay_funded_daily_wages(
                 &mut agents,
                 &mut allocator,
                 0.12,
                 &mut treasury,
-                &[],
                 &logistics,
-                true,
             ));
             households.sync_agent_money_from_households(&mut agents);
         };
@@ -1658,6 +1658,49 @@ fn deserted_employer_is_ejected_before_wages() {
 }
 
 #[test]
+fn payroll_keeps_funded_store_workers_without_city_sales_activity() {
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let grocery = catalog.profile_for_id("grocery_basic").unwrap();
+    let staff = grocery.worker_capacity;
+    let daily_payroll = grocery.average_daily_wage() * staff as f32;
+    assert!(staff > 1);
+
+    let mut households = HouseholdSystem::new();
+    households.households.push(make_household(0, staff as u16, 0.0, 0.0));
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset =
+        register_test_asset(&mut allocator, "test", "funded_store_res", ZoneClass::Residential);
+    let commercial_asset =
+        register_test_asset(&mut allocator, "test", "funded_store_com", ZoneClass::Commercial);
+    allocator.buildings.push(make_building(0.0, ZoneType::Residential, &residential_asset, 0.0));
+    allocator.buildings.push(make_building(20.0, ZoneType::Commercial, &commercial_asset, 0.0));
+    allocator.buildings[1].worker_count = staff;
+    allocator.buildings[1].operating_budget = daily_payroll * 3.0;
+
+    let mut agents = AgentSystem::new();
+    for _ in 0..staff {
+        let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
+        agents.household_id[agent] = 0;
+        agents.transit[agent] = TRANSIT_IN_BUILDING;
+        agents.current_building[agent] = 0;
+        agents.assign_work_building(agent, 1, 0);
+    }
+    // Hiring funded the whole store. No household has bought anything, so the citywide
+    // sales activity alone would justify one worker.
+    households.job_funding.capacities = vec![0, staff];
+
+    let mut treasury_balance = 0.0;
+    for day in 1..=3 {
+        households.pay_daily_wages(&mut agents, &mut allocator, 0.0, &mut treasury_balance);
+        assert_eq!(allocator.buildings[1].worker_count, staff);
+        assert!((0..agents.len()).all(|agent| agents.work_building[agent] == 1
+            && agents.consecutive_unpaid_days[agent] == 0));
+        assert!((households.households[0].budget - daily_payroll * day as f32).abs() < 0.01);
+    }
+    assert!(allocator.buildings[1].operating_budget.abs() < 0.01);
+}
+
+#[test]
 fn insolvent_self_fire_decrements_worker_count() {
     let mut households = HouseholdSystem::new();
     households.households.push(make_household(0, 1, 0.0, 0.0));
@@ -1698,6 +1741,7 @@ fn insolvent_self_fire_decrements_worker_count() {
     agents.assign_work_building(agent, 1, 0);
     agents.consecutive_unpaid_days[agent] = 1;
 
+    households.job_funding.capacities = vec![0, 1];
     let mut treasury_balance = 0.0;
     households.pay_daily_wages(&mut agents, &mut allocator, 0.0, &mut treasury_balance);
 
@@ -1757,6 +1801,7 @@ fn wage_payment_liquidates_output_inventory_before_unpaid() {
     agents.current_building[agent] = 0;
     agents.assign_work_building(agent, 1, 0);
 
+    households.job_funding.capacities = vec![0, 1];
     let mut treasury_balance = 0.0;
     households.pay_daily_wages(&mut agents, &mut allocator, 0.0, &mut treasury_balance);
 
