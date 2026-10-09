@@ -17,6 +17,29 @@ pub(crate) struct OperationPlan {
     pub area: f32,
 }
 
+impl OperationPlan {
+    /// Recipe scale: clamped activity times the sanitized explicit work area, if any.
+    pub(crate) fn production(self, profile: &EconomyProfileRuntime) -> f32 {
+        let area =
+            if crate::simulation::work_area::profile_kind_uses_explicit_work_area(profile.kind) {
+                crate::simulation::work_area::sanitize_work_area_scale(self.area)
+            } else {
+                1.0
+            };
+        self.activity.clamp(0.0, 1.0) * area
+    }
+}
+
+/// Recurring purchased units of one recipe input at a production scale. Internally produced
+/// units are excluded; customer bounds reuse this exact arithmetic.
+pub(crate) fn purchased_input_units(profile: &EconomyProfileRuntime,
+    input: &RuntimeResourcePort, production: f32) -> f32 {
+    let internal = profile
+        .output_port(input.resource_runtime_id)
+        .map_or(0.0, |output| output.units_per_day);
+    (input.units_per_day - internal).max(0.0) * production
+}
+
 /// Site-specific prices, taxes and carrier quotes supplied by the caller.
 #[derive(Clone, Copy)]
 pub(crate) struct OperationPrices {
@@ -213,13 +236,7 @@ impl OperatingCosts {
         mut input_quote: impl FnMut(InputRequirement) -> InputSupplyCosts,
     ) -> Self {
         let activity = plan.activity.clamp(0.0, 1.0);
-        let area =
-            if crate::simulation::work_area::profile_kind_uses_explicit_work_area(profile.kind) {
-                crate::simulation::work_area::sanitize_work_area_scale(plan.area)
-            } else {
-                1.0
-            };
-        let production = activity * area;
+        let production = plan.production(profile);
         let demand = profile.utility_demand_units_per_day(plan.area);
         let electricity = profile.electricity_demand_kwh_per_day(plan.area, activity, 0);
         let mut costs = Self {
@@ -231,10 +248,7 @@ impl OperatingCosts {
             ..Default::default()
         };
         for input in &profile.inputs {
-            let internal = profile
-                .output_port(input.resource_runtime_id)
-                .map_or(0.0, |output| output.units_per_day);
-            let daily_units = (input.units_per_day - internal).max(0.0) * production;
+            let daily_units = purchased_input_units(profile, input, production);
             let (target, reorder, _) = profile.input_inventory_targets(input, production);
             let quote = input_quote(InputRequirement {
                 resource: input.resource_runtime_id,

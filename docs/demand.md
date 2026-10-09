@@ -3149,7 +3149,8 @@ now use reusable owner chains; repeated accepted replacement does not append obs
 history. An owner-local quantity read supplies the household share needed by future output
 publication. Preparation is O(household accounts + owners + receipt capacity); a proof's work
 and rollback follow affected accounts/receipts and their bucket updates, without a city scan
-per replacement. General receipt-capacity preflight/retry under fragmentation remains open.
+per replacement. General receipt-capacity preflight/retry under fragmentation remained open here;
+the later receipt-capacity change and the 2026-10-09 census preflight below close it.
 The new regression covers 128 rejected multi-owner transactions, 128 accepted replacements,
 recycled links, journal-generation wrap, unchanged capacities and exact original numeric bits.
 The directed router regression also checks multi-owner rejection and restored mode eligibility.
@@ -4116,10 +4117,82 @@ The freshly compiled fixture baseline is archived as
 `rust/target/goal-evidence/metrum-dem02-component-cascade-baseline-tests.gz`, decompressed
 SHA-256 `776cb6131de21aca1ffbe19b39e3e23572d8b7e4430334070fbd48918dfb27c2`.
 Its fixture/test/timing artifacts use `/tmp/metrum-dem02-component-cascade-baseline-`.
-Positive partial-activity cascades remain outside this absence proof.
+Positive partial-activity cascades remained outside this absence proof; the follow-up below adds them.
 
-Interdependent queued/cyclic replacement reloads, broader populated execution/scaling, worst-case financing
-cascades and full performance acceptance remain open. DEM-02 is not complete.
+The **correctness follow-up (2026-10-09)** closes three open items.
+
+- **Positive partial-activity cascades.** The component buckets that count possible buyers now
+  also hold a freshly recounted upper bound on their staffed purchases. Each counted buyer's
+  bound replays the joint proof's f32 arithmetic at the largest activity any later pass can
+  reach: the top plan of `funded_private_operation`, or its closure limit for household sellers,
+  whose quotas can grow when a rival fails. A seller that serves only businesses then has its
+  activity and worker ceiling capped by that total, with the joint proof's own demand-activity
+  formula, and the cap travels up the chain in rounds within the same retry. Totals are summed
+  fresh, never decremented, and stay stale-high until recounted; several buyers or partial
+  staffing add a few ulps of slack, so a bound can only be loose and ordinary closure still
+  corrects it. Counts and bounds never accept a purchase: directed routes, prices and complete
+  joint financing still govern publication. `OperationPlan::production` and
+  `purchased_input_units` now share that arithmetic with the operating-cost quote. Per retry, the
+  work is O(staffed input buyers × ports) seed checks plus, per round, O(stale component
+  membership + visited source ports × log components); scratch is retained and no spatial index
+  is added. A regression where the end customer's income makes every link of a 2/8/32 chain
+  partly active (0.81/0.96/0.99), then fails and recovers, matches full replay bit for bit for
+  capacities, recipe activity, financing, deliveries and household accounts. It needs at most
+  three censuses, where replay needs one per link (32 at length 32).
+- **Census receipt fragmentation.** Live census commits of physical inputs and household
+  customers now preflight reusable cells (`accept_growing_for`) and grow the retained arena
+  exactly when needed, as project and replacement commits already did. The reset estimates
+  are now only a warm start. That matters because a released and requoted expansion can hold
+  up to twice the input ports plus output slots, which exceeds the input-book estimate when
+  input ports outnumber output slots. A regression starts every census of the varied mixed
+  market from empty arenas and matches the normally prepared run exactly; disabling either
+  preflight trips the existing capacity assert.
+- **Queued and cyclic replacement reloads.** A SimCore regression upgrades a live food
+  processor while three groceries are queued against its packaged food. It saves and reloads
+  before the replacement and before each queue minute, then compares every building, budget,
+  construction timer, worker count and treasury value with the uninterrupted run. It also
+  compares every still-queued grocery's rebuilt proof: workers, financing bits and each input
+  source/quantity/price receipt. The first grocery buys from the replaced processor; the later
+  groceries are unsupported once it holds the shared customers, identically in both runs.
+  Loading rebinds buildings to the embedded default catalog, which has no cross-firm cycle, so
+  the cyclic case is covered where reload actually rebuilds it: the cyclic replacement
+  regression now replays its accepted replacement cold from the saved allocator, zoning and
+  shipments. It matches the warm execution, which first failed on blocked terrain, in buildings,
+  budgets, construction, both financing accounts and both cyclic sales.
+
+Fresh release validation of these changes passes **2,283 library tests** (108 ignored, no
+failures) and **all three growth integrations**. All five year, two-year, expansion, recovery
+and saved-town reports are byte-identical to the component-cascade build; the saved town still
+ends at 80 residents, and no source identity changed during the run. A field comment and the
+ignored benchmark below were added after that run. Artifacts use
+`/tmp/metrum-dem02-step1-final-full-`.
+
+Matched sequential unprofiled release timing compares HEAD `874ec0f5` (a detached worktree with
+only the new ignored benchmark appended) against the working tree, with eight Rayon workers,
+CPUs 0,2,4,6,8,10,12,14 and both run orders. Warm medians (forward/reverse):
+
+- **Partial cascade, length 32 with 16,384 background buildings:** **13.734 / 15.050 → 1.035 /
+  1.102 ms**.
+- **Partial cascade, length 8 without background:** **0.236 / 0.314 → 0.073 / 0.084 ms**.
+- **Zero-customer and disconnected cascades:** unchanged.
+- **Mixed market at 1,024 districts:** **24.759 / 24.863 → 12.146 / 12.447 ms**, because the
+  partial limits remove one of its three censuses.
+
+Whole-economy 10k timing keeps identical economic records in every run. The first forward
+hourly comparison detects **5.5358 → 6.2476 ms (+12.9%, p < 0.05)**. The reversed order
+(5.3234 baseline / 5.4632 ms current, p = 0.32) and three repeated orders (+4.2%, −3.5% and
++6.8%, p = 0.10–0.13) detect no significant change, and daily never changes significantly
+(about 99–103 ms). The hourly regression is therefore not reproduced, but it is not excluded
+either. Drivers, identities and logs use `/tmp/metrum-dem02-step1-final-` and
+`/tmp/metrum-dem02-step1-final-repeat-`. The timed executables are archived as
+`rust/target/goal-evidence/metrum-dem02-step1-final-{tests,bench,baseline-tests,baseline-bench}.gz`,
+decompressed SHA-256 `c303e3816cda8c0fbd3bae5caa46840e65db2e887690c02b5832418f2aa2afb0`,
+`947395f3172ea611a22ee5977e1b24b11e8ff9a9a217deae202d34c17bd50cee`,
+`f24d5bbbfcee130acd046e97ff2d3fd52027b6b46263ce43c39bb834d42af18c` and
+`8516e695db6f3b103d35f4bd92d69d318a39a2104d45490d7edfd5dd1068acb0`.
+
+Broader populated execution/scaling, worst-case financing cascades, the hourly concern and full
+performance acceptance remain open. DEM-02 is not complete.
 
 The following full-suite/timing figures describe the preceding consumer/freight-route build.
 
@@ -4170,8 +4243,8 @@ reports remain unchanged; whole-economy timing detects no significant change, an
 largest mixed-market penalty no longer appears. The subsequent projected-supplier removal
 fix validates retained handles before reading variant owners; fresh broad checks and timing
 retain those outcomes. The tested per-buyer supplier cache was removed without a whole-economy
-gain. Disconnected chains now use component-local buyer tallies (final checks above); positive
-partial-activity cascades still need further work. The nine methods behind the remaining
+gain. Disconnected chains now use component-local buyer tallies, and positive partial-activity
+cascades propagate recounted purchase bounds (final checks above). The nine methods behind the remaining
 unused-method warnings are not unwired runtime paths: three global `has_offers` probes are
 replaced by per-recipe `offers_inputs`; `BusinessBudgets::claim`/`accept_for` and
 `BusinessMarket::accept_for` by `claim_opportunity`, `try_extend_for` and `commit_joint_for`;
@@ -4183,8 +4256,9 @@ Every business claim now debits only nonnegative price deltas (actual savings en
 repricing), so no offer can repair an infeasible buyer and the repair loop and its release-time
 exemption are gone. The previously known utility-machinery failure (540 versus 96) was a
 stale test expectation from the retired 1,200 MJ / 96 coal recipe; 1,200 of the current
-24,000 daily kWh burns 540 of 10,800 kg, and the fixture now expects that. Remaining work includes
-interdependent queued/cyclic replacement reloads,
+24,000 daily kWh burns 540 of 10,800 kg, and the fixture now expects that. Census receipt
+commits now preflight fragmentation exactly, and queued/cyclic replacement reloads are covered
+(correctness follow-up above). Remaining work includes
 populated execution/scaling, broader financing cascade cost and the unresolved
 hourly/queue performance regressions. The original handoff below preserves the full scope and
 starting evidence; its statements about unwired call sites describe that earlier build.

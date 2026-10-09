@@ -863,6 +863,8 @@ fn cyclic_replacement_preserves_both_financing_proofs_and_exact_rejection() {
             let cash: Vec<_> = allocator.buildings.iter().map(|building| building.operating_budget.to_bits()).collect();
             let mut agents = crate::simulation::economy::agents::AgentSystem::new();
             let mut households = HouseholdSystem::new();
+            // Persisted inputs as a save would hold them before either execution attempt.
+            let mut cold = (allocator.clone(), zoning.clone(), logistics.clone());
             for ground in [&blocked, &terrain] {
                 demand.execute_building_actions(&plan, &mut allocator, &mut zoning, &mut agents,
                     &mut households, &mut logistics, &mut 0.0, &graph, &network, ground, 420, &policy);
@@ -873,6 +875,23 @@ fn cyclic_replacement_preserves_both_financing_proofs_and_exact_rejection() {
                     if placed { 200.0 * price } else { 2_400.0 });
                 assert_eq!(demand.construction_execution.reservations.business.sales(1 - owner, food, 200.0).revenue, 600.0);
             }
+            // Reload rebuilds every derived book cold. The rejected attempt restored the saved
+            // state exactly, so a cold replay of the cyclic replacement must match bit for bit.
+            let mut reloaded = DemandSystem::new();
+            reloaded.runtime_catalog = demand.runtime_catalog.clone();
+            reloaded.runtime_tuning = demand.runtime_tuning.clone();
+            reloaded.execute_building_actions(&plan, &mut cold.0, &mut cold.1,
+                &mut crate::simulation::economy::agents::AgentSystem::new(), &mut HouseholdSystem::new(),
+                &mut cold.2, &mut 0.0, &graph, &network, &terrain, 420, &policy);
+            let books = |demand: &DemandSystem, allocator: &BuildingAllocator| (
+                allocator.buildings.iter().map(|building| (building.asset_id.clone(),
+                    building.operating_budget.to_bits(), building.construction_remaining_hours)).collect::<Vec<_>>(),
+                [0, 1].map(|index| demand.construction_execution.reservations.business.financing(index).map(f64::to_bits)),
+                [demand.construction_execution.reservations.business.sales(owner, grain, 200.0),
+                    demand.construction_execution.reservations.business.sales(1 - owner, food, 200.0)]
+                    .map(|sales| (sales.units.to_bits(), sales.revenue.to_bits())));
+            assert_eq!(books(&reloaded, &cold.0), books(&demand, &allocator),
+                "cold cyclic replacement must match warm execution, price={price}, reverse={reverse}");
         }
     }
 }

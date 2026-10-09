@@ -488,6 +488,53 @@ fn downstream_income_withdrawal_and_recovery_revalidate_the_complete_supplier_ch
     }
 }
 
+#[test]
+fn partial_downstream_income_caps_the_supplier_chain_without_a_census_per_link() {
+    let mut tuning = (*load_runtime_economy_tuning().unwrap()).clone();
+    tuning.owa_import_price_multiplier = 10.0;
+    tuning.owa_export_price_multiplier = 0.0;
+    // Incomes at which the end operation sells part of its output, then fails after its
+    // partial sales have already capped the chain (end price scales with chain length).
+    for (length, partial, failing) in [(2, 7_750.0, 7_500.0), (8, 11_250.0, 10_500.0),
+        (32, 25_000.0, 24_500.0)] {
+        let mut market = financing_chain(length, 0);
+        let mut replay = financing_chain(length, 0);
+        replay.funding.disable_customer_cascade();
+        for income in [1_000_000.0, partial, failing, partial, 1_000_000.0] {
+            market.families[0].gross_daily_wages = income;
+            market.families[0].budget = income;
+            replay.families[0] = market.families[0].clone();
+            market.refresh(&tuning);
+            replay.refresh(&tuning);
+            assert!(market.funding.closure_passes <= 3,
+                "positive customer limits must not replay the census for each supplier link");
+            if income == partial {
+                assert!(replay.funding.closure_passes >= length, "fixture must exercise the cascade");
+            }
+            assert_eq!(market.funding.capacities, replay.funding.capacities);
+            market.funding.customers.assert_same_accounts_for_test(&replay.funding.customers);
+            for source in 0..length {
+                let building = &market.allocator.buildings[source];
+                let profile = market.catalog.profile_by_runtime_id(building.economy_profile_runtime_id).unwrap();
+                assert_eq!(market.funding.input_demand_scale(source, building, profile, false).to_bits(),
+                    replay.funding.input_demand_scale(source, building, profile, false).to_bits());
+                assert_eq!(market.funding.business.financing(source).map(f64::to_bits),
+                    replay.funding.business.financing(source).map(f64::to_bits));
+                let [mut deliveries, mut expected] = [Vec::new(), Vec::new()];
+                market.funding.input_supply.visit_dependents(source, |buyer, _, units|
+                    deliveries.push((buyer, units.to_bits())));
+                replay.funding.input_supply.visit_dependents(source, |buyer, _, units|
+                    expected.push((buyer, units.to_bits())));
+                assert_eq!(deliveries, expected, "source={source}, length={length}, income={income}");
+                if income == partial {
+                    let activity = market.funding.input_demand_scale(source, building, profile, false);
+                    assert!(activity > 0.0 && activity < 1.0, "length={length}, activity={activity}");
+                }
+            }
+        }
+    }
+}
+
 fn with_disconnected_customer_chain(mut market: MarketFixture, length: usize) -> MarketFixture {
     let first = market.allocator.buildings.len();
     let a = market.graph.add_node(Vector3::new(2_000.0, 0.0, 0.0), NodeType::Border);
@@ -565,6 +612,26 @@ fn zero_customer_propagation_matches_full_replay_in_varied_markets() {
 }
 
 #[test]
+fn census_receipt_commits_grow_exactly_from_empty_arenas() {
+    let mut tuning = (*load_runtime_economy_tuning().unwrap()).clone();
+    tuning.owa_export_price_multiplier = 0.0;
+    let mut market = MarketFixture::new(&[0, 1, 2, 3]);
+    let mut reference = MarketFixture::new(&[0, 1, 2, 3]);
+    market.funding.input_supply.discard_receipt_estimate = true;
+    market.funding.customers.discard_receipt_estimate_for_test();
+    // Released expansions and withdrawn/recovered suppliers fragment both receipt arenas.
+    for cash in [100_000.0, 0.0, 100_000.0, 0.0] {
+        for fixture in [&mut market, &mut reference] {
+            fixture.allocator.buildings[HOMES + 1].operating_budget = cash;
+            fixture.refresh(&tuning);
+        }
+        market.assert_same_funding(&reference);
+        assert!(market.funding.input_supply.receipt_storage().0 > 0);
+        assert!(market.funding.customers.receipt_capacity_for_test() > 0);
+    }
+}
+
+#[test]
 #[ignore = "manual release financing-cascade depth/background scaling; setup excluded"]
 fn benchmark_financing_cascade_depth() {
     benchmark_chain_cases(false);
@@ -604,5 +671,39 @@ fn benchmark_chain_cases(disconnected: bool) {
         }
         samples.sort_by(f64::total_cmp);
         eprintln!("financing_cascade length={length} background={background} disconnected={disconnected} setup_ms={setup_ms:.3} cold_ms={cold_ms:.3} warm_median_ms={:.3} warm_max_ms={:.3} passes={passes:?}", samples[7], samples[14]);
+    }
+}
+
+
+
+#[test]
+#[ignore = "manual release partial financing-cascade depth/background scaling; setup excluded"]
+fn benchmark_partial_financing_cascade_depth() {
+    use std::time::Instant;
+    let mut tuning = (*load_runtime_economy_tuning().unwrap()).clone();
+    tuning.owa_import_price_multiplier = 10.0;
+    tuning.owa_export_price_multiplier = 0.0;
+    // Partial end-customer incomes from the replay regression; every link stays partly active.
+    for (length, income, background) in [(8, 11_250.0, 0), (32, 25_000.0, 0),
+        (8, 11_250.0, 16_384), (32, 25_000.0, 16_384)] {
+        let setup = Instant::now();
+        let mut market = financing_chain(length, background);
+        market.families[0].gross_daily_wages = income;
+        market.families[0].budget = income;
+        let setup_ms = setup.elapsed().as_secs_f64() * 1_000.0;
+        let cold = Instant::now();
+        market.refresh(&tuning);
+        let cold_ms = cold.elapsed().as_secs_f64() * 1_000.0;
+        let mut samples = [0.0_f64; 15];
+        let mut passes = [0; 15];
+        for round in 0..18 {
+            let start = Instant::now();
+            market.refresh(&tuning);
+            let elapsed = start.elapsed().as_secs_f64() * 1_000.0;
+            if round >= 3 { samples[round - 3] = elapsed; passes[round - 3] = market.funding.closure_passes; }
+            assert!(market.funding.capacities[..length].iter().all(|&workers| workers == 1));
+        }
+        samples.sort_by(f64::total_cmp);
+        eprintln!("partial_financing_cascade length={length} background={background} setup_ms={setup_ms:.3} cold_ms={cold_ms:.3} warm_median_ms={:.3} warm_max_ms={:.3} passes={passes:?}", samples[7], samples[14]);
     }
 }

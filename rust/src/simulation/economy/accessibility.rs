@@ -74,6 +74,9 @@ struct ComponentBuckets {
     available: usize,
     // Independent membership census; financial availability changes do not reset it.
     counted: usize,
+    // Freshly summed upper bound carried by counted members; stale-high until recounted.
+    counted_units: f64,
+    units_dirty: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -208,6 +211,8 @@ impl ReachableBucketIndex {
                     max_chunk: entry.chunk,
                     available: 0,
                     counted: 0,
+                    counted_units: 0.0,
+                    units_dirty: false,
                 });
                 index
             });
@@ -242,14 +247,49 @@ impl ReachableBucketIndex {
         }
     }
 
-    /// Counts an independent subset over existing membership in O(indexed entries).
-    /// Reservation updates preserve these counts until the caller starts another census.
-    pub(crate) fn reset_member_counts(&mut self, counted: impl Fn(usize) -> bool) {
-        for component in &mut self.components { component.counted = 0; }
-        for bucket in &self.buckets {
-            self.components[bucket.component].counted += bucket.items.iter()
-                .filter(|&&item| counted(item)).count();
+    /// Counts an independent subset over existing membership in O(indexed entries), with
+    /// each counted member's units. Reservation updates preserve these counts until the
+    /// caller starts another census.
+    pub(crate) fn reset_member_counts(&mut self, counted: impl Fn(usize) -> Option<f64>) {
+        for component in &mut self.components {
+            component.counted = 0;
+            component.counted_units = 0.0;
+            component.units_dirty = false;
         }
+        // Bucket order is component/chunk order, matching `recount_member_units`.
+        for bucket in &self.buckets {
+            let component = &mut self.components[bucket.component];
+            for units in bucket.items.iter().filter_map(|&item| counted(item)) {
+                component.counted += 1;
+                component.counted_units += units;
+            }
+        }
+    }
+
+    /// Marks one component's unit total stale in O(log components); true when newly marked.
+    pub(crate) fn mark_member_units(&mut self, component: u32) -> bool {
+        let Some(&component) = self.by_component.get(&component) else { return false; };
+        !std::mem::replace(&mut self.components[component].units_dirty, true)
+    }
+
+    /// Replaces one component's unit total with a fresh ordered sum, never an incremental
+    /// difference. O(log components + component chunks + component entries), no allocation.
+    pub(crate) fn recount_member_units(&mut self, component: u32,
+        counted: impl Fn(usize) -> Option<f64>) {
+        let Some(&component) = self.by_component.get(&component) else { return; };
+        let mut total = 0.0;
+        for &bucket in self.components[component].by_chunk.values() {
+            total += self.buckets[bucket].items.iter().filter_map(|&item| counted(item)).sum::<f64>();
+        }
+        self.components[component].counted_units = total;
+        self.components[component].units_dirty = false;
+    }
+
+    /// Counted members and their units in either entrance component, in O(log components).
+    pub(crate) fn counted_units(&self, components: BuildingModeComponents) -> (usize, f64) {
+        components.as_slice().iter().filter_map(|component| self.by_component.get(component))
+            .fold((0, 0.0), |(count, units), &component| (count + self.components[component].counted,
+                units + self.components[component].counted_units))
     }
 
     /// Removes one previously counted membership in O(log components), returning true
@@ -634,8 +674,14 @@ mod reservation_tests {
         index.enable_reservations();
         let mut a = BuildingModeComponents::default(); a.push(0);
         let mut b = BuildingModeComponents::default(); b.push(1);
-        index.reset_member_counts(|item| item < 2);
+        index.reset_member_counts(|item| (item < 2).then_some(item as f64 + 0.5));
         assert!(index.has_counted_members(a) && index.has_counted_members(b));
+        assert_eq!((index.counted_units(a), index.counted_units(b)), ((2, 2.0), (1, 1.5)));
+        // Totals stay stale-high until an explicit fresh recount.
+        assert!(index.mark_member_units(0) && !index.mark_member_units(0));
+        index.recount_member_units(0, |item| (item == 1).then_some(0.25));
+        assert_eq!(index.counted_units(a), (2, 0.25));
+        assert!(index.mark_member_units(0));
         assert!(!index.remove_counted_member(0));
         assert!(index.remove_counted_member(0));
         assert!(!index.has_counted_members(a) && index.has_counted_members(b));
@@ -646,8 +692,9 @@ mod reservation_tests {
         index.visit_component_members(1, |item| members.push(item));
         assert_eq!(members, [1, 2]);
         assert!(index.remove_counted_member(1));
-        index.reset_member_counts(|item| item == 2);
+        index.reset_member_counts(|item| (item == 2).then_some(3.0));
         assert!(!index.has_counted_members(a) && index.has_counted_members(b));
+        assert_eq!(index.counted_units(b), (1, 3.0));
     }
 
     #[test]

@@ -312,9 +312,11 @@ impl BusinessMarket {
         (self.identities.len(), self.index_builds)
     }
 
-    /// Counts potential input buyers within existing freight components. This independent
-    /// O(indexed input membership) census survives ordinary finance-account resets.
-    pub(crate) fn prepare_possible_buyers(&mut self, possible: impl Fn(usize, u16) -> bool + Sync) {
+    /// Counts potential input buyers and their maximum purchased units within existing freight
+    /// components. This independent O(indexed input membership) census survives ordinary
+    /// finance-account resets.
+    pub(crate) fn prepare_possible_buyers(&mut self,
+        possible: impl Fn(usize, u16) -> Option<f64> + Sync) {
         let identities = &self.identities;
         self.indices.par_iter_mut().for_each(|index| index.reset_member_counts(|port| {
             let (owner, resource) = identities[port];
@@ -337,6 +339,32 @@ impl BusinessMarket {
     /// Positive counts cannot establish directed reachability, purchases or financing.
     pub(crate) fn has_possible_buyers(&self, seller: usize, resource: u16) -> bool {
         self.indices[resource as usize].has_counted_members(self.access[seller].components)
+    }
+
+    /// Marks a counted input's unit totals stale, visiting each newly marked component.
+    /// O(authored input ports + log components), with no route query or allocation.
+    pub(crate) fn mark_possible_input(&mut self, buyer: usize, resource: u16,
+        mut marked: impl FnMut(u32)) {
+        let Some(port) = self.buyer_ports[buyer].clone()
+            .find(|&port| self.identities[port].1 == resource) else { return; };
+        for &component in self.port_access[port].components.as_slice() {
+            if self.indices[resource as usize].mark_member_units(component) { marked(component); }
+        }
+    }
+
+    /// Freshly sums counted buyers' maximum units in one resource/component, in
+    /// O(log components + component membership).
+    pub(crate) fn recount_possible_input(&mut self, resource: u16, component: u32,
+        units: impl Fn(usize) -> Option<f64>) {
+        let identities = &self.identities;
+        self.indices[resource as usize].recount_member_units(component,
+            |port| units(identities[port].0));
+    }
+
+    /// Counted buyers and an upper bound on their purchases in either seller entrance
+    /// component, in O(log components). A buyer reachable through both may count twice.
+    pub(crate) fn possible_demand(&self, seller: usize, resource: u16) -> (usize, f64) {
+        self.indices[resource as usize].counted_units(self.access[seller].components)
     }
 
     /// Account count and retained arena/mapping capacities for replacement scaling checks.

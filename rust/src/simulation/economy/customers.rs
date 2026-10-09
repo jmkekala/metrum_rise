@@ -57,6 +57,8 @@ pub(crate) struct ConsumerBudgets {
     releasing_owner: Option<usize>,
     affordable_residents: f64,
     revalidation: revalidation::Revalidation,
+    #[cfg(test)]
+    discard_receipt_estimate: bool,
 }
 
 impl ConsumerBudgets {
@@ -225,8 +227,14 @@ impl ConsumerBudgets {
 
     fn prepare_owners(&mut self, owners: usize, output_ports: usize) {
         self.owners.resize(owners, usize::MAX);
-        // Initial reservation estimate; replaced owners recycle their previous cells.
-        // General multi-owner fragmentation still needs capacity preparation between proofs.
+        // Warm-start estimate only. Every commit preflights reusable cells: census commits
+        // grow exactly, and enclosing proofs grow between attempts and replay.
+        #[cfg(test)]
+        if self.discard_receipt_estimate {
+            // Retained census claims stay intact; only spare cells are dropped.
+            self.committed.shrink_to_fit();
+            return;
+        }
         self.committed
             .reserve(2 * (self.funds.len() + output_ports));
     }

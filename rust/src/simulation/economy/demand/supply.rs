@@ -121,6 +121,27 @@ impl ProjectReservations {
         self.operations.get(self.owner_base + index).copied().flatten()
     }
 
+    /// Prepared project proof for exact reload comparisons: workers, financing headroom bits
+    /// and each recorded input source/quantity/price receipt, in receipt order.
+    #[cfg(test)]
+    pub(super) fn project_proof_for_test(&self, book: &RecurringSupply, parcel: u64,
+        zoning: &ZoningSystem, catalog: &RuntimeEconomyCatalog, tuning: &RuntimeEconomyTuning)
+        -> Option<(u32, [u64; 2], Vec<(u16, Option<usize>, u64, u32, u32)>)> {
+        let operation = self.project_operation(parcel, zoning)?;
+        let owner = self.owner_base + zoning.parcels.storage_index(ParcelId::from_raw(parcel))?;
+        let profile = catalog.profile_by_runtime_id(operation.profile)?;
+        let mut sources = Vec::new();
+        OperatingCosts::for_plan_with_input_quotes(profile, operation.plan, operation.prices,
+            |_, _| 0.0, |input| {
+                book.visit_input_sources(owner, input,
+                    catalog.unit_price_for_resource(input.resource).unwrap_or(0.0) * tuning.owa_import_price_multiplier,
+                    Some(operation.prices.carrier_quote), |source, units, goods, carrier|
+                        sources.push((input.resource, source, units.to_bits(), goods.to_bits(), carrier.to_bits())));
+                Default::default()
+            });
+        Some((operation.plan.workers, operation.headroom.map(f64::to_bits), sources))
+    }
+
     /// Forks both customer books from the same completed live financing proof.
     pub(super) fn reset(&mut self, funding: &crate::simulation::economy::hiring::JobFunding,
         allocator: &BuildingAllocator, catalog: &RuntimeEconomyCatalog, tuning: &RuntimeEconomyTuning,

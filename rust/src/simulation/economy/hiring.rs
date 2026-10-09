@@ -48,8 +48,8 @@ pub(crate) struct JobFunding {
     closure_ceilings: Vec<u32>,
     // Joint customer limits retain fractional production independently of rounded payroll.
     closure_activity: Vec<f32>,
-    // Necessary customer upper bounds propagate complete buyer withdrawal without a
-    // fresh city-wide quotation for every preceding link in a supplier chain.
+    // Necessary customer upper bounds propagate complete buyer withdrawal and partial
+    // purchase limits without a fresh city-wide quotation for every supplier-chain link.
     potential_customers: closure::PotentialCustomers,
     offered_activity: Vec<f32>,
     // A physical repair touches only buyers of withdrawn provisional production.
@@ -961,7 +961,7 @@ fn reserve_service_inputs(
             return 0.0;
         };
         if costs.inputs.is_finite() && costs.freight.is_finite() {
-            supply.supply.accept_for(supply.buyer);
+            supply.supply.accept_growing_for(supply.buyer);
             return workers as f32 / physical.max(1) as f32;
         }
     }
@@ -1141,7 +1141,7 @@ fn funded_private_operation(
             *headroom = [f64::from(revenue) - f64::from(costs.total()),
                 capital - f64::from(costs.working_capital)];
             if let Some(context) = supply.as_mut() {
-                context.supply.accept_for(context.buyer);
+                context.supply.accept_growing_for(context.buyer);
             }
             return (workers, activity);
         }

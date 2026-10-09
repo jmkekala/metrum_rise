@@ -303,6 +303,22 @@ impl ConsumerMarket {
         self.budgets.accept_for(owner);
     }
 
+    /// Census commit outside any revalidation transaction: preflights reusable cells and grows
+    /// the retained arena exactly when the census estimate is short. O(staged claims + reusable
+    /// cells); warm censuses keep the grown capacity and do not allocate.
+    pub(crate) fn accept_growing_for(&mut self, owner: usize) {
+        if let Err(required) = self.budgets.check_accept_capacity(owner) {
+            self.budgets.reserve_receipts(required);
+        }
+        self.budgets.accept_for(owner);
+    }
+
+    /// Starts every census from an empty receipt arena to exercise exact commit growth.
+    #[cfg(test)]
+    pub(crate) fn discard_receipt_estimate_for_test(&mut self) {
+        self.budgets.discard_receipt_estimate = true;
+    }
+
     /// Preflights exact receipt capacity in O(staged claims + reusable cells), without mutation.
     pub(crate) fn check_accept_capacity(&self, owner: usize) -> Result<(), usize> {
         self.budgets.check_accept_capacity(owner)

@@ -87,6 +87,9 @@ pub(crate) struct RecurringSupply {
     released: Vec<Claim>,
     releasing_owner: Option<usize>,
     receipt_capacity: usize,
+    // Starts every census from an empty arena to exercise exact commit growth.
+    #[cfg(test)]
+    pub(crate) discard_receipt_estimate: bool,
     prices: Vec<(ResourceRuntimeId, f64)>,
     // A staffing search retries one operation against exactly restored quantities.
     // Replay its already-ranked offers instead of repeating spatial/route searches.
@@ -375,7 +378,11 @@ impl RecurringSupply {
         // At most one outstanding claim per eligible output port in an operation quote.
         self.staged.reserve(self.remaining.len());
         self.offers.reserve(self.remaining.len());
-        self.committed.reserve(self.receipt_capacity);
+        // Warm-start estimate only; census commits preflight and grow exactly.
+        let estimate = self.receipt_capacity;
+        #[cfg(test)]
+        let estimate = if self.discard_receipt_estimate { self.committed.shrink_to_fit(); 0 } else { estimate };
+        self.committed.reserve(estimate);
         self.released.reserve(self.remaining.len());
         self.source_receipts.resize(self.remaining.len(), usize::MAX);
         self.source_receipts.fill(usize::MAX);
@@ -601,6 +608,18 @@ impl RecurringSupply {
             self.active[claim.slot] = available;
             self.set_available(claim.source, claim.resource, available, allocator, graph);
         }
+    }
+
+    /// Census commit for an owner quoted outside any revalidation transaction. Released and
+    /// requoted owners can fragment claims beyond the reset estimate (up to twice the input
+    /// ports plus output slots), so preflight reusable cells and grow the retained arena
+    /// exactly before appending. O(staged claims + reusable cells); warm censuses keep the
+    /// grown capacity and do not allocate.
+    pub(crate) fn accept_growing_for(&mut self, owner: usize) {
+        if let Err(required) = self.check_accept_capacity(owner) {
+            self.reserve_receipts(required);
+        }
+        self.accept_for(owner);
     }
 
     /// Records a live owner's accepted input flows for a later replacement quote.

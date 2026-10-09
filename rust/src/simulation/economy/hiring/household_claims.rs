@@ -173,7 +173,7 @@ impl HouseholdQuotes {
             self.requests.truncate(quote.first + quote.ports);
         }
         if !self.replaying {
-            if accepted { customers.accept_for(quote.owner); } else { customers.reject(); }
+            if accepted { customers.accept_growing_for(quote.owner); } else { customers.reject(); }
             self.quotes[self.cursor].accepted = accepted;
         }
         self.cursor += 1;
@@ -196,7 +196,7 @@ impl HouseholdQuotes {
             if !quote.accepted { continue; }
             census.quote(quote.owner, customers, &mut self.scratch[..quote.ports]);
             debug_assert_eq!(&self.scratch[..quote.ports], &self.units[quote.first..quote.first + quote.ports]);
-            customers.accept_for(quote.owner);
+            customers.accept_growing_for(quote.owner);
         }
         self.replaying = false;
         #[cfg(test)]

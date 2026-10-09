@@ -12,7 +12,13 @@ pub(super) struct PotentialCustomers {
     pub(super) counted: Vec<bool>,
     /// Staffed input buyers in stable building order; retries skip homes and other nonbuyers.
     pub(super) owners: Vec<usize>,
+    // Largest activity each counted buyer can still purchase at within this census.
+    activity: Vec<f32>,
     pending: Vec<(u16, u32)>,
+    // Resource/component unit totals marked stale, and the round being recounted.
+    stale: Vec<(u16, u32)>,
+    round: Vec<(u16, u32)>,
+    sources: Vec<usize>,
     prepared: bool,
     /// Retains full-replay behavior for exact comparison tests.
     #[cfg(test)]
@@ -24,24 +30,44 @@ impl PotentialCustomers {
     /// over the existing customer index only when a joint financing proof needs a retry.
     pub(super) fn prepare(&mut self, buildings: usize) {
         self.counted.resize(buildings, false);
+        self.activity.resize(buildings, 0.0);
         self.owners.clear();
         self.pending.clear();
+        self.stale.clear();
         self.prepared = false;
     }
 
-    /// Each input can remove at most two component memberships; prepare outside quotation.
+    /// Each input can remove or mark at most two component memberships; prepare outside
+    /// quotation. Distinct stale totals are bounded by the same membership.
     pub(super) fn reserve_inputs(&mut self, inputs: usize) {
         self.owners.reserve(inputs);
         self.pending.reserve(2 * inputs);
+        self.stale.reserve(2 * inputs);
+        self.round.reserve(2 * inputs);
     }
 
     fn remove(&mut self, owner: usize, profile: &EconomyProfileRuntime,
         business: &mut super::super::customers::business::BusinessMarket) {
         if !std::mem::replace(&mut self.counted[owner], false) { return; }
+        self.activity[owner] = 0.0;
         for input in &profile.inputs {
             if !external_input(profile, input) { continue; }
             business.withdraw_possible_input(owner, input.resource_runtime_id,
                 |component| self.pending.push((input.resource_runtime_id, component)));
+            business.mark_possible_input(owner, input.resource_runtime_id,
+                |component| self.stale.push((input.resource_runtime_id, component)));
+        }
+    }
+
+    // A lower purchasing bound makes this buyer's input totals stale-high until recounted.
+    fn lower(&mut self, owner: usize, activity: f32, profile: &EconomyProfileRuntime,
+        business: &mut super::super::customers::business::BusinessMarket) {
+        if !self.counted[owner] || activity >= self.activity[owner] { return; }
+        self.activity[owner] = activity;
+        for input in &profile.inputs {
+            if !external_input(profile, input) { continue; }
+            business.mark_possible_input(owner, input.resource_runtime_id,
+                |component| self.stale.push((input.resource_runtime_id, component)));
         }
     }
 }
@@ -52,55 +78,176 @@ fn external_input(profile: &EconomyProfileRuntime,
         .map_or(0.0, |output| output.units_per_day)
 }
 
+// Maximum staffed purchase of a counted buyer, replaying the joint proof's f32 arithmetic.
+// Below full staffing, the rounded staffed share of a smaller activity can exceed the bound
+// by a few ulps, so that case carries slack.
+fn possible_input_units(customers: &PotentialCustomers, allocator: &BuildingAllocator,
+    catalog: &RuntimeEconomyCatalog, owner: usize, resource: u16) -> Option<f64> {
+    if !customers.counted[owner] { return None; }
+    let building = &allocator.buildings[owner];
+    let profile = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)?;
+    let input = profile.input_port(resource).filter(|input| external_input(profile, input))?;
+    let activity = customers.activity[owner];
+    if activity <= 0.0 { return Some(0.0); }
+    let production = OperationPlan { workers: 0, activity,
+        area: output_area_scale_for_building(building, profile) }.production(profile);
+    let staffing = building.worker_count as f32
+        / physical_worker_capacity_for_profile(building, profile).max(1) as f32;
+    let units = super::super::operation::purchased_input_units(profile, input, production)
+        * (staffing.min(activity) / activity);
+    Some(f64::from(if staffing < activity { units * (1.0 + 4.0 * f32::EPSILON) } else { units }))
+}
+
 impl JobFunding {
-    /// Propagates only a necessary impossibility: no potential staffed business customer
-    /// remains for any output, and neither households nor exports/public budgets can pay.
-    /// Uses existing customer/supplier membership; each disappearing resource/component
-    /// visits its sources once per census. O(input membership) lazy preparation,
-    /// O(staffed input buyers) seed checks per retry plus
-    /// O(affected input ports × (ports per buyer + log components)
-    /// + visited source output ports × log components)
-    /// across propagation; no allocation or city scan for each dependency link.
+    /// Propagates necessary customer limits. A source loses its whole operation when no
+    /// potential staffed business customer remains for any output and neither households nor
+    /// exports/public budgets can pay. Otherwise, a source selling only to businesses has its
+    /// activity capped by its possible buyers' maximum staffed purchases, so partial
+    /// reductions cross a supplier chain without a census for each link.
+    ///
+    /// Uses existing customer/supplier membership. O(input membership) lazy preparation,
+    /// O(staffed input buyers × ports) seed checks per retry, then for each propagation round
+    /// O(stale component membership + visited source output ports × log components); rounds
+    /// follow the longest reduced dependency chain. Scratch is retained; no city scan or
+    /// allocation is added for each dependency link.
     pub(super) fn propagate_impossible_customers(&mut self, allocator: &BuildingAllocator,
         catalog: &RuntimeEconomyCatalog, tuning: &RuntimeEconomyTuning) {
         #[cfg(test)]
         if self.potential_customers.disabled { return; }
         if !self.potential_customers.prepared {
-            self.business.prepare_possible_buyers(|owner, resource| {
-                if !self.potential_customers.counted[owner] { return false; }
-                let Some(profile) = catalog.profile_by_runtime_id(allocator.buildings[owner].economy_profile_runtime_id)
-                    else { return false; };
-                profile.input_port(resource).is_some_and(|input| external_input(profile, input))
-            });
+            // Totals start from the census's initial limits; the seed check below then
+            // marks every limit reduced by the failed proof that triggered this retry.
+            for slot in 0..self.potential_customers.owners.len() {
+                let owner = self.potential_customers.owners[slot];
+                let building = &allocator.buildings[owner];
+                self.potential_customers.activity[owner] = catalog
+                    .profile_by_runtime_id(building.economy_profile_runtime_id)
+                    .map_or(0.0, |profile| self.possible_activity(owner, building, profile, tuning,
+                        physical_worker_capacity_for_profile(building, profile), 1.0));
+            }
+            let customers = &self.potential_customers;
+            self.business.prepare_possible_buyers(|owner, resource|
+                possible_input_units(customers, allocator, catalog, owner, resource));
             self.potential_customers.prepared = true;
         }
         for slot in 0..self.potential_customers.owners.len() {
             let owner = self.potential_customers.owners[slot];
-            if self.closure_ceilings[owner] == 0 && self.potential_customers.counted[owner]
-                && let Some(profile) = catalog.profile_by_runtime_id(allocator.buildings[owner].economy_profile_runtime_id) {
+            if !self.potential_customers.counted[owner] { continue; }
+            let building = &allocator.buildings[owner];
+            let Some(profile) = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
+                else { continue; };
+            if self.closure_ceilings[owner] == 0 {
                 self.potential_customers.remove(owner, profile, &mut self.business);
+            } else {
+                let activity = self.possible_activity(owner, building, profile, tuning,
+                    self.closure_ceilings[owner], self.closure_activity[owner]);
+                self.potential_customers.lower(owner, activity, profile, &mut self.business);
             }
         }
-        while let Some((resource, component)) = self.potential_customers.pending.pop() {
-            self.input_supply.visit_possible_sources(resource, component, |owner| {
-                if self.closure_ceilings[owner] == 0 || self.service_flags[owner] { return; }
-                let building = &allocator.buildings[owner];
-                if !live(building) { return; }
-                let Some(profile) = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
-                    else { return; };
-                if building_outputs_can_export_to_owa(building, profile)
-                    && self.carrier_quotes[owner].is_some() && tuning.owa_export_price_multiplier > 0.0 {
-                    return;
-                }
-                if profile.outputs.iter().any(|output| profile.net_output_units_per_day(output) > 0.0
-                    && (self.customers.consumes(output.resource_runtime_id)
-                        || self.business.has_possible_buyers(owner, output.resource_runtime_id))) {
-                    return;
-                }
-                self.closure_ceilings[owner] = 0;
-                self.closure_activity[owner] = 0.0;
-                self.potential_customers.remove(owner, profile, &mut self.business);
-            });
+        loop {
+            while let Some((resource, component)) = self.potential_customers.pending.pop() {
+                self.input_supply.visit_possible_sources(resource, component, |owner| {
+                    if self.closure_ceilings[owner] == 0 || self.service_flags[owner] { return; }
+                    let building = &allocator.buildings[owner];
+                    if !live(building) { return; }
+                    let Some(profile) = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
+                        else { return; };
+                    if building_outputs_can_export_to_owa(building, profile)
+                        && self.carrier_quotes[owner].is_some() && tuning.owa_export_price_multiplier > 0.0 {
+                        return;
+                    }
+                    if profile.outputs.iter().any(|output| profile.net_output_units_per_day(output) > 0.0
+                        && (self.customers.consumes(output.resource_runtime_id)
+                            || self.business.has_possible_buyers(owner, output.resource_runtime_id))) {
+                        return;
+                    }
+                    self.closure_ceilings[owner] = 0;
+                    self.closure_activity[owner] = 0.0;
+                    self.potential_customers.remove(owner, profile, &mut self.business);
+                });
+            }
+            if self.potential_customers.stale.is_empty() { break; }
+            // Recount every stale total before reading any of them in this round. Totals
+            // marked by this round's reductions stay stale-high until the next round.
+            std::mem::swap(&mut self.potential_customers.stale, &mut self.potential_customers.round);
+            for slot in 0..self.potential_customers.round.len() {
+                let (resource, component) = self.potential_customers.round[slot];
+                let customers = &self.potential_customers;
+                self.business.recount_possible_input(resource, component, |owner|
+                    possible_input_units(customers, allocator, catalog, owner, resource));
+            }
+            for (resource, component) in self.potential_customers.round.drain(..) {
+                let sources = &mut self.potential_customers.sources;
+                self.input_supply.visit_possible_sources(resource, component, |owner| sources.push(owner));
+            }
+            for slot in 0..self.potential_customers.sources.len() {
+                let owner = self.potential_customers.sources[slot];
+                self.limit_business_source(owner, allocator, catalog, tuning);
+            }
+            self.potential_customers.sources.clear();
+        }
+    }
+
+    // Upper bound on the activity at which a counted buyer can purchase in any later pass of
+    // this census. Mirrors the top plan in `funded_private_operation`; household quotas can
+    // still grow when a rival fails, so consumer sellers rely on their closure limit alone.
+    fn possible_activity(&self, owner: usize, building: &Building, profile: &EconomyProfileRuntime,
+        tuning: &RuntimeEconomyTuning, ceiling: u32, activity_ceiling: f32) -> f32 {
+        let physical = physical_worker_capacity_for_profile(building, profile);
+        if self.service_flags[owner] {
+            return self.capacities[owner] as f32 / physical.max(1) as f32;
+        }
+        if physical == 0 || ceiling == 0 { return 0.0; }
+        let area = output_area_scale_for_building(building, profile);
+        let unbounded = profile.outputs.iter().any(|port| self.customers.consumes(port.resource_runtime_id))
+            || (building_outputs_can_export_to_owa(building, profile)
+                && self.carrier_quotes[owner].is_some() && tuning.owa_export_price_multiplier > 0.0);
+        let market_activity = if unbounded { 1.0 } else {
+            profile.outputs.iter().map(|port| provisional_local_share(profile, area,
+                port.resource_runtime_id, None, &self.market)).fold(0.0, f32::max)
+        }.min(activity_ceiling);
+        let workers = ((physical as f32 * market_activity).ceil() as u32).min(ceiling);
+        market_activity.min(workers as f32 / physical.max(1) as f32)
+    }
+
+    // Caps a source that sells only to businesses by its possible buyers' total purchases,
+    // using the joint proof's own demand-activity arithmetic. A single possible buyer gives
+    // the value that proof will find; several buyers carry rounding slack, so the ordinary
+    // closure can still lower that conservative cap.
+    fn limit_business_source(&mut self, owner: usize, allocator: &BuildingAllocator,
+        catalog: &RuntimeEconomyCatalog, tuning: &RuntimeEconomyTuning) {
+        if self.closure_ceilings[owner] == 0 || self.service_flags[owner] { return; }
+        let building = &allocator.buildings[owner];
+        if !live(building) { return; }
+        let Some(profile) = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
+            else { return; };
+        if (building_outputs_can_export_to_owa(building, profile)
+            && self.carrier_quotes[owner].is_some() && tuning.owa_export_price_multiplier > 0.0)
+            || profile.outputs.iter().any(|output| self.customers.consumes(output.resource_runtime_id)) {
+            return;
+        }
+        let area = output_area_scale_for_building(building, profile);
+        let mut demand_activity = 0.0_f32;
+        for output in &profile.outputs {
+            let full = profile.net_output_units_per_day(output) * area;
+            if full <= 0.0 { continue; }
+            let (buyers, units) = self.business.possible_demand(owner, output.resource_runtime_id);
+            let sold = units.min(f64::from(full)) as f32;
+            let sold = if buyers > 1 { sold * (1.0 + 4.0 * f32::EPSILON) } else { sold };
+            demand_activity = demand_activity.max(sold / full);
+        }
+        if demand_activity >= self.closure_activity[owner] { return; }
+        let physical = physical_worker_capacity_for_profile(building, profile);
+        self.closure_activity[owner] = demand_activity;
+        self.closure_ceilings[owner] = self.closure_ceilings[owner]
+            .min((physical as f32 * demand_activity).ceil() as u32);
+        if self.closure_ceilings[owner] == 0 {
+            self.closure_activity[owner] = 0.0;
+            self.potential_customers.remove(owner, profile, &mut self.business);
+        } else {
+            let activity = self.possible_activity(owner, building, profile, tuning,
+                self.closure_ceilings[owner], demand_activity);
+            self.potential_customers.lower(owner, activity, profile, &mut self.business);
         }
     }
 

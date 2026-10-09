@@ -333,6 +333,15 @@ impl DemandSystem {
         ));
     }
 
+    /// Current execution-epoch proof of a queued or constructing project, if prepared.
+    #[cfg(test)]
+    pub(crate) fn project_proof_for_test(&self, parcel: u64, zoning: &ZoningSystem)
+        -> Option<(u32, [u64; 2], Vec<(u16, Option<usize>, u64, u32, u32)>)> {
+        let execution = &self.construction_execution;
+        execution.reservations.project_proof_for_test(&execution.funding.input_supply, parcel,
+            zoning, &self.runtime_catalog, &self.runtime_tuning)
+    }
+
     /// Removes a failed queue entry and ends its provisional proof before later execution.
     /// The next check revalidates commitments which may have depended on this customer.
     pub(crate) fn reject_queued_spawn(&mut self, action: &DemandSpawnAction,

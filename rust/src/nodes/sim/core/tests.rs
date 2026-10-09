@@ -2369,3 +2369,113 @@ fn benchmark_road_preview_modes() {
         );
     }
 }
+
+
+#[test]
+fn queued_buyers_and_supplier_replacement_survive_reload_at_every_step() {
+    use crate::simulation::economy::agents::HouseholdAgeComposition;
+    use crate::simulation::economy::definitions::load_runtime_economy_tuning;
+    use crate::simulation::economy::demand::{DemandLevelChangeAction, demand_building_action_key};
+
+    let mut outcomes = Vec::new();
+    for reload in [false, true] {
+        let (mut core, homes, factories) = construction_execution_fixture();
+        core.transit_network.rebuild_cch_and_check(&core.region_graph);
+        // The live processor gains a level-2 tier, so its replacement must revalidate the
+        // queued groceries that buy its packaged food.
+        let mut manifest = core.allocator.registry.get(&factories[0].asset_id).unwrap().manifest.clone();
+        manifest.asset_set = Some("execution_processor".to_owned());
+        core.allocator.registry.register("test", manifest.clone(), String::new());
+        manifest.asset_id = "execution_factory_l2".to_owned();
+        let tier = manifest.building.as_mut().unwrap();
+        tier.level = 2;
+        tier.worker_capacity = Some(8);
+        core.allocator.registry.register("test", manifest, String::new());
+        let target = "test:execution_factory_l2".to_owned();
+        let shop = register_test_asset(&mut core.allocator, "execution_shop", ZoneType::Commercial);
+        let commercial = core.zoning.profiles.default_runtime_id_for_zone_type(ZoneType::Commercial).unwrap();
+        core.zoning.place_parcel_run_at(10.0, 20.0, 170.0, 20.0, commercial, 20.0, 30.0, 0.0,
+            &core.region_graph).unwrap();
+        core.allocator.prepare_building_site_query_index(core.config.zone_cell_m);
+        let shops: Vec<_> = core.zoning.parcels().iter().filter(|parcel| core.zoning.profiles
+            .profile_by_runtime_id(parcel.zone_profile_runtime_id()).unwrap().zone_type == ZoneType::Commercial)
+            .map(|parcel| DemandSpawnAction { parcel_id: parcel.id().raw(), asset_id: shop.clone() })
+            .take(3).collect();
+        assert_eq!(shops.len(), 3);
+        for (index, home) in homes.iter().take(4).enumerate() {
+            execute_test_construction(&mut core, home, ZoneType::Residential, index as u16 + 1);
+        }
+        execute_test_construction(&mut core, &factories[0], ZoneType::Industrial, 5);
+        let supplier = core.allocator.buildings.len() - 1;
+        for building in &mut core.allocator.buildings { building.construction_remaining_hours = 0; }
+        core.allocator.buildings[supplier].worker_count = 4;
+        core.allocator.buildings[supplier].operating_budget = 1_000_000.0;
+        let catalog = load_runtime_economy_catalog().unwrap();
+        let tuning = load_runtime_economy_tuning().unwrap();
+        for home in 0..4 {
+            for _ in 0..3 {
+                let household = core.households.admit_immigrant_household(&catalog, &tuning, home, 2,
+                    HouseholdAgeComposition { adult_count: 2, ..Default::default() });
+                let family = &mut core.households.households[household];
+                family.budget = 10_000.0;
+                family.gross_daily_wages = 600.0;
+                family.employed_adults = 1;
+                family.shopping_has_car = true;
+                core.allocator.buildings[home].occupancy += 1;
+            }
+        }
+        for (index, action) in shops.iter().enumerate() {
+            core.pending_demand_spawns.push_back(super::state::PendingDemandSpawnAction {
+                due_minute: 8 + index as u64, zone_type: ZoneType::Commercial,
+                action: action.clone(), planned_day_index: 1, planned_minute_of_day: 0,
+            });
+        }
+        core.refresh_demand_construction_queue(1, 6);
+        let mut sequence = Vec::new();
+        for minute in 7..=10 {
+            core.time.day_index = 1;
+            core.time.minute_of_day = minute - 1;
+            if reload {
+                // Loading rebuilds every queued proof, supplier book and replacement variant
+                // cold from persisted buildings, zoning and the queue.
+                let path = temp_save_path("queued_supplier_replacement");
+                core.save_game_internal(path.to_str().unwrap(), None).unwrap();
+                let mut loaded = test_core();
+                loaded.allocator.registry = core.allocator.registry.clone();
+                loaded.load_game_internal(path.to_str().unwrap()).unwrap();
+                std::fs::remove_file(path).unwrap();
+                core = loaded;
+            }
+            if minute == 7 {
+                let mut plan = DemandBuildingActionPlan::default();
+                plan.industrial.upgrades.push(DemandLevelChangeAction {
+                    building: demand_building_action_key(&core.allocator.buildings[supplier]),
+                    target_asset_id: target.clone(),
+                });
+                core.refresh_demand_construction_queue(1, minute);
+                core.demand.execute_building_actions(&plan, &mut core.allocator, &mut core.zoning,
+                    &mut core.agents, &mut core.households, &mut core.logistics,
+                    &mut core.treasury.balance, &core.region_graph, &core.transit_network,
+                    &core.heightmap, absolute_operational_minute(1, minute), &core.fiscal_policy);
+            } else {
+                assert_eq!(core.execute_pending_demand_spawns_for_minute(1, minute), 1);
+            }
+            // Every still-queued grocery's proof, after the same epoch has been prepared.
+            let proofs: Vec<_> = core.pending_demand_spawns.iter().map(|pending|
+                core.demand.project_proof_for_test(pending.action.parcel_id, &core.zoning)).collect();
+            if minute == 7 {
+                assert_eq!(core.allocator.buildings[supplier].asset_id, target, "reload={reload}");
+                let first = proofs[0].as_ref().expect("the replacement must retain its queued buyer");
+                assert!(first.2.iter().any(|&(_, source, ..)| source == Some(supplier)),
+                    "the queued grocery's packaged food comes from the replaced processor");
+            }
+            sequence.push((core.allocator.buildings.iter().map(|building| (
+                building.parcel_id, building.asset_id.clone(), building.operating_budget.to_bits(),
+                building.construction_remaining_hours, building.worker_count,
+            )).collect::<Vec<_>>(), core.treasury.balance.to_bits(), proofs));
+        }
+        assert!(core.allocator.buildings.iter().any(|building| building.zone_type == ZoneType::Commercial));
+        outcomes.push(sequence);
+    }
+    assert_eq!(outcomes[0], outcomes[1], "reload must preserve each replacement, placement and queued proof");
+}
