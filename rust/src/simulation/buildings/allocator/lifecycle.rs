@@ -1157,6 +1157,15 @@ impl BuildingAllocator {
         ) {
             return None;
         }
+        // Yards are laid from the asset's hedge, planting, surfaces and structures, so a
+        // replacement that touches any authored yard clears the old one and lays the target's.
+        let refresh_yard = [
+            self.buildings[building_idx].asset_id.as_str(),
+            action.target_asset_id.as_str(),
+        ]
+        .into_iter()
+        .filter_map(|asset| self.registry.get(asset)?.manifest.building.as_ref())
+        .any(|data| data.yard_hedge.is_some() || !data.yard_planting.is_empty());
         let old_site_bounds = self.site_world_bounds(building_idx);
         let building = &mut self.buildings[building_idx];
         building.asset_id = action.target_asset_id.clone();
@@ -1169,6 +1178,14 @@ impl BuildingAllocator {
         building.rezone_grace_days_remaining = 0;
         let zone_type = building.zone_type;
         self.rebuild_building_site_client(building_idx, zone_cell_m);
+        if refresh_yard {
+            // The yard key is the parcel and generation, which a level change keeps.
+            self.queue_yard_removal(building_idx);
+            self.queue_yard(building_idx, zone_cell_m);
+        }
+        let building = &self.buildings[building_idx];
+        self.level_changes
+            .record((building.parcel_id, building.build_generation));
         self.accumulate_pending_site_dirty_bounds(old_site_bounds);
         self.accumulate_pending_site_dirty_bounds(self.site_world_bounds(building_idx));
         self.bump_building_ref_revision();

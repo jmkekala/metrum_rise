@@ -152,6 +152,7 @@ impl SimulationNode {
             bounds,
             view,
             core.operational_hour_fraction(),
+            std::time::Instant::now(),
         );
         result.set("busy", false);
         result.set("evaluated_parts", lods.evaluated_parts as i64);

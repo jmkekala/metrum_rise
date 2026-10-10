@@ -9,6 +9,8 @@
 //! Primary key is `"pack_id:asset_id"`. Secondary indices cover:
 //! - zone-type placement: all zoned-private building assets for a given zone
 //! - family upgrade chains: `(asset_set, level + 1) → qualified_id` for in-place upgrades
+//! - unfamilied tiers: zoned-private assets without an `asset_set`, grouped by zone, density,
+//!   lot footprint and level, for level changes of buildings outside any family
 
 use crate::assets::asset::{AssetManifest, BuildingData, PlacementMode, ZoneClass};
 use std::collections::HashMap;
@@ -44,6 +46,29 @@ pub struct AssetRegistry {
     /// Level → family → qualified_id. Direct tier indexing avoids a second hash lookup.
     /// At most 256 buckets, allocated only through the highest registered tier.
     upgrade_index: Vec<HashMap<String, String>>,
+    /// Density → (zone, footprint, level) → sorted qualified_ids of zoned-private assets without
+    /// an `asset_set`. Density is the outer key so lookups borrow the manifest's string.
+    unfamilied_tiers: HashMap<String, HashMap<UnfamiliedTier, Vec<String>>>,
+}
+
+/// Level-change pool key for assets outside any upgrade family.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct UnfamiliedTier {
+    zone: ZoneClass,
+    lot_width_cells: u16,
+    lot_depth_cells: u16,
+    level: u8,
+}
+
+impl UnfamiliedTier {
+    fn of(building: &BuildingData, zone: ZoneClass, level: u8) -> Self {
+        Self {
+            zone,
+            lot_width_cells: building.lot_width_cells,
+            lot_depth_cells: building.lot_depth_cells,
+            level,
+        }
+    }
 }
 
 impl AssetRegistry {
@@ -78,6 +103,24 @@ impl AssetRegistry {
                     ids.retain(|id| id != &qid);
                     if ids.is_empty() {
                         densities.remove(density);
+                    }
+                }
+            }
+            if old.manifest.asset_set.is_none()
+                && building.placement_mode == PlacementMode::ZonedPrivate
+                && let Some(zone) = building.zone_type
+            {
+                let density = building.density_key().unwrap_or("low");
+                if let Some(tiers) = self.unfamilied_tiers.get_mut(density) {
+                    let tier = UnfamiliedTier::of(building, zone, building.level);
+                    if let Some(ids) = tiers.get_mut(&tier) {
+                        ids.retain(|id| id != &qid);
+                        if ids.is_empty() {
+                            tiers.remove(&tier);
+                        }
+                    }
+                    if tiers.is_empty() {
+                        self.unfamilied_tiers.remove(density);
                     }
                 }
             }
@@ -129,6 +172,17 @@ impl AssetRegistry {
                     }
                 }
                 families.insert(set.clone(), qid.clone());
+            } else {
+                let ids = self
+                    .unfamilied_tiers
+                    .entry(bd.density_key().unwrap_or("low").to_owned())
+                    .or_default()
+                    .entry(UnfamiliedTier::of(bd, zone_type, bd.level))
+                    .or_default();
+                if !ids.contains(&qid) {
+                    ids.push(qid.clone());
+                    ids.sort_unstable();
+                }
             }
         }
 
@@ -144,32 +198,45 @@ impl AssetRegistry {
 
     /// Returns the qualified ID of the next upgrade tier for the given asset, or `None`.
     ///
-    /// Upgrade is possible when the asset has an `asset_set` and a building with
-    /// `level + 1` in the same family is registered.
-    pub fn next_level(&self, qualified_id: &str) -> Option<&str> {
-        let entry = self.entries.get(qualified_id)?;
-        let asset_set = entry.manifest.asset_set.as_deref()?;
-        let level = entry.manifest.building.as_ref()?.level;
-        self.upgrade_index
-            .get(usize::from(level.checked_add(1)?))?
-            .get(asset_set)
-            .map(String::as_str)
+    /// An asset with an `asset_set` upgrades only to the family member at `level + 1`. A
+    /// zoned-private asset without one upgrades to an unfamilied asset of the same zone, density
+    /// and lot footprint at `level + 1`; `selection` (a stable per-site hash) picks among several.
+    pub fn next_level(&self, qualified_id: &str, selection: u64) -> Option<&str> {
+        let level = self.entries.get(qualified_id)?.manifest.building.as_ref()?.level;
+        self.level_target(qualified_id, level.checked_add(1)?, selection)
     }
 
     /// Returns the qualified ID of the previous downgrade tier for the given asset, or `None`.
     ///
-    /// Downgrade is possible when the asset has an `asset_set` and a building with
-    /// `level - 1` in the same family is registered.
-    pub fn prev_level(&self, qualified_id: &str) -> Option<&str> {
-        let entry = self.entries.get(qualified_id)?;
-        let asset_set = entry.manifest.asset_set.as_deref()?;
-        let level = entry.manifest.building.as_ref()?.level;
+    /// Uses the same family or unfamilied-tier rules as [`Self::next_level`] at `level - 1`.
+    pub fn prev_level(&self, qualified_id: &str, selection: u64) -> Option<&str> {
+        let level = self.entries.get(qualified_id)?.manifest.building.as_ref()?.level;
         if level <= 1 {
             return None;
         }
-        self.upgrade_index
-            .get(usize::from(level - 1))?
-            .get(asset_set)
+        self.level_target(qualified_id, level - 1, selection)
+    }
+
+    // O(1) hash lookups; a family is explicit, so a member never falls back to unfamilied assets.
+    fn level_target(&self, qualified_id: &str, level: u8, selection: u64) -> Option<&str> {
+        let manifest = &self.entries.get(qualified_id)?.manifest;
+        if let Some(asset_set) = manifest.asset_set.as_deref() {
+            return self
+                .upgrade_index
+                .get(usize::from(level))?
+                .get(asset_set)
+                .map(String::as_str);
+        }
+        let building = manifest.building.as_ref()?;
+        if !building.is_zoned_private() {
+            return None;
+        }
+        let tier = UnfamiliedTier::of(building, building.zone_type?, level);
+        let ids = self
+            .unfamilied_tiers
+            .get(building.density_key().unwrap_or("low"))?
+            .get(&tier)?;
+        ids.get((selection % ids.len() as u64) as usize)
             .map(String::as_str)
     }
 
@@ -334,6 +401,7 @@ impl AssetRegistry {
             densities.clear();
         }
         self.upgrade_index.clear();
+        self.unfamilied_tiers.clear();
     }
 
     /// Revision of asset registration/removal, including replacement of an existing manifest.
@@ -564,13 +632,13 @@ mod tests {
             manifest.validate().unwrap();
             reg.register("base", manifest, String::new());
         }
-        assert_eq!(reg.next_level("base:tier_1"), Some("base:tier_2"));
-        assert_eq!(reg.prev_level("base:tier_2"), Some("base:tier_1"));
-        assert_eq!(reg.prev_level("base:tier_1"), None);
-        assert_eq!(reg.next_level("base:tier_2"), None);
-        assert_eq!(reg.next_level("base:tier_254"), Some("base:tier_255"));
-        assert_eq!(reg.prev_level("base:tier_255"), Some("base:tier_254"));
-        assert_eq!(reg.next_level("base:tier_255"), None);
+        assert_eq!(reg.next_level("base:tier_1", 0), Some("base:tier_2"));
+        assert_eq!(reg.prev_level("base:tier_2", 0), Some("base:tier_1"));
+        assert_eq!(reg.prev_level("base:tier_1", 0), None);
+        assert_eq!(reg.next_level("base:tier_2", 0), None);
+        assert_eq!(reg.next_level("base:tier_254", 0), Some("base:tier_255"));
+        assert_eq!(reg.prev_level("base:tier_255", 0), Some("base:tier_254"));
+        assert_eq!(reg.next_level("base:tier_255", 0), None);
 
         let mut alternative = reg.get("base:tier_2").unwrap().manifest.clone();
         alternative.asset_id = "alternative".to_owned();
@@ -578,8 +646,56 @@ mod tests {
         let mut replaced = reg.get("base:tier_2").unwrap().manifest.clone();
         replaced.asset_set = Some("other".to_owned());
         reg.register("base", replaced, String::new());
-        assert_eq!(reg.next_level("base:tier_1"), Some("base:alternative"));
-        assert_eq!(reg.prev_level("base:tier_2"), None);
+        assert_eq!(reg.next_level("base:tier_1", 0), Some("base:alternative"));
+        assert_eq!(reg.prev_level("base:tier_2", 0), None);
+    }
+
+    #[test]
+    fn unfamilied_assets_change_level_within_matching_tier_pools() {
+        let mut reg = AssetRegistry::new();
+        let mut register = |id: &str, zone, (w, d), density: &str, level, set: Option<&str>| {
+            let mut manifest = make_building_manifest(id, zone, w, d);
+            manifest.asset_set = set.map(str::to_owned);
+            let building = manifest.building.as_mut().unwrap();
+            building.level = level;
+            building.density = Some(density.to_owned());
+            manifest.validate().unwrap();
+            reg.register("base", manifest, String::new());
+        };
+        let house = ZoneClass::Residential;
+        register("house_a", house, (2, 2), "low", 1, None);
+        register("house_b", house, (2, 2), "low", 1, None);
+        register("villa_a", house, (2, 2), "low", 2, None);
+        register("villa_b", house, (2, 2), "low", 2, None);
+        // Family members, other footprints, densities and zones never join the pool.
+        register("family_2", house, (2, 2), "low", 2, Some("family"));
+        register("wide_2", house, (3, 2), "low", 2, None);
+        register("dense_2", house, (2, 2), "high", 2, None);
+        register("shop_2", ZoneClass::Commercial, (2, 2), "low", 2, None);
+        register("family_1", house, (2, 2), "low", 1, Some("family"));
+        register("lonely_1", house, (2, 2), "low", 1, Some("lonely"));
+
+        let ups: Vec<_> = (0..4).map(|key| reg.next_level("base:house_a", key)).collect();
+        assert_eq!(
+            ups,
+            [Some("base:villa_a"), Some("base:villa_b"), Some("base:villa_a"), Some("base:villa_b")]
+        );
+        assert_eq!(reg.next_level("base:house_a", 7), reg.next_level("base:house_a", 7));
+        assert_eq!(reg.prev_level("base:villa_b", 1), Some("base:house_b"));
+        assert_eq!(reg.prev_level("base:house_a", 0), None);
+        assert_eq!(reg.next_level("base:villa_a", 0), None);
+        assert_eq!(reg.next_level("base:wide_2", 0), None);
+        assert_eq!(reg.prev_level("base:wide_2", 0), None);
+        assert_eq!(reg.next_level("base:family_1", 1), Some("base:family_2"));
+        assert_eq!(reg.next_level("base:lonely_1", 0), None);
+
+        // Joining a family leaves the pool; clearing the registry empties it.
+        let mut moved = reg.get("base:villa_a").unwrap().manifest.clone();
+        moved.asset_set = Some("villas".to_owned());
+        reg.register("base", moved, String::new());
+        assert_eq!(reg.next_level("base:house_a", 0), Some("base:villa_b"));
+        reg.clear();
+        assert!(reg.unfamilied_tiers.is_empty());
     }
 
     #[test]
@@ -610,8 +726,8 @@ mod tests {
                 ));
             }
             for (low, high) in &queries {
-                assert_eq!(registry.next_level(low), Some(high.as_str()));
-                assert_eq!(registry.prev_level(high), Some(low.as_str()));
+                assert_eq!(registry.next_level(low, 0), Some(high.as_str()));
+                assert_eq!(registry.prev_level(high, 0), Some(low.as_str()));
             }
             let ids = registry.buildings_for_zone_density(ZoneClass::Residential, "low");
             assert_eq!(ids.len(), family_count * 2);
@@ -622,8 +738,8 @@ mod tests {
                 let start = Instant::now();
                 for _ in 0..64 {
                     for (low, high) in &queries {
-                        black_box(registry.next_level(black_box(low)));
-                        black_box(registry.prev_level(black_box(high)));
+                        black_box(registry.next_level(black_box(low), 0));
+                        black_box(registry.prev_level(black_box(high), 0));
                         black_box(registry.buildings_for_zone_density(
                             black_box(ZoneClass::Residential),
                             black_box("low"),

@@ -223,3 +223,14 @@ fn colour_schemes_split_groups_without_splitting_geometry() {
     chunk.update(&parts, view(900.0), false);
     assert_eq!(occupied(&chunk), [(0, 0, 1), (1, 0, 2), (2, 0, 3)]);
 }
+
+#[test]
+fn level_change_rise_eases_out_and_finishes() {
+    use super::spatial::level_change_rise_progress;
+    use std::time::Duration;
+    assert_eq!(level_change_rise_progress(Duration::ZERO), 0.0);
+    let half = level_change_rise_progress(Duration::from_millis(1250));
+    assert!((half - 0.75).abs() < 1e-6, "ease-out is past halfway at half time: {half}");
+    assert_eq!(level_change_rise_progress(Duration::from_millis(2500)), 1.0);
+    assert_eq!(level_change_rise_progress(Duration::from_secs(60)), 1.0);
+}

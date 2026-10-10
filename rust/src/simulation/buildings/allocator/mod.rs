@@ -41,7 +41,7 @@ use crate::simulation::network::types::VehicleFrontageAccess;
 use crate::simulation::work_area::profile_kind_uses_explicit_work_area;
 use crate::simulation::zoning::{ZoneType, ZoningSystem};
 use godot::prelude::Vector2;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 /// Shipped baseline private-use families supported by the live zoning-driven runtime.
 pub(crate) const BASELINE_PRIVATE_ZONES: [ZoneType; 3] = [
@@ -346,6 +346,8 @@ pub struct BuildingAllocator {
     pub(crate) pending_production_site_removals: Vec<(usize, usize)>,
     /// Yard hedges to lay and remove, in the order the buildings were placed and removed.
     pub(crate) pending_yards: Vec<yard::YardEvent>,
+    /// Recent in-place level changes, read by the renderer to animate the replacement.
+    pub(crate) level_changes: LevelChangeLog,
     /// Maximum half-diagonal of placed lots in zoning cells, rebuilt with [`Self::building_chunks`].
     pub(crate) max_lot_radius_cells: f32,
     /// Maximum support-footprint distance from its indexed lot center, in world metres.
@@ -385,6 +387,41 @@ pub(crate) struct EconomyProfileBinding {
     pub economy_broken: bool,
 }
 
+/// Bounded record of in-place level changes for presentation only.
+///
+/// Keys are `(parcel_id, build_generation)`, which a level change keeps. Readers remember the
+/// running total they last saw; only the newest [`Self::CAPACITY`] keys are retained, so a
+/// headless run without a reader stays bounded and a reader that falls far behind merely skips
+/// animations. Never saved.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct LevelChangeLog {
+    keys: VecDeque<(u64, u32)>,
+    total: u64,
+}
+
+impl LevelChangeLog {
+    const CAPACITY: usize = 4096;
+
+    pub(crate) fn record(&mut self, key: (u64, u32)) {
+        if self.keys.len() == Self::CAPACITY {
+            self.keys.pop_front();
+        }
+        self.keys.push_back(key);
+        self.total += 1;
+    }
+
+    /// Returns the running total and the retained keys recorded after `seen`. O(new keys).
+    pub(crate) fn since(&self, seen: u64) -> (u64, impl Iterator<Item = &(u64, u32)>) {
+        let new = self.total.saturating_sub(seen).min(self.keys.len() as u64) as usize;
+        (self.total, self.keys.iter().skip(self.keys.len() - new))
+    }
+
+    // The total stays monotonic so a reader never mistakes later changes for seen ones.
+    fn clear(&mut self) {
+        self.keys.clear();
+    }
+}
+
 impl Building {
     /// Stable key selecting this instance's authored colour scheme.
     ///
@@ -412,6 +449,17 @@ impl Building {
             x ^ z.rotate_left(32),
             self.build_generation,
             "appearance.explicit",
+        )
+    }
+
+    // Level changes keep the parcel, generation and zoning profile, so the key is stable
+    // across upgrades and downgrades of the same standing building.
+    fn level_change_key(&self) -> u64 {
+        placement::stable_parcel_selection_hash(
+            self.zone_profile_runtime_id,
+            self.parcel_id,
+            self.build_generation,
+            "level_change",
         )
     }
 
@@ -633,6 +681,7 @@ impl BuildingAllocator {
             field_clearance: FieldClearanceIndex::default(),
             pending_production_site_removals: Vec::new(),
             pending_yards: Vec::new(),
+            level_changes: LevelChangeLog::default(),
             max_lot_radius_cells: 0.0,
             max_site_radius_m: 0.0,
             dirty_index: true,
@@ -783,6 +832,7 @@ impl BuildingAllocator {
         self.field_clearance.clear();
         self.pending_production_site_removals.clear();
         self.pending_yards.clear();
+        self.level_changes.clear();
         self.building_sites.clear();
         self.edge_occupancy.clear();
         for list in &mut self.zone_index {
@@ -828,6 +878,21 @@ impl BuildingAllocator {
     /// Advances the derived entrance-reference revision.
     pub(crate) fn bump_entrance_ref_revision(&mut self) {
         self.entrance_ref_revision = self.entrance_ref_revision.wrapping_add(1);
+    }
+
+    /// Returns the asset this building would upgrade to, if any.
+    ///
+    /// Family members follow their `asset_set`; other zoned buildings pick one unfamilied asset
+    /// by a stable per-site key, so planning and execution agree on the same target.
+    pub(crate) fn upgrade_target(&self, building: &Building) -> Option<&str> {
+        self.registry
+            .next_level(&building.asset_id, building.level_change_key())
+    }
+
+    /// Returns the asset this building would downgrade to, if any. See [`Self::upgrade_target`].
+    pub(crate) fn downgrade_target(&self, building: &Building) -> Option<&str> {
+        self.registry
+            .prev_level(&building.asset_id, building.level_change_key())
     }
 
     /// Returns usable household slots: one for farms, otherwise the asset's declared capacity.

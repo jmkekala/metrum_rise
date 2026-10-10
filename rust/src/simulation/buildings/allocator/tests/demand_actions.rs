@@ -256,6 +256,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         DemandBuildingActionKey, DemandBuildingActionPlan, DemandLevelChangeAction,
         DemandSpawnAction, DemandSystem,
     };
+    use crate::simulation::buildings::allocator::yard::YardEvent;
     use godot::prelude::Vector3;
 
     let mut allocator = BuildingAllocator::new();
@@ -275,6 +276,13 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         Some("res_family"),
         2,
     );
+    // Only the level-2 asset lines its yard, so level changes must lay and clear the hedge.
+    let mut hedged = allocator.registry.get(&residential_level_2).unwrap().manifest.clone();
+    hedged.building.as_mut().unwrap().yard_hedge = Some(crate::assets::asset::YardHedge {
+        hedge: crate::assets::asset::YardHedgeKind::Low,
+        edges: crate::assets::asset::LotEdge::ALL.to_vec(),
+    });
+    allocator.registry.register("base", hedged, String::new());
     let mut zoning = crate::simulation::zoning::ZoningSystem::new(&WorldConfig::default());
     let mut graph = RegionGraph::new();
     let mut network = crate::simulation::network::TransitNetwork::new();
@@ -485,6 +493,34 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         .find(|building| building.parcel_id == spawn_parcel_id)
         .expect("spawn action should place a building on the selected parcel");
     assert!(spawned.operating_budget.abs() <= f32::EPSILON);
+    let yard_events = |parcel_id| {
+        allocator
+            .pending_yards
+            .iter()
+            .filter(|event| match event {
+                YardEvent::Placed { key, .. } | YardEvent::Removed(key) => key.0 == parcel_id,
+            })
+            .collect::<Vec<_>>()
+    };
+    let upgraded = yard_events(occupied_parcels[0]);
+    assert!(
+        matches!(
+            upgraded.as_slice(),
+            [YardEvent::Removed(_), YardEvent::Placed { hedge: Some(_), .. }]
+        ),
+        "upgrade must replace the old yard with the target's hedge: {upgraded:?}"
+    );
+    let downgraded = yard_events(occupied_parcels[1]);
+    assert!(
+        matches!(downgraded.as_slice(), [YardEvent::Removed(_)]),
+        "downgrade must clear the hedge the target no longer authors: {downgraded:?}"
+    );
+    let (total, recorded) = allocator.level_changes.since(0);
+    let mut recorded: Vec<_> = recorded.map(|key| key.0).collect();
+    recorded.sort_unstable();
+    let mut expected = vec![occupied_parcels[0], occupied_parcels[1]];
+    expected.sort_unstable();
+    assert_eq!((total, recorded), (2, expected), "both level changes are presented");
 
     // A later terrain edit cannot authorize a new asset footprint at an unsupported fixed pad.
     let mut blocked_terrain = terrain.clone();
@@ -631,4 +667,24 @@ fn test_commercial_demand_spawn_startup_budget_includes_first_import_cost() {
             + first_import_base_cost)
             .max(500.0);
     assert!((building.operating_budget - expected_startup_budget).abs() <= 0.01);
+}
+
+#[test]
+fn level_change_log_is_bounded_and_never_replays_after_clear() {
+    let mut log = LevelChangeLog::default();
+    for parcel in 1..=4100 {
+        log.record((parcel, 0));
+    }
+    let (total, keys) = log.since(0);
+    let keys: Vec<_> = keys.collect();
+    assert_eq!(total, 4100);
+    assert_eq!(keys.len(), 4096, "only the newest keys are retained");
+    assert_eq!(*keys[0], (5, 0));
+    let (_, newest) = log.since(4098);
+    assert_eq!(newest.collect::<Vec<_>>(), [&(4099, 0), &(4100, 0)]);
+    log.clear();
+    assert_eq!(log.since(4100).1.count(), 0);
+    log.record((7, 1));
+    let (total, keys) = log.since(4100);
+    assert_eq!((total, keys.collect::<Vec<_>>()), (4101, vec![&(7, 1)]));
 }

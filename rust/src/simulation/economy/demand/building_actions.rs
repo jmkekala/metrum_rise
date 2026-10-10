@@ -693,7 +693,7 @@ impl DemandSystem {
                     }
                     return result;
                 }
-                if let Some(target_asset_id) = allocator.registry.prev_level(&building.asset_id)
+                if let Some(target_asset_id) = allocator.downgrade_target(building)
                     && level_change_is_compatible(allocator, catalog, building_idx, target_asset_id)
                     && building_is_viable_for_downgrade(
                         allocator,
@@ -712,7 +712,7 @@ impl DemandSystem {
                         },
                     ));
                 }
-                if let Some(target_asset_id) = allocator.registry.next_level(&building.asset_id)
+                if let Some(target_asset_id) = allocator.upgrade_target(building)
                     && level_change_is_compatible(allocator, catalog, building_idx, target_asset_id)
                     && building_is_viable_for_upgrade(
                         allocator,

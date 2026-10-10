@@ -2246,7 +2246,7 @@ Placement-mode interpretation:
 Optional upgrade fields:
 
 - `level`: integer `>= 1`, default `1`. Declares which growth tier this asset represents within its family.
-- `upgrade_family`: string, recommended for ordinary zoned private buildings. Current runtime compatibility note: this is still stored as top-level `asset_set` in the implemented schema today
+- `upgrade_family`: optional string. Pairs specific assets across levels. Current runtime compatibility note: this is still stored as top-level `asset_set` in the implemented schema today
 
 Building families and upgrade levels:
 
@@ -2256,9 +2256,9 @@ Building families and upgrade levels:
   `density`, `lot_width_cells`, and `lot_depth_cells`; together those define one closed upgrade
   family.
 - `level` must be unique within a family. Two assets with the same `upgrade_family` and `level` are a conflict; the runtime logs a warning. The second asset loaded wins.
-- A building at level N upgrades to level N+1 in the same family when the runtime finds a registered asset with the same `upgrade_family` and `level = N+1`. No pointer in the manifest is required.
+- A building at level N upgrades to level N+1 in the same family when the runtime finds a registered asset with the same `upgrade_family` and `level = N+1`. No pointer in the manifest is required. A family member never falls back to assets outside its family.
 - Each family member is independently authorable. Creating a level-2 variant later never requires editing the level-1 file.
-- A building with no `upgrade_family` belongs to no family and never upgrades. This is valid for true one-off buildings and landmarks, but it is risky as an accidental omission on ordinary zoned private buildings.
+- A zoned private building with no `upgrade_family` changes level to another asset without a family with the same `zone_type`, `density`, `lot_width_cells` and `lot_depth_cells` at level N±1. A stable per-site hash picks among several, so different lots may upgrade to different variants. Assets in a family are never picked this way. Level is a wealth tier: a higher level may keep the same household or worker capacity.
 - Runtime family and zone/density queries borrow their string keys. The upgrade index uses direct
   tier buckets (at most 256 for the `u8` tier domain); tier 255 has no successor. These are the
   existing registry indices, not additional copies of asset identity. Audit acceptance
@@ -2279,11 +2279,8 @@ Building families and upgrade levels:
 
 Recommended editor behavior:
 
-- auto-fill `upgrade_family` when a new building asset is created instead of leaving it blank
 - preserve the same `upgrade_family` when creating a higher-level variant from an existing building
-- warn when a normal zoned private building has no `upgrade_family`
-- require `upgrade_family` when `level > 1`
-- keep an explicit way to clear the field for true one-off buildings or landmarks that should never upgrade
+- keep `upgrade_family` optional; leaving it blank uses the matching-tier pool above
 
 #### Zoning Registry Integration
 
@@ -3108,7 +3105,13 @@ Implemented and verified 2026-09-20. The runtime contract is:
   Failed tiers retain authored ordinals and fall back to a valid mesh with a diagnostic.
 - Stationary views with unchanged relevant state perform no repeated LOD evaluation or
   transform upload. Construction animation still advances; completion and abandonment
-  have appearance revisions. Reference revisions and world replacement invalidate reused
+  have appearance revisions. An in-place level change (upgrade or downgrade) removes the old
+  model at once and raises the new one from below ground with the construction rise offset over
+  2.5 s of real time, eased out, at any simulation speed or while paused. The allocator's
+  bounded `LevelChangeLog` (newest 4,096 `(parcel, generation)` keys, never saved) feeds it; the
+  renderer consumes only entries recorded after it first looked, so loads and new renderers do
+  not replay old changes. Rising chunks rebuild each frame like construction chunks, plus one
+  settling frame. Simulation state, occupants and jobs are untouched. Reference revisions and world replacement invalidate reused
   building indices. Pack generation changes invalidate resource slots and pending output.
 - Updates are applied coherently before drawing; no crossfade, duplicate or missing
   instances during a transition. Godot buffers retain peak power-of-two capacity while

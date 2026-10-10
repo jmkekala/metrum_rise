@@ -241,7 +241,7 @@ impl<'a> SiteSupply<'a> {
             book.prepare_projected_sources(catalog, graph, [zoning.overlay_revision(),
                 zoning.overlay_occupancy_revision(), allocator.registry.revision()], || {
                 allocator.buildings.par_iter().enumerate().flat_map_iter(|(owner, building)| {
-                    [Some(building.asset_id.as_str()), allocator.registry.prev_level(&building.asset_id), allocator.registry.next_level(&building.asset_id)]
+                    [Some(building.asset_id.as_str()), allocator.downgrade_target(building), allocator.upgrade_target(building)]
                         .into_iter().flatten().filter_map(move |asset| {
                             let profile = candidate_economy_profile(allocator, catalog, asset)?;
                             if !crate::simulation::economy::logistics::building_outputs_can_supply_local_inputs(building, profile) {
@@ -274,8 +274,8 @@ impl<'a> SiteSupply<'a> {
                                 })
                         }).collect();
                         sites.par_extend(allocator.buildings.par_iter().enumerate().flat_map_iter(|(owner, building)| {
-                            [Some(building.asset_id.as_str()), allocator.registry.prev_level(&building.asset_id),
-                                allocator.registry.next_level(&building.asset_id)].into_iter().flatten().filter_map(move |asset| {
+                            [Some(building.asset_id.as_str()), allocator.downgrade_target(building),
+                                allocator.upgrade_target(building)].into_iter().flatten().filter_map(move |asset| {
                                 let profile = candidate_economy_profile(allocator, catalog, asset)?;
                                 if profile.inputs.is_empty() { return None; }
                                 let entrance = allocator.demand_site_entrance(building.parcel_id, asset,

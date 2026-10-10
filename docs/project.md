@@ -937,6 +937,14 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- `DEM-02` level changes (2026-10-10): the upgrade family (`asset_set`) is optional. Zoned
+  buildings without one change level to an unfamilied asset with the same zone, density and lot
+  footprint at the next level, chosen by a stable per-site hash; family members stay within their
+  family. A pre-zoned player save with four unfamilied level-2 houses now records 85 residential
+  upgrades in 60 days (none before). Level changes now refresh the yard (hedge/planting) of the
+  new asset and play a 2.5 s render-only rise of the new model; the simulation swap stays
+  instant. See [level changes](demand.md#level-changes).
+
 - Docs (2026-10-10): [`economy.md`](economy.md) and [`demand.md`](demand.md) are rewritten as
   current-state specifications. Their previous contents, including the `ECON-14`/`DEM-02`
   diagnoses, implementation logs and dated measurements, moved verbatim to

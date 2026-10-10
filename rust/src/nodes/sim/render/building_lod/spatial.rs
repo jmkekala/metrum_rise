@@ -17,6 +17,17 @@ use rayon::prelude::*;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::path::Path;
+use std::time::{Duration, Instant};
+
+/// Real-time length of the rise that presents an in-place level change. Presentation only:
+/// the simulation swapped the asset instantly and keeps running underneath.
+const LEVEL_CHANGE_RISE: Duration = Duration::from_millis(2500);
+
+/// Ease-out share of the construction rise completed `elapsed` after a level change.
+pub(super) fn level_change_rise_progress(elapsed: Duration) -> f32 {
+    let t = (elapsed.as_secs_f32() / LEVEL_CHANGE_RISE.as_secs_f32()).clamp(0.0, 1.0);
+    1.0 - (1.0 - t) * (1.0 - t)
+}
 
 /// Stable resource identity within a catalog generation.
 pub(crate) struct CatalogPart {
@@ -97,6 +108,13 @@ pub(crate) struct SpatialBatches {
     last_revision: Option<(u64, u64)>,
     last_hour: f32,
     construction: bool,
+    // Level-change log total already consumed; `None` until first seen, so a new renderer or
+    // world never replays changes it did not witness.
+    level_changes_seen: Option<u64>,
+    // Rising level changes by (parcel, generation) with their real-time start.
+    level_change_started: HashMap<(u64, u32), Instant>,
+    // Whether the previous frame animated, so the frame after the last rise settles it.
+    level_change_animating: bool,
 }
 
 impl SpatialBatches {
@@ -197,6 +215,9 @@ impl SpatialBatches {
         self.last_revision = None;
         self.last_view = None;
         self.construction = false;
+        self.level_changes_seen = None;
+        self.level_change_started.clear();
+        self.level_change_animating = false;
     }
 
     /// Returns false for an unchanged frame. Rectangle lookup is O(queried chunks);
@@ -207,6 +228,7 @@ impl SpatialBatches {
         bounds: [i32; 4],
         view: View,
         hour: f32,
+        now: Instant,
     ) -> bool {
         self.evaluated_parts = 0;
         self.queried_chunks = 0;
@@ -214,10 +236,27 @@ impl SpatialBatches {
             allocator.building_ref_revision(),
             allocator.building_visual_revision,
         );
+        let (total, recorded) = allocator
+            .level_changes
+            .since(self.level_changes_seen.unwrap_or(u64::MAX));
+        let mut fresh = false;
+        if self.level_changes_seen.is_some() {
+            for &key in recorded {
+                self.level_change_started.insert(key, now);
+                fresh = true;
+            }
+        }
+        self.level_changes_seen = Some(total);
+        self.level_change_started
+            .retain(|_, start| now.duration_since(*start) < LEVEL_CHANGE_RISE);
+        let animating = !self.level_change_started.is_empty();
+        let settling = std::mem::replace(&mut self.level_change_animating, animating);
         if self.last_view == Some(view)
             && self.last_bounds == Some(bounds)
             && self.last_revision == Some(revision)
             && (!self.construction || self.last_hour == hour)
+            && !animating
+            && !settling
         {
             return false;
         }
@@ -253,12 +292,14 @@ impl SpatialBatches {
         let parts = &self.parts;
         let catalog = &self.catalog;
         let assets = &self.assets;
+        let rising = &self.level_change_started;
         // par_bridge borrows the map; HashMap::par_iter_mut would first allocate a staging Vec.
         self.chunks
             .iter_mut()
             .par_bridge()
             .for_each(|(key, chunk)| {
-                let changed = chunk.revision != Some(revision) || chunk.construction;
+                // A fresh level change restarts its building's rise even without a revision bump.
+                let changed = chunk.revision != Some(revision) || chunk.construction || fresh;
                 if changed {
                     chunk.instances.clear();
                     chunk.construction = false;
@@ -318,6 +359,16 @@ impl SpatialBatches {
                                 y -= construction_rise_offset_m(
                                     building,
                                     construction_visual_progress(building, hour),
+                                );
+                            } else if !rising.is_empty()
+                                && let Some(start) =
+                                    rising.get(&(building.parcel_id, building.build_generation))
+                            {
+                                // Rebuilt every frame like construction until the rise ends.
+                                chunk.construction = true;
+                                y -= construction_rise_offset_m(
+                                    building,
+                                    level_change_rise_progress(now.duration_since(*start)),
                                 );
                             }
                             let lighting = super::window_lighting::parameters(
