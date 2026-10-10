@@ -181,6 +181,7 @@ pub(super) fn maybe_schedule_work_trip(
             transit_network,
             graph,
             pathfind_count,
+            None,
         )
     {
         cache.record_commute_estimate(estimate, sim_time, time, operational_clock);

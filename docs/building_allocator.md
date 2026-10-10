@@ -351,13 +351,12 @@ allocator maintenance path. Broken and unfinished placed buildings remain inspec
 Household detail aggregation is a separate bridge path and remains under audit.
 
 `AUDIT-01-B1` locality validation runs the ignored release test
-`simulation::buildings::allocator::tests::indexing::benchmark_building_pick_locality`
-with `RAYON_NUM_THREADS=24` and CPU affinity 0. Five fresh processes each use three warm-up and
-11 measured samples of 2,000 picks, retaining 32 nearby buildings and adding 0 / 1,024 / 65,536
-distant buildings. Setup/index construction is excluded; each workload checks the same chosen
-building. Query medians are **76.752 / 74.401 / 75.689 ns**. Exact binary/source identity and raw
-results are `/tmp/metrum-full-audit/building-pick-after-identity.json` and
-`building-pick-locality*.{json,log}`. This establishes clean-query locality, not an old/new speedup.
+`simulation::buildings::allocator::tests::indexing::benchmark_building_pick_locality` with
+`RAYON_NUM_THREADS=24` and CPU affinity 0. Five fresh processes each use three warm-up and 11
+measured samples of 2,000 picks, retaining 32 nearby buildings and adding 0 / 1,024 / 65,536 distant
+buildings. Setup/index construction is excluded; each workload checks the same chosen building.
+Query medians are **76.752 / 74.401 / 75.689 ns**. This establishes clean-query locality, not an
+old/new speedup.
 
 Current vacancy rule:
 
@@ -418,13 +417,11 @@ site rebuild or setup time is measured. Building/parcel checksums and revisions 
 
 These are medians of process medians for dispatch/revalidation, not whole-tick or demolition
 speedups. The removed O(B) key construction allocated one hash table plus an asset-ID copy per
-building. Artifacts are `/tmp/metrum-full-audit/demand-lookup-{before,after}-identity.json`,
-`demand-lookup-matched-bench.json`, `demand-lookup-matched-summary.json` and per-pair logs.
-Before/after executable SHA-256 values are
+building. Before/after executable SHA-256 values are
 `120735fac831810ccdd5855fe61eef5837575050c6a89c454e0ad9d2e12eacbc` and
-`82818134ba5af4d05188806130e0646fbeb0668a1e8dea78acb10518ec76295a`.
-The existing combined action regression now removes the first storage slot before upgrading and
-downgrading survivors, and rejects a stale asset key on an otherwise removable parcel.
+`82818134ba5af4d05188806130e0646fbeb0668a1e8dea78acb10518ec76295a`. The existing combined
+action regression now removes the first storage slot before upgrading and downgrading
+survivors, and rejects a stale asset key on an otherwise removable parcel.
 
 ### Site radius maintenance audit (`AUDIT-01-B3`)
 
@@ -472,15 +469,12 @@ grow from 0.0069 to 3.4011 ms before and 0.0070 to 3.3856 ms after. Planning rem
 results establish no general road-planning speedup or exported cross-build payload-hash comparison.
 
 Builds use `cargo test --offline --manifest-path rust/Cargo.toml --release --lib`, Rust 1.98.1
-(48a229cea 2026-09-01). Affinity is CPU 0 for one worker and `0,2,4,6,8,10,12,14` for eight,
-with `RAYON_NUM_THREADS` matching and `METRUM_DEBUG=0`. Before/after executable SHA-256 values are
+(48a229cea 2026-09-01). Affinity is CPU 0 for one worker and `0,2,4,6,8,10,12,14` for eight, with
+`RAYON_NUM_THREADS` matching and `METRUM_DEBUG=0`. Before/after executable SHA-256 values are
 `33a93821ce3c018a4c516237cbceb3a6d2b7087d52fefa63bbc11f7279e1041f` and
-`87652b2ff206b2409017f57562c6daafc09337b26953d0154e09ca62f52b45ee`.
-Source/binaries stayed fixed and no compilation, tests or archive compression competed with accepted
-measurements. Runners, exact commands, source identities and results are in
-`/tmp/metrum-full-audit/site-radius-*`. The initial capture hit the temporary quota; its incomplete
-copy and unmatched probe were excluded. Verified compression recovered space before all matched
-pairs restarted (`site-radius-capture-quota.log`, `binary_archives.json`).
+`87652b2ff206b2409017f57562c6daafc09337b26953d0154e09ca62f52b45ee`. Source/binaries stayed fixed and
+no compilation, tests or archive compression competed with accepted measurements. The initial
+capture hit the temporary quota; its incomplete copy and unmatched probe were excluded.
 
 ## Rezoning clock correction (`AUDIT-01-B4`)
 
@@ -511,13 +505,11 @@ All pairs retain identical parcel/position/countdown checksums and occupancy/ref
 | 262,144 | 15.8464665 | 15.940285 |
 
 These medians of process medians show essentially unchanged daily scan cost; they establish no
-road-edit locality or whole-maintenance speedup. Builds use Rust 1.98.1 and
-`cargo test --offline --manifest-path rust/Cargo.toml --release --lib`. Before/after executable
-SHA-256 values are `7c139ec8bd65608a81e73684535721497177ee4f786563580b4d04eda51a7bfe` and
-`51c4d9a6cc124ce4e40b62e792b44c17a1dea0ef5529f5002cd892023f19172a`.
-Exact commands, fixed source identities, the failing baseline regression and matched outputs are
-retained under `/tmp/metrum-full-audit/rezone-clock-*`. Compilation and engine checks ran separately
-from timing comparisons.
+road-edit locality or whole-maintenance speedup. Builds use Rust 1.98.1 and `cargo test --offline
+--manifest-path rust/Cargo.toml --release --lib`. Before/after executable SHA-256 values are
+`7c139ec8bd65608a81e73684535721497177ee4f786563580b4d04eda51a7bfe` and
+`51c4d9a6cc124ce4e40b62e792b44c17a1dea0ef5529f5002cd892023f19172a`. Compilation and engine checks
+ran separately from timing comparisons.
 
 ## Explicit lot-query correction (`AUDIT-01-B5`)
 
@@ -553,12 +545,10 @@ separately measured first/revalidation call is 0.05649/0.05487 ms before/after a
 general placement speedup; the boundary regression establishes the corrected rejection behavior.
 
 Builds use Rust 1.98.1 and `cargo test --offline --manifest-path rust/Cargo.toml --release --lib`.
-Runs use CPU affinity `0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`, `METRUM_DEBUG=0`, without competing
-compilation/tests. Before/after executable SHA-256 values are
+Runs use CPU affinity `0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`, `METRUM_DEBUG=0`, without
+competing compilation/tests. Before/after executable SHA-256 values are
 `e01d8824fbf3aa3df8c0151bb0e97647c333f3d567a39995096c0a85892b68f9` and
 `4a530c6a5d508e409a9a91bd0c797dc4add738b2ef05ccf0d2c87d45c1c2f76b`.
-Exact commands, four-file diff, source identities and results are in
-`/tmp/metrum-full-audit/lot-query-*`.
 
 ## Redevelopment rerolls a plot (`RENDER-08`)
 
@@ -591,8 +581,7 @@ family and within-family variant tests retain their separate assertions while sh
 Their copied hash algorithm, obsolete strip naming and profile-lookup helper with ignored allocator
 and graph arguments are removed. Missing spawned parcels now fail the fixture explicitly.
 
-All 1,754 release tests pass (52 ignored). The baseline vector run, complete final suite, three-file
-diff and source-comparison evidence are retained under `/tmp/metrum-full-audit/parcel-hash-*`.
+All 1,754 release tests pass (52 ignored).
 
 ## Road dependency grid correction (`AUDIT-01-B7`)
 
@@ -626,12 +615,10 @@ microseconds to revalidation; warm queries retain locality. These measurements c
 feasibility, not complete placement or arbitrary road-edit latency.
 
 Builds use Rust 1.98.1 and `cargo test --offline --manifest-path rust/Cargo.toml --release --lib`.
-Matched runs use `RAYON_NUM_THREADS=8`, `METRUM_DEBUG=0`, CPU affinity
-`0,2,4,6,8,10,12,14`, and no competing compilation/tests. Executable SHA-256 values are
+Matched runs use `RAYON_NUM_THREADS=8`, `METRUM_DEBUG=0`, CPU affinity `0,2,4,6,8,10,12,14`, and
+no competing compilation/tests. Executable SHA-256 values are
 `69080b7e81319429aec298641bef2a4c60f5ab0e43544bd68ef5f0d6c697f3e2` before and
 `c29c1f793a1914aba3c6abb10029c13d20d567f0c939f80292cdce2935e7c2e6` after.
-Exact commands, source identities, two-file diff and logs are in
-`/tmp/metrum-full-audit/site-dependencies-*`.
 
 ## City-scale spawn and admission cost (`ALLOC-02`, `ALLOC-03`)
 

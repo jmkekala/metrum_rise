@@ -189,14 +189,13 @@ Building polling (`AUDIT-01-F5`) uses one refresh per 30 process frames in both 
 headless execution. Asset-instance setup owns the aligned packed requests; periodic refresh
 reuses them. The all-city Rust transform scans remain a separate audit item.
 
-Matched headless release-extension measurements use
-`godot --headless --path godot --script res://tests/building_asset_reload_test.gd -- --benchmark-building-poll`,
-CPU affinity 0, `RAYON_NUM_THREADS=24`, `METRUM_DEBUG=0`, and five alternating process pairs.
-An empty world with one generated asset containing 2 / 128 / 1,024 mesh parts measures completed
-request/bridge/upload calls, excluding busy replies, fixture import and node setup. Medians change
-from **12.05 / 272.85 / 2,498.85 µs** to **9.90 / 183.85 / 1,598.35 µs**. These are boundary costs,
-not populated-city rendering acceptance. Raw logs, matched results and exact source/extension
-identities are under `/tmp/metrum-full-audit/building-poll-*`.
+Matched headless release-extension measurements use `godot --headless --path godot --script
+res://tests/building_asset_reload_test.gd -- --benchmark-building-poll`, CPU affinity 0,
+`RAYON_NUM_THREADS=24`, `METRUM_DEBUG=0`, and five alternating process pairs. An empty world with
+one generated asset containing 2 / 128 / 1,024 mesh parts measures completed request/bridge/upload
+calls, excluding busy replies, fixture import and node setup. Medians change from **12.05 / 272.85 /
+2,498.85 µs** to **9.90 / 183.85 / 1,598.35 µs**. These are boundary costs, not populated-city
+rendering acceptance.
 
 Shipped design:
 
@@ -1685,16 +1684,13 @@ timing separates transform calculation from outline/UI rebuild: one/two selected
 1.859/2.445 µs. Group outlines rebuild once per update; pointer motion takes no document snapshots.
 
 Reproduce with a release `.so` and a fresh `XDG_DATA_HOME`/`XDG_CONFIG_HOME` for **each** process:
-`RAYON_NUM_THREADS=4 godot --headless --path <project> --script res://tests/asset_selection_test.gd -- --asset-editor --benchmark-asset-selection`;
-substitute `asset_workspace_test.gd` / `--benchmark-asset-workspace` or
-`asset_editor_preview_test.gd` / `--benchmark-asset-preview`. Render checks use
-`--display-driver x11 --rendering-method forward_plus` instead of `--headless`, with
-`--capture-selection=<directory>` or `--capture-workspace=<directory>`.
-Local artifacts: `/tmp/metrum-context.16ONJ5/`; `complete-*.log`, `rust-complete.log`,
-`rustdoc-complete.log`, `render-accepted-*`, `accept-bench-baseline-*.log` and
-`accepted-current-*.log`. Baseline/current library SHA-256 prefixes: `ca964f35eb0f` /
-`fe522773cce90`. Timed production diff: `production.diff` (`2590f3844968`), plus new-file
-hashes in `new-source-sha256.txt` (`af397e428b45`). Earlier exploratory runs are not acceptance data.
+`RAYON_NUM_THREADS=4 godot --headless --path <project> --script res://tests/asset_selection_test.gd
+-- --asset-editor --benchmark-asset-selection`; substitute `asset_workspace_test.gd` /
+`--benchmark-asset-workspace` or `asset_editor_preview_test.gd` / `--benchmark-asset-preview`.
+Render checks use `--display-driver x11 --rendering-method forward_plus` instead of `--headless`,
+with `--capture-selection=<directory>` or `--capture-workspace=<directory>`. Baseline/current
+library SHA-256 prefixes: `ca964f35eb0f` / `fe522773cce90`. Earlier exploratory runs are not
+acceptance data.
 
 Start flow:
 
@@ -2263,20 +2259,17 @@ Building families and upgrade levels:
 - A building at level N upgrades to level N+1 in the same family when the runtime finds a registered asset with the same `upgrade_family` and `level = N+1`. No pointer in the manifest is required.
 - Each family member is independently authorable. Creating a level-2 variant later never requires editing the level-1 file.
 - A building with no `upgrade_family` belongs to no family and never upgrades. This is valid for true one-off buildings and landmarks, but it is risky as an accidental omission on ordinary zoned private buildings.
-- Runtime family and zone/density queries borrow their string keys. The upgrade index uses
-  direct tier buckets (at most 256 for the `u8` tier domain); tier 255 has no successor.
-  These are the existing registry indices, not additional copies of asset identity.
-  Audit acceptance (`AUDIT-01-AS1/AS2`): five alternating unprofiled release process pairs per
-  CPU, pinned separately to CPUs 0 and 16, `RAYON_NUM_THREADS=24`. Each fixture registers
-  128 or 2,048 families with two validated tiers; setup and correctness assertions are outside
-  timing. Three warmups precede 11 samples of 64 sweeps, measuring upgrade, downgrade and
-  zone/density lookup as one triplet. Median ns/triplet for 128 / 2,048 families:
-  CPU 0 `103.339 / 148.413 → 75.215 / 123.192`; CPU 16
-  `193.128 / 263.371 → 145.682 / 213.586`. This measures registry queries only.
-  Command: `assets::registry::tests::benchmark_asset_registry_lookups --exact --ignored --nocapture`
-  on the matched release test executables. Raw rows and executable/source identities are in
-  `/tmp/metrum-full-audit/asset-registry-pinned-matched-bench.json`,
-  `asset-registry-before-identity.json` and `asset-registry-tier-index-after-identity.json`.
+- Runtime family and zone/density queries borrow their string keys. The upgrade index uses direct
+  tier buckets (at most 256 for the `u8` tier domain); tier 255 has no successor. These are the
+  existing registry indices, not additional copies of asset identity. Audit acceptance
+  (`AUDIT-01-AS1/AS2`): five alternating unprofiled release process pairs per CPU, pinned separately
+  to CPUs 0 and 16, `RAYON_NUM_THREADS=24`. Each fixture registers 128 or 2,048 families with two
+  validated tiers; setup and correctness assertions are outside timing. Three warmups precede 11
+  samples of 64 sweeps, measuring upgrade, downgrade and zone/density lookup as one triplet. Median
+  ns/triplet for 128 / 2,048 families: CPU 0 `103.339 / 148.413 → 75.215 / 123.192`; CPU 16 `193.128
+  / 263.371 → 145.682 / 213.586`. This measures registry queries only. Command:
+  `assets::registry::tests::benchmark_asset_registry_lookups --exact --ignored --nocapture` on the
+  matched release test executables.
 
 - `lot_width_cells` and `lot_depth_cells` must be identical for all members of a family. The footprint does not change on upgrade; only the mesh and capacities change.
 - `household_capacity`, `worker_capacity`, and `flat_size_m2` are tier-specific. A level-2 building may house more households or provide larger flats than a level-1 building of the same family.
@@ -2714,14 +2707,12 @@ inapplicable to the asset type. The unused direct-write SimulationNode exporter 
 runtime publication has one staged file-service implementation.
 
 Fresh audit verification: `cargo test` passes **1,833 tests (63 ignored)**; `cargo check --benches`,
-`cargo doc --no-deps`, release build, formatting and shell/diff checks pass without warnings.
-All six asset-editor headless suites pass using the isolated project created by `run.sh --test`.
+`cargo doc --no-deps`, release build, formatting and shell/diff checks pass without warnings. All
+six asset-editor headless suites pass using the isolated project created by `run.sh --test`.
 Adjacent machinery, camera-save/load, selection-gesture, UI-settings, day-cycle and building-asset
 reload suites pass. Four X11 / Forward+ rendered suites (selection, layout, workspace and preview)
-exit successfully; inspected captures cover task spacing and direct access-point selection.
-Logs/captures: `/tmp/metrum-precommit.Dl9Msd/`; headless asset logs:
-`/tmp/metrum-asset-tests.7xPBx4/`. Deployed release library SHA-256:
-`5a5ddeb006068a5818dbf23394922352a29008e1457543693ce14918aab6a852`.
+exit successfully; inspected captures cover task spacing and direct access-point selection. Deployed
+release library SHA-256: `5a5ddeb006068a5818dbf23394922352a29008e1457543693ce14918aab6a852`.
 
 Two sequential unprofiled release-extension runs use Godot 4.7.2, four Rayon workers and separate
 XDG profiles. Commands: `godot --headless --path <isolated-project> --script
@@ -2754,134 +2745,117 @@ The adjacent camera save/load and machinery bridge checks also pass. One concurr
 run printed PASS then crashed on shutdown; an isolated debug rerun and three sequential release
 reruns exited cleanly. Its cause is unconfirmed; the final asset regressions run sequentially.
 
-Native Wayland / Forward+ rendered checks on Radeon RX 7900 XTX cover dark/light task layouts,
-Model sub-sections, bounded creation/pack/preview dialogs, thumbnail capture/undo/draft/publication/reopen, unclipped chrome and pane-centered
-framing at 1280×900 and 960×640. Artifacts: `/tmp/metrum-authoring.DVzbwb/captures/` and sibling logs.
+Native Wayland / Forward+ rendered checks on Radeon RX 7900 XTX cover dark/light task layouts, Model
+sub-sections, bounded creation/pack/preview dialogs, thumbnail
+capture/undo/draft/publication/reopen, unclipped chrome and pane-centered framing at 1280×900 and
+960×640.
 
 Two matched unprofiled release measurements used the generated one-part box fixture, Godot 4.7.2,
-`RAYON_NUM_THREADS=4`, 100 metadata commands and 10,000 idle camera/LOD updates. Command:
-`godot --headless --path godot --script res://tests/asset_workspace_test.gd -- --asset-editor --benchmark-asset-workspace`
-with isolated `XDG_DATA_HOME` / `XDG_CONFIG_HOME`. Metadata commands averaged 261.220 / 259.010 µs;
-idle updates 1.560 / 1.556 µs, with zero model imports and zero idle per-part policy evaluations.
-Field edits style only the changed validation subtree, not every editor dialog.
-Release library SHA-256: `b50cba91e17a35d7d0257d77bd263e934593421d1b3a89ba5f88442507ab726b`.
+`RAYON_NUM_THREADS=4`, 100 metadata commands and 10,000 idle camera/LOD updates. Command: `godot
+--headless --path godot --script res://tests/asset_workspace_test.gd -- --asset-editor
+--benchmark-asset-workspace` with isolated `XDG_DATA_HOME` / `XDG_CONFIG_HOME`. Metadata commands
+averaged 261.220 / 259.010 µs; idle updates 1.560 / 1.556 µs, with zero model imports and zero idle
+per-part policy evaluations. Field edits style only the changed validation subtree, not every editor
+dialog. Release library SHA-256: `b50cba91e17a35d7d0257d77bd263e934593421d1b3a89ba5f88442507ab726b`.
 Editor/fixture source digest: `6bca33a1f49e61e9699d2123354bc92069b3b0fc549d1953a0a52468e07f9055`
-(`sha256sum godot/scripts/editors/asset_editor/*.gd godot/scripts/editors/asset_editor.gd godot/scripts/core/editor_camera_input.gd godot/tests/asset_workspace_test.gd | sha256sum`).
-Logs: `/tmp/metrum-authoring.DVzbwb/workspace-final-release-{1,2}.log`. These measure editor command/idle
-cost only, not city-scale rendering or GPU performance. Roadside/traffic scenes, autosave/recovery,
-standardized thumbnail rigs and gameplay LOD integration remain separate work.
+(`sha256sum godot/scripts/editors/asset_editor/*.gd godot/scripts/editors/asset_editor.gd
+godot/scripts/core/editor_camera_input.gd godot/tests/asset_workspace_test.gd | sha256sum`). These
+measure editor command/idle cost only, not city-scale rendering or GPU performance. Roadside/traffic
+scenes, autosave/recovery, standardized thumbnail rigs and gameplay LOD integration remain separate
+work.
 
 Startup/layout follow-up verification (2026-09-19): all five targeted headless asset regressions
 pass, including the new `asset_layout_test.gd` in `run.sh --test`. It covers a fresh welcome,
-cancelled dialogs, import-ready Model, selection/comparison actions, library activation into a
-real published fixture, 1,699-pixel stale preferences, drag limits, collapsed/resized restoration,
-Reset layout, idle preference stability, and 960×640 / 1440×900 / 3063×1751 layouts at 100/150/200%.
-The same regression passes rendered on native Wayland / Forward+ in both themes; settled captures
-are at `/tmp/metrum-layout.zFcGpF/verified-captures/`, with sibling test logs. Fixtures are generated
-in isolated user profiles. Layout work is O(1) per coalesced UI layout event and adds no idle loop.
-Two sequential, unprofiled release runs of the existing workspace benchmark command above used
-separate isolated profiles and `RAYON_NUM_THREADS=4`, with the same release library hash above.
-Metadata edits averaged 276.770 / 275.820 µs; idle updates 1.590 / 1.564 µs; imports and idle
-per-part policy evaluations remained zero. Logs: `/tmp/metrum-layout.zFcGpF/acceptance-{1,2}.log`.
-Follow-up source digest: `beab756bd646191b6e97cefde14c6b52bb8e821d4b2d5697436c9ffcba8b3148`
-(`sha256sum godot/scripts/editors/asset_editor/*.gd godot/scripts/editors/asset_editor.gd godot/scripts/core/editor_camera_input.gd godot/scripts/ui/top_menu.gd godot/tests/asset_workspace_test.gd godot/tests/asset_layout_test.gd | sha256sum`).
-The earlier Rust checks and timing/capture artifacts describe the original authoring build;
-this follow-up changes only editor UI/workflow and its regressions, not simulation or asset contracts.
+cancelled dialogs, import-ready Model, selection/comparison actions, library activation into a real
+published fixture, 1,699-pixel stale preferences, drag limits, collapsed/resized restoration, Reset
+layout, idle preference stability, and 960×640 / 1440×900 / 3063×1751 layouts at 100/150/200%.
+Fixtures are generated in isolated user profiles. Layout work is O(1) per coalesced UI layout event
+and adds no idle loop. Two sequential, unprofiled release runs of the existing workspace benchmark
+command above used separate isolated profiles and `RAYON_NUM_THREADS=4`, with the same release
+library hash above. Metadata edits averaged 276.770 / 275.820 µs; idle updates 1.590 / 1.564 µs;
+imports and idle per-part policy evaluations remained zero. Follow-up source digest:
+`beab756bd646191b6e97cefde14c6b52bb8e821d4b2d5697436c9ffcba8b3148` (`sha256sum
+godot/scripts/editors/asset_editor/*.gd godot/scripts/editors/asset_editor.gd
+godot/scripts/core/editor_camera_input.gd godot/scripts/ui/top_menu.gd
+godot/tests/asset_workspace_test.gd godot/tests/asset_layout_test.gd | sha256sum`). The earlier Rust
+checks and timing/capture artifacts describe the original authoring build; this follow-up changes
+only editor UI/workflow and its regressions, not simulation or asset contracts.
 
-Export discoverability verification (2026-09-20): all six headless asset suites pass with the existing
-extension. The layout suite exercises toolbar/File export for incomplete and valid assets, collapsed
-inspector recovery, non-publishing review, disabled empty-state export and retained File draft commands.
-Rendered X11 / Forward+ layout checks pass in both themes at 100/150/200% UI scale; logs and captures:
-`/tmp/metrum-export-navigation.V3RSSv/` (`*-accepted.log`, `rendered-layout.log`, `captures/`).
-This is event-driven UI navigation using existing validation; no new idle work or simulation changes.
+Export discoverability verification (2026-09-20): all six headless asset suites pass with the
+existing extension. The layout suite exercises toolbar/File export for incomplete and valid assets,
+collapsed inspector recovery, non-publishing review, disabled empty-state export and retained File
+draft commands. This is event-driven UI navigation using existing validation; no new idle work or
+simulation changes.
 
 LOD workflow verification (2026-09-20): all six headless asset suites and rendered X11 / Forward+
 preview/layout suites pass. Generated fixtures exercise visible Add LOD1–3, immediate preview,
-selected-tier replacement preserving other sources/transforms/bands, undo/redo, removal and automatic
-selection. Layout assertions keep Add LOD on-screen at 960×640 through 3063×1751 and 100/150/200% UI
-scale. Short lists fit their rows; longer lists scroll after five rows. Artifacts:
-`/tmp/metrum-lod-workflow.Guc0R7/` (`*-accepted.log`, `accepted-render-*.log`, `accepted-*-captures/`).
+selected-tier replacement preserving other sources/transforms/bands, undo/redo, removal and
+automatic selection. Layout assertions keep Add LOD on-screen at 960×640 through 3063×1751 and
+100/150/200% UI scale. Short lists fit their rows; longer lists scroll after five rows.
 
 Matched sequential unprofiled measurements used the existing one-part synthetic-box workspace
-benchmark, Godot 4.7.2 and `RAYON_NUM_THREADS=4`, with separate isolated XDG profiles and no renderer
-running concurrently. Command: `godot --headless --path /tmp/metrum-reference-label.wfAwYu/project
---script res://tests/asset_workspace_test.gd -- --asset-editor --benchmark-asset-workspace`.
-For 100 metadata edits / 10,000 idle updates, before means were 303.770 / 290.700 µs per edit and
-1.621 / 1.594 µs idle; after means were 290.900 / 324.760 µs per edit and 1.562 / 1.585 µs idle.
-All runs had zero reimports and zero idle per-part policy evaluations. List rebuilds remain O(LODs)
-on selection/document changes; fitting their visible height is O(1), with no new idle work.
-Logs: `before-{1,2}.log`, `accepted-after-{1,2}.log` in the artifact directory. Unchanged release
-library SHA-256: `5a5ddeb006068a5818dbf23394922352a29008e1457543693ce14918aab6a852`;
-workflow source/test digest: `c828b0e156cdb66705ef8db039995d626b4f8a0d1b90d1ded54005c928abb379`.
-These are editor-input measurements, not city-renderer performance or fresh Rust-suite validation.
+benchmark, Godot 4.7.2 and `RAYON_NUM_THREADS=4`, with separate isolated XDG profiles and no
+renderer running concurrently. For 100 metadata edits / 10,000 idle updates, before means were
+303.770 / 290.700 µs per edit and 1.621 / 1.594 µs idle; after means were 290.900 / 324.760 µs per
+edit and 1.562 / 1.585 µs idle. All runs had zero reimports and zero idle per-part policy
+evaluations. List rebuilds remain O(LODs) on selection/document changes; fitting their visible
+height is O(1), with no new idle work. Unchanged release library SHA-256:
+`5a5ddeb006068a5818dbf23394922352a29008e1457543693ce14918aab6a852`; workflow source/test digest:
+`c828b0e156cdb66705ef8db039995d626b4f8a0d1b90d1ded54005c928abb379`. These are editor-input
+measurements, not city-renderer performance or fresh Rust-suite validation.
 
 Visible-LOD selection follow-up (2026-09-20): all six headless asset suites and rendered X11 /
-Forward+ preview/selection suites pass. Tests cover distant-mesh clicks, automatic refinement,
-part switching, replacement of the actual rendered tier, explicit clicks on an already highlighted
-row, and failed-tier repair. Artifacts: `/tmp/metrum-visible-lod.3iHUKm/` (`*-final.log`,
-`render-{preview,selection}.log`, `{preview,selection}-captures/`). No Rust or asset-format changes.
-Highlight updates are O(1), do not rebuild the list, and leave idle policy evaluation at zero.
-Two matched sequential unprofiled runs used the unchanged release library above, four Rayon workers,
-isolated XDG profiles and `godot --headless --path /tmp/metrum-reference-label.wfAwYu/project
---script res://tests/asset_editor_preview_test.gd -- --asset-editor --benchmark-asset-preview`.
-With one part/four LODs, 100 warm-up transitions then 2,000 alternating 32/900-pixel camera updates,
-mean CPU update cost was 7.966 / 8.362 µs before and 9.389 / 9.467 µs after; the extra live row/button
-synchronization adds about 1.3 µs per transition, with zero mesh imports and unchanged O(parts)
-camera-update complexity. Logs: `before-{1,2}.log`, `after-{1,2}.log` in that directory. These measure
-synchronous preview updates, not GPU frame time. Panel/controller/preview-test/selection-test digest:
-`b5dbe3f7050e5c7be4128e5050898c8ac7ec937139b46ef737c7d8127b154da1`.
+Forward+ preview/selection suites pass. Tests cover distant-mesh clicks, automatic refinement, part
+switching, replacement of the actual rendered tier, explicit clicks on an already highlighted row,
+and failed-tier repair. No Rust or asset-format changes. Highlight updates are O(1), do not rebuild
+the list, and leave idle policy evaluation at zero. With one part/four LODs, 100 warm-up transitions
+then 2,000 alternating 32/900-pixel camera updates, mean CPU update cost was 7.966 / 8.362 µs before
+and 9.389 / 9.467 µs after; the extra live row/button synchronization adds about 1.3 µs per
+transition, with zero mesh imports and unchanged O(parts) camera-update complexity. These measure
+synchronous preview updates, not GPU frame time. Panel/controller/preview-test/selection-test
+digest: `b5dbe3f7050e5c7be4128e5050898c8ac7ec937139b46ef737c7d8127b154da1`.
 
-Temporary-inspection correction (2026-09-20): the previous follow-up still left Add/Replace and
-row selection permanently forced, so zooming close could remain on LOD3. A generated four-tier
+Temporary-inspection correction (2026-09-20): the previous follow-up still left Add/Replace and row
+selection permanently forced, so zooming close could remain on LOD3. A generated four-tier
 import/replacement regression reproduced this before the fix. Camera transform/projection changes
-now resume Automatic, including on unselected parts, with no list rebuild or source mutation.
-All six headless suites and rendered X11 / Forward+ preview/selection suites pass, including
-close perspective picking after coarse-tier inspection, immediate inspection at a changed view,
-and idle inspection retention. Artifacts: `/tmp/metrum-lod-resume.Gwl32p/` (`repro.log`,
-`*-final.log`, `render-{preview,selection}.log`, `{preview,selection}-captures/`).
-Two sequential unprofiled runs of the same command/workload above, unchanged release extension,
-four Rayon workers and isolated XDG profiles measured 9.349 / 9.414 µs before and 9.679 / 9.534 µs
-after per automatic transition, with zero imports; idle policy evaluations remain zero.
-Logs: `before-{1,2}.log`, `after-{1,2}.log`. Complexity stays O(1) idle and O(parts) on camera
-changes; this measures editor CPU updates, not GPU/city rendering. No Rust suite rerun.
-Source digest (`sha256sum godot/scripts/editors/asset_editor.gd
-godot/scripts/editors/asset_editor/preview_panel.gd godot/scripts/editors/asset_editor/preview_lod.gd
-godot/tests/asset_editor_preview_test.gd godot/tests/asset_selection_test.gd | sha256sum`):
+now resume Automatic, including on unselected parts, with no list rebuild or source mutation. All
+six headless suites and rendered X11 / Forward+ preview/selection suites pass, including close
+perspective picking after coarse-tier inspection, immediate inspection at a changed view, and idle
+inspection retention. Two sequential unprofiled runs of the same command/workload above, unchanged
+release extension, four Rayon workers and isolated XDG profiles measured 9.349 / 9.414 µs before and
+9.679 / 9.534 µs after per automatic transition, with zero imports; idle policy evaluations remain
+zero. Complexity stays O(1) idle and O(parts) on camera changes; this measures editor CPU updates,
+not GPU/city rendering. No Rust suite rerun. Source digest (`sha256sum
+godot/scripts/editors/asset_editor.gd godot/scripts/editors/asset_editor/preview_panel.gd
+godot/scripts/editors/asset_editor/preview_lod.gd godot/tests/asset_editor_preview_test.gd
+godot/tests/asset_selection_test.gd | sha256sum`):
 `39559648a416debfbedf9b5391632ed694e144b28631594aaa1f0194881bd2d7`.
 
 LOD-details presentation follow-up (2026-09-20): headless preview/layout and rendered X11 /
 Forward+ preview checks pass. Regression covers collapsed-by-default projected size, expansion,
-live updates in both states and clearing the asset. Artifacts: `/tmp/metrum-lod-details.Ug1k2q/`
-(`after-{1,2}.log`, `layout.log`, `render-preview.log`, `captures/`). Using the same benchmark
-command, release extension, four workers, isolated profiles and sequential workload above,
-automatic transitions measured 9.759 / 9.640 µs before and 10.027 / 10.228 µs after, with zero
-imports and zero idle policy evaluations. The label split preserves O(1) selected-panel work;
-LOD policy is unchanged. Panel/preview-test digest (`sha256sum` of those two files, then
-`sha256sum`): `52bcdca47a71e2170c05d30e5fadcbc1ef4b216e25186594cbdf592eadf765fb`.
+live updates in both states and clearing the asset. Using the same benchmark command, release
+extension, four workers, isolated profiles and sequential workload above, automatic transitions
+measured 9.759 / 9.640 µs before and 10.027 / 10.228 µs after, with zero imports and zero idle
+policy evaluations. The label split preserves O(1) selected-panel work; LOD policy is unchanged.
+Panel/preview-test digest (`sha256sum` of those two files, then `sha256sum`):
+`52bcdca47a71e2170c05d30e5fadcbc1ef4b216e25186594cbdf592eadf765fb`.
 
 Source-material summary removal (2026-09-20): all six headless asset suites and rendered X11 /
 Forward+ workspace/preview suites pass, including all-tier night emission and source-preserving
 export. The unused UI, catalog and selection-time deep copy/formatting are removed; emission
-surface capture is unchanged. Artifacts: `/tmp/metrum-remove-materials.cCbgJQ/` (`asset*.log`,
-`render-*.log`, `*-captures/`). Two matched sequential unprofiled workspace runs used the unchanged
-release extension above, `RAYON_NUM_THREADS=4`, isolated XDG profiles and command
-`godot --headless --path /tmp/metrum-reference-label.wfAwYu/project --script
-res://tests/asset_workspace_test.gd -- --asset-editor --benchmark-asset-workspace`.
-For 100 metadata edits / 10,000 idle updates, before means were 289.410 / 286.040 µs per edit
-and 1.565 / 1.614 µs idle; after means were 275.700 / 287.700 µs and 1.590 / 1.617 µs.
-Zero imports and idle policy evaluations in every run (`before-{1,2}.log`, `after-{1,2}.log`).
-This removes O(material surfaces) summary storage/copying; existing import traversal and idle
-complexity are unchanged. No Rust or city-renderer changes; no Rust suite rerun.
+surface capture is unchanged. For 100 metadata edits / 10,000 idle updates, before means were
+289.410 / 286.040 µs per edit and 1.565 / 1.614 µs idle; after means were 275.700 / 287.700 µs and
+1.590 / 1.617 µs. This removes O(material surfaces) summary storage/copying; existing import
+traversal and idle complexity are unchanged. No Rust or city-renderer changes; no Rust suite rerun.
 
-Initial selection follow-up verification (2026-09-19, before the direct-click correction below): all six headless asset regressions pass, including
-`asset_selection_test.gd`, now included in `run.sh --test`. Generated fixtures cover oblique roof
-hits, empty space inside bounds, nested transforms, visible LODs, elevated yards/anchors, missing
-and relinked sources, task/explicit filters, overlap cycling, filtered box and mixed selection,
-zoom/UI-scaled handles, click jitter, drag/rotation/vertex undo, cancellation, inspector focus,
-modal blocking, comparison meshes and cache invalidation. Native Wayland / Forward+ checks pass
-with dark/light hover captures in `/tmp/metrum-selection.KzJu4V/final-captures/`; sibling logs hold
-the six headless results and `native-final.log`. This follow-up does not change Rust or run the full
-repository test suite; earlier Rust results remain historical evidence for the unchanged library.
+Initial selection follow-up verification (2026-09-19, before the direct-click correction below): all
+six headless asset regressions pass, including `asset_selection_test.gd`, now included in `run.sh
+--test`. Generated fixtures cover oblique roof hits, empty space inside bounds, nested transforms,
+visible LODs, elevated yards/anchors, missing and relinked sources, task/explicit filters, overlap
+cycling, filtered box and mixed selection, zoom/UI-scaled handles, click jitter,
+drag/rotation/vertex undo, cancellation, inspector focus, modal blocking, comparison meshes and
+cache invalidation. This follow-up does not change Rust or run the full repository test suite;
+earlier Rust results remain historical evidence for the unchanged library.
 
 `asset_selection.gd` owns gestures/hover state, `asset_picker.gd` collects deterministic hits, and
 `picking_overlay.gd` draws visible screen-space handles; `building_preview.gd` draws depth-tested
@@ -2915,42 +2889,43 @@ The overlapping two-mesh/one-anchor/one-yard fixture averaged **0.776 / 0.755 µ
 
 These generated sphere instances share one mesh resource; one lies under the ray and the others
 exercise AABB rejection. Each row has 1,000 queries. These are editor CPU acceptance measurements,
-not before/after or GPU/city-scale comparisons. Logs: `/tmp/metrum-selection.KzJu4V/acceptance-{1,2}.log`.
-Source digest: `38092abd8599810d5bb1c6003e79756ac6f941f1916316f37d3e97d15141be18`
-(`sha256sum godot/scripts/editors/asset_editor/*.gd godot/scripts/editors/asset_editor.gd godot/scripts/core/editor_camera_input.gd godot/scripts/renderers/building_preview.gd godot/tests/asset_selection_test.gd | sha256sum`).
+not before/after or GPU/city-scale comparisons. Source digest:
+`38092abd8599810d5bb1c6003e79756ac6f941f1916316f37d3e97d15141be18` (`sha256sum
+godot/scripts/editors/asset_editor/*.gd godot/scripts/editors/asset_editor.gd
+godot/scripts/core/editor_camera_input.gd godot/scripts/renderers/building_preview.gd
+godot/tests/asset_selection_test.gd | sha256sum`).
 
 Direct-click correction (2026-09-19): task-linked filtering was removed from the default workflow.
 Normal clicks select every object kind and open its settings, including reopening a collapsed
 inspector. Guide/text priority matches their visible overlay layer; billboard text bounds are
-queried from current Label3D nodes, excluding stale labels awaiting deletion. A deferred bounds-ready
-invalidation updates stationary hover after glyph layout; idle frames still do no geometry queries.
-Layout persistence moved from PREDELETE to tree exit, and detached callbacks reject unavailable windows.
-All six headless asset regressions and the native Wayland / Forward+ selection regression pass.
-The added fixture routes actual viewport mouse events through three parking rectangles, loading,
-driveway and their labels over a yard, from Model/Overview/Site, at 100/200% UI scaling. It verifies
-automatic settings navigation and collapsed-inspector expansion. Layout checks now detach/free the
-editor both after settling and with a pending layout callback. Logs and dark/light click captures:
-`/tmp/metrum-anchor-fix.8hM65b/` (`native-selection.log`, `captures/*-access-click.png`).
-Two sequential unprofiled release runs of the same selection benchmark command above, same Godot,
-four Rayon workers and unchanged release library, used separate isolated profiles. Idle checks:
-0.733 / 0.741 µs; All-object queries: 20.221 / 20.610 µs, with zero idle queries/cache rebuilds.
-The 66,048-triangle, 16-instance BVH case measured 9.550 / 9.322 µs per query; builds remained separate
-from query timing. Logs: `acceptance-{1,2}.log` in that directory. Bounds remain O(1) idle and
-O(asset instances + anchors + yard vertices + visited BVH nodes + hit sorting) on changed queries.
-Source digest: `6d71e4800f38f5524abab529bf9b15c322435faf6d33086e8e9065fd79d164b0`
-(`sha256sum godot/scripts/editors/asset_editor/*.gd godot/scripts/editors/asset_editor.gd godot/scripts/core/editor_camera_input.gd godot/scripts/renderers/building_preview.gd godot/tests/asset_selection_test.gd godot/tests/asset_layout_test.gd | sha256sum`).
-No Rust changes or fresh full-repository test run in this correction.
+queried from current Label3D nodes, excluding stale labels awaiting deletion. A deferred
+bounds-ready invalidation updates stationary hover after glyph layout; idle frames still do no
+geometry queries. Layout persistence moved from PREDELETE to tree exit, and detached callbacks
+reject unavailable windows. All six headless asset regressions and the native Wayland / Forward+
+selection regression pass. The added fixture routes actual viewport mouse events through three
+parking rectangles, loading, driveway and their labels over a yard, from Model/Overview/Site, at
+100/200% UI scaling. It verifies automatic settings navigation and collapsed-inspector expansion.
+Layout checks now detach/free the editor both after settling and with a pending layout callback. Two
+sequential unprofiled release runs of the same selection benchmark command above, same Godot, four
+Rayon workers and unchanged release library, used separate isolated profiles. Idle checks: 0.733 /
+0.741 µs; All-object queries: 20.221 / 20.610 µs, with zero idle queries/cache rebuilds. The
+66,048-triangle, 16-instance BVH case measured 9.550 / 9.322 µs per query; builds remained separate
+from query timing. Bounds remain O(1) idle and O(asset instances + anchors + yard vertices + visited
+BVH nodes + hit sorting) on changed queries. Source digest:
+`6d71e4800f38f5524abab529bf9b15c322435faf6d33086e8e9065fd79d164b0` (`sha256sum
+godot/scripts/editors/asset_editor/*.gd godot/scripts/editors/asset_editor.gd
+godot/scripts/core/editor_camera_input.gd godot/scripts/renderers/building_preview.gd
+godot/tests/asset_selection_test.gd godot/tests/asset_layout_test.gd | sha256sum`). No Rust changes
+or fresh full-repository test run in this correction.
 
 Scale-reference follow-up (2026-09-19): removed the shell's empty-click relocation path and
-duplicated human-toggle state. The shared picker/gesture controller now handles the reference
-and comparison helper without document transactions. The capsule is actually 1.8 m tall (the old
-configuration used 1.4 m); its cached geometry is created once, not during overlay rebuilds.
-All six headless asset regressions pass. The selection regression adds actual mouse events for
-figure/handle selection, top-down and oblique dragging, 100/200% UI scale, overlap priority, movement
-outside the lot, cancellation, empty-click deselection, rebuild persistence and undo/redo isolation.
-Native Wayland / Forward+ checks also pass; dark/light captures were inspected. Artifacts:
-`/tmp/metrum-scale-reference.03ZOi3/` (`final-asset_*test.log`, `render-verified.log`,
-`captures-verified/*-scale-reference.png`, `verified-acceptance-{1,2}.log`).
+duplicated human-toggle state. The shared picker/gesture controller now handles the reference and
+comparison helper without document transactions. The capsule is actually 1.8 m tall (the old
+configuration used 1.4 m); its cached geometry is created once, not during overlay rebuilds. All six
+headless asset regressions pass. The selection regression adds actual mouse events for figure/handle
+selection, top-down and oblique dragging, 100/200% UI scale, overlap priority, movement outside the
+lot, cancellation, empty-click deselection, rebuild persistence and undo/redo isolation. Native
+Wayland / Forward+ checks also pass; dark/light captures were inspected.
 
 Two sequential, unprofiled release-library acceptance runs used Godot 4.7.2, four Rayon workers,
 separate isolated XDG profiles, and `godot --headless --path godot --script
@@ -2972,8 +2947,7 @@ targets; Alt+click still cycles through them. All six asset headless suites pass
 X11/Forward+ on Godot 4.7.2 / RX 7900 XTX passes the selection suite and day/night pixel checks:
 four 16×16 regions behind a generated building are byte-identical with guides enabled or hidden.
 Visible parking/loading/driveway clicks, label picking, LOD openings, moving occluders and cached
-handle visibility are covered. Artifacts: `/tmp/metrum-guide-depth.IeWTwi/`, `final-*.log`,
-`rendered-accepted.log`, `captures-accepted/`.
+handle visibility are covered.
 
 Matched unprofiled release runs (four Rayon workers, isolated XDG profile, the existing
 `asset_selection_test.gd -- --asset-editor --benchmark-asset-selection` command) use two parts,
@@ -3011,11 +2985,9 @@ active-LOD material ownership are consolidated. Legacy single-mesh loading, glob
 scaling, write-only state and unused editing entry points are removed. UI widgets, camera/input,
 native mesh picking and rendering remain GDScript presentation code.
 
-Fresh consolidation verification: `cd rust && cargo test` passes 1,832 tests (63 ignored);
-`cargo check --benches` and the release build pass without warnings. All six headless asset-editor
-suites and `economy_machinery_test.gd` pass against the deployed release library. Artifacts:
-`/tmp/metrum-editor-cleanup.boDR12/` (`rust-full.log`, `bench-check.log`, `release-build.log`,
-`final-asset_*test.log`, `economy-machinery.log`). Library SHA-256:
+Fresh consolidation verification: `cd rust && cargo test` passes 1,832 tests (63 ignored); `cargo
+check --benches` and the release build pass without warnings. All six headless asset-editor suites
+and `economy_machinery_test.gd` pass against the deployed release library. Library SHA-256:
 `4e9010ddbfca01be311cc31aaeea1a80bc5eeeb1869c13ece4264015ba487b68`.
 
 Sequential unprofiled Godot 4.7.2 release-extension measurements used four Rayon workers and
@@ -3038,16 +3010,14 @@ show the framed mesh and emission correctly. The capture fixture now waits for d
 layout and asserts a visible projected size before framing/capture. These native checks cover
 rendering assertions and captures only (`rendered-preview.log`).
 
-Guide visual refresh (2026-09-19): frontage/access arrows share an eight-triangle filled glyph;
-the lot outline is constant-size geometry and frontage retains O(frontage cells) tick generation
-with at most three arrows. Existing anchor/yard edge generation and picking bounds are unchanged;
-no new per-frame mesh builds, textures, scene nodes or draw calls were introduced. All six headless
-asset suites pass, including cardinal frontage/lot-size and guide-height checks. Native Wayland /
-Forward+ selection assertions and inspected close-up day/night captures pass in both themes;
-test camera input is disabled so physical scrolling cannot disturb the fixed capture rig.
-These native checks cover selection assertions and captures only.
-Artifacts: `/tmp/metrum-guide-polish.nFhf7n/accepted-asset_*test.log`, `verified-render.log`, and
-`verified-captures/*-guide-{detail,night}.png` in that directory.
+Guide visual refresh (2026-09-19): frontage/access arrows share an eight-triangle filled glyph; the
+lot outline is constant-size geometry and frontage retains O(frontage cells) tick generation with
+at most three arrows. Existing anchor/yard edge generation and picking bounds are unchanged; no new
+per-frame mesh builds, textures, scene nodes or draw calls were introduced. All six headless asset
+suites pass, including cardinal frontage/lot-size and guide-height checks. Native Wayland /
+Forward+ selection assertions and inspected close-up day/night captures pass in both themes; test
+camera input is disabled so physical scrolling cannot disturb the fixed capture rig. These native
+checks cover selection assertions and captures only.
 
 Matched, sequential, unprofiled before/after runs used Godot 4.7.2, four Rayon workers, the same
 release library SHA-256 recorded above, separate isolated XDG profiles, and the existing
@@ -3090,31 +3060,29 @@ Optional `--benchmark-asset-preview` now measures warmed switches rather than im
 surfaces, and export with the asset's copied bytes. No simulation tick or world-wide rendering
 loop is added.
 
-Night-preview follow-up (2026-09-20): all six asset-editor headless suites and `day_cycle_test`
-pass freshly; X11/Forward+ (RX 7900 XTX, Godot 4.7.2) also passes, with inspected day/night
-captures now exercising Automatic via the actual preset buttons. The sandboxed Xvfb attempt
-could not open a display; the rendered check used approved desktop access instead.
-Artifacts: `/tmp/metrum-night-preview.uKcymY/`. The isolated `project/emission_measure.gd`
-extends the same fixture: 100 warmup Day/Night pairs, then 2,000 alternating preset changes,
-one part/emissive surface. Two sequential unprofiled headless runs with `RAYON_NUM_THREADS=4`
-measured **101.204 / 100.710 µs per change**, zero imports, using the existing release extension
-(SHA256 prefix `5a5ddeb006068a581`) and panel source `bf10e33785c8af18`.
-Run with `godot --headless --path <isolated-project> --script res://emission_measure.gd -- --asset-editor`
-and isolated XDG data/config paths. These are input-handler timings, not GPU/frame timings:
-the added solar lookup is O(1); applying emission remains O(parts + emissive surfaces) on input
-only, with no idle-frame work, new material copies or simulation changes.
+Night-preview follow-up (2026-09-20): all six asset-editor headless suites and `day_cycle_test` pass
+freshly; X11/Forward+ (RX 7900 XTX, Godot 4.7.2) also passes, with inspected day/night captures now
+exercising Automatic via the actual preset buttons. The sandboxed Xvfb attempt could not open a
+display; the rendered check used approved desktop access instead. The isolated
+`project/emission_measure.gd` extends the same fixture: 100 warmup Day/Night pairs, then 2,000
+alternating preset changes, one part/emissive surface. Two sequential unprofiled headless runs with
+`RAYON_NUM_THREADS=4` measured **101.204 / 100.710 µs per change**, zero imports, using the existing
+release extension (SHA256 prefix `5a5ddeb006068a581`) and panel source `bf10e33785c8af18`. Run with
+`godot --headless --path <isolated-project> --script res://emission_measure.gd -- --asset-editor`
+and isolated XDG data/config paths. These are input-handler timings, not GPU/frame timings: the
+added solar lookup is O(1); applying emission remains O(parts + emissive surfaces) on input only,
+with no idle-frame work, new material copies or simulation changes.
 
 Comparison readability follow-up (2026-09-20): fresh `asset_editor_preview_test` and
 `asset_selection_test` headless runs pass. The preview test generates a textured wall/roof GLB,
 checks opacity/shading, source isolation, authored glass/cutouts, load-during-night emission and
-clear/reload; X11/Forward+ captures pass in both UI themes at Day/Night. Artifacts:
-`/tmp/metrum-comparison.STBDZK/{accepted.log,selection.log,render-accepted.log,captures-accepted/}`.
-Using the isolated project, fresh XDG profiles, `RAYON_NUM_THREADS=4`, Godot 4.7.2 and the existing
-release extension (`d8ce9d24c17ded8c`), `--benchmark-asset-preview` on i9-12900K measures 1.371 ms
-mean comparison load (10 loads, two surfaces; import/material/pick-cache setup, excluding deferred
-scene cleanup) and 80.678 µs per cached emission change (2,000 changes, one surface). Renderer
-digest: `f4aff8e81fc3b960`. These are current-build CPU checks, not before/after or GPU timings;
-no simulation code changed. The optional capture/benchmark flags extend the existing command above.
+clear/reload; X11/Forward+ captures pass in both UI themes at Day/Night. Using the isolated project,
+fresh XDG profiles, `RAYON_NUM_THREADS=4`, Godot 4.7.2 and the existing release extension
+(`d8ce9d24c17ded8c`), `--benchmark-asset-preview` on i9-12900K measures 1.371 ms mean comparison
+load (10 loads, two surfaces; import/material/pick-cache setup, excluding deferred scene cleanup)
+and 80.678 µs per cached emission change (2,000 changes, one surface). Renderer digest:
+`f4aff8e81fc3b960`. These are current-build CPU checks, not before/after or GPU timings; no
+simulation code changed. The optional capture/benchmark flags extend the existing command above.
 
 ### Gameplay building LODs — RENDER-07
 
@@ -3167,12 +3135,11 @@ Pack reload, graphics settings, camera save/load and all six editor regression s
 profile. Its deliberately corrupted lower tier emits an expected importer error; assertions
 verify fallback and no repeated import. No personal pack is a regression dependency.
 
-Manual Kuopio review through the gameplay importer: all four installed houses' LOD0–3
-load with consistent tier bounds, recognizable silhouettes, source textures and emission
-maps. Roof shading changes between authored tiers remain visible in the comparison;
-thresholds are provisional, not universal art-quality acceptance. These exports have black
-authored emission factors; `RENDER-09` now activates those masks at night.
-Review image/log: `/tmp/metrum-building-lod.A51PQh/kuopio-review.{png,log}`.
+Manual Kuopio review through the gameplay importer: all four installed houses' LOD0–3 load
+with consistent tier bounds, recognizable silhouettes, source textures and emission maps.
+Roof shading changes between authored tiers remain visible in the comparison; thresholds
+are provisional, not universal art-quality acceptance. These exports have black authored
+emission factors; `RENDER-09` now activates those masks at night.
 
 Matched unprofiled release acceptance: i9-12900K, RX 7900 XTX/RADV, stock Godot 4.7.2,
 Forward+/X11, 1280×720, render scale 1, vsync off, `RAYON_NUM_THREADS=4`.
@@ -3203,15 +3170,11 @@ establish a production texture budget. These are building-renderer measurements,
 full-city/one-million-population FPS claim. Existing site/plot/construction auxiliary buffers
 remain revision-gated city-wide batches; their topology rebuild cost is not the LOD hot path.
 
-Artifacts: `/tmp/metrum-building-lod.A51PQh/`, including `final-bench-*.log`,
-`repeat-bench-*.log`, `fixtures/{baseline,candidate}.{json,png}` and locality logs.
 Baseline scripts/deployed release library were preserved from pre-change `3efc2ff8842d`;
 library SHA-256 prefixes: baseline `e831effca05b813d`, candidate `463fa4724b55dfee`.
-Harness prefix `680f2bd4101e4901`. Fixed-neighbourhood locality holds 32 candidate parts
-in one chunk while adding 0/1,024/65,536 background buildings; setup and index construction
-are excluded. Final release medians were **3.078 / 3.111 / 4.080 µs** respectively
-(`accepted-locality.log`); every query still evaluates exactly 32 parts in one chunk.
-Warmed camera transitions retain the same output and buffer capacities.
+Harness prefix `680f2bd4101e4901`. Fixed-neighbourhood locality holds 32 candidate parts in
+one chunk while adding 0/1,024/65,536 background buildings; setup and index construction
+are excluded. Warmed camera transitions retain the same output and buffer capacities.
 
 Reproduce after deploying the rebuilt extension, using an isolated user profile:
 
@@ -3347,11 +3310,8 @@ Matched unprofiled measurements use Godot 4.7.2 Forward+, RX 7900 XTX and i9-129
   cost; timings remain independent of background population. Baseline is
   `c0fca5ccbff55bc733b60cfb5f61cab51f029254`, built from an isolated source snapshot.
 
-Artifacts are under `/tmp/metrum-window/`: `final-rust.log`, `build-final.log`,
-`lod-gpu-final.log`, `window-bench-final.log`, `preview-final.log`, `colours-final.log`,
-`day-cycle.log`, `matched-{before,after}-{1,2}.log`, `house-lod{0,1,2,3}.png`,
-`build-identities.txt` and `source-identities.txt`. Test executable hashes are retained
-so the baseline and candidate remain identifiable independently of later builds.
+Test executable hashes are retained so the baseline and candidate remain identifiable
+independently of later builds.
 
 Reproduce with an isolated `XDG_DATA_HOME` and four Rayon workers:
 
@@ -3416,14 +3376,11 @@ after uses the updated shader and SSIL on. Median viewport GPU times:
 | 1920 × 1080 | 0.107 / 0.106 ms | 0.278 / 0.278 ms |
 
 This isolates receiver/SSIL cost; it is not a whole-city frame-time claim. No CPU simulation
-worker setting affects this fixture. Artifacts under `/tmp/metrum-spill/` include
-`matched_spill.gd`, `baseline-site.gdshader`, `matched-gpu.log`, `final-gpu.log`,
-`window-regression.log`, `editor-regression.log`, `probe-regression.log`,
-`source-identities.txt` and captured `spill-*.png` under the isolated user-data directory.
-Reproduce the regression/current-shader SSIL off/on benchmark with:
+worker setting affects this fixture. Reproduce the regression/current-shader SSIL off/on
+benchmark with:
 
 ```sh
-XDG_DATA_HOME=/tmp/metrum-spill godot --path godot --script res://tests/window_spill_test.gd -- --benchmark-spill --capture-spill
+XDG_DATA_HOME=$ARTIFACTS/metrum-spill godot --path godot --script res://tests/window_spill_test.gd -- --benchmark-spill --capture-spill
 ```
 
 ### Window brightness and variation — RENDER-11
@@ -3474,14 +3431,10 @@ Matched unprofiled Godot 4.7.2 Forward+ runs on RX 7900 XTX, VSync off:
   **1920×1080: 0.277/0.276 → 0.372/0.373 ms**. This is an isolated rendering fixture,
   not a whole-city frame-time claim. No simulation worker setting affects either fixture.
 
-Artifacts in `/tmp/metrum-window-look/`: `before-{environment.tres,windows.gdshader,materials.gd}`,
-`matched_material.gd`, `material-gpu.log`, `matched_look.gd`, `matched-gpu.log`,
-`{before,after}-{day,night}.png`, `rust-{brightness,assets,export,lod}.log`, `shader.log`,
-`lod-gpu.log`, `editor-final.log`, `colours-final.log`, `build.log`, and source/library
-identity files. Source baseline is `f22b8177ec1f6fc69bcb6b8e31f858450ead7064` plus the
-preceding `RENDER-10` working changes captured before implementation. Run the committed
-`building_window_test.gd`, `window_spill_test.gd`, `building_lod_test.gd` and editor tests
-with isolated `XDG_DATA_HOME`; matched scripts preserve the precise baseline comparisons.
+Source baseline is `f22b8177ec1f6fc69bcb6b8e31f858450ead7064` plus the preceding `RENDER-10`
+working changes captured before implementation. Run the committed `building_window_test.gd`,
+`window_spill_test.gd`, `building_lod_test.gd` and editor tests with isolated `XDG_DATA_HOME`;
+matched scripts preserve the precise baseline comparisons.
 
 ### Shared LOD policy and automatic inspection — TOOLS-05
 
@@ -3544,15 +3497,14 @@ without warnings. Headless and native Wayland/Forward+ preview regressions passe
 4.7.2; economy-profile and day-cycle regressions passed too. The rendered inspector was checked
 on RX 7900 XTX. This validates the preview, not finished-art thresholds or gameplay GPU cost.
 
-Isolated unprofiled release measurement: i9-12900K, single benchmark thread (no Rayon/world),
-base `35f15a5b` plus this working tree; policy SHA-256 prefix `b63d5f2368675356`, benchmark prefix
+Isolated unprofiled release measurement: i9-12900K, single benchmark thread (no Rayon/world), base
+`35f15a5b` plus this working tree; policy SHA-256 prefix `b63d5f2368675356`, benchmark prefix
 `2895c0ca0a343a17`. Criterion uses a 20 m box at 100 m, 60° perspective, 1920×1080, four tiers,
 Balanced quality and previous LOD1; 1 s warmup, 2 s measurement, 30 samples. Projection plus
-selection: **37.54–37.73 ns**; selection alone: **3.94–3.99 ns** (95% intervals). Artifacts:
-`rust/target/criterion/AssetLod/`. These exclude Godot calls, loading, uploads and rendering.
-The headless generated-mesh diagnostic separately measured 40 warmed switches at **0.003 ms
-mean, zero imports**. Neither result establishes city-scale performance or a before/after
-gameplay improvement.
+selection: **37.54–37.73 ns**; selection alone: **3.94–3.99 ns** (95% intervals). These exclude
+Godot calls, loading, uploads and rendering. The headless generated-mesh diagnostic separately
+measured 40 warmed switches at **0.003 ms mean, zero imports**. Neither result establishes
+city-scale performance or a before/after gameplay improvement.
 
 Implement the editor as a shared Godot-based tool mode with TOML manifests and `.glb` as the canonical asset format. Start implementation from the v1 contract in this document: canonical pack layout, scanner rules, `pack_id` / `asset_id` grammar, per-class `asset.toml` schemas, and the minimum preview-scene interactions required to author each asset class. Export manifest files directly into the pack output folder next to the asset files.
 

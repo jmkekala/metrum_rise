@@ -989,33 +989,26 @@ resets its camera and save filename; unchanged camera framing did not indicate t
 
 Fresh verification for this change:
 
-- Release Rust suite: **1,688 passed**, 15 ignored measurement cases; log
-  `/tmp/metrum-terrain-final-suite.log`. Includes populated-city reset, rejection of old-world
-  terrain acknowledgements, matching apron heights across tile sides, and a Rust/Godot contract
-  version check. Release build, rustdoc and formatting/diff checks pass without compiler warnings.
-- Godot camera/save-load and terrain/road renderer regressions pass. The actual gameplay scene
-  also passes two `farms.sqlite` load → New Game cycles on the deployed release: chunk `(22, 0)`
-  publishes, 22 model-part bases match their support, and old terrain, models, foundations, camera
-  framing and save filename clear/reset. Log: `/tmp/metrum-farms-release-scene-stdout.log`.
-  These are headless CPU geometry/frame and instance-count checks; Xvfb could not create a display,
-  so GPU readback was not verified. User data is isolated under `/tmp/metrum-farms-godot`; the
-  original save's SHA-256 still matches the untouched reproduction copy.
-- Unprofiled release measurement: `RAYON_NUM_THREADS=24` and the test binary with
-  `--exact nodes::sim::core::tests::building_site_terrain::building_site_terrain_rebuild_benchmark
-  --ignored --nocapture`. Three separate processes, two warmups and 20 measured rebuilds each,
-  use the existing four-yard Kuopio fixture; placement and road compilation are outside timing.
-  All **27 patches / 586 tiles** pass final mesh validation. Assembly p50: **86.203 / 84.163 /
-  88.706 ms**; CDT/buffer build p50: **45.912 / 46.483 / 43.565 ms**. This measures complete
-  fixture terrain rebuilding, not a single building placement or a before/after speedup.
-  Logs: `/tmp/metrum-terrain-rebuild-final-{1,2,3}.log`.
-- Populated-map locality: same executable and 24 Rayon workers, run alone with
-  `--exact nodes::sim::core::tests::road_plan_scaling::populated_paved_road_plan_scaling --ignored
-  --nocapture`. Across 0 / 1,000 / 10,000 / 100,000 remote buildings, matching remote parcels,
-  0 / 4 / 40 / 391 remote roads and 24–600,024 agents, the four local paved sites produce
-  identical terrain products. Plan p50 stays **22.196 / 21.769 / 21.015 / 21.240 ms**, and
-  worker p50 stays **22.750 / 22.170 / 22.468 / 22.105 ms** (100 samples/level).
-  One-time snapshot cost, outside those timings, is **0.010 / 0.052 / 0.352 / 3.359 ms**.
-  Log: `/tmp/metrum-terrain-populated-locality.log`.
+- Includes populated-city reset, rejection of old-world terrain acknowledgements, matching apron
+  heights across tile sides, and a Rust/Godot contract version check. Release build, rustdoc and
+  formatting/diff checks pass without compiler warnings.
+- Godot camera/save-load and terrain/road renderer regressions pass. These are headless CPU
+  geometry/frame and instance-count checks; Xvfb could not create a display, so GPU readback was
+  not verified.
+- Unprofiled release measurement: `RAYON_NUM_THREADS=24` and the test binary with `--exact
+  nodes::sim::core::tests::building_site_terrain::building_site_terrain_rebuild_benchmark
+  --ignored --nocapture`. Three separate processes, two warmups and 20 measured rebuilds each, use
+  the existing four-yard Kuopio fixture; placement and road compilation are outside timing. All
+  **27 patches / 586 tiles** pass final mesh validation. Assembly p50: **86.203 / 84.163 / 88.706
+  ms**; CDT/buffer build p50: **45.912 / 46.483 / 43.565 ms**. This measures complete fixture
+  terrain rebuilding, not a single building placement or a before/after speedup.
+- Populated-map locality: same executable and 24 Rayon workers, run alone with `--exact
+  nodes::sim::core::tests::road_plan_scaling::populated_paved_road_plan_scaling --ignored
+  --nocapture`. Across 0 / 1,000 / 10,000 / 100,000 remote buildings, matching remote parcels, 0 /
+  4 / 40 / 391 remote roads and 24–600,024 agents, the four local paved sites produce identical
+  terrain products. Plan p50 stays **22.196 / 21.769 / 21.015 / 21.240 ms**, and worker p50 stays
+  **22.750 / 22.170 / 22.468 / 22.105 ms** (100 samples/level). One-time snapshot cost, outside
+  those timings, is **0.010 / 0.052 / 0.352 / 3.359 ms**.
 - Build identity: release test executable SHA-256
   `a92c2250a3fa3f04f671f7e7339157457bfe1ad31da2cee7ac1a1190686364b7`;
   deployed library SHA-256 `725c26f69ad6230e0407407df7d39449551060497d2ae1a640f370e54127c708`.
@@ -1113,8 +1106,8 @@ RAYON_NUM_THREADS=24 cargo test --release --lib populated_road_plan_scaling -- -
 RAYON_NUM_THREADS=24 cargo test --release --lib populated_paved_road_plan_scaling -- --ignored --nocapture --test-threads=1
 RAYON_NUM_THREADS=24 cargo test --release --lib graded_yard_height_query_benchmark -- --ignored --nocapture --test-threads=1
 # Repository root, after deploying the release library to godot/bin:
-godot --headless --path godot --log-file /tmp/metrum-yard-godot-engine-indexed.log --script res://tests/road_junction_preview_test.gd
-xvfb-run -a godot --display-driver x11 --path godot --rendering-method gl_compatibility --log-file /tmp/metrum-yard-rendered-engine-indexed.log --script res://tests/road_junction_preview_test.gd
+godot --headless --path godot --log-file $ARTIFACTS/metrum-yard-godot-engine-indexed.log --script res://tests/road_junction_preview_test.gd
+xvfb-run -a godot --display-driver x11 --path godot --rendering-method gl_compatibility --log-file $ARTIFACTS/metrum-yard-rendered-engine-indexed.log --script res://tests/road_junction_preview_test.gd
 ```
 
 Fresh Rust result: **1,640 passed, 5 intentionally ignored measurements, 0 failed**, including
@@ -1154,14 +1147,9 @@ The complete world-height query over 76 accepted Kuopio apron points measures **
 scan measured 10,713.9 ns; it was replaced with the existing owner-local triangle index before
 acceptance. The index adds no point-query allocation or query-time compilation.
 
-Temporary raw logs: `/tmp/metrum-site-baseline-scaling-20260910.log`,
-`/tmp/metrum-yard-full-rust-indexed.log`, `/tmp/metrum-yard-release-indexed.log`,
-`/tmp/metrum-yard-scaling-indexed.log`, `/tmp/metrum-yard-paved-scaling-indexed.log`,
-`/tmp/metrum-yard-query-indexed.log`, `/tmp/metrum-yard-godot-indexed.log`,
-`/tmp/metrum-yard-rendered-indexed.log`, and `/tmp/metrum-yard-rustdoc.log`.
-The measurements above remain here after those temporary
-artifacts expire. These are local correctness/locality and renderer-contract checks, not an
-uncapped gameplay FPS acceptance or a claim that every possible lot is buildable.
+The measurements above remain here after those temporary artifacts expire. These are local
+correctness/locality and renderer-contract checks, not an uncapped gameplay FPS acceptance
+or a claim that every possible lot is buildable.
 
 ### 8. Level-Yard Follow-up (2026-09-10)
 
@@ -1216,18 +1204,11 @@ bounded to the fixed neighborhood rather than growing proportionally with backgr
 Snapshot/setup cost remains separate. World-height queries over the same 76 frontage-apron points
 measure **676.7 ns p50**, with compilation and placement excluded (10 × 100,000 queries).
 
-Temporary follow-up evidence: `/tmp/metrum-flat-yard-before.log` (expected old-code failure),
-`/tmp/metrum-flat-yard-full-rust.log`, `/tmp/metrum-flat-yard-baseline-scaling.log`,
-`/tmp/metrum-flat-yard-scaling.log`, and `/tmp/metrum-flat-yard-query.log`.
-
-`cargo build --release` and `cargo doc --no-deps` also pass without warnings. The headless and
-Xvfb Godot commands from the preceding section pass against the rebuilt revision-7 library;
-follow-up logs are `/tmp/metrum-flat-yard-build.log`, `/tmp/metrum-flat-yard-rustdoc.log`,
-`/tmp/metrum-flat-yard-godot.log` and `/tmp/metrum-flat-yard-rendered.log` (same Godot/Mesa versions).
-The release library was deployed to `godot/bin/libmetrum_rise.so`, SHA-256
-`d203e6ef059e905f4fc3e140593862ad1d4862e8e0b6e727388c97a2cedd2936`.
-Formatting and `git diff --check` pass. These checks retain the earlier caveat: the factory in
-the user's exact saved scene has not been visually replayed.
+`cargo build --release` and `cargo doc --no-deps` also pass without warnings. The release library
+was deployed to `godot/bin/libmetrum_rise.so`, SHA-256
+`d203e6ef059e905f4fc3e140593862ad1d4862e8e0b6e727388c97a2cedd2936`. Formatting and `git diff
+--check` pass. These checks retain the earlier caveat: the factory in the user's exact saved scene
+has not been visually replayed.
 
 #### Imported structural bounds verification (2026-09-11)
 
@@ -1265,18 +1246,13 @@ small increase, not a claimed speedup. Pack import alone took **29.45, 28.41, 27
 query timing. These do not establish populated-city catalog-reload performance.
 
 Deployed release library SHA-256:
-`849010f4a5bb4d96c3023a47cc78cd7f473ed49fc47c44259332f231d1cc6574`.
-Query measurement binary SHA-256:
-`fb911df62022790741a122b4c5b48296c52e2bec8aa6fabf7f08884922267577`;
-baseline is the preceding corner-noding build described in `terrain.md`.
-Artifacts: `/tmp/metrum-frontage-query-{before,after}-{1,2,3}.log`,
-`/tmp/metrum-frontage-import-{1,2,3}.log`, `/tmp/metrum-frontage-{before,after}-coverage.log`.
-Correctness logs: `/tmp/metrum-frontage-final-tests.log`, `/tmp/metrum-frontage-bridge.log`,
-`/tmp/metrum-frontage-renderer.log`, `/tmp/metrum-frontage-rustdoc.log`.
-Fresh final verification: `cargo test --release --lib` passes **1,658 tests** (9 measurements
-ignored), including the asset-refresh assertion added after the query measurements. Headless
-`road_junction_preview_test.gd` and `network_tool_chunk_renderer_test.gd` both pass; release build,
-rustdoc, formatting and `git diff --check` are clean.
+`849010f4a5bb4d96c3023a47cc78cd7f473ed49fc47c44259332f231d1cc6574`. Query measurement binary
+SHA-256: `fb911df62022790741a122b4c5b48296c52e2bec8aa6fabf7f08884922267577`; baseline is the
+preceding corner-noding build described in `terrain.md`. Fresh final verification: `cargo test
+--release --lib` passes **1,658 tests** (9 measurements ignored), including the asset-refresh
+assertion added after the query measurements. Headless `road_junction_preview_test.gd` and
+`network_tool_chunk_renderer_test.gd` both pass; release build, rustdoc, formatting and `git diff
+--check` are clean.
 
 ### 9. Shared Zoned / Explicit Site Contract (2026-09-10)
 
@@ -1326,8 +1302,8 @@ concurrent assistant build/render test. They use the same existing paved localit
 100 samples per population level; setup and the one-time snapshot remain outside repeated work:
 
 ```bash
-RAYON_NUM_THREADS=24 rust/target/release/deps/metrum_rise-9cc8d57998aa4451 populated_paved_road_plan_scaling --ignored --nocapture --test-threads=1
-RAYON_NUM_THREADS=24 rust/target/release/deps/metrum_rise-9cc8d57998aa4451 graded_yard_height_query_benchmark --ignored --nocapture --test-threads=1
+RAYON_NUM_THREADS=24 $TEST_BINARY populated_paved_road_plan_scaling --ignored --nocapture --test-threads=1
+RAYON_NUM_THREADS=24 $TEST_BINARY graded_yard_height_query_benchmark --ignored --nocapture --test-threads=1
 ```
 
 | Background buildings | Compile p50 (ms) | Worker p50 (ms) | One-time snapshot (ms) |
@@ -1343,15 +1319,10 @@ points and 10 × 100,000 queries. Earlier sections are historical evidence, not 
 before/after baseline for this refactor; these numbers establish current locality, not a speedup.
 The 9 ms largest snapshot is reported explicitly and is not part of the ~20 ms repeated compile.
 
-Logs: `/tmp/metrum-shared-site-final-tests.log`, `/tmp/metrum-shared-site-build.log`,
-`/tmp/metrum-shared-site-rustdoc.log`, `/tmp/metrum-shared-site-format.log`,
-`/tmp/metrum-shared-site-scaling.log`, `/tmp/metrum-shared-site-query.log`.
 The deployed release library SHA-256 is
-`2bc8e9a5dc681303995f04f0587d44217a367c51d89035f7fae73c200b1b9449`.
-The existing Godot bridge/terrain-payload regression also passes against that library:
-`godot --headless --path godot --log-file /tmp/metrum-shared-site-godot-engine.log --script res://tests/road_junction_preview_test.gd`,
-with output in `/tmp/metrum-shared-site-godot.log`. This is a fresh headless contract check, not
-a graphical replay of the reported houses; prior rendered runs in sections 7–8 are historical.
+`2bc8e9a5dc681303995f04f0587d44217a367c51d89035f7fae73c200b1b9449`. This is a fresh headless
+contract check, not a graphical replay of the reported houses; prior rendered runs in sections 7–8
+are historical.
 
 ### 10. Residential Buildability (2026-09-10)
 
@@ -1396,8 +1367,8 @@ sequentially after compilation, without concurrent assistant builds or render te
 
 ```bash
 # Repository root; build with cargo test --release --lib --no-run from rust/ first.
-RAYON_NUM_THREADS=24 rust/target/release/deps/metrum_rise-9cc8d57998aa4451 populated_zoning_feasibility_scaling --ignored --nocapture --test-threads=1
-RAYON_NUM_THREADS=24 rust/target/release/deps/metrum_rise-9cc8d57998aa4451 populated_paved_road_plan_scaling --ignored --nocapture --test-threads=1
+RAYON_NUM_THREADS=24 $TEST_BINARY populated_zoning_feasibility_scaling --ignored --nocapture --test-threads=1
+RAYON_NUM_THREADS=24 $TEST_BINARY populated_paved_road_plan_scaling --ignored --nocapture --test-threads=1
 ```
 
 | Background buildings | First/revalidate site query (ms) | Warm site p50 / p95 (µs) | Road plan compile p50 (ms) | Road snapshot, once per edit (ms) |
@@ -1408,15 +1379,13 @@ RAYON_NUM_THREADS=24 rust/target/release/deps/metrum_rise-9cc8d57998aa4451 popul
 | 100,000 | 0.0177 | 0.750 / 1.065 | 20.587 | 3.5066 |
 
 There are 300 warm feasibility samples and 100 measured plans per population level. Feasibility
-performs exactly one local solve over the entire matrix; subsequent remote changes only check
-local dependencies. Road/terrain products match exactly across population levels. Fixture insertion
-and normal index preparation are outside measured queries; cold solving/revalidation and one-time
-road snapshots are reported separately. This establishes current locality, not an old-build speedup
-or end-to-end zoning-tool frame latency. Earlier sections' timings are historical, not fresh baselines.
+performs exactly one local solve over the entire matrix; subsequent remote changes only check local
+dependencies. Road/terrain products match exactly across population levels. Fixture insertion and
+normal index preparation are outside measured queries; cold solving/revalidation and one-time road
+snapshots are reported separately. This establishes current locality, not an old-build speedup or
+end-to-end zoning-tool frame latency. Earlier sections' timings are historical, not fresh baselines.
 Measured executable SHA-256: `16fa69e5a6e2bfcf04f4fe1513c2119eba8a3a8ee981ea734fc785355e5ca353`;
 subsequent test-only cleanup leaves the measured production implementation unchanged.
-Raw measurements: `/tmp/metrum-buildability-zoning-scaling.log` and
-`/tmp/metrum-buildability-road-scaling.log`; this table retains results after those files expire.
 
 Final correctness verification: `cargo test --release` passes **1,646 tests**, with six measurements
 ignored by the ordinary suite (the two relevant locality measurements are run explicitly above).
@@ -1430,13 +1399,10 @@ per-parcel drag colors, tool mesh/label handling, free-parcel placement and depe
 
 ```bash
 # Repository root, against the deployed release library.
-godot --headless --path godot --log-file /tmp/metrum-buildability-godot-engine.log --script res://tests/road_junction_preview_test.gd
-xvfb-run -a godot --display-driver x11 --path godot --rendering-method gl_compatibility --log-file /tmp/metrum-buildability-rendered-engine.log --script res://tests/road_junction_preview_test.gd
+godot --headless --path godot --log-file $ARTIFACTS/metrum-buildability-godot-engine.log --script res://tests/road_junction_preview_test.gd
+xvfb-run -a godot --display-driver x11 --path godot --rendering-method gl_compatibility --log-file $ARTIFACTS/metrum-buildability-rendered-engine.log --script res://tests/road_junction_preview_test.gd
 ```
 
-Logs: `/tmp/metrum-buildability-final-tests.log`, `/tmp/metrum-buildability-release-build.log`,
-`/tmp/metrum-buildability-all-targets.log`, `/tmp/metrum-buildability-rustdoc.log`,
-`/tmp/metrum-buildability-godot.log` and `/tmp/metrum-buildability-rendered.log`.
 Deployed `godot/bin/libmetrum_rise.so` SHA-256:
 `bbcafb1a30b2f4d50066a9d2fbf55e9178ecc35dc01d71e83d70c6bcd9c913f8`.
 
@@ -1468,21 +1434,18 @@ Fresh final verification: `cargo test --release` passes **1,648 tests**, with si
 ignored in the ordinary suite. `cargo check --all-targets`, `cargo doc --no-deps`, release build,
 formatting and both working/index diff-whitespace checks pass without Rust warnings. The headless
 and Xvfb rendered `road_junction_preview_test.gd` both pass against the rebuilt/deployed library;
-Xvfb reports only the unsupported V-Sync warning. Commands are the section-10 commands with
-`/tmp/metrum-site-audit-` log prefixes.
+Xvfb reports only the unsupported V-Sync warning.
 
 Matched unprofiled comparisons ran each baseline/final pair sequentially after all builds, using
 Rust 1.98.1 release settings and 24 Rayon workers, with no concurrent assistant build or renderer.
 Both builds are the working tree over `91af8afca4eb2e9a493ab3bc7f2025a2b87195d9`, before/after the
-audit fixes above. The pre-audit test executable is preserved at `/tmp/metrum-site-audit-baseline-tests`
-(SHA-256 `a8dcdd116cbe04cd73fb5abd5f1c5b08b7f7cd4dc02962eb8b2d75ce62941f3c`); final executable
-SHA-256 is `5c1b6d0505eb5987511aee3311de96afdb3a29e04e46f906aa3d92f16fa9cd6b`.
+audit fixes above.
 
 ```bash
 # Repository root; each measurement is a fresh process, setup excluded from its timed loops.
 for audit_measurement in graded_yard_height_query_benchmark populated_zoning_feasibility_scaling populated_paved_road_plan_scaling; do
-  RAYON_NUM_THREADS=24 /tmp/metrum-site-audit-baseline-tests "$audit_measurement" --ignored --nocapture --test-threads=1
-  RAYON_NUM_THREADS=24 rust/target/release/deps/metrum_rise-9cc8d57998aa4451 "$audit_measurement" --ignored --nocapture --test-threads=1
+  RAYON_NUM_THREADS=24 $ARTIFACTS/metrum-site-audit-baseline-tests "$audit_measurement" --ignored --nocapture --test-threads=1
+  RAYON_NUM_THREADS=24 $TEST_BINARY "$audit_measurement" --ignored --nocapture --test-threads=1
 done
 ```
 
@@ -1504,10 +1467,8 @@ The complete height query over 76 Kuopio apron points (10 × 100,000 queries) ch
 **683.8 ns p50 / 686.2 ns p90** to **766.3 ns p50 / 810.6 ns p90**. The full acceptance guard
 therefore costs about 83 ns per median query; this correctness cost is explicit, not a speedup.
 
-Raw performance logs use `/tmp/metrum-site-audit-{baseline,final}-<measurement>.log` with the exact
-measurement names above. Correctness/build logs are `/tmp/metrum-site-audit-{tests,check,rustdoc,build}.log`;
-Godot logs are `/tmp/metrum-site-audit-{godot,rendered}.log`. The tables retain evidence after these
-temporary artifacts expire. Deployed `godot/bin/libmetrum_rise.so` SHA-256:
+The tables retain evidence after these temporary artifacts expire. Deployed
+`godot/bin/libmetrum_rise.so` SHA-256:
 `d0b260e94c5aef161c438a44cb35bb27b82befa362f4175beba31c3a5e2117e5`.
 
 ### 12. Entry/Exit Grounding And Exact Pad Boundaries (2026-09-10)
@@ -1537,17 +1498,14 @@ build, formatting and diff checks pass without Rust warnings. The Kuopio SQLite 
 revision-9 library. The rendered run only reports the virtual driver's unsupported VSync mode.
 
 Matched, unprofiled release measurements ran sequentially after all builds, with Rust 1.98.1 and
-`RAYON_NUM_THREADS=24`, over working-tree base `91af8afca4eb2e9a493ab3bc7f2025a2b87195d9`.
-Baseline is the pre-fix implementation with the new snapshot benchmark instrumentation:
-`/tmp/metrum-access-baseline-tests`, SHA-256
-`bec46f458fd998a99e80f6fb1dab35ce38da15ac345969d6ad02d1ec5eb44820`.
-Final test executable `rust/target/release/deps/metrum_rise-9cc8d57998aa4451`, SHA-256
+`RAYON_NUM_THREADS=24`, over working-tree base `91af8afca4eb2e9a493ab3bc7f2025a2b87195d9`. Final
+test executable `$TEST_BINARY`, SHA-256
 `4c01acddd54e3ec9f80af733ada0b98788a6c4f4426e55eec94cda64f3e7ab7c`.
 
 ```bash
 for measurement in graded_yard_access_snapshot_benchmark populated_paved_road_plan_scaling populated_zoning_feasibility_scaling graded_yard_height_query_benchmark; do
-  RAYON_NUM_THREADS=24 /tmp/metrum-access-baseline-tests "$measurement" --ignored --nocapture --test-threads=1
-  RAYON_NUM_THREADS=24 rust/target/release/deps/metrum_rise-9cc8d57998aa4451 "$measurement" --ignored --nocapture --test-threads=1
+  RAYON_NUM_THREADS=24 $ARTIFACTS/metrum-access-baseline-tests "$measurement" --ignored --nocapture --test-threads=1
+  RAYON_NUM_THREADS=24 $TEST_BINARY "$measurement" --ignored --nocapture --test-threads=1
 done
 ```
 
@@ -1580,9 +1538,6 @@ queries take 0.0559/0.0145/0.0151/0.0174 ms, separately from warm measurements. 
 The existing 76-point height-query benchmark (10 × 100,000 samples) remains stable:
 756.7 → 751.2 ns p50 and 760.3 → 751.7 ns p90. Its pair ran after the Godot checks had exited.
 
-Logs: `/tmp/metrum-access-{before,after}-<measurement>.log` for the exact names above;
-`/tmp/metrum-access-{tests,check,rustdoc,build}.log` for correctness/build checks.
-Godot logs are `/tmp/metrum-access-{godot,rendered}.log`.
 The deployed library SHA-256 is
 `7230d78be163ab17e94909acc02e672f9ef47e00c00de98ece5d60d3d528debe`.
 
@@ -1641,10 +1596,8 @@ Commands run from `rust/` for Cargo and the repository root for Godot:
 `RAYON_NUM_THREADS=24 godot --headless --path godot --script res://tests/<name>_test.gd`;
 rendered check uses `xvfb-run -a godot --display-driver x11 --path godot
 --rendering-method gl_compatibility --script res://tests/road_junction_preview_test.gd`.
-Logs: `/tmp/metrum-audit-sealed-{tests,build,doc}.log`,
-`/tmp/metrum-audit-sealed-clippy.{jsonl,log}`, `/tmp/metrum-audit-final-<name>.log` and
-`/tmp/metrum-audit-rendered.log`. Toolchain: Rust 1.98.1; Godot 4.7.2, gdext API 4.5.
-The checked-in Kuopio SQLite and user assets remain unchanged.
+Toolchain: Rust 1.98.1; Godot 4.7.2, gdext API 4.5. The checked-in Kuopio SQLite and user
+assets remain unchanged.
 
 Final unprofiled measurements use independent release processes on an i9-12900K, with
 `RAYON_NUM_THREADS=24`, no concurrent builds/render tests and no profiler. The height-query
@@ -1686,16 +1639,11 @@ Reproduction: `RAYON_NUM_THREADS=24 <binary> <measurement> --ignored --nocapture
 Use `taskset -c 0 <binary>` for `graded_yard_height_query_benchmark` only. Other exact workload
 names are `graded_yard_access_snapshot_benchmark`, `graded_yard_vehicle_support_batch_benchmark`,
 `populated_zoning_feasibility_scaling`, `populated_paved_road_plan_scaling` and
-`benchmark_road_site_cdt_noding`. Logs are `/tmp/metrum-audit-sealed-query-{1,2,3}-{before,after}.log`
-and `/tmp/metrum-audit-sealed-{before,after}-<measurement>.log`.
-The extra access/batch process pairs use
-`/tmp/metrum-audit-sealed-{2,3}-{before,after}-<measurement>.log`.
+`benchmark_road_site_cdt_noding`.
 
 Build identities (working changes on `91af8afca4eb2e9a493ab3bc7f2025a2b87195d9`, SHA-256):
 
-- Pre-audit executable `/tmp/metrum-audit-before-tests`:
-  `7767a8db42fa886644764739ad7833eced7afca243462e11678c23a6fe2f5e6f`.
-- Final executable `rust/target/release/deps/metrum_rise-9cc8d57998aa4451`:
+- Final executable `$TEST_BINARY`:
   `a0346d598d43f8386d373bb0958ab83da9863368f082f68386c2576b01b32cc0`.
 - Final deployed library `godot/bin/libmetrum_rise.so`:
   `890c719920b8a947e8067040f069515bb7e36b9d3801e2f296f1464a04f8f62e`.

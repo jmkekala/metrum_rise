@@ -73,10 +73,10 @@ old/new pairs with 60 warm-up and 120 measured frames, gave 0.064/0.064 → 0.06
 at 640×360 and 0.310/0.307 → 0.315/0.316 ms at 1920×1080. This isolates two paint
 patches under one directional and one local light, not a whole-city frame.
 
-Command: `XDG_DATA_HOME=/tmp/metrum-road-light RAYON_NUM_THREADS=4 timeout 90 godot --path godot --script res://tests/road_marking_lighting_test.gd -- --asset-editor --benchmark-markings`.
-Vsync is disabled during measurement. Artifacts: `/tmp/metrum-road-light/render.log` and
-`identities.txt`. Build base: `124be55d13d7eccf02681fc7e906ee43cf1f4a94` plus this material
-change; unchanged release extension SHA-256:
+Command: `XDG_DATA_HOME=$ARTIFACTS/metrum-road-light RAYON_NUM_THREADS=4 timeout 90 godot --path
+godot --script res://tests/road_marking_lighting_test.gd -- --asset-editor --benchmark-markings`.
+Vsync is disabled during measurement. Build base: `124be55d13d7eccf02681fc7e906ee43cf1f4a94` plus
+this material change; unchanged release extension SHA-256:
 `5368fe8e87315e028fad2437e87a26119a0b7b1b7a63ec7b7bf592b8415dbe89`.
 
 ## Ownership Boundaries
@@ -268,13 +268,11 @@ background size; snapshot construction still scales with the stored city. This p
 does not time applying an edit or remapping the agent store. No concurrent builds or other
 benchmark jobs ran during timing, and both source trees and executables remained fixed.
 
-Reproduce with `python3 /tmp/metrum-full-audit/match_lane_reattachment.py`. The runner records
-commands for `simulation::economy::agents::remap::tests::benchmark_lane_reattachment` and
-`nodes::sim::core::tests::road_plan_scaling::populated_paved_road_plan_scaling`, using
-`--exact --ignored --nocapture --test-threads=1` and `METRUM_DEBUG=0`. Query runs use one worker;
-planning runs use eight. Results are in `lane-reattach-matched-{bench,summary}.json` under that
-directory. `lane-reattach-{before,after}-identity.json` records all source hashes and Rust 1.98.1
-(`48a229cea`, 2026-09-01). Binary SHA-256 values are
+The runner records commands for
+`simulation::economy::agents::remap::tests::benchmark_lane_reattachment` and
+`nodes::sim::core::tests::road_plan_scaling::populated_paved_road_plan_scaling`, using `--exact
+--ignored --nocapture --test-threads=1` and `METRUM_DEBUG=0`. Query runs use one worker; planning
+runs use eight. Binary SHA-256 values are
 `d7490495dd5c66a0a9ddd3e86d013ac1e8e756e4ae6828096a805c0540b05bf4` before and
 `14e2f21e2685cae09f4f0aed7ba7057b4fa40515f1d099de9c60c60fb93a4651` after.
 
@@ -320,9 +318,7 @@ and 600,024 total agents.
 
 Planning remains comparable; this does not claim removal of its one-time world snapshot or the
 existing agent invalidation pass. Both workloads use Rust 1.98.1, offline release lib-test builds,
-`METRUM_DEBUG=0` and no concurrent builds/tests. Exact commands, source identities, the three-file
-diff and matched results are `/tmp/metrum-full-audit/lane-rebuild-*`; replay with
-`python3 /tmp/metrum-full-audit/match_lane_rebuild.py`. Before/after executable SHA-256 values are
+`METRUM_DEBUG=0` and no concurrent builds/tests. Before/after executable SHA-256 values are
 `e37149dd31660156f5cddd4976b2c2cc324536cc888a92c3a71184583f6c3ea1` and
 `991bd166a3c5da6d8620fef8bce48fada818cba4107980a7a141ebe1364a8a5d`.
 
@@ -1065,14 +1061,13 @@ upload are excluded; this is a mode comparison, not a universal frame-time guara
 Local products match throughout, reaching 600,024 agents, 100,004 parcels and 391 background
 roads. One-time snapshots are separate: 0.006 / 0.012 / 0.046 / 0.358 ms.
 
-Artifacts: `/tmp/metrum-preview-modes/{modes,locality,full-tests,rendered,rustdoc}.log` and
-`capture_*_full.png`. Run native checks with `cargo test --offline --release --lib` from
-`rust/` and the filters above; run Godot scripts under `godot/tests/` against that release.
-Use `TMPDIR` on a writable filesystem (these runs used `rust/target/preview-test-tmp`).
-Native test binary SHA-256: `6a1bd37b08e0c2006394ad47b9aeb4fb1d86f767008fb86d67460e418029f41e`;
-deployed extension: `6382e3a4c62cb6d5ba53532ccb3ab83caebe1ef2a1fc1723bc828934cbbf632f`.
-The final extension also includes the generation-label export correction validated by the
-Godot suites; native timings measure the same planner implementation.
+Run native checks with `cargo test --offline --release --lib` from `rust/` and the filters
+above; run Godot scripts under `godot/tests/` against that release. Use `TMPDIR` on a writable
+filesystem. Native test binary SHA-256:
+`6a1bd37b08e0c2006394ad47b9aeb4fb1d86f767008fb86d67460e418029f41e`; deployed extension:
+`6382e3a4c62cb6d5ba53532ccb3ab83caebe1ef2a1fc1723bc828934cbbf632f`. The final extension also
+includes the generation-label export correction validated by the Godot suites; native timings
+measure the same planner implementation.
 
 User-requested repeat after deployment (2026-09-28): rebuilt the release test binary from
 the final source, then ran the same benchmark three times sequentially with four Rayon workers,
@@ -1084,14 +1079,11 @@ per mode. Road-only p50 values: **16.383 / 16.575 / 16.345 ms**; full-mode p50 v
 mesh filtering, worker lock/queue waits, bridge serialization, GPU upload and display latency.
 
 Fresh locality rerun also passes with identical local products at all four city sizes:
-road-only worker p50 **0.898 / 0.956 / 0.998 / 0.998 ms**, full worker p50
-**6.245 / 6.450 / 6.597 / 6.875 ms**. Snapshot setup is separate:
-0.005 / 0.014 / 0.050 / 0.399 ms. This fixed-input reuse workload differs from moving-cursor
-planning above. Commands are the same filters documented above; fresh artifacts are
-`/tmp/metrum-preview-modes/modes-requested.log`, `modes-requested-{2,3}.log` and
-`locality-requested.log` in that directory. Test binary SHA-256:
-`db06828a61d03bc0eb2c34c6c98559bf474b26b9051245d7ff3b714528cd6250`.
-Deployed extension identity remains unchanged.
+road-only worker p50 **0.898 / 0.956 / 0.998 / 0.998 ms**, full worker p50 **6.245 / 6.450 /
+6.597 / 6.875 ms**. Snapshot setup is separate: 0.005 / 0.014 / 0.050 / 0.399 ms. This
+fixed-input reuse workload differs from moving-cursor planning above. Test binary SHA-256:
+`db06828a61d03bc0eb2c34c6c98559bf474b26b9051245d7ff3b714528cd6250`. Deployed extension
+identity remains unchanged.
 
 ### Preview display performance plan (`ROAD-30`–`ROAD-36`)
 
@@ -1287,17 +1279,11 @@ a measurable polling/scheduling interval to investigate. Packing and CPU mesh su
 are smaller costs in these fixtures. Road/junction solving remains separate, and the
 choice to retain one or both preview modes remains deferred until after improvements.
 
-Artifacts: `rust/target/road30-artifacts/` (also available as `/tmp/road30`) contains
-`acceptance-v3-a.json`, `acceptance-v3-b.json`, `diagnostic-v3.json`, their matching logs
-and `*-manifest.json` files. Manifests pin source hashes, binary, command, working directory
-and environment. `run_baselines.py` reproduces the isolated-profile sequence. These runs
-used the existing `/tmp/metrum-road28/candidate/godot` project with workspace scripts and
-library, the workspace `rust/target/preview-test-tmp` TMPDIR/XDG profile, and the direct
-command `godot --path /tmp/metrum-road28/candidate/godot --windowed --resolution 1280x720 -- --gameplay-road-benchmark`.
-The launcher recipe above uses its default 1920×1080 window, so use the recorded command
-and manifests when matching these exact numbers. Only v3 artifacts constitute the accepted
-baseline; earlier development captures are superseded.
-`captures3/` contains diagnostic final-pose screenshots taken outside operation timers.
+Manifests pin source hashes, binary, command, working directory and environment. The launcher recipe
+above uses its default 1920×1080 window, so use the recorded command and manifests when matching
+these exact numbers. Only v3 artifacts constitute the accepted baseline; earlier development
+captures are superseded. `captures3/` contains diagnostic final-pose screenshots taken outside
+operation timers.
 
 **Correctness/build checks:** five release Rust mailbox/timing tests, nine Python report
 validation/comparison tests, and the Godot metrics, junction-preview, stream-preview and
@@ -1312,15 +1298,13 @@ Logs live alongside the captures:
 Commands used for targeted checks:
 
 ```bash
-TMPDIR="$PWD/rust/target/preview-test-tmp" cargo test --offline --release --manifest-path rust/Cargo.toml --lib road_preview::
+TMPDIR="$ARTIFACTS/preview-test-tmp" cargo test --offline --release --manifest-path rust/Cargo.toml --lib road_preview::
 cargo doc --offline --no-deps --manifest-path rust/Cargo.toml
 python3 -m unittest discover -s tools -p test_road_benchmark_report.py
 ```
 
-Godot checks use `godot --headless --path /tmp/metrum-road28/candidate/godot --script
-res://tests/<suite>.gd` with the isolated TMPDIR/XDG profile and four Rayon workers from the
-capture manifests. No road-planning algorithm changed, so this task does not establish a
-new populated-map planning speedup or repeat the unrelated city-scale acceptance suite.
+No road-planning algorithm changed, so this task does not establish a new populated-map
+planning speedup or repeat the unrelated city-scale acceptance suite.
 
 #### `ROAD-31` — Validate immutable road buffers once in Rust
 
@@ -1396,17 +1380,12 @@ processes) to 0/0 (candidate); none exceeded 50 ms on either side. Moving displa
 is dominated by cadence and worker time. Some full-mode p95s dropped by about one frame. This is
 a small controlled-neighbourhood result, not a city-scale or cross-hardware claim.
 
-Artifacts: `rust/target/road31-artifacts/` holds `{baseline,candidate}-{a,b,diag}.json`,
-their logs and manifests, `run_ab.py` (the reproducer), `summarize.py`/`diagnostic-compare.txt`
-and `acceptance.py`/`acceptance-compare.txt`. The isolated projects are under
-`rust/target/road31/{baseline,candidate}/godot`. They use the workspace or baseline-worktree
-scripts and release libraries, with the `ROAD-30` override profile name. The `rust/target/preview-test-tmp`
-TMPDIR/XDG profile was used, with four Rayon workers and 1280×720. The benchmarked candidate
-library SHA-256 is `d3f1dea4…a2103495`; the baseline is `f3eb73fa…2f2264a`. After the runs, an
-`is_multiple_of(3)` clippy fix produced the deployed `godot/bin` library
-`837f5616…23fb88e4`. That fix does not change behaviour, and the Rust and Godot checks were rerun on it.
-`tools/road_benchmark_report.py --baseline/--candidate` does not yet accept preview-matrix
-captures; the two helper scripts compute the tables above.
+The runs used the workspace or baseline-worktree scripts and release libraries, with the `ROAD-30`
+override profile name. The benchmarked candidate library SHA-256 is `d3f1dea4…a2103495`; the
+baseline is `f3eb73fa…2f2264a`. After the runs, an `is_multiple_of(3)` clippy fix produced the
+deployed `godot/bin` library `837f5616…23fb88e4`. That fix does not change behaviour, and the Rust
+and Godot checks were rerun on it. `tools/road_benchmark_report.py --baseline/--candidate` does not
+yet accept preview-matrix captures; the two helper scripts compute the tables above.
 
 **Correctness checks:** new Rust test `seal_certifies_only_well_formed_finite_buffers`
 covers NaN/Inf in each attribute, a missing colour and a partial triangle. Preview parity
@@ -1518,11 +1497,6 @@ dominated by frame cadence and worker time. Individual p95s moved by about one f
 directions, so no moving-latency change is claimed. This is a small controlled-neighbourhood result,
 not a city-scale or cross-hardware claim.
 
-Artifacts: `rust/target/road32-artifacts/` holds `{baseline,candidate}-{a,b,diag}.json`, their logs
-and manifests, `run_ab.py`, `summarize.py`/`diagnostic-compare.txt` and
-`acceptance.py`/`acceptance-compare.txt`. Isolated projects live under
-`rust/target/road32/{baseline,candidate}/godot`; the baseline scripts come from a detached `HEAD` worktree.
-
 **Correctness checks:** `road_junction_preview_test` now also verifies:
 - successive replacements alternate between two terrain slot sets and two road node sets, and the
   third replacement reuses the first set's nodes, materials and textures;
@@ -1632,11 +1606,6 @@ expected. The benefit is locality: repeated work and bytes now follow the edited
 than all existing geometry in the affected chunks. Frame intervals over 33.333 ms were 0/0 (baseline)
 and 1/0 (candidate); none exceeded 50 ms. The residency-retry fixture's full-mode p95 is dominated by
 its injected staging delay. This is a controlled-neighbourhood result, not a city-scale claim.
-
-Artifacts: `rust/target/road33-artifacts/` holds `{baseline,candidate}-{a,b,diag,diag2}.json`, their
-logs and manifests, `run_ab.py`/`run_diag2.py`, `summarize.py`/`diagnostic-compare.txt`,
-`moving.py`/`moving-compare.txt` and `acceptance.py`/`acceptance-compare.txt`. Isolated projects and
-the frozen baseline scripts and libraries are under `rust/target/road33/`.
 
 **Correctness checks:** new Rust test `moving_junction_bounds_reuse_resident_split_and_clip_only_approaches`
 slides a T 6 m along an existing road on flat and sloped terrain, beside an unrelated road in the same
@@ -1766,11 +1735,6 @@ only overlapping bounds. Per-chunk reuse would need content comparison for no me
 Refined terrain patches could keep their revision only if the worker offered previous CDT windows
 to the builder; the moving road changes every window it crosses, so that is left out.
 
-Artifacts: `rust/target/road34-artifacts/` holds `{baseline,candidate}-{a,b,diag}.json`, their logs
-and manifests, `run_ab.py`, `summarize.py`/`diagnostic-compare.txt` and
-`acceptance.py`/`acceptance-compare.txt`. The isolated projects and the frozen baseline scripts,
-tests and library are under `rust/target/road34/`.
-
 **Correctness checks:**
 - Rust `only_identical_plain_patches_keep_their_revision`: equal road-free snapshots in fresh Arcs keep
   their revision; changed heights, refined patches and patches dropped from the footprint get new ones;
@@ -1884,10 +1848,6 @@ as shipped:
   recovers these rows, and mispredictions cost a whole frame. It is deliberately not done. Reducing
   worker time moves more fixtures into the winning region.
 
-Artifacts: `rust/target/road35-artifacts/` holds `{baseline,candidate}-{a,b,diag}.json`, logs,
-manifests, `run_ab.py`, `summarize.py`, `acceptance-compare.txt` and `diagnostic-compare.txt`.
-The isolated projects, frozen baseline scripts/tests and library are under `rust/target/road35/`.
-
 **Correctness checks:**
 - Rust `started_id_separates_finished_from_pending_requests`: pending input has not started, a
   taken request publishes its ID, and displaced input never starts; the existing mailbox burst,
@@ -1961,19 +1921,15 @@ The possible gain is too small for the complexity:
 library, unpinned (reference) and pinned with `taskset` to four or two E-cores (3.9 GHz max, Rayon 4
 and 2). The GPU was unchanged, so this simulates a weak CPU, not a weak GPU or driver. Road-layer
 submission medians slowed by 1.7–2.0× (to 0.57–0.84 ms) while worker time slowed by 1.5–2.3× (to
-25–83 ms). Submission stays at or below 3% of worker time, and the best-case in-place saving stays at
-about 0.25 ms. On two cores, submission p95 rose to 1.4–2.3 ms in some fixtures, and `sloped_multi`
-had 159/188 frames over 33 ms (66/54 over 50 ms, full/road-only; ≤2 elsewhere). Stage-and-install
-medians stayed at 1.2–4.5 ms, so those hitches point to core contention between the main, render and
-preview worker threads, which in-place buffer updates would not remove. Artifacts:
-`rust/target/road36-throttle/` (`run.py`, `summarize.py`, `compare.txt`, captures, logs,
-manifests); all three captures passed `--validate`.
+25–83 ms). Submission stays at or below 3% of worker time, and the best-case in-place saving stays
+at about 0.25 ms. On two cores, submission p95 rose to 1.4–2.3 ms in some fixtures, and
+`sloped_multi` had 159/188 frames over 33 ms (66/54 over 50 ms, full/road-only; ≤2 elsewhere).
+Stage-and-install medians stayed at 1.2–4.5 ms, so those hitches point to core contention between
+the main, render and preview worker threads, which in-place buffer updates would not remove.
 
 Revisit only if a larger workload or rendered GPU timing shows mesh submission or upload as a
 material cost, and then prefer reducing uploaded geometry (as `ROAD-33` did) over in-place updates.
-Artifacts: `rust/target/road36-artifacts/` holds `instrumentation.diff`, `layers.jsonl`,
-`measure.json`/`measure.log`, `analyze.py` and `compat.txt`; the instrumented project is
-`rust/target/road36/measure/godot`. No production code changed.
+No production code changed.
 
 **Shared acceptance and references.** Report full-mode responsiveness first and both-mode
 comparisons for every step; shared-path changes must not regress the comparison mode.
@@ -2008,13 +1964,10 @@ in the order below, with the shared acceptance rules of the `ROAD-30`–`ROAD-36
 unprofiled release runs before and after, a separate diagnostic run, and correctness checks.
 
 **Baseline workload.** Same hardware, window and settings as the `ROAD-30` v3 captures (i9-12900K,
-RX 7900 XTX / RADV, Godot 4.7.2, X11, 1280×720, VSync, 60 FPS cap, four Rayon workers). Release library
-SHA-256 `4672197b…c989bc6dee` (`HEAD` build). One unprofiled run (`head-a`), one `METRUM_DEBUG_PERF=1`
-diagnostic run (`head-diag`) and one diagnostic run with Rayon's default 24 workers (`r24-diag`); all
-passed `--validate`. Command, with the isolated `rust/target/preview-test-tmp` TMPDIR/XDG profile,
-`METRUM_GAMEPLAY_BENCHMARK_MATRIX=preview`, 100 repetitions, 8 warmups and
-`METRUM_GAMEPLAY_BENCHMARK_MAX_FPS=60`:
-`godot --path rust/target/preview-bench/godot --windowed --resolution 1280x720 -- --gameplay-road-benchmark`.
+RX 7900 XTX / RADV, Godot 4.7.2, X11, 1280×720, VSync, 60 FPS cap, four Rayon workers). Release
+library SHA-256 `4672197b…c989bc6dee` (`HEAD` build). One unprofiled run (`head-a`), one
+`METRUM_DEBUG_PERF=1` diagnostic run (`head-diag`) and one diagnostic run with Rayon's default 24
+workers (`r24-diag`); all passed `--validate`.
 
 Unprofiled acceptance run, milliseconds. Single-process values, not ranges:
 
@@ -2255,14 +2208,11 @@ therefore stays; lowering the allocation and free volume is `ROAD-40` work.
   `road_junction_preview_test`, `road_preview_stream_test`, `zoning_road_tool_test` and
   `vegetation_land_cover_test`.
 
-**Artifacts:** `rust/target/road37-38/artifacts/`:
 - captures, logs and manifests: `{base,cand}-{w4,wdef}-{a,b,c,diag,diag2}`, and the attribution runs
   `{var,cand}-w4-diag{x,y}`;
 - scripts: `run_ab.py`, `summarize.py`;
 - results: `summary.txt`, `attribution.txt`;
 - Godot suite logs.
-
-The libraries are in `rust/target/road37-38/lib/`.
 
 #### `ROAD-39` results
 
@@ -2321,14 +2271,10 @@ Per-node `JunctionN` export, road-debug run, default workers, milliseconds. Fixt
 
 No GDScript changed, so the Godot suites were not rerun. The preview matrix exercised the bridge.
 
-**Artifacts:** `rust/target/road39/artifacts/`:
 - captures, logs and manifests: `{base,cand}-{wdef-{a,b,c,diag,road},w4-{a,b}}`, plus
   `base-wdef-a-failed`;
 - scripts: `run_ab.py`, `summarize.py`;
 - results: `summary.txt`.
-
-The libraries are in `rust/target/road39/lib/`. The baseline library reads runtime data through its
-build path, so it needs the detached worktree `rust/target/road37-38/wt` at `310248e2`.
 
 #### `ROAD-40` results
 
@@ -2495,7 +2441,6 @@ shipping on all platforms:
 
 No GDScript changed, so the Godot suites were not rerun. The preview matrix exercised the bridge.
 
-**Artifacts:** `rust/target/road40/`:
 - `lib/` (stage libraries), `bin/` (stage test binaries, plus `x-mimalloc`), `godot-s0`–`godot-s3`;
 - `harness/` (`ab.sh`, `cmp.py`, `stage.sh`, runs `round-*`, `hash-*`, `sort-*`, `alloc-x-*`);
 - `prof/` (`perf` LBR recordings and `cat.py`/`allocsite.py`);
@@ -2579,7 +2524,6 @@ independent stage.
 
 Only a test file changed, so the full suite was not rerun.
 
-**Artifacts:** `rust/target/road41/`:
 - Godot A/B: `run.py`, `summarize.py`, `summary.txt`, `sha256.txt`, `lib/`, `godot-base`/`godot-cand`, and
   `artifacts/` with captures, logs and manifests;
 - `harness/`: `ab.py`, `bench.sh`, `results.txt` and both test binaries;
@@ -2637,7 +2581,6 @@ Probing the previous pose's larger caches costs more than the few hits save.
 - Revisit only if the contributor keys become relative to a fixed-leg frame, so that unchanged legs keep
   their keys while the edited leg moves. That is a redesign of the key scheme, not a cache offer.
 
-**Artifacts:** `rust/target/road42/`:
 - `diagnostic.patch` (the reverted offer) and `road42_diag.rs` (the replay test);
 - the test binary, `diag-bin`, SHA-256 `4fecc269…06caeb11`;
 - `base.log`/`offer.log` (road-debug runs), `parse.py`, `hits.txt` and `timing.txt`.
@@ -2704,7 +2647,6 @@ counting only the timed compiles on one thread at `HEAD` `422f38de`:
   and on bounding peak RSS.
 - Revisit if a later compile redesign flattens stage outputs.
 
-**Artifacts:** `rust/target/road43/`:
 - binaries: `base-bin` (`HEAD`, SHA-256 `dc72267a…c721b332`), `proto1-bin` (overlay workspace,
   `95f5f112…8dbb8dc8`), `count-bin`/`proto1-count-bin` (counting allocator) and `base-nodigest-bin`;
 - patches: `compile_benchmark.counting.rs`, `overlay-workspace-prototype.patch` and
@@ -2716,14 +2658,12 @@ counting only the timed compiles on one thread at `HEAD` `422f38de`:
   - `sites.py`/`sites.txt` and `sizes.py`/`sizes.txt`;
   - `nodigest-libc.txt`.
 
-**Artifacts:** `rust/target/preview-bottlenecks-artifacts/` holds:
 - captures, logs and manifests: `head-a`, `head-diag`, `r24-diag`, plus the per-case `prof-*`,
   `off*`, `st-*` and `dbg-*` runs;
 - `perf` recordings: `prof-*.data` (cycles, LBR) and `off*-sloped_cross.data` (context switches);
 - runner and analysis scripts: `run.py`, `run24.py`, `prof.sh`, `offcpu*.sh`, `stracefutex.sh`,
   `summarize.py`, `agg*.py`, `tree.py`, `callers.py`, `dropcost.py`, `offcpu.py`, `leafcallers.py`.
 
-The `perf` data decodes with `perf script --no-inline` against the library in `rust/target/preview-bench/lib/`.
 No production code changed during this analysis.
 
 ### Junction preview without terrain reconstruction (`ROAD-28`)
@@ -2891,13 +2831,10 @@ new-junction motion. Click terrain medians remain **5.65 / 5.46 / 5.90 / 6.01 ms
 
 Commands: `RAYON_NUM_THREADS=4 METRUM_DEBUG=0 cargo test --offline --release --manifest-path
 rust/Cargo.toml --lib benchmark_neighboring_cross_preview -- --ignored --nocapture
---test-threads=1`, and the same command with `populated_road_plan_scaling`. The full suite uses
-`-- --test-threads=4` and workspace-local `TMPDIR`; an initial `/tmp` run hit SQLite I/O errors.
-Artifacts: `/tmp/metrum-preview-correction/{before,after,locality,full-tests-final,godot-junction-final,rendered}.log`
-and `capture_{neighbor_cross,sloped_neighbor_cross}*.png`. Final test executable SHA-256:
-`1370ee7cf1b5cceeb8da0174b19f4dfcc348a7a094a218982eb640e7449bd452`.
-Baseline production was the preceding ROAD-28 implementation; the same benchmark body ran
-before and after the correction. Terrain clearance is still deferred to placement.
+--test-threads=1`, and the same command with `populated_road_plan_scaling`. Final test executable
+SHA-256: `1370ee7cf1b5cceeb8da0174b19f4dfcc348a7a094a218982eb640e7449bd452`. Baseline production was
+the preceding ROAD-28 implementation; the same benchmark body ran before and after the correction.
+Terrain clearance is still deferred to placement.
 
 The continuous-motion, chunk-renderer and zoning-road-tool headless suites also pass. Release
 build and Rustdoc are warning-free. The deployed extension SHA-256 is
@@ -2995,31 +2932,25 @@ above directly quantify the deferred terrain and reused/cold road work.
 Build/workload identity: i9-12900K, CPU affinity 0–23, `RAYON_NUM_THREADS=4`, `METRUM_DEBUG=0`,
 Rust 1.98.1 and Godot `4.7.2.stable.arch_linux.ed1daf0bf`. Baseline runtime is git
 `7369654f6e7cc04d8b5b1c09663ecbc776966cfb`; candidate native diff SHA-256 is
-`0d29b6a7de18d5b5d4388c56236d151aecfc41272d1d15e8d04ce88e7faa8541`.
-Debug-stripped baseline/candidate library hashes begin `d29aa6117e00202e` /
-`e2d654c2fc5629d6f`; identical motion harness hash begins `1973f82ac2d06eeb`.
-Full hashes and script identities are in `/tmp/metrum-road28/matched-identity.json`.
-The deployed unstripped release has SHA-256
-`236527ffcf605aa402c38dd0c2e2a867780568e5458074c90d26ec86462a234e` and matches the
-measured candidate's ELF build ID `cd1d8cdc538a57e857e1a02ccb343e874b2e8282`.
+`0d29b6a7de18d5b5d4388c56236d151aecfc41272d1d15e8d04ce88e7faa8541`. Debug-stripped
+baseline/candidate library hashes begin `d29aa6117e00202e` / `e2d654c2fc5629d6f`; identical
+motion harness hash begins `1973f82ac2d06eeb`. The deployed unstripped release has SHA-256
+`236527ffcf605aa402c38dd0c2e2a867780568e5458074c90d26ec86462a234e` and matches the measured
+candidate's ELF build ID `cd1d8cdc538a57e857e1a02ccb343e874b2e8282`.
 
 Reproduction commands (run performance work without competing jobs):
 
 ```bash
 env RAYON_NUM_THREADS=4 METRUM_DEBUG=0 cargo test --offline --release --manifest-path rust/Cargo.toml --lib -- --test-threads=4
-bash /tmp/metrum-road28/run-matched.sh
+bash $ARTIFACTS/metrum-road28/run-matched.sh
 env RAYON_NUM_THREADS=4 METRUM_DEBUG=0 cargo test --offline --release --manifest-path rust/Cargo.toml --lib nodes::sim::core::tests::road_plan_scaling::populated_road_plan_scaling -- --exact --ignored --nocapture --test-threads=1
-env XDG_DATA_HOME=/tmp/metrum-road28/profile-data XDG_CONFIG_HOME=/tmp/metrum-road28/profile-config RAYON_NUM_THREADS=4 METRUM_DEBUG=0 METRUM_JUNCTION_PREVIEW_CAPTURE=/tmp/metrum-road28/final godot --display-driver wayland --path /tmp/metrum-road28/candidate/godot --script res://tests/road_junction_preview_test.gd
+env XDG_DATA_HOME=$ARTIFACTS/metrum-road28/profile-data XDG_CONFIG_HOME=$ARTIFACTS/metrum-road28/profile-config RAYON_NUM_THREADS=4 METRUM_DEBUG=0 METRUM_JUNCTION_PREVIEW_CAPTURE=$ARTIFACTS/metrum-road28/final godot --display-driver wayland --path $ARTIFACTS/metrum-road28/candidate/godot --script res://tests/road_junction_preview_test.gd
 ```
 
-Artifacts under `/tmp/metrum-road28/`: `matched-{baseline,candidate}-{1,2,3}-{motion,interaction}.json`
-and corresponding logs, `locality-{1,2,3}.log`, `comparison.json`/`comparison.txt`,
-`full-rust-tests.log`, `rustdoc.log`, `report-tests.log`, `rendered-junction-final.log`,
-`rendered-motion.log`, `final_*.png`, `motion_*_motion_*.png` and `profile-*.data`/reports.
-All six interaction JSON captures pass the existing benchmark reporter's validation. Projects
-and user-data profiles are isolated under that directory; user saves and installed assets are
-not benchmark inputs. The earlier five-case baseline captures are diagnostic history and are
-not mixed into the eight-case comparison above.
+All six interaction JSON captures pass the existing benchmark reporter's validation. Projects and
+user-data profiles are isolated under that directory; user saves and installed assets are not
+benchmark inputs. The earlier five-case baseline captures are diagnostic history and are not mixed
+into the eight-case comparison above.
 
 ### Road guide removal (`ROAD-27`)
 
@@ -3036,19 +2967,16 @@ fields while retaining road output and generation checks.
 Fresh validation: all 2,010 active release Rust tests pass (81 ignored), along with Godot's
 `network_tool_chunk_renderer_test` and `road_preview_stream_test`, and eight benchmark-report
 tests. The cursor regression checks that former continuation guides no longer attract the
-cursor while zoning-grid, free-angle and real-road connection behavior remain intact.
-Changed Rust files pass formatting checks; the repository-wide formatting check still reports
-unrelated formatting in existing vegetation/zoning files. The release extension is atomically
-deployed; logs and executable/library hashes are in `rust/target/no-road-guides/`.
+cursor while zoning-grid, free-angle and real-road connection behavior remain intact. Changed
+Rust files pass formatting checks; the repository-wide formatting check still reports
+unrelated formatting in existing vegetation/zoning files.
 
 Matched unprofiled release runs compare the preceding contextual-guide executable with guide
-removal on Rust 1.98.1, i9-12900K CPU 0, `RAYON_NUM_THREADS=1 METRUM_DEBUG=0`.
-Run `bash rust/target/no-road-guides/benchmarks.sh` for the existing
-`benchmark_zoning_snap_locality --ignored --nocapture --test-threads=1` fixture.
-At 0 / 1,000 / 10,000 background roads, median query times are
-0.069 → 0.061 / 0.077 → 0.071 / 0.080 → 0.083 µs; all checksums match
-`(266240, 532480)`. Setup is excluded. These single trials support retained query locality,
-not a speedup claim; guide generation and upload no longer execute.
+removal on Rust 1.98.1, i9-12900K CPU 0, `RAYON_NUM_THREADS=1 METRUM_DEBUG=0`. At 0 / 1,000
+/ 10,000 background roads, median query times are 0.069 → 0.061 / 0.077 → 0.071 / 0.080 →
+0.083 µs; all checksums match `(266240, 532480)`. Setup is excluded. These single trials
+support retained query locality, not a speedup claim; guide generation and upload no longer
+execute.
 
 ### Empty generated-carrier height lookup (`ROAD-26`)
 
@@ -3069,19 +2997,16 @@ and `road_preview_stream_test`, including continuous movement through five junct
 fixtures. The extension is deployed. This reproduces the failing lookup, not the exact road
 layout from the crash dump.
 
-Fresh matched, unprofiled release locality runs on the i9-12900K (Rust 1.98.1,
-CPU 0, `RAYON_NUM_THREADS=1`, `METRUM_DEBUG=0`) use
-`taskset -c 0 <release-test-executable> populated_cell_road_plan_scaling --ignored --nocapture --test-threads=1`.
-Each run measures 100 samples per size with fixed affected geometry, increasing background
-buildings/painted cells from 0 to 100,000, roads from 0 to 391, parcels from 4 to 100,004 and
-agents from 24 to 600,024. Local products match at every size. Worker p50 before → after is
-37.510 → 35.081, 35.919 → 35.678, 35.491 → 35.880 and 35.957 → 36.173 ms at
-0 / 1,000 / 10,000 / 100,000 background buildings. Largest-case compile p50 is
-35.061 → 35.198 ms; readiness is 0.150 → 0.145 ms. One-time snapshot setup is measured
-separately (0.369 → 0.366 ms at the largest size). These runs retain local planning cost;
-they do not establish a speedup. Logs, reproduction, build/deployment SHA-256 identities and
-continuous-preview metrics are in `rust/target/road-preview-empty-height/` (`before.sha256`,
-`after.sha256`, `deployed.sha256`, `populated-before.log`, `populated-after.log`).
+Fresh matched, unprofiled release locality runs on the i9-12900K (Rust 1.98.1, CPU 0,
+`RAYON_NUM_THREADS=1`, `METRUM_DEBUG=0`) use `taskset -c 0 <release-test-executable>
+populated_cell_road_plan_scaling --ignored --nocapture --test-threads=1`. Each run measures 100
+samples per size with fixed affected geometry, increasing background buildings/painted cells from 0
+to 100,000, roads from 0 to 391, parcels from 4 to 100,004 and agents from 24 to 600,024. Local
+products match at every size. Worker p50 before → after is 37.510 → 35.081, 35.919 → 35.678, 35.491
+→ 35.880 and 35.957 → 36.173 ms at 0 / 1,000 / 10,000 / 100,000 background buildings. Largest-case
+compile p50 is 35.061 → 35.198 ms; readiness is 0.150 → 0.145 ms. One-time snapshot setup is
+measured separately (0.369 → 0.366 ms at the largest size). These runs retain local planning cost;
+they do not establish a speedup.
 
 ### Third-road boundary and placement feedback (`ROAD-25`)
 
@@ -3138,13 +3063,12 @@ below 0.018 ms. Separately measured one-time snapshot cost is 0.006 → 0.007 ms
 buildings and 3.403 → 3.439 ms at 100,000. The approximately 1% largest-case worker difference
 does not change locality; these measurements do not establish whole-city frame rate.
 
-Command: `RAYON_NUM_THREADS=8 METRUM_DEBUG=0 taskset -c 0,2,4,6,8,10,12,14 BINARY --exact nodes::sim::core::tests::road_plan_scaling::populated_paved_road_plan_scaling --ignored --nocapture --test-threads=1`.
-Release test executable SHA-256 before: `088c53a52ba53b229113388d75f8a1b5a5b83fec0e4687d58d1233bf0bd100f6`;
-after: `42f30b3027712d14291a762f6e8410bfddce53430e91efce86b61e2c037443b6`.
-Deployed library SHA-256: `bb5e27f6da196ecf4613b492da28f8281063ca4f10d65c7983217a34557e0151`.
-Artifacts: `/tmp/metrum-road-fix/` contains `locality-{before,after}-{1,2,3}.log`,
-`locality-summary.json`, correctness/build logs, `sweep-all.log` (baseline), `sweep-after.log`,
-and the original failing regression trace `rust-repro.log`.
+Command: `RAYON_NUM_THREADS=8 METRUM_DEBUG=0 taskset -c 0,2,4,6,8,10,12,14 BINARY --exact
+nodes::sim::core::tests::road_plan_scaling::populated_paved_road_plan_scaling --ignored --nocapture
+--test-threads=1`. Release test executable SHA-256 before:
+`088c53a52ba53b229113388d75f8a1b5a5b83fec0e4687d58d1233bf0bd100f6`; after:
+`42f30b3027712d14291a762f6e8410bfddce53430e91efce86b61e2c037443b6`. Deployed library SHA-256:
+`bb5e27f6da196ecf4613b492da28f8281063ca4f10d65c7983217a34557e0151`.
 
 ### Node Edit Audit Measurements (2026-09-12)
 
@@ -3204,18 +3128,17 @@ The largest planning fixture contains 391 background roads and 600,024 total age
 cost remains comparable and local; one-time snapshots still scale with the stored city. This is
 not acceptance of the remaining global agent invalidation or full pathing-rebuild costs.
 
-Reproduce with `python3 /tmp/metrum-full-audit/match_node_edits.py`. The exact ignored entries are
+The exact ignored entries are
 `simulation::network::topology::node_edit_tests::benchmark_node_edit_locality` and
-`nodes::sim::core::tests::road_plan_scaling::populated_paved_road_plan_scaling`, using
-`--exact --ignored --nocapture --test-threads=1`, `METRUM_DEBUG=0`, and offline release builds.
-Mutations/profiles use `taskset -c 0`, `RAYON_NUM_THREADS=1`; planning uses
-`taskset -c 0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`. Results, setup/clone timings, source snapshots
-and the seven-file diff are under `/tmp/metrum-full-audit/node-edits-*`. Rust is 1.98.1; executable
-SHA-256 values are `cc95a605c79771c82391601ef4a7b33db3bc0bf3853cb4d4cd6b8e15c3e49130` before and
+`nodes::sim::core::tests::road_plan_scaling::populated_paved_road_plan_scaling`, using `--exact
+--ignored --nocapture --test-threads=1`, `METRUM_DEBUG=0`, and offline release builds.
+Mutations/profiles use `taskset -c 0`, `RAYON_NUM_THREADS=1`; planning uses `taskset -c
+0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`. Rust is 1.98.1; executable SHA-256 values are
+`cc95a605c79771c82391601ef4a7b33db3bc0bf3853cb4d4cd6b8e15c3e49130` before and
 `b4746664fd713fea768dc93d62097c04e8f002df08fc63938d9097850ffb58fc` after. The initial capture hit
-quota; its incomplete executable/empty archive were removed, old artifacts were losslessly
-archived and verified, and capture was retried atomically. No measurements ran from that failed
-capture or concurrently with archival, compilation, tests or source changes.
+quota; its incomplete executable/empty archive were removed, old artifacts were losslessly archived
+and verified, and capture was retried atomically. No measurements ran from that failed capture or
+concurrently with archival, compilation, tests or source changes.
 
 ### Node Query Audit Measurements (2026-09-12)
 
@@ -3264,7 +3187,6 @@ Commands and identities:
 - Before release test executable SHA-256: `14f7b87aaf06f9e046843fb731164e6c3d3ac63d610d7ba6cf88d537ce250c96`.
 - After: `b4cc03a9f9290b26156280c1157a66705c6c6038110994184dcb5230c2688f9a`.
 - Rust: `rustc 1.98.1 (48a229cea 2026-09-01) (Arch Linux rust 1:1.98.1-1)`.
-- Artifacts: `/tmp/metrum-full-audit/node-query-{before,after}-identity.json`, `node-query-bench.json`, `node-query-summary.json`, `node-query-planning-bench.json`, `node-query-planning-summary.json`, raw per-pair logs and `node-query.diff`.
 
 Final source/test compilation is warning-free. All 1,763 release tests pass (58 ignored),
 `node-query-final-tests.log`. No builds, tests or source changes overlapped the accepted benchmark
@@ -3308,7 +3230,7 @@ Command: `RAYON_NUM_THREADS=1 METRUM_DEBUG=0 taskset -c 0 BINARY --exact simulat
 - Before release test executable SHA-256: `a8d62cd8c19c3d6af01de5c71b327c80a08ef8ddbac92baf0ce02d749142a489`.
 - After: `d02c0c5fbe9354eb7a8e7d86ee40822d808aa83e89e607fdcf0667f261351b52`.
 - Rust: `rustc 1.98.1 (48a229cea 2026-09-01) (Arch Linux rust 1:1.98.1-1)`.
-- Artifacts: `/tmp/metrum-full-audit/edge-query-{before,after}-identity.json`, `edge-query-bench.json`, `edge-query-summary.json`, raw per-pair logs and `edge-query.diff`. Identities include the corrected GDScript API header alongside Rust sources.
+- Identities include the corrected GDScript API header alongside Rust sources.
 
 No builds, tests or source changes overlapped the accepted measurements. Test/benchmark compilation
 is warning-free, `edge-query-after-check.log`.
@@ -3349,7 +3271,6 @@ snapshot creation is measured separately (3.329 → 3.413 ms at the largest size
 - Before release test executable SHA-256: `3fbda58cf0889ebe799363b0bab112efb91ee8607abee492c0bed982220c75b0`.
 - After: `088c53a52ba53b229113388d75f8a1b5a5b83fec0e4687d58d1233bf0bd100f6`.
 - Rust: `rustc 1.98.1 (48a229cea 2026-09-01) (Arch Linux rust 1:1.98.1-1)`.
-- Artifacts: `/tmp/metrum-full-audit/node-grid-capacity-{before,after}-identity.json`, query and planning `*-bench.json`/`*-summary.json`, raw matched-pair logs and `node-grid-capacity.diff`.
 
 All 1,765 release tests pass (60 ignored), `node-grid-capacity-after-tests.log`. Test/benchmark
 compilation is warning-free. No builds, tests or source changes overlapped accepted measurements.
@@ -3358,22 +3279,18 @@ compilation is warning-free. No builds, tests or source changes overlapped accep
 
 Correctness without acceptable performance is not done.
 
-`AUDIT-01-G1` corrects the common integer-key rounding helper: ties round away from zero,
-but representable values immediately below a half must remain below the boundary. Large
-already-integral values and saturating conversions retain Rust's standard semantics.
-The former offset-plus-cast shortcut violated that contract. On the audited build, three
-alternating unprofiled release process pairs of
-`nodes::sim::core::tests::road_plan_scaling::populated_road_plan_scaling --exact --ignored --nocapture`
-used 24 Rayon workers, three warmups and 100 observations per background size. With
-0/1,000/10,000/100,000 remote buildings, worker p50 medians were
-`20.920/20.908/20.756/20.892 → 21.453/21.600/21.712/21.676 ms`.
-At 100,000 buildings (600,024 agents, 391 remote roads), direct planning was
-`20.355 → 20.692 ms`; readiness stayed below 0.020 ms, and the separately measured
-one-time snapshot was `3.317 → 3.371 ms`. Every run retained identical local terrain products.
-The small bounded cost of correct rounding is accepted; repeated planning still follows
-the fixed neighborhood. Exact binaries, source hashes and raw process logs are under
-`/tmp/metrum-full-audit/quantization-*`, with merged results in `quantization-locality-matched.json`.
-The separate scalar experiment is diagnostic evidence, not a whole-city timing claim.
+`AUDIT-01-G1` corrects the common integer-key rounding helper: ties round away from zero, but
+representable values immediately below a half must remain below the boundary. Large already-integral
+values and saturating conversions retain Rust's standard semantics. The former offset-plus-cast
+shortcut violated that contract. On the audited build, three alternating unprofiled release process
+pairs of `nodes::sim::core::tests::road_plan_scaling::populated_road_plan_scaling --exact --ignored
+--nocapture` used 24 Rayon workers, three warmups and 100 observations per background size. With
+0/1,000/10,000/100,000 remote buildings, worker p50 medians were `20.920/20.908/20.756/20.892 →
+21.453/21.600/21.712/21.676 ms`. At 100,000 buildings (600,024 agents, 391 remote roads), direct
+planning was `20.355 → 20.692 ms`; readiness stayed below 0.020 ms, and the separately measured
+one-time snapshot was `3.317 → 3.371 ms`. Every run retained identical local terrain products. The
+small bounded cost of correct rounding is accepted; repeated planning still follows the fixed
+neighborhood. The separate scalar experiment is diagnostic evidence, not a whole-city timing claim.
 
 Required bounds:
 
@@ -3766,10 +3683,7 @@ the site materials are present. These are texture accounting and material-factor
 not RSS, peak memory, first-draw shader compilation or gameplay frame-rate measurements. Each
 process starts with empty factory caches; OS file caches are not flushed.
 
-Artifacts are `/tmp/metrum-full-audit/material-inputs-*`: source hashes/snapshots, the actual render
-harness and images, image comparison, all process commands/logs and matched measurement summaries.
-`python3 /tmp/metrum-full-audit/match_material_inputs.py` replays the five pairs and restores the
-accepted five source files between exited engine processes. The unchanged release extension is
+The unchanged release extension is
 `2dcc2885453d135cef74f03272df8b50e437f168bd28f298f01c5a489d35ef20`.
 
 `ROAD-05` is the active refined-terrain performance contract:

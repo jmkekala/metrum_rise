@@ -2270,7 +2270,7 @@ fn routed_consumer_claims_require_the_return_trip_and_the_households_mode() {
     let home_origin = crate::simulation::economy::agents::tick::BuildingTripEnds::origin(0, &allocator, &network, &graph);
     let destination = crate::simulation::economy::agents::tick::BuildingTripEnds::at_entrance(&proposed, false, &network, &graph);
     assert!(matches!(crate::simulation::economy::agents::tick::estimate_trip_seconds_between(
-        &home_origin, &destination, true, &network, &graph, &paths, f32::INFINITY, f32::INFINITY),
+        &home_origin, &destination, true, &network, &graph, &paths, f32::INFINITY, f32::INFINITY, None),
         crate::simulation::economy::agents::tick::TripEstimate::Seconds(Some(_))));
     assert_eq!(customers.claim_reachable(&proposed, resource, 1.0, 25.0,
         &allocator, &network, &graph), 0.0, "one outward trip cannot promise a shopping round trip");

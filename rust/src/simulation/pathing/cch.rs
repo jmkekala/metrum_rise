@@ -125,6 +125,9 @@ impl CchPathScratch {
     /// Borrows the most recently reconstructed path until the next query uses this scratch.
     pub(crate) fn nodes(&self) -> &[u32] { &self.nodes }
 
+    /// Lends the search half to cost-only quotes; it leaves the last path untouched.
+    pub(crate) fn query(&mut self) -> &mut CchQueryScratch { &mut self.query }
+
     /// Prepares search and reconstruction storage once per graph layout.
     pub(crate) fn prepare(&mut self, cch: &CchGraph, graph: &RegionGraph) {
         self.query.prepare(cch, graph);

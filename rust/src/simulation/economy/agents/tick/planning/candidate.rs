@@ -21,7 +21,7 @@ use std::collections::BinaryHeap;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 mod query;
-pub(crate) use query::TripQueryScratch;
+pub(crate) use query::{SharedNetworkQuotes, TripQueryScratch};
 pub(super) use query::RouteStart;
 
 #[cfg(test)]
@@ -360,7 +360,7 @@ pub(super) fn combine_trip_ends(
     if origin.node != destination.node {
         return TripQueryScratch::with(transit_network, graph, |scratch| {
             scratch.combine(mode, origin_rank, destination_rank, origin, destination,
-                transit_network, graph, pathfind_count)
+                transit_network, graph, pathfind_count, None)
         });
     }
     if mode != MODE_CAR

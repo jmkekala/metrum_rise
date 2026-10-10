@@ -456,24 +456,19 @@ Median of run medians, in microseconds:
 | 10,000 | 4.280 | 4.274 | 14.961 | 15.627 |
 | 100,000 | 4.656 | 4.478 | 15.094 | 15.986 |
 
-The extra normalization during refinement adds 0.6–0.9 µs to the graded fixture (4–6%); flat previews
-show no regression and work remains local. Road picking remains 0.017–0.052 µs.
-The graded case verifies twelve lots and neighboring frontage gaps within
-2 mm; flat before/after checks preserve twelve lots at matching local stations and sides. Setup
-is timed separately and excluded. These measurements cover Rust picking and geometry validation,
-excluding site feasibility, Godot transfer/rendering and resident simulation. Sources and binaries
-stay fixed during measurement with no competing build/test work. Historical first-implementation
-and spacing results remain in `/tmp/metrum-zoning-road/` and `/tmp/metrum-zoning-gap/`; they do not
-validate this endpoint correction.
+The extra normalization during refinement adds 0.6–0.9 µs to the graded fixture (4–6%); flat
+previews show no regression and work remains local. Road picking remains 0.017–0.052 µs. The graded
+case verifies twelve lots and neighboring frontage gaps within 2 mm; flat before/after checks
+preserve twelve lots at matching local stations and sides. Setup is timed separately and excluded.
+These measurements cover Rust picking and geometry validation, excluding site feasibility, Godot
+transfer/rendering and resident simulation. Sources and binaries stay fixed during measurement with
+no competing build/test work.
 
 Build: `cargo test --offline --manifest-path rust/Cargo.toml --release --lib`, Rust 1.98.1
 (48a229cea 2026-09-01). Before/after test executable SHA-256 values:
 `261b5793fba3b04401ccfe9356f03d21bc132c0761cbe5c83c13b0fb0f8e6c89` and
-`1cc51de4d10e85c9bbfc8f23c0bad382f688079293a1805a9c62c0ff59dbf16b`.
-Exact commands, source snapshots, retained binaries, regression failures, raw runs and summary
-are in `/tmp/metrum-zoning-endpoint/`; replay with `python3 /tmp/metrum-zoning-endpoint/measure.py`.
-Native/tool validation: `godot --headless --path godot --script res://tests/zoning_road_tool_test.gd`
-(Godot 4.7.2).
+`1cc51de4d10e85c9bbfc8f23c0bad382f688079293a1805a9c62c0ff59dbf16b`. Native/tool validation: `godot
+--headless --path godot --script res://tests/zoning_road_tool_test.gd` (Godot 4.7.2).
 
 Shared zoning terrain verification (2026-09-13): the previous missing-asset exemption skipped
 terrain checks for densities without matching content, while low density checked the installed
@@ -515,18 +510,13 @@ solve count stays one. Median of run medians in µs:
 Cached feasibility remains local and is about four times faster in this comparison. The initial
 solve takes 0.046 ms; revalidation after remote edits takes 0.011–0.017 ms without another solve.
 Fixture setup is excluded. No competing build or test work ran during measurements. These
-measurements validate the shared terrain check before the subsequent anchoring change;
-the endpoint table above records still earlier builds.
-Rust 1.98.1 release and Godot 4.7.2 are used over base `0b813dfed291a8b250c204b376dbea9127b76308`.
-Before/after shared-library SHA-256 values are
+measurements validate the shared terrain check before the subsequent anchoring change; the endpoint
+table above records still earlier builds. Rust 1.98.1 release and Godot 4.7.2 are used over base
+`0b813dfed291a8b250c204b376dbea9127b76308`. Before/after shared-library SHA-256 values are
 `164c2871ce23cc3d57cdebf8b46c4f99c4ab107b69bd5426901aff7b83c8ce55` and
-`4e2b12e22de94d975a49352c77d6c007394bd47a4138a6ebb71e0b5d049bef42`.
-Build commands are `cargo build --offline --manifest-path rust/Cargo.toml --release` and
-`cargo test --offline --manifest-path rust/Cargo.toml --release --lib`. Exact measurement commands,
-test-executable identities, changed-source snapshots, retained binaries, regression failures and
-raw results are in `/tmp/metrum-zoning-terrain/` (`metadata.json`, `measure.py`, `measure.gd`,
-`summary.json`, and logs). Replay with `python3 /tmp/metrum-zoning-terrain/measure.py`.
-The previous missing-asset policy's measurements remain historical in `/tmp/metrum-zoning-assets/`.
+`4e2b12e22de94d975a49352c77d6c007394bd47a4138a6ebb71e0b5d049bef42`. Build commands are `cargo build
+--offline --manifest-path rust/Cargo.toml --release` and `cargo test --offline --manifest-path
+rust/Cargo.toml --release --lib`.
 
 Shared manual/automatic anchoring verification (2026-09-13): the preceding endpoint-based fill
 dropped whole candidates overlapping manual lots, leaving unused fractions at both group ends.
@@ -565,16 +555,13 @@ solutions are warm. Same CPU/worker/sample settings, with no resident simulation
 The corrected fill computes two additional lots for the same input. Its first query after manual
 placement takes 0.364 ms versus 0.041 ms previously: new anchored poses need terrain solves, whereas
 the old endpoint grid reused the earlier empty-road results. The initial empty-road query takes
-0.671 ms versus 0.640 ms. These are medians of one first call per process, not tail-latency estimates.
-No assistant builds or tests ran alongside these timings. Rust 1.98.1 release and Godot 4.7.2 are
-used over base `0b813dfed291a8b250c204b376dbea9127b76308`; before/after shared-library SHA-256 values are
-`4e2b12e22de94d975a49352c77d6c007394bd47a4138a6ebb71e0b5d049bef42` and
-`8ea7dc9ef42bc571460fcc7ccf4e92588098b0aea7ec25108ed32b3bb4a68fae`.
-Build with `cargo test --offline --manifest-path rust/Cargo.toml --release --lib` and
-`cargo build --offline --manifest-path rust/Cargo.toml --release`. Exact commands, test-binary hashes,
-changed-source snapshots, retained binaries, failed/passing regressions and raw results are in
-`/tmp/metrum-zoning-anchors/`. Replay with `measure-locality.py` and `measure-native.py`; results
-are in `summary.json` and `native-summary.json`, with identities in the corresponding metadata files.
+0.671 ms versus 0.640 ms. These are medians of one first call per process, not tail-latency
+estimates. No assistant builds or tests ran alongside these timings. Rust 1.98.1 release and Godot
+4.7.2 are used over base `0b813dfed291a8b250c204b376dbea9127b76308`; before/after shared-library
+SHA-256 values are `4e2b12e22de94d975a49352c77d6c007394bd47a4138a6ebb71e0b5d049bef42` and
+`8ea7dc9ef42bc571460fcc7ccf4e92588098b0aea7ec25108ed32b3bb4a68fae`. Build with `cargo test --offline
+--manifest-path rust/Cargo.toml --release --lib` and `cargo build --offline --manifest-path
+rust/Cargo.toml --release`.
 
 Per-candidate placement, preview and rezone conflict checks use local indices. Updating one known
 parcel's occupant uses the stable-id map in O(1) expected time. Bulk save/load reconstructs the
@@ -607,10 +594,8 @@ Build command: `cargo test --offline --manifest-path rust/Cargo.toml --release -
 1.98.1 (48a229cea 2026-09-01). The runner uses `taskset -c 0`, `--exact`, `--ignored`, `--nocapture`
 and `--test-threads=1`. Before/after executable SHA-256 values are
 `698c4b37964c9cf76343d56e1402b825eda55e231612a0866582a23062769cd3` and
-`6dc89a511294abc67af9e927e17d5c70fce2c83895256bf123e93fd218bf4c10`.
-Sources/binaries remained fixed during timings, with no competing builds/tests. Exact commands,
-source identities, regression failures and matched results are in
-`/tmp/metrum-full-audit/zoning-profiles-*`; the runner is `match_zoning_profiles.py`.
+`6dc89a511294abc67af9e927e17d5c70fce2c83895256bf123e93fd218bf4c10`. Sources/binaries remained fixed
+during timings, with no competing builds/tests.
 
 ### Parcel occupancy audit (`AUDIT-01-Z2`)
 
@@ -645,12 +630,10 @@ building-removal work are excluded. These are isolated parcel-store records, not
 routing simulation; this benchmark does not claim whole-demolition or road-planning timings.
 
 Builds use `cargo test --offline --manifest-path rust/Cargo.toml --release --lib`, Rust 1.98.1
-(48a229cea 2026-09-01). `match_parcel_occupancy.py` records `taskset -c 0`, `--exact`, `--ignored`,
-`--nocapture` and `--test-threads=1` commands. Before/after executable SHA-256 values are
+(48a229cea 2026-09-01). Before/after executable SHA-256 values are
 `81d18be15f6374146486e583785c7892547d663aa21e37a5f16ad38accbc709f` and
-`2868aec40c81e8e2b97f117e5d2acd1a7a937c703f0ad1e69be92dce07564907`.
-Sources and binaries remained fixed with no competing builds/tests. Source identities, minimal
-diffs, raw logs and matched summaries are in `/tmp/metrum-full-audit/parcel-occupancy-*`.
+`2868aec40c81e8e2b97f117e5d2acd1a7a937c703f0ad1e69be92dce07564907`. Sources and binaries remained
+fixed with no competing builds/tests.
 
 ### Parcel geometry maintenance audit (`AUDIT-01-Z3`)
 
@@ -703,10 +686,8 @@ cross-build payload hashes.
 Build command: `cargo test --offline --manifest-path rust/Cargo.toml --release --lib`, Rust 1.98.1
 (48a229cea 2026-09-01). Before/after executable SHA-256 values are
 `62f0ed5f0b40a93b9595315a41d5e2ec3e9b517be34046e0581b290c7ddb48fd` and
-`95200aa665985854acdb99d950fa382a04f9666f4a61a230b9fd19f892198fc0`.
-Source/binaries remained fixed during measurement with no competing build/test work. Commands,
-source identities and raw/summary results are `/tmp/metrum-full-audit/parcel-geometry-*`;
-`match_parcel_geometry.py` and `match_parcel_geometry_planning.py` are the replay runners.
+`95200aa665985854acdb99d950fa382a04f9666f4a61a230b9fd19f892198fc0`. Source/binaries remained fixed
+during measurement with no competing build/test work.
 
 ---
 
@@ -1089,10 +1070,8 @@ allocation/memory acceptance or Godot upload cost. Those gates remain open.
 Runner: `RAYON_NUM_THREADS=1 METRUM_DEBUG=0 taskset -c 0 <release-test-binary> --exact
 simulation::zoning::cells::tests::generation::benchmark_cell_zoning_locality --ignored --nocapture
 --test-threads=1`. Binary SHA-256:
-`e985d49fcf15b75b59ebd85c9fe673fdceeb6168aca6856d2eaaf94d767049b4`.
-`/tmp/zone04-foundation/metadata.json` records the exact command, compiler, binary and source-file
-hashes; `trial-{1,2,3}.log` contains raw timings and `library-tests.log` the full suite output.
-Source/binary identity remained fixed with no competing build/test work during measurements.
+`e985d49fcf15b75b59ebd85c9fe673fdceeb6168aca6856d2eaaf94d767049b4`. Source/binary identity
+remained fixed with no competing build/test work during measurements.
 
 The next Rust slice adds canonical rectangular `CellLot` coverage to derived parcels. A lot's
 frontage direction, width and depth address cells in its persistent frame; road access metadata
@@ -1145,15 +1124,13 @@ Median of the three trial medians:
 | 1,024 | 6,144 | 2.327 |
 | 10,000 | 60,000 | 2.321 |
 
-Every case restores the same local paint, lot id and claims. Runner:
-`RAYON_NUM_THREADS=1 METRUM_DEBUG=0 taskset -c 0 <release-test-binary> --exact
+Every case restores the same local paint, lot id and claims. Runner: `RAYON_NUM_THREADS=1
+METRUM_DEBUG=0 taskset -c 0 <release-test-binary> --exact
 simulation::zoning::cells::tests::lots::benchmark_cell_lot_edit_locality --ignored --nocapture
 --test-threads=1`. Binary SHA-256:
-`50824901244ea5f1d23f3716e6f51daa98641932c4c832be8e63705a047c81c1`.
-`/tmp/zone04-lots/metadata.json` records the command, compiler, binary and source hashes;
-`trial-{1,2,3}.log` and `library-tests.log` retain the measured/tested outputs. No competing
-build/test work ran during measurements. These results cover local ownership edits, not frame
-generation, asset packing, live road edits, save throughput, allocation budgets or rendering.
+`50824901244ea5f1d23f3716e6f51daa98641932c4c832be8e63705a047c81c1`. No competing build/test
+work ran during measurements. These results cover local ownership edits, not frame generation,
+asset packing, live road edits, save throughput, allocation budgets or rendering.
 
 ### Automatic lot derivation and demand integration checkpoint
 
@@ -1190,12 +1167,10 @@ the foundation's bounded coordinate/basis rounding allowance, while cell ownersh
 full-footprint intersection rules. Field and explicit-site reservations do not receive that road
 contact allowance.
 
-Fresh release library verification: **1,926 passed, 67 ignored**, command
-`cargo test --offline --release --manifest-path rust/Cargo.toml --lib`, recorded in
-`/tmp/zone04-derivation/library-tests.log`. New regressions cover actual building growth on straight
-and rotated roads, rear paint, partial readiness, corner frontage choices, worker/asset-order
-determinism, missing/replaced catalogs, occupied preservation, road widening and no-build toggles.
-The later benchmark-only addition increases the ignored test count by one.
+New regressions cover actual building growth on straight and rotated roads, rear paint, partial
+readiness, corner frontage choices, worker/asset-order determinism, missing/replaced catalogs,
+occupied preservation, road widening and no-build toggles. The later benchmark-only addition
+increases the ignored test count by one.
 
 Let `C` be local cells, `S` compatible size choices, `Q` supported proposals, `A` their bounded
 coverage, `L` local empty lots and `R` queried road/field/site geometry. Derivation costs
@@ -1217,19 +1192,16 @@ supported proposals, then retires those empty lots; setup is excluded. There are
 | 1,024 | 6,144 | 32.225 |
 | 10,000 | 60,000 | 32.463 |
 
-The same build reruns the previous generation and paint benchmarks: local generation is
-603.422 / 606.440 / 607.988 µs at 0 / 1,000 / 10,000 distant roads with 0 / 16,384 / 131,072
-distant cells. Local erase/undo is 2.399 / 2.413 / 2.397 µs at 0 / 1,024 / 10,000 distant lots.
-Local products and counters match in every case. Runner:
-`RAYON_NUM_THREADS=1 METRUM_DEBUG=0 taskset -c 0 <release-test-binary> --exact
-simulation::zoning::cells::tests::generation::lots::benchmark_cell_lot_derivation_locality
---ignored --nocapture --test-threads=1`. Binary SHA-256:
-`563eb7ea66a8be92e13cdcf1ee5dff77ba7ae199d835f8055fda13aa1a187aac`.
-`/tmp/zone04-derivation/metadata.json` records commands, compiler, worker settings and source/binary
-hashes; `derive-{1,2,3}.log`, `generation-{1,2,3}.log` and `paint-{1,2,3}.log` hold the results.
-No competing build/test work ran during measurements. This isolates Rust geometry/lot ownership;
-it does not establish end-to-end compiled-surface, populated-building/agent, memory or rendering
-acceptance.
+The same build reruns the previous generation and paint benchmarks: local generation is 603.422 /
+606.440 / 607.988 µs at 0 / 1,000 / 10,000 distant roads with 0 / 16,384 / 131,072 distant cells.
+Local erase/undo is 2.399 / 2.413 / 2.397 µs at 0 / 1,024 / 10,000 distant lots. Local products and
+counters match in every case. Runner: `RAYON_NUM_THREADS=1 METRUM_DEBUG=0 taskset -c 0
+<release-test-binary> --exact
+simulation::zoning::cells::tests::generation::lots::benchmark_cell_lot_derivation_locality --ignored
+--nocapture --test-threads=1`. Binary SHA-256:
+`563eb7ea66a8be92e13cdcf1ee5dff77ba7ae199d835f8055fda13aa1a187aac`. No competing build/test work ran
+during measurements. This isolates Rust geometry/lot ownership; it does not establish end-to-end
+compiled-surface, populated-building/agent, memory or rendering acceptance.
 
 ### External placement reservation checkpoint
 
@@ -1295,16 +1267,15 @@ reservations and reconciles the current lots. Existing buildings and their claim
 occupied lots enter the existing redevelopment lifecycle. Consecutive undo works without rewinding
 simulation time or copying a city snapshot. All reservation preconditions are checked atomically.
 
-Fresh release verification: **1,941 passed, 69 ignored**, using
-`cargo test --offline --release --manifest-path rust/Cargo.toml --lib`. New cases cover cold fill
-across chunks, same-profile barriers, view-order-independent geometry, chunk-local invalidation,
-one rendering owner per cell, stale previews, consecutive undo after growth, and atomic inverse
-reservation checks. `cargo doc --offline --no-deps --manifest-path rust/Cargo.toml` passes.
-Headless `zoning_cells_tool_test.gd` and the existing `zoning_road_tool_test.gd` both pass using
-the rebuilt debug extension. The cell test includes toolbar operation separation, all selectors,
-cancellation, retained previews, native mixed-workflow reservations, unchanged chunk payloads and
-queued native undo. `./run.sh --test` includes the new bridge test. Evidence is under
-`/tmp/zone04-tools/`, including source/binary identities and the library, bridge and rustdoc logs.
+Fresh release verification: **1,941 passed, 69 ignored**, using `cargo test --offline --release
+--manifest-path rust/Cargo.toml --lib`. New cases cover cold fill across chunks, same-profile
+barriers, view-order-independent geometry, chunk-local invalidation, one rendering owner per cell,
+stale previews, consecutive undo after growth, and atomic inverse reservation checks. `cargo doc
+--offline --no-deps --manifest-path rust/Cargo.toml` passes. Headless `zoning_cells_tool_test.gd`
+and the existing `zoning_road_tool_test.gd` both pass using the rebuilt debug extension. The cell
+test includes toolbar operation separation, all selectors, cancellation, retained previews, native
+mixed-workflow reservations, unchanged chunk payloads and queued native undo. `./run.sh --test`
+includes the new bridge test.
 
 Three matched unprofiled release trials rerun the same isolated workloads on CPU 0 with
 `RAYON_NUM_THREADS=1` and `METRUM_DEBUG=0`. Median of the three trial medians:
@@ -1341,11 +1312,10 @@ swept brush, 5 µs immediate erase/undo, 50 µs derive/retire and 0.3 ms populat
 Cold fill, runtime gesture, overlay upload, memory and allocation budgets require their own fixtures.
 
 Runner: `RAYON_NUM_THREADS=1 METRUM_DEBUG=0 taskset -c 0 <release-test-binary> --exact <test>
---ignored --nocapture --test-threads=1`. Exact test names, commands, sources and raw trial logs are
-recorded in `/tmp/zone04-tools/metadata.json` and `{generation,derive,paint,cells,baseline}-{1,2,3}.log`.
-Binary SHA-256: `355729e9766c5ad508fc6a34dd59675f654a58ca96cb6a7e6d1b00851bdffd2f`.
-No competing build/test process ran during the measurements. The debug extension used by the
-Godot checks has SHA-256 `c90ec9d2cf754eca8bfcbdfea3a6e6e7e7cffd84cfa610491a07180d44cae543`.
+--ignored --nocapture --test-threads=1`. Binary SHA-256:
+`355729e9766c5ad508fc6a34dd59675f654a58ca96cb6a7e6d1b00851bdffd2f`. No competing build/test process
+ran during the measurements. The debug extension used by the Godot checks has SHA-256
+`c90ec9d2cf754eca8bfcbdfea3a6e6e7e7cffd84cfa610491a07180d44cae543`.
 
 ### Loaded reservations and boundary precision
 
@@ -1376,9 +1346,9 @@ index and its local candidate bound.
 
 Fresh release verification passes 1,945 library tests, including mixed rotated saves, completely
 erased occupied lots, field boundary contact/intrusion, explicit-site and road conflicts, orphan
-unpainted saved cells, no-build restoration and the precise runtime boundary checks. The log is
-`/tmp/zone04-load-validation/library-tests.log`. The additional ignored site-query timing fixture
-was added after this full run; production code is unchanged by that fixture.
+unpainted saved cells, no-build restoration and the precise runtime boundary checks. The
+additional ignored site-query timing fixture was added after this full run; production code is
+unchanged by that fixture.
 
 Three matched unprofiled release trials use CPU 0, `RAYON_NUM_THREADS=1` and `METRUM_DEBUG=0`,
 without concurrent builds/tests. The load fixture times only reservation validation after world
@@ -1399,15 +1369,11 @@ fixture still produces 144 cells with identical work counters: generation is
 1 µs for the precise site query and 1.5 ms for this load-validation fixture with 10,000 fields
 and 10,000 explicit sites. These measurements exclude full load, overlay upload and memory costs.
 
-Commands, source hashes, environment and raw trial logs are in
-`/tmp/zone04-load-validation/{metadata.json,summary.json,sites-*.log,load-*.log,generation-*.log}`.
-The runner uses `taskset -c 0 <release-test-binary> --exact <test> --ignored --nocapture
---test-threads=1`; exact test paths are recorded in `metadata.json`.
 Release test binary SHA-256: `0743f8121b8ee1e1b80103ef266d5368ffd04bf054e5ef628972f46986f39817`.
 Fresh `zoning_cells_tool_test.gd` and `zoning_road_tool_test.gd` both pass with debug extension
-SHA-256 `43015e11e1c6010adc3ae0b992e3f854cfbf65163ea8fa1dca506ea4f0dd28a6`.
-Their logs and the warning-free `cargo doc --offline --no-deps --manifest-path rust/Cargo.toml`
-result are in the same artifact directory.
+SHA-256 `43015e11e1c6010adc3ae0b992e3f854cfbf65163ea8fa1dca506ea4f0dd28a6`. Their logs and the
+warning-free `cargo doc --offline --no-deps --manifest-path rust/Cargo.toml` result are in the same
+artifact directory.
 
 ### Straight split frontage and regeneration undo
 
@@ -1441,7 +1407,6 @@ pass remains local and deterministic.
 Fresh release verification passes **1,949 tests** with 72 manual timing fixtures ignored. New
 regressions cover five split positions at two orientations with and without existing lots,
 partial frontage after no-build, erase/regenerate/undo, and narrow/full query agreement.
-The full log is `/tmp/zone04-continuity/library-tests.log`.
 
 Three matched unprofiled release trials on an Intel Core i9-12900K use CPU 0,
 `RAYON_NUM_THREADS=1`, `METRUM_DEBUG=0` and no competing builds/tests. Medians across trials are
@@ -1464,20 +1429,16 @@ accepted cells. Its isolated regression ceiling is 2 ms; the preceding single-ro
 ceilings remain unchanged. These measurements do not time a full road transaction, entrance
 repair, populated simulation snapshot, overlay upload or rendering.
 
-Exact commands, source hashes and raw trials are in
-`/tmp/zone04-continuity/{metadata.json,summary.json,generation-*.log,derive-*.log,paint-*.log,split-*.log}`.
-The runner uses `taskset -c 0 <release-test-binary> --exact <test> --ignored --nocapture
---test-threads=1`; test paths are recorded in `metadata.json`. Release test binary SHA-256:
-`efbc40de4d0398d845a5b15ea7942274de16db1add7a1143a5dceccab8d19617`.
+Release test binary SHA-256: `efbc40de4d0398d845a5b15ea7942274de16db1add7a1143a5dceccab8d19617`.
 
 Both Godot zoning checks pass with deployed debug extension SHA-256
-`f3cae9f5e956fc06d6918fac25ba9d8593b40f2e338745bda51d98846871d45b`.
-Commands use `XDG_DATA_HOME=/tmp/zone04-godot-data XDG_CONFIG_HOME=/tmp/zone04-godot-config
+`f3cae9f5e956fc06d6918fac25ba9d8593b40f2e338745bda51d98846871d45b`. Commands use
+`XDG_DATA_HOME=$ARTIFACTS/zone04-godot-data XDG_CONFIG_HOME=$ARTIFACTS/zone04-godot-config
 godot --headless --path godot --script res://tests/<test>.gd`, with tests
-`zoning_cells_tool_test` and `zoning_road_tool_test`. Logs and the warning-free
-`cargo doc --offline --no-deps --manifest-path rust/Cargo.toml` result are in the same artifact
-directory. An initial debug build exhausted disk space; clearing generated incremental cache
-allowed a successful rebuild before these checks.
+`zoning_cells_tool_test` and `zoning_road_tool_test`. Logs and the warning-free `cargo doc
+--offline --no-deps --manifest-path rust/Cargo.toml` result are in the same artifact directory.
+An initial debug build exhausted disk space; clearing generated incremental cache allowed a
+successful rebuild before these checks.
 
 ### Occupied attachments through straight-road edits
 
@@ -1497,12 +1458,11 @@ processes them. It cannot generate new empty cells, and a partial eligible inter
 a complete empty frontage cell. New construction still requires full eligible coverage. The
 existing no-build removal policy in section 8 is unchanged.
 
-Fresh release verification passes **1,952 tests**, with 72 manual timing fixtures ignored.
-The added regressions cover occupied split/restored-road metadata at two orientations, erased
+Fresh release verification passes **1,952 tests**, with 72 manual timing fixtures ignored. The
+added regressions cover occupied split/restored-road metadata at two orientations, erased
 claims, disabled frontage, and actual road commit/undo with a grown building and entrance cache.
 The runtime regression preserves exact building position/facing, parcel footprint and ownership,
-and verifies current road stations and entrance edge ids. Log:
-`/tmp/zone04-occupied/library-tests.log`.
+and verifies current road stations and entrance edge ids.
 
 Three matched unprofiled trials use the preceding CPU/worker settings and no competing builds.
 The occupied fixture alternates immutable split and restored road graphs and changes all four
@@ -1525,12 +1485,11 @@ measurements, excluding full road transactions, building entrance-cache rebuildi
 Occupant metadata publication is O(changed lot ids), with no global building lookup or spatial
 index invalidation; the existing entrance rebuild remains a separate cost.
 
-Commands, source hashes, raw trials and medians are in `/tmp/zone04-occupied/metadata.json`,
-`summary.json` and `{generation,derive,paint,split}-{1,2,3}.log`. Release test binary SHA-256:
-`c8660a468cfb9b9f67c4123aaadcff3957bae7d4218b612c03c61b6b36d49cc9`.
-Both Godot zoning tests pass using the preceding headless commands and deployed debug extension
-SHA-256 `50f791f59ad46dad2e7118a28fb75def14240904812d96a5375bb5ef26e66c62`.
-Their logs and the warning-free Rustdoc result are in the same artifact directory.
+Release test binary SHA-256:
+`c8660a468cfb9b9f67c4123aaadcff3957bae7d4218b612c03c61b6b36d49cc9`. Both Godot zoning tests
+pass using the preceding headless commands and deployed debug extension SHA-256
+`50f791f59ad46dad2e7118a28fb75def14240904812d96a5375bb5ef26e66c62`. Their logs and the
+warning-free Rustdoc result are in the same artifact directory.
 
 ### Curved frontage through subdivision, reversal and reload
 
@@ -1578,13 +1537,12 @@ and older manual-parcel saves continue to load. V65 contains
 no historical curve guides; an incompatible old split cannot recover provenance that was never
 saved. Existing painted addresses and occupied footprints remain authoritative.
 
-Fresh release verification passes **1,961 tests**, with 73 timing fixtures ignored:
-`cargo test --offline --release --manifest-path rust/Cargo.toml --lib`.
-The regressions cover empty/occupied lot retention, exact source serialization with fractional
-widths and all orientation quadrants, large coordinates,
-subdivision, restoration, reversed attachment sides, erase/cache/undo, changed-curve rejection,
-SQLite round trips against compiled road surfaces, malformed guides and v65 compatibility.
-Rustdoc also completes without warnings. Logs are in `/tmp/zone04-curves/`.
+Fresh release verification passes **1,961 tests**, with 73 timing fixtures ignored: `cargo test
+--offline --release --manifest-path rust/Cargo.toml --lib`. The regressions cover
+empty/occupied lot retention, exact source serialization with fractional widths and all
+orientation quadrants, large coordinates, subdivision, restoration, reversed attachment sides,
+erase/cache/undo, changed-curve rejection, SQLite round trips against compiled road surfaces,
+malformed guides and v65 compatibility. Rustdoc also completes without warnings.
 
 Three matched unprofiled trials use CPU 0, one Rayon worker and `METRUM_DEBUG=0`, without
 competing builds or tests. The curve fixture alternates split and restored graphs, refreshing
@@ -1605,14 +1563,11 @@ ceilings: generation 0.663–0.667 ms, pick 1.014–1.018 µs, brush 5.093–5.2
 30.955–32.031 µs, erase/undo 2.251–2.274 µs, empty split refresh 1.565–1.574 ms and occupied
 split/restore 1.260–1.267 ms. These controls include up to 10,000 distant roads/lots as before.
 
-Commands, worker settings, source hashes, raw trials and medians are retained in
-`/tmp/zone04-curves/{measure.py,metadata.json,summary.json}` and
-`{curve,generation,derive,paint,split}-{1,2,3}.log`. Release test binary SHA-256:
-`3dcfb4d0ad81890d2bdb755d46a76aa188130693c164df4dd1feb105bc341ee2`.
-The metadata separately records the final Rustdoc-only source annotation. Both Godot zoning
-scripts pass with the preceding headless commands against the deployed release extension,
-SHA-256 `d4f8c4ecd1681fb2c5724d58b43c627a817ea2acf0fb0318f16c0ff6abc08dd1`.
-Logs: `/tmp/zone04-curves/godot-cells.log` and `godot-parcels.log`.
+Release test binary SHA-256:
+`3dcfb4d0ad81890d2bdb755d46a76aa188130693c164df4dd1feb105bc341ee2`. The metadata separately
+records the final Rustdoc-only source annotation. Both Godot zoning scripts pass with the
+preceding headless commands against the deployed release extension, SHA-256
+`d4f8c4ecd1681fb2c5724d58b43c627a817ea2acf0fb0318f16c0ff6abc08dd1`.
 
 ### Native road transactions and rendered references
 
@@ -1652,15 +1607,13 @@ Godot **4.7.2**, Forward+ Vulkan, Wayland and an AMD Radeon RX 7900 XTX, with th
 clipped terrain mesh using a flat green inspection material. This checks zoning geometry and
 overlay appearance; it is not terrain-art or frame-time acceptance.
 
-Artifacts are `/tmp/zone04-references/{library-tests.log,rustdoc.log,rendered.log}`,
-the three named Godot test logs and `rendered/{manifest.json,01_*.png,...,07_*.png}`.
 The reference build's release extension SHA-256 is
-`c45de65fdad2409be82f1de606397ae6e33c61db44b258721efc265289f23c64`.
-Capture command, from the repository root:
+`c45de65fdad2409be82f1de606397ae6e33c61db44b258721efc265289f23c64`. Capture command,
+from the repository root:
 
 ```bash
-METRUM_ZONE_REFERENCE_DIR=/tmp/zone04-references/rendered \
-XDG_DATA_HOME=/tmp/zone04-godot-data XDG_CONFIG_HOME=/tmp/zone04-godot-config \
+METRUM_ZONE_REFERENCE_DIR=$ARTIFACTS/zone04-references/rendered \
+XDG_DATA_HOME=$ARTIFACTS/zone04-godot-data XDG_CONFIG_HOME=$ARTIFACTS/zone04-godot-config \
 godot --display-driver wayland --rendering-method forward_plus --audio-driver Dummy \
   --resolution 64x64 --path godot --script res://tests/zoning_reference_test.gd
 ```
@@ -1691,27 +1644,21 @@ at the largest background rises from 36.941 to 42.768 ms; trial p50 ranges overl
 so no planning speedup or unchanged tail latency is claimed. These results establish local
 products and bounded observed cost, not final frame-time or allocation acceptance.
 
-Commands, compiler/source hashes and raw results are retained under `/tmp/zone04-references/` in
-`measure.py`, `metadata.json`, `summary.json` and
-`{generation,split,curve,road-plan}-{before,after}-{1,2,3}.log`. Release test binary SHA-256:
-before `cf800034c8e5d2a68ab8e3cb5b4c62527f2ae17413e04afb564f1da39105590e`,
-reference `129dc169e6013248a1dc60f2ce0012b9d247cb78e82a4c57e1153d6f1c8355be`.
+Release test binary SHA-256: before
+`cf800034c8e5d2a68ab8e3cb5b4c62527f2ae17413e04afb564f1da39105590e`, reference
+`129dc169e6013248a1dc60f2ce0012b9d247cb78e82a4c57e1153d6f1c8355be`.
 
-Subsequent native SQLite/dequeue verification passes for queued cell growth at angles 0 and
-0.35 radians. An unchanged lot keeps its identity through load and asset-work preparation and
-receives its scheduled building. Erasing part of its paint or disabling its road before saving
-leaves the queued action harmless when dequeued after load. No replacement lot receives the old
-action. Paint, due time, occupancy and cell claims are checked. Command:
-`cargo test --offline --release --manifest-path rust/Cargo.toml --lib
-queued_cell_growth_reloads_and_revalidates_erased_or_disabled_lots -- --nocapture`;
-log `/tmp/zone04-references/queued-load.log`. This adds tests only; it does not change the measured
-runtime or deployed extension.
+Subsequent native SQLite/dequeue verification passes for queued cell growth at angles 0 and 0.35
+radians. An unchanged lot keeps its identity through load and asset-work preparation and receives
+its scheduled building. Erasing part of its paint or disabling its road before saving leaves the
+queued action harmless when dequeued after load. No replacement lot receives the old action. Paint,
+due time, occupancy and cell claims are checked. This adds tests only; it does not change the
+measured runtime or deployed extension.
 
 The subsequent rotated native block regression exposed 29 missing interior cells and seven
-near-identical bases/phases. The historical failure is retained in
-`/tmp/zone04-references/rotated-block.log`. Independent f32 endpoint rounding had become independent
-grid authority. The road-owned choices described above resolve this without coarsening cell
-overlap predicates or depending on resident render chunks.
+near-identical bases/phases. Independent f32 endpoint rounding had become independent grid
+authority. The road-owned choices described above resolve this without coarsening cell overlap
+predicates or depending on resident render chunks.
 
 ### Persistent straight-road alignment checkpoint
 
@@ -1736,13 +1683,11 @@ pass and all PNGs were inspected. Cardinal and rotated blocks each export 1,055 
 the production chunk overlay. These captures establish geometry and appearance, not frame-time
 acceptance.
 
-Artifacts: `/tmp/zone04-alignment/{library-tests-external.log,rustdoc.log,build-final.log,rendered.log}`, the
-three named bridge-test logs, and `rendered/{manifest.json,01_*.png,...,08_*.png}`. The capture
-command above is unchanged except for `METRUM_ZONE_REFERENCE_DIR=/tmp/zone04-alignment/rendered`.
-Release extension SHA-256:
-`2e5dc72a03ee8e28be83c6359379bbc1725dcbc95e3606a519df283d0210e180`.
-The final library log also contains the direct-insertion, node-move and rollback assertions;
-earlier logs in that directory retain the intermediate failures and their fixes.
+The capture command above is unchanged except for
+`METRUM_ZONE_REFERENCE_DIR=$ARTIFACTS/zone04-alignment/rendered`. Release extension SHA-256:
+`2e5dc72a03ee8e28be83c6359379bbc1725dcbc95e3606a519df283d0210e180`. The final library log also
+contains the direct-insertion, node-move and rollback assertions; earlier logs in that directory
+retain the intermediate failures and their fixes.
 
 Three further matched unprofiled release trials use the retained baseline above and the final
 alignment binary, alternating before/after on CPU 0 with one Rayon worker and `METRUM_DEBUG=0`.
@@ -1774,21 +1719,14 @@ cells. Its current worker p95 at the largest background is 36.608 ms; snapshots 
 whole-world setup costs. These are local subsystem/planning measurements, not complete road
 commit or rendering acceptance.
 
-Commands, environment, source hashes and summaries are in
-`/tmp/zone04-alignment/{measure.py,metadata.json,summary.json}` with
-`{generation,split,curve,road-plan}-{before,after}-{1,2,3}.log`. The retained current test binary
-is `/tmp/zone04-alignment/after-tests`, SHA-256
-`b81ff4b5e99f81ff6ddde21373077885843c7b9d7b0d5947cd84aab7ccb9e1a0`.
-
 A separate glibc `memusage --no-timer` run of the split fixture reports heap peaks of
 24,484,721 bytes before and 33,690,239 bytes after, with 823,069 versus 964,831 total
 malloc/calloc/realloc calls and no failed allocations. These totals include every background
 fixture, graph/index setup, initial source preparation and all repeated operations; they do not
 establish per-edit allocations or idle-tick behavior. Profiled timings are excluded from the
-table. Commands and scope are in `/tmp/zone04-alignment/{memory.py,memory-metadata.json}` and
-`memory-{before,after}.log`. An initial `--mmap` trace produced an invalid peak counter; its
-`memory-mmap-*` artifacts are discarded diagnostics, not memory evidence. Operation-isolated
-allocation and broader memory acceptance remain open.
+table. An initial `--mmap` trace produced an invalid peak counter; its `memory-mmap-*`
+artifacts are discarded diagnostics, not memory evidence. Operation-isolated allocation and
+broader memory acceptance remain open.
 
 ### Occupied cell lots during road removal
 
@@ -1804,22 +1742,18 @@ The native deletion regression covers cardinal and rotated curves, intact and er
 immediate road undo, then a second deletion followed by building maintenance. Pose, lot identity,
 occupied coverage and paint survive while the building exists; claims are released after its
 removal. The full release suite passes **1,972 tests** and all three bridge suites pass with the
-rebuilt extension. Logs: `/tmp/zone04-alignment/library-tests-lifecycle.log`, `build-lifecycle.log`
-and `lifecycle-*_test.log` (the initial failure is `curved-road-delete.log`). Extension SHA-256:
-`1ead3f393a4b6f6d8d1cb75defc60f60115c3a9669e19bc669e4a69f41b7233a`.
-The preceding timing and image evidence applies to its recorded alignment build.
+rebuilt extension. Extension SHA-256:
+`1ead3f393a4b6f6d8d1cb75defc60f60115c3a9669e19bc669e4a69f41b7233a`. The preceding timing and image
+evidence applies to its recorded alignment build.
 
-Three unprofiled one-worker trials on CPU 0 put the six-cell occupy/clear round trip at
-0.458 / 0.461 / 0.461 µs with 0 / 1,024 / 10,000 distant lots. Every case retains the same local
-lot and queues exactly one local dirty region. Setup, warm-up and region draining are excluded;
-this is an after-only locality measurement, not a before/after speedup. Matched erase/undo stays
-within its 5 µs ceiling: 2.836 / 2.861 / 2.855 µs on the preceding alignment binary versus
-2.774 / 2.797 / 2.794 µs after the retention fix. No concurrent build/test load ran during timing.
-The new ignored benchmark is `simulation::zoning::cells::tests::lots::benchmark_cell_occupancy_release_locality`.
-Commands, source hashes, worker settings and medians are in
-`/tmp/zone04-alignment/{lifecycle-metadata.json,lifecycle-summary.json}`, with raw logs
-`lifecycle-{edit-before,edit-after,release-after}-{1,2,3}.log`. The retained lifecycle test binary
-is `lifecycle-tests`, SHA-256
+Three unprofiled one-worker trials on CPU 0 put the six-cell occupy/clear round trip at 0.458 /
+0.461 / 0.461 µs with 0 / 1,024 / 10,000 distant lots. Every case retains the same local lot and
+queues exactly one local dirty region. Setup, warm-up and region draining are excluded; this is an
+after-only locality measurement, not a before/after speedup. Matched erase/undo stays within its 5
+µs ceiling: 2.836 / 2.861 / 2.855 µs on the preceding alignment binary versus 2.774 / 2.797 / 2.794
+µs after the retention fix. No concurrent build/test load ran during timing. The new ignored
+benchmark is `simulation::zoning::cells::tests::lots::benchmark_cell_occupancy_release_locality`.
+The retained lifecycle test binary is `lifecycle-tests`, SHA-256
 `711e5069d9de91a651ee70988522f18ed1ba18a18a8cd40d6ef8d5b610f53509`.
 
 ### Road-attached parcel removal and inverse locality
@@ -1849,11 +1783,9 @@ rebuild, and this checkpoint does not certify the entire bulldoze/network pipeli
 The regressions exercise all 256 subsets of eight records with non-storage-order ids, exact dense
 order and occupancy restoration, coincident-footprint pick precedence, distant and same-chunk
 attachment changes, local detach/restore, bulk cleanup and clear/reinsert. The baseline fails the
-local-removal chunk-order assertion; the corrected release passes **1,974 library tests** with
-75 timing fixtures ignored. All three headless Godot bridge suites and warning-free Rustdoc pass.
-Artifacts: `/tmp/zone04-removal/{baseline-correctness.log,local-tests.log,library-tests.log,build.log,
-rustdoc.log}` and the three named bridge-test logs. Extension SHA-256:
-`b0b63556065eb427b1e0d742bfb885ca03bbc17be076f27011c621493cc95cc8`.
+local-removal chunk-order assertion; the corrected release passes **1,974 library tests** with 75
+timing fixtures ignored. All three headless Godot bridge suites and warning-free Rustdoc pass.
+Extension SHA-256: `b0b63556065eb427b1e0d742bfb885ca03bbc17be076f27011c621493cc95cc8`.
 
 Three matched unprofiled release trials alternate the retained baseline and corrected binary on
 CPU 0 with `RAYON_NUM_THREADS=1`, `METRUM_DEBUG=0`, and no concurrent build/test/capture. The new
@@ -1879,29 +1811,22 @@ products across background sizes and pass the existing 2 ms ceiling.
 
 The populated native planning fixture still produces identical local products through 600,024
 agents, 100,004 parcels and 100,000 remote painted cells. Its first three trials give worker p50
-35.954 / 37.664 ms before versus 37.686 / 37.647 ms after at 0 / 100,000 background buildings.
-One snapshot per edit is separately 0.008 / 3.408 ms before versus 0.008 / 3.600 ms after.
-Readiness p95 medians at 10,000 and 100,000 backgrounds are 0.337 and 0.349 ms on the current
-binary, exceeding the existing 0.3 ms ceiling; the corresponding baseline medians are 0.231 and
-0.267 ms. This is not a blanket planning-performance pass. The third current trial falls back
-below the ceiling. Two further matched control pairs retain every original result and reverse
-the fourth pair's execution order. The current-build largest-background p95 is 0.252 ms in the
-fourth trial and 0.303 ms in the fifth. Across all five trials its median is **0.303 ms**, versus
-0.247 ms before; the 0.300 ms readiness ceiling therefore remains unmet. The baseline also has
-one 0.340 ms trial, so no specific causal explanation is established by these timings. Five-trial
-worker p50 at the largest background is 35.854 ms before and 35.995 ms after, with matching local
-products throughout. Further investigation must explain the tail rather than repeat until a pass.
-The control commands/order and all five-trial values are in
-`/tmp/zone04-removal/{recheck.py,recheck-metadata.json,summarize-controls.py,controls-summary.json}`
-and `road-plan-{before,after}-{4,5}.log`.
+35.954 / 37.664 ms before versus 37.686 / 37.647 ms after at 0 / 100,000 background buildings. One
+snapshot per edit is separately 0.008 / 3.408 ms before versus 0.008 / 3.600 ms after. Readiness p95
+medians at 10,000 and 100,000 backgrounds are 0.337 and 0.349 ms on the current binary, exceeding
+the existing 0.3 ms ceiling; the corresponding baseline medians are 0.231 and 0.267 ms. This is not
+a blanket planning-performance pass. The third current trial falls back below the ceiling. Two
+further matched control pairs retain every original result and reverse the fourth pair's execution
+order. The current-build largest-background p95 is 0.252 ms in the fourth trial and 0.303 ms in the
+fifth. Across all five trials its median is **0.303 ms**, versus 0.247 ms before; the 0.300 ms
+readiness ceiling therefore remains unmet. The baseline also has one 0.340 ms trial, so no specific
+causal explanation is established by these timings. Five-trial worker p50 at the largest background
+is 35.854 ms before and 35.995 ms after, with matching local products throughout. Further
+investigation must explain the tail rather than repeat until a pass.
 
-Commands, compiler/CPU/worker settings, source hashes and original medians are in
-`/tmp/zone04-removal/{measure.py,metadata.json,before-source.json,summarize.py,summary.json}`;
-raw logs are `{removal,edit,split,road-plan}-{before,after}-{1,2,3}.log`. The exact same measured
-fixtures run on both binaries. Retained baseline test binary SHA-256:
-`1bbd60425b70ba8ebfd99b6932b5f56d24b0121dcc3b7fa74e2f940aadeb43a7`;
-corrected test binary SHA-256:
-`d5effb163f906e22575d0c5f11c20da2c146a36e08f0ae1e9dd55803e83ad31e`.
+The exact same measured fixtures run on both binaries. Retained baseline test binary SHA-256:
+`1bbd60425b70ba8ebfd99b6932b5f56d24b0121dcc3b7fa74e2f940aadeb43a7`; corrected test binary
+SHA-256: `d5effb163f906e22575d0c5f11c20da2c146a36e08f0ae1e9dd55803e83ad31e`.
 
 ### Readiness reservation query work
 
@@ -1922,17 +1847,14 @@ does not establish the broader allocation/memory gate.
 
 A separate `perf record -F 997 -e cycles:u --call-graph dwarf,4096` run of the populated planning
 fixture identified repeated corner and polygon preparation in its whole-workload leaf samples.
-Call-chain decoding was incomplete, so it does not explain individual readiness tail events.
-The retained `--no-inline` report guided the source investigation; profiled timings are excluded
-from acceptance. Artifacts are `/tmp/zone04-readiness/{before.perf.data,before-report.txt,
-profile-before.log}`. The command and decoding limitation are recorded in `metadata.json` there.
+Call-chain decoding was incomplete, so it does not explain individual readiness tail events. The
+retained `--no-inline` report guided the source investigation; profiled timings are excluded from
+acceptance.
 
-The full release suite passes **1,976 tests** (75 timing fixtures ignored), including new checks
-for borrowed/owned overlap agreement at rotated and distant concave boundaries, exact contact,
+The full release suite passes **1,976 tests** (75 timing fixtures ignored), including new checks for
+borrowed/owned overlap agreement at rotated and distant concave boundaries, exact contact,
 empty/distant road polygons, and unique reserved footprints across blocks and chunks. All three
-headless Godot bridge suites and warning-free Rustdoc pass. Logs are under
-`/tmp/zone04-readiness/{cell-tests.log,library-tests.log,build.log,rustdoc.log}` and the three named
-bridge-test logs. Extension SHA-256:
+headless Godot bridge suites and warning-free Rustdoc pass. Extension SHA-256:
 `644b0067e408b152a78388b1301567ed7a8946521c321f061c61fbda7be2a513`.
 
 Three matched unprofiled release pairs use the preceding removal binary and this query build,
@@ -1962,20 +1884,12 @@ largest fixture still contains 600,024 agents, 100,004 parcels and 100,000 remot
 Snapshot costs remain separate whole-world setup costs; these results do not certify complete
 road-edit locality or all interactive runtime paths.
 
-Commands, compiler/CPU/worker settings, source hashes, all raw trials and summary are in
-`/tmp/zone04-readiness/{measure.py,metadata.json,before-source.json,summarize.py,summary.json}` and
-`{generation,curve,edit,site,road-plan}-{before,after}-{1,2,3}.log`. The retained query test binary
-is `after-tests`, SHA-256
-`1de75067e367d8c2f872ce651a0e7b0f582124660a8946adb91ef180007eb25d`;
-the baseline is `/tmp/zone04-removal/after-tests`, whose hash is recorded above.
-
-The same extension also passes all eight real Forward+ Vulkan/Wayland reference captures on
-the RX 7900 XTX. All PNGs were inspected and are byte-for-byte identical to the accepted alignment
+The same extension also passes all eight real Forward+ Vulkan/Wayland reference captures on the RX
+7900 XTX. All PNGs were inspected and are byte-for-byte identical to the accepted alignment
 captures; the manifest reports identical cell/mesh uploads, including 1,055 cells in each block
-orientation. Artifacts: `/tmp/zone04-readiness/rendered/{manifest.json,01_*.png,...,08_*.png}` and
-`rendered.log`. The capture command above uses
-`METRUM_ZONE_REFERENCE_DIR=/tmp/zone04-readiness/rendered`. These are geometry/appearance checks,
-not frame-time acceptance.
+orientation. The capture command above uses
+`METRUM_ZONE_REFERENCE_DIR=$ARTIFACTS/zone04-readiness/rendered`. These are geometry/appearance
+checks, not frame-time acceptance.
 
 ### Node merge, terrain and road-class acceptance
 
@@ -1994,17 +1908,14 @@ Three additional native regressions pass without production changes:
   reject stale gestures. Returning to ground restores the same lot footprints in both tested
   orientations. Existing no-build toggle coverage remains in the same suite.
 
-Fresh release verification is **15 cell integration tests** and **1,979 full library tests**
-(75 timing fixtures ignored), all passing. Commands:
-`cargo test --offline --release --manifest-path rust/Cargo.toml --lib
-nodes::sim::core::tests::zoning_buildability::cell_zoning -- --nocapture` and
-`cargo test --offline --release --manifest-path rust/Cargo.toml --lib`.
-Logs and source/compiler identities are in
-`/tmp/zone04-merges/{cell-tests.log,library-tests.log,metadata.json}`. Test binary SHA-256:
-`ddc9830f3270802685189532d0054c27292233324d6fc7a6a4f9494f0b4b71f4`.
-Source hashes confirm only test modules changed from the query build; the deployed extension
-still has the SHA-256 recorded above. Godot captures and performance measurements were not rerun
-for these test-only additions; the preceding evidence retains its recorded scope.
+Fresh release verification is **15 cell integration tests** and **1,979 full library tests** (75
+timing fixtures ignored), all passing. Commands: `cargo test --offline --release --manifest-path
+rust/Cargo.toml --lib nodes::sim::core::tests::zoning_buildability::cell_zoning -- --nocapture`
+and `cargo test --offline --release --manifest-path rust/Cargo.toml --lib`. Test binary SHA-256:
+`ddc9830f3270802685189532d0054c27292233324d6fc7a6a4f9494f0b4b71f4`. Source hashes confirm only
+test modules changed from the query build; the deployed extension still has the SHA-256 recorded
+above. Godot captures and performance measurements were not rerun for these test-only additions;
+the preceding evidence retains its recorded scope.
 
 ### Node movement reservation guard
 
@@ -2031,25 +1942,20 @@ and a terminal curb/sidewalk cap that overlaps paint while the straight corridor
 Rejected moves retain authoring epochs and undo depth. Native and controller bridge cases check
 both rejection and accepted movement.
 
-Initial guard release verification: **1,982 library tests pass**, 76 timing fixtures ignored; all three
-headless Godot bridge suites and warning-free Rustdoc pass. Commands are the full library test,
-release build, the three named bridge scripts above, and
-`cargo doc --offline --no-deps --manifest-path rust/Cargo.toml`. Logs are under
-`/tmp/zone04-movement/{before-tests.log,library-tests.log,build.log,rustdoc.log}` and the three
-named bridge logs. Extension SHA-256:
-`e8df9a35957d97244b500f4d0f0e0185a60db33823f3abf2d30a7c5d0093028b`.
-Test binary SHA-256:
+Initial guard release verification: **1,982 library tests pass**, 76 timing fixtures ignored; all
+three headless Godot bridge suites and warning-free Rustdoc pass. Commands are the full library
+test, release build, the three named bridge scripts above, and `cargo doc --offline --no-deps
+--manifest-path rust/Cargo.toml`. Extension SHA-256:
+`e8df9a35957d97244b500f4d0f0e0185a60db33823f3abf2d30a7c5d0093028b`. Test binary SHA-256:
 `98ed4f2f031378542043c099d390f16279479a57d1d075246b56c01471f6a510`.
 
 Three matched unprofiled road-planning pairs and three node-validation trials use CPU 0,
-`RAYON_NUM_THREADS=1`, `METRUM_DEBUG=0`, rustc 1.98.1 and an i9-12900K. Each component has
-100 samples per background size after three road warmups or five node warmups. Fixture construction
-is excluded; road-preview snapshot cost is recorded separately. The second road pair reverses execution order. Both
-retained binaries run the same road-placement workload; the current fixture additionally exposes
-the separate node-validation mode. The baseline production code is the preceding query build.
-All source and binary hashes remained unchanged during measurement. Commands, hashes, raw logs
-and parsed rows are in `/tmp/zone04-movement/{measure.py,metadata.json,results.json}` and
-`road-{before,after}-{1,2,3}.log` / `node-after-{1,2,3}.log`.
+`RAYON_NUM_THREADS=1`, `METRUM_DEBUG=0`, rustc 1.98.1 and an i9-12900K. Each component has 100
+samples per background size after three road warmups or five node warmups. Fixture construction is
+excluded; road-preview snapshot cost is recorded separately. The second road pair reverses execution
+order. Both retained binaries run the same road-placement workload; the current fixture additionally
+exposes the separate node-validation mode. The baseline production code is the preceding query
+build. All source and binary hashes remained unchanged during measurement.
 
 The table reports the median of each trial's p95, in milliseconds. Each move compiles one span
 and two terminals and checks reservations; destruction of that temporary surface is also timed.
@@ -2070,10 +1976,9 @@ its performance gate remains open despite the stable local work. There is no equ
 validation in the earlier production code, so these node figures are not a before/after speedup.
 
 A separate `perf record -F 499 -g --call-graph dwarf,16384` run of the node fixture locates self
-samples in span-boundary generation and polygon crossing checks, among other work. Artifacts are
-`/tmp/zone04-movement/node-perf{.data,.log,-report.txt,-children.txt}`. This profile includes setup;
-its timings are diagnostic only and do not replace the unprofiled figures or establish a complete
-breakdown of validation cost.
+samples in span-boundary generation and polygon crossing checks, among other work. This profile
+includes setup; its timings are diagnostic only and do not replace the unprofiled figures or
+establish a complete breakdown of validation cost.
 
 The initial guard also required separate terminal pieces for bridges, although the compiler
 intentionally assigns those ends to the span. A native regression with unrelated cell paint
@@ -2083,27 +1988,20 @@ required-span checks and exact reservation checks remain in place. The new regre
 the accepted bridge extension, unchanged remote paint, and undo restoring its endpoint.
 
 After this correction, **1,983 release library tests pass** (76 timing fixtures ignored), all three
-headless Godot bridge suites pass, and Rustdoc is warning-free. The commands are unchanged; logs
-are `/tmp/zone04-movement/bridge-{library-tests,build,rustdoc}.log` and
-`bridge-{zoning_cells_tool_test,zoning_road_tool_test,road_junction_preview_test}.log`. The failing
-regression is retained as `bridge-before-fixed-fixture.log`; the earlier `bridge-before.log` stopped
-in a ground-terrain fixture assertion and is not evidence of the movement bug. Current extension
-SHA-256: `ab265ff347e1aed9b0707d6186498ab84864771b6fc5170801d28f59cfa19137`.
-Current test binary SHA-256:
-`4db2d9ab81113cc363711a7cc9e9e99e38f4471d5994c98344399db0faf3094c`.
-The preceding road-planning controls and profile apply to the initial guard build recorded above;
-the correction changes only the node movement validator and its new regression.
+headless Godot bridge suites pass, and Rustdoc is warning-free. Current extension SHA-256:
+`ab265ff347e1aed9b0707d6186498ab84864771b6fc5170801d28f59cfa19137`. Current test binary SHA-256:
+`4db2d9ab81113cc363711a7cc9e9e99e38f4471d5994c98344399db0faf3094c`. The preceding road-planning
+controls and profile apply to the initial guard build recorded above; the correction changes only
+the node movement validator and its new regression.
 
 Three further matched node-validation pairs compare the retained initial guard with this correction,
 using the same CPU, worker count, backgrounds, warmups and samples. The second pair reverses order;
 source and binary identities remain unchanged throughout. Median p95 for clear moves at 0 / 100,000
-remote buildings is 7.223 / 7.474 ms before and 7.194 / 7.378 ms after; blocked moves are
-7.673 / 7.789 ms before and 7.853 / 7.754 ms after. Every run retains identical local products across
-background sizes. Maximum p95 across all current cases is **8.437701 ms**, versus 8.361399 ms before;
-the **5 ms** component gate still fails. This is a correctness correction, with no established
-performance improvement. Commands, source/binary identities, rows and raw logs are
-`/tmp/zone04-movement/bridge-{measure.py,metadata.json,results.json}` and
-`bridge-node-{before,after}-{1,2,3}.log`. Accepted-move finalization remains outside this component
+remote buildings is 7.223 / 7.474 ms before and 7.194 / 7.378 ms after; blocked moves are 7.673 /
+7.789 ms before and 7.853 / 7.754 ms after. Every run retains identical local products across
+background sizes. Maximum p95 across all current cases is **8.437701 ms**, versus 8.361399 ms
+before; the **5 ms** component gate still fails. This is a correctness correction, with no
+established performance improvement. Accepted-move finalization remains outside this component
 measurement, and no new rendered-reference captures were taken for the movement changes.
 
 ### Staged node validation and boundary lookup cost
@@ -2128,23 +2026,16 @@ first matching coordinate and its exact height; unmatched source coordinates rem
 Earthwork vertex normals use winding computed once per loop, reducing that part from O(P²) to
 O(P). These are edit-time temporaries, with no new persistent spatial index or dependency.
 
-The separate diagnostic run identified terminal solving as the dominant cost in the measured
-clear move (about 6.9 ms for two nodes versus 0.4 ms for the span). Logs are
-`/tmp/zone04-boundaries/node-phases-expanded-stack.log` and `reuse-phases.log`; the command uses the
-retained release test fixture with `RUST_MIN_STACK=33554432 METRUM_DEBUG=1 METRUM_DEBUG_PERF=1
-METRUM_DEBUG_FILTER=road RAYON_NUM_THREADS=1`. The diagnostic run overflowed the ordinary Rust
-test-thread stack before emitting phase measurements (`node-phases.log`); that failed run produced no phase evidence.
-Diagnostic timings include logging and are not acceptance measurements. Normal timing runs leave
-diagnostics disabled and use the default test-thread stack.
+The separate diagnostic run identified terminal solving as the dominant cost in the measured clear
+move (about 6.9 ms for two nodes versus 0.4 ms for the span). Diagnostic timings include logging and
+are not acceptance measurements. Normal timing runs leave diagnostics disabled and use the default
+test-thread stack.
 
 Fresh validation: **1,986 release library tests pass** (76 timing fixtures ignored), all three
 headless Godot suites pass, and Rustdoc is warning-free. The full-library, release-build, headless
-script and Rustdoc commands are unchanged from the movement checkpoint. Logs are
-`/tmp/zone04-boundaries/{final-library-tests-2,build,rustdoc}.log` and the three named Godot suite
-logs. Current extension SHA-256:
-`53cc46e8bcf72073641ca71bfc854b5b0132b1d31123e56e2c7df6b728bd3e1b`.
-Current release test binary SHA-256:
-`f5f58b2e6a70b4bce01ce022d45cc620c51a4d03051460331950f7ab56304bb9`.
+script and Rustdoc commands are unchanged from the movement checkpoint. Current extension SHA-256:
+`53cc46e8bcf72073641ca71bfc854b5b0132b1d31123e56e2c7df6b728bd3e1b`. Current release test binary
+SHA-256: `f5f58b2e6a70b4bce01ce022d45cc620c51a4d03051460331950f7ab56304bb9`.
 
 Three matched unprofiled pairs for both node validation and road planning use CPU 0,
 `RAYON_NUM_THREADS=1`, `METRUM_DEBUG=0`, rustc 1.98.1 and an i9-12900K. The second pair reverses
@@ -2153,9 +2044,7 @@ construction is excluded and the preview snapshot is timed separately. Before/af
 the same moves and reservations. An after-build span conflict intentionally has no compiled node
 pieces, since it already proves rejection; clear moves retain the full products. Each build
 asserts identical local products across backgrounds. No competing build, test or capture ran.
-Commands, source/binary hashes and all raw rows are in
-`/tmp/zone04-boundaries/{measure.py,metadata.json,results.json}` and
-`{node,road}-{before,after}-{1,2,3}.log`. All measured identities remained unchanged.
+All measured identities remained unchanged.
 
 Median of the three trial p95 values, in milliseconds:
 
@@ -2183,10 +2072,8 @@ current preview snapshot grows from 0.007927 to 4.066154 ms; complete edit-path 
 
 Eight fresh Godot 4.7.2 Forward+ / RX 7900 XTX captures and their fixture records are byte-identical
 to the accepted query-build references, with 667 / 432 / 760 / 1,055 / 1,077 / 1,002 / 672 / 1,055
-cells and four cell meshes each. The angled-junction image was also inspected. The real-renderer
-command recorded above uses `METRUM_ZONE_REFERENCE_DIR=/tmp/zone04-boundaries/rendered`;
-artifacts are `rendered.log` and `rendered/{manifest.json,01_*.png,...,08_*.png}`. These verify
-geometry and appearance, not frame-time or allocation acceptance.
+cells and four cell meshes each. The angled-junction image was also inspected. These verify geometry
+and appearance, not frame-time or allocation acceptance.
 
 ### Reuse of immutable ring source preparation
 
@@ -2209,22 +2096,17 @@ headless Godot suites and warning-free Rustdoc. The new regression checks repeat
 source visits, changed contours, different bands/mouths/owners/materials, source-less regions,
 cap eligibility and canonicalization policies against both explicit expected coordinates and
 fresh preparation. Existing ambiguity, curved/junction, cold/reused compilation and zoning
-movement regressions also pass. Commands match the previous checkpoint; logs are
-`/tmp/zone04-terminals/{final-library-tests,build,rustdoc}.log` and the three named suite logs.
-Release test binary SHA-256:
-`f9367b60fbf2237761365c3f33931975124440acd527cdcd68471207f19d66e1`.
-Deployed extension SHA-256:
+movement regressions also pass. Release test binary SHA-256:
+`f9367b60fbf2237761365c3f33931975124440acd527cdcd68471207f19d66e1`. Deployed extension SHA-256:
 `9975dd56cbfe8f50d097834487a64e05f8b987e4368b1bc6d4071e5943298818`.
 
 Three matched unprofiled node-validation and road-planning pairs use CPU 0, one Rayon worker,
 `METRUM_DEBUG=0`, rustc 1.98.1 and the same i9-12900K. Trial two reverses binary order. The retained
 baseline is the previous checkpoint's `f5f58b2...` test binary. Each fixture has 100 measured
-samples after five node or three road warmups; construction is excluded and preview snapshots
-are separate. No build, test, renderer or profiler competed with timing. Exact local products
-match across 0 / 1,000 / 10,000 / 100,000 remote buildings and painted cells, reaching 600,024
-agents, 100,004 parcels and 391 remote roads. Commands, all source/binary hashes and raw rows are
-`/tmp/zone04-terminals/{measure.py,metadata.json,results.json}` and
-`{node,road}-{before,after}-{1,2,3}.log`. Measured identities remained unchanged.
+samples after five node or three road warmups; construction is excluded and preview snapshots are
+separate. No build, test, renderer or profiler competed with timing. Exact local products match
+across 0 / 1,000 / 10,000 / 100,000 remote buildings and painted cells, reaching 600,024 agents,
+100,004 parcels and 391 remote roads. Measured identities remained unchanged.
 
 Clear-move times, median of the three trial percentiles, in milliseconds:
 
@@ -2245,11 +2127,8 @@ recorded tails. Worker p50 at 0 / 100,000 backgrounds is 35.355 / 35.221 ms befo
 34.851 / 34.775 ms after. Current one-time snapshot cost grows from 0.007617 to 3.420721 ms,
 so whole edit-path locality remains open.
 
-After timing, eight fresh Godot 4.7.2 Forward+ / RX 7900 XTX captures and their fixture records
-match `/tmp/zone04-boundaries/rendered` byte-for-byte. The rotated block was also inspected.
-The previously recorded renderer command uses `METRUM_ZONE_REFERENCE_DIR=/tmp/zone04-terminals/rendered`;
-results are `rendered.log` and `rendered/{manifest.json,comparison.json,01_*.png,...,08_*.png}`.
-These are geometry/appearance checks, not renderer frame-time or allocation acceptance.
+The rotated block was also inspected. These are geometry/appearance checks, not renderer frame-time
+or allocation acceptance.
 
 ### Isolated cell heap budgets
 
@@ -2313,19 +2192,16 @@ Reproduce with a release library test binary:
 
 ```bash
 cargo test --offline --release --manifest-path rust/Cargo.toml --lib --no-run
-python3 benchmarks/zoning_memory.py --binary /tmp/zone04-allocations/final-tests --output /tmp/zone04-memory-new --runs 3
+python3 benchmarks/zoning_memory.py --binary $ARTIFACTS/zone04-allocations/final-tests --output $ARTIFACTS/zone04-memory-new --runs 3
 ```
 
 The retained measured binary is a copy of the compiled library test executable; substitute the
 executable printed by Cargo when measuring a new build. Its SHA-256 is
-`26a3a6b34247d8450ac9333702744c2cde2c33958546034ebbb398e2b699abf2`.
-Commands, source/binary identities, raw logs, compressed traces and exact locality checks are
-`/tmp/zone04-allocations/repeated/{metadata.json,results.json,summary.json,*.log,*.data.gz}`.
-Fresh ordinary verification passes **1,987 release library tests**, with 78 timing/profiling
-fixtures ignored (`/tmp/zone04-allocations/library-tests.log`). Production source and the deployed
-extension are unchanged from the preceding geometry checkpoint, verified by hash. Its Godot
-bridge/rendering and latency evidence remains attached to that build; those checks were not
-rerun for this test-only addition.
+`26a3a6b34247d8450ac9333702744c2cde2c33958546034ebbb398e2b699abf2`. Fresh ordinary verification
+passes **1,987 release library tests**, with 78 timing/profiling fixtures ignored. Production
+source and the deployed extension are unchanged from the preceding geometry checkpoint, verified
+by hash. Its Godot bridge/rendering and latency evidence remains attached to that build; those
+checks were not rerun for this test-only addition.
 
 These backend idle/query/edit and painted-store heap budgets now pass. Generated frontage/lot
 memory, native cold/large-fill materialization, dense local conflicts, and Godot bridge/renderer
@@ -2389,17 +2265,16 @@ unrestricted CPU affinity, Godot 4.7.2 Forward+ and RX 7900 XTX. No production s
 Run with an unused output directory:
 
 ```bash
-METRUM_ZONE_OVERLAY_DIR=/tmp/zone04-overlay-new METRUM_DEBUG=0 RAYON_NUM_THREADS=1 XDG_DATA_HOME=/tmp/zone04-godot-data XDG_CONFIG_HOME=/tmp/zone04-godot-config godot --display-driver wayland --rendering-method forward_plus --audio-driver Dummy --resolution 64x64 --path godot --script res://tests/zoning_overlay_benchmark.gd
+METRUM_ZONE_OVERLAY_DIR=$ARTIFACTS/zone04-overlay-new METRUM_DEBUG=0 RAYON_NUM_THREADS=1 XDG_DATA_HOME=$ARTIFACTS/zone04-godot-data XDG_CONFIG_HOME=$ARTIFACTS/zone04-godot-config godot --display-driver wayland --rendering-method forward_plus --audio-driver Dummy --resolution 64x64 --path godot --script res://tests/zoning_overlay_benchmark.gd
 ```
 
-Artifacts are `/tmp/zone04-overlay/{metadata.json,summary.json,settled-{1,2,4}.log}` and
-`settled-{1,2,4}/results.json`; source/binary hashes remain unchanged through all runs. Trial 2
-finished all measurements and printed its failure summary but hung during engine shutdown and
-was interrupted. Trial 3 began during that shutdown and is excluded; trial 4 replaces it after
-both earlier processes ended. The initial `trial-1` prototype stopped at the first changed mesh
-and is diagnostic only. Full-settling trials supersede its timings. Fresh script parsing and the
-cell-tool bridge regression pass; Rust tests and reference captures were not rerun for this
-benchmark-only addition. Their earlier evidence remains attached to the unchanged build.
+Trial 2 finished all measurements and printed its failure summary but hung during engine
+shutdown and was interrupted. Trial 3 began during that shutdown and is excluded; trial 4
+replaces it after both earlier processes ended. The initial `trial-1` prototype stopped at the
+first changed mesh and is diagnostic only. Full-settling trials supersede its timings. Fresh
+script parsing and the cell-tool bridge regression pass; Rust tests and reference captures were
+not rerun for this benchmark-only addition. Their earlier evidence remains attached to the
+unchanged build.
 
 ### Bounded generation batches after local edits
 
@@ -2418,25 +2293,21 @@ space per chunk, O(touched chunks) invalidation and O(1) bounded query/completio
 conflict halo, exact footprint predicates, pinned-frame priorities and generated geometry remain
 authoritative; no new index, dependency or save-format field is introduced.
 
-Fresh release verification passes **1,990 library tests**, with 78 manual fixtures ignored.
-New tests compare partial/batched generation with forced full regeneration on straight,
-perpendicular, competing and curved roads at two rotations, including repaint/Erase, external
-exclusions, frontage and erased occupied claims. Additional checks cover accumulated edits,
-negative chunk boundaries, cold/global invalidation, complete neighboring batches and pending
-work that exceeds the batch bounds. The test log is
-`/tmp/zone04-region-batches/library-tests.log`. All three Godot bridge suites and Rustdoc also pass
-on the candidate extension. The benchmark now returns from the draw callback before requesting
-engine shutdown; this follows the reference fixture's teardown order and does not change its
-timed work.
+Fresh release verification passes **1,990 library tests**, with 78 manual fixtures ignored. New
+tests compare partial/batched generation with forced full regeneration on straight, perpendicular,
+competing and curved roads at two rotations, including repaint/Erase, external exclusions, frontage
+and erased occupied claims. Additional checks cover accumulated edits, negative chunk boundaries,
+cold/global invalidation, complete neighboring batches and pending work that exceeds the batch
+bounds. All three Godot bridge suites and Rustdoc also pass on the candidate extension. The
+benchmark now returns from the draw callback before requesting engine shutdown; this follows the
+reference fixture's teardown order and does not change its timed work.
 
 Three fresh heap repeats pass all **168 calibrated phases**. Fixed native query/edit event counts,
 peak heap and retention match the preceding heap checkpoint exactly and stay identical across
 backgrounds; 101,376 idle preparation/pick operations again record zero events in the profiler's
 covered APIs. The 11,400-cell painted store now peaks at 540,964 bytes and retains 369,172 bytes,
-an additional 5,120 retained bytes for the chunk work records. Large-fill peak remains
-1,097,888 bytes. These still meet the existing budgets. Full traces, calibration logs and exact
-metric comparisons are under `/tmp/zone04-region-batches/memory/`; profiled time is not latency
-evidence. The measured test executable SHA-256 is
+an additional 5,120 retained bytes for the chunk work records. Large-fill peak remains 1,097,888
+bytes. These still meet the existing budgets. The measured test executable SHA-256 is
 `be1ab98f3fc66112d72049bdffa33edc752b7cc7798aeaabf8f0f3694e42d397`.
 
 Three matched, unprofiled before/after renderer pairs use the preceding overlay fixture unchanged
@@ -2462,21 +2333,14 @@ are outside this fixture.
 
 The candidate extension SHA-256 is
 `045fefdd103d16b64693c1427db9e0fc1429c6be0654b867f007915d521640f0`; baseline is
-`9975dd56cbfe8f50d097834487a64e05f8b987e4368b1bc6d4071e5943298818`.
-Commands, source/build identities, run ordering, individual results and exact assertions are
-`/tmp/zone04-region-batches/{measure.py,measurement-metadata.json,summary.json,before-*.log,after-*.log}`
-and `{before,after}-{1,2,3}/results.json`. All measurement windows are isolated; candidate 1,
-baseline 2 and candidate 3 required interruption after completing measurements but hanging in
-engine shutdown. The draw-callback teardown change does not resolve the hang; its cause is unverified.
-Each process ended before the next started, and the candidate library was restored and hash-checked.
+`9975dd56cbfe8f50d097834487a64e05f8b987e4368b1bc6d4071e5943298818`. All measurement windows are
+isolated; candidate 1, baseline 2 and candidate 3 required interruption after completing
+measurements but hanging in engine shutdown. The draw-callback teardown change does not resolve the
+hang; its cause is unverified. Each process ended before the next started, and the candidate library
+was restored and hash-checked.
 
-Eight fresh reference captures and fixture records match `/tmp/zone04-terminals/rendered`
-byte-for-byte; the rotated block was also inspected. Artifacts are
-`/tmp/zone04-region-batches/rendered/{manifest.json,comparison.json,01_*.png,...,08_*.png}` and
-`rendered.log`. That process also printed all eight passes and then required interruption during
-shutdown. All six compressed heap traces pass integrity checks. The preliminary candidate that
-only clipped dirty bounds is retained under `/tmp/zone04-dirtyregions/`; its timings describe that
-intermediate build, not the final batching implementation.
+That process also printed all eight passes and then required interruption during shutdown. All six
+compressed heap traces pass integrity checks.
 
 Outstanding: remaining external edit-path acceptance; complete road-edit/removal locality;
 node-validation latency; remaining memory/allocation and matched rendering performance acceptance.
@@ -2501,12 +2365,11 @@ publication area that conflicts with a crossing candidate, retained incompatible
 coordinate offsets and near-boundary contacts. Existing partial/full generation, occupied claims,
 curves and deterministic ownership checks also pass. Rustdoc, formatting and diff checks pass.
 
-One fresh heap repeat passes all **56 calibrated phases**. Every measured heap metric matches
-the previous batching checkpoint: 33,792 idle operations have zero observed events, and the
+One fresh heap repeat passes all **56 calibrated phases**. Every measured heap metric matches the
+previous batching checkpoint: 33,792 idle operations have zero observed events, and the
 11,400-cell store retains 369,172 bytes with a 540,964-byte peak. These are the previously defined
 libc-event/native-fixture measurements, not renderer or GPU allocation acceptance. Both compressed
-traces pass integrity checks. Artifacts are `/tmp/zone04-conflict-cost/memory/`; its executable
-SHA-256 is `f88613d64507bd6d50d608e7a59a72456e9cc1685db2009101d943f6f6b3a15d`.
+traces pass integrity checks.
 
 Three fresh matched, unprofiled renderer pairs retain the same fixture, one Rayon worker,
 unrestricted CPU affinity, Godot 4.7.2 Forward+ and RX 7900 XTX. Pair 2 reverses build order;
@@ -2529,20 +2392,17 @@ This remains a fixed visible neighborhood with distant roads/paint, not whole-ga
 
 The candidate extension SHA-256 is
 `5ec3f961afc671462d80d45d663e46c3617df0ed1de80a0b56c305e9199259e0`; baseline is
-`045fefdd103d16b64693c1427db9e0fc1429c6be0654b867f007915d521640f0`.
-Commands, source/build identities, ordering and checks are in
-`/tmp/zone04-conflict-cost/{measure.py,measurement-metadata.json,summary.json,checkpoint.json}`;
-individual results are `{before,after}-{1,2,3}/results.json`. Baseline 1 and all three candidate
-runs required interruption after recording their complete results and hanging during shutdown.
-Each process ended before the next began; the candidate extension was restored and hash-checked.
+`045fefdd103d16b64693c1427db9e0fc1429c6be0654b867f007915d521640f0`. Baseline 1 and all three
+candidate runs required interruption after recording their complete results and hanging during
+shutdown. Each process ended before the next began; the candidate extension was restored and
+hash-checked.
 
 Eight fresh reference PNGs and the entire manifest match the preceding batching checkpoint
-byte-for-byte. See `/tmp/zone04-conflict-cost/rendered/{manifest.json,comparison.json,*.png}` and
-`rendered.log`. That process also required interruption after printing all eight passes.
-Headless phase diagnostics and a sampled process profile are retained in the same parent directory;
-they are not acceptance timings. The profile includes setup and has incomplete worker stacks.
-Shared road-footprint preparation remains a candidate for investigation, not a demonstrated fix.
-The remaining acceptance gates listed above stay open; `ZONE-04` is still in progress.
+byte-for-byte. That process also required interruption after printing all eight passes. Headless
+phase diagnostics and a sampled process profile are retained in the same parent directory; they are
+not acceptance timings. The profile includes setup and has incomplete worker stacks. Shared
+road-footprint preparation remains a candidate for investigation, not a demonstrated fix. The
+remaining acceptance gates listed above stay open; `ZONE-04` is still in progress.
 
 ### Road footprint preparation
 
@@ -2568,9 +2428,7 @@ and 11,700 to 180 bytes respectively; peaks fall from 196 to 132 bytes and 180 t
 Retention is unchanged. All other phase metrics match, including 33,792 zero-event idle
 operations and the 369,172-byte retained 11,400-cell store. These are normal libc heap events,
 including frees, in the existing isolated native fixtures; they do not cover renderer/GPU memory
-or latency. Both compressed traces pass integrity checks. Artifacts are
-`/tmp/zone04-road-footprints/memory/`, with test executable SHA-256
-`80ac18ec4337afd3575816485cb4e9cbeb1314a2f7dab782811b4e22b8276fd4`.
+or latency. Both compressed traces pass integrity checks.
 
 Three matched, unprofiled renderer pairs keep the previous fixture, one Rayon worker,
 unrestricted CPU affinity, Godot 4.7.2 Forward+ and RX 7900 XTX. Pair 2 reverses build order.
@@ -2598,18 +2456,14 @@ Clear node-move validation remains essentially unchanged: maximum p95 is 6.97237
 **6.964345 ms after**, still above its 5 ms gate. Road-readiness maximum p95 is 0.158853 →
 **0.158459 ms**, within 0.300 ms. Largest-background one-time snapshot medians are 3.379054 →
 3.399228 ms; this separate background-dependent cost remains an outstanding locality issue.
-Commands, source/binary identities, raw logs and summaries are in
-`/tmp/zone04-road-footprints/native/`.
 
 Candidate extension SHA-256 is
 `a4a882469725d7e1906bafa6791b717c555ca2de52b57db21254f448e0017050`; baseline is
-`5ec3f961afc671462d80d45d663e46c3617df0ed1de80a0b56c305e9199259e0`.
-Renderer commands, identities, ordering and results are in
-`/tmp/zone04-road-footprints/{measure.py,measurement-metadata.json,summary.json}` and
-`{before,after}-{1,2,3}/results.json`. Baseline 2 required interruption after completing results;
-all other processes exited. The runner now allows ten seconds after observing the final result
-before interrupting a shutdown wait, without changing any measured window. Each process ended
-before the next began and the candidate extension was restored and verified.
+`5ec3f961afc671462d80d45d663e46c3617df0ed1de80a0b56c305e9199259e0`. Baseline 2 required
+interruption after completing results; all other processes exited. The runner now allows ten
+seconds after observing the final result before interrupting a shutdown wait, without changing
+any measured window. Each process ended before the next began and the candidate extension was
+restored and verified.
 
 The separate headless export diagnostic places world-size snapshot reads at 1 µs median on both
 builds; it does not implicate that read in this fixture's cost. Dirty-export median is 2.936 →
@@ -2681,12 +2535,9 @@ exact local geometry, idle zero uploads and the one-chunk / 28,224 packed-byte /
 edit replacement. Every sample renders five draw calls and 1,342 primitives. These backgrounds
 contain no native buildings or agents; dense development and whole-gameplay frames remain open.
 
-Artifacts are `/tmp/zone04-async-cells/`: `library-tests.log`, `bridge-results.json`, `rustdoc.log`,
-`measure.py`, `measurement-metadata.json`, `summary.json`, `{before,after}-{1,2,3}/results.json`,
-and `rendered/{manifest.json,comparison.json,*.png}`. All six timing processes and the reference
-process exit normally. This does not prove the earlier intermittent shutdown issue fixed.
-Source identities stay unchanged during measurement; the candidate library is restored and
-verified afterward. Candidate extension SHA-256 is
+All six timing processes and the reference process exit normally. This does not prove the earlier
+intermittent shutdown issue fixed. Source identities stay unchanged during measurement; the
+candidate library is restored and verified afterward. Candidate extension SHA-256 is
 `4ce88ce15dd941508d4170e990ea66f5fbac21967697130fac42131cbbf7d90a`; baseline is
 `a4a882469725d7e1906bafa6791b717c555ca2de52b57db21254f448e0017050`. The test executable is
 `90adc4ebcdf640e7a1fc9fad29ecfcd6782a51f7b8e972e6ff5a2573e4186627`.
@@ -2775,16 +2626,12 @@ after complete results and its final pass line; the previously observed shutdown
 unresolved. All other renderer processes exit normally. Each process is terminal before another
 timed process starts, and candidate deployment is restored and verified afterward.
 
-Evidence is under `/tmp/zone04-snapshot/`: `library-tests.log`, `bridge-results.json`, `rustdoc.log`,
-`components-{before,after}.log`, `diagnostic-metadata.json`, `index_bench.rs`, `index-bench.jsonl`,
-`height-{before,after}-{1,2,3}.log`, `height-metadata.json`, `native/{metadata.json,results.json,summary.json}`,
-`memory-retry/{metadata.json,results.json,comparison.json,*.data.gz}`, `measurement-{metadata,extra}.json`,
-`trial-selection.json`, `summary.json`, and `rendered/{manifest.json,comparison.json,*.png}`.
 Native runners and both renderer runners record commands and source/binary identities. Candidate
-extension SHA-256 is `77a35bc00e2d251f083f5ea6d01a52cd240b4ac8228ea30872e04d3df274071c`; baseline
-is `4ce88ce15dd941508d4170e990ea66f5fbac21967697130fac42131cbbf7d90a`. Candidate test executable
+extension SHA-256 is `77a35bc00e2d251f083f5ea6d01a52cd240b4ac8228ea30872e04d3df274071c`; baseline is
+`4ce88ce15dd941508d4170e990ea66f5fbac21967697130fac42131cbbf7d90a`. Candidate test executable
 SHA-256 is `2aafceef70eeaefd714729a85b71ba7bcc3f337bb6fcf74c364c1a274fe9ea14`; the baseline,
-including the same snapshot diagnostic, is `82266a600a3680537fcd5cce40f71fea481f51f6d192beb2a97e4ab292aed146`.
+including the same snapshot diagnostic, is
+`82266a600a3680537fcd5cce40f71fea481f51f6d192beb2a97e4ab292aed146`.
 
 Whole-edit locality, node-validation latency, remaining edit-path coverage and broader
 memory/rendering acceptance remain open. The six owner indices no longer require full snapshot
@@ -2851,14 +2698,9 @@ checkpoint; the reference process exits normally. This verifies geometry and too
 The preceding renderer latency and heap runs remain evidence for their original binaries,
 not fresh performance measurements of this build.
 
-Artifacts are under `/tmp/zone04-surface-snapshot/`: `library-tests.log`, `check-fixed.log`,
-`build.log`, `rustdoc.log`, `bridge-results.json`, `components-{before,after}.log`,
-`diagnostic-metadata.json`, `native/{measure.py,metadata.json,results.json,summary.txt}`,
-`height.py`, `height-metadata.json`, `height-{before,after}-{1,2,3}.log`, `summary.json`,
-`reference-metadata.json`, and `rendered/{manifest.json,comparison.json,*.png}`. Metadata records
-commands, source identities, executable hashes, CPU affinity and worker settings. The native
-runner verifies all measured source and executable identities after the final pair. Component
-diagnostics run `populated_cell_snapshot_scaling`; native pairs run
+Metadata records commands, source identities, executable hashes, CPU affinity and worker
+settings. The native runner verifies all measured source and executable identities after the
+final pair. Component diagnostics run `populated_cell_snapshot_scaling`; native pairs run
 `populated_cell_node_move_validation_scaling` and `populated_cell_road_plan_scaling`; the query
 fixture is `graded_yard_height_query_benchmark`, all through the release library test executables
 with `--exact --ignored --nocapture --test-threads=1`, `METRUM_DEBUG=0`, `RAYON_NUM_THREADS=1`
@@ -2931,16 +2773,9 @@ not grow in this fixture, so it does not certify complete field lifecycle or who
 No new heap, renderer latency or reference-image measurements were run in this checkpoint;
 earlier results remain evidence for their original binaries.
 
-Artifacts are under `/tmp/zone04-field-reservations/`: `regressions-before.log`,
-`release-tests.log`, `build.log`, `rustdoc.log`, `build-metadata.json`, `bridge-results.json`,
-`measurement-metadata.json`, `scaling-{1,2,3}.log`, `scaling-results.json`,
-`scaling-summary.json`, `after-tests` and `after.so`. Build commands are
-`cargo test --release --lib`, `cargo build --release` and `cargo doc --no-deps`, from `rust/`.
-Run `python3 /tmp/zone04-field-reservations/measure.py` to repeat the three cost trials; it calls
-`nodes::sim::core::tests::fields::field_cell_cache_edit_scaling` through the retained release
-test executable with `--exact --ignored --nocapture --test-threads=1`, `taskset -c 0`,
-`RAYON_NUM_THREADS=1` and `METRUM_DEBUG=0`. Metadata verifies source and executable identities
-before and after measurement. Extension SHA-256 is
+Build commands are `cargo test --release --lib`, `cargo build --release` and `cargo doc
+--no-deps`, from `rust/`. Metadata verifies source and executable identities before and after
+measurement. Extension SHA-256 is
 `1cff42919bb64af6c3f22272a46915dbbe1b5dec565c2a90199f935a79ad5cfb`; test executable SHA-256 is
 `9fa28cf6b2becf1f45ac3c8a56d33d9b0f38a9002dde3a164ff8c808f8188a50`.
 
@@ -2996,19 +2831,13 @@ background building/agent state or authored parcels. It therefore does not estab
 undo locality or a populated city's full restoration cost. Heap, GPU latency and reference
 captures were not rerun; earlier measurements retain their original scope and build identity.
 
-Artifacts are under `/tmp/zone04-restore-reservations/`: `regressions-before.log`,
-`check-fixed.log`, `release-tests.log`, `build.log`, `rustdoc.log`, `build-metadata.json`,
-`bridge-results.json`, `measurement-metadata.json`, `scaling-{1,2,3}.log`,
-`scaling-results.json`, `scaling-summary.json` and retained binaries. Build commands remain
-`cargo test --release --lib`, `cargo build --release` and `cargo doc --no-deps`, from `rust/`.
-`python3 /tmp/zone04-restore-reservations/measure.py` repeats the three trials by running
-`nodes::sim::core::tests::fields::undo_scaling::rejected_field_undo_reservation_scaling` through
-`after-tests --exact --ignored --nocapture --test-threads=1`, with `taskset -c 0` and the worker
-settings above. Source and executable identities are checked before and after the measurements.
-Extension SHA-256 is `7f0d0d1602c218e670e34e98ab3b041c9be0a655110dbd0e9a9dcd96400a121a`;
-test executable SHA-256 is `845971f2539525d24eb0b91345543b6fca7f190819c9b6580d44c85aff0165c0`.
-Whole-edit locality, node-validation latency, remaining edit-path coverage and broader
-memory/rendering acceptance remain open. `ZONE-04` stays in progress.
+Build commands remain `cargo test --release --lib`, `cargo build --release` and `cargo doc
+--no-deps`, from `rust/`. Source and executable identities are checked before and after the
+measurements. Extension SHA-256 is
+`7f0d0d1602c218e670e34e98ab3b041c9be0a655110dbd0e9a9dcd96400a121a`; test executable SHA-256 is
+`845971f2539525d24eb0b91345543b6fca7f190819c9b6580d44c85aff0165c0`. Whole-edit locality,
+node-validation latency, remaining edit-path coverage and broader memory/rendering acceptance
+remain open. `ZONE-04` stays in progress.
 
 ### Feature handoff — `ZONE-04`
 
@@ -3029,17 +2858,13 @@ Final verification passes **2,004 release library tests** (81 manual fixtures ig
 layouts pass, including the seven reference arrangements and a rotated block. The mixed-paint
 capture was also inspected. The release extension is deployed at `godot/bin/libmetrum_rise.so`.
 
-An experimental polygon-crossing index was removed before handoff: its isolated large-ring
-gain did not establish a useful improvement in the populated node-edit check, and blocked moves
-cost more. The final Rust/Cargo sources match `source-before.json` in
-`/tmp/zone04-node-cost/`; executable and extension hashes are those in the preceding checkpoint.
-Fresh final evidence is `final-release-tests.log`, `final/bridge-results.json`,
-`final/rustdoc.log`, `rendered-before/{manifest.json,*.png}` and `reference-before-metadata.json`.
-The `before` name identifies the retained implementation; `after` artifacts describe the
+An experimental polygon-crossing index was removed before handoff: its isolated large-ring gain
+did not establish a useful improvement in the populated node-edit check, and blocked moves cost
+more. The `before` name identifies the retained implementation; `after` artifacts describe the
 discarded experiment. The final suite ran the retained release executable with `METRUM_DEBUG=0`
 and `RAYON_NUM_THREADS=1`; source hashes were checked after restoring the two experimental files.
-Godot checks use the existing scripts and the deployed extension. Rendered checks required
-desktop access because the sandbox could not connect to the display; they then exited normally.
+Godot checks use the existing scripts and the deployed extension. Rendered checks required desktop
+access because the sandbox could not connect to the display; they then exited normally.
 
 ### Performance measurement scope
 
@@ -3102,13 +2927,6 @@ The fixed local curve retains 18 occupied lots; its resolved coverage increases 
 252 cells. Each build preserves identical local products as background occupancy increases
 to 5,138 lots. These measurements establish local generation cost, not whole-city rendering.
 
-Evidence is in `rust/target/zone04-wysiwyg/`: `before.sha256` identifies the retained baseline
-executable built from `a9958afd76c5b5dcfa272ac688eb47c590d96c19` plus the failing regression;
-`after.sha256` records the corrected executable and changed Rust sources. `pinned-{before,after}-*.log`
-and `curve-{before,after}-*.log` hold acceptance timings; earlier unpinned straight-grid trials
-are retained separately. `cell-tests.log`, `full-tests.log` and `build.log` record validation.
-The two named bridge logs and `deployed.sha256` record the extension checks and deployment.
-
 ### Frontage-priority follow-up — 2026-09-28
 
 Gameplay testing rejected whole-grid dominance because one lattice suppressed the neighboring
@@ -3121,11 +2939,11 @@ O(C log C) with unchanged local conflict queries and allocation structure.
 
 The corner regression now requires front-row cells with the correct supplying road on both
 sides of the overlap, as well as unchanged cell addresses after paint/erase at three angular
-offsets. Follow-up verification artifacts are in `rust/target/zone04-frontage/`.
-All 69 cell-store tests pass. Three matched, interleaved, unprofiled release trials use the
-existing `benchmark_cell_zoning_locality` and `benchmark_cell_curve_frontage_locality` fixtures
-with `--ignored --nocapture --test-threads=1`, CPU 0, `RAYON_NUM_THREADS=1`, `METRUM_DEBUG=0`,
-Rust 1.98.1 and the same i9-12900K. Setup remains outside the timers. Median trial times:
+offsets. All 69 cell-store tests pass. Three matched, interleaved, unprofiled release trials
+use the existing `benchmark_cell_zoning_locality` and `benchmark_cell_curve_frontage_locality`
+fixtures with `--ignored --nocapture --test-threads=1`, CPU 0, `RAYON_NUM_THREADS=1`,
+`METRUM_DEBUG=0`, Rust 1.98.1 and the same i9-12900K. Setup remains outside the timers. Median
+trial times:
 
 | Workload / distant background | Whole-grid priority | Restored depth priority |
 | --- | ---: | ---: |
@@ -3169,8 +2987,7 @@ building grace and road-split repair; the lot lifecycle still owns claim release
 Regressions cover removal behind an excluded middle row, retained paint and restoration after
 the exclusion is removed, rectangular frontage coverage at competing roads, and cold narrow
 requests matching full-area generation. Existing paint/erase, partial-invalidation, split-road
-and occupied-lot regressions remain part of acceptance. Evidence is recorded in
-`rust/target/zone04-orphans/`.
+and occupied-lot regressions remain part of acceptance.
 
 All 71 cell-store tests pass. Three matched, interleaved, unprofiled release trials use the
 existing `benchmark_cell_zoning_locality` and `benchmark_cell_curve_frontage_locality` fixtures
@@ -3230,9 +3047,7 @@ citywide traversal or per-agent/tick allocation is introduced.
 Fresh verification passes all 2,008 release library tests (81 manual fixtures ignored),
 including native orthogonal block layouts and rejected-edit rollback, plus both
 `zoning_cells_tool_test` and `zoning_road_tool_test` headlessly. The release extension was
-rebuilt and atomically deployed. Logs and executable/source/library hashes are under
-`rust/target/zone04-junction/`; `regression.log` records the original failing junction test,
-`full-tests.log` the final full run, and `deployed.sha256` the installed library identity.
+rebuilt and atomically deployed.
 
 Three interleaved matched, unprofiled release trials compare baseline
 `e1e83dd3d2fb282c5692b9caf99165aee6c5a3b3` (`before-tests`, `before.sha256`) with the final test
@@ -3268,19 +3083,17 @@ remain active. The cursor reads an immutable persistent alignment map in the exi
 snapshot. No simulation lock, new spatial index, or city-wide grid copy is added to pointer work.
 
 Fresh verification on this build: **2,012 release Rust tests passed, 82 ignored**, plus
-`network_tool_chunk_renderer_test`, `zoning_cells_tool_test`, and `zoning_road_tool_test`.
-The rectangle regression checks all 144 interior cells at three rotations, three road widths,
-and two cell sizes, including first-road snapping for the cardinal fixtures. Other new checks
-cover differing reference/selected widths, branch attachment, immutable snapshots, and the
-actual checkbox/Spline bridge behavior and independence from Shift. The options panel was rendered under Xvfb;
-`rust/target/zoning-snap/ui-preview.png` records the layout. Release build and atomic deployment
+`network_tool_chunk_renderer_test`, `zoning_cells_tool_test`, and `zoning_road_tool_test`. The
+rectangle regression checks all 144 interior cells at three rotations, three road widths, and two
+cell sizes, including first-road snapping for the cardinal fixtures. Other new checks cover
+differing reference/selected widths, branch attachment, immutable snapshots, and the actual
+checkbox/Spline bridge behavior and independence from Shift. Release build and atomic deployment
 completed; restart the game to load the updated extension.
 
 Checkbox-only follow-up: removed the road tool's Shift key query and shortcut tooltip. A fresh
 `network_tool_chunk_renderer_test` run passes, including Shift press/release leaving the checkbox
-setting in control (`rust/target/zoning-snap/checkbox-only-test.log`). This GDScript-only change
-leaves the Rust build and measured algorithms above unchanged; Rust tests and benchmarks were
-not rerun for shortcut removal.
+setting in control. This GDScript-only change leaves the Rust build and measured algorithms above
+unchanged; Rust tests and benchmarks were not rerun for shortcut removal.
 
 Matched unprofiled release measurements use Rust 1.98.1, i9-12900K, CPU 0 affinity,
 `RAYON_NUM_THREADS=1`, and `METRUM_DEBUG=0`, without competing builds/tests. The baseline is
@@ -3328,13 +3141,6 @@ The largest fixture has 100,004 parcels and 600,024 agents. Repeated planning re
 its small timing differences do not indicate a material regression. The separately reported
 one-time snapshot retains existing background-dependent costs outside this change.
 
-Artifacts: `rust/target/zoning-snap/` contains `final-tests.log`, `build.log`, the three
-`*test.log` bridge reports, `split-{before,after}-{1,2,3}.log`, `cursor-{1,2,3}.log`,
-`populated-{before,after}.log`, and `ui-preview.{log,png}`. `before.sha256`, `after.sha256`, and
-`deployed.sha256` identify the baseline/final executables, changed Rust sources and matching
-built/deployed libraries. The earlier `full-tests.log` predates the first-road length refinement;
-`final-tests.log` is the acceptance run for the deployed build.
-
 
 ### Free-angle snapping and left-side options — 2026-09-28
 
@@ -3367,11 +3173,9 @@ Median of trial medians, microseconds; fixture setup is excluded:
 | 1,000 | 0.069 | 0.073 |
 | 10,000 | 0.074 | 0.077 |
 
-All cursor checksums remain `(266240, 532480)` across background sizes. These figures cover
-only the grid query, not the whole Godot frame. Artifacts are in
-`rust/target/zoning-snap-angle/`: `tests.log`, `build.log`, `bridge.log`,
-`ui-preview.{log,png}`, `cursor-{before,after}-{1,2,3}.log`, and baseline/final/deployed SHA-256
-manifests. Earlier measurements above belong to their recorded builds.
+All cursor checksums remain `(266240, 532480)` across background sizes. These figures cover only
+the grid query, not the whole Godot frame. Earlier measurements above belong to their recorded
+builds.
 
 ### Straight-road endpoint continuation — 2026-09-28
 
@@ -3392,8 +3196,6 @@ Native commit coverage also exercises compiled-road exclusions at the join.
 Fresh verification passes all 2,016 release library tests (82 ignored), including both new
 regressions and existing save/rollback/layout checks, plus `zoning_cells_tool_test` and
 `zoning_road_tool_test` headlessly. The release extension is rebuilt and atomically deployed.
-Logs and executable/source/deployed-library SHA-256 identities are under
-`rust/target/zoning-continuation/`; `reproduction.log` records the original missing column.
 
 Matched unprofiled release runs use the pre-fix executable in `before.sha256` and final
 executable in `after.sha256`, Rust 1.98.1 on i9-12900K, with no competing builds/tests:
@@ -3518,8 +3320,4 @@ Builds: baseline is HEAD `398f7bab` with extension SHA-256
 `23cb570e059b1035ac719809d0223ba24678c4f4605ba605c0d7e53d053f6552`. The deployed build differs
 only by rustfmt line moves: `1cc1b854accd2524b7f3d935288870438d2dc722c4856033bee6b4e6275672e0`,
 rechecked with one headless run (`final-headless-a`: lag 0 / 1 / 4 paused, 0 / 1 / 2 running).
-Machine: i9-12900K,
-Godot 4.7.2. Isolated projects, logs, per-run JSON, `run.sh` and `summarize.py` / `compare.txt`
-are under `rust/target/zone-latency/`. Reproduce a run with
-`rust/target/zone-latency/artifacts/run.sh <baseline|height|candidate> <label>`; set
-`GODOT_MODE=--windowed` for the windowed runs.
+Machine: i9-12900K, Godot 4.7.2.

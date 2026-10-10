@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Commute bounds used by job search must never change an exhaustive commute estimate.
+//! Commute bounds and shared network legs used by job search must never change an exhaustive
+//! commute estimate.
 
 use super::super::populated_city::zoned_city;
 use crate::config::MIN_ROUTE_SPEED_MS;
 use crate::simulation::economy::accessibility::max_speed_for_modes;
 use crate::simulation::economy::agents::tick::{
-    BuildingTripEnds, TripEstimate, estimate_building_origin_trip_seconds,
+    BuildingTripEnds, SharedNetworkQuotes, TripEstimate, estimate_building_origin_trip_seconds,
     estimate_trip_seconds_between,
 };
 use crate::simulation::network::types::TransitFlags;
@@ -28,6 +29,9 @@ fn bounded_commute_estimates_match_exhaustive_estimates() {
     let speed_bound =
         max_speed_for_modes(graph, TransitFlags::FOOT | TransitFlags::CAR).max(MIN_ROUTE_SPEED_MS);
     let pathfinds = AtomicU32::new(0);
+    // Bounded estimates read legs priced for earlier homes and budgets; exact ones never do.
+    let mut shared = SharedNetworkQuotes::default();
+    shared.sync(network);
 
     let buildings_of = |zone: fn(ZoneType) -> bool| -> Vec<usize> {
         (0..allocator.buildings.len())
@@ -59,7 +63,7 @@ fn bounded_commute_estimates_match_exhaustive_estimates() {
         for (&job, ends) in jobs.iter().zip(&job_ends) {
             for has_car in [false, true] {
                 let exact = estimate_building_origin_trip_seconds(
-                    home, job, has_car, allocator, network, graph, &pathfinds,
+                    home, job, has_car, allocator, network, graph, &pathfinds, None,
                 );
                 let Some(exact_s) = exact else {
                     continue;
@@ -89,7 +93,7 @@ fn bounded_commute_estimates_match_exhaustive_estimates() {
                 ] {
                     match estimate_trip_seconds_between(
                         &home_ends, ends, has_car, network, graph, &pathfinds, speed_bound,
-                        budget_s,
+                        budget_s, Some(&shared),
                     ) {
                         TripEstimate::Seconds(seconds) => assert_eq!(
                             seconds, exact,
@@ -110,4 +114,5 @@ fn bounded_commute_estimates_match_exhaustive_estimates() {
     }
     assert!(routed > 10_000, "only {routed} reachable pairs checked");
     assert!(over_budget > 0, "no budget ever pruned a pair");
+    assert!(shared.len() > 0, "no bounded estimate retained a network leg");
 }

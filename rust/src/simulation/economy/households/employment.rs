@@ -21,7 +21,7 @@ use crate::simulation::economy::accessibility::{
     chunk_for_point, lower_bound_travel_seconds, max_speed_for_modes,
 };
 use crate::simulation::economy::agents::tick::{
-    BuildingTripEnds, TripEstimate, estimate_building_origin_trip_seconds,
+    BuildingTripEnds, SharedNetworkQuotes, TripEstimate, estimate_building_origin_trip_seconds,
     estimate_trip_seconds_between,
 };
 use crate::simulation::economy::agents::{AgentSystem, TRANSIT_IN_BUILDING, age_group_can_work};
@@ -296,6 +296,7 @@ impl HouseholdSystem {
         phase_start = Instant::now();
 
         self.refresh_workplace_route_cache(allocator, transit_network);
+        self.workplace_network_quotes.sync(transit_network);
         let route_cache_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
         let foot_components = ModeComponentIndex::build(graph, TransitFlags::FOOT);
@@ -352,6 +353,7 @@ impl HouseholdSystem {
             graph,
             &catalog,
             &self.workplace_route_cache,
+            &self.workplace_network_quotes,
             &agents.pathfind_count,
             max_walk_commute_speed,
             max_car_commute_speed,
@@ -415,7 +417,7 @@ impl HouseholdSystem {
         if timing_enabled {
             debug_log!(
                 "economy",
-                "workplace_assignment_detail agents={} buildings={} households={} job_supply={} home_keys={} current_keys={} home_options={} current_options={} route_cache_entries={} new_route_entries={} plans={} load_ms={:.3} prep_ms={:.3} route_cache_ms={:.3} component_ms={:.3} supply_ms={:.3} collect_keys_ms={:.3} speed_bounds_ms={:.3} option_build_ms={:.3} insert_routes_ms={:.3} plan_ms={:.3} apply_ms={:.3} total_ms={:.3}",
+                "workplace_assignment_detail agents={} buildings={} households={} job_supply={} home_keys={} current_keys={} home_options={} current_options={} route_cache_entries={} network_quote_entries={} new_route_entries={} plans={} load_ms={:.3} prep_ms={:.3} route_cache_ms={:.3} component_ms={:.3} supply_ms={:.3} collect_keys_ms={:.3} speed_bounds_ms={:.3} option_build_ms={:.3} insert_routes_ms={:.3} plan_ms={:.3} apply_ms={:.3} total_ms={:.3}",
                 agents.len(),
                 allocator.buildings.len(),
                 self.households.len(),
@@ -425,6 +427,7 @@ impl HouseholdSystem {
                 home_option_count,
                 current_option_count,
                 self.workplace_route_cache.len(),
+                self.workplace_network_quotes.len(),
                 new_route_entry_count,
                 plan_count,
                 load_ms,
@@ -1268,6 +1271,7 @@ fn build_home_job_options(
     graph: &RegionGraph,
     catalog: &RuntimeEconomyCatalog,
     route_cache: &HashMap<WorkplaceRouteCacheKey, Option<u16>>,
+    network_quotes: &SharedNetworkQuotes,
     pathfind_count: &AtomicU32,
     max_walk_commute_speed: f32,
     max_car_commute_speed: f32,
@@ -1292,6 +1296,7 @@ fn build_home_job_options(
                 transit_network,
                 graph,
                 route_cache,
+                network_quotes,
                 pathfind_count,
                 exact_entrance_cache_available,
                 if key.has_car {
@@ -1339,6 +1344,7 @@ fn build_home_job_options(
                 graph,
                 catalog,
                 route_cache,
+                network_quotes,
                 pathfind_count,
                 exact_entrance_cache_available,
                 &mut route_entries,
@@ -1381,6 +1387,7 @@ fn build_home_job_options_for_key(
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
     route_cache: &HashMap<WorkplaceRouteCacheKey, Option<u16>>,
+    network_quotes: &SharedNetworkQuotes,
     pathfind_count: &AtomicU32,
     exact_entrance_cache_available: bool,
     max_commute_speed: f32,
@@ -1432,6 +1439,7 @@ fn build_home_job_options_for_key(
         transit_network,
         graph,
         route_cache,
+        network_quotes,
         pathfind_count,
         exact_entrance_cache_available,
         home.center_x,
@@ -1456,6 +1464,7 @@ fn build_home_job_options_for_key(
             transit_network,
             graph,
             route_cache,
+            network_quotes,
             pathfind_count,
             exact_entrance_cache_available,
             home.center_x,
@@ -1483,6 +1492,7 @@ fn scan_home_job_bucket(
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
     route_cache: &HashMap<WorkplaceRouteCacheKey, Option<u16>>,
+    network_quotes: &SharedNetworkQuotes,
     pathfind_count: &AtomicU32,
     exact_entrance_cache_available: bool,
     origin_x: f32,
@@ -1511,6 +1521,7 @@ fn scan_home_job_bucket(
                 transit_network,
                 graph,
                 route_cache,
+                network_quotes,
                 pathfind_count,
                 exact_entrance_cache_available,
                 max_commute_speed,
@@ -1612,6 +1623,7 @@ fn build_current_job_option_for_key(
     graph: &RegionGraph,
     catalog: &RuntimeEconomyCatalog,
     route_cache: &HashMap<WorkplaceRouteCacheKey, Option<u16>>,
+    network_quotes: &SharedNetworkQuotes,
     pathfind_count: &AtomicU32,
     exact_entrance_cache_available: bool,
     new_route_entries: &mut [WorkplaceRouteCacheEntry; JOB_ROUTE_SCAN_CANDIDATES],
@@ -1629,6 +1641,7 @@ fn build_current_job_option_for_key(
         transit_network,
         graph,
         route_cache,
+        network_quotes,
         pathfind_count,
         exact_entrance_cache_available,
         new_route_entries,
@@ -1695,6 +1708,7 @@ fn cached_commute_seconds_within(
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
     route_cache: &HashMap<WorkplaceRouteCacheKey, Option<u16>>,
+    network_quotes: &SharedNetworkQuotes,
     pathfind_count: &AtomicU32,
     exact_entrance_cache_available: bool,
     network_speed_bound_ms: f32,
@@ -1721,6 +1735,7 @@ fn cached_commute_seconds_within(
         pathfind_count,
         network_speed_bound_ms,
         budget_s,
+        Some(network_quotes),
     ) else {
         return None;
     };
@@ -1740,6 +1755,7 @@ fn cached_commute_seconds(
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
     route_cache: &HashMap<WorkplaceRouteCacheKey, Option<u16>>,
+    network_quotes: &SharedNetworkQuotes,
     pathfind_count: &AtomicU32,
     exact_entrance_cache_available: bool,
     new_route_entries: &mut [WorkplaceRouteCacheEntry; JOB_ROUTE_SCAN_CANDIDATES],
@@ -1763,6 +1779,7 @@ fn cached_commute_seconds(
         transit_network,
         graph,
         pathfind_count,
+        Some(network_quotes),
     );
     if *new_route_entry_count < JOB_ROUTE_SCAN_CANDIDATES {
         new_route_entries[*new_route_entry_count] = (key, result);

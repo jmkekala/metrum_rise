@@ -202,6 +202,9 @@ pub struct HouseholdSystem {
     pub(super) workplace_route_cache_building_revision: u64,
     pub(super) workplace_route_cache_entrance_revision: u64,
     pub(super) workplace_route_cache_cch_generation: u32,
+    // Network legs of workplace commutes; exact across hours while the CCH revision holds.
+    pub(super) workplace_network_quotes:
+        crate::simulation::economy::agents::tick::SharedNetworkQuotes,
     pub(super) daily_ledgers: Vec<DailyHouseholdLedger>,
     pub(super) last_power_settlement: DailyPowerSettlementSummary,
     pub(super) last_city_service_wages: CityServiceWages,
@@ -243,6 +246,7 @@ impl HouseholdSystem {
             workplace_route_cache_building_revision: u64::MAX,
             workplace_route_cache_entrance_revision: u64::MAX,
             workplace_route_cache_cch_generation: u32::MAX,
+            workplace_network_quotes: Default::default(),
             daily_ledgers: Vec::new(),
             last_power_settlement: DailyPowerSettlementSummary::default(),
             last_city_service_wages: CityServiceWages::default(),

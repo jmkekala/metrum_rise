@@ -17,7 +17,7 @@ use super::candidate::{
     price_trip_without_network,
 };
 use super::types::BuiltTripPlan;
-use super::candidate::TripQueryScratch;
+use super::candidate::{SharedNetworkQuotes, TripQueryScratch};
 use crate::simulation::buildings::allocator::{BuildingAllocator, BuildingEntrance};
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
@@ -268,6 +268,7 @@ pub(crate) fn estimate_building_origin_trip_seconds(
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
     pathfind_count: &AtomicU32,
+    shared: Option<&SharedNetworkQuotes>,
 ) -> Option<u16> {
     let origin = BuildingTripEnds::origin(current_building, allocator, transit_network, graph);
     let destination =
@@ -281,6 +282,7 @@ pub(crate) fn estimate_building_origin_trip_seconds(
         pathfind_count,
         f32::INFINITY,
         f32::INFINITY,
+        shared,
     ) {
         TripEstimate::Seconds(seconds) => seconds,
         TripEstimate::OverBudget => unreachable!("an unbounded estimate has no budget"),
@@ -472,7 +474,8 @@ pub(crate) enum TripEstimate {
 /// at `network_speed_bound_ms` between its network nodes. Candidates are routed in bound order and
 /// skipped once their bound loses to the best mode-choice cost found, so the chosen candidate is
 /// the one an exhaustive search picks. When every bound exceeds `budget_s` the result is
-/// [`TripEstimate::OverBudget`] without any query.
+/// [`TripEstimate::OverBudget`] without any query. `shared` lends network legs priced by other
+/// workers or earlier passes; it never changes the estimate.
 pub(crate) fn estimate_trip_seconds_between(
     origin: &BuildingTripEnds,
     destination: &BuildingTripEnds,
@@ -482,10 +485,11 @@ pub(crate) fn estimate_trip_seconds_between(
     pathfind_count: &AtomicU32,
     network_speed_bound_ms: f32,
     budget_s: f32,
+    shared: Option<&SharedNetworkQuotes>,
 ) -> TripEstimate {
     super::candidate::TripQueryScratch::with(transit_network, graph, |scratch| {
         estimate_trip_seconds_with_scratch(origin, destination, has_car, transit_network,
-            graph, pathfind_count, network_speed_bound_ms, budget_s, scratch)
+            graph, pathfind_count, network_speed_bound_ms, budget_s, shared, scratch)
     })
 }
 
@@ -498,6 +502,7 @@ fn estimate_trip_seconds_with_scratch(
     pathfind_count: &AtomicU32,
     network_speed_bound_ms: f32,
     budget_s: f32,
+    shared: Option<&SharedNetworkQuotes>,
     scratch: &mut super::candidate::TripQueryScratch,
 ) -> TripEstimate {
     let mut best: Option<PlannedTripCandidate> = None;
@@ -577,6 +582,7 @@ fn estimate_trip_seconds_with_scratch(
             transit_network,
             graph,
             pathfind_count,
+            shared,
         ) && best
             .as_ref()
             .is_none_or(|best| candidate_better(&candidate, best))

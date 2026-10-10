@@ -94,6 +94,7 @@ fn agent_commute_estimate_uses_active_world_clock() {
         &core.transit_network,
         &core.region_graph,
         &core.agents.pathfind_count,
+        None,
     )
     .expect("the clock fixture must have a feasible walking commute");
     assert!(physical_seconds > 1);

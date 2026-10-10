@@ -843,3 +843,61 @@ fn prepared_cost_queries_match_paths_without_growing_search_storage() {
         assert_eq!(capacities(&fork), prepared);
     }
 }
+
+// Commute quotes use the cost-only query; random one-ways, costs and turn whitelists must
+// never make it disagree with the materialized path or the turn-aware oracle.
+#[test]
+fn cost_only_queries_match_paths_on_random_restricted_graphs() {
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut next = |bound: u64| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state % bound
+    };
+    let mut scratch = CchQueryScratch::default();
+    let mut paths = CchPathScratch::default();
+    for seed in 0..24 {
+        let side = 3 + (seed % 3) as u32;
+        let mut graph = grid(side);
+        for edge in graph.edges_iter_mut() {
+            edge.base_cost = 1.0 + next(12) as f32;
+            if next(5) == 0 { edge.bkw_lanes = 0; }
+            if next(2) == 0 { edge.allowed_types |= TransitFlags::FOOT; }
+        }
+        for node in 0..graph.node_count() as u32 {
+            let arms = graph.node_adjacency(node).to_vec();
+            if arms.len() < 3 || next(3) != 0 { continue; }
+            let incoming = arms[next(arms.len() as u64) as usize];
+            for &outgoing in &arms {
+                if outgoing != incoming && next(2) == 0 {
+                    graph.add_lane_connection(node, incoming, 0, outgoing, 0);
+                }
+            }
+        }
+        let mut cch = CchGraph::build(&graph);
+        for phase in 0..2 {
+            if phase == 1 {
+                for edge in graph.edges_iter_mut() { edge.base_cost = 1.0 + next(12) as f32; }
+                cch.customize(&graph);
+            }
+            for from in 0..graph.node_count() as u32 {
+                for to in 0..graph.node_count() as u32 {
+                    for start_edge in graph.node_adjacency(from).iter().copied().chain([usize::MAX]) {
+                        for mode in [TransitFlags::CAR, TransitFlags::FOOT] {
+                            let cost = cch.find_cost(from, to, start_edge, &graph, mode, &mut scratch);
+                            let path = cch.find_path_in(from, to, start_edge, &graph, mode, &mut paths)
+                                .map(|route| route.0);
+                            assert_eq!(cost, path,
+                                "seed={seed} phase={phase} {from}->{to} edge={start_edge} mode={mode}");
+                            if mode == TransitFlags::CAR {
+                                assert_eq!(cost, turn_aware_dijkstra(&graph, from, to, start_edge),
+                                    "seed={seed} phase={phase} {from}->{to} edge={start_edge}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

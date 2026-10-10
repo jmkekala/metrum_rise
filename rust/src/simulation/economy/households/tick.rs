@@ -186,7 +186,9 @@ impl HouseholdSystem {
         // Job searches repeat for a worker only after a multi-day lock, so a commute estimated
         // yesterday is rarely asked again. Dropping the cache daily bounds it to one day's
         // searches; it grew with every pair ever scanned (7.4M entries at 30k by day 15).
+        // Network legs follow the same daily bound.
         drop(std::mem::take(&mut self.workplace_route_cache));
+        self.workplace_network_quotes.clear();
         self.assign_agent_workplaces_with_service_funding(
             agents,
             allocator,

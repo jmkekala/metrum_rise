@@ -322,11 +322,9 @@ sloped lane heights, lateral orientation, ownership flags and mismatched-source 
 
 The final audit's `lane_change_snapshot_benchmark` measures 100/1,000/10,000 cars on two sloped
 lanes, with fixture setup excluded, ten warmups and 100 recycled snapshots per workload. Release
-p50 for inactive versus all-active lane changes is 0.0316/0.0363, 0.1189/0.1507 and
-0.8272/0.9872 ms respectively (`RAYON_NUM_THREADS=24`). This isolates the snapshot sampling cost;
-it is not a gameplay frame-time benchmark. Log: `/tmp/metrum-audit-sealed-lane-change.log`;
-build identity and related acceptance checks are in
-[`earthworks.md`](earthworks.md#changeset-audit-2026-09-11).
+p50 for inactive versus all-active lane changes is 0.0316/0.0363, 0.1189/0.1507 and 0.8272/0.9872
+ms respectively (`RAYON_NUM_THREADS=24`). This isolates the snapshot sampling cost; it is not a
+gameplay frame-time benchmark.
 
 Lane pose sampling in `nodes/sim/render/lane_pose.rs`:
 
@@ -379,14 +377,12 @@ new function. Runs were interleaved, two per side, headless and windowed 640×36
 | 20,000 | 24.9–25.3 → 1.19–1.25 | 34.8–35.3 → 8.22–8.26 |
 
 Headless numbers agree (lane cars at 20,000: 24.6–24.8 → 0.82–0.88 ms). Off-lane cars keep the
-unchanged native support solve, about 0.4 µs per car, which is now their dominant cost. Real off-lane
-counts are limited to cars in an access phase. The Rust-only kernel
+unchanged native support solve, about 0.4 µs per car, which is now their dominant cost. Real
+off-lane counts are limited to cars in an access phase. The Rust-only kernel
 (`car_smoothing_frame_cost`, ignored test) measures 0.045 / 0.17 / 0.66 ms for 1,000 / 5,000 /
-20,000 lane cars. Artifacts are in `rust/target/render14-artifacts/`: logs, `summarize.py` and
-`compare.txt`. The isolated projects are in `rust/target/render14/`. After the runs, a clippy
-cleanup (`as_chunks` in place of `chunks_exact`, with no behaviour change) produced the deployed
-`godot/bin` library `7a09021d…bb31156e`. The native tests and the headless and windowed vehicle
-grounding test were rerun on it.
+20,000 lane cars. After the runs, a clippy cleanup (`as_chunks` in place of `chunks_exact`, with no
+behaviour change) produced the deployed `godot/bin` library `7a09021d…bb31156e`. The native tests
+and the headless and windowed vehicle grounding test were rerun on it.
 
 **Correctness checks:**
 - Native `car_visual` tests cover:
@@ -493,13 +489,8 @@ The accepted tradeoff is a small serial cost: the largest single-worker idle cas
 The existing lane-claim order, actual movement, legal detach checks and lane-gap rules are unchanged.
 
 Run `BINARY --exact simulation::economy::agents::tick::claims::tests::benchmark_claim_preparation
---ignored --nocapture --test-threads=1` with the affinity/worker settings above. Artifacts are
-`/tmp/metrum-full-audit/traffic-state-{before,final}-identity.json` (source/binary hashes) and
-`traffic-final-matched-bench.json` (commands, runs, timings and checksums). The earlier iterator and
-batched implementations are retained separately in `traffic-state-matched-bench.json` and
-`traffic-batched-matched-bench.json`; they are not acceptance builds. Assembly inspection in
-`traffic-state-inlining-evidence.json` identified the added per-agent helper calls. Both hot
-predicates explicitly retain their original in-loop execution in the accepted build.
+--ignored --nocapture --test-threads=1` with the affinity/worker settings above. Both hot predicates
+explicitly retain their original in-loop execution in the accepted build.
 
 ### Speed Update Audit Measurements (2026-09-12)
 
@@ -523,8 +514,7 @@ Five alternating release process pairs use eight physical cores (`taskset -c
 At 1,048,576 agents, single-core road timing is 43.944670 → 46.577261 ms and mixed timing is
 31.389801 → 24.839429 ms. The fully occupied single-lane stress case therefore has an accepted
 3.5% eight-core / 6% single-core cost; the change is not a universal timing improvement. Idle
-work retains comparable timings. All detailed rows, including smaller single-core cases, are
-in `/tmp/metrum-full-audit/speed-buffer-matched-bench.json`.
+work retains comparable timings.
 
 The change removes one retained `f32` per speed-buffer slot (4 MiB in the largest fixture) and an
 O(A) serial copy. Existing per-agent gap lookup remains O(log K) in that lane's occupancy, with
@@ -532,10 +522,9 @@ bounded per-edge lane queries. This fixture intentionally concentrates traffic i
 lanes; it measures the speed phase rather than gameplay frame time or ordinary city density.
 
 Run `BINARY --exact simulation::economy::agents::tick::speed::tests::benchmark_speed_update
---ignored --nocapture --test-threads=1` with the settings above. Source/binary hashes are in
-`/tmp/metrum-full-audit/speed-buffer-{before,after}-identity.json`; the matched-results JSON
-contains each command and log path. The regression independently reverses agent storage and
-runs with one/eight workers, comparing every speed and timer bit after six updates.
+--ignored --nocapture --test-threads=1` with the settings above. The regression
+independently reverses agent storage and runs with one/eight workers, comparing every speed
+and timer bit after six updates.
 
 ### Lane Reservation Audit Measurements (2026-09-12)
 
@@ -586,19 +575,14 @@ lateral targets in parallel using minimum agent ID, then executes those moves in
 Three classification modes in the existing byte avoid repeating the decision for ordinary
 movement. Dynamic handoffs retain stable serial order.
 
-Reproduce with `python3 /tmp/metrum-full-audit/match_lane_transitions_final.py modes-after
-lane-transitions-modes`. It records the exact binary commands for the ignored tests
+The measured ignored tests are
 `tick::movement_pass::tests::benchmark_lane_transitions`,
 `tick::claims::tests::benchmark_claim_preparation`, and
 `tick::movement_pass::tests::benchmark_empty_lane_claim_reset` under
-`simulation::economy::agents`, with `METRUM_DEBUG=0` and the worker settings above. Results and
-logs are in `/tmp/metrum-full-audit/lane-transitions-modes-matched-bench.json` and
-`lane-transitions-modes-matched-summary.json`. Rust is 1.98.1 (`48a229cea`, 2026-09-01).
-Baseline identity/source is `lane-transitions-final-before-*`, binary SHA-256
-`ed8ee8df8150244d3637cbebbf74318d1e0676a887e6c2e36ab17df7f280e138`;
-accepted identity/source is `lane-transitions-modes-after-*`, binary SHA-256
+`simulation::economy::agents`, with `METRUM_DEBUG=0` and the worker settings above. Rust is
+1.98.1 (`48a229cea`, 2026-09-01). Baseline binary SHA-256
+`ed8ee8df8150244d3637cbebbf74318d1e0676a887e6c2e36ab17df7f280e138`; accepted binary SHA-256
 `71402a5b38110a6ce1b15ff553e012d0d9814dc52530fe9a0ba292cac6ca18fc`.
-The earlier `lane-transitions-final-after-*` files describe an intermediate implementation.
 
 ## Known Limits
 

@@ -270,30 +270,26 @@ The current schema omits retired pedestrian-side/step storage; older files can r
 unused fields. Load connections are read-only and never create a missing input file.
 Graph reconstruction uses the normal insertion methods' maintained adjacency and spatial indices.
 
-The `AUDIT-01-S4` save-bookkeeping benchmark uses a minimal two-node graph, no agents, and
-1,024 / 8,192 / 65,536 isolated building records; construction and fixture cloning are outside
-timing. Five alternating unprofiled release process pairs, 24 Rayon workers, three warmups and
-11 samples of 20 repetitions produce median map-building times of
-`0.033 / 0.262 / 2.175 → 0.007 / 0.055 / 0.452 ms` and six-reference-per-building times of
-`0.048 / 0.411 / 4.625 → 0.007 / 0.059 / 0.476 ms`.
-This measures serialization bookkeeping, not SQL I/O or complete saves. Building preflight remains
-O(B); its O(B) identity-map allocation is removed, and each reference remains O(1).
-Command: `simulation::save::tests::benchmark_snapshot_reference_bookkeeping --exact --ignored --nocapture`
-on matched release test binaries. Source/binary identities and raw runs:
-`/tmp/metrum-full-audit/save-cleanup-{before,after}-*` and `save-cleanup-matched-bench.json`.
+The `AUDIT-01-S4` save-bookkeeping benchmark uses a minimal two-node graph, no agents, and 1,024 /
+8,192 / 65,536 isolated building records; construction and fixture cloning are outside timing. Five
+alternating unprofiled release process pairs, 24 Rayon workers, three warmups and 11 samples of 20
+repetitions produce median map-building times of `0.033 / 0.262 / 2.175 → 0.007 / 0.055 / 0.452 ms`
+and six-reference-per-building times of `0.048 / 0.411 / 4.625 → 0.007 / 0.059 / 0.476 ms`. This
+measures serialization bookkeeping, not SQL I/O or complete saves. Building preflight remains O(B);
+its O(B) identity-map allocation is removed, and each reference remains O(1). Command:
+`simulation::save::tests::benchmark_snapshot_reference_bookkeeping --exact --ignored --nocapture` on
+matched release test binaries.
 
-Graph-load acceptance (`AUDIT-01-S5/S7`): five alternating unprofiled release process pairs,
-24 Rayon workers, three warmups and 11 samples of three loads from an in-memory SQLite database.
+Graph-load acceptance (`AUDIT-01-S5/S7`): five alternating unprofiled release process pairs, 24
+Rayon workers, three warmups and 11 samples of three loads from an in-memory SQLite database.
 Minimal fixtures contain 1,024 / 8,192 independent road segments, two nodes and two points in each
-geometry per segment. Fixture construction and initial SQL serialization are outside timing;
-loading and dropping the returned graph are included. Median load time improves
-`2.200 → 1.862 ms` and `18.247 → 15.554 ms`, including the added sequence/reference checks.
-Validation adds O(1) work per row with no new buffer. Removing the second index build avoids
-repeating graph-wide adjacency construction and R-tree/node-grid insertion. The benchmark verifies
-adjacency and node/edge spatial lookups.
-Command: `simulation::save::tests::benchmark_sqlite_graph_loading --exact --ignored --nocapture`.
-Raw rows and source/executable identities: `/tmp/metrum-full-audit/save-validation-matched-bench.json`
-and `save-validation-{before,after}-identity.json`. This excludes disk I/O, terrain, lanes and agents.
+geometry per segment. Fixture construction and initial SQL serialization are outside timing; loading
+and dropping the returned graph are included. Median load time improves `2.200 → 1.862 ms` and
+`18.247 → 15.554 ms`, including the added sequence/reference checks. Validation adds O(1) work per
+row with no new buffer. Removing the second index build avoids repeating graph-wide adjacency
+construction and R-tree/node-grid insertion. The benchmark verifies adjacency and node/edge spatial
+lookups. Command: `simulation::save::tests::benchmark_sqlite_graph_loading --exact --ignored
+--nocapture`. This excludes disk I/O, terrain, lanes and agents.
 
 | Buffer / return value | Type | Layout / meaning |
 |-----------------------|------|------------------|

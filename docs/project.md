@@ -279,7 +279,7 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   Failed-site clearance preserves healthy vacant buildings; departures use individual eligibility.
   The HUD shows actual project counts and concrete constraints. Candidate-site freight,
   local buyer affordability/connectivity and full growth/performance acceptance remain
-  open under `DEM-02`; see [the current contract](demand.md#implementation-contract-and-progress).
+  open under `DEM-02`; see [the current contract](archive/demand_history_2026-10-10.md#implementation-contract-and-progress).
 
 - **Asset editor ground**: the preview now has flat terrain with a 10 m × 10 m grid
   continuing beyond the lot, using the game's terrain shader and shared grass textures.
@@ -305,7 +305,7 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
 
 - **Electricity accounting (`ECON-14`, implemented)**: profile-authored building demand,
   kWh meters, demand-limited coal generation and unpaid household bills are implemented.
-  The [consumption table and 1/2/3-worker ledger](economy.md#electricity-consumption-and-coal-balance)
+  The [consumption table and 1/2/3-worker ledger](economy.md#utility-service-layer)
   target an affordable 170-resident starter plant. Fresh validation passes 362 economy tests,
   all three village growth tests and six staffed plant/mine scenarios. A labor/housing guard fixes
   an unstaffed industrial startup after housing saturation; fuel buffers now follow staffed capacity.
@@ -314,14 +314,14 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   Neither comparison detects a significant daily change.
   Mid-day save continuation, removal/undo accounting and the Godot display regression pass.
   Pre-73 saves retain cash and convert generation, but lack the new meters for their first partial day;
-  see [validation and limitations](economy.md#electricity-validation-econ-14).
+  see [validation and limitations](archive/economy_history_2026-10-10.md#electricity-validation-econ-14).
 
 - **Healthy city growth (`ECON-11`–`ECON-12` done; `ECON-13`–`ECON-14` and `DEM-02` in progress)**:
   The original saved-town replay stayed at seven residents through day 32 despite empty homes
   and high industrial pressure. Independent entry now removes the global startup-cash recovery
   dependency; the same save grows from 7 to 85 residents, with 69 employed, over 30 days.
   See the [saved-town diagnosis and redesign](demand.md#growth-redesign-dem-02).
-  The [critical demand review](demand.md#critical-demand-review-2026-10-07) also identifies category
+  The [critical demand review](archive/demand_history_2026-10-10.md#critical-demand-review-2026-10-07) also identifies category
   dilution, repeated distress penalties and size-independent admission pacing. Fresh checks:
   the pre-change build passed 93 demand-related tests and all three growth scenarios; the two
   tracked startup tests failed and the saved-town stall reproduced. The first admission edit now
@@ -600,12 +600,12 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   After owner receipts and cached pedestrian proofs, final checks pass 430 economy, 23 pathing,
   25 save tests, both continuations and the saved-town year; its report is unchanged.
   Matched 10k hourly timing regresses 5.7515 → 6.4500 ms (+12.1%); discrete counts match,
-  treasury differs. The [fresh AI handoff](demand.md#ai-continuation-handoff--2026-10-08)
-  records historical next steps, validation boundaries and artifacts; [continuation progress](demand.md#continuation-implementation--2026-10-08)
+  treasury differs. The [fresh AI handoff](archive/demand_history_2026-10-10.md#ai-continuation-handoff--2026-10-08)
+  records historical next steps, validation boundaries and artifacts; [continuation progress](archive/demand_history_2026-10-10.md#continuation-implementation--2026-10-08)
   records the current changes and verification boundary.
   Funded-buyer closure, cyclic local chains, replacement output publication, populated
   execution with changing frontage prices and full growth/performance acceptance remain open. See the
-  [implementation contract](demand.md#implementation-contract-and-progress).
+  [implementation contract](archive/demand_history_2026-10-10.md#implementation-contract-and-progress).
   The preceding independent-entry full run passes 2,164 library tests and all three growth scenarios,
   including two years with all five business profiles operating. The scarce-labour expansion
   test then passes separately after correcting its capital bound to count actual arriving adults:
@@ -623,13 +623,13 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
     reference grain farms, mostly
     food retail/processing. Additional meshes do not create customers; new activities need
     affordable spending or explicit external/public funding.
-  - The [regional-market repair](economy.md#regional-industrial-markets-econ-14) replaces export
+  - The [regional-market repair](archive/economy_history_2026-10-10.md#regional-industrial-markets-econ-14) replaces export
     price decay with finite shared customer volumes at 1.0× prices; imports remain 1.25×.
     New factories must cover full operating costs, and household admission requires recurring
     income rather than temporary benefits or pantry-refill jobs. Shopping and rehousing fixes
     keep supply tasks viable. The two-year village now sustains 58 residents and 45 jobs, with no
     bankruptcies or replacement capital, no second-year stockouts, and all eligible benefits paid.
-    The [service and producer audit](economy.md#village-services-and-producer-audit-econ-14)
+    The [service and producer audit](archive/economy_history_2026-10-10.md#village-services-and-producer-audit-econ-14)
     opens barber/pharmacy at 60 residents, each with one worker and positive year-two operating
     cash (+5,719 / +2,685); city recurring balance is +199,536 after transfers and road upkeep.
     Farms/mines now charge 20,000 / 25,000 per added hectare and consume area-scaled utilities.
@@ -644,7 +644,7 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
     monetary values. A carrier holds at most 20,000 kg; per-resource delivery batches remain
     40/50/100 kg. The payload check adds O(1) arithmetic, with no extra routing or trip expansion.
     Save format 72 preserves arrival composition and carrier quotes and still converts pre-70 quantities; oversized
-    legacy shipment cargo is rejected. [Production/freight economics](economy.md#production-and-freight-economics-econ-14)
+    legacy shipment cargo is rejected. [Production/freight economics](archive/economy_history_2026-10-10.md#production-and-freight-economics-econ-14)
     remove outside purchase quotas. Quotes use cached route time (4 dispatch + 4 per round-trip
     vehicle-hour), with no additional routing for pricing. Producer reorder lots and daily-output
     export batches replace tiny hourly loads. Grain farms produce 20 kg/ha/day (7.3 t/ha/year)
@@ -668,7 +668,7 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
     (hour 2.086 → 2.050 ms; daily intervals remain broad). The fixture has one extra employed
     resident after the admission fix. Unpinned mixed-core comparisons and full limits are in the owner doc.
     The following results belong to the earlier unit-only build.
-    [Unit-only validation](economy.md#unit-and-payload-validation-econ-14): 350 Rust checks, three
+    [Unit-only validation](archive/economy_history_2026-10-10.md#unit-and-payload-validation-econ-14): 350 Rust checks, three
     growth scenarios and the Godot quantity display pass; matched 10k timings show no significant
     change. Two residential selection tests fail identically on the pre-change build and remain
     separate `DEM-02` startup/selection work.
@@ -684,8 +684,10 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
     the same rule. Grocery route checks reuse the cached walking proofs with identical results.
     The new baseline is 34.18 ms hourly and 8.60 ms daily. The first live 100k run completes
     after the `ECON-20` crash fix, but its daily workplace search grows quadratically and its
-    single border road starves industry. See the
-    [fixture record](economy.md#live-economy-fixture-econ-18-2026-10-09).
+    single border road starves industry. Job search now shares exact network legs across
+    workers and hours: 100k option building falls 28% with identical records, and the 100k
+    household hour is the main hourly cost. See the
+    [fixture record](archive/economy_history_2026-10-10.md#live-economy-fixture-econ-18-2026-10-09).
   - Use matched **10k** hourly/daily performance checks. **The 1M run is deferred** and larger
     tiers do not block this work. Existing scaling fixes (`ECON-15`, `ALLOC-02`–`ALLOC-04`,
     `ROAD-44`–`ROAD-49`, `ROAD-52`, `ECON-16`) and their measurements remain recorded in the
@@ -934,6 +936,13 @@ reopening requires a current reproduction, not an assumption that the old geomet
 | Road surface / roadbed replacement                         | [`roads.md`](roads.md)               |
 
 ## Recent Structural Changes
+
+- Docs (2026-10-10): [`economy.md`](economy.md) and [`demand.md`](demand.md) are rewritten as
+  current-state specifications. Their previous contents, including the `ECON-14`/`DEM-02`
+  diagnoses, implementation logs and dated measurements, moved verbatim to
+  [`archive/economy_history_2026-10-10.md`](archive/economy_history_2026-10-10.md) and
+  [`archive/demand_history_2026-10-10.md`](archive/demand_history_2026-10-10.md); links to dated
+  evidence now point there.
 
 - `ECON-10`: the developer economy editor is removed: its scene, scripts, Tools menu entry,
   `--economy-editor` mode, sandbox playback, scenarios, controllers and JSON export. Economy data

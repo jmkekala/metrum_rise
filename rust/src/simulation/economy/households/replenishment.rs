@@ -1602,6 +1602,7 @@ fn shopping_leg_budget_hours(
         transit_network,
         graph,
         pathfind_count,
+        None,
     )
     .unwrap_or(0);
     let travel_hours = (f64::from(travel_seconds) * 24.0 / seconds_per_day).ceil() as u16;

@@ -1,5 +1,7 @@
 # Metrum Rise — Economy and Healthy Growth
 
+> **Archived 2026-10-10.** Historical record of designs, diagnoses and measurements; statements here may be superseded. The current specification is [`economy.md`](../economy.md).
+
 ## Purpose
 
 This document owns household and business finances, production, services, trade, and the economic
@@ -9,8 +11,8 @@ by those flows after starter savings and business startup capital cease to cover
 
 Economy data is authored in `economy/profiles.toml` and checked with Rust balance tests and
 headless scenarios. There is no developer economy editor. Demand decisions belong to
-[`demand.md`](demand.md), placement legality to [`zoning.md`](zoning.md), and physical trip
-execution to [`entrance_and_exit.md`](entrance_and_exit.md).
+[`demand.md`](demand_history_2026-10-10.md), placement legality to [`zoning.md`](../zoning.md), and physical trip
+execution to [`entrance_and_exit.md`](../entrance_and_exit.md).
 
 ## Reading Guide and Status
 
@@ -253,12 +255,12 @@ cargo test --lib economy::definitions::balance_tests
 cargo test --lib economy::definitions::balance_tests::starter_ledger::starter_town_balance_sheet -- --ignored --nocapture
 ```
 
-Source: `rust/src/simulation/economy/definitions/balance_tests/starter_ledger.rs`. Local report:
-`/tmp/metrum-starter-ledger-2026-10-05.log`. This is static accounting, not a growth simulation
-or proof of the smallest viable town. It assumes level-one buildings, paid demand, steady
-inventories, sufficient workers/inputs, and imported utilities. Average authored wages match
-current payroll. Business margins include consumed inputs, payroll, property tax and utilities;
-they exclude cash-based profit tax, startup purchases and delivery interruptions.
+Source: `rust/src/simulation/economy/definitions/balance_tests/starter_ledger.rs`. This is
+static accounting, not a growth simulation or proof of the smallest viable town. It assumes
+level-one buildings, paid demand, steady inventories, sufficient workers/inputs, and imported
+utilities. Average authored wages match current payroll. Business margins include consumed
+inputs, payroll, property tax and utilities; they exclude cash-based profit tax, startup
+purchases and delivery interruptions.
 
 Tables in this initial worksheet retain the 1.75× baseline and its candidate comparisons.
 The current catalog uses 1.25× and higher service consumption; these historical worksheet
@@ -441,7 +443,7 @@ buildings selected earlier in the same pass.
 
 The `DEM-02` implementation now pairs legal housing candidates with workplace completion times
 and reserves finite workers per selected project, including queued construction and its delayed
-completion dates; [implementation status and evidence](demand.md#implementation-contract-and-progress)
+completion dates; [implementation status and evidence](demand_history_2026-10-10.md#implementation-contract-and-progress)
 remain authoritative. Employment and admission now share a recurring-sales and working-capital
 forecast; unfinished workplaces supply housing pull but no live jobs. The global export-entry
 gate is now removed: each project revalidates placed workforce and recurring sales before owner
@@ -642,7 +644,7 @@ hourly; 590.26 → 591.31 ms daily), with identical economic records; earlier re
 Construction/replacement arena growth remains unfinished. The preceding rollback/numeric
 revision passes 2,247 release library tests, all growth integrations, both reload continuations and
 the unchanged saved-town year, with only the known utility failure. See the current evidence in
-[`demand.md`](demand.md#continuation-implementation--2026-10-08).
+[`demand.md`](demand_history_2026-10-10.md#continuation-implementation--2026-10-08).
 Proposed replacement recipes now have prepared supplier entries with actual doors/prices and
 transactional output changes. CCH metric updates retain this geometry while invalidating prices
 and refreshing route bounds. The focused release suite passes 453 economy tests. Replacement
@@ -718,11 +720,11 @@ Preceding broad verification passes 2,238 library tests, all growth integrations
 continuations and the unchanged saved-town year; only the known utility assertion fails.
 Matched hourly timing still regresses 7.0255 → 7.8825 ms (+12.199%); daily timing has no significant
 change and complete economic records match. The evidence and its validation boundary are maintained in
-[`demand.md`](demand.md#continuation-implementation--2026-10-08).
+[`demand.md`](demand_history_2026-10-10.md#continuation-implementation--2026-10-08).
 Owner receipts and cached directed pedestrian proofs now pass final focused checks: 430 economy,
 23 pathing and 25 save tests, both reload continuations and the unchanged saved-town year.
 That historical matched 10k hourly cost increases 5.7515 → 6.4500 ms (+12.1%);
-this regression remains open. See the [continuation work](demand.md#continuation-implementation--2026-10-08)
+this regression remains open. See the [continuation work](demand_history_2026-10-10.md#continuation-implementation--2026-10-08)
 for remaining work and the distinction between final focused and earlier full-suite evidence.
 Funded-buyer closure, cyclic local chains and replacement output publication are implemented;
 complete market and performance acceptance remain open under `DEM-02`. Physical dispatch
@@ -736,7 +738,7 @@ match. A separate physical-execution benchmark places 1,024 import-backed factor
 excluding setup and first-check preparation, while verifying every placement and 13,414,400
 owner equity. Populated local-market and full-redesign scaling remain open.
 Validation evidence belongs in the
-[demand contract](demand.md#implementation-contract-and-progress).
+[demand contract](demand_history_2026-10-10.md#implementation-contract-and-progress).
 
 The growth HUD now reads cached hourly decisions instead of normalized pressure. It shows exact
 selected/queued/constructing counts and housing, asset, site, customer, income and labour constraints.
@@ -935,20 +937,17 @@ This is the authored default for economy balancing. Clock construction uses vali
 Trip estimators return physical travel seconds. The schedule cache converts those to operational
 minutes using the live world's day duration; refresh intervals make the inverse conversion before
 being added to physical agent simulation time. Employment ranking continues to use physical seconds.
-Agent movement and scheduling borrow the same `TimeSystem` for date, minute and conversion rate.
-The saved day duration remains authoritative when current tuning changes (`AUDIT-01-A2`);
-configuration supplies the default for new worlds and the authored schedule/refresh intervals.
-`AUDIT-01-A1` covers half, default and double day durations, including departure marks and refresh
-deadlines. Five matched release process pairs (`benchmark_commute_cache_recording --ignored
---nocapture`, 24 Rayon workers, 11 samples of one million recordings) measure about 1.00 ms before
-and 2.13–2.22 ms after the correction. This periodic O(1) arithmetic adds no allocation; it does not
-measure route-search cost. Identities and raw logs are under `/tmp/metrum-full-audit/clock-*`.
-The later live-clock ownership correction measures 2.172–2.178 → 2.409–2.425 ms per million
-recordings in five CPU-0 matched release pairs. Full farm tick comparisons retain comparable
-cost at 1,000/10,000/100,000 agents; 24-worker runs are noisy, while three CPU-0/one-worker
-pairs give 1.375/1.775 → 1.322/1.717 ms for 100,000 idle/working agents. These are
-movement-only fixtures with no route search, not whole-city economy timings; commands,
-source/binary identities and raw logs are under `/tmp/metrum-full-audit/live-clock-*`.
+Agent movement and scheduling borrow the same `TimeSystem` for date, minute and conversion rate. The
+saved day duration remains authoritative when current tuning changes (`AUDIT-01-A2`); configuration
+supplies the default for new worlds and the authored schedule/refresh intervals. `AUDIT-01-A1`
+covers half, default and double day durations, including departure marks and refresh deadlines. Five
+matched release process pairs (`benchmark_commute_cache_recording --ignored --nocapture`, 24 Rayon
+workers, 11 samples of one million recordings) measure about 1.00 ms before and 2.13–2.22 ms after
+the correction. This periodic O(1) arithmetic adds no allocation; it does not measure route-search
+cost. The later live-clock ownership correction measures 2.172–2.178 → 2.409–2.425 ms per million
+recordings in five CPU-0 matched release pairs. Full farm tick comparisons retain comparable cost at
+1,000/10,000/100,000 agents; 24-worker runs are noisy, while three CPU-0/one-worker pairs give
+1.375/1.775 → 1.322/1.717 ms for 100,000 idle/working agents.
 
 ### Why this scale is the target
 
@@ -1022,17 +1021,14 @@ Five matched process pairs on eight physical P cores (`RAYON_NUM_THREADS=8`, aff
 | 100,000 | 0.581686 | 0.090967 |
 | 1,000,000 | 5.831440 | 0.893865 |
 
-The 24-worker million-agent median improves 5.820677 → 0.649441 ms. The accepted tradeoff is
-roughly 3–11 microseconds of extra daily work in the small physical-core fixtures and about 16%
-overhead in the CPU-0/one-worker million-agent case (5.844838 → 6.762297 ms). These results concern
-one daily state pass, not the full daily settlement or frame time. Initial fine-grained dispatch
-was substantially worse for small collections and is retained only as diagnostic evidence.
-The benchmark uses minimal agent SoA setup, a fixed pollution field, three warmups and 21 samples
-of eight updates, resetting happiness outside timing. Command: the recorded test binary with
-`--exact simulation::economy::agents::daily::tests::benchmark_daily_agent_update --ignored --nocapture`.
-Identities, commands and raw measurements are under `/tmp/metrum-full-audit/environment-*`;
-final comparisons are `environment-zipped-matched-bench.json` and
-`environment-physical-matched-bench.json`.
+The 24-worker million-agent median improves 5.820677 → 0.649441 ms. The accepted tradeoff is roughly
+3–11 microseconds of extra daily work in the small physical-core fixtures and about 16% overhead in
+the CPU-0/one-worker million-agent case (5.844838 → 6.762297 ms). These results concern one daily
+state pass, not the full daily settlement or frame time. Initial fine-grained dispatch was
+substantially worse for small collections and is retained only as diagnostic evidence. The benchmark
+uses minimal agent SoA setup, a fixed pollution field, three warmups and 21 samples of eight
+updates, resetting happiness outside timing. Command: the recorded test binary with `--exact
+simulation::economy::agents::daily::tests::benchmark_daily_agent_update --ignored --nocapture`.
 
 Deterministic hourly-demand rule:
 
@@ -1217,7 +1213,7 @@ Buildings own the money used for production and operations.
 
 - sellers receive revenue when households or other buildings buy goods
 - workplaces pay wages and operating costs
-- **Funded hiring**: Employment and admission share the maximum workforce whose forecast recurring sales cover operating expenses and whose cash, stock and unsettled freight assets cover working capital. A normal inventory purchase or payroll settlement therefore does not erase jobs solely by moving cash. Owner equity supplies capital, never sales. Unfinished and inactive private employers advertise no live jobs; city services use their explicit funding limit. Daily payroll pays at most that same census capacity, bounded by the current physical workplace; service stores and explicit work areas release workers above it, power funding changes shed to the same fiscal ceiling, and other unpaid workers leave after two days (`ECON-17`). See the current [implementation and remaining market constraints](demand.md#implementation-contract-and-progress).
+- **Funded hiring**: Employment and admission share the maximum workforce whose forecast recurring sales cover operating expenses and whose cash, stock and unsettled freight assets cover working capital. A normal inventory purchase or payroll settlement therefore does not erase jobs solely by moving cash. Owner equity supplies capital, never sales. Unfinished and inactive private employers advertise no live jobs; city services use their explicit funding limit. Daily payroll pays at most that same census capacity, bounded by the current physical workplace; service stores and explicit work areas release workers above it, power funding changes shed to the same fiscal ceiling, and other unpaid workers leave after two days (`ECON-17`). See the current [implementation and remaining market constraints](demand_history_2026-10-10.md#implementation-contract-and-progress).
 - non-residential utility consumption and sewage-management charges should count as building operating cost in `v0.1`
 - utility-producing or utility-processing buildings are normal economic operators that earn service revenue from those utility charges
 - city-owned service buildings are the municipal exception: their wages and placement costs are paid by the city treasury, and their local utility fees deposit into the treasury rather than into the building operating budget
@@ -1532,7 +1528,7 @@ for the starter fixture. Startup grants alone are not evidence of viability.
 
 This section uses `startup economy` to mean early-city money, inventories, freight, and `OWA` support. It does not own any special fresh-map building-placement exception, and it does not own the demand-side decision about whether new households should be admitted.
 
-[`docs/demand.md`](demand.md) owns whether the city admits households at all and how many it admits. This document owns the startup money, inventories, freight, and runtime consequences once those households already exist.
+[`docs/demand.md`](demand_history_2026-10-10.md) owns whether the city admits households at all and how many it admits. This document owns the startup money, inventories, freight, and runtime consequences once those households already exist.
 
 ### Outside World Exchange (`OWA`)
 
@@ -1565,9 +1561,9 @@ Shared outside-gateway boundary:
 - that shared physical gateway should not collapse freight and household movement into one logic
   path
 - `OWA` still owns external goods and utility-service exchange
-- [`docs/entrance_and_exit.md`](entrance_and_exit.md) should own any later household
+- [`docs/entrance_and_exit.md`](../entrance_and_exit.md) should own any later household
   `OutsideGateway` arrival or departure trip semantics
-- [`docs/demand.md`](demand.md) still owns whether households are admitted or removed at all
+- [`docs/demand.md`](demand_history_2026-10-10.md) still owns whether households are admitted or removed at all
 
 ### Border connections and physical freight
 
@@ -1616,7 +1612,7 @@ buyers.
 Daily demand snapshots read business and utility `OWA` input reliance as import-substitution pressure for
 industrial growth. That pressure is diagnostic of actual outside-input use; industrial spawn
 quantity reserves local customer capacity, while export-led openings use the staged operating-viability gate in
-[`demand.md`](demand.md).
+[`demand.md`](demand_history_2026-10-10.md).
 
 Exports sell surplus to outside buyers without a fixed quantity ceiling. When an industrial building's
 unreserved output inventory exceeds a **one-day production buffer** after local input holds and
@@ -1650,7 +1646,7 @@ local input holds preserve priority for reachable local buyers.
 
 ### Household admission and removal handoff
 
-Household admission and removal affect labor supply, consumption, service load, and business viability, but the city-level decision about whether that change should happen belongs to [`docs/demand.md`](demand.md), not to this document.
+Household admission and removal affect labor supply, consumption, service load, and business viability, but the city-level decision about whether that change should happen belongs to [`docs/demand.md`](demand_history_2026-10-10.md), not to this document.
 
 For `v0.1`, the economy-side contract is:
 
@@ -1680,8 +1676,8 @@ Cross-system rule:
 
 - this document owns whether a household can afford to stay in its current home
 - this document owns household-side relocation between vacant homes inside the city
-- [`docs/demand.md`](demand.md) owns whether a household ultimately leaves the city
-- [`docs/zoning.md`](zoning.md) owns what buildings and levels are legally allowed on the site if
+- [`docs/demand.md`](demand_history_2026-10-10.md) owns whether a household ultimately leaves the city
+- [`docs/zoning.md`](../zoning.md) owns what buildings and levels are legally allowed on the site if
   later redevelopment happens
 
 Important `v0.1` rule:
@@ -1744,13 +1740,13 @@ Current live note:
   including both cash reload checks; only the existing utility quantity assertion fails. The
   saved-town year and growth reports are unchanged. Matched 10k timing shows no significant
   change, and 128 rehousing claims stay near 0.02 ms through 65,536 unrelated vacant homes;
-  see [the validation evidence](demand.md#outputs).
+  see [the validation evidence](demand_history_2026-10-10.md#outputs).
 - future-home workforce reservations apply the same individual relocation thresholds before
   crediting incoming workers. Displaced residents reserve physical household places, contributing
   only their actual unemployed adults; households with no available workers still consume a
   place. Post-employment money synchronization refreshes household employment counts from current
   agent assignments, so unhoused employees do not erase housed unemployed adults. See the
-  [future-home accounting and validation](demand.md#outputs).
+  [future-home accounting and validation](demand_history_2026-10-10.md#outputs).
 
 Eviction and unhoused rule:
 
@@ -1778,11 +1774,10 @@ on a later ring still participate in the building-ID tie-break.
 Matched unprofiled release measurements used `RAYON_NUM_THREADS=24 cargo test --offline
 --manifest-path rust/Cargo.toml --release --lib benchmark_housing_chunk_bounds -- --ignored
 --nocapture`, 11 samples of 1,000 bound queries, without concurrent compilation or Godot work.
-Median microseconds/query before → after: radius 8 `0.302 → 0.161`, 32 `4.954 → 0.639`,
-80 `28.543 → 1.590`, 128 `71.441 → 2.541`. This measures the chunk-distance bound, not city FPS.
-Source identities, baseline diff and logs are under `/tmp/metrum-full-audit/housing-*`.
-The household suite freshly passes 102 tests (3 manual benchmarks ignored), including pre/post-pickup
-eviction accounting and cross-ring distance ties; whole-codebase audit validation remains ongoing.
+Median microseconds/query before → after: radius 8 `0.302 → 0.161`, 32 `4.954 → 0.639`, 80 `28.543 →
+1.590`, 128 `71.441 → 2.541`. This measures the chunk-distance bound, not city FPS. The household
+suite freshly passes 102 tests (3 manual benchmarks ignored), including pre/post-pickup eviction
+accounting and cross-ring distance ties; whole-codebase audit validation remains ongoing.
 
 Household-removal index repair now composes chained swap moves and updates surviving agents once
 in parallel: O(A + R) household-reference work and O(R) temporary mappings for A agents and R
@@ -1793,15 +1788,14 @@ shopper's household reference immediately in O(1), preserving the active shoppin
 Matched unprofiled release removal measurements used `RAYON_NUM_THREADS=24 cargo test --offline
 --manifest-path rust/Cargo.toml --release --lib benchmark_household_removal -- --ignored
 --nocapture`, seven samples per size, 256 removed households and one resident per household.
-Setup is excluded. Median milliseconds before → after: 1,024 households `1.547 → 0.113`,
-8,192 `14.185 → 0.394`, 65,536 `116.395 → 2.535`. These fixtures have no freight orders;
-they measure selection/removal and household-ID repair, not all possible emigration workloads.
-Logs and pre-change source copies are under `/tmp/metrum-full-audit/removal-*`.
+Setup is excluded. Median milliseconds before → after: 1,024 households `1.547 → 0.113`, 8,192
+`14.185 → 0.394`, 65,536 `116.395 → 2.535`. These fixtures have no freight orders; they measure
+selection/removal and household-ID repair, not all possible emigration workloads.
 
 Deterministic household-removal selection:
 
 1. Demand counts households satisfying `HouseholdExitPolicy` after relocation and eviction, then
-   applies the explicit daily departure fraction/cap described in [demand outputs](demand.md#outputs).
+   applies the explicit daily departure fraction/cap described in [demand outputs](demand_history_2026-10-10.md#outputs).
 2. Execution rechecks that same policy against live state. A household must still be unhoused and
    past either the destitution delay or the maximum rehousing period. Housed households never qualify.
 3. Eligible households are ranked by lower essential cash reserve days, then lower pantry days,
@@ -1831,7 +1825,7 @@ The demand system should track aggregated pressures such as:
 - unmet goods or service demand
 - broad city stability signals that other systems consume
 
-This layer should operate mostly on coarse aggregate data rather than per-agent decision logic. The detailed city-growth and migration-pressure contract belongs in [`docs/demand.md`](demand.md).
+This layer should operate mostly on coarse aggregate data rather than per-agent decision logic. The detailed city-growth and migration-pressure contract belongs in [`docs/demand.md`](demand_history_2026-10-10.md).
 
 Important scope note:
 
@@ -1873,9 +1867,9 @@ Demand pressure alone must not be enough to level a building up.
 
 Cross-system rule:
 
-- [`docs/demand.md`](demand.md) decides whether a building is under enough sustained pressure to be
+- [`docs/demand.md`](demand_history_2026-10-10.md) decides whether a building is under enough sustained pressure to be
   eligible for upgrade or downgrade
-- [`docs/zoning.md`](zoning.md) decides which next level is legal inside the current
+- [`docs/zoning.md`](../zoning.md) decides which next level is legal inside the current
   `upgrade_family` and zone profile
 - this document decides whether that legal next level is economically viable
 
@@ -2340,7 +2334,7 @@ paid revenue. Bulk-input payment days do not erase recovered reserves. Candidate
 imported inputs, utility/property bills and minimum dispatch cost. Actual route costs then
 matter through cash recovery. This is a bounded expansion rule, not a private investment market:
 new sites still receive the existing explicit owner-equity grant. Broader demand simplification
-and investor financing remain separate work. See [`demand.md`](demand.md).
+and investor financing remain separate work. See [`demand.md`](demand_history_2026-10-10.md).
 
 The producer worksheet uses full staffing, paid export sales, imported inputs/utilities,
 level-one industrial property tax of 35/day and 10% tax on positive steady cash margins. It
@@ -2397,25 +2391,24 @@ operating surplus but cannot repay construction before exhaustion even on the ne
 The 4 ha mine's near-route payback fits that resource life. This remains an investment warning,
 not a claim that every positive operating margin is a sensible placement.
 
-Fresh worksheet: `cargo test --manifest-path rust/Cargo.toml --release --lib producer_balance_sheet -- --ignored --nocapture`,
-artifact `/tmp/metrum-farm-cap-ledger.log`. Fresh physical and performance validation follows.
-No previous capped-market timing validates this build.
+Fresh physical and performance validation follows. No previous capped-market timing validates this
+build.
 
 **Corrected farm/minimum-area validation, 2026-10-06.** Fresh release checks pass: **395 tests**
 across economy, work-area staffing, agriculture, saves, field preview/edit/load/undo, diagnostics
-and producer cash flow (32 manual checks ignored). Log `/tmp/metrum-farm-final-tests.log`.
-The new minimum regression checks rejected preview/commit/resize, unchanged budgets/geometry
-and acceptance at exactly 40,000 m². Tests also cover the six-worker ceiling through hiring,
-payroll, production and reconstructed area state. Test build uses eight Rayon workers and
-`-C target-cpu=x86-64-v2`; performance comparisons below explicitly match baseline flags.
+and producer cash flow (32 manual checks ignored). The new minimum regression checks rejected
+preview/commit/resize, unchanged budgets/geometry and acceptance at exactly 40,000 m². Tests also
+cover the six-worker ceiling through hiring, payroll, production and reconstructed area state.
+Test build uses eight Rayon workers and `-C target-cpu=x86-64-v2`; performance comparisons below
+explicitly match baseline flags.
 
 Fresh physical experiment: `RAYON_NUM_THREADS=8 METRUM_BALANCE_DAYS=730
-METRUM_BALANCE_REPORT_DIR=/tmp/metrum-farm-minimum-producers-730 cargo test --release --lib
-producer_balance_matrix -- --ignored --nocapture`. The actual run used the compiled release test
-executable with these same arguments and environment. Log `/tmp/metrum-farm-minimum-matrix.log`;
-daily reports are in the stated directory. Each case receives its **one-time declared city
-construction endowment before observation**. Initial private capital is recorded separately;
-no later producer capital is added, and operating changes exclude startup cash.
+METRUM_BALANCE_REPORT_DIR=$ARTIFACTS/metrum-farm-minimum-producers-730 cargo test --release
+--lib producer_balance_matrix -- --ignored --nocapture`. The actual run used the compiled
+release test executable with these same arguments and environment. Each case receives its
+**one-time declared city construction endowment before observation**. Initial private capital is
+recorded separately; no later producer capital is added, and operating changes exclude startup
+cash.
 
 | Grain farm | Physical jobs | Operating cash change, 730 days | Final 90 days | Farm bankruptcies | City residents at end | City empty-household-days, year 2 / final 90 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -2456,22 +2449,13 @@ remain broad; no speedup or tight regression bound is claimed. The isolated 10k-
 check also passes (21 samples; density 3.60 ns/query, capped grain 1.99 ns/query), with no
 allocation in the calculation. That microbenchmark is not a city timing comparison.
 
-Commands: `RAYON_NUM_THREADS=8 CRITERION_HOME=/tmp/metrum-freight-perf
-/tmp/metrum-freight-before-bench /10k --save-baseline before --bench`, then the compiled
-`economy_tick_benchmark-72225520980149bf /10k --baseline before --bench` with the same environment.
-Logs: `/tmp/metrum-freight-perf-before.log`, `/tmp/metrum-farm-perf-after.log`,
-`/tmp/metrum-farm-cap-microbench.log`. Benchmark SHA-256 before
-`c7331b86c41889071edd35c3420d3466d95bf1cb4180cfac1017043d14f85f6d`; after
-`95d6f45c7c885986a5df9d39ab1b340db31eacbcb1f2970d061676971c45ef7b`.
-Changes/source hashes: `/tmp/metrum-farm-final.patch`, `/tmp/metrum-farm-final-identity.txt`;
-before snapshot `/tmp/metrum-freight-start/`. The corrected extension is deployed to
-`godot/bin/libmetrum_rise.so`; isolated headless `field_edit_tool_test.gd` and
-`economy_machinery_test.gd` both pass, including the minimum-area error during drawing.
-Logs: `/tmp/metrum-farm-godot-field.log`, `/tmp/metrum-farm-godot-economy.log`.
-`cargo doc --no-deps` completes with no missing-doc warnings; its existing unrelated
-`VegetationGenerator` link warning remains (`/tmp/metrum-farm-rustdoc.log`). Targeted source
-format checks and `git diff --check` pass; unrelated pre-existing formatter differences in
-asset-authoring code were left untouched.
+Benchmark SHA-256 before `c7331b86c41889071edd35c3420d3466d95bf1cb4180cfac1017043d14f85f6d`; after
+`95d6f45c7c885986a5df9d39ab1b340db31eacbcb1f2970d061676971c45ef7b`. The corrected extension is
+deployed to `godot/bin/libmetrum_rise.so`; isolated headless `field_edit_tool_test.gd` and
+`economy_machinery_test.gd` both pass, including the minimum-area error during drawing. `cargo doc
+--no-deps` completes with no missing-doc warnings; its existing unrelated `VegetationGenerator`
+link warning remains. Targeted source format checks and `git diff --check` pass; unrelated
+pre-existing formatter differences in asset-authoring code were left untouched.
 
 **Shopping delivery acknowledgement repair, 2026-10-06.** The physical 100 ha farm trace
 found a paid shopper arriving home at 04:24, then leaving for work in the next frame before
@@ -2484,9 +2468,8 @@ Travel-aware cached departure minutes remain authoritative; they are not rounded
 
 Fresh release tests: **343 economy tests pass**, including due-departure suppression at home
 and work, multi-frame arrival purpose, delivery accounting and the existing commute-clock
-regressions (`/tmp/metrum-shopping-tests.log`). The physical 730-day matrix completes and
-reconciles accounting (`/tmp/metrum-shopping-matrix.log`, daily reports in
-`/tmp/metrum-shopping-producers-730/`). Producer initial capital remains separate from sales.
+regressions. The physical 730-day matrix completes and reconciles accounting. Producer
+initial capital remains separate from sales.
 
 | Grain farm | Operating cash change, 730 days | Final 90 days | Residents at end | City empty-household-days, year 2 / final 90 |
 | --- | ---: | ---: | ---: | ---: |
@@ -2504,12 +2487,11 @@ mine towns (19/18/60 empty-household-days).
 The ordinary village still fails healthy-city acceptance: **243 second-year empty-household-days**,
 60 in the final quarter, with 98 residents and 72 employed at the end. Every business-profile
 survival/cash assertion passes before that failure; concurrent-year determinism and observer
-neutrality also pass (**2/3 integration tests pass**, `/tmp/metrum-shopping-growth.log`). The final
-short household has an unemployed adult and elder, no home, and pension income insufficient
-for two people's supplies. Admission still validates one preview for an entire batch, does not
-reserve funded work for incoming carriers, and recomputes household composition after arrival.
-Those were separate admission/lifecycle defects under `DEM-02`; this delivery fix did not
-establish healthy-city acceptance. Report: `/tmp/metrum-shopping-village-730.txt`.
+neutrality also pass. The final short household has an unemployed adult and elder, no home, and
+pension income insufficient for two people's supplies. Admission still validates one preview for an
+entire batch, does not reserve funded work for incoming carriers, and recomputes household
+composition after arrival. Those were separate admission/lifecycle defects under `DEM-02`; this
+delivery fix did not establish healthy-city acceptance.
 
 Fresh performance for this repair uses eight Rayon workers, empty Rust flags, sequential
 unprofiled release binaries and no concurrent CPU jobs. The matched 10k economy fixture is
@@ -2532,30 +2514,26 @@ at 10k; no larger tier runs.
 ```bash
 RUSTFLAGS='' CARGO_ENCODED_RUSTFLAGS='' cargo bench --manifest-path rust/Cargo.toml \
   --bench agent_benchmark --bench economy_tick_benchmark --no-run
-RAYON_NUM_THREADS=8 CRITERION_HOME=/tmp/metrum-shopping-perf \
-  /tmp/metrum-shopping-before-bench /10k --save-baseline before --bench
-RAYON_NUM_THREADS=8 CRITERION_HOME=/tmp/metrum-shopping-perf \
-  rust/target/release/deps/economy_tick_benchmark-72225520980149bf /10k --baseline before --bench
-RAYON_NUM_THREADS=8 CRITERION_HOME=/tmp/metrum-shopping-perf \
-  rust/target/release/deps/agent_benchmark-b9c3c532dd72f3b3 \
+RAYON_NUM_THREADS=8 CRITERION_HOME=$ARTIFACTS/metrum-shopping-perf \
+  $ARTIFACTS/metrum-shopping-before-bench /10k --save-baseline before --bench
+RAYON_NUM_THREADS=8 CRITERION_HOME=$ARTIFACTS/metrum-shopping-perf \
+  $BENCH_BINARY /10k --baseline before --bench
+RAYON_NUM_THREADS=8 CRITERION_HOME=$ARTIFACTS/metrum-shopping-perf \
+  $BENCH_BINARY \
   'indoor_(schedule|shopping)/10000$' --bench
 ```
 
-Artifacts: `/tmp/metrum-shopping-perf-{before,after}.log`,
-`/tmp/metrum-shopping-indoor-perf.log`, `/tmp/metrum-shopping-bench-build.log`,
-`/tmp/metrum-shopping-final.patch` and `/tmp/metrum-shopping-final-identity.txt`.
 Economy binary SHA-256 before `95d6f45c7c885986a5df9d39ab1b340db31eacbcb1f2970d061676971c45ef7b`,
-after `80e7ea40efbfa5c94860c97ec3320cd9abe9c2b6f84804c51c02906a2fb1b2ca`;
-indoor benchmark `f8bfae54bb5f14f939b3307f119e59545b2f83355ec62bc0f0779fee0e61a1aa`.
-Catalog is unchanged between these matched runs:
-`a30680e6f8cde47bc36db89e704e9946cb189610564145cf5eb48205e4cad2f7`.
+after `80e7ea40efbfa5c94860c97ec3320cd9abe9c2b6f84804c51c02906a2fb1b2ca`; indoor benchmark
+`f8bfae54bb5f14f939b3307f119e59545b2f83355ec62bc0f0779fee0e61a1aa`. Catalog is unchanged between
+these matched runs: `a30680e6f8cde47bc36db89e704e9946cb189610564145cf5eb48205e4cad2f7`.
 
 **Admission and continued growth repair, 2026-10-06.** The admission batch now consumes finite
 recurring-income capacity per actual family, reserves adults and transfer claims while carriers
 travel, and preserves approved composition through arrival ordering and save/load (format 72).
 This adds O(1) arithmetic per bounded candidate and per pending carrier in the existing scan,
 with two u16 fields per agent and no new route search. It reserves aggregate wage opportunities;
-ordinary reachable-work search still chooses an employer. See [the admission contract](demand.md).
+ordinary reachable-work search still chooses an employer. See [the admission contract](demand_history_2026-10-10.md).
 
 The first reservation run exposed two further growth stalls. Bulk-input purchases put otherwise
 profitable factories on alternating cash-negative days, so export expansion now requires earned
@@ -2566,14 +2544,13 @@ hours; the same seed feeds preview and launch, and load derives it from the save
 families still fail the same affordability test. Cached commute-aware departure timing is unchanged.
 
 Fresh physical village validation passes **all three integration tests**, including concurrent-year
-determinism and observer neutrality (`/tmp/metrum-applicants-growth.log`). The two-year town grows
-from **114 residents / 88 employed** at year one to **156 / 119**, with 83 households at the end.
-Grocery, food processor, machinery factory, barber and pharmacy profiles all have zero bankruptcies
-and zero replacement startup cash. All have positive operating cash in year two and the final
-quarter. There are **zero empty-household-days in year two** and zero unpaid eligible transfers.
-City recurring surplus is **+787,656 in year two**, **+205,124 in the final quarter**; the treasury
-stays positive. Private construction equity is recorded separately from operating cash.
-Report: `/tmp/metrum-applicants-village-730.txt` (one-year report alongside it).
+determinism and observer neutrality. The two-year town grows from **114 residents / 88 employed**
+at year one to **156 / 119**, with 83 households at the end. Grocery, food processor, machinery
+factory, barber and pharmacy profiles all have zero bankruptcies and zero replacement startup cash.
+All have positive operating cash in year two and the final quarter. There are **zero
+empty-household-days in year two** and zero unpaid eligible transfers. City recurring surplus is
+**+787,656 in year two**, **+205,124 in the final quarter**; the treasury stays positive. Private
+construction equity is recorded separately from operating cash.
 
 | Business profile | Year-two operating cash | Final 90 days |
 | --- | ---: | ---: |
@@ -2583,12 +2560,11 @@ Report: `/tmp/metrum-applicants-village-730.txt` (one-year report alongside it).
 | Personal service / barber | +35,533 | +9,999 |
 | Health essentials / pharmacy | +44,872 | +12,048 |
 
-The fresh 730-day producer matrix completes and reconciles accounting for all nine cases
-(`/tmp/metrum-applicants-matrix.log`, reports `/tmp/metrum-applicants-producers-730/`). Every grain
-farm survives with no bankruptcy or replacement capital, and every farm town has zero
+The fresh 730-day producer matrix completes and reconciles accounting for all nine cases. Every
+grain farm survives with no bankruptcy or replacement capital, and every farm town has zero
 empty-household-days in year two and the final quarter. City final-quarter recurring finances are
-positive in all nine scenarios. Explicit producer construction is charged before observation;
-the diagnostic supplies that one-time infrastructure endowment and no later rescue capital.
+positive in all nine scenarios. Explicit producer construction is charged before observation; the
+diagnostic supplies that one-time infrastructure endowment and no later rescue capital.
 
 | Grain farm | Operating cash, 730 days | Final 90 days | Residents / employed at end |
 | --- | ---: | ---: | ---: |
@@ -2610,11 +2586,11 @@ an exhausted deposit or guarantee jobs. The passing matrix test asserts reconcil
 universal solvency or household supply.
 
 Fresh targeted release validation: **392 tests pass**, covering economy, save/load, allocator
-lifecycle and field placement (`/tmp/metrum-applicants-tests.log`). New regressions cover finite
-batch claims, pending worker/benefit reservations, approved composition through reversed arrival
-order and save migration, continued applicants after rejection, and export expansion across
-bulk-input cash days. `cargo doc --no-deps` completes with no missing-doc warnings; its unrelated
-existing `VegetationGenerator` link warning remains (`/tmp/metrum-applicants-rustdoc.log`).
+lifecycle and field placement. New regressions cover finite batch claims, pending worker/benefit
+reservations, approved composition through reversed arrival order and save migration, continued
+applicants after rejection, and export expansion across bulk-input cash days. `cargo doc
+--no-deps` completes with no missing-doc warnings; its unrelated existing `VegetationGenerator`
+link warning remains.
 
 Fresh performance uses sequential unprofiled release binaries, empty `RUSTFLAGS` and
 `CARGO_ENCODED_RUSTFLAGS`, and eight Rayon workers. Unrestricted scheduling on this mixed-core
@@ -2644,31 +2620,25 @@ All performance filters remain at 10k; no larger tier was run.
 ```bash
 RUSTFLAGS='' CARGO_ENCODED_RUSTFLAGS='' cargo bench --manifest-path rust/Cargo.toml \
   --bench economy_tick_benchmark --bench agent_benchmark --no-run
-RAYON_NUM_THREADS=8 CRITERION_HOME=/tmp/metrum-applicants-perf-pinned \
-  taskset -c 0,2,4,6,8,10,12,14 /tmp/metrum-admission-before-bench \
+RAYON_NUM_THREADS=8 CRITERION_HOME=$ARTIFACTS/metrum-applicants-perf-pinned \
+  taskset -c 0,2,4,6,8,10,12,14 $ARTIFACTS/metrum-admission-before-bench \
   /10k --save-baseline before --bench
-RAYON_NUM_THREADS=8 CRITERION_HOME=/tmp/metrum-applicants-perf-pinned \
+RAYON_NUM_THREADS=8 CRITERION_HOME=$ARTIFACTS/metrum-applicants-perf-pinned \
   taskset -c 0,2,4,6,8,10,12,14 \
-  rust/target/release/deps/economy_tick_benchmark-72225520980149bf \
+  $BENCH_BINARY \
   /10k --baseline before --bench
-RAYON_NUM_THREADS=8 CRITERION_HOME=/tmp/metrum-applicants-perf \
-  rust/target/release/deps/agent_benchmark-b9c3c532dd72f3b3 \
+RAYON_NUM_THREADS=8 CRITERION_HOME=$ARTIFACTS/metrum-applicants-perf \
+  $BENCH_BINARY \
   'indoor_(schedule|shopping)/10000$' --bench
 ```
 
-Logs: `/tmp/metrum-applicants-perf-{before,after}.log`,
-`/tmp/metrum-applicants-perf-repeat-{before,after}.log`,
-`/tmp/metrum-applicants-perf-pinned-{before,after}.log`,
-`/tmp/metrum-applicants-indoor-perf.log`; Criterion directories share these prefixes.
 Build base is `c51973df97a94fa9c9e7b2182be223dec9a512fd` plus the recorded dirty-tree patch.
-Before binary SHA-256 `80e7ea40efbfa5c94860c97ec3320cd9abe9c2b6f84804c51c02906a2fb1b2ca`;
-after `5f48f9f9743a3164ea8af8c67b383a44db80ad62f56b0af251c4120dc86f1f41`;
-indoor `ee88a68aa8cbd71f5ebf6736a77507f8add5674b55158eb75905f9477cd0a74a`.
-Catalog hash stays `a30680e6f8cde47bc36db89e704e9946cb189610564145cf5eb48205e4cad2f7`.
-Source identity: `/tmp/metrum-applicants-final.patch`, `/tmp/metrum-applicants-final-identity.txt`
-and the three new Rust files copied beside them. The before sources are the shopping-repair
-artifacts listed above. Rust checks are fresh for this repair; Godot UI checks and deployment
-described earlier belong to their earlier builds.
+Before binary SHA-256 `80e7ea40efbfa5c94860c97ec3320cd9abe9c2b6f84804c51c02906a2fb1b2ca`; after
+`5f48f9f9743a3164ea8af8c67b383a44db80ad62f56b0af251c4120dc86f1f41`; indoor
+`ee88a68aa8cbd71f5ebf6736a77507f8add5674b55158eb75905f9477cd0a74a`. Catalog hash stays
+`a30680e6f8cde47bc36db89e704e9946cb189610564145cf5eb48205e4cad2f7`. The before sources are the
+shopping-repair artifacts listed above. Rust checks are fresh for this repair; Godot UI checks and
+deployment described earlier belong to their earlier builds.
 
 ### 1. Resource Types
 
@@ -3095,6 +3065,18 @@ seconds of every routed pair, are therefore identical to an exhaustive search.
 `commute_bounds.rs` checks this on more than 10,000 home-job pairs. Workplace access terms are
 computed once per job snapshot, and home terms once per home.
 
+Network legs are shared across workers and hours (2026-10-10). Door, frontage and live
+congestion terms are recomputed for every routed pair, but the road-network leg between its two
+lane ends depends only on those lanes and nodes and on the CCH build, metric and lane count. A
+car leg is priced with the cost-only CCH query. A walking leg still needs its path, because the
+pedestrian connector check reads it. The household system keeps these legs in one table
+(`SharedNetworkQuotes`), shared by every job-search worker. The table is emptied when that
+revision changes, and dropped daily with the workplace route cache. Commute seconds, rankings
+and assignments are unchanged; `commute_bounds.rs` compares bounded estimates that read the table
+with exhaustive ones that do not. A home's ranked options are not reused between hours: car
+commutes include live frontage delays, and at 100k the set of open employers turns over almost
+completely every hour ([measurement](demand_history_2026-10-10.md#growth-redesign-dem-02)).
+
 Recommended seed weights for the first implementation:
 
 - `w_income = 0.35`
@@ -3222,20 +3204,18 @@ This keeps goods visible in traffic without adding a second movement stack.
 
 The `AUDIT-01` return-clock/identity fix adds O(1) allocation-free work per active shipment.
 Five alternating unprofiled release process pairs, 24 Rayon workers, 11 × 16 progression calls
-per size, measured 65,536 active returns at median `0.335 → 0.399 ms` per logistics pass.
-This isolates progression with no arrivals/removals or route planning. The additional 0.064 ms
-buys the missing bounded lifecycle; it does not establish cleanup-batch scaling. Before/after
-executables, hashes and raw runs are under `/tmp/metrum-full-audit/carrier-*`.
+per size, measured 65,536 active returns at median `0.335 → 0.399 ms` per logistics pass. This
+isolates progression with no arrivals/removals or route planning. The additional 0.064 ms buys
+the missing bounded lifecycle; it does not establish cleanup-batch scaling.
 
 Carrier swap repair uses the moved agent's stable shipment ID and binary-searches the existing
 ordered shipment vector. Appends, retention, SQLite load and undo preserve ID order; undo stores
-jobs without a duplicate historical vector index. Repair is O(1) for a moved resident and
-O(log S) for a moved freight carrier, with no new index or allocation. Five alternating release
-process pairs (24 Rayon workers, 11 samples of 256 repairs, setup/SoA removal excluded) measured
-1,024 / 8,192 / 65,536 shipments at median `0.155 / 0.560 / 12.413 ms` before and
-`0.004 / 0.005 / 0.005 ms` after. Exact sources, executables, hashes and raw runs:
-`/tmp/metrum-full-audit/carrier-remap-*`. Actual cleanup regressions also exercise mixed resident
-and freight swap moves with noncontiguous shipment IDs.
+jobs without a duplicate historical vector index. Repair is O(1) for a moved resident and O(log
+S) for a moved freight carrier, with no new index or allocation. Five alternating release process
+pairs (24 Rayon workers, 11 samples of 256 repairs, setup/SoA removal excluded) measured 1,024 /
+8,192 / 65,536 shipments at median `0.155 / 0.560 / 12.413 ms` before and `0.004 / 0.005 / 0.005
+ms` after. Actual cleanup regressions also exercise mixed resident and freight swap moves with
+noncontiguous shipment IDs.
 
 ### Agent Initialization Audit Measurements (2026-09-12)
 
@@ -3264,13 +3244,10 @@ cases; the largest mixed batch adds 0.165 ms. This measures warmed insertion, ex
 planning, household admission, capacity growth and gameplay ticking. It is not a frame-time or
 full immigration benchmark. No other builds or benchmark jobs ran during these comparisons.
 
-Reproduce with `python3 /tmp/metrum-full-audit/match_agent_spawning.py`. The runner records
-commands for `BINARY --exact simulation::economy::agents::lifecycle::tests::benchmark_agent_spawning
---ignored --nocapture --test-threads=1`, with `taskset -c 0`, `RAYON_NUM_THREADS=1` and
-`METRUM_DEBUG=0`. Raw runs and summaries are in `agent-spawn-matched-{bench,summary}.json` under
-that directory. `agent-spawn-{before,after}-identity.json` records source hashes and Rust 1.98.1
-(`48a229cea`, 2026-09-01). Binary SHA-256 values are
-`e6beeb312519a402df54cd27681ccf134968dda35970feebacc144b479087d83` before and
+The runner records commands for `BINARY --exact
+simulation::economy::agents::lifecycle::tests::benchmark_agent_spawning --ignored --nocapture
+--test-threads=1`, with `taskset -c 0`, `RAYON_NUM_THREADS=1` and `METRUM_DEBUG=0`. Binary SHA-256
+values are `e6beeb312519a402df54cd27681ccf134968dda35970feebacc144b479087d83` before and
 `bf921775fe34e6a3db8b1f496ae64797959d3a62622527c39c25f81ce7373ecb` after.
 
 ### Compression rule
@@ -3409,11 +3386,10 @@ distance ties still prefer the lower building ID. Grocery retry-cursor ordering 
 `AUDIT-01-H15` validation used the isolated `benchmark_shopping_candidate_selection --ignored
 --nocapture` release fixture: 1,000 queries per sample, 11 samples, descending candidate streams
 with distance ties, limits/scans of 8/128 and 24/384, and five alternating process pairs with
-`RAYON_NUM_THREADS=24`. Median milliseconds per 1,000 queries were `0.656 → 0.667` and
-`2.862 → 2.907`; this establishes no speedup. The verified improvement is removing transient
-capacity growth. Selection remains O(K) per candidate and O(K) scratch storage for fixed K;
-index construction complexity is unchanged. Sources, executable identities and raw runs are
-under `/tmp/metrum-full-audit/shopping-*`.
+`RAYON_NUM_THREADS=24`. Median milliseconds per 1,000 queries were `0.656 → 0.667` and `2.862 →
+2.907`; this establishes no speedup. The verified improvement is removing transient capacity
+growth. Selection remains O(K) per candidate and O(K) scratch storage for fixed K; index
+construction complexity is unchanged.
 
 Household replenishment in `v0.1` uses one visible fulfillment mode:
 
@@ -3832,10 +3808,9 @@ and assertions are outside timing; the fixture does not run placement or product
 
 The release command is `taskset -c 0 BINARY --exact
 simulation::extraction::tests::benchmark_extraction_site_lookup --ignored --nocapture
---test-threads=1`, with `RAYON_NUM_THREADS=1`. Source/binary identities, individual logs and
-results are `/tmp/metrum-full-audit/site-order-{before,after}-identity.json` and
-`site-order-matched-bench.json`. These timings cover lookup and removal of buildings without
-production sites; they do not measure the O(S) shifts required by affected-site edits.
+--test-threads=1`, with `RAYON_NUM_THREADS=1`. These timings cover lookup and removal of
+buildings without production sites; they do not measure the O(S) shifts required by
+affected-site edits.
 
 Machinery reference price is 20 currency/kg; OWA imports cost 25/kg at the current 1.25 multiplier.
 These are initial game-balance values. Heavy mines are intended to benefit from local customers
@@ -3895,7 +3870,7 @@ needs. Retained farm workers above current active capacity are excluded using th
 system's staffing rule. Matching resource deficits determine eligible factory types and spawn
 volume. Existing, under-construction and selected factory outputs reserve capacity, including the factory's own
 same-resource upkeep. Adding a profile without an asset cannot spawn a building. See
-[`demand.md`](demand.md) and the authoring checklist in [`asset_editor.md`](asset_editor.md).
+[`demand.md`](demand_history_2026-10-10.md) and the authoring checklist in [`asset_editor.md`](../asset_editor.md).
 
 ### Resource identity and cost
 
@@ -3915,30 +3890,25 @@ supplies it.
 
 ### Runtime bounds and verification
 
-Hourly production remains O(buildings) for a fixed catalog, with Rayon on the ordinary-building pass;
-area production keeps its existing indexed site traversal. Input consumption allocates no memory
-per building. Recipe work traverses inputs/outputs and performs bounded same-resource port lookups.
-Demand computes each profile's capacity scale once per building and reuses its output-port pass
-for the relevant resource totals. It reuses the existing parallel resource reduction and compact
-resource arrays; with a fixed catalog it remains O(buildings), plus candidate output-port checks. No agent traversal
-or additional spatial index is introduced. Freight uses the existing supplier/component indices,
-route cache and reservations; protecting additional customer types adds
-recipe-port work to its existing building pass.
-The outbound-only reservation query scans active shipments in O(S), retains only source inventory
-slots, and does not allocate inbound views. Its flattened storage ends at the last
-active source/resource slot, independently of destination IDs. Both views share source-cargo
-eligibility and reject resource IDs outside the catalog. A matched unprofiled release fixture with
-4,096 orders, 256 sources and destination IDs through 69,631 improves from `0.741` to `0.015 ms`
-per query (11 × 100 queries, 24 Rayon workers); logs and binary identities are under
-`/tmp/metrum-full-audit/reservations-*`. This is a reservation-query measurement, not whole freight
-throughput or a city-frame claim.
-Daily-to-hourly production conversion has one shared constant. Demand and household settlement
-share the same compact-resource aggregation helpers, and service activity/sales share one demand-rate
-query. Stores, service stores and explicit production areas all follow their funded census
-activity.
-Resource order and accumulation order are preserved. Mine depletion updates its existing
-cache in O(1) per site; inventory inspection and reserve protection perform bounded recipe-port work
-without adding allocations or city-wide scans.
+Hourly production remains O(buildings) for a fixed catalog, with Rayon on the ordinary-building
+pass; area production keeps its existing indexed site traversal. Input consumption allocates no
+memory per building. Recipe work traverses inputs/outputs and performs bounded same-resource port
+lookups. Demand computes each profile's capacity scale once per building and reuses its output-port
+pass for the relevant resource totals. It reuses the existing parallel resource reduction and
+compact resource arrays; with a fixed catalog it remains O(buildings), plus candidate output-port
+checks. No agent traversal or additional spatial index is introduced. Freight uses the existing
+supplier/component indices, route cache and reservations; protecting additional customer types adds
+recipe-port work to its existing building pass. The outbound-only reservation query scans active
+shipments in O(S), retains only source inventory slots, and does not allocate inbound views. Its
+flattened storage ends at the last active source/resource slot, independently of destination IDs.
+Both views share source-cargo eligibility and reject resource IDs outside the catalog. This is a
+reservation-query measurement, not whole freight throughput or a city-frame claim. Daily-to-hourly
+production conversion has one shared constant. Demand and household settlement share the same
+compact-resource aggregation helpers, and service activity/sales share one demand-rate query.
+Stores, service stores and explicit production areas all follow their funded census activity.
+Resource order and accumulation order are preserved. Mine depletion updates its existing cache in
+O(1) per site; inventory inspection and reserve protection perform bounded recipe-port work without
+adding allocations or city-wide scans.
 
 The `AUDIT-01` follow-up uses shared fixed-size parallel chunk folds and input-order merging for
 floating-point activity and demand totals. Accumulators update in place; worker scheduling cannot
@@ -3947,42 +3917,33 @@ temporary accumulators. No per-resident allocation or sort of chunk results is n
 
 Fresh matched unprofiled release comparison: six alternating process pairs, `RAYON_NUM_THREADS=24`,
 the existing `benchmark_business_demand_snapshot` factory fixture, 10 warmups then 11 samples of
-100 snapshots per size; setup is excluded and no compilation/Godot work runs concurrently.
-Median milliseconds/snapshot before → after: 1,024 buildings `0.092 → 0.028`,
-8,192 `0.125 → 0.094`, 65,536 `0.2905 → 0.252`. This measures business snapshots, not city FPS
-or all mixed household/industry workloads. Command on each saved release test executable:
-`benchmark_business_demand_snapshot --ignored --nocapture`. Raw runs and exact binary identities:
-`/tmp/metrum-full-audit/reduction-long-matched-bench.json` and `reduction-long-binaries.sha256`.
-The before build restores the initially inventoried metrics/snapshot sources in the isolated
-`reduction-baseline/` crate. Earlier short-window timings are superseded by this comparison.
+100 snapshots per size; setup is excluded and no compilation/Godot work runs concurrently. Median
+milliseconds/snapshot before → after: 1,024 buildings `0.092 → 0.028`, 8,192 `0.125 → 0.094`,
+65,536 `0.2905 → 0.252`. This measures business snapshots, not city FPS or all mixed
+household/industry workloads. Command on each saved release test executable:
+`benchmark_business_demand_snapshot --ignored --nocapture`. The before build restores the initially
+inventoried metrics/snapshot sources in the isolated `reduction-baseline/` crate. Earlier
+short-window timings are superseded by this comparison.
 
 Follow-up audit verification on 2026-09-12: the release Rust suite passed 1,709 tests (16 ignored),
-including proportional upkeep, paid startup imports, shared-budget local holds, inactive farm demand, net
-output headroom, small-shop restocking, invalid recipe rejection, industrial absorption and save
-round trips. Added regressions cover depleted-mine capacity restoration, upkeep/shipment reserves
-during liquidation, and distinct-resource inventory fill. Profitability checks include maximum
-authored wages and farm/mine property taxes; utility accounting checks distinguish power payroll
-and include prior-day input refunds.
-All eight headless Godot regressions passed, including native economy-editor export/playback,
-the Machinery asset selector, refund display, farm inspector and camera save/load. A copy of the
-existing `farms.sqlite` passed two load/New Game cycles with 22 grounded models and chunk `(22, 0)`
-published; the original save was untouched. Logs: `/tmp/metrum-machinery-audit2-tests.log`,
-`/tmp/metrum-machinery-audit2-<test_script>.log`, `/tmp/metrum-machinery-audit2-farms-load.log`.
-The editor checks cover Godot's floating-point JSON representation of whole-number resource IDs
-and construction durations; fractional durations remain invalid. The release library was rebuilt
-and deployed. The 15 Python runner/report checks, benchmark-target compile check, formatting and
-diff checks pass. Rustdoc reports no missing-doc warnings. Clippy reports no warnings on changed
-lines; it completes with existing repository warnings when the pre-existing `clippy::mut_from_ref`
-error in `agents/tick/slices.rs` is allowed. Compiler/check logs use the same
-`/tmp/metrum-machinery-audit2-` prefix (`build`, `clippy`, `rustdoc`, `bench-check`,
-`python-terrain`, `python-report`).
+including proportional upkeep, paid startup imports, shared-budget local holds, inactive farm
+demand, net output headroom, small-shop restocking, invalid recipe rejection, industrial absorption
+and save round trips. Added regressions cover depleted-mine capacity restoration, upkeep/shipment
+reserves during liquidation, and distinct-resource inventory fill. Profitability checks include
+maximum authored wages and farm/mine property taxes; utility accounting checks distinguish power
+payroll and include prior-day input refunds. All eight headless Godot regressions passed, including
+native economy-editor export/playback, the Machinery asset selector, refund display, farm inspector
+and camera save/load. The editor checks cover Godot's floating-point JSON representation of
+whole-number resource IDs and construction durations; fractional durations remain invalid. The
+release library was rebuilt and deployed. The 15 Python runner/report checks, benchmark-target
+compile check, formatting and diff checks pass. Rustdoc reports no missing-doc warnings. Clippy
+reports no warnings on changed lines; it completes with existing repository warnings when the
+pre-existing `clippy::mut_from_ref` error in `agents/tick/slices.rs` is allowed.
 
 Fresh follow-up audit demand benchmark on 2026-09-12: matched, unprofiled release builds, 24 Rayon
-workers, 11 samples per size, median snapshot time. The fixture holds the road graph fixed and varies
-staffed food processors with stocked input buffers and a 10,000 operating budget; setup/cloning
-is excluded. Both builds include Machinery. Before is the previously audited working tree over
-`a91d6159`, captured in `/tmp/metrum-machinery-audit2-before.diff`; after includes the follow-up
-fixes and shared resource helpers.
+workers, 11 samples per size, median snapshot time. The fixture holds the road graph fixed and
+varies staffed food processors with stocked input buffers and a 10,000 operating budget;
+setup/cloning is excluded. Both builds include Machinery.
 
 | Buildings | Before audit | After audit |
 | ---: | ---: | ---: |
@@ -3990,14 +3951,12 @@ fixes and shared resource helpers.
 | 8,192 | 0.141 ms | 0.132 ms |
 | 65,536 | 0.448 ms | 0.281 ms |
 
-Command: `RAYON_NUM_THREADS=24 cargo test --offline --manifest-path rust/Cargo.toml --release --lib benchmark_business_demand_snapshot -- --ignored --nocapture`.
-Fixture: `rust/src/simulation/economy/demand/tests.rs::benchmark_business_demand_snapshot`.
-Logs: `/tmp/metrum-machinery-audit2-bench-before.log`, `/tmp/metrum-machinery-audit2-bench-after.log`.
-The audited source/config identity is recorded in `/tmp/metrum-machinery-audit2-source.sha256`
-(`750a4070e2bf599585e849e7a479b48975c4a77dbe1313f5be1c2dce60aae987`).
-The final run saves 0.167 ms at 65,536 buildings; small-fixture results are shown above.
-The fixed-catalog linear bound is unchanged. These measurements cover demand aggregation,
-not end-to-end freight or million-agent throughput.
+Command: `RAYON_NUM_THREADS=24 cargo test --offline --manifest-path rust/Cargo.toml --release --lib
+benchmark_business_demand_snapshot -- --ignored --nocapture`. Fixture:
+`rust/src/simulation/economy/demand/tests.rs::benchmark_business_demand_snapshot`. The final run
+saves 0.167 ms at 65,536 buildings; small-fixture results are shown above. The fixed-catalog linear
+bound is unchanged. These measurements cover demand aggregation, not end-to-end freight or
+million-agent throughput.
 
 ## Farm Households (`ECON-08`)
 
@@ -4049,9 +4008,6 @@ family admission/relocation, mixed-age employment, housing/job counts, in-place 
 home-bound trip preservation, and occupied-farm SQLite load, removal/remapping and demolition
 undo. `cargo build` and `cargo doc --no-deps` passed without warnings. The deployed extension
 passed the headless field-tool regression and inspector/asset-editor script checks.
-Logs: `/tmp/metrum-farm-household-all-tests.log`, `/tmp/metrum-farm-household-build.log`,
-`/tmp/metrum-farm-household-rustdoc.log`, `/tmp/metrum-farm-household-field-ui.log`,
-and `/tmp/metrum-farm-household-godot-check.log`.
 
 Matched unprofiled release timing compares idle residents with on-site workers in the same
 minimal one-road/one-building fixture, with four Rayon workers, one test thread, three warmup
@@ -4067,15 +4023,13 @@ Both cases preserve in-building state and issue zero pathfinding requests.
 
 These timings show comparable tick cost, not a speedup claim; small batches include scheduling
 overhead. Build identity: `325f0402` plus the farm changes; release test binary SHA-256
-`5f0663cc15bc2c67996e309dad22b618d2e55e3caf2ea2b0b2b4fe4d97460107`;
-`agents/tick/schedule.rs` SHA-256
-`df8b76823bcbbcaf404317304090fb6a719e846c1fb45d8a7ffeaa53c3cb3e13`;
+`5f0663cc15bc2c67996e309dad22b618d2e55e3caf2ea2b0b2b4fe4d97460107`; `agents/tick/schedule.rs`
+SHA-256 `df8b76823bcbbcaf404317304090fb6a719e846c1fb45d8a7ffeaa53c3cb3e13`;
 `households/tests/farms.rs` SHA-256
-`d475a97bb4dec9d1b8c758078a1cf5b1198cf1ed28d13cb378f48affdc381782`.
-Commands from `rust/`: `cargo test --release --lib --no-run`, then
-`RAYON_NUM_THREADS=4 target/release/deps/metrum_rise-9cc8d57998aa4451 benchmark_farm_household_tick --ignored --nocapture --test-threads=1`.
-Build/run logs: `/tmp/metrum-farm-household-release-build.log` and
-`/tmp/metrum-farm-household-benchmark.log`. Timing ran after builds and other checks finished.
+`d475a97bb4dec9d1b8c758078a1cf5b1198cf1ed28d13cb378f48affdc381782`. Commands from `rust/`: `cargo
+test --release --lib --no-run`, then `RAYON_NUM_THREADS=4
+$TEST_BINARY benchmark_farm_household_tick --ignored --nocapture
+--test-threads=1`. Timing ran after builds and other checks finished.
 
 ### Farm audit validation (2026-09-11)
 
@@ -4086,21 +4040,18 @@ and the plot-boundary payload now have shared owners. Unused agent-owned home se
 person-counted occupancy rebuilding were removed; housing fixtures claim household slots through
 the allocator.
 
-Fresh checks: `cargo test --lib` passed 1,684 tests (14 ignored); `cargo build` and
-`cargo doc --no-deps` passed without warnings. The rebuilt/deployed extension passed the headless
-field-tool regression and industry-tool, inspector, and asset-editor script checks. Logs:
-`/tmp/metrum-farm-audit-all-tests-final.log`, `/tmp/metrum-farm-audit-build.log`,
-`/tmp/metrum-farm-audit-doc.log`, and `/tmp/metrum-farm-audit-{field-tool,industry-tool,inspector,asset-editor}-stdout.log`.
+Fresh checks: `cargo test --lib` passed 1,684 tests (14 ignored); `cargo build` and `cargo doc
+--no-deps` passed without warnings. The rebuilt/deployed extension passed the headless field-tool
+regression and industry-tool, inspector, and asset-editor script checks.
 
 Release checks ran after compilation finished. The vacancy benchmark holds 10,000 claim/release
 pairs on one farm fixed, with untimed setup and index allocation, three warmups, 21 samples, one
-test thread, and `RAYON_NUM_THREADS=4`. Median times were 0.583 / 0.580 / 0.560 ms with
-1 / 1,000 / 100,000 buildings, consistent with allocation-free O(1) claims independent of
-background housing. The capacity benchmark retained 2.43 ns/query for the field minimum through
-1,000,000 queries (`RAYON_NUM_THREADS=1`). Logs: `/tmp/metrum-farm-audit-vacancies.log` and
-`/tmp/metrum-farm-audit-capacity.log`. Run the release test binary with
-`benchmark_farm_vacancy_claims` or `benchmark_work_area_capacity`, then
-`--ignored --nocapture --test-threads=1`.
+test thread, and `RAYON_NUM_THREADS=4`. Median times were 0.583 / 0.580 / 0.560 ms with 1 /
+1,000 / 100,000 buildings, consistent with allocation-free O(1) claims independent of background
+housing. The capacity benchmark retained 2.43 ns/query for the field minimum through 1,000,000
+queries (`RAYON_NUM_THREADS=1`). Run the release test binary with
+`benchmark_farm_vacancy_claims` or `benchmark_work_area_capacity`, then `--ignored --nocapture
+--test-threads=1`.
 
 Matched pre/post-audit resident-worker tick runs reuse the fixture above and its unchanged
 three-warmup/21-sample/ten-tick protocol with four Rayon workers. Six alternating before/after
@@ -4114,18 +4065,11 @@ pathfinding requests:
 | 100,000 | 0.619 | 0.567 |
 
 Sub-millisecond timings vary between runs; these isolated checks show no consistent regression
-with population, and do not measure end-to-end city economy cost. The full idle/working samples
-are in `/tmp/metrum-farm-audit-tick-comparison.json`; individual runs are
-`/tmp/metrum-farm-audit-{before,after}-tick-{0..5}.log`.
-Build command: `cargo test --release --lib --no-run`; build log:
-`/tmp/metrum-farm-audit-release-build.log`. Compare `/tmp/metrum-farm-audit-before-tests` and
-`rust/target/release/deps/metrum_rise-9cc8d57998aa4451` using
-`benchmark_farm_household_tick --ignored --nocapture --test-threads=1`.
-Build identity is `325f0402` plus the working farm changes and audit fixes. Before/after release
-binary SHA-256: `5f0663cc15bc2c67996e309dad22b618d2e55e3caf2ea2b0b2b4fe4d97460107` /
-`5db37fd42543f05b5d62dd6c34792693a4a1d21fd4085eecf93ee28a0726ff9a`.
-Audit `allocator/index.rs` SHA-256:
-`550e5d36c95865740f6c71e33ef10991f2c140204fa9cf2b50d98a0b95f2917e`;
+with population, and do not measure end-to-end city economy cost. Build identity is `325f0402`
+plus the working farm changes and audit fixes. Before/after release binary SHA-256:
+`5f0663cc15bc2c67996e309dad22b618d2e55e3caf2ea2b0b2b4fe4d97460107` /
+`5db37fd42543f05b5d62dd6c34792693a4a1d21fd4085eecf93ee28a0726ff9a`. Audit `allocator/index.rs`
+SHA-256: `550e5d36c95865740f6c71e33ef10991f2c140204fa9cf2b50d98a0b95f2917e`;
 `households/tests/farms.rs` SHA-256:
 `a12909922973c94c3d06dd0a7e2d1e3f281707336733a10f3d1d9bfd92ceddfd`.
 
@@ -4150,10 +4094,9 @@ ordinary suite; release build and rustdoc have no warnings. All 12 changed GDScr
 nine headless runs pass: field editing, vehicle support, network chunks, road metrics, junction
 preview, preview streaming, camera save/load in both modes, and two actual farm-save load → New
 Game cycles. The latter checks 22 grounded model parts and successful chunk `(22, 0)` publication.
-Logs use `/tmp/metrum-full-audit-`, including `final-tests.log`, `build.log`, `rustdoc.log`,
-`field_edit_tool.log`, and `farms_load_new_game.log`. The original farm save remains unchanged.
-Default Clippy still rejects the pre-existing `mut_from_ref` in unchanged agent `tick/slices.rs`;
-the audit run allowing only that lint completes with the existing lint warnings and no errors.
+The original farm save remains unchanged. Default Clippy still rejects the pre-existing
+`mut_from_ref` in unchanged agent `tick/slices.rs`; the audit run allowing only that lint
+completes with the existing lint warnings and no errors.
 
 Unprofiled release locality uses `populated_field_road_plan_scaling --ignored --nocapture`,
 24 Rayon workers, 100 samples per level and the existing fixed four-site neighborhood. Both
@@ -4167,18 +4110,13 @@ builds retain identical local products as background fields/buildings/parcels gr
 | 10,000 | 20.375 / 19.789 | 0.107 / 0.104 |
 | 100,000 | 20.240 / 20.884 | 0.116 / 0.121 |
 
-Repeated planning remains local; the existing one-time snapshot is separate and reaches
-3.369 / 3.394 ms at the largest size. Logs: `/tmp/metrum-full-audit-field-perf-{before,after}.log`.
-Before/after release test binaries have SHA-256 `320340841a98d0a72e7e025e3108b2cf1cb7bf991fd0f0bf0f3abc17202326cc`
-and `eae0e5612f497741331efb9600b1db2d96e55480db7fc3ab656920b052599fd8`;
-paths and deployed-library identity are in `/tmp/metrum-full-audit-build-identity.json`.
+Repeated planning remains local; the existing one-time snapshot is separate and reaches 3.369 /
+3.394 ms at the largest size.
 
 Three alternating headless before/after industry-tool runs use 21 timed batches of 10,000 manual
-idle updates after three warmups. Median cost falls from 1.116–1.150 to 0.066–0.069 microseconds
-per direct call; actual inactive tools now disable processing entirely. Setup is untimed, both
-scripts use the same release extension, and no build or other benchmark runs concurrently.
-Reproduction script: `/tmp/metrum-full-audit-idle-benchmark.gd`, selecting the saved baseline or
-current tool with `METRUM_AUDIT_INDUSTRY_SCRIPT`; logs: `/tmp/metrum-full-audit-idle-{before,after}-{1,2,3}.log`.
+idle updates after three warmups. Median cost falls from 1.116–1.150 to 0.066–0.069 microseconds per
+direct call; actual inactive tools now disable processing entirely. Setup is untimed, both scripts
+use the same release extension, and no build or other benchmark runs concurrently.
 
 ## Field Staffing Density (`ECON-06`)
 
@@ -4209,31 +4147,24 @@ rebalances yield and density together. The following timing evidence belongs to 
 
 Regression coverage checks hectare boundaries, hourly yield, startup payroll, demand equivalents,
 surplus-worker release, export reserves, invalid staffing areas, and editor export/reload.
-Validation before the two-worker floor: `cargo test --lib` passed 1,663 tests (11 ignored), `cargo doc --no-deps`
-reported no warnings, and Godot `--check-only` passed for the economy editor and building inspector.
-The Rust test log is `/tmp/metrum-farm-all-tests.log`.
-The isolated release timing is reproducible from `rust/` with
-`cargo test --release benchmark_work_area_capacity -- --ignored --nocapture`.
+Validation before the two-worker floor: `cargo test --lib` passed 1,663 tests (11 ignored), `cargo
+doc --no-deps` reported no warnings, and Godot `--check-only` passed for the economy editor and
+building inspector. The isolated release timing is reproducible from `rust/` with `cargo test
+--release benchmark_work_area_capacity -- --ignored --nocapture`.
 
 Capacity-only timing before the two-worker floor on 2026-09-11 used the release build from
-`325f0402` plus the initial staffing change, one test thread, 21 unprofiled samples per size,
-and eight fixed hectare values repeated across each query batch. With other builds finished, median times were
-0.023 ms / 10,000 queries, 0.233 ms / 100,000, and 2.328 ms / 1,000,000 (about 2.33 ns/query).
-This measures the capacity helper only; it is not an end-to-end city-speed comparison.
+`325f0402` plus the initial staffing change, one test thread, 21 unprofiled samples per size, and
+eight fixed hectare values repeated across each query batch. With other builds finished, median
+times were 0.023 ms / 10,000 queries, 0.233 ms / 100,000, and 2.328 ms / 1,000,000 (about 2.33
+ns/query). This measures the capacity helper only; it is not an end-to-end city-speed comparison.
 The measured `work_area.rs` SHA-256 is
 `4002cbb2b49af54bef393c29cf211aa28463016345d3889bbdd44fd3eef2719c`.
-Build/run logs: `/tmp/metrum-farm-capacity-benchmark.log` and
-`/tmp/metrum-farm-capacity-benchmark-quiet.log`; the latter reruns the built release test binary
-with `benchmark_work_area_capacity --ignored --nocapture --test-threads=1`.
 
-Fresh validation with the two-worker floor and plot guides on 2026-09-11:
-`cargo test --lib` passed 1,674 tests (12 ignored), and `cargo build` plus
-`cargo doc --no-deps` completed without warnings. The deployed debug extension passed the
-headless field-tool regression; industry-tool and inspector script checks also passed.
-Logs: `/tmp/metrum-farm-minimum-tests.log`, `/tmp/metrum-farm-boundary-build.log`,
-`/tmp/metrum-farm-boundary-rustdoc.log`, `/tmp/metrum-farm-boundary-ui.log`, and
-`/tmp/metrum-farm-boundary-parse.log`. Headless checks used `--log-file /tmp/...` so they
-did not need to write the game's user-data directory.
+Fresh validation with the two-worker floor and plot guides on 2026-09-11: `cargo test
+--lib` passed 1,674 tests (12 ignored), and `cargo build` plus `cargo doc --no-deps`
+completed without warnings. The deployed debug extension passed the headless field-tool
+regression; industry-tool and inspector script checks also passed. Headless checks used
+`--log-file $ARTIFACTS/...` so they did not need to write the game's user-data directory.
 
 The current release capacity benchmark compares the same helper with minimums of zero and
 two, using the same eight hectare values, 21 unprofiled samples per size, one test thread,
@@ -4246,14 +4177,13 @@ After builds finished, medians were:
 | 100,000 | 0.254 ms | 0.243 ms |
 | 1,000,000 | 2.499 ms | 2.431 ms |
 
-This checks O(1) capacity-query cost in the current build; it is not a whole-city comparison
-or a comparison against the old implementation. Build identity: `325f0402` plus the field
-changes, `work_area.rs` SHA-256
-`da5d368d395d3e8dec02b9e3574efdf637d7f07453ade6e12f65310a74851048`, release test binary SHA-256
-`fd548c59bc9d5574a705be67d6cc9a0bbc7952569cac14c8810d671ac932ad15`.
-Commands from `rust/`: `cargo test --release --lib --no-run`, then
-`RAYON_NUM_THREADS=1 target/release/deps/metrum_rise-9cc8d57998aa4451 benchmark_work_area_capacity --ignored --nocapture --test-threads=1`.
-Logs: `/tmp/metrum-farm-minimum-release-build.log` and `/tmp/metrum-farm-minimum-benchmark.log`.
+This checks O(1) capacity-query cost in the current build; it is not a whole-city comparison or a
+comparison against the old implementation. Build identity: `325f0402` plus the field changes,
+`work_area.rs` SHA-256 `da5d368d395d3e8dec02b9e3574efdf637d7f07453ade6e12f65310a74851048`, release
+test binary SHA-256 `fd548c59bc9d5574a705be67d6cc9a0bbc7952569cac14c8810d671ac932ad15`. Commands
+from `rust/`: `cargo test --release --lib --no-run`, then `RAYON_NUM_THREADS=1
+$TEST_BINARY benchmark_work_area_capacity --ignored --nocapture
+--test-threads=1`.
 
 ## Field Placement and Editing (`ECON-07`)
 
@@ -4302,13 +4232,10 @@ funding, owner remapping, SQLite load and demolition undo. The headless
 `godot/tests/field_edit_tool_test.gd` exercises vertex selection, release, rollback, cancellation,
 and boundary-guide visibility during drawing and resizing. It runs in `./run.sh --test`.
 
-Validation before plot guides and the two-worker floor on 2026-09-11:
-`cargo test --lib` passed 1,673 tests (12 ignored); `cargo build`
-and `cargo doc --no-deps` completed without warnings. The rebuilt extension passed the headless
-field editor and native road junction/preview regressions. Input manager and inspector script
-checks also passed. Logs: `/tmp/metrum-field-all-tests.log`, `/tmp/metrum-field-ui-test.log`,
-`/tmp/metrum-field-road-bridge.log`, `/tmp/metrum-field-native-build.log`,
-`/tmp/metrum-field-rustdoc.log`.
+Validation before plot guides and the two-worker floor on 2026-09-11: `cargo test --lib` passed
+1,673 tests (12 ignored); `cargo build` and `cargo doc --no-deps` completed without warnings.
+The rebuilt extension passed the headless field editor and native road junction/preview
+regressions. Input manager and inspector script checks also passed.
 
 Matched unprofiled release runs used four Rayon workers, one test thread, 100 measured samples
 per size after three warmups, and the same fixed local road/sites. Fixture setup was untimed;
@@ -4326,12 +4253,10 @@ fixed local reservation and one per background building.
 
 Reproduce from `rust/`: build with `cargo test --release --lib --no-run`, then run the emitted
 test binary separately with `RAYON_NUM_THREADS=4` and either `populated_road_plan_scaling` or
-`populated_field_road_plan_scaling`, followed by `--ignored --nocapture --test-threads=1`.
-Build: `325f04021c2f1d8be7f189aa3e46120bb1010c03` plus these working-tree changes; binary SHA-256
-`03157cecf2434837da368ae298433024367b9817967ea5bb897b47ae9e5b9ded`.
-Results: `/tmp/metrum-field-road-baseline.log`, `/tmp/metrum-field-road-scaling.log`,
-`/tmp/metrum-field-benchmark-identity.json`. These measure local placement, not whole-city tick
-throughput or interactive GPU rendering.
+`populated_field_road_plan_scaling`, followed by `--ignored --nocapture --test-threads=1`. Build:
+`325f04021c2f1d8be7f189aa3e46120bb1010c03` plus these working-tree changes; binary SHA-256
+`03157cecf2434837da368ae298433024367b9817967ea5bb897b47ae9e5b9ded`. These measure local
+placement, not whole-city tick throughput or interactive GPU rendering.
 
 ## Building Bankruptcy
 
@@ -4446,16 +4371,15 @@ the distinct resident-first workplace assignment sort remains.
 
 Matched unprofiled release measurements use 1,024/8,192/65,536 workers, 11 timing samples, five
 alternating process pairs, and 24 or one Rayon worker. Setup/reset is outside staffing timing;
-`benchmark_payroll_phase` includes payroll and final money publication, four calls per sample.
-At 65,536 workers, 24-worker medians are 0.235 → 0.253 ms without power quotas,
-0.463 → 0.580 ms with quotas, and 2.683 → 2.081 ms for payroll. Process variation is substantial
-(power before 0.379–1.841 ms, after 0.395–0.665 ms), so these do not establish an overall speedup.
-Single-worker staffing medians are 0.130 → 0.106 ms and 0.377 → 0.317 ms; payroll ranges overlap.
-The bounded quota overhead is accepted for the existing hourly/daily cadence; there is no new
-per-agent allocation or city-wide index. Commands are the two ignored benchmark names with
-`--ignored --nocapture --test-threads=1` on preserved release binaries. Exact identities, workload
-source and raw samples are under `/tmp/metrum-full-audit/employment-{before,final}-*` and
-`employment-final-matched-bench.json`. These fixtures do not measure complete job route searches.
+`benchmark_payroll_phase` includes payroll and final money publication, four calls per sample. At
+65,536 workers, 24-worker medians are 0.235 → 0.253 ms without power quotas, 0.463 → 0.580 ms with
+quotas, and 2.683 → 2.081 ms for payroll. Process variation is substantial (power before
+0.379–1.841 ms, after 0.395–0.665 ms), so these do not establish an overall speedup. Single-worker
+staffing medians are 0.130 → 0.106 ms and 0.377 → 0.317 ms; payroll ranges overlap. The bounded
+quota overhead is accepted for the existing hourly/daily cadence; there is no new per-agent
+allocation or city-wide index. Commands are the two ignored benchmark names with `--ignored
+--nocapture --test-threads=1` on preserved release binaries. These fixtures do not measure
+complete job route searches.
 
 **Step 3 — Pay utility cost.**
 
@@ -4508,15 +4432,15 @@ diagnostic printing is read-only. The unused `HouseholdSystem::clone` implementa
 
 Utility accounting validation (`AUDIT-01`, 2026-09-12): both cash-limit regressions failed before
 the fix; the full release suite now passes 1,731 tests (25 ignored). The matched unprofiled release
-fixture runs 24 hourly household charge/stock passes plus one daily utility settlement, with
-11 samples and five alternating process pairs, 24 Rayon workers. At 1,024/8,192/65,536 households,
+fixture runs 24 hourly household charge/stock passes plus one daily utility settlement, with 11
+samples and five alternating process pairs, 24 Rayon workers. At 1,024/8,192/65,536 households,
 median daily-block time is 1.689/1.869/4.723 → 1.519/1.904/5.187 ms. Large-fixture process ranges
 overlap (before 3.823–6.467 ms, after 3.543–5.463 ms); no speedup is claimed. The fix adds O(1)
 arithmetic per household to the existing O(H + B) settlement, with no new allocation. Setup and
-ledger reset are excluded; the fixture uses funded households and OWA-only utility service.
-Run `benchmark_household_utility_settlement --ignored --nocapture --test-threads=1` on the
-preserved release binaries. Source/binary identities, raw runs and tests are under
-`/tmp/metrum-full-audit/utility-*`. The subsequent save/lifecycle batch validates mid-day payment persistence separately.
+ledger reset are excluded; the fixture uses funded households and OWA-only utility service. Run
+`benchmark_household_utility_settlement --ignored --nocapture --test-threads=1` on the preserved
+release binaries. The subsequent save/lifecycle batch validates mid-day payment persistence
+separately.
 
 
 
@@ -4644,37 +4568,31 @@ trajectories retain their original dates and do not validate a later build.
 
 ### Electricity validation (`ECON-14`)
 
-**Current correctness (2026-10-07).** The lifecycle revision passes 362 economy tests
-(`/tmp/metrum-power-final-economy.log`) and 25 save/load tests
-(`/tmp/metrum-power-final-save.log`). Coverage includes fuel limits, fixed staffed upkeep,
-cash-poor delivery, mixed-use bills, multiple providers, rounded cash debits, legacy mine density,
-removed-building meters/input costs and removal after midnight billing. Fourteen field-lifecycle
-checks pass (`/tmp/metrum-power-lifecycle-fields.log`). Actual-core demolition/undo and mid-day
-save continuation pass (`/tmp/metrum-power-lifecycle-undo-2.log`,
-`/tmp/metrum-power-continuation-2.log`). Continuation compares uninterrupted and loaded runs with
-the plant present or demolished, through the next settlement: energy, bills, fuel, revenue and net
-cash agree within 0.01. This proves format-73 continuation; pre-73 migration has the cutover limits
-documented above.
+**Current correctness (2026-10-07).** The lifecycle revision passes 362 economy tests and 25
+save/load tests. Coverage includes fuel limits, fixed staffed upkeep, cash-poor delivery, mixed-use
+bills, multiple providers, rounded cash debits, legacy mine density, removed-building meters/input
+costs and removal after midnight billing. Fourteen field-lifecycle checks pass. Actual-core
+demolition/undo and mid-day save continuation pass. Continuation compares uninterrupted and loaded
+runs with the plant present or demolished, through the next settlement: energy, bills, fuel,
+revenue and net cash agree within 0.01. This proves format-73 continuation; pre-73 migration has
+the cutover limits documented above.
 
-The broader core batch passes 113 tests (`/tmp/metrum-power-final-core.log`). The allocator batch
-passes 59 and fails two startup residential family/variant selection fixtures before their selection
-assertions (`/tmp/metrum-power-lifecycle-allocator.log`). Both fail identically on unchanged HEAD
-`318b1634` (`/tmp/metrum-power-baseline-demand-selection.log`); they remain tracked under `DEM-02`.
+The broader core batch passes 113 tests. The allocator batch passes 59 and fails two startup
+residential family/variant selection fixtures before their selection assertions. Both fail
+identically on unchanged HEAD `318b1634`; they remain tracked under `DEM-02`.
 
 The headless Godot economy regression passes against the current extension in an isolated user
 profile, checking rendered kWh/MWh values and kW/MW formatting as well as the existing machinery
-authoring checks (`/tmp/metrum-power-godot-ui.log`).
-Fresh `cargo doc --no-deps` reports no missing-doc warnings; its one unresolved
-`VegetationGenerator` link is unrelated (`/tmp/metrum-power-final-rustdoc.log`).
+authoring checks. Fresh `cargo doc --no-deps` reports no missing-doc warnings; its one
+unresolved `VegetationGenerator` link is unrelated.
 
-All three growth integration tests pass after adding the industrial labor/housing guard
-(`/tmp/metrum-power-final-growth.log`). It rejects startups when no unemployed workers remain
-beyond existing vacancies and neither vacant, unfinished nor additional candidate homes can house
-more, reusing existing residential placement/upgrade candidates. This fixes the late unstaffed
-factory failure found by the initial two-year run. The village ends with 155 residents and 115
-employed, no bankruptcies/replacement capital, no second-year empty-household days, and positive
-recurring city finances (`/tmp/metrum-power-final-two-years.txt`). This village contains no
-power plant, exercising OWA electricity supply and affordability.
+All three growth integration tests pass after adding the industrial labor/housing guard. It
+rejects startups when no unemployed workers remain beyond existing vacancies and neither vacant,
+unfinished nor additional candidate homes can house more, reusing existing residential
+placement/upgrade candidates. This fixes the late unstaffed factory failure found by the initial
+two-year run. The village ends with 155 residents and 115 employed, no bankruptcies/replacement
+capital, no second-year empty-household days, and positive recurring city finances. This village
+contains no power plant, exercising OWA electricity supply and affordability.
 
 **Physical plant/mine runs.** `coal_power_balance_matrix --ignored --nocapture --test-threads=1`,
 with `RAYON_NUM_THREADS=8`, grows the village for 365 days, places the plant while housing remains
@@ -4698,8 +4616,7 @@ These are trailing-90-day cash averages, including input purchases/freight, wage
 upkeep; they are distinct from the steady operating worksheet above. Bulk machinery stocks can
 span a reporting window. The mine adds electricity demand and supplies fuel; its observed-year
 operating cash gain is 62,931–65,735, excluding opening cash. More staffed capacity alone does not
-create customers. Final lifecycle-build artifacts: `/tmp/metrum-power-final-plants.log` and
-`/tmp/metrum-power-final-plants/power-*-workers-*.txt`.
+create customers.
 
 **Matched 10k performance.** Sequential unprofiled release runs, eight Rayon workers pinned to
 CPUs `0,2,4,6,8,10,12,14`; no concurrent tests/builds. Both use the existing `/10k` fixture:
@@ -4712,26 +4629,20 @@ CPUs `0,2,4,6,8,10,12,14`; no concurrent tests/builds. Both use the existing `/1
 | kWh + lifecycle accounting | 15.3 | 2.389 (2.329–2.454) | 795.91 (594.74–972.64) |
 
 The final revision adds about 0.18 ms/hour (+8.4%, `p<0.01`); daily change is not significant
-(`p=0.85`). The preceding staffed-buffer revision measured +0.35 ms/hour (+16.6%, `p=0.01`),
-also with no significant daily change (`p=0.98`), in `/tmp/metrum-power-perf-before.log` and
-`/tmp/metrum-power-perf-buffer.log`. These runs establish added hourly cost, not unchanged
-performance or a lifecycle-optimization speedup; process variation affects its magnitude. New work
-is O(buildings + households), with reused scratch, parallel passes, fixed-order reductions and
-no added routing or per-agent scheduling. The broad daily cost remains `ECON-13` work.
+(`p=0.85`). These runs establish added hourly cost, not unchanged performance or a
+lifecycle-optimization speedup; process variation affects its magnitude. New work is O(buildings +
+households), with reused scratch, parallel passes, fixed-order reductions and no added routing or
+per-agent scheduling. The broad daily cost remains `ECON-13` work.
 
 Builds use `RUSTFLAGS='' CARGO_ENCODED_RUSTFLAGS='' cargo bench --manifest-path rust/Cargo.toml
---bench economy_tick_benchmark --no-run`. HEAD source/configuration is isolated in
-`/tmp/metrum-power-baseline-source`; its bootstrap assets match the workspace. Executable SHA-256
-prefixes are `3cbb0ec1b218f55c` (HEAD) and `2eaee9667c7b2df1` (final lifecycle build); catalog prefixes
-are `a30680e6f8cde47b` and `753ce26467a405b2`. Run commands:
+--bench economy_tick_benchmark --no-run`. Executable SHA-256 prefixes are `3cbb0ec1b218f55c` (HEAD)
+and `2eaee9667c7b2df1` (final lifecycle build); catalog prefixes are `a30680e6f8cde47b` and
+`753ce26467a405b2`. Run commands:
 
 ```bash
-RAYON_NUM_THREADS=8 CRITERION_HOME=/tmp/metrum-power-final-perf taskset -c 0,2,4,6,8,10,12,14 /tmp/metrum-power-head-economy --bench /10k --save-baseline before
-RAYON_NUM_THREADS=8 CRITERION_HOME=/tmp/metrum-power-final-perf taskset -c 0,2,4,6,8,10,12,14 /tmp/metrum-power-final-economy-bench --bench /10k --baseline before
+RAYON_NUM_THREADS=8 CRITERION_HOME=$ARTIFACTS/metrum-power-final-perf taskset -c 0,2,4,6,8,10,12,14 $ARTIFACTS/metrum-power-head-economy --bench /10k --save-baseline before
+RAYON_NUM_THREADS=8 CRITERION_HOME=$ARTIFACTS/metrum-power-final-perf taskset -c 0,2,4,6,8,10,12,14 $ARTIFACTS/metrum-power-final-economy-bench --bench /10k --baseline before
 ```
-
-Logs: `/tmp/metrum-power-final-perf-before.log`, `/tmp/metrum-power-final-perf-after.log`;
-full executable/catalog identities: `/tmp/metrum-power-final-bench-sha256.txt`.
 
 ### `ECON-11` balance tests
 
@@ -4845,7 +4756,7 @@ The live runner uses a statically dispatched empty observer and stores no diagno
 Reproduce from the repository root:
 
 ```bash
-METRUM_GROWTH_REPORT=/tmp/metrum-village-daily-2026-10-05.txt \
+METRUM_GROWTH_REPORT=$ARTIFACTS/metrum-village-daily-2026-10-05.txt \
   cargo test --manifest-path rust/Cargo.toml --test growth_scenario
 cargo test --manifest-path rust/Cargo.toml --test growth_scenario \
   starter_town_keeps_growing_and_solvent_through_year_one -- --ignored
@@ -4939,23 +4850,21 @@ enabled; that economic failure is the subject of the report, not a passing growt
 City/business reconciliation errors round to 0.0000; the largest individual household residual
 is 0.0215 currency from `f32` accumulation, below the 0.1 test tolerance.
 
-**Matched 10k cost check.** Baseline source is `21100889`, extracted to
-`/tmp/metrum-village-baseline`; changed source is that build plus this diagnostic extension.
 Authored economy/demand/zoning data and bootstrap assets match. Both release binaries were built
-from the repository root with `cargo bench --manifest-path <checkout>/rust/Cargo.toml
---bench economy_tick_benchmark -- /10k` and default target flags (the nested `rust/.cargo`
-CPU override is not loaded from that working directory). Eight Rayon workers, no profiling,
-23 hourly samples and ten daily samples per process. Setup is outside timing. The fixture has
-11,120 residents, 5,597 households and 7,396 buildings after its warm-up; all runs finish with
-identical recorded state. Its large treasury is a timing-fixture property, not growth evidence.
+from the repository root with `cargo bench --manifest-path <checkout>/rust/Cargo.toml --bench
+economy_tick_benchmark -- /10k` and default target flags (the nested `rust/.cargo` CPU override
+is not loaded from that working directory). Eight Rayon workers, no profiling, 23 hourly samples
+and ten daily samples per process. Setup is outside timing. The fixture has 11,120 residents,
+5,597 households and 7,396 buildings after its warm-up; all runs finish with identical recorded
+state. Its large treasury is a timing-fixture property, not growth evidence.
 
 The first pair flagged +13.7% hourly cost (2.204 → 2.507 ms); daily intervals overlapped.
 This justified an alternating **baseline / changed / changed / baseline** repeat with saved
 binaries, no simultaneous builds/tests, and shared Criterion output:
 
 ```bash
-RAYON_NUM_THREADS=8 CRITERION_HOME=/tmp/metrum-village-paired \
-  /tmp/metrum-village-head-bench /10k --save-baseline head_A --bench
+RAYON_NUM_THREADS=8 CRITERION_HOME=$ARTIFACTS/metrum-village-paired \
+  $ARTIFACTS/metrum-village-head-bench /10k --save-baseline head_A --bench
 # Same command with after-bench/after_A, after-bench/after_B, head-bench/head_B.
 ```
 
@@ -4971,11 +4880,7 @@ initial comparison implied. No consistent hourly slowdown is demonstrated, and d
 intervals overlap. Do not claim a speedup or use these broad daily intervals as proof that
 `ECON-13` performance work is complete. No larger tier was run.
 
-Artifacts: `/tmp/metrum-village-daily-2026-10-05.txt`, `/tmp/metrum-village-tests-final.log`,
-`/tmp/metrum-village-unit-final.log`, `/tmp/metrum-village-bench-head.log`,
-`/tmp/metrum-village-bench-after.log`, `/tmp/metrum-village-{head_A,after_A,after_B,head_B}.log`,
-and `/tmp/metrum-village-paired/economy_tick/`. Saved binary SHA-256 prefixes:
-baseline `8b4fa257985b0cc8`, changed `2e1ec6347b2c40f5`.
+Saved binary SHA-256 prefixes: baseline `8b4fa257985b0cc8`, changed `2e1ec6347b2c40f5`.
 
 #### Failed-business recovery (`ECON-14`)
 
@@ -5041,7 +4946,7 @@ cargo test --manifest-path rust/Cargo.toml --lib -- \
   economy::households::tests economy::demand::tests economy::fiscal::tests \
   economy::definitions::balance_tests nodes::sim::core::budget::tests \
   buildings::allocator::tests::demand_actions
-METRUM_GROWTH_REPORT=/tmp/metrum-recovery-only-2026-10-06.txt \
+METRUM_GROWTH_REPORT=$ARTIFACTS/metrum-recovery-only-2026-10-06.txt \
   cargo test --manifest-path rust/Cargo.toml --test growth_scenario -- --include-ignored
 ```
 
@@ -5064,18 +4969,14 @@ cost comparison, not organic-growth acceptance or closure of the broad daily-cos
 
 ```bash
 cargo bench --manifest-path rust/Cargo.toml --bench economy_tick_benchmark --no-run
-RAYON_NUM_THREADS=8 CRITERION_HOME=/tmp/metrum-recovery-perf-before \
-  /tmp/metrum-village-after-bench /10k --save-baseline before --bench
-RAYON_NUM_THREADS=8 CRITERION_HOME=/tmp/metrum-recovery-perf-before \
-  /tmp/metrum-recovery-after-bench /10k --baseline before --bench
+RAYON_NUM_THREADS=8 CRITERION_HOME=$ARTIFACTS/metrum-recovery-perf-before \
+  $ARTIFACTS/metrum-village-after-bench /10k --save-baseline before --bench
+RAYON_NUM_THREADS=8 CRITERION_HOME=$ARTIFACTS/metrum-recovery-perf-before \
+  $ARTIFACTS/metrum-recovery-after-bench /10k --baseline before --bench
 ```
 
-Artifacts: `/tmp/metrum-recovery-only-2026-10-06.txt`, `/tmp/metrum-recovery-only-tests.log`,
-`/tmp/metrum-import125-2026-10-06.txt`, `/tmp/metrum-import125-tests.log`,
-`/tmp/metrum-recovery-final-unit.log`, `/tmp/metrum-recovery-bench-build.log`,
-`/tmp/metrum-recovery-perf-{before,after}.log`, and `/tmp/metrum-recovery-perf-before/economy_tick/`.
-The import experiment used the same scenario executable in a fresh process after editing only
-the multiplier; the runtime loader reads authored data at process startup.
+The import experiment used the same scenario executable in a fresh process after editing only the
+multiplier; the runtime loader reads authored data at process startup.
 
 #### Grocery startup repair (`ECON-14`)
 
@@ -5149,16 +5050,11 @@ cargo test --manifest-path rust/Cargo.toml --lib -- \
   economy::households::tests economy::demand::tests economy::fiscal::tests \
   economy::definitions::balance_tests economy::agents \
   buildings::allocator::tests::demand_actions nodes::sim::core::budget::tests
-METRUM_GROWTH_REPORT=/tmp/metrum-grocery-final-year.txt \
-METRUM_GROWTH_LONG_REPORT=/tmp/metrum-grocery-two-years.txt \
+METRUM_GROWTH_REPORT=$ARTIFACTS/metrum-grocery-final-year.txt \
+METRUM_GROWTH_LONG_REPORT=$ARTIFACTS/metrum-grocery-two-years.txt \
   cargo test --manifest-path rust/Cargo.toml --test growth_scenario -- --include-ignored
 ```
 
-Artifacts: `/tmp/metrum-grocery-unit-third.log`, `/tmp/metrum-grocery-final-scenario.log`,
-`/tmp/metrum-grocery-final-year.txt`, `/tmp/metrum-grocery-two-years.txt`. Causal traces are
-`/tmp/metrum-grocery-trace-baseline.txt`, `/tmp/metrum-grocery-inventory175-v2.txt`,
-`/tmp/metrum-grocery-inventory125.txt`, `/tmp/metrum-grocery-return125.txt`,
-`/tmp/metrum-grocery-services125.txt`, and `/tmp/metrum-grocery-evac125.txt`.
 These are local artifacts; the acceptance tests and figures above are the durable record.
 
 **Fresh matched 10k performance:** recovery-only binary SHA-256 prefix `3e763b5a4042b07b`
@@ -5182,15 +5078,11 @@ the broad daily cost remains `ECON-13` work. No larger tier was run.
 
 ```bash
 cargo bench --manifest-path rust/Cargo.toml --bench economy_tick_benchmark --no-run
-RAYON_NUM_THREADS=8 CRITERION_HOME=/tmp/metrum-grocery-perf \
-  /tmp/metrum-recovery-after-bench /10k --save-baseline before --bench
-RAYON_NUM_THREADS=8 CRITERION_HOME=/tmp/metrum-grocery-perf \
-  /tmp/metrum-grocery-after-bench /10k --baseline before --bench
+RAYON_NUM_THREADS=8 CRITERION_HOME=$ARTIFACTS/metrum-grocery-perf \
+  $ARTIFACTS/metrum-recovery-after-bench /10k --save-baseline before --bench
+RAYON_NUM_THREADS=8 CRITERION_HOME=$ARTIFACTS/metrum-grocery-perf \
+  $ARTIFACTS/metrum-grocery-after-bench /10k --baseline before --bench
 ```
-
-Performance artifacts: `/tmp/metrum-grocery-bench-build.log`,
-`/tmp/metrum-grocery-perf-{before,after}.log`, `/tmp/metrum-grocery-perf/economy_tick/`.
-Final ordinary scenario verification: `/tmp/metrum-grocery-final-active.log`.
 
 #### Regional industrial markets (`ECON-14`)
 
@@ -5200,7 +5092,7 @@ for delivered imports and 142,560 in wages while earning 87,360 from local deliv
 118,522.50 from exports. Machinery paid 92,800 for imported inputs and 82,800 in wages, against
 6,400 local sales and 76,800 exports. Other receipts included distress liquidation. Operating
 cash fell by 228,089.49 / 97,112.07 respectively; 15 / 14 bankruptcies and 170,300 / 83,040 in
-replacement capital concealed the recurring losses. See `/tmp/metrum-industry-baseline.txt`.
+replacement capital concealed the recurring losses.
 
 The repair replaces declining export bids with fixed catalog-price bids and **finite shared
 regional purchase volumes**: food 480, grain 580, coal 160 and machinery 80 units/day. Unlisted
@@ -5278,10 +5170,10 @@ and cancellation, profitable factory selection, recurring household admission, p
 forecasting, field employment, benefits, shopping, arrival purpose, rehousing, demolition and
 SQLite round-trip preservation of the export-volume vector. Twenty-five existing manual or
 separate target tests are ignored. All three scenario tests pass, with no ignored growth target.
-Cash residuals are below 0.0001 for the city/business ledgers and 0.007 for households.
-Changed Rust files pass formatting and `git diff --check`. `cargo doc --no-deps` reports no
-missing-doc warnings; its one unrelated existing broken link is `VegetationGenerator` in
-`nodes/simulation_node/vegetation_api.rs:155` (`/tmp/metrum-industry-doc.log`).
+Cash residuals are below 0.0001 for the city/business ledgers and 0.007 for households. Changed
+Rust files pass formatting and `git diff --check`. `cargo doc --no-deps` reports no missing-doc
+warnings; its one unrelated existing broken link is `VegetationGenerator` in
+`nodes/simulation_node/vegetation_api.rs:155`.
 
 ```bash
 cargo test --manifest-path rust/Cargo.toml --lib -- \
@@ -5289,13 +5181,11 @@ cargo test --manifest-path rust/Cargo.toml --lib -- \
   economy::agents economy::fiscal::tests buildings::allocator::tests::demand_actions \
   buildings::allocator::tests::lifecycle nodes::sim::core::budget::tests \
   save::tests::sqlite_round_trip
-METRUM_GROWTH_REPORT=/tmp/metrum-industry-final-year.txt \
-METRUM_GROWTH_LONG_REPORT=/tmp/metrum-industry-final-two-years.txt \
+METRUM_GROWTH_REPORT=$ARTIFACTS/metrum-industry-final-year.txt \
+METRUM_GROWTH_LONG_REPORT=$ARTIFACTS/metrum-industry-final-two-years.txt \
   cargo test --manifest-path rust/Cargo.toml --test growth_scenario
 ```
 
-Artifacts: `/tmp/metrum-industry-final-unit.log`, `/tmp/metrum-industry-final-scenario.log`,
-`/tmp/metrum-industry-final-year.txt`, `/tmp/metrum-industry-final-two-years.txt`.
 The temporary files are local diagnostics; the checked-in assertions and figures above are the
 durable acceptance record.
 
@@ -5321,15 +5211,13 @@ work. No larger tier was run.
 ```bash
 cargo bench --manifest-path rust/Cargo.toml --bench economy_tick_benchmark --no-run
 # Each binary loads its recorded catalog; restore the current catalog after the baseline run.
-RAYON_NUM_THREADS=8 CRITERION_HOME=/tmp/metrum-industry-perf \
-  /tmp/metrum-grocery-after-bench /10k --save-baseline before --bench
-RAYON_NUM_THREADS=8 CRITERION_HOME=/tmp/metrum-industry-perf \
-  /tmp/metrum-industry-after-bench /10k --baseline before --bench
+RAYON_NUM_THREADS=8 CRITERION_HOME=$ARTIFACTS/metrum-industry-perf \
+  $ARTIFACTS/metrum-grocery-after-bench /10k --save-baseline before --bench
+RAYON_NUM_THREADS=8 CRITERION_HOME=$ARTIFACTS/metrum-industry-perf \
+  $ARTIFACTS/metrum-industry-after-bench /10k --baseline before --bench
 ```
 
-Artifacts: `/tmp/metrum-industry-bench-build.log`, `/tmp/metrum-industry-perf-{before,after}.log`,
-`/tmp/metrum-industry-perf-identity.txt`, `/tmp/metrum-industry-{before,final}-profiles.toml` and
-`/tmp/metrum-industry-perf/economy_tick/`. The current catalog was restored and its hash checked.
+The current catalog was restored and its hash checked.
 
 ### Village services and producer audit (`ECON-14`)
 
@@ -5465,22 +5353,12 @@ cargo test --manifest-path rust/Cargo.toml --lib -- \
   nodes::sim::core::scenario::balance_cases nodes::sim::core::tests::fields \
   simulation::extraction::tests simulation::agriculture::tests simulation::work_area::tests \
   save::tests::sqlite_round_trip
-METRUM_GROWTH_REPORT=/tmp/metrum-area-costs-year.txt \
-METRUM_GROWTH_LONG_REPORT=/tmp/metrum-area-costs-two-years.txt \
+METRUM_GROWTH_REPORT=$ARTIFACTS/metrum-area-costs-year.txt \
+METRUM_GROWTH_LONG_REPORT=$ARTIFACTS/metrum-area-costs-two-years.txt \
   cargo test --manifest-path rust/Cargo.toml --test growth_scenario
-METRUM_BALANCE_DAYS=730 METRUM_BALANCE_REPORT_DIR=/tmp/metrum-area-costs-730 \
+METRUM_BALANCE_DAYS=730 METRUM_BALANCE_REPORT_DIR=$ARTIFACTS/metrum-area-costs-730 \
   cargo test --manifest-path rust/Cargo.toml --lib producer_balance_matrix -- --ignored --nocapture
 ```
-
-Artifacts: `/tmp/metrum-area-costs-unit-final.log`, `/tmp/metrum-area-costs-startup-test.log`,
-`/tmp/metrum-area-costs-scenario-final.log`, `/tmp/metrum-area-costs-{year,two-years}.txt`,
-`/tmp/metrum-area-costs-730.log`, `/tmp/metrum-area-costs-730/*.txt`,
-`/tmp/metrum-area-costs-godot.log`, `/tmp/metrum-area-costs-rustdoc.log`,
-`/tmp/metrum-area-costs-format.log`. The initial 180-day matrix is in
-`/tmp/metrum-area-costs-initial.log` and `/tmp/metrum-area-costs-180/*.txt`.
-Godot uses `/tmp/metrum-area-costs-godot-dwh9yb30/project` with isolated data/config directories;
-the real player profile is untouched. Commands, assertions and this summary are the durable
-record; `/tmp` reports are local diagnostic artifacts.
 
 **Fresh matched 10k performance:** sequential, unprofiled release runs with eight Rayon workers,
 no concurrent builds/tests and diagnostics disabled. Both binaries use the same current catalog
@@ -5503,15 +5381,13 @@ remain `ECON-13` work. Only the 10k tier ran.
 
 ```bash
 cargo bench --manifest-path rust/Cargo.toml --bench economy_tick_benchmark --no-run
-RAYON_NUM_THREADS=8 CRITERION_HOME=/tmp/metrum-area-costs-perf \
-  /tmp/metrum-industry-after-bench /10k --save-baseline before --bench
-RAYON_NUM_THREADS=8 CRITERION_HOME=/tmp/metrum-area-costs-perf \
-  /tmp/metrum-area-costs-after-bench /10k --baseline before --bench
+RAYON_NUM_THREADS=8 CRITERION_HOME=$ARTIFACTS/metrum-area-costs-perf \
+  $ARTIFACTS/metrum-industry-after-bench /10k --save-baseline before --bench
+RAYON_NUM_THREADS=8 CRITERION_HOME=$ARTIFACTS/metrum-area-costs-perf \
+  $ARTIFACTS/metrum-area-costs-after-bench /10k --baseline before --bench
 ```
 
-Artifacts: `/tmp/metrum-area-costs-bench-build.log`, `/tmp/metrum-area-costs-build-identity.txt`,
-`/tmp/metrum-area-costs-tracked.patch`, `/tmp/metrum-area-costs-perf-{before,after}.log` and
-`/tmp/metrum-area-costs-perf/economy_tick/`. The catalog was unchanged between the runs.
+The catalog was unchanged between the runs.
 
 ### Unit and payload validation (`ECON-14`)
 
@@ -5548,26 +5424,16 @@ cargo test --manifest-path rust/Cargo.toml --lib -- \
   economy::definitions economy::logistics economy::households economy::demand \
   economy::agents::tests buildings::allocator::tests agriculture::tests extraction::tests \
   work_area::tests save::tests nodes::sim::core::scenario::balance_cases
-METRUM_GROWTH_REPORT=/tmp/metrum-units-year.txt \
-METRUM_GROWTH_LONG_REPORT=/tmp/metrum-units-two-years.txt \
+METRUM_GROWTH_REPORT=$ARTIFACTS/metrum-units-year.txt \
+METRUM_GROWTH_LONG_REPORT=$ARTIFACTS/metrum-units-two-years.txt \
   cargo test --manifest-path rust/Cargo.toml --test growth_scenario
 cargo build --manifest-path rust/Cargo.toml --release
 cargo doc --manifest-path rust/Cargo.toml --no-deps
-XDG_DATA_HOME=/tmp/metrum-area-costs-godot-dwh9yb30/data \
-XDG_CONFIG_HOME=/tmp/metrum-area-costs-godot-dwh9yb30/config \
-  godot --headless --path /tmp/metrum-area-costs-godot-dwh9yb30/project \
+XDG_DATA_HOME=$ARTIFACTS/metrum-area-costs-godot-dwh9yb30/data \
+XDG_CONFIG_HOME=$ARTIFACTS/metrum-area-costs-godot-dwh9yb30/config \
+  godot --headless --path $ARTIFACTS/metrum-area-costs-godot-dwh9yb30/project \
   --script res://tests/economy_machinery_test.gd
 ```
-
-Artifacts: `/tmp/metrum-units-final-tests.log`, `/tmp/metrum-units-growth.log`,
-`/tmp/metrum-units-{year,two-years}.txt`, `/tmp/metrum-units-godot.log`,
-`/tmp/metrum-units-release-build.log`, `/tmp/metrum-units-rustdoc.log`,
-`/tmp/metrum-units-prechange-selection.log`, `/tmp/metrum-units-prechange/` and
-`/tmp/metrum-units-format-paths.txt`. The pre-change source reconstruction uses
-`/tmp/metrum-area-costs-tracked.patch` plus the unchanged `balance_cases.rs`; its catalog
-matches `/tmp/metrum-units-before-profiles.toml` byte for byte. The unit implementation's
-tracked patch, untracked diagnostic source and binary/catalog SHA-256 identities are recorded
-in `/tmp/metrum-units-tracked.patch` and `/tmp/metrum-units-build-identity.txt`.
 
 **Fresh matched 10k performance.** Sequential unprofiled release processes, eight Rayon workers,
 no concurrent builds/tests, setup outside timing. Baseline executable SHA-256 prefix
@@ -5589,14 +5455,13 @@ fixed buying caps. Wide daily timing intervals and daily settlement cost remain 
 ```bash
 cargo bench --manifest-path rust/Cargo.toml --bench economy_tick_benchmark --no-run
 # Baseline ran before changing the catalog; the preserved binary alone does not pin its data.
-RAYON_NUM_THREADS=8 CRITERION_HOME=/tmp/metrum-units-perf \
-  /tmp/metrum-area-costs-after-bench /10k --save-baseline before --bench
-RAYON_NUM_THREADS=8 CRITERION_HOME=/tmp/metrum-units-perf \
-  /tmp/metrum-units-after-bench /10k --baseline before --bench
+RAYON_NUM_THREADS=8 CRITERION_HOME=$ARTIFACTS/metrum-units-perf \
+  $ARTIFACTS/metrum-area-costs-after-bench /10k --save-baseline before --bench
+RAYON_NUM_THREADS=8 CRITERION_HOME=$ARTIFACTS/metrum-units-perf \
+  $ARTIFACTS/metrum-units-after-bench /10k --baseline before --bench
 ```
 
-Timing artifacts: `/tmp/metrum-units-bench-build.log`, `/tmp/metrum-units-perf-{before,after}.log`
-and `/tmp/metrum-units-perf/economy_tick/`. No per-trip transport-price calculation is added.
+No per-trip transport-price calculation is added.
 
 ### `ECON-13` economy tick baseline
 
@@ -5702,9 +5567,7 @@ The build took 18.0 s.
 
 Testing stock before routing, or skipping sold-out stores, was the next `ECON-13` candidate.
 Either changes which candidates are kept; the 2026-10-10 walking-proof check instead keeps every
-candidate and makes the route checks themselves cheap (below). Drivers,
-logs and the executable are in `rust/target/owa/` (`perf.py`, `perf/`,
-`diag/economy-debug.log`).
+candidate and makes the route checks themselves cheap (below).
 
 **`ECON-19` and store activity (2026-10-10).** Same settings; three executables in rotated order,
 four runs each: the baseline above, `85228b40` (`ECON-19` stock-check offsets) and the `DEM-02`
@@ -5718,18 +5581,24 @@ exact permutation test over the four run means.
 | `daily_settlement` mean | 17.54 ms | 25.50 ms (+45.4%, p = 0.029) | 9.89 ms (−61.2% vs `ECON-19`, p = 0.029) |
 | Day 15 households / employed | 5,320 / 7,156 | 5,320 / 7,129 | 5,330 / 7,166 |
 
-Even check slots lower the worst hours but raise the mean hourly and daily cost; that increase
-was not attributed further, because the store change removes it. With groceries producing
-what households buy, fewer shoppers search sold-out stores, and the store build is 29.5% below
-the baseline hourly and 43.6% below it daily. Drivers, logs and executables are in
-`rust/target/dem02-store/` (`perf.py`, `perf/`). The service-store follow-up (same settings, four
+Even check slots lower the worst hours but raise the mean hourly and daily cost; that increase was
+not attributed further, because the store change removes it. With groceries producing what
+households buy, fewer shoppers search sold-out stores, and the store build is 29.5% below the
+baseline hourly and 43.6% below it daily. The service-store follow-up (same settings, four
 alternating runs against the store build) measures **105.85 ms hourly** (p = 0.60, no change) and
 **8.81 ms daily** (−11.1%, p = 0.029), with a largest hourly sample of 157–161 ms. The
-explicit-work-area follow-up leaves timing unchanged. The walking-proof shopping check then
-answers most grocery route checks from cached pedestrian components with identical results:
-**34.18 ms hourly** (−67.6%, p = 0.029), largest sample 56–59 ms, and **8.60 ms daily**. This is
-the current 10k baseline. See the [`DEM-02` evidence](demand.md#continuation-implementation--2026-10-08)
-and `rust/target/dem02-{service,explicit,walk}/`.
+explicit-work-area follow-up leaves timing unchanged. The walking-proof shopping check then answers
+most grocery route checks from cached pedestrian components with identical results: **34.18 ms
+hourly** (−67.6%, p = 0.029), largest sample 56–59 ms, and **8.60 ms daily**. This is the current
+10k baseline.
+
+**Workplace search legs (2026-10-10).** Cost-only car legs and the shared network-leg table ([job
+search](#agents-supply-labor)) against `24705c42`; same settings, four alternating runs each. Every
+run of both builds ends with identical `GrowthDayRecord`s (day 15: 5,341 households, 7,134
+employed). Hourly time is **34.93 → 34.45 ms** (−1.4%, p = 0.20) with a largest sample of 56–60 ms
+in both; daily time is **8.74 → 8.73 ms** (p = 0.89). Neither change is significant: the 10k
+workplace pass is a few milliseconds of the hour. The 100k effect is recorded under
+[`DEM-02`](demand_history_2026-10-10.md#growth-redesign-dem-02).
 
 #### Historical larger-city builds and initial timings
 

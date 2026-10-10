@@ -423,13 +423,10 @@ medians are 232.121 → 232.113 µs per update, while terrain-query calls fall f
 isolates GDScript/mesh construction and establishes no whole-frame or native terrain speedup.
 Control lookup remains O(local lane/crosswalk handles), and ribbon geometry has ten fixed segments.
 
-Command: `RAYON_NUM_THREADS=1 METRUM_DEBUG=0 taskset -c 0 godot --headless --path godot --script res://tests/selection_gesture_test.gd -- --benchmark-selection-drag`.
-The before runs add `--tool-path=/tmp/metrum-full-audit/selection-gesture-original-source/godot/scripts/tools/select_tool.gd`.
-Both use release extension SHA-256 `f3647c04fc3714b8f84a1f2fa506d3d93417bd47292deb4d22ee13e2b1ad605e`.
-Exact script hashes, commands, samples and query counts are in
-`/tmp/metrum-full-audit/selection-gesture-{original,after}-identity.json`, `selection-gesture-bench.json`
-and `selection-gesture-summary.json`. No builds, tests or source mutations overlapped measurement.
-The final scene also corrects its resource load-step count; this metadata is outside the drag fixture.
+Command: `RAYON_NUM_THREADS=1 METRUM_DEBUG=0 taskset -c 0 godot --headless --path godot --script
+res://tests/selection_gesture_test.gd -- --benchmark-selection-drag`. The runs use release extension SHA-256 `f3647c04fc3714b8f84a1f2fa506d3d93417bd47292deb4d22ee13e2b1ad605e`. No builds, tests or
+source mutations overlapped measurement. The final scene also corrects its resource load-step count;
+this metadata is outside the drag fixture.
 
 ---
 
@@ -512,11 +509,10 @@ medians change from 316/5,122/87,932 µs to 120/1,749/31,565 µs. This is a UI-r
 not simulation or whole-frame acceptance. Both styles use the same settings reader on valid data;
 the before run loads the original UIStyle script, and the after run uses the corrected script.
 
-Command: `RAYON_NUM_THREADS=1 METRUM_DEBUG=0 taskset -c 0 godot --headless --path godot --script res://tests/ui_settings_test.gd -- --benchmark-ui-scale`.
-Before runs add `--style-path=/tmp/metrum-full-audit/ui-settings-original-source/godot/scripts/ui/ui_style.gd`.
-Release extension: `f3647c04fc3714b8f84a1f2fa506d3d93417bd47292deb4d22ee13e2b1ad605e`.
-Source hashes, full commands, samples and results are in `/tmp/metrum-full-audit/ui-settings-*`.
-No builds, tests or source changes overlapped accepted measurement.
+Command: `RAYON_NUM_THREADS=1 METRUM_DEBUG=0 taskset -c 0 godot --headless --path godot --script
+res://tests/ui_settings_test.gd -- --benchmark-ui-scale`. Release extension:
+`f3647c04fc3714b8f84a1f2fa506d3d93417bd47292deb4d22ee13e2b1ad605e`. No builds, tests or source
+changes overlapped accepted measurement.
 
 ---
 
@@ -787,15 +783,11 @@ Camera ownership rules:
 Camera validation (2026-09-11): targeted Rust tests and the headless
 `res://tests/camera_save_load_test.gd` pass, covering shared zoom endpoints, hillside movement,
 mode changes, saved underground views and immediate orthographic updates when bounds change.
-The suite and a WorldEditor policy smoke test pass under both `METRUM_DEBUG=0` and `1`.
-Updates remain O(1), with at most two existing heightmap samples and no new allocations.
-Matched unprofiled release timing for the cleanup used `METRUM_DEBUG=0 RAYON_NUM_THREADS=24
-godot --headless --path godot --script /tmp/metrum-camera-cleanup-benchmark.gd`, with the same
-256 m flat-world fixture: one warmup plus 15 batches of 2,000 pan updates in each of three
-processes, excluding setup. Before/after library SHA-256 prefixes: `49a1d0bf1c39` /
-`8f7f61265fa8`. Normal median times were 1.952–1.980 / 2.034–2.067 µs per update; debug
-times were 1.938–1.944 / 1.972–2.023 µs. Both remain about 2 µs per input update.
-Local logs: `/tmp/metrum-camera-cleanup-benchmark-{before,after}-{1,2,3}.log`.
+The suite and a WorldEditor policy smoke test pass under both `METRUM_DEBUG=0` and `1`. Updates
+remain O(1), with at most two existing heightmap samples and no new allocations. Before/after
+library SHA-256 prefixes: `49a1d0bf1c39` / `8f7f61265fa8`. Normal median times were 1.952–1.980
+/ 2.034–2.067 µs per update; debug times were 1.938–1.944 / 1.972–2.023 µs. Both remain about 2
+µs per input update.
 
 ---
 

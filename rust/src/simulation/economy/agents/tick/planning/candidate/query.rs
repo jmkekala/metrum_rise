@@ -45,6 +45,57 @@ struct NetworkQuote {
     seconds: Option<f32>,
 }
 
+type NetworkQuoteRevision = (u32, u64, usize);
+
+fn network_quote_revision(network: &TransitNetwork) -> NetworkQuoteRevision {
+    (network.cch_graph.build_generation, network.cch_graph.metric_revision,
+        network.lane_system.lanes.len())
+}
+
+/// Network-leg quotes shared by every worker of a parallel search, across passes.
+///
+/// A leg's seconds are a pure function of its key under one CCH/lane revision, so whichever
+/// worker prices a leg first cannot change a result; the worker-local slots miss whenever Rayon
+/// places a repeated pair on another thread. Lookups take a read lock and only misses write.
+/// The owner bounds growth with [`Self::clear`]; [`Self::sync`] empties stale revisions.
+#[derive(Default)]
+pub(crate) struct SharedNetworkQuotes {
+    revision: Option<NetworkQuoteRevision>,
+    quotes: std::sync::RwLock<
+        std::collections::HashMap<NetworkQuoteKey, Option<f32>, foldhash::fast::FixedState>>,
+}
+
+impl SharedNetworkQuotes {
+    /// Empties retained legs if the network revision changed since they were priced.
+    pub(crate) fn sync(&mut self, network: &TransitNetwork) {
+        let revision = network_quote_revision(network);
+        if self.revision != Some(revision) {
+            self.clear();
+            self.revision = Some(revision);
+        }
+    }
+
+    /// Drops every retained leg together with its storage.
+    pub(crate) fn clear(&mut self) {
+        *self.quotes.get_mut().unwrap() = Default::default();
+    }
+
+    /// Retained leg count.
+    pub(crate) fn len(&self) -> usize { self.quotes.read().unwrap().len() }
+
+    // `None` means not retained; a quote from another revision is never answered.
+    fn get(&self, key: &NetworkQuoteKey, revision: NetworkQuoteRevision) -> Option<Option<f32>> {
+        if self.revision != Some(revision) { return None; }
+        self.quotes.read().unwrap().get(key).copied()
+    }
+
+    fn insert(&self, key: NetworkQuoteKey, seconds: Option<f32>, revision: NetworkQuoteRevision) {
+        if self.revision == Some(revision) {
+            self.quotes.write().unwrap().insert(key, seconds);
+        }
+    }
+}
+
 /// Validated source of a pedestrian route, including agents already on the network.
 #[derive(Clone, Copy)]
 pub(in super::super) enum RouteStart {
@@ -79,8 +130,7 @@ impl TripQueryScratch {
     pub(crate) fn prepare(&mut self, network: &TransitNetwork, graph: &RegionGraph) {
         self.cch.prepare(&network.cch_graph, graph);
         let lanes = &network.lane_system.lanes;
-        let quote_revision = (network.cch_graph.build_generation,
-            network.cch_graph.metric_revision, lanes.len());
+        let quote_revision = network_quote_revision(network);
         if self.quote_revision != Some(quote_revision) {
             // Direct slots bound retained pairs by road storage, never homes × workplaces.
             // Collisions only replace retained results: every miss uses the exact planner.
@@ -135,6 +185,7 @@ impl TripQueryScratch {
         network: &TransitNetwork,
         graph: &RegionGraph,
         pathfind_count: &AtomicU32,
+        shared: Option<&SharedNetworkQuotes>,
     ) -> Option<PlannedTripCandidate> {
         // The caller has already priced shared frontages/nodes without a search.
         debug_assert!(origin.node != destination.node);
@@ -145,7 +196,16 @@ impl TripQueryScratch {
         let seconds = if let Some(quote) = self.network_quotes[slot].filter(|quote| quote.key == key) {
             quote.seconds
         } else {
-            let seconds = self.network_seconds(mode, origin, destination, network, graph, pathfind_count);
+            let revision = network_quote_revision(network);
+            let seconds = match shared.and_then(|shared| shared.get(&key, revision)) {
+                Some(seconds) => seconds,
+                None => {
+                    let seconds = self.network_seconds(mode, origin, destination, network, graph,
+                        pathfind_count);
+                    if let Some(shared) = shared { shared.insert(key, seconds, revision); }
+                    seconds
+                }
+            };
             self.network_quotes[slot] = Some(NetworkQuote { key, seconds });
             seconds
         }?;
@@ -322,24 +382,22 @@ impl TripQueryScratch {
         network: &TransitNetwork, graph: &RegionGraph, pathfind_count: &AtomicU32) -> Option<f32> {
         pathfind_count.fetch_add(1, Ordering::Relaxed);
         let edge = network.lane_system.lanes.get(origin.lane_id)?.edge_id;
+        let flags = transit_flags_for_mode(mode);
+        if mode == MODE_CAR {
+            // Same bidirectional search as the path query; only walks inspect the route.
+            return network.cch_graph.find_cost(origin.node, destination.node, edge, graph,
+                flags, self.cch.query());
+        }
         let (mut seconds, _, path) = network.cch_graph.find_path_in(
             origin.node,
             destination.node,
             edge,
             graph,
-            transit_flags_for_mode(mode),
+            flags,
             &mut self.cch,
         )?;
-        if mode != MODE_CAR
-            && !path_has_connectors(
-                path,
-                origin.lane_id,
-                destination.lane_id,
-                network,
-                graph,
-                &mut self.possible,
-                &mut self.next,
-            )
+        if !path_has_connectors(path, origin.lane_id, destination.lane_id, network, graph,
+            &mut self.possible, &mut self.next)
         {
             seconds = self.walking_cost(origin, destination, network, graph)?;
         }
@@ -521,6 +579,10 @@ mod tests {
             .map(|(index, _)| index)
             .collect();
         let mut fallback_count = 0;
+        // A second worker shares legs only through `shared`, never its own slots.
+        let mut other = TripQueryScratch::default();
+        let mut shared = SharedNetworkQuotes::default();
+        let mut last_key = None;
         for change in 0..4 {
             if change == 1 {
                 graph.edge_mut(1).base_cost += 17.0;
@@ -535,6 +597,12 @@ mod tests {
                 network.cch_graph.customize(&graph);
             }
             scratch.prepare(&network, &graph);
+            other.prepare(&network, &graph);
+            let revision = network_quote_revision(&network);
+            assert!(last_key.is_none_or(|key| shared.get(&key, revision).is_none()),
+                "legs priced on an older revision must never answer");
+            shared.sync(&network);
+            assert_eq!(shared.len(), 0, "every edit here changes the revision");
             for &attach in &lanes {
                 for &detach in &lanes {
                     let lane_type = network.lane_system.lanes[attach].lane_type;
@@ -603,16 +671,25 @@ mod tests {
                     let before = scratch.epoch;
                     assert_eq!(
                         scratch
-                            .combine(mode, 0, 0, &origin, &destination, &network, &graph, &counter)
+                            .combine(mode, 0, 0, &origin, &destination, &network, &graph, &counter, None)
                             .map(|candidate| candidate.total_cost_s),
                         expected
                     );
                     fallback_count += usize::from(scratch.epoch != before);
                     let searches = counter.load(Ordering::Relaxed);
                     assert_eq!(scratch.combine(mode, 0, 0, &origin, &destination, &network, &graph,
-                        &counter).map(|candidate| candidate.total_cost_s), expected);
+                        &counter, None).map(|candidate| candidate.total_cost_s), expected);
                     assert_eq!(counter.load(Ordering::Relaxed), searches,
                         "an identical lane leg must reuse both successful and failed proofs");
+                    for _ in 0..2 {
+                        other.network_quotes.fill(None);
+                        assert_eq!(other.combine(mode, 0, 0, &origin, &destination, &network, &graph,
+                            &counter, Some(&shared)).map(|candidate| candidate.total_cost_s), expected);
+                    }
+                    assert_eq!(counter.load(Ordering::Relaxed), searches + 1,
+                        "a shared leg is searched once, then answered for another worker");
+                    last_key = Some(NetworkQuoteKey { mode, from_lane: attach, to_lane: detach,
+                        from_node: origin.node, to_node: destination.node });
                     // Different doors and live frontage charges share only the network leg.
                     let mut moved_origin = origin;
                     moved_origin.local_time_s = 9.0;
@@ -625,7 +702,7 @@ mod tests {
                         .map(|candidate| candidate.total_cost_s);
                     let searches = counter.load(Ordering::Relaxed);
                     assert_eq!(scratch.combine(mode, 0, 0, &moved_origin, &moved_destination,
-                        &network, &graph, &counter).map(|candidate| candidate.total_cost_s), moved_expected);
+                        &network, &graph, &counter, None).map(|candidate| candidate.total_cost_s), moved_expected);
                     assert_eq!(counter.load(Ordering::Relaxed), searches);
                     assert_eq!(capacities(&scratch), prepared);
                 }

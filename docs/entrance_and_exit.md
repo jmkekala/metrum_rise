@@ -1252,34 +1252,32 @@ another traffic scan or allocation. Hiring refreshes its border quotes on that r
 
 CCH customization uses `edge.base_cost` alone, matching flow-field costs and the free-flow
 contract above. Freight caches border sweeps and node-to-node costs. Complete quotes carry the
-traffic revision at which they were priced: unchanged traffic reuses them in expected O(1),
-while a changed revision lazily reprices only requested quotes, without clearing or reallocating
-the whole cache. A warmed cache and a cache rebuilt after load therefore price the same current
-traffic. Repricing a local quote evaluates at most four entrance combinations,
-with expected O(1) cached node-pair lookups; border quotes use the existing sweep plus at most two
-entrance options. Node-pair retention is bounded by O(roads + nodes) prepared storage. Missing
-pairs, including misses after that cache fills, use the exact cost-only CCH search with reusable
-generation-stamped labels and heaps; no unused node path is built. Complete building/building and
-border/building maps likewise have prepared O(roads + nodes + buildings) capacity; saturation
-computes an exact uncached quote. Entrance/index invalidation advances their generation in O(1),
-with a storage clear only on generation wrap. Border sweeps are prepared before the quotation
-loop, including physical dispatch, rather than allocated by a border quote. The saturation
-regression compares every directed fixture pair with independent CCH/border costs across
-invalidation and changing frontage delays, while all map capacities stay fixed.
-Recurring supply distinguishes geometry revisions from CCH metric revisions: price changes
-retain source/resource/component buckets and prepared replacement doors, but still invalidate
-quote freshness and refresh the maximum-speed search bound. Proposed suppliers use their own
-directed door route and current frontage delays through the same prepared node-cost scratch;
-their private supply handles never enter allocator-ID route caches. Exact rollback restores
-their quantity eligibility. The 453-test release economy run includes different proposed doors,
-unreachable variants, changing frontage delay and warm reuse across a CCH metric change
-(`/tmp/metrum-dem02-projected-sources-metric-tests.log`). Runtime replacement admission still
-requires its affected-buyer proof before activating these projected sources.
-Clearing query labels is O(1),
-not a scan over the prepared city capacity. Household customer feasibility preserves the ordinary
-direct frontage/node rules and checks directed pedestrian component reachability with a reusable
-stack when the existing constant-time cyclic-component proof does not apply. Base-cost
-customization invalidates those tables through a separate CCH metric revision.
+traffic revision at which they were priced: unchanged traffic reuses them in expected O(1), while
+a changed revision lazily reprices only requested quotes, without clearing or reallocating the
+whole cache. A warmed cache and a cache rebuilt after load therefore price the same current
+traffic. Repricing a local quote evaluates at most four entrance combinations, with expected O(1)
+cached node-pair lookups; border quotes use the existing sweep plus at most two entrance options.
+Node-pair retention is bounded by O(roads + nodes) prepared storage. Missing pairs, including
+misses after that cache fills, use the exact cost-only CCH search with reusable generation-stamped
+labels and heaps; no unused node path is built. Complete building/building and border/building
+maps likewise have prepared O(roads + nodes + buildings) capacity; saturation computes an exact
+uncached quote. Entrance/index invalidation advances their generation in O(1), with a storage
+clear only on generation wrap. Border sweeps are prepared before the quotation loop, including
+physical dispatch, rather than allocated by a border quote. The saturation regression compares
+every directed fixture pair with independent CCH/border costs across invalidation and changing
+frontage delays, while all map capacities stay fixed. Recurring supply distinguishes geometry
+revisions from CCH metric revisions: price changes retain source/resource/component buckets and
+prepared replacement doors, but still invalidate quote freshness and refresh the maximum-speed
+search bound. Proposed suppliers use their own directed door route and current frontage delays
+through the same prepared node-cost scratch; their private supply handles never enter allocator-ID
+route caches. Exact rollback restores their quantity eligibility. The 453-test release economy run
+includes different proposed doors, unreachable variants, changing frontage delay and warm reuse
+across a CCH metric change. Runtime replacement admission still requires its affected-buyer proof
+before activating these projected sources. Clearing query labels is O(1), not a scan over the
+prepared city capacity. Household customer feasibility preserves the ordinary direct frontage/node
+rules and checks directed pedestrian component reachability with a reusable stack when the
+existing constant-time cyclic-component proof does not apply. Base-cost customization invalidates
+those tables through a separate CCH metric revision.
 
 Freight delivery quotations also retain fixed lane projection and local access geometry in
 indexed, revision-stamped route-cache slots. Batch preparation reserves only added slots;
@@ -1586,12 +1584,11 @@ These are medians of process medians, using Rust 1.98.1, release lib-test execut
 `RAYON_NUM_THREADS=1`, `METRUM_DEBUG=0`, CPU affinity `0`, with no competing compilation/tests.
 Before/after executable SHA-256 values are
 `fb8709ef79dfa43214ef50124c0c471baf8a7c7681bd76b67c297b97a7a7e296` and
-`e4afc9be6f64b21e5800dda4b5060f6df8e18d0bf1cb7a87099f057c4d6f5b9d`.
-The measurements cover these CCH queries, not hierarchy rebuilds, whole movement ticks or city-wide
-road edits. Initial meeting/stack-only revisions regressed smaller queries; separate `perf record`
-runs located repeated hashing before the shared entry update. Those preliminary timings and profiles
-are retained for traceability and are not acceptance timings. Exact commands, four-file diff, source
-identities, final results and prior revisions are under `/tmp/metrum-full-audit/cch-query-*`.
+`e4afc9be6f64b21e5800dda4b5060f6df8e18d0bf1cb7a87099f057c4d6f5b9d`. The measurements cover these CCH
+queries, not hierarchy rebuilds, whole movement ticks or city-wide road edits. Initial
+meeting/stack-only revisions regressed smaller queries; separate `perf record` runs located repeated
+hashing before the shared entry update. Those preliminary timings and profiles are retained for
+traceability and are not acceptance timings.
 
 `AUDIT-01-P2` keeps order/rank arrays and shortcut endpoint indices local to construction. The
 unused elimination tree and its per-shortcut maintenance are removed. Finished routers retain
@@ -1619,14 +1616,12 @@ they exclude allocator metadata and are not RSS or peak-memory measurements. The
 largest cycle median. This is a storage cleanup, not a demonstrated construction speedup.
 
 Five separate CPU-0/single-worker query pairs reuse `benchmark_cch_queries`. Before/after medians
-are 4.857/5.004, 20.747/20.808 and 156.667/157.759 µs for sides 8/16/32, respectively; cost, distance,
-path-node count and shortcut count match. Query differences range from 0.3–3%; no query speedup is
-claimed. All runs use Rust 1.98.1, release lib-test builds, `METRUM_DEBUG=0`, and no competing
-compilation/tests. Before/after executable SHA-256 values are
+are 4.857/5.004, 20.747/20.808 and 156.667/157.759 µs for sides 8/16/32, respectively; cost,
+distance, path-node count and shortcut count match. Query differences range from 0.3–3%; no query
+speedup is claimed. All runs use Rust 1.98.1, release lib-test builds, `METRUM_DEBUG=0`, and no
+competing compilation/tests. Before/after executable SHA-256 values are
 `1b0e02280c2bd55bb87434a111e0721d5c99405f9aaa386b281646376653ed33` and
 `c81df2ef71f842235e3c8d2979ee404492645f7bd8def4544a2b02924b608a4f`.
-Exact commands, source identities, two-file diff, capacity accounting and both matched workloads
-are retained under `/tmp/metrum-full-audit/cch-storage-*`.
 
 `AUDIT-01-P3` separates vehicle whitelists from pedestrian routing. Previously a vehicle rule sent
 a walking trip with shortest cost 12 onto a route costing 60. Contraction now retains pedestrian-only
@@ -1671,11 +1666,9 @@ universal speedup or city-scale timing acceptance. The memory accounting exclude
 metadata, RSS and peak build storage. Initial fixes without capacity finalization and the slower
 parallel finalizer are preserved separately, rather than reported as the accepted build.
 
-Artifacts are `/tmp/metrum-full-audit/cch-foot-*`, including all commands, three-file source
-snapshots/diff, intermediate identities, matched products and timings. The final executable hashes
-are `be6be668c03ade4dae20adb401ba06f30ce2e25b2475c35fb2f374cbb9137417` before and
-`c0095bb8ab4f07de42d4b45587c21c2d90225db7eb2da48f2fd96194f78d264d` after. Commands use Rust 1.98.1,
-`METRUM_DEBUG=0`, offline release lib-test builds and no concurrent builds/tests.
+The final executable hashes are `be6be668c03ade4dae20adb401ba06f30ce2e25b2475c35fb2f374cbb9137417`
+before and `c0095bb8ab4f07de42d4b45587c21c2d90225db7eb2da48f2fd96194f78d264d` after. Commands use
+Rust 1.98.1, `METRUM_DEBUG=0`, offline release lib-test builds and no concurrent builds/tests.
 
 ##### Pedestrian direction audit measurements
 
@@ -1739,17 +1732,15 @@ to a car query. Partitioning removes roughly one third of the initial corrected 
 13,511,504 retained bytes. These are cold routing-build/query measurements, not a whole-city
 frame-time or million-population performance acceptance. No RSS or peak-memory claim is made.
 
-Commands and raw records are in `/tmp/metrum-full-audit/flow-adjacency-*`; the rejected initial
-measurements are under `flow-adjacency-initial-matched/`, with separate source/executable identities.
 The final test executable hashes are
 `9ffdce6b1549ceba631d35ba5d763b025f75aee70b959ae04a9dd3ed9eafed9c` before and
 `b89ee741845d301fb02e831bc8c3226389c049d5e1c5b8ff2f9e263338d4f519` after. Runs use Rust 1.98.1,
 `METRUM_DEBUG=0`, offline release lib-test builds, `RAYON_NUM_THREADS=1` / `taskset -c 0` for flow
-and queries, and `RAYON_NUM_THREADS=8` / `taskset -c 0,2,4,6,8,10,12,14` for CCH construction.
-The exact ignored entries are `simulation::pathing::flow_field::tests::benchmark_flow_field_build`
-and `simulation::pathing::cch::ordering_tests::{benchmark_cch_build_storage,benchmark_cch_queries}`;
-CCH variants use `METRUM_CCH_BENCH_GRAPH=car|mixed|one_way`. No builds, tests or source mutations
-run concurrently with accepted measurements.
+and queries, and `RAYON_NUM_THREADS=8` / `taskset -c 0,2,4,6,8,10,12,14` for CCH construction. The
+exact ignored entries are `simulation::pathing::flow_field::tests::benchmark_flow_field_build` and
+`simulation::pathing::cch::ordering_tests::{benchmark_cch_build_storage,benchmark_cch_queries}`; CCH
+variants use `METRUM_CCH_BENCH_GRAPH=car|mixed|one_way`. No builds, tests or source mutations run
+concurrently with accepted measurements.
 
 Use this exact precedence:
 
@@ -1989,15 +1980,13 @@ test; vehicle orientation itself is checked in Rust snapshot transforms, not by 
 
 Matched unprofiled runs used Rust 1.98.1, `RAYON_NUM_THREADS=24`, working-tree base
 `91af8afca4eb2e9a493ab3bc7f2025a2b87195d9`, with no concurrent builds or Godot runs.
-Baseline executable `/tmp/metrum-angle-baseline-tests` SHA-256:
-`4c01acddd54e3ec9f80af733ada0b98788a6c4f4426e55eec94cda64f3e7ab7c`.
-Final `rust/target/release/deps/metrum_rise-9cc8d57998aa4451` SHA-256:
+Final `$TEST_BINARY` SHA-256:
 `3e8806fc9b647b0aaf2e82f828021a8478d3238c4b4b94cf7a4a885b4dfbf901`.
 
 ```bash
 for measurement in graded_yard_access_snapshot_benchmark graded_yard_height_query_benchmark populated_paved_road_plan_scaling; do
-  RAYON_NUM_THREADS=24 /tmp/metrum-angle-baseline-tests "$measurement" --ignored --nocapture --test-threads=1
-  RAYON_NUM_THREADS=24 rust/target/release/deps/metrum_rise-9cc8d57998aa4451 "$measurement" --ignored --nocapture --test-threads=1
+  RAYON_NUM_THREADS=24 $ARTIFACTS/metrum-angle-baseline-tests "$measurement" --ignored --nocapture --test-threads=1
+  RAYON_NUM_THREADS=24 $TEST_BINARY "$measurement" --ignored --nocapture --test-threads=1
 done
 ```
 
@@ -2021,9 +2010,8 @@ remain identical. Compile p50 before → after is 20.078 → 20.694 / 20.128 →
 compile p95 22.80–30.08 ms. Separate one-time edit snapshots cost 0.0064/0.0511/0.3698/3.3858 ms.
 Repeated local work does not grow proportionally with the background city.
 
-Artifacts: `/tmp/metrum-angle-{before,after}-<measurement>.log` for the exact names above;
-`/tmp/metrum-angle-{tests,check,rustdoc,build,godot}.log` for verification. Deployed library
-SHA-256: `7874b0f50ac54935ead1638f676278abf9661290630fa22e102bd0d56c1de1d0`.
+Deployed library SHA-256:
+`7874b0f50ac54935ead1638f676278abf9661290630fa22e102bd0d56c1de1d0`.
 
 ### Rigid Vehicle Support Verification (2026-09-10)
 
@@ -2043,13 +2031,9 @@ centre-only solve. The rendered run also checks actual MultiMesh transform readb
 is included in `./run.sh --test`; headless mode checks cached uploaded poses, not dummy-renderer
 GPU readback. These are geometric regressions, not an exact replay of the screenshot's trip.
 
-Matched unprofiled snapshot comparison uses the same 76-position mixed-access workload above,
-Rust 1.98.1, 24 Rayon workers and base `91af8afca4eb2e9a493ab3bc7f2025a2b87195d9` plus working-tree
-changes, with builds and other engine/benchmark runs stopped during timing. Baseline executable
-`/tmp/metrum-support-baseline-tests` has SHA-256
-`3e8806fc9b647b0aaf2e82f828021a8478d3238c4b4b94cf7a4a885b4dfbf901`;
-current `rust/target/release/deps/metrum_rise-9cc8d57998aa4451` has SHA-256
-`5ed4e143bf483bddea5eaccccd18ccd07ba925dcad99ad5c1c97231dd4204384`.
+Matched unprofiled snapshot comparison uses the same 76-position mixed-access workload above, Rust
+1.98.1, 24 Rayon workers and base `91af8afca4eb2e9a493ab3bc7f2025a2b87195d9` plus working-tree
+changes, with builds and other engine/benchmark runs stopped during timing.
 
 | Visible mixed access agents | Centre-only p50 / p90 (ms) | Footprint p50 / p90 (ms) |
 | --- | --- | --- |
@@ -2074,16 +2058,13 @@ Ordinary lane cars skip footprint probes. No road-planning path changed; the ear
 locality result above is historical, not rerun for this rendering-only correction.
 
 ```bash
-RAYON_NUM_THREADS=24 /tmp/metrum-support-baseline-tests graded_yard_access_snapshot_benchmark --ignored --nocapture --test-threads=1
-RAYON_NUM_THREADS=24 rust/target/release/deps/metrum_rise-9cc8d57998aa4451 graded_yard_access_snapshot_benchmark --ignored --nocapture --test-threads=1
-RAYON_NUM_THREADS=24 rust/target/release/deps/metrum_rise-9cc8d57998aa4451 graded_yard_vehicle_support_batch_benchmark --ignored --nocapture --test-threads=1
+RAYON_NUM_THREADS=24 $ARTIFACTS/metrum-support-baseline-tests graded_yard_access_snapshot_benchmark --ignored --nocapture --test-threads=1
+RAYON_NUM_THREADS=24 $TEST_BINARY graded_yard_access_snapshot_benchmark --ignored --nocapture --test-threads=1
+RAYON_NUM_THREADS=24 $TEST_BINARY graded_yard_vehicle_support_batch_benchmark --ignored --nocapture --test-threads=1
 RAYON_NUM_THREADS=24 xvfb-run -a godot --display-driver x11 --path godot --rendering-method gl_compatibility --script res://tests/vehicle_ground_support_test.gd -- --benchmark-vehicle-support
 ```
 
-Artifacts: `/tmp/metrum-support-{before,after}-snapshot-2.log`, `/tmp/metrum-support-batch.log`,
-`/tmp/metrum-support-render.log`, and `/tmp/metrum-support-{tests,check,rustdoc,godot}.log`.
-Deployed library SHA-256:
-`7e17c3d1fe490619bd2cf86a1c36cacf42b87b80391a0c493ba0344abee16d68`.
+Deployed library SHA-256: `7e17c3d1fe490619bd2cf86a1c36cacf42b87b80391a0c493ba0344abee16d68`.
 
 ## Access Movement Audit Measurements (2026-09-12)
 
@@ -2111,12 +2092,9 @@ or other benchmarks. The table reports the median of the three process medians.
 
 Run `BINARY --bench 'AgentSystem::tick_access/access_(egress|ingress)_car/(1000|100000)$'
 --noplot` with `RAYON_NUM_THREADS=8` and `taskset -c 0,2,4,6,8,10,12,14`, or one worker on CPU 0.
-Set `CRITERION_HOME` to a separate output directory for each process. Source/build identities,
-commands, complete Criterion output and timings are retained under `/tmp/metrum-full-audit/` as
-`access-sharing-{before,after}-identity.json`, `access-sharing-matched-bench.json`,
-`access-sharing-matched-summary.json` and the referenced process directories/logs. Correctness
-is verified separately by the 1,753-test release suite, including repeated vertices, exact
-corners, zero/multi-segment steps, reverse traversal, watchdog and border-route recovery.
+Set `CRITERION_HOME` to a separate output directory for each process. Correctness is verified
+separately by the 1,753-test release suite, including repeated vertices, exact corners,
+zero/multi-segment steps, reverse traversal, watchdog and border-route recovery.
 
 ## Recommended Direction
 

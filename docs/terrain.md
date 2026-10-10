@@ -29,16 +29,13 @@ splits, city scans or per-frame CPU allocations. Paved terrain skips the grass/r
 branch. Four additional cached texture bindings are applied per terrain material setup;
 shared grass defaults eliminate repeated tuning writes.
 
-Initial shader-only validation (2026-09-26; before the export correction below): `plot_material_lighting_test.gd` passes day/moon/darkness,
-asphalt/concrete frontage-to-yard matching, sidewalk matching, rotated mesh orientation,
-shadows and local lamps. Mean sampled RGB-vector difference is zero for flat grass and
-at most 0.000006 for frontage/yard paving (tolerance 0.012). Window-spill regression passes.
-The existing chunk-renderer test passes when run from `/tmp/metrum-plot-light/renderer_only.gd`
-with only the native road-cursor acknowledgment test omitted; the full command timed out
-on that native contract using the deployed library. The terrain overlay test passes overlay
-intensity, borders and near-floor checks but fails its far-canopy luminance assertion; the
-unchanged baseline shader also fails that same assertion. Neither broader suite is claimed
-as a full pass.
+Initial shader-only validation (2026-09-26; before the export correction below):
+`plot_material_lighting_test.gd` passes day/moon/darkness, asphalt/concrete frontage-to-yard
+matching, sidewalk matching, rotated mesh orientation, shadows and local lamps. Mean sampled
+RGB-vector difference is zero for flat grass and at most 0.000006 for frontage/yard paving
+(tolerance 0.012). Window-spill regression passes. The terrain overlay test passes overlay
+intensity, borders and near-floor checks but fails its far-canopy luminance assertion; the unchanged
+baseline shader also fails that same assertion. Neither broader suite is claimed as a full pass.
 
 Matched unprofiled GPU measurements: upstream Godot 4.7.2 release, Forward+, RX 7900 XTX
 (RADV), 1920×1080 SubViewport, AgX/SSIL/glow from the shared environment, one 40 m plane,
@@ -53,18 +50,18 @@ pairs per material, 60 warm-up and 120 measured frames each; median viewport GPU
 | Yard paving | 0.558 / 0.561 | 0.558 / 0.559 |
 | Road sidewalk | 0.560 / 0.562 | 0.560 / 0.562 |
 
-These are isolated material measurements, not whole-city frame timings. Baseline shader
-snapshots are from `345d59284f13ae81d1b984c727778c66ec17c8bc`; release library SHA-256
-`5368fe8e87315e028fad2437e87a26119a0b7b1b7a63ec7b7bf592b8415dbe89` was used for these shader-only measurements.
-Artifacts: `/tmp/metrum-plot-light/{benchmark-final.log,spill.log,overlays.log,overlay-baseline.log,renderer-only.log,chunks.log,identities.txt}`.
-The baseline directory holds `terrain.before`, `site_ground.before`, `site_surface.before`
-and `road.before`, each containing the corresponding shader from the baseline commit.
+These are isolated material measurements, not whole-city frame timings. Baseline shader snapshots
+are from `345d59284f13ae81d1b984c727778c66ec17c8bc`; release library SHA-256
+`5368fe8e87315e028fad2437e87a26119a0b7b1b7a63ec7b7bf592b8415dbe89` was used for these shader-only
+measurements. The baseline directory holds `terrain.before`, `site_ground.before`,
+`site_surface.before` and `road.before`, each containing the corresponding shader from the baseline
+commit.
 
 ```bash
-XDG_DATA_HOME=/tmp/metrum-plot-light RAYON_NUM_THREADS=4 godot --path godot --script res://tests/plot_material_lighting_test.gd -- --asset-editor --benchmark-plots --baseline-dir=/tmp/metrum-plot-light
-XDG_DATA_HOME=/tmp/metrum-plot-light RAYON_NUM_THREADS=4 godot --path godot --script res://tests/window_spill_test.gd -- --asset-editor
-XDG_DATA_HOME=/tmp/metrum-plot-light RAYON_NUM_THREADS=4 godot --path godot --script res://tests/terrain_overlay_shader_test.gd -- --asset-editor
-XDG_DATA_HOME=/tmp/metrum-plot-light RAYON_NUM_THREADS=4 godot --headless --path godot --script res://tests/network_tool_chunk_renderer_test.gd -- --asset-editor
+XDG_DATA_HOME=$ARTIFACTS/metrum-plot-light RAYON_NUM_THREADS=4 godot --path godot --script res://tests/plot_material_lighting_test.gd -- --asset-editor --benchmark-plots --baseline-dir=$ARTIFACTS/metrum-plot-light
+XDG_DATA_HOME=$ARTIFACTS/metrum-plot-light RAYON_NUM_THREADS=4 godot --path godot --script res://tests/window_spill_test.gd -- --asset-editor
+XDG_DATA_HOME=$ARTIFACTS/metrum-plot-light RAYON_NUM_THREADS=4 godot --path godot --script res://tests/terrain_overlay_shader_test.gd -- --asset-editor
+XDG_DATA_HOME=$ARTIFACTS/metrum-plot-light RAYON_NUM_THREADS=4 godot --headless --path godot --script res://tests/network_tool_chunk_renderer_test.gd -- --asset-editor
 ```
 
 ### Native terrain winding correction
@@ -101,16 +98,11 @@ For 12,288 indices: old **0.928 / 1.032 µs**, corrected **4.001 / 1.281 µs**;
 999,999: **132.457 / 140.237 → 147.808 / 150.013 µs**.
 This isolates index iteration/copying; it does not measure full Godot upload or city frames.
 
-Commands: `cargo test --manifest-path rust/Cargo.toml --lib exported_terrain_faces_are_front_facing_from_above`,
-`cargo test --manifest-path rust/Cargo.toml --lib nodes::simulation_node::tests::cdt`,
-`cargo test --manifest-path rust/Cargo.toml --lib building_site_terrain`,
-`cargo build --manifest-path rust/Cargo.toml --release`; use the material-test command above
-without benchmark flags for the native rendered check. Benchmark reproduction:
-`rustc -O /tmp/metrum-plot-light/index_bench.rs -o /tmp/metrum-plot-light/index_bench`, then
-`/tmp/metrum-plot-light/index_bench`. Evidence under `/tmp/metrum-plot-light/`:
-`native-render-before.log`, `native-render-after.log`, `winding-rust.log`,
-`winding-cdt-tests.log`, `winding-site-tests.log`, `winding-build.log`,
-`index-benchmark.log`, `index-benchmark-build.txt`, `winding-identities.txt`.
+Commands: `cargo test --manifest-path rust/Cargo.toml --lib
+exported_terrain_faces_are_front_facing_from_above`, `cargo test --manifest-path rust/Cargo.toml
+--lib nodes::simulation_node::tests::cdt`, `cargo test --manifest-path rust/Cargo.toml --lib
+building_site_terrain`, `cargo build --manifest-path rust/Cargo.toml --release`; use the
+material-test command above without benchmark flags for the native rendered check.
 
 ### Morning sky reflection parity
 
@@ -130,18 +122,16 @@ at most **0.000071** (threshold 0.002); the previous shader reached **0.02391** 
 The native export/material day/night/local-light regression also passes on this shader.
 The prior checks used a constant background, so they could not catch sky reflectance drift.
 
-Matched unprofiled release Godot 4.7.2 / Forward+ / RX 7900 XTX (RADV), 1920×1080,
-06:00 live sky, directional shadow, `RAYON_NUM_THREADS=4`, vsync off: two alternating
-before/after pairs, 60 warm-up and 120 measured frames each. Median viewport GPU time:
-**0.730 / 0.734 ms before → 0.731 / 0.733 ms after**. This is an isolated material fixture.
-The Rust library remains `54ecc2f8dad9d5f3cd48134242883023dfa2d4cfdc1dc61ce1481c2a2650f108`.
-Baseline `terrain.before` is the immediately preceding working-tree shader with the
-`SPECULAR = 0.0` paving assignment. Evidence in `/tmp/metrum-dawn/`:
-`specular-probe.log`, `regression-benchmark.log`, `material-regression.log`, `identities.txt`.
+Matched unprofiled release Godot 4.7.2 / Forward+ / RX 7900 XTX (RADV), 1920×1080, 06:00 live
+sky, directional shadow, `RAYON_NUM_THREADS=4`, vsync off: two alternating before/after pairs,
+60 warm-up and 120 measured frames each. Median viewport GPU time: **0.730 / 0.734 ms before →
+0.731 / 0.733 ms after**. This is an isolated material fixture. The Rust library remains
+`54ecc2f8dad9d5f3cd48134242883023dfa2d4cfdc1dc61ce1481c2a2650f108`. Baseline `terrain.before`
+is the immediately preceding working-tree shader with the `SPECULAR = 0.0` paving assignment.
 
 ```bash
-XDG_DATA_HOME=/tmp/metrum-dawn RAYON_NUM_THREADS=4 godot --path godot --script res://tests/plot_dawn_lighting_test.gd -- --asset-editor --benchmark-dawn --baseline-shader=/tmp/metrum-dawn/terrain.before
-XDG_DATA_HOME=/tmp/metrum-dawn RAYON_NUM_THREADS=4 godot --path godot --script res://tests/plot_material_lighting_test.gd -- --asset-editor
+XDG_DATA_HOME=$ARTIFACTS/metrum-dawn RAYON_NUM_THREADS=4 godot --path godot --script res://tests/plot_dawn_lighting_test.gd -- --asset-editor --benchmark-dawn --baseline-shader=$ARTIFACTS/metrum-dawn/terrain.before
+XDG_DATA_HOME=$ARTIFACTS/metrum-dawn RAYON_NUM_THREADS=4 godot --path godot --script res://tests/plot_material_lighting_test.gd -- --asset-editor
 ```
 
 Final consolidation removes the dormant lane-stripe calculation from the road shader:
@@ -156,14 +146,12 @@ road-marking tests pass; the isolated renderer suite (excluding the previously d
 native acknowledgment test) also passes. Matched final morning GPU medians using the same
 settings above: terrain **0.733 / 0.730 → 0.729 / 0.732 ms** against the original zero-specular
 shader; road **0.781 / 0.785 → 0.782 / 0.786 ms**, yard **0.779 / 0.779 → 0.779 / 0.780 ms**
-against the respective immediately pre-consolidation shaders (already at 0.5 reflectance).
-No additional draw calls, texture fetches or steady-frame CPU work. Artifact directory:
-`/tmp/metrum-dawn/`, files `unified-dawn.log`, `road-unified-benchmark.log`,
-`site-unified-benchmark.log`, `unified-materials.log`, `unified-markings.log`,
-`unified-renderer.log`, `unified-identities.txt`. The saved `unified_bench.gd` reuses the dawn
-fixture and selects the road or yard for measurement through `METRUM_PAVING_BENCH=road`
-or `site`, with `--baseline-shader` pointing to `road-refactor.before` or
-`site-refactor.before`; all other command flags above remain the same.
+against the respective immediately pre-consolidation shaders (already at 0.5 reflectance). No
+additional draw calls, texture fetches or steady-frame CPU work. The saved `unified_bench.gd`
+reuses the dawn fixture and selects the road or yard for measurement through
+`METRUM_PAVING_BENCH=road` or `site`, with `--baseline-shader` pointing to
+`road-refactor.before` or `site-refactor.before`; all other command flags above remain the
+same.
 
 ## Window light reception — RENDER-10
 
@@ -199,9 +187,8 @@ finite unit foliage normals, smooth lighting and uniform foliage albedo per surf
 all 24 near variants. These checks validate rendering contracts, not player preference.
 
 Normal construction adds O(vertices) work once at catalogue startup. The fragment correction
-is O(1), with no new texture lookup, vertex attribute, surface or simulation work. Matched
-unprofiled E13 measurements and captures are recorded under `/tmp/metrum-crown-cohesion/`.
-The user confirmed a clear improvement in the forest appearance.
+is O(1), with no new texture lookup, vertex attribute, surface or simulation work. The user
+confirmed a clear improvement in the forest appearance.
 
 Reproduction (from repository root):
 
@@ -209,7 +196,7 @@ Reproduction (from repository root):
 godot --headless --path godot --script res://tests/vegetation_appearance_test.gd
 godot --path godot --audio-driver Dummy --resolution 640x480 --script res://tests/vegetation_level_match_test.gd
 godot --path godot --audio-driver Dummy --resolution 640x480 --script res://tests/vegetation_wind_gate_test.gd
-METRUM_GPU_PROBE_EXPERIMENT=E13 METRUM_GPU_PROBE_OUTPUT=/tmp/metrum-crown-cohesion/after/gpu-final godot --path godot --windowed --resolution 1280x720 --script res://tests/local_gpu_probe.gd
+METRUM_GPU_PROBE_EXPERIMENT=E13 METRUM_GPU_PROBE_OUTPUT=$ARTIFACTS/metrum-crown-cohesion/after/gpu-final godot --path godot --windowed --resolution 1280x720 --script res://tests/local_gpu_probe.gd
 ```
 
 The probe requires a fresh output directory. Baseline: `2c278b01`; candidate: the working
@@ -460,13 +447,12 @@ patch upload, not catalogue construction: its maximum is 19.358 ms before and
 Commands were `godot --path godot --headless --log-file <writable-log> --script
 res://tests/vegetation_appearance_test.gd` and the corresponding
 `vegetation_invalidation_test.gd`, plus `godot --path godot --headless --log-file
-<writable-log> --import`. Full output, the temporary catalogue/snapshot harnesses,
-and all samples are in `/tmp/foliage-atlas-validation/`. Final appearance output:
-`PASS vegetation appearance, shared material, LOD buckets, positions and empty density`;
-`grep -c "SCRIPT ERROR"` is 0. Invalidation exits 0 with 0 `SCRIPT ERROR` lines; that
-harness contains no PASS print. The initial default-log run crashed on a sandbox-denied
-user-log write; matched runs use writable logs. Import generated the companions despite
-sandbox-denied editor settings and debug socket operations.
+<writable-log> --import`. Final appearance output: `PASS vegetation appearance, shared
+material, LOD buckets, positions and empty density`; `grep -c "SCRIPT ERROR"` is 0.
+Invalidation exits 0 with 0 `SCRIPT ERROR` lines; that harness contains no PASS print.
+The initial default-log run crashed on a sandbox-denied user-log write; matched runs use
+writable logs. Import generated the companions despite sandbox-denied editor settings
+and debug socket operations.
 
 Two Blender 5.2.1 LTS bakes (fixed seed, 32 Cycles samples, one CPU thread) produce
 PNG SHA-256 `612472fef60b135ae51678b110538b12f5d4b884425773fb365142d6440a7dca`
@@ -2118,29 +2104,22 @@ levels or resolve the per-patch range problem. `RENDER-04` remains blocked on di
 **Historical phase-2 verification and artifacts.** These runs preceded `1bee14a7`, over `6ff3e638`. Commands:
 
 ```sh
-OPENBLAS_NUM_THREADS=1 python3 tools/vegetation_lod_measure.py /tmp/render02/phase1
-OPENBLAS_NUM_THREADS=1 python3 tools/vegetation_lod_measure.py /tmp/render02/phase2
-OPENBLAS_NUM_THREADS=1 python3 tools/vegetation_lod_measure.py /tmp/render02/phase2-final
+OPENBLAS_NUM_THREADS=1 python3 tools/vegetation_lod_measure.py $ARTIFACTS/render02/phase1
+OPENBLAS_NUM_THREADS=1 python3 tools/vegetation_lod_measure.py $ARTIFACTS/render02/phase2
+OPENBLAS_NUM_THREADS=1 python3 tools/vegetation_lod_measure.py $ARTIFACTS/render02/phase2-final
 python3 -m unittest discover -s tools -p test_vegetation_lod_measure.py
-godot --headless --path godot --log-file /tmp/render02/final-tests/vegetation_appearance_test-engine.log --script res://tests/vegetation_appearance_test.gd
+godot --headless --path godot --log-file $ARTIFACTS/render02/final-tests/vegetation_appearance_test-engine.log --script res://tests/vegetation_appearance_test.gd
 # Same direct invocation for vegetation_edit_test, vegetation_invalidation_test,
 # and vegetation_land_cover_test. Inspect SCRIPT ERROR independently of exit/PASS.
 ```
 
-Phase 1 ran before the material edit and phase 2 after it; each has 896 raw raster samples
-(224 view/variant/level samples × 4 controls) in `measurements.json`, `summary.csv`, its
-mesh export and source hashes. The later reporter also emits `transitions.csv`, reads the
-distant coverage default from its shader, and hashes the atlas. It does not alter the
-recorded raster equations or values. Both exports exit 0 with **0 SCRIPT ERROR**; the
-initial standalone export also exits 0 with **0 SCRIPT ERROR**. The two analytic instrument
-tests pass (run three times), checking full coverage, depth/alpha rejection and mip filtering.
-The standalone/phase-1/phase-2 export catalogue times are `97.127 / 109.296 / 97.304 ms`;
-these single setup samples are recorded separately from the matched benchmark below.
-The final reporter run in `/tmp/render02/phase2-final` freshly exports the current tree,
-exits 0 with **0 SCRIPT ERROR**, and reproduces all **896** phase-2 samples and summary
-values exactly. Its catalogue setup is `106.546 ms`. It includes the transition CSV and
-atlas hash. `/tmp/render02/final-source-sha256.txt` also identifies the exact changed
-sources and deployed native library used for this handoff.
+It does not alter the recorded raster equations or values. Both exports exit 0 with **0 SCRIPT
+ERROR**; the initial standalone export also exits 0 with **0 SCRIPT ERROR**. The two analytic
+instrument tests pass (run three times), checking full coverage, depth/alpha rejection and mip
+filtering. The standalone/phase-1/phase-2 export catalogue times are `97.127 / 109.296 /
+97.304 ms`; these single setup samples are recorded separately from the matched benchmark
+below. The final reporter run freshly exports the current tree, exits 0 with **0 SCRIPT ERROR**, and
+reproduces all **896** phase-2 samples and summary values exactly. Its catalogue setup is `106.546 ms`. It includes the transition CSV and atlas hash.
 
 | Direct vegetation test | Baseline exit / SCRIPT ERROR | Final exit / SCRIPT ERROR | Final output |
 |---|---|---|---|
@@ -2151,13 +2130,10 @@ sources and deployed native library used for this handoff.
 
 The baseline correctness run's catalogue/upload-maximum times were `102.178 / 19.367 ms`
 while the CPU raster was active; the final correctness run's were `106.175 / 19.675 ms`.
-These are **not matched performance evidence**. Matched,
-unprofiled runs use the existing appearance fixture (4096 placements per patch, four
-warmup uploads, maximum of the following 24 uploads) sequentially after raster work ends.
-The baseline scripts are exact `git show 6ff3e638:<path>` copies under
-`/tmp/render02/benchmark/`, with only preload paths redirected to the copied baseline
-species/renderer; the after runs use live scripts. Same official Godot executable and
-deployed native library, default worker settings, no Rust rebuild, profiler or GPU renderer.
+These are **not matched performance evidence**. Matched, unprofiled runs use the existing
+appearance fixture (4096 placements per patch, four warmup uploads, maximum of the following
+24 uploads) sequentially after raster work ends. Same official Godot executable and deployed
+native library, default worker settings, no Rust rebuild, profiler or GPU renderer.
 
 | Run order | Build | Catalogue ms | Upload maximum ms | Exit / SCRIPT ERROR |
 |---:|---|---:|---:|---|
@@ -2172,13 +2148,11 @@ deployed native library, default worker settings, no Rust rebuild, profiler or G
 
 Median catalogue time regresses **100.570 → 107.510 ms (+6.940 ms, +6.9%)**; median upload
 maximum is **22.1795 → 19.787 ms**. Wide ranges prevent claiming a reliable upload speedup.
-The extra startup material remains a measured cost, not a performance acceptance. Full
-logs/results are in `/tmp/render02/baseline-tests`, `final-tests` and `benchmark`; graphical
-probe failures are `/tmp/render02-probe.log` and `/tmp/render02-x11.log` (0 SCRIPT ERROR,
-but X11/Wayland initialization errors). Neither the unrelated failing full `run.sh --test`
-chain nor Rust tests were run for this rendering-only change. GPU compilation, matched
-unprofiled release frame times, other apparent sizes and an in-engine appearance check
-remain required before accepting this candidate.
+The extra startup material remains a measured cost, not a performance acceptance. Neither
+the unrelated failing full `run.sh --test` chain nor Rust tests were run for this
+rendering-only change. GPU compilation, matched unprofiled release frame times, other
+apparent sizes and an in-engine appearance check remain required before accepting this
+candidate.
 
 **Follow-up: filtered distant crowns and shadowed wood (`render02-tune`).**
 The quarter-metre point mask is replaced by two deterministic object-space hashes at
@@ -2367,26 +2341,23 @@ The material blends needle litter/duff and moss hues, matching the incoming gras
 luminance before blending. Coverage changes no lighting, shadow visibility, grass palette,
 chroma gain or hillshade tint. Tree shadows remain responsible for canopy light occlusion.
 
-Fresh headless validation uses the release GDExtension from `cargo build --release`, copied
-to `godot/bin/libmetrum_rise.so`. Direct commands are
-`godot --headless --path godot --log-file /tmp/render05/<test>-engine.log --script res://tests/<test>.gd`.
-`vegetation_edit_test`, `vegetation_appearance_test`, `vegetation_invalidation_test`,
-`vegetation_land_cover_test` and `network_tool_chunk_renderer_test` each exit **0**, with
-**0 `SCRIPT ERROR` entries**. The new native test covers R8 publication, a boundary plant,
-clear-cut/removal, both revision streams, stage isolation and `ImageTexture` reuse. The Rust
-oracle compares every texel with accepted canopy products, allowing only the <0.1 mm
-roundoff from reconstructing packed local f32 positions; overlapping border bytes must
-match exactly. Logs are under `/tmp/render05/`.
+Fresh headless validation uses the release GDExtension from `cargo build --release`, copied to
+`godot/bin/libmetrum_rise.so`. Direct commands are `godot --headless --path godot --log-file
+$ARTIFACTS/render05/<test>-engine.log --script res://tests/<test>.gd`. `vegetation_edit_test`,
+`vegetation_appearance_test`, `vegetation_invalidation_test`, `vegetation_land_cover_test` and
+`network_tool_chunk_renderer_test` each exit **0**, with **0 `SCRIPT ERROR` entries**. The new
+native test covers R8 publication, a boundary plant, clear-cut/removal, both revision streams, stage
+isolation and `ImageTexture` reuse. The Rust oracle compares every texel with accepted canopy
+products, allowing only the <0.1 mm roundoff from reconstructing packed local f32 positions;
+overlapping border bytes must match exactly.
 
-Fresh Rust verification (`cargo ... --manifest-path rust/Cargo.toml`):
-`fmt --check` exits 0; `test --release` exits 0 with
-`test result: ok. 1684 passed; 0 failed; 11 ignored; 0 measured; 0 filtered out; finished in 74.99s`
-(and an empty passing doc-test target). `doc --no-deps` exits 0 with **0** matches for
-`warning: missing documentation`. `clippy --release` exits **101**, with 494 warnings and
-the pre-existing `clippy::mut_from_ref` error at
-`rust/src/simulation/economy/agents/tick/slices.rs:37` (`get_mut(&self) -> &mut T`). That
-file is identical to parent `9ccc236b`; this task does not change its unsafe storage contract.
-Full output is in `/tmp/render05/{fmt,rust-test,clippy,doc}.log`.
+Fresh Rust verification (`cargo ... --manifest-path rust/Cargo.toml`): `fmt --check` exits 0; `test
+--release` exits 0 with `test result: ok. 1684 passed; 0 failed; 11 ignored; 0 measured; 0 filtered
+out; finished in 74.99s` (and an empty passing doc-test target). `doc --no-deps` exits 0 with **0**
+matches for `warning: missing documentation`. `clippy --release` exits **101**, with 494 warnings
+and the pre-existing `clippy::mut_from_ref` error at
+`rust/src/simulation/economy/agents/tick/slices.rs:37` (`get_mut(&self) -> &mut T`). That file is
+identical to parent `9ccc236b`; this task does not change its unsafe storage contract.
 
 Fresh, unprofiled release timing on the Intel i5-3350P (four cores), rustc 1.93.1,
 `RAYON_NUM_THREADS=4 cargo test --release vegetation_edit_benchmark -- --ignored --nocapture`
@@ -2394,9 +2365,7 @@ from `rust/`, exits 0. The existing Criterion fixture uses a 510 m patch at `(-2
 default generator settings, 50 samples, 2 s warmup and 6 s measurement per arm. The painted
 case is the existing 255 m brush-disc fixture; index preparation and background edit setup
 are outside timing. These are matched controls in one run, after compilation and other tests
-finished. Build identity: parent `9ccc236b` plus the RENDER-05 sources listed in
-`/tmp/render05/source-sha256.txt` (coverage source SHA-256
-`18141bafb5990b4876742793265756ba43701e99699334c895ee4446d7c0681d`).
+finished.
 
 | Background edits | Canopy scatter | Added coverage build | Painted scatter | Added painted coverage build |
 |---:|---:|---:|---:|---:|
@@ -2406,13 +2375,11 @@ finished. Build identity: parent `9ccc236b` plus the RENDER-05 sources listed in
 These coverage costs are **additional per patch**, for candidate acceptance and crown-disc
 rasterization; they exclude R8 bridge conversion and Godot/GPU texture upload. The untouched
 coverage confidence intervals are 256.55–296.58 µs and 234.06–239.88 µs; painted intervals are
-544.38–553.55 µs and 621.78–680.91 µs. The painted background case is about **18% slower**,
-so this run does not establish that background edits cost nothing. Inspection bounds the
+544.38–553.55 µs and 621.78–680.91 µs. The painted background case is about **18% slower**, so
+this run does not establish that background edits cost nothing. Inspection bounds the
 candidate walk to the same local cells; authored edit lookups use the existing sparse store.
-The brief's 242/632 µs scatter figures are historical, not current-build validation.
-Raw output: `/tmp/render05/benchmark.log`; Criterion samples/reports:
-`rust/target/criterion/VegetationEdits/`.
-No game launch or GPU capture is part of this task; **on-screen appearance is unverified**.
+The brief's 242/632 µs scatter figures are historical, not current-build validation. No game
+launch or GPU capture is part of this task; **on-screen appearance is unverified**.
 
 ### The generator became the saved population (2026-09-12)
 
@@ -3053,13 +3020,13 @@ and after **90.944, 99.424, 94.523 ms**: medians **54.858 → 94.523 ms**, a **3
 startup increase. These are unprofiled CPU measurements on the shared machine, not GPU
 acceptance results. Additional geometry and the area integration increase startup cost.
 
-Commands (full stdout/stderr under `/tmp/birch-validation/`):
+Commands:
 
 ```bash
-godot --path godot --headless --log-file /tmp/birch-validation/after-engine-1.log --script res://tests/vegetation_appearance_test.gd > /tmp/birch-validation/after-appearance-1.log 2>&1
-godot --path godot --headless --log-file /tmp/birch-validation/invalidation-engine.log --script res://tests/vegetation_invalidation_test.gd > /tmp/birch-validation/invalidation.log 2>&1
-grep -c 'SCRIPT ERROR' /tmp/birch-validation/after-appearance-1.log /tmp/birch-validation/invalidation.log
-XDG_CONFIG_HOME=/tmp/birch-validation/config godot --path godot --headless --log-file /tmp/birch-validation/import-engine.log --import > /tmp/birch-validation/import.log 2>&1
+godot --path godot --headless --log-file $ARTIFACTS/birch-validation/after-engine-1.log --script res://tests/vegetation_appearance_test.gd > $ARTIFACTS/birch-validation/after-appearance-1.log 2>&1
+godot --path godot --headless --log-file $ARTIFACTS/birch-validation/invalidation-engine.log --script res://tests/vegetation_invalidation_test.gd > $ARTIFACTS/birch-validation/invalidation.log 2>&1
+grep -c 'SCRIPT ERROR' $ARTIFACTS/birch-validation/after-appearance-1.log $ARTIFACTS/birch-validation/invalidation.log
+XDG_CONFIG_HOME=$ARTIFACTS/birch-validation/config godot --path godot --headless --log-file $ARTIFACTS/birch-validation/import-engine.log --import > $ARTIFACTS/birch-validation/import.log 2>&1
 ```
 
 Appearance prints `PASS vegetation appearance, shared material, LOD buckets, positions and
@@ -3075,9 +3042,9 @@ Both final atlas bakes used Blender `5.2.1 LTS`, Cycles CPU, one render thread, 
 hang after files were written, the validation invocation exits after the bake script returns:
 
 ```bash
-blender --background -noaudio --python tools/bake_foliage_atlas.py --python-expr 'import sys, os; sys.stdout.flush(); sys.stderr.flush(); os._exit(0)' -- /tmp/birch-validation/bake-1/foliage_atlas.png
+blender --background -noaudio --python tools/bake_foliage_atlas.py --python-expr 'import sys, os; sys.stdout.flush(); sys.stderr.flush(); os._exit(0)' -- $ARTIFACTS/birch-validation/bake-1/foliage_atlas.png
 # Repeat with bake-2, then compare:
-sha256sum /tmp/birch-validation/bake-{1,2}/foliage_atlas.png
+sha256sum $ARTIFACTS/birch-validation/bake-{1,2}/foliage_atlas.png
 ```
 
 Both PNGs hash to `15e7fa5d263076c0258e8abbee37f0b0b3a1a40391f0092b27eca5905202d990`;
@@ -3205,16 +3172,15 @@ Pollution retains own/neighbor weights `0.60/0.40` and retention `0.995`; noise 
 and `0.90`. The kernel expands separately for each field so Rayon receives constant coefficients.
 Desirability reads the two resulting fields; it has no zoning dependency.
 
-Environmental bilinear sampling clamps to the edge and interpolates along the remaining axis
-for single-row/column grids; a single cell stays constant and an empty grid returns zero
-(`AUDIT-01-G3`). Five CPU-0 matched release pairs (24 configured Rayon workers; sampling itself
-is serial) measure 1,048,576 queries per sample, 11 samples per process:
-1 × 1 costs 5.671 → 1.059 ms; 1 × 512 costs 5.672 → 2.798 ms; 512 × 1 costs
-5.769 → 2.711 ms; 512 × 512 costs 6.548 → 6.165 ms. The ordinary 2D interpolation
-path is unchanged. Command: the recorded release test binary with
-`--exact simulation::grid::data_grid::tests::benchmark_bilinear_grid_sampling --ignored --nocapture`.
-Identities and raw results are under `/tmp/metrum-full-audit/grid-sampling-*`. This isolates
-sampling arithmetic and does not measure whole-overlay rasterization or GPU upload.
+Environmental bilinear sampling clamps to the edge and interpolates along the remaining axis for
+single-row/column grids; a single cell stays constant and an empty grid returns zero
+(`AUDIT-01-G3`). Five CPU-0 matched release pairs (24 configured Rayon workers; sampling itself is
+serial) measure 1,048,576 queries per sample, 11 samples per process: 1 × 1 costs 5.671 → 1.059 ms;
+1 × 512 costs 5.672 → 2.798 ms; 512 × 1 costs 5.769 → 2.711 ms; 512 × 512 costs 6.548 → 6.165 ms.
+The ordinary 2D interpolation path is unchanged. Command: the recorded release test binary with
+`--exact simulation::grid::data_grid::tests::benchmark_bilinear_grid_sampling --ignored
+--nocapture`. This isolates sampling arithmetic and does not measure whole-overlay rasterization or
+GPU upload.
 
 Environmental RGBA pixels sample their world-space texture centres through
 `WorldConfig.world_to_env_grid`, so rounded source-grid dimensions cannot stretch cell spacing
@@ -3244,21 +3210,18 @@ that version is retained only as a measured intermediate (`overlay-raster-matche
 Column reuse preserves its exact result bytes across 1/8/24 workers. Three mixed-core 24-worker
 pairs also improve the larger workloads, but physical-core comparisons above are the primary evidence.
 
-Command: the recorded release test binary with
-`--exact nodes::sim::render::zoning::tests::benchmark_environmental_overlay_raster --ignored --nocapture --test-threads=1`.
-The deterministic source fields include zero/negative, intermediate and saturated values;
-three warmups precede 21 samples of four rasterizations each. No world-constructor work is timed.
-Identities/source snapshots are `overlay-raster-{before,columns}-*`, and raw results are
-`/tmp/metrum-full-audit/overlay-columns-matched-bench.json`. Corrected alignment intentionally
-changes old pixels; checksums match within each build across all repetitions/worker counts.
-This CPU test excludes the Godot array bridge and GPU texture upload.
+Command: the recorded release test binary with `--exact
+nodes::sim::render::zoning::tests::benchmark_environmental_overlay_raster --ignored --nocapture
+--test-threads=1`. The deterministic source fields include zero/negative, intermediate and saturated
+values; three warmups precede 21 samples of four rasterizations each. No world-constructor work is
+timed. Corrected alignment intentionally changes old pixels; checksums match within each build
+across all repetitions/worker counts. This CPU test excludes the Godot array bridge and GPU texture
+upload.
 
-The later explicit-terrain-extent correction retains comparable raster cost: five eight-core
-pairs measure 0.0281 → 0.0278, 1.0288 → 1.0305 and 3.8871 → 3.8820 ms; three CPU-0
-single-worker pairs remain comparable as well. Aligned-world bytes match exactly; the added
-45 × 35 m authored / 50 × 40 m rendered fixture verifies the intentionally corrected case.
-Build identities and raw rows are in `/tmp/metrum-full-audit/extraction-{before,final}-identity.json`
-and `extraction-matched-bench.json`; the raster baseline is `overlay-raster-columns-tests`.
+The later explicit-terrain-extent correction retains comparable raster cost: five eight-core pairs
+measure 0.0281 → 0.0278, 1.0288 → 1.0305 and 3.8871 → 3.8820 ms; three CPU-0 single-worker pairs
+remain comparable as well. Aligned-world bytes match exactly; the added 45 × 35 m authored / 50 × 40
+m rendered fixture verifies the intentionally corrected case.
 
 Deposit sampling, mine attachment and field/pit rendering share their exact f32 ray-crossing
 predicate (`AUDIT-01-G6`). Separate boundary-inclusive and higher-precision road predicates retain
@@ -3282,10 +3245,7 @@ payload validation and hashing are outside timing. Per-getter process medians:
 | 2001 × 2001 | 25.574 → 5.821 | 25.470 → 5.873 | 25.447 → 5.710 |
 
 All blank RGBA bytes/checksums match. This is CPU bridge acceptance; GPU upload and full gameplay
-frame cost remain outside the timing. Command/script and raw rows are preserved under
-`/tmp/metrum-full-audit/overlay-raster-bridge-benchmark.gd` and
-`overlay-bridge-matched-bench.json`; extension identities are in the corresponding
-`overlay-raster-{before,columns}-identity.json` files. The initial harness used an unavailable
+frame cost remain outside the timing. The initial harness used an unavailable
 `PackedByteArray.hash()` member; it was corrected to Godot's `hash()` before any matched timing.
 
 `AUDIT-01-G2` preserves O(C) diffusion work and existing row parallelism, with no per-cell
@@ -3298,15 +3258,13 @@ allocation or new grid state. Five matched unprofiled release pairs on eight phy
 | 256 × 256 | 0.111181 | 0.113025 |
 | 512 × 512 | 0.303329 | 0.298051 |
 
-Command: the recorded release test binary with
-`--exact simulation::grid::tests::benchmark_environmental_diffusion --ignored --nocapture`.
-Each sample resets deterministic source fields outside timing and measures eight paired ticks;
-25 samples produce each process median. Empty building/road collections isolate diffusion,
-excluding emission scaling and world construction. All output-bit checksums match across builds
-and 1/8/24 workers. CPU-0 single-worker timings also remain comparable; 24-worker timings on
-mixed core types are noisy. Exact identities and raw results are in
-`/tmp/metrum-full-audit/environment-{before,zipped}-identity.json`,
-`environment-zipped-matched-bench.json` and `environment-physical-matched-bench.json`.
+Command: the recorded release test binary with `--exact
+simulation::grid::tests::benchmark_environmental_diffusion --ignored --nocapture`. Each sample
+resets deterministic source fields outside timing and measures eight paired ticks; 25 samples
+produce each process median. Empty building/road collections isolate diffusion, excluding
+emission scaling and world construction. All output-bit checksums match across builds and
+1/8/24 workers. CPU-0 single-worker timings also remain comparable; 24-worker timings on mixed
+core types are noisy.
 
 The terrain shader blends environmental colors with their encoded alpha (`alpha × 0.6`) and
 clamps overlay sampling at the world edge (`AUDIT-01-G5`). Previously every nonzero value used
@@ -3333,13 +3291,9 @@ viewport/mode; timing includes frame synchronization, rendering and image readba
 
 These timings are comparable, not a hardware-GPU or gameplay speedup claim. Work remains
 O(pixels); alpha adds one scalar multiply and cleanup removes unused shader state. Output is
-repeatable within each build, and inactive-overlay controls match across builds. Exact shader
-identities, raw timings and image comparison results are under
-`/tmp/metrum-full-audit/terrain-shader-{before,after}-identity.json`,
-`terrain-shader-matched-bench.json`, and `terrain-shader-reference-comparison.json`.
-`terrain-shader-benchmark.gd` and `match_terrain_shader.py` preserve the workload/commands.
-The sandbox denied Xvfb's local listening socket; rendered checks ran with that restriction
-lifted. No display/network service is needed by the simulation tests.
+repeatable within each build, and inactive-overlay controls match across builds. The sandbox
+denied Xvfb's local listening socket; rendered checks ran with that restriction lifted. No
+display/network service is needed by the simulation tests.
 
 ### 3. Terrain Uses Dual Sparse Buffers
 
@@ -3465,14 +3419,13 @@ Three CPU-0 single-worker pairs improve blank/sparse cases by roughly 10–16%; 
 costs are retained explicitly. The first four-chunk batch had roughly 4–7 µs excess small-grid
 overhead; it is a measured intermediate, not the accepted implementation.
 
-Command: preserved release test binary with
-`--exact simulation::core::sparse_chunk_grid::tests::benchmark_sparse_dense_replacement --ignored --nocapture --test-threads=1`.
-Three warmups precede 21 samples of eight replacements, including old-chunk destruction and
-allocation. Input setup, dense reconstruction and weighted-bit checksums are outside timing.
-Sparse fixtures fill the final cell of every sixty-fourth chunk; all output checksums and chunk
-counts match across builds and worker counts. Identities/source snapshots are
-`/tmp/metrum-full-audit/sparse-load-{before,final}-*`; raw rows are `sparse-grain-matched-bench.json`.
-This isolates sparse reconstruction, excluding SQLite decoding, water filling and renderer upload.
+Command: preserved release test binary with `--exact
+simulation::core::sparse_chunk_grid::tests::benchmark_sparse_dense_replacement --ignored --nocapture
+--test-threads=1`. Three warmups precede 21 samples of eight replacements, including old-chunk
+destruction and allocation. Input setup, dense reconstruction and weighted-bit checksums are outside
+timing. Sparse fixtures fill the final cell of every sixty-fourth chunk; all output checksums and
+chunk counts match across builds and worker counts. This isolates sparse reconstruction, excluding
+SQLite decoding, water filling and renderer upload.
 
 ### 8. Engineered Ground Is A Chunk-Local Visual Derivation Step
 
@@ -3556,13 +3509,11 @@ payload, live source statistics and formatted diagnostic output, alongside regul
 payloads with negative heights.
 
 Three CPU-0 headless helper runs compare the existing calculation on a prepared float array with
-native-byte decoding plus that same calculation: 7 × 7 samples cost 0.00309 → 0.00341 ms,
-55 × 55 cost 0.16156 → 0.16113 ms, and 515 × 515 cost 14.382 → 14.121 ms. Outputs match.
-This isolates diagnostic decoding overhead; it does **not** compare with the old production
-reader that incorrectly returned zero. Three warmups precede 21 samples, with 128 / 16 / 1
-repetitions respectively; setup is excluded. Command/script, renderer identity and raw results
-are under `/tmp/metrum-full-audit/water-stats-benchmark.gd`, `water-stats-final-identity.json`
-and `water-stats-benchmark.json`. These timings do not cover full diagnostic formatting or frames.
+native-byte decoding plus that same calculation: 7 × 7 samples cost 0.00309 → 0.00341 ms, 55 × 55
+cost 0.16156 → 0.16113 ms, and 515 × 515 cost 14.382 → 14.121 ms. Outputs match. This isolates
+diagnostic decoding overhead; it does **not** compare with the old production reader that
+incorrectly returned zero. Three warmups precede 21 samples, with 128 / 16 / 1 repetitions
+respectively; setup is excluded. These timings do not cover full diagnostic formatting or frames.
 
 Terrain, including refined and road-preview patches, exports a single native `height_bytes` buffer
 (`AUDIT-01-G8`). The retired parallel `height_data` export and frontend fallback are removed;
@@ -3571,11 +3522,9 @@ failed refinement payloads still omit drawable heights intentionally. Terrain an
 order. This is stateless, explicitly requested diagnostic work, not simulation state.
 
 Three CPU-0 headless comparisons against the retained previous water reader give 7 × 7 / 55 × 55 /
-515 × 515 diagnostic costs of 0.00337 → 0.00307 / 0.15981 → 0.14063 / 13.985 → 12.381 ms.
-Both sides decode the same byte payload and produce equal statistics; eliminating the redundant
-per-value conversion is included. Setup is excluded; three warmups precede 21 measured samples.
-Scripts, before/after renderer identities and raw rows are `/tmp/metrum-full-audit/surface-stats-benchmark.gd`,
-`surface-payload-{before,after}-identity.json` and `surface-stats-benchmark.json`.
+515 × 515 diagnostic costs of 0.00337 → 0.00307 / 0.15981 → 0.14063 / 13.985 → 12.381 ms. Both sides
+decode the same byte payload and produce equal statistics; eliminating the redundant per-value
+conversion is included. Setup is excluded; three warmups precede 21 measured samples.
 
 Five alternating native bridge process pairs on eight physical P cores measure completed
 asynchronous payload requests for blank nonzero terrain, with regular and refined paths:
@@ -3596,10 +3545,7 @@ have equal checksums after excluding the removed duplicate array; raw height byt
 mesh products are unchanged. Work remains O(payload samples/mesh size), with one fewer height
 buffer and bulk byte copies. The benchmark changes no road-planning algorithm.
 
-Command: `taskset -c 0,2,4,6,8,10,12,14 godot --headless --path godot --script
-/tmp/metrum-full-audit/surface-payload-benchmark.gd`, `RAYON_NUM_THREADS=8`.
-Raw commands, rows and extension identities are `surface-payload-matched-bench.json` and
-`surface-payload-{before,after}-identity.json`. This excludes texture upload and full gameplay frames.
+This excludes texture upload and full gameplay frames.
 
 Geometry diagnostics also share clip aggregation, signed polygon area, bounds formatting and mesh
 labels (`AUDIT-01-G9`). The clip result is built once from the decoded groups; it no longer validates
@@ -3608,15 +3554,13 @@ the same packed loops twice or initializes a duplicate statistics dictionary. Me
 O(surface count) work for mesh labels and O(decoded clip points/groups) work for clip diagnostics.
 No persistent cache or simulation state is added.
 
-Three CPU-0 headless before/after helper runs preserve every result. Single-surface mesh labels
-cost 0.00128 → 0.00093 ms at three vertices, 0.00300 → 0.00094 ms at 3,072 vertices and
-0.07450 → 0.00100 ms at 98,304 vertices. Clip diagnostics with one hole per outer loop cost
-0.01027 → 0.00873 / 0.21669 → 0.21094 / 1.748 → 1.708 ms at 1 / 32 / 256 groups.
-Three warmups precede 21 samples; fixture/mesh construction is excluded and output checksums match.
-The existing surface regression also verifies multiple surfaces, primitive/null meshes, hole area,
-negative-coordinate bounds and actual native payload logs. Commands, source identities and raw rows
-are `/tmp/metrum-full-audit/render-geometry-benchmark.gd`, `render-geometry-{before,after}-identity.json`
-and `render-geometry-benchmark.json`. These are explicit diagnostic costs, not gameplay frame timings.
+Three CPU-0 headless before/after helper runs preserve every result. Single-surface mesh labels cost
+0.00128 → 0.00093 ms at three vertices, 0.00300 → 0.00094 ms at 3,072 vertices and 0.07450 → 0.00100
+ms at 98,304 vertices. Clip diagnostics with one hole per outer loop cost 0.01027 → 0.00873 /
+0.21669 → 0.21094 / 1.748 → 1.708 ms at 1 / 32 / 256 groups. Three warmups precede 21 samples;
+fixture/mesh construction is excluded and output checksums match. The existing surface regression
+also verifies multiple surfaces, primitive/null meshes, hole area, negative-coordinate bounds and
+actual native payload logs. These are explicit diagnostic costs, not gameplay frame timings.
 
 ### 10. Live Water Runtime Is Baseline Still Water Only
 
@@ -3664,19 +3608,18 @@ Current deterministic rules:
 - resource deposit chunks are terrain-aligned `u16` richness grids keyed by `resource_id`,
   starting with `coal`
 - loading a `WorldDefinition` resets runtime state to a fresh blank city on that world
-- City load and blank-world reset share transient cleanup, including terrain brush state,
-  render ownership, undo history, diagnostics and camera culling bounds. The final network-render
-  invalidation advances the global terrain payload generation; an extra pre-publication bump
-  is not needed. New Game retains the loaded asset registry by ownership transfer.
-  Audit `AUDIT-01-AS4`: five alternating unprofiled release process pairs, pinned to CPU 0,
-  `RAYON_NUM_THREADS=24`, three warmups then 11 samples of five resets. The fixture has no agents,
-  buildings or roads; every measured replacement creates the same flat 256 m square world
-  with 8 m samples and retains 128 / 4,096 registered assets. Registration and the initial test
-  world are outside timing. Median reset time is `0.056421 / 1.804271 → 0.002045 / 0.002033 ms`.
-  This isolates Rust world replacement and catalog retention, excluding file I/O and rendering.
-  Command: `nodes::sim::core::tests::benchmark_blank_world_reset_with_assets --exact --ignored --nocapture`
-  on matched release executables. Raw rows and source/executable identities are in
-  `/tmp/metrum-full-audit/world-reset-matched-bench.json` and `world-reset-{before,after}-identity.json`.
+- City load and blank-world reset share transient cleanup, including terrain brush state, render
+  ownership, undo history, diagnostics and camera culling bounds. The final network-render
+  invalidation advances the global terrain payload generation; an extra pre-publication bump is not
+  needed. New Game retains the loaded asset registry by ownership transfer. Audit `AUDIT-01-AS4`:
+  five alternating unprofiled release process pairs, pinned to CPU 0, `RAYON_NUM_THREADS=24`, three
+  warmups then 11 samples of five resets. The fixture has no agents, buildings or roads; every
+  measured replacement creates the same flat 256 m square world with 8 m samples and retains 128 /
+  4,096 registered assets. Registration and the initial test world are outside timing. Median reset
+  time is `0.056421 / 1.804271 → 0.002045 / 0.002033 ms`. This isolates Rust world replacement and
+  catalog retention, excluding file I/O and rendering. Command:
+  `nodes::sim::core::tests::benchmark_blank_world_reset_with_assets --exact --ignored --nocapture`
+  on matched release executables.
 - world replacement clears derived terrain ownership, caches and asynchronous render requests;
   its global terrain payload generation advances so old-world payloads and acknowledgements
   cannot match an unchanged patch key in the new world
@@ -4693,8 +4636,6 @@ deduplication buffer. No city-wide query or per-agent work is introduced.
 
 Fresh verification: `cargo test --release --lib` passes 1,656 tests (9 intentionally ignored);
 headless `road_junction_preview_test.gd` and `network_tool_chunk_renderer_test.gd` pass.
-Logs: `/tmp/metrum-chunk-full-tests.log`, `/tmp/metrum-chunk-bridge.log`, and
-`/tmp/metrum-chunk-renderer-tests.log`.
 
 Targeted unprofiled measurement uses the same fixture plus 1,089 regular source samples:
 24 batches of 50 builds, four warmups, input cloning outside the timed compiler. Command:
@@ -4707,12 +4648,10 @@ Three matched isolated CDT-module process pairs (`rustc 1.98.1`, `--edition=2024
 identical release Spade/R-tree/overlay dependencies, debug logging disabled, no concurrent
 builds/tests) measure old/new medians **0.4816/0.4611**, **0.4828/0.4607**, and
 **0.4842/0.4607 ms/tile**. The middle pair reverses process order. Each build runs the serial
-tile kernel; outer Rayon scheduling and whole-patch upload are outside this measurement.
-The old output has one invalid and three missing constraints, so these are correction-cost
-measurements, not an equivalent-output speedup or a city-scale FPS claim. Harnesses and logs:
-`/tmp/metrum-cdt-{before,after}/harness.rs`, `/tmp/metrum-chunk-kernel-{before,after}-*.log`,
-and `/tmp/metrum-chunk-kernel-production.log`. Matched binary SHA-256 prefixes:
-`9c810e195d67e7d5` (before), `3952a9f86230267ee` (after).
+tile kernel; outer Rayon scheduling and whole-patch upload are outside this measurement. The
+old output has one invalid and three missing constraints, so these are correction-cost
+measurements, not an equivalent-output speedup or a city-scale FPS claim. Matched binary
+SHA-256 prefixes: `9c810e195d67e7d5` (before), `3952a9f86230267ee` (after).
 
 #### Shared-side yard seam verification (2026-09-11)
 
@@ -4734,10 +4673,9 @@ read-only loaded scene publishes all eight requested patches; its repaired point
 by triangles on both sides at exactly the same height. A local rendered-triangle incidence audit
 changes from one >1 cm disagreement to zero (maximum residual under 5 mm with 1 mm XZ incidence
 tolerance). The neighboring frontage still passes 99 probes, maximum paired difference 6.5 mm.
-Neither assets, the diagnostic save nor the checked-in terrain fixture were modified. Logs:
-`/tmp/metrum-yard-seam-{red,cdt-tests,full-tests,scene,bridge,renderer}.log` and
-`/tmp/metrum-yard-seam-{before,after}-audit.log`. Full-suite command from repository root:
-`RAYON_NUM_THREADS=24 rust/target/release/deps/metrum_rise-9cc8d57998aa4451 --test-threads=8`.
+Neither assets, the diagnostic save nor the checked-in terrain fixture were modified. Full-suite
+command from repository root: `RAYON_NUM_THREADS=24
+$TEST_BINARY --test-threads=8`.
 
 Matched, unprofiled release timing (`rustc 1.98.1`, Cargo release profile, debug flags unset,
 `RAYON_NUM_THREADS=24`, no concurrent builds/tests) reuses `benchmark_road_site_cdt_noding` above.
@@ -4759,14 +4697,8 @@ every background size within each build. Worker p50 milliseconds, before/after:
 
 Current readiness p50 stays below 0.020 ms; one-time snapshot cost is separate (0.007–3.312 ms).
 This verifies locality, not an end-to-end speedup: one pair cannot attribute the small-map timing
-variation. Commands for each retained release test binary use
-`RAYON_NUM_THREADS=24 <binary> <benchmark_name> --ignored --nocapture --test-threads=1`.
-Before binary: `/tmp/metrum-yard-seam-before-tests`, SHA-256
-`e3b5bb7b17e17d09f987c6a299d20028f90ba9fa6726f6a5350e38926fe7a1a2`;
-after binary: `rust/target/release/deps/metrum_rise-9cc8d57998aa4451`, SHA-256
-`7767a8db42fa886644764739ad7833eced7afca243462e11678c23a6fe2f5e6f`.
-Artifacts: `/tmp/metrum-yard-seam-kernel-{before,after}-{1,2,3}.log` and
-`/tmp/metrum-yard-seam-locality-{before,after}.log`. Deployed library SHA-256:
+variation. Commands for each retained release test binary use `RAYON_NUM_THREADS=24 <binary>
+<benchmark_name> --ignored --nocapture --test-threads=1`. Deployed library SHA-256:
 `8e8daecd8676bfe2a6d914531fc59b0587be111a45429ed2fa47ff3431e4e832`.
 
 ### 6. Offline Heightmap / DEM Import Is Live
