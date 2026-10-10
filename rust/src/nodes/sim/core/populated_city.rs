@@ -53,6 +53,9 @@ const DISTRICTS: [ZoneType; 8] = [
 // tier; solvency is the growth scenario's measure, not this one.
 const FUNDED_TREASURY: f64 = 1.0e15;
 const WARM_UP_DAYS: u32 = 2;
+// One border trunk per this many residents. Imports cross the border on the roads alone, so a
+// single trunk could not supply a 100k city's industry; 10k keeps its one trunk.
+const RESIDENTS_PER_BORDER: f32 = 10_000.0;
 
 /// Wall-clock cost of the economy ticks run by one [`PopulatedCity::advance_hour`] call.
 #[derive(Clone, Copy, Debug)]
@@ -232,8 +235,10 @@ fn paint_districts(core: &mut SimCore, row_z: &[f32], half_x: f32) {
     }
 }
 
-/// Builds the street grid of a `side_m` square city and its border connection, unzoned. Returns
-/// the city, the z of every row street and the half width of the grid along x.
+/// Builds the street grid of a `side_m` square city and its border connections, unzoned: one row
+/// street per [`RESIDENTS_PER_BORDER`] of the city's fill continues to the world edge, evenly
+/// spaced and alternating west and east. Returns the city, the z of every row street and the
+/// half width of the grid along x.
 pub(super) fn street_grid(side_m: f32) -> (SimCore, Vec<f32>, f32) {
     let rows = (side_m / ROW_SPACING_M) as usize + 1;
     let crosses = (side_m / CROSS_SPACING_M) as usize + 1;
@@ -251,8 +256,12 @@ pub(super) fn street_grid(side_m: f32) -> (SimCore, Vec<f32>, f32) {
     let row_z: Vec<f32> = (0..rows)
         .map(|i| i as f32 * ROW_SPACING_M - half_z)
         .collect();
-    let trunk_z = row_z[rows / 2];
-    let border_x = 1.0 - core.heightmap.half_world_extents().0;
+    let residents = (side_m / SIDE_HEADROOM).powi(2) * RESIDENTS_PER_M2;
+    let trunks = ((residents / RESIDENTS_PER_BORDER).round() as usize).clamp(1, rows);
+    // Trunk k runs from the west edge when k is even and to the east edge when it is odd; a
+    // single trunk is the middle row from the west.
+    let trunk_rows: Vec<usize> = (0..trunks).map(|k| (2 * k + 1) * rows / (2 * trunks)).collect();
+    let edge_x = core.heightmap.half_world_extents().0 - 1.0;
     // The bulk road path of the in-game benchmark city: lanes are rebuilt once at the end.
     core.transit_network.bulk_load = true;
     // Cross streets go in one block at a time, so a row meets existing junctions instead of
@@ -264,19 +273,26 @@ pub(super) fn street_grid(side_m: f32) -> (SimCore, Vec<f32>, f32) {
             add_road(&mut core, (x, block[0]), (x, block[1]));
         }
     }
-    for &z in &row_z {
-        let start = if z == trunk_z { border_x } else { -half_x };
-        add_road(&mut core, (start, z), (half_x, z));
+    for (row, &z) in row_z.iter().enumerate() {
+        let (start, end) = match trunk_rows.iter().position(|&trunk| trunk == row) {
+            Some(k) if k % 2 == 0 => (-edge_x, half_x),
+            Some(_) => (-half_x, edge_x),
+            None => (-half_x, half_x),
+        };
+        add_road(&mut core, (start, z), (end, z));
     }
     {
         let core = &mut core;
         core.transit_network
             .finalize_bulk_load(&mut core.region_graph, &mut core.allocator);
     }
-    let border_y = core.heightmap.sample_height_world(border_x, trunk_z);
-    let border = core.check_border_candidate_internal(Vector3::new(border_x, border_y, trunk_z));
-    assert!(border >= 0, "the trunk must end at the world edge");
-    core.set_border_connection_internal(border as i32);
+    for (k, &row) in trunk_rows.iter().enumerate() {
+        let (x, z) = (if k % 2 == 0 { -edge_x } else { edge_x }, row_z[row]);
+        let y = core.heightmap.sample_height_world(x, z);
+        let border = core.check_border_candidate_internal(Vector3::new(x, y, z));
+        assert!(border >= 0, "trunk {k} must end at the world edge");
+        core.set_border_connection_internal(border as i32);
+    }
     (core, row_z, half_x)
 }
 

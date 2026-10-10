@@ -6,7 +6,7 @@ use super::HouseholdSystem;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::fiscal::{CityFiscalPolicy, FiscalRevenue};
-use crate::simulation::economy::logistics::{ShipmentSystem, has_connected_border_node};
+use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::{debug, debug_log};
@@ -42,8 +42,7 @@ impl HouseholdSystem {
         self.rehouse_unhoused_before_growth(agents, allocator);
         let counts_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
-        let owa_exports_available = has_connected_border_node(graph);
-        self.run_building_economy(allocator, owa_exports_available);
+        self.run_building_economy(allocator);
         self.run_electricity_hour(allocator);
         let building_economy_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
@@ -75,7 +74,6 @@ impl HouseholdSystem {
             transit_network,
             graph,
             service_funding_by_building,
-            owa_exports_available,
             logistics,
             fiscal_policy,
             *treasury_balance, minute_of_day,
@@ -153,7 +151,6 @@ impl HouseholdSystem {
         let bankruptcy_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
         // Step 2: pay wages (budget does not go negative from this step).
-        let owa_exports_available = has_connected_border_node(graph);
         let income_tax = self.pay_funded_daily_wages(
             agents,
             allocator,
@@ -196,7 +193,6 @@ impl HouseholdSystem {
             transit_network,
             graph,
             service_funding_by_building,
-            owa_exports_available,
             logistics,
             fiscal_policy,
             *treasury_balance, 0,

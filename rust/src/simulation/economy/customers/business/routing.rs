@@ -312,6 +312,18 @@ impl BusinessMarket {
         (self.identities.len(), self.index_builds)
     }
 
+    /// Whether the buyer/recipe-port layout was prepared for these buildings, entrances and
+    /// roads. A census pass can end before reseeding; after a building removal the previous
+    /// layout then names moved or missing owners. O(buildings).
+    pub(crate) fn layout_matches(&self, allocator: &BuildingAllocator, network: &TransitNetwork) -> bool {
+        self.revision == Some((
+            allocator.building_ref_revision(),
+            allocator.entrance_ref_revision(),
+            network.cch_graph.build_generation,
+        )) && self.profiles.iter().copied()
+            .eq(allocator.buildings.iter().map(|building| building.economy_profile_runtime_id))
+    }
+
     /// Counts potential input buyers and their maximum purchased units within existing freight
     /// components. This independent O(indexed input membership) census survives ordinary
     /// finance-account resets.
@@ -470,6 +482,19 @@ impl BusinessMarket {
             let Some(destination) = destination else {
                 return true;
             };
+            // A buyer whose accounts cannot take any units even with free freight needs no
+            // route quote: no actual quote can raise its claim (`ECON-21`). O(buyer accounts).
+            let mut slot = self.budgets.buyer_accounts[buyer];
+            let mut claimable = false;
+            while slot != usize::MAX && !claimable {
+                let account = self.budgets.accounts[slot];
+                claimable = self.account_ports[slot] == port && account.units > 0.0
+                    && self.budgets.claimable_without_carrier(slot, requested - sales.units, price, !joint);
+                slot = account.next_buyer;
+            }
+            if !claimable {
+                return true;
+            }
             if let Some(carrier) =
                 logistics.customer_carrier_quote(entrance, destination, seller,
                     self.port_sites[port].is_none().then_some(buyer), allocator, network, graph, tuning)

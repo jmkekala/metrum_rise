@@ -61,34 +61,87 @@ fn zero_sales_commercial_active_worker_capacity_is_bootstrap_sized() {
 }
 
 #[test]
-fn household_shortage_floor_opens_commercial_workers_without_sales() {
+fn grocery_activity_follows_its_own_census_not_city_shortage() {
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
     let mut allocator = BuildingAllocator::new();
     allocator
         .buildings
         .push(make_building(0.0, ZoneType::Residential, "test:home", 0.0));
-    allocator.buildings.push(make_building(
-        10.0,
-        ZoneType::Commercial,
-        "test:grocery",
-        0.0,
-    ));
-
+    for x in [10.0, 20.0] {
+        allocator
+            .buildings
+            .push(make_building(x, ZoneType::Commercial, "test:grocery", 0.0));
+    }
     let mut households = HouseholdSystem::new();
     for _ in 0..7 {
         households.households.push(make_household(0, 2, 10.0, 0.0));
     }
-
-    refresh_commercial_activity_floor(&catalog, &households.households, &mut allocator, true);
-    let store = &allocator.buildings[1];
     let profile = catalog
-        .profile_by_runtime_id(store.economy_profile_runtime_id)
+        .profile_by_runtime_id(allocator.buildings[1].economy_profile_runtime_id)
         .expect("grocery runtime profile");
+    for store in &mut allocator.buildings[1..] {
+        store.worker_count = profile.worker_capacity;
+        for input in &profile.inputs {
+            store.set_inventory_units(input.resource_runtime_id, input.units_per_day);
+        }
+    }
 
+    // Empty pantries citywide do not open work at a store whose census funded none.
+    refresh_commercial_activity_floor(&catalog, &mut allocator, &[]);
+    let idle = building_operation_factors(&catalog, &allocator.buildings[1], profile);
+    assert_eq!(idle.active_worker_capacity, 1, "bootstrap slot only");
+    assert_eq!(idle.throughput_factor, 0.0);
+
+    // The store its customers reserved runs at full funded activity; a city-wide demand ratio
+    // must not also cap it.
+    refresh_commercial_activity_floor(&catalog, &mut allocator, &[0.0, 1.0, 0.2]);
+    let busy = building_operation_factors(&catalog, &allocator.buildings[1], profile);
+    assert_eq!(busy.active_worker_capacity, profile.worker_capacity);
+    assert_eq!(busy.throughput_factor, 1.0);
+    let quiet = building_operation_factors(&catalog, &allocator.buildings[2], profile);
     assert_eq!(
-        active_worker_capacity_for_profile(&catalog, store, profile),
-        3,
-        "14 residents with empty household stock should open a demand floor above the one-worker bootstrap"
+        quiet.active_worker_capacity,
+        (profile.worker_capacity as f32 * 0.2).ceil() as u32
+    );
+    assert!((quiet.throughput_factor - 0.2).abs() < 1e-6);
+}
+
+#[test]
+fn rounded_store_staff_refill_the_shelf_only_up_to_target() {
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let mut allocator = BuildingAllocator::new();
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Commercial,
+        "test:grocery",
+        0.0,
+    ));
+    let profile = catalog
+        .profile_by_runtime_id(allocator.buildings[0].economy_profile_runtime_id)
+        .expect("grocery runtime profile");
+    let output = &profile.outputs[0];
+    let store = &mut allocator.buildings[0];
+    store.worker_count = profile.worker_capacity;
+    for input in &profile.inputs {
+        store.set_inventory_units(input.resource_runtime_id, input.units_per_day);
+    }
+    // Funded sales take 78.5% of output; whole workers round that up to 12 of 15.
+    let activity = 0.785;
+    refresh_commercial_activity_floor(&catalog, &mut allocator, &[activity]);
+    let staffed = 12.0 / profile.worker_capacity as f32;
+    let factors = building_operation_factors(&catalog, &allocator.buildings[0], profile);
+    assert_eq!(factors.active_worker_capacity, 12);
+    assert!(
+        (factors.throughput_factor - staffed).abs() < 1e-6,
+        "empty shelf: paid staff refill it"
+    );
+
+    let target = profile.net_output_units_per_day(output) * profile.stock_target_days * activity;
+    allocator.buildings[0].set_inventory_units(output.resource_runtime_id, target);
+    let factors = building_operation_factors(&catalog, &allocator.buildings[0], profile);
+    assert!(
+        (factors.throughput_factor - activity).abs() < 1e-6,
+        "a full shelf produces only the funded sales"
     );
 }
 
@@ -115,14 +168,8 @@ fn grocery_stock_and_shopper_reservations_cover_pantry_recovery_before_hiring() 
             .push(make_household(0, 2, 1_000.0, 0.0));
     }
     allocator.buildings[1].set_inventory_units(resource, 70.0);
-    let signal =
-        refresh_commercial_activity_floor(&catalog, &households.households, &mut allocator, true);
+    let signal = commercial_activity_signal_for_city(&catalog, &households.households, &allocator);
     assert_eq!(signal.demand_units_per_day, 14.0);
-    let profile = catalog.profile_for_id("grocery_basic").unwrap();
-    assert_eq!(
-        active_worker_capacity_for_profile(&catalog, &allocator.buildings[1], profile),
-        2
-    );
 
     // Moving goods from the shelf into unpaid or paid shopper reservations must
     // not create another order to produce them.
@@ -135,15 +182,17 @@ fn grocery_stock_and_shopper_reservations_cover_pantry_recovery_before_hiring() 
             REPLENISHMENT_SHOPPING_RETURNING
         };
     }
-    let signal =
-        refresh_commercial_activity_floor(&catalog, &households.households, &mut allocator, true);
+    let signal = commercial_activity_signal_for_city(&catalog, &households.households, &allocator);
     assert_eq!(signal.demand_units_per_day, 14.0);
+
+    // One bulk purchase must not raise recurring payroll above the funded activity.
+    refresh_commercial_activity_floor(&catalog, &mut allocator, &[0.0, 0.1]);
     allocator.buildings[1].daily_household_sales_value = 5_000.0;
     allocator.buildings[1].recent_household_sales_value = 5_000.0;
+    let profile = catalog.profile_for_id("grocery_basic").unwrap();
     assert_eq!(
         active_worker_capacity_for_profile(&catalog, &allocator.buildings[1], profile),
-        2,
-        "one bulk purchase must not create recurring full-capacity payroll"
+        2
     );
 }
 
@@ -157,6 +206,8 @@ fn grocery_production_and_inputs_follow_demand_below_rounded_worker_capacity() {
     for input in &profile.inputs {
         grocery.set_inventory_units(input.resource_runtime_id, 100.0);
     }
+    // A shelf at its three-day target leaves no refill for the rounded-up worker.
+    grocery.set_inventory_units(profile.outputs[0].resource_runtime_id, 90.0);
     let factors = building_operation_factors(&catalog, &grocery, profile);
     assert_eq!(factors.active_worker_capacity, 3);
     assert!((factors.throughput_factor * 200.0 - 30.0).abs() < 0.001);
@@ -256,7 +307,7 @@ fn explicit_work_area_market_scale_limits_jobs_and_output() {
 }
 
 #[test]
-fn explicit_work_area_activity_uses_owa_as_external_market() {
+fn explicit_work_area_activity_follows_its_census() {
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
     let farm_profile = catalog
         .profile_for_id("grain_farm_basic")
@@ -274,45 +325,20 @@ fn explicit_work_area_activity_uses_owa_as_external_market() {
     farm.operating_budget = 10_000.0;
     allocator.buildings.push(farm);
 
-    let households = HouseholdSystem::new();
-    refresh_commercial_activity_floor(&catalog, &households.households, &mut allocator, true);
-
-    assert!(
-        (allocator.buildings[0].commercial_activity_floor_scale - 1.0).abs() < 0.001,
-        "OWA-capable explicit producers should not throttle staffing to local input demand"
-    );
-    assert_eq!(
-        active_worker_capacity_for_profile(&catalog, &allocator.buildings[0], farm_profile),
-        2
-    );
-}
-
-#[test]
-fn explicit_work_area_activity_requires_owa_gateway_or_local_demand() {
-    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
-    let farm_profile = catalog
-        .profile_for_id("grain_farm_basic")
-        .expect("grain farm runtime profile");
-    let mut allocator = BuildingAllocator::new();
-    let farm_asset = register_test_asset(
-        &mut allocator,
-        "test",
-        "no_gateway_market_scaled_farm",
-        ZoneClass::Industrial,
-    );
-    let mut farm = make_building(0.0, ZoneType::None, &farm_asset, 0.0);
-    farm.economy_profile_runtime_id = farm_profile.runtime_id;
-    farm.work_area_scale = 2.0;
-    farm.operating_budget = 10_000.0;
-    allocator.buildings.push(farm);
-
-    let households = HouseholdSystem::new();
-    refresh_commercial_activity_floor(&catalog, &households.households, &mut allocator, false);
-
+    // Neither an `OWA` gateway nor local buyers open jobs the census did not fund.
+    refresh_commercial_activity_floor(&catalog, &mut allocator, &[]);
     assert_eq!(allocator.buildings[0].commercial_activity_floor_scale, 0.0);
     assert_eq!(
         active_worker_capacity_for_profile(&catalog, &allocator.buildings[0], farm_profile),
         0
+    );
+
+    // An export-funded census opens the whole area without a local-demand throttle.
+    refresh_commercial_activity_floor(&catalog, &mut allocator, &[1.0]);
+    assert!((allocator.buildings[0].commercial_activity_floor_scale - 1.0).abs() < 0.001);
+    assert_eq!(
+        active_worker_capacity_for_profile(&catalog, &allocator.buildings[0], farm_profile),
+        2
     );
 }
 
@@ -441,7 +467,11 @@ fn one_worker_commercial_production_uses_hourly_input_need() {
             .households
             .push(make_household(1, 2, 1_000.0, 0.0));
     }
-    households.run_building_economy(&mut allocator, true);
+    // The census funded exactly one worker's share of the store.
+    households
+        .job_funding
+        .set_activity(0, 1.0 / profile.worker_capacity as f32);
+    households.run_building_economy(&mut allocator);
 
     let output_units = allocator.buildings[0].inventory_units(household_supply_resource);
     let expected_units = profile.outputs[0].units_per_day / 24.0 / profile.worker_capacity as f32;

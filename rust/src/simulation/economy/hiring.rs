@@ -187,6 +187,20 @@ impl JobFunding {
         })
     }
 
+    /// Accepted recipe activity by building index, as a share of authored full output.
+    /// Sales-scaled stores produce and restock at this rate; empty before the first census.
+    pub(crate) fn activities(&self) -> &[f32] {
+        &self.activities
+    }
+
+    /// Stands in for a census that accepted `activity` at building `index`.
+    #[cfg(test)]
+    pub(crate) fn set_activity(&mut self, index: usize, activity: f32) {
+        self.activities
+            .resize(self.activities.len().max(index + 1), 0.0);
+        self.activities[index] = activity;
+    }
+
     /// Net-input multiplier for an established funded buyer, capped by its current staff.
     /// Public invoices use the fiscal ceiling independently of material availability; private
     /// buyers use their accepted recipe activity. O(1), including explicit work-area scaling.
@@ -831,7 +845,7 @@ impl JobFunding {
             self.publish_business_deliveries(allocator, catalog, graph);
             break;
         }
-        self.propagate_impossible_customers(allocator, catalog, tuning);
+        self.propagate_impossible_customers(allocator, network, catalog, tuning);
         self.offered_activity.clone_from(&self.activities);
         // Attribute failed local proofs to this pass before the next import pass starts.
         lap(6);

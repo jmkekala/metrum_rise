@@ -677,9 +677,14 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
     households, no jobs and treasury −42,465. The 600-household regional-pull term is not a hard
     immigration cap and does not explain this early failure.
   - The 10k timing fixture runs a live economy since 2026-10-09 (`ECON-18`): agents move and
-    `OWA` freight is uncapped, so only road traffic limits trade. The new baseline is 152.10 ms
-    hourly. About 104 ms of that is shopping route checks against stores sold out by the
-    `DEM-02` activity cap. See the
+    `OWA` freight is uncapped, so only road traffic limits trade. Stock checks are spread evenly
+    over the hours (`ECON-19`). Since 2026-10-10 each grocery produces, staffs and restocks at
+    its own funded census activity instead of a citywide ratio (`DEM-02`), so output matches
+    what households buy and empty pantries fall from about 3,750 to 169; service stores follow
+    the same rule. Grocery route checks reuse the cached walking proofs with identical results.
+    The new baseline is 34.18 ms hourly and 8.60 ms daily. The first live 100k run completes
+    after the `ECON-20` crash fix, but its daily workplace search grows quadratically and its
+    single border road starves industry. See the
     [fixture record](economy.md#live-economy-fixture-econ-18-2026-10-09).
   - Use matched **10k** hourly/daily performance checks. **The 1M run is deferred** and larger
     tiers do not block this work. Existing scaling fixes (`ECON-15`, `ALLOC-02`–`ALLOC-04`,

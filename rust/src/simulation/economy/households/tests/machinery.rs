@@ -25,7 +25,7 @@ fn machinery_factory_consumes_imported_materials_and_its_own_upkeep() {
     allocator.buildings.push(factory);
     let mut households = HouseholdSystem::new();
     for _ in 0..24 {
-        households.run_building_economy(&mut allocator, true);
+        households.run_building_economy(&mut allocator);
     }
     let factory = &allocator.buildings[0];
     assert!((factory.inventory_units(machinery) - 120.0).abs() < 0.001);
@@ -33,7 +33,7 @@ fn machinery_factory_consumes_imported_materials_and_its_own_upkeep() {
     assert!((factory.inventory_units(metals) - 70.0).abs() < 0.001);
     allocator.buildings[0].set_inventory_units(steel, 0.0);
     let stock = allocator.buildings[0].resource_inventory.clone();
-    households.run_building_economy(&mut allocator, true);
+    households.run_building_economy(&mut allocator);
     assert_eq!(
         allocator.buildings[0].resource_inventory, stock,
         "no materials means no production or upkeep consumption"
@@ -99,7 +99,10 @@ fn mine_upkeep_is_charged_once_and_only_for_remaining_reserve() {
         funded_input_demand_scale(&allocator.buildings[0], profile, 1.0),
         2.0
     );
-    HouseholdSystem::new().run_building_economy(&mut allocator, true);
+    // The census funded the whole mine.
+    let mut households = HouseholdSystem::new();
+    households.job_funding.set_activity(0, 1.0);
+    households.run_building_economy(&mut allocator);
     assert_eq!(allocator.buildings[0].inventory_units(machinery), 80.0);
     extraction.produce_hourly(&mut allocator, &catalog);
     assert_eq!(allocator.buildings[0].inventory_units(coal), 5.0);
@@ -230,7 +233,7 @@ fn same_resource_upkeep_frees_storage_during_production() {
         profile.output_buffer_capacity_units_for(profile.output_port(machinery).unwrap());
     factory.set_inventory_units(machinery, capacity - 40.0 / 24.0);
     allocator.buildings.push(factory);
-    HouseholdSystem::new().run_building_economy(&mut allocator, true);
+    HouseholdSystem::new().run_building_economy(&mut allocator);
     assert!((allocator.buildings[0].inventory_units(machinery) - capacity).abs() < 0.001);
     assert!((allocator.buildings[0].inventory_units(steel) - 78.75).abs() < 0.001);
 }

@@ -1901,6 +1901,32 @@ fn financed_business_customers_require_directed_routes_and_reprice_frontage() {
 }
 
 #[test]
+fn claims_unfundable_with_free_freight_stay_unfundable_at_any_carrier_quote() {
+    use crate::simulation::economy::customers::business::BusinessBudgets;
+    use crate::simulation::economy::operation::InputRequirement;
+    let input = InputRequirement { resource: 1, daily_units: 100.0, buffer_units: 400.0,
+        replenishment_batch_units: Some(50.0) };
+    // Funded, margin-limited and infeasible buyers against cheaper and dearer sellers.
+    for finance in [[100.0, 10_000.0], [0.5, 10_000.0], [100.0, 0.0], [0.0, 0.0], [-1.0, 5.0]] {
+        for price in [6.0, 8.0, 9.5, 12.0] {
+            let mut book = BusinessBudgets::default();
+            book.reset(1, 1, 1, 1);
+            book.set_finance(0, finance);
+            book.push_input(0, input, 8.0, 40.0, 0.0, 100.0, 1.0).unwrap();
+            let claimable = book.claimable_without_carrier(0, 100.0, price, true);
+            let mut free = book.clone();
+            assert_eq!(claimable, free.claim_opportunity(0, 100.0, price, 0.0) > 0.0);
+            for carrier in [0.0, 10.0, 40.0, 400.0] {
+                let mut quoted = book.clone();
+                let units = quoted.claim_opportunity(0, 100.0, price, carrier);
+                assert!(claimable || units == 0.0,
+                    "finance={finance:?} price={price} carrier={carrier}: skipped quote would claim {units}");
+            }
+        }
+    }
+}
+
+#[test]
 fn recurring_supply_requires_directed_route_even_inside_one_weak_component() {
     use crate::simulation::economy::operation::InputRequirement;
     let (mut graph, mut network, first, second, _) = simple_graph_with_border();

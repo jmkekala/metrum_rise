@@ -31,8 +31,6 @@ use crate::simulation::economy::definitions::{
 };
 use crate::simulation::economy::fiscal::{CityFiscalPolicy, tax_amount};
 use crate::simulation::economy::logistics::ShipmentSystem;
-#[cfg(test)]
-use crate::simulation::economy::logistics::has_connected_border_node;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::TransitFlags;
@@ -201,7 +199,6 @@ impl HouseholdSystem {
             transit_network,
             graph,
             &[],
-            has_connected_border_node(graph),
             &mut ShipmentSystem::new(),
             &CityFiscalPolicy::from_runtime_tuning(&load_runtime_economy_tuning().unwrap()),
             0.0, 420,
@@ -215,7 +212,6 @@ impl HouseholdSystem {
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
         service_funding_by_building: &[f32],
-        owa_exports_available: bool,
         logistics: &mut ShipmentSystem,
         fiscal_policy: &CityFiscalPolicy,
         treasury_balance: f64,
@@ -230,12 +226,7 @@ impl HouseholdSystem {
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
         let load_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
-        refresh_commercial_activity_floor(
-            &catalog,
-            &self.households,
-            allocator,
-            owa_exports_available,
-        );
+        refresh_commercial_activity_floor(&catalog, allocator, self.job_funding.activities());
         self.job_funding.refresh(
             allocator,
             &self.households,
@@ -457,19 +448,13 @@ impl HouseholdSystem {
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
         service_funding_by_building: &[f32],
-        owa_exports_available: bool,
     ) {
         if service_funding_by_building.is_empty() {
             return;
         }
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
-        refresh_commercial_activity_floor(
-            &catalog,
-            &self.households,
-            allocator,
-            owa_exports_available,
-        );
+        refresh_commercial_activity_floor(&catalog, allocator, self.job_funding.activities());
         let funded_capacity_by_building: Vec<Option<u32>> = allocator
             .buildings
             .par_iter()

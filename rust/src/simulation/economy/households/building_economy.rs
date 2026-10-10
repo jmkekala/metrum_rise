@@ -428,19 +428,10 @@ impl HouseholdSystem {
         total_tax
     }
 
-    pub(super) fn run_building_economy(
-        &mut self,
-        allocator: &mut BuildingAllocator,
-        owa_exports_available: bool,
-    ) {
+    pub(super) fn run_building_economy(&mut self, allocator: &mut BuildingAllocator) {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
-        refresh_commercial_activity_floor(
-            &catalog,
-            &self.households,
-            allocator,
-            owa_exports_available,
-        );
+        refresh_commercial_activity_floor(&catalog, allocator, self.job_funding.activities());
         self.settle_hourly_service_store_sales(allocator, &catalog);
         allocator.buildings.par_iter_mut().for_each(|building| {
             let zone = building.zone_type;

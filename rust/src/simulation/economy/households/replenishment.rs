@@ -5,8 +5,7 @@
 use super::data::{DailyHouseholdLedger, Household, HouseholdSystem};
 use super::metrics::{
     OPERATIONAL_HOURS_PER_DAY, economy_profile_for_building, household_demand_profile,
-    household_supply_resource_runtime_id, household_supply_unit_price, stable_hash64,
-    stock_days,
+    household_supply_resource_runtime_id, household_supply_unit_price, stable_hash64, stock_days,
 };
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
@@ -15,7 +14,8 @@ use crate::simulation::economy::accessibility::{
     chunk_for_point,
 };
 use crate::simulation::economy::agents::tick::{
-    building_origin_trip_is_feasible, estimate_building_origin_trip_seconds,
+    BuildingTripEnds, PedestrianReachability, building_origin_trip_is_feasible,
+    estimate_building_origin_trip_seconds,
 };
 use crate::simulation::economy::agents::{
     ACTIVITY_HOME, ACTIVITY_SHOPPING, AgentSystem, TRANSIT_IN_BUILDING, age_group_can_shop,
@@ -127,6 +127,62 @@ struct StoreSupplyEntry {
     chunk: (i32, i32),
     foot_components: BuildingModeComponents,
     car_components: BuildingModeComponents,
+    // Trip origin and destination ends, prepared once per hour when walking proofs exist.
+    ends: Option<[BuildingTripEnds; 2]>,
+}
+
+// A cached cyclic pedestrian component proves both walking legs in O(1); the ordinary
+// planner, which always allows walking, then succeeds too. False means only unproven.
+fn proven_shopping_walk(
+    walking: Option<&PedestrianReachability>,
+    home: Option<&[BuildingTripEnds; 2]>,
+    store: Option<&[BuildingTripEnds; 2]>,
+) -> bool {
+    let (Some(walking), Some(home), Some(store)) = (walking, home, store) else {
+        return false;
+    };
+    home[0].has_proven_walk_to(&store[1], walking) && store[0].has_proven_walk_to(&home[1], walking)
+}
+
+fn trip_ends(
+    building: usize,
+    allocator: &BuildingAllocator,
+    network: &TransitNetwork,
+    graph: &RegionGraph,
+) -> [BuildingTripEnds; 2] {
+    [
+        BuildingTripEnds::origin(building, allocator, network, graph),
+        BuildingTripEnds::destination(building, allocator, network, graph),
+    ]
+}
+
+// One household's shopping round-trip test, shared by its candidate scans.
+struct ShoppingRoutes<'a> {
+    home_idx: usize,
+    has_car: bool,
+    walking: Option<&'a PedestrianReachability>,
+    home: Option<[BuildingTripEnds; 2]>,
+    allocator: &'a BuildingAllocator,
+    transit_network: &'a TransitNetwork,
+    graph: &'a RegionGraph,
+    pathfind_count: &'a std::sync::atomic::AtomicU32,
+}
+
+impl ShoppingRoutes<'_> {
+    // Exact: the same answer as `shopping_route_is_feasible`, without a path search
+    // when the walking proof holds. O(1) then; otherwise two ordinary trip plans.
+    fn feasible(&self, store: &StoreSupplyEntry) -> bool {
+        proven_shopping_walk(self.walking, self.home.as_ref(), store.ends.as_ref())
+            || shopping_route_is_feasible(
+                self.home_idx,
+                store.building_idx,
+                self.has_car,
+                self.allocator,
+                self.transit_network,
+                self.graph,
+                self.pathfind_count,
+            )
+    }
 }
 
 struct StoreSupplyIndex {
@@ -140,9 +196,11 @@ impl StoreSupplyIndex {
         allocator: &BuildingAllocator,
         catalog: &crate::simulation::economy::definitions::RuntimeEconomyCatalog,
         household_supply_resource: u16,
+        network: &TransitNetwork,
         graph: &RegionGraph,
         foot_components: &ModeComponentIndex,
         car_components: &ModeComponentIndex,
+        walking: Option<&PedestrianReachability>,
     ) -> Self {
         let mut entries: Vec<_> = allocator
             .buildings
@@ -174,6 +232,7 @@ impl StoreSupplyIndex {
                     chunk: chunk_for_point(store.center_x, store.center_y),
                     foot_components,
                     car_components,
+                    ends: walking.map(|_| trip_ends(idx, allocator, network, graph)),
                 })
             })
             .collect();
@@ -214,6 +273,7 @@ impl StoreSupplyIndex {
         graph: &RegionGraph,
         foot_components: &ModeComponentIndex,
         car_components: &ModeComponentIndex,
+        walking: Option<&PedestrianReachability>,
         pathfind_count: &std::sync::atomic::AtomicU32,
         search_cursor: u32,
         candidates: &mut Vec<usize>,
@@ -225,18 +285,18 @@ impl StoreSupplyIndex {
         if home_idx >= allocator.buildings.len() {
             return;
         }
+        let routes = ShoppingRoutes {
+            home_idx,
+            has_car,
+            walking,
+            home: walking.map(|_| trip_ends(home_idx, allocator, transit_network, graph)),
+            allocator,
+            transit_network,
+            graph,
+            pathfind_count,
+        };
         if search_cursor > 0
-            && self.fill_cursor_window_candidates(
-                home_idx,
-                has_car,
-                allocator,
-                transit_network,
-                graph,
-                pathfind_count,
-                search_cursor,
-                candidates,
-                diagnostics,
-            )
+            && self.fill_cursor_window_candidates(&routes, search_cursor, candidates, diagnostics)
         {
             return;
         }
@@ -247,14 +307,9 @@ impl StoreSupplyIndex {
         self.scan_candidate_bucket(
             &self.foot_buckets,
             home_foot_components,
-            home_idx,
             home.center_x,
             home.center_y,
-            allocator,
-            transit_network,
-            graph,
-            has_car,
-            pathfind_count,
+            &routes,
             candidates,
             seen_candidates,
             diagnostics,
@@ -266,14 +321,9 @@ impl StoreSupplyIndex {
             self.scan_candidate_bucket(
                 &self.car_buckets,
                 home_car_components,
-                home_idx,
                 home.center_x,
                 home.center_y,
-                allocator,
-                transit_network,
-                graph,
-                has_car,
-                pathfind_count,
+                &routes,
                 candidates,
                 seen_candidates,
                 diagnostics,
@@ -285,18 +335,14 @@ impl StoreSupplyIndex {
         &self,
         buckets: &ReachableBucketIndex,
         components: BuildingModeComponents,
-        home_idx: usize,
         origin_x: f32,
         origin_y: f32,
-        allocator: &BuildingAllocator,
-        transit_network: &TransitNetwork,
-        graph: &RegionGraph,
-        has_car: bool,
-        pathfind_count: &std::sync::atomic::AtomicU32,
+        routes: &ShoppingRoutes,
         candidates: &mut Vec<usize>,
         seen_candidates: &mut Vec<usize>,
         diagnostics: &mut ReplenishmentDiagnostics,
     ) {
+        let allocator = routes.allocator;
         buckets.scan_nearest(components, origin_x, origin_y, |event| match event {
             ReachableBucketScanEvent::Item { item_idx } => {
                 if let Some(entry) = self.entries.get(item_idx) {
@@ -307,15 +353,7 @@ impl StoreSupplyIndex {
                         return false;
                     }
                     seen_candidates.push(entry.building_idx);
-                    if !shopping_route_is_feasible(
-                        home_idx,
-                        entry.building_idx,
-                        has_car,
-                        allocator,
-                        transit_network,
-                        graph,
-                        pathfind_count,
-                    ) {
+                    if !routes.feasible(entry) {
                         diagnostics.rejected_unreachable += 1;
                         return true;
                     }
@@ -349,16 +387,12 @@ impl StoreSupplyIndex {
 
     fn fill_cursor_window_candidates(
         &self,
-        home_idx: usize,
-        has_car: bool,
-        allocator: &BuildingAllocator,
-        transit_network: &TransitNetwork,
-        graph: &RegionGraph,
-        pathfind_count: &std::sync::atomic::AtomicU32,
+        routes: &ShoppingRoutes,
         search_cursor: u32,
         candidates: &mut Vec<usize>,
         diagnostics: &mut ReplenishmentDiagnostics,
     ) -> bool {
+        let (allocator, home_idx) = (routes.allocator, routes.home_idx);
         if self.entries.is_empty() {
             return false;
         }
@@ -367,18 +401,10 @@ impl StoreSupplyIndex {
         let inspected = total_entries.min(GROCERY_ROUTE_SCAN_CANDIDATES);
         for offset in 0..inspected {
             let entry = &self.entries[(start + offset) % total_entries];
-            if !has_car && entry.foot_components.as_slice().is_empty() {
+            if !routes.has_car && entry.foot_components.as_slice().is_empty() {
                 continue;
             }
-            if !shopping_route_is_feasible(
-                home_idx,
-                entry.building_idx,
-                has_car,
-                allocator,
-                transit_network,
-                graph,
-                pathfind_count,
-            ) {
+            if !routes.feasible(entry) {
                 diagnostics.rejected_unreachable += 1;
                 continue;
             }
@@ -730,17 +756,24 @@ impl HouseholdSystem {
         let trigger_days = profile.reorder_threshold_days;
         let foot_components = ModeComponentIndex::build(graph, TransitFlags::FOOT);
         let car_components = ModeComponentIndex::build(graph, TransitFlags::CAR);
+        let shopper_candidates = self.collect_eligible_shopper_candidates(agents);
+        // Proofs prepared by the hourly funding census; `None` after a topology change.
+        let walking = self
+            .job_funding
+            .customers
+            .walking_proofs(allocator, transit_network);
         let store_index = StoreSupplyIndex::build(
             allocator,
             catalog,
             household_supply_resource,
+            transit_network,
             graph,
             &foot_components,
             &car_components,
+            walking,
         );
         let stock_critical_purchase_available =
             urgent_restock_candidate_exists && store_index.has_any();
-        let shopper_candidates = self.collect_eligible_shopper_candidates(agents);
         let (mut plans, mut diagnostics) = self
             .households
             .par_iter()
@@ -767,6 +800,7 @@ impl HouseholdSystem {
                         graph,
                         &foot_components,
                         &car_components,
+                        walking,
                         absolute_hour,
                         check_interval,
                         stock_critical_purchase_available,
@@ -1183,6 +1217,7 @@ fn plan_household_replenishment(
     graph: &RegionGraph,
     foot_components: &ModeComponentIndex,
     car_components: &ModeComponentIndex,
+    walking: Option<&PedestrianReachability>,
     absolute_hour: u32,
     check_interval: u32,
     stock_critical_purchase_available: bool,
@@ -1236,6 +1271,7 @@ fn plan_household_replenishment(
         graph,
         foot_components,
         car_components,
+        walking,
         &agents.pathfind_count,
         household.replenishment_search_cursor,
         candidates,
@@ -1638,7 +1674,6 @@ pub(crate) fn stable_replenishment_offset_hours(
     home_building_id: usize,
     household_seed: u32,
 ) -> u16 {
-    let mixed =
-        stable_hash64(home_building_id as u64 ^ u64::from(household_seed).rotate_left(32));
+    let mixed = stable_hash64(home_building_id as u64 ^ u64::from(household_seed).rotate_left(32));
     (mixed % OPERATIONAL_HOURS_PER_DAY as u64) as u16
 }

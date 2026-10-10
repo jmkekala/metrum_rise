@@ -48,6 +48,22 @@ pub(crate) struct ConsumerMarket {
 }
 
 impl ConsumerMarket {
+    /// Walking proofs built for the current building, entrance and network topology; `None`
+    /// before the first census or after a change it has not seen. O(1).
+    pub(crate) fn walking_proofs(
+        &self,
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+    ) -> Option<&PedestrianReachability> {
+        let revision = (
+            allocator.building_ref_revision(),
+            allocator.entrance_ref_revision(),
+            network.cch_graph.build_generation,
+            network.cch_graph.metric_revision,
+        );
+        (self.revision == Some(revision)).then_some(&self.walking)
+    }
+
     /// Withdraws all customer accounts and access, retaining reusable account allocations.
     pub(crate) fn clear(&mut self) {
         self.budgets.clear();

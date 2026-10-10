@@ -13,11 +13,11 @@ use crate::simulation::economy::definitions::{
 };
 use crate::simulation::economy::fiscal::FiscalRevenue;
 use crate::simulation::economy::households::{
-    active_worker_capacity_for_profile_with_floor_scale, commercial_activity_signal_for_city,
+    active_worker_capacity_for_profile_with_floor_scale,
     scaled_output_buffer_capacity_units_for_building, scaled_output_units_per_day_for_building,
     service_funded_worker_capacity,
 };
-use crate::simulation::economy::logistics::{ShipmentSystem, has_connected_border_node};
+use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::work_area::profile_kind_uses_explicit_work_area;
 use crate::simulation::zoning::ZoneType;
 use rayon::prelude::*;
@@ -360,26 +360,6 @@ fn daily_city_flow_work_bucket(
     }
 }
 
-fn daily_city_flow_activity_floor_scale(
-    building_zone: ZoneType,
-    cached_floor_scale: f32,
-    profile: &EconomyProfileRuntime,
-    commercial_activity_floor_scale: f32,
-) -> f32 {
-    if profile_kind_uses_explicit_work_area(profile.kind)
-        || (matches!(building_zone, ZoneType::Commercial)
-            && profile.kind == EconomyProfileRuntimeKind::ServiceStore)
-    {
-        return cached_floor_scale.clamp(0.0, 1.0);
-    }
-    if matches!(building_zone, ZoneType::Commercial)
-        && profile.kind == EconomyProfileRuntimeKind::Store
-    {
-        return commercial_activity_floor_scale.clamp(0.0, 1.0);
-    }
-    1.0
-}
-
 fn active_budget_backed_worker_capacity(
     allocator_city_funded: bool,
     building_operating_budget: f32,
@@ -518,7 +498,6 @@ impl SimCore {
             &mut self.agents,
             &mut self.allocator,
             &funding,
-            has_connected_border_node(&self.region_graph),
         );
         self.refresh_job_funding(&funding);
     }
@@ -852,12 +831,6 @@ impl SimCore {
     pub(super) fn daily_city_flow_diagnostics(&self) -> DailyCityFlowDiagnostics {
         let mut diagnostics = DailyCityFlowDiagnostics::default();
         let catalog = self.demand.runtime_catalog();
-        let commercial_activity_floor_scale = commercial_activity_signal_for_city(
-            catalog,
-            &self.households.households,
-            &self.allocator,
-        )
-        .activity_floor_scale;
         let mut service_funding_by_building = vec![1.0; self.allocator.buildings.len()];
         let city_funding = self.service_policy.electricity_funding;
         service_funding_by_building
@@ -924,17 +897,11 @@ impl SimCore {
             let Some(work_bucket) = work_bucket else {
                 continue;
             };
-            let activity_floor_scale = daily_city_flow_activity_floor_scale(
-                building.zone_type,
-                building.commercial_activity_floor_scale,
-                profile,
-                commercial_activity_floor_scale,
-            );
             let active_worker_capacity = active_worker_capacity_for_profile_with_floor_scale(
                 catalog,
                 building,
                 profile,
-                activity_floor_scale,
+                building.commercial_activity_floor_scale,
             );
             let active_worker_capacity = service_funded_worker_capacity(
                 active_worker_capacity,

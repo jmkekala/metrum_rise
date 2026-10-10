@@ -438,8 +438,10 @@ fn service_store_sales_use_staffed_aggregate_household_demand() {
     let mut household = make_household(0, 100, 0.0, 0.0);
     household.budget = 10.0;
     households.households.push(household);
+    // The census funded the two staffed workers' half of the barber's output.
+    households.job_funding.set_activity(1, 0.5);
 
-    households.run_building_economy(&mut allocator, true);
+    households.run_building_economy(&mut allocator);
 
     let service_unit_price = catalog
         .unit_price_for_resource(personal_services)
@@ -469,7 +471,7 @@ fn service_store_sales_use_staffed_aggregate_household_demand() {
 }
 
 #[test]
-fn service_store_active_worker_slots_scale_from_aggregate_demand() {
+fn service_store_active_worker_slots_scale_from_census_activity() {
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
     let personal_service_profile = catalog
         .profile_for_id("personal_service_small")
@@ -498,8 +500,7 @@ fn service_store_active_worker_slots_scale_from_aggregate_demand() {
     service_building.economy_profile_runtime_id = personal_service_profile.runtime_id;
     allocator.buildings.push(service_building);
 
-    let empty_households = HouseholdSystem::new();
-    refresh_commercial_activity_floor(&catalog, &empty_households.households, &mut allocator, true);
+    refresh_commercial_activity_floor(&catalog, &mut allocator, &[]);
     assert_eq!(
         active_worker_capacity_for_profile(
             &catalog,
@@ -507,13 +508,11 @@ fn service_store_active_worker_slots_scale_from_aggregate_demand() {
             personal_service_profile
         ),
         0,
-        "service stores should offer no active worker slots without resident demand"
+        "service stores should offer no active worker slots without funded customers"
     );
 
-    let mut households = HouseholdSystem::new();
-    households.households.push(make_household(0, 70, 0.0, 0.0));
-
-    refresh_commercial_activity_floor(&catalog, &households.households, &mut allocator, true);
+    // The census funded a fifth of the barber's output for the customers it reserved.
+    refresh_commercial_activity_floor(&catalog, &mut allocator, &[0.0, 0.2]);
 
     assert_eq!(
         active_worker_capacity_for_profile(
@@ -522,7 +521,7 @@ fn service_store_active_worker_slots_scale_from_aggregate_demand() {
             personal_service_profile
         ),
         1,
-        "70 residents should create only one active barber slot, not the full four-worker profile"
+        "a fifth of the output opens one active barber slot, not the full four-worker profile"
     );
     allocator.buildings[1].worker_count = 1;
     let factors =
@@ -1437,7 +1436,7 @@ fn power_service_funding_sheds_workers_to_funded_capacity() {
         agents.assign_work_building(agent, 1, 0);
     }
 
-    households.enforce_service_funding_staffing(&mut agents, &mut allocator, &[1.0, 0.05], true);
+    households.enforce_service_funding_staffing(&mut agents, &mut allocator, &[1.0, 0.05]);
 
     assert_eq!(allocator.buildings[1].worker_count, 1);
     assert_eq!(agents.work_building[a0], 1);
@@ -1482,7 +1481,6 @@ fn benchmark_funded_staffing() {
                     black_box(&mut agents),
                     &mut allocator,
                     &funding,
-                    true,
                 );
                 *sample = start.elapsed().as_secs_f64() * 1_000.0;
             }

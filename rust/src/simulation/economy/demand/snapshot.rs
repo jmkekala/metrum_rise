@@ -22,7 +22,6 @@ use crate::simulation::economy::households::{
     affordable_consumer_residents,
     commercial_activity_signal_for_city, household_is_housed, household_reserve_days,
     output_area_scale_for_building,
-    service_store_live_output_units_by_resource,
 };
 use crate::simulation::economy::hiring::JobFunding;
 use crate::simulation::economy::reduction::ordered_fold;
@@ -31,9 +30,6 @@ use crate::simulation::economy::resource_totals::{
 };
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::{NodeType, TransitFlags, TransitType};
-use crate::simulation::work_area::{
-    profile_kind_uses_explicit_work_area,
-};
 use crate::simulation::zoning::ZoneType;
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -325,19 +321,11 @@ impl DailyDemandSnapshot {
         let household_accumulator =
             collect_household_snapshot_accumulator(allocator, households, catalog, tuning, config);
         let housed_resident_count = household_accumulator.housed_resident_count;
-        let service_activity_scale_by_resource = service_store_activity_scale_by_resource(
-            catalog,
-            allocator,
-            &demand_sink_rates_by_resource,
-            housed_resident_count,
-        );
         let building_accumulator = collect_building_snapshot_accumulator(
             allocator,
             catalog,
             fiscal_policy.income_tax_rate,
             &demand_sink_rates_by_resource,
-            commercial_activity_signal.recurring_activity_floor_scale,
-            &service_activity_scale_by_resource,
             job_funding,
         );
         let total_household_slots = building_accumulator.total_household_slots;
@@ -562,8 +550,6 @@ impl BuildingSnapshotAccumulator {
         catalog: &RuntimeEconomyCatalog,
         income_tax_rate: f32,
         demand_sink_rates_by_resource: &[(ResourceRuntimeId, f32)],
-        commercial_activity_floor_scale: f32,
-        service_activity_scale_by_resource: &[(ResourceRuntimeId, f32)],
         job_funding: &JobFunding,
         idx: usize,
         building: &Building,
@@ -579,16 +565,6 @@ impl BuildingSnapshotAccumulator {
             .map(|authored| authored.is_zoned_private())
             .unwrap_or(!matches!(building.zone_type, ZoneType::None));
         let active_profile = catalog.profile_by_runtime_id(building.economy_profile_runtime_id);
-        let profile_activity_floor_scale = active_profile
-            .map(|profile| {
-                profile_activity_floor_scale(
-                    building,
-                    profile,
-                    commercial_activity_floor_scale,
-                    service_activity_scale_by_resource,
-                )
-            })
-            .unwrap_or(1.0);
 
         if building.is_under_construction() {
             if is_private_building {
@@ -645,7 +621,8 @@ impl BuildingSnapshotAccumulator {
                 catalog,
                 building,
                 profile,
-                profile_activity_floor_scale,
+                // Stores and explicit work areas cache their activity; a store's is its census.
+                building.commercial_activity_floor_scale,
             );
             let funded_worker_capacity =
                 physical_worker_capacity.min(job_funding.capacities.get(idx).copied().unwrap_or(0));
@@ -776,75 +753,11 @@ fn profile_offers_work(building: &Building, profile: &EconomyProfileRuntime) -> 
     )
 }
 
-fn service_store_activity_scale_by_resource(
-    catalog: &RuntimeEconomyCatalog,
-    allocator: &BuildingAllocator,
-    demand_sink_rates_by_resource: &[(ResourceRuntimeId, f32)],
-    housed_resident_count: u32,
-) -> Vec<(ResourceRuntimeId, f32)> {
-    if housed_resident_count == 0 {
-        return Vec::new();
-    }
-    let live_output_units_by_resource =
-        service_store_live_output_units_by_resource(catalog, allocator);
-    if live_output_units_by_resource.is_empty() {
-        return Vec::new();
-    }
-
-    let mut activity_scale_by_resource = Vec::new();
-    for &(resource_runtime_id, consumption_rate_per_resident) in demand_sink_rates_by_resource {
-        let live_output_units =
-            resource_amount(&live_output_units_by_resource, resource_runtime_id);
-        if live_output_units <= EPSILON {
-            continue;
-        }
-        let demand_units = housed_resident_count as f32 * consumption_rate_per_resident.max(0.0);
-        add_resource_amount(
-            &mut activity_scale_by_resource,
-            resource_runtime_id,
-            (demand_units / live_output_units).clamp(0.0, 1.0),
-        );
-    }
-    activity_scale_by_resource
-}
-
-fn profile_activity_floor_scale(
-    building: &Building,
-    profile: &EconomyProfileRuntime,
-    commercial_activity_floor_scale: f32,
-    service_activity_scale_by_resource: &[(ResourceRuntimeId, f32)],
-) -> f32 {
-    if profile.kind == EconomyProfileRuntimeKind::ServiceStore {
-        return profile
-            .outputs
-            .iter()
-            .map(|output| {
-                resource_amount(
-                    service_activity_scale_by_resource,
-                    output.resource_runtime_id,
-                )
-            })
-            .fold(0.0, f32::max)
-            .clamp(0.0, 1.0);
-    }
-    if profile_kind_uses_explicit_work_area(profile.kind) {
-        return building.commercial_activity_floor_scale.clamp(0.0, 1.0);
-    }
-    if matches!(building.zone_type, ZoneType::Commercial)
-        && profile.kind == EconomyProfileRuntimeKind::Store
-    {
-        return commercial_activity_floor_scale.clamp(0.0, 1.0);
-    }
-    1.0
-}
-
 fn collect_building_snapshot_accumulator(
     allocator: &BuildingAllocator,
     catalog: &RuntimeEconomyCatalog,
     income_tax_rate: f32,
     demand_sink_rates_by_resource: &[(ResourceRuntimeId, f32)],
-    commercial_activity_floor_scale: f32,
-    service_activity_scale_by_resource: &[(ResourceRuntimeId, f32)],
     job_funding: &JobFunding,
 ) -> BuildingSnapshotAccumulator {
     ordered_fold(
@@ -857,8 +770,6 @@ fn collect_building_snapshot_accumulator(
                 catalog,
                 income_tax_rate,
                 demand_sink_rates_by_resource,
-                commercial_activity_floor_scale,
-                service_activity_scale_by_resource,
                 job_funding,
                 idx,
                 building,

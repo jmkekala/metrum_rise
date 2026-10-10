@@ -296,8 +296,18 @@ impl BusinessBudgets {
         self.claim_priced(slot, requested, seller_price, carrier_quote, false)
     }
 
-    fn claim_priced(&mut self, slot: usize, requested: f64,
-        seller_price: f32, carrier_quote: f32, require_finance: bool) -> f64 {
+    /// Whether this account could take any units from a seller at `seller_price` with free
+    /// freight. Claims only shrink as the carrier quote grows, so `false` proves that no route
+    /// quote can make the claim positive. Pure; O(1).
+    pub(crate) fn claimable_without_carrier(&self, slot: usize, requested: f64,
+        seller_price: f32, require_finance: bool) -> bool {
+        self.priced_claim(slot, requested, seller_price, 0.0, require_finance).is_some()
+    }
+
+    // Units, margin delta, capital delta and unit goods price of a claim, without staging it.
+    // Both deltas are non-decreasing in the carrier quote, so the units are non-increasing.
+    fn priced_claim(&self, slot: usize, requested: f64, seller_price: f32, carrier_quote: f32,
+        require_finance: bool) -> Option<(f64, f64, f64, f32)> {
         let account = self.accounts[slot];
         let goods = seller_price * account.goods_multiplier;
         if requested <= 0.0
@@ -306,12 +316,12 @@ impl BusinessBudgets {
             || !carrier_quote.is_finite()
             || carrier_quote < 0.0
         {
-            return 0.0;
+            return None;
         }
         let finance = self.finance[account.buyer];
         // Price deltas are nonnegative, so no offer can repair an already infeasible buyer.
         if require_finance && !(finance[0] > 0.0 && finance[1] >= 0.0) {
-            return 0.0;
+            return None;
         }
         let goods_delta = f64::from(goods) - account.goods;
         let carrier_delta = f64::from(carrier_quote) / f64::from(account.batch) - account.carrier;
@@ -343,8 +353,20 @@ impl BusinessBudgets {
             }
         }
         if units <= 0.0 || account.units - units == account.units {
-            return 0.0;
+            return None;
         }
+        Some((units, margin_delta, capital_delta, goods))
+    }
+
+    fn claim_priced(&mut self, slot: usize, requested: f64,
+        seller_price: f32, carrier_quote: f32, require_finance: bool) -> f64 {
+        let Some((units, margin_delta, capital_delta, goods)) =
+            self.priced_claim(slot, requested, seller_price, carrier_quote, require_finance)
+        else {
+            return 0.0;
+        };
+        let account = self.accounts[slot];
+        let finance = self.finance[account.buyer];
         let acquired = Receipt {
             account: slot,
             units,

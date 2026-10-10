@@ -471,6 +471,29 @@ fn financing_links(length: usize, cyclic: bool, units: f32, price: Option<u32>, 
 }
 
 #[test]
+fn removed_buildings_invalidate_the_possible_buyer_layout_until_reseeded() {
+    let mut tuning = (*load_runtime_economy_tuning().unwrap()).clone();
+    tuning.owa_import_price_multiplier = 10.0;
+    tuning.owa_export_price_multiplier = 0.0;
+    let mut market = financing_chain(4, 1);
+    market.families[0].gross_daily_wages = 1_000_000.0;
+    market.families[0].budget = 1_000_000.0;
+    market.refresh(&tuning);
+    assert!(market.funding.business.layout_matches(&market.allocator, &market.network));
+    // A swap-removed last building leaves the census's layout naming a missing owner, which
+    // crashed customer propagation in a 100k city when a pass ended before reseeding.
+    market.allocator.buildings.pop();
+    market.allocator.entrances.pop();
+    market.allocator.bump_entrance_ref_revision();
+    assert!(!market.funding.business.layout_matches(&market.allocator, &market.network));
+    market.families[0].gross_daily_wages = 0.0;
+    market.families[0].budget = 0.0;
+    market.refresh(&tuning);
+    assert!(market.funding.business.layout_matches(&market.allocator, &market.network));
+    assert_eq!(&market.funding.capacities[..4], &[0; 4]);
+}
+
+#[test]
 fn downstream_income_withdrawal_and_recovery_revalidate_the_complete_supplier_chain() {
     let mut tuning = (*load_runtime_economy_tuning().unwrap()).clone();
     tuning.owa_import_price_multiplier = 10.0;

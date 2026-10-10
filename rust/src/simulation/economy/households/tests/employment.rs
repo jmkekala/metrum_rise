@@ -1539,7 +1539,6 @@ fn workplace_claim_falls_back_to_next_ranked_job_when_best_fills() {
             1.0 / worker_capacity as f32,
             1.0 / worker_capacity as f32,
         ],
-        false,
         &mut ShipmentSystem::new(),
         &crate::simulation::economy::fiscal::CityFiscalPolicy::default(),
         100_000.0, 420,

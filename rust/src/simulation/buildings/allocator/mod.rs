@@ -265,10 +265,11 @@ pub struct Building {
     /// Commercial staffing and input targets use this as a cheap demand signal instead of
     /// assuming every shop should immediately operate at full authored capacity.
     pub recent_household_sales_value: f32,
-    /// Runtime-only commercial activity floor derived from local household demand and stock gaps.
+    /// Runtime-only activity cap of a store, service store or explicit work area: its funded
+    /// share of full output from the latest job-funding census (`DEM-02`).
     ///
     /// This is rebuilt by the household economy before production, hiring, and demand accounting;
-    /// it is not persisted because it is a deterministic aggregate of live city state.
+    /// it is not persisted because the census is rebuilt from live city state.
     pub commercial_activity_floor_scale: f32,
     /// Cached scale from an explicit player-drawn production area to authored full-area capacity.
     ///

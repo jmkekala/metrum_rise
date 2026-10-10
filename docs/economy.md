@@ -2786,7 +2786,11 @@ is a labor-and-utility commercial profile whose outputs are aggregate service ca
 stored goods. For example, `personal_service_small` can back a barber, salon, tailor, or laundromat
 asset, while `health_essentials_small` can back a pharmacy asset. These profiles may have no freight
 inputs in the first pass; small supplies are treated as ordinary operating cost until a future
-`commercial_consumables` resource becomes worthwhile.
+`commercial_consumables` resource becomes worthwhile. A service store's active worker slots follow
+its own funded census activity (`DEM-02`, 2026-10-10), as goods stores do: the share of its
+output that reachable, affordable households reserved. Hourly service sales remain the city's
+resident demand capped by total staffed capacity and credited by capacity share, so that share
+now follows the customers each store reserved instead of a citywide demand ratio.
 
 Base capacities such as `household_capacity` remain asset-authored metadata. However, `worker_capacity` is authoritatively derived from the building's bound economy profile if one is present, overriding any value in the asset manifest. Living standards for households are defined by the asset's `flat_size_m2` (authored in `asset.toml`). Starter move-in sizing treats this as one household's interior area: 25 m2 baseline space, a two-person household may fit as one adult plus one child-weighted member, and larger households reserve two adult-equivalent members at 22 m2 each plus child-weighted extra members at 12 m2 each.
 
@@ -3131,16 +3135,24 @@ Where:
 - `base_rate` is the authored full-capacity output rate for the building or recipe
 - `staffing_factor = clamp(filled_workers / worker_capacity, 0.0..1.0)`
 - explicit field producers and extractors replace `worker_capacity` in this ratio with the
-  area-scaled active worker capacity; an uncommitted area has zero active worker capacity, and
-  10,000 m2 receives exactly the authored worker count
-- grocery `filled_workers` is capped by recurring resident consumption plus pantry recovery,
-  net of retail stock and shopper reservations. Recovery is spread over the authored pantry
-  target days; recent bulk purchases do not independently open worker slots. Production and
-  upstream input demand are further capped to the continuous demand rate, so rounding jobs up
-  to whole workers does not create surplus output. Input inventory uses that same demand rate,
-  retaining the existing minimum shipment buffer
-- a zero-sales store still keeps one bootstrap worker slot, but household shortage can open more
-  active worker slots before sales recover so essential shops do not deadlock on empty shelves
+  area-scaled worker capacity; an uncommitted area has zero worker capacity, and 10,000 m2
+  receives exactly the authored worker count. Their active slots are that capacity times their
+  own funded census activity (`DEM-02`, 2026-10-10): the exports and local buyers they can
+  finance. A citywide local-demand ratio, or full activity whenever a border existed, no longer
+  applies
+- a grocery's `filled_workers` and production are capped by its own funded census activity
+  (`DEM-02`): the share of full output that its reachable, affordable household customers and
+  staffed business buyers reserved, after financing. Upstream input demand and input inventory
+  use that continuous share, retaining the existing minimum shipment buffer; recent bulk
+  purchases do not open worker slots. Once the shelf holds the profile's `stock_target_days` of
+  funded sales, production also follows that share, so rounding jobs up to whole workers does
+  not create surplus output. Below that target the paid staff work at their full rate to refill
+  the shelf, because bulk pantry purchases otherwise find a store that only matches its sales
+  sold out; this opens no job and stays within the output buffer. Before 2026-10-09 a citywide
+  demand-to-output ratio also capped every store. It throttled the stores the census had funded,
+  and the 10k fixture produced about a third of what its households consumed
+- a store without funded census activity produces nothing; hiring and payroll already follow
+  the same census (`ECON-17`), so it holds no paid staff either
 - `input_factor` is the limiting required-input coverage for the current production step, clamped
   to `0.0..1.0`; production compares input inventory to the current effective hourly input need,
   not to the full authored daily input for a fully staffed building
@@ -3922,7 +3934,8 @@ per query (11 × 100 queries, 24 Rayon workers); logs and binary identities are 
 throughput or a city-frame claim.
 Daily-to-hourly production conversion has one shared constant. Demand and household settlement
 share the same compact-resource aggregation helpers, and service activity/sales share one demand-rate
-query. Service stores and explicit production areas also share their profile activity-scale calculation.
+query. Stores, service stores and explicit production areas all follow their funded census
+activity.
 Resource order and accumulation order are preserved. Mine depletion updates its existing
 cache in O(1) per site; inventory inspection and reserve protection perform bounded recipe-port work
 without adding allocations or city-wide scans.
@@ -5604,7 +5617,10 @@ builds a square city sized for the requested residents (about 2,800 per km², pl
 - Streets run every 50 m, with back-to-back lots between them, and cross streets every 400 m.
   Roads are added through the bulk path of the in-game benchmark city; cross streets go in one
   block at a time so rows never split a city-length road (`ROAD-52`).
-- An `OWA` trunk runs from the world edge along the middle street.
+- `OWA` trunks run from the world edge along evenly spaced row streets, one per 10,000
+  residents, alternating west and east (since 2026-10-10; 10k keeps its single trunk along the
+  middle street from the west). A 100k city with one trunk fulfilled about 2,000 of its
+  15,000–45,000 daily imports, so its firms starved; roads are the only limit on trade.
 - Streets are zoned with the player's brush in a repeating pattern of eight rows: six
   residential, one commercial and one industrial.
 - Every lot is built through the demand spawn executor with the `godot/bootstrap/mods` pack, and
@@ -5650,13 +5666,20 @@ The fixture now steps `SimCore::step_frame`, and `OWA` freight is uncapped
 - Groceries restock from local processors.
 - 36 food processors fail and are replaced.
 
-Two shortfalls remain:
+Two shortfalls remained:
 
-- Grocery output is capped by the citywide activity floor (`DEM-02`): about 3,400 units a day
-  against 10,625 consumed. About 3,500 of 5,320 households have empty pantries, most in terminal
-  replenishment failure.
-- In one benchmark run, 5,530 of 13,768 freight jobs timed out in transit. All border freight
-  shares one trunk road, but the cause has not been diagnosed.
+- Grocery output was capped by the citywide activity floor (`DEM-02`): about 3,400 units a day
+  against 10,625 consumed. About 3,500 of 5,320 households had empty pantries, most in terminal
+  replenishment failure. Fixed 2026-10-10: each store now follows its own funded census
+  activity ([store staffing](#building-throughput-depends-on-staffing)). Output is about 10,300
+  a day, and empty pantries fall to 169 by day 19.
+- In one benchmark run, 5,530 of 13,768 freight jobs timed out in transit. Diagnosed 2026-10-10
+  as road throughput: every new firm orders its opening inputs from the one border at once
+  (about 2,240 carriers in the first hour), and all of them share one trunk road. Fulfilled
+  border imports plateau at about 20–70 an hour, jobs left waiting expire six hours after each
+  dispatch wave, and their retries form the next wave. In the current build 4,941 of the 5,012
+  timeouts fall on days 0–2 and later days see 0–29. Roads are the intended limit on trade;
+  giving the fixture more border roads would change the workload and is left open.
 
 **Baseline.** `dc87e396` plus the `ECON-18` changes, release `bench` profile,
 `RAYON_NUM_THREADS=8`, `taskset -c 0,2,4,6,8,10,12,14`. Four sequential unprofiled runs of
@@ -5677,10 +5700,36 @@ The build took 18.0 s.
 - Each candidate is route-checked out and back through the live trip planner before its stock
   is tested. In one peak hour, 28,545 of 29,784 candidates were then rejected as sold out.
 
-Testing stock before routing, or skipping sold-out stores, is the next `ECON-13` candidate. Either
-changes which candidates are kept, so it needs its own equivalence and growth checks. Drivers,
+Testing stock before routing, or skipping sold-out stores, was the next `ECON-13` candidate.
+Either changes which candidates are kept; the 2026-10-10 walking-proof check instead keeps every
+candidate and makes the route checks themselves cheap (below). Drivers,
 logs and the executable are in `rust/target/owa/` (`perf.py`, `perf/`,
 `diag/economy-debug.log`).
+
+**`ECON-19` and store activity (2026-10-10).** Same settings; three executables in rotated order,
+four runs each: the baseline above, `85228b40` (`ECON-19` stock-check offsets) and the `DEM-02`
+store-activity change. Each executable's city records are identical across its runs. p is an
+exact permutation test over the four run means.
+
+| Benchmark | Baseline | `ECON-19` | Store activity |
+| --- | ---: | ---: | ---: |
+| `operational_hour` mean | 150.62 ms | 169.59 ms (+12.6%, p = 0.029) | 106.23 ms (−37.4% vs `ECON-19`, p = 0.029) |
+| `operational_hour` max sample | 259–265 ms | 206–217 ms | 152–160 ms |
+| `daily_settlement` mean | 17.54 ms | 25.50 ms (+45.4%, p = 0.029) | 9.89 ms (−61.2% vs `ECON-19`, p = 0.029) |
+| Day 15 households / employed | 5,320 / 7,156 | 5,320 / 7,129 | 5,330 / 7,166 |
+
+Even check slots lower the worst hours but raise the mean hourly and daily cost; that increase
+was not attributed further, because the store change removes it. With groceries producing
+what households buy, fewer shoppers search sold-out stores, and the store build is 29.5% below
+the baseline hourly and 43.6% below it daily. Drivers, logs and executables are in
+`rust/target/dem02-store/` (`perf.py`, `perf/`). The service-store follow-up (same settings, four
+alternating runs against the store build) measures **105.85 ms hourly** (p = 0.60, no change) and
+**8.81 ms daily** (−11.1%, p = 0.029), with a largest hourly sample of 157–161 ms. The
+explicit-work-area follow-up leaves timing unchanged. The walking-proof shopping check then
+answers most grocery route checks from cached pedestrian components with identical results:
+**34.18 ms hourly** (−67.6%, p = 0.029), largest sample 56–59 ms, and **8.60 ms daily**. This is
+the current 10k baseline. See the [`DEM-02` evidence](demand.md#continuation-implementation--2026-10-08)
+and `rust/target/dem02-{service,explicit,walk}/`.
 
 #### Historical larger-city builds and initial timings
 

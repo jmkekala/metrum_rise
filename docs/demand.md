@@ -4306,8 +4306,8 @@ work area shrank after the census. Service stores and explicit work areas shed w
 that limit instead of above the citywide activity capacity, and power funding changes shed to
 the census's `funding × physical` ceiling. Other unpaid workers still leave after two days.
 Every hourly workplace pass rebuilds the census, and building removal and remapping keep it
-aligned, so payroll needs no extra census. Production still caps
-sales-scaled stores by the citywide activity floor; removing that layer remains `DEM-02` work.
+aligned, so payroll needs no extra census. Production then still capped sales-scaled stores by
+the citywide activity floor; the store-activity change below removes that layer.
 
 - **Correctness.** A regression keeps a fully funded grocery with no city sales activity staffed
   and paid for three days; with the old active-capacity payroll it fails. Payroll tests now
@@ -4333,6 +4333,151 @@ sales-scaled stores by the citywide activity floor; removing that layer remains 
   workers, because it no longer refreshes the activity floor; funded staffing is unchanged.
   Drivers, logs and executables are in `rust/target/econ17/` (`full-checks.py`, `perf.py`,
   `perf/`, `dbg15-*.log`).
+
+The **store-activity change (2026-10-10)** removes the citywide activity floor from sales-scaled
+stores. The floor was the city's household demand divided by all stores' full output, applied to
+every store alike, while the census had already funded each store for the reachable, affordable
+customers it reserved. Stores those customers chose were throttled to the city ratio: in the 10k
+fixture the census funds 776 grocery workers, concentrated in the stores households reach, but
+`ceil(15 × 0.33) = 5` effective workers per store produced about 3,400 units a day against 10,600
+consumed, and about 3,800 of 5,320 households had empty pantries. Each store now caches its own
+census activity (`JobFunding::activities`), which production, staffing, input targets and the
+demand snapshot read; the budget diagnostics drop their own citywide recomputation. The census
+reads nothing from the floor, so no feedback loop is added. A store with no funded activity
+produces nothing. Its paid staff, the funded share rounded up to whole workers, may refill its
+shelf to the profile's `stock_target_days` of funded sales before production falls back to that
+share. Without that buffer the starter grocery produced exactly its 157 daily sales with about 15
+units on the shelf, and bulk pantry purchases found it sold out on 21 report days, including
+day 716.
+
+- **10k fixture** (temporary probe, removed; run before the shelf refill was added): with the
+  same 776 funded workers, grocery output is
+  10,300 units a day from day 3. Empty pantries fall from about 3,750 (unchanged through day 6
+  before the change) to 907 on day 6, 367 on day 10 and 169 on day 19; households in terminal
+  shopping failure fall from 2,400–3,200 to at most 302 from day 10 and 1–151 from day 16.
+- **Correctness.** Three store regressions cover census-only activity against city-wide
+  shortage, shelf refill only up to target, and the existing rounded-capacity contract at a full
+  shelf. Fresh release validation passes **2,288 library tests** (110 ignored), **all three
+  growth integrations** and the saved-town year. The starter town ends with 157 residents and 119
+  employed instead of 153/115, with 4.5% more two-year treasury; the expansion town gains two
+  households; the recovery town four residents. The saved town keeps identical daily counts.
+  Startup empties move from days 7–11 (17 household-days) to days 6–18 (26 household-days)
+  because the shelf now fills only through paid slack, and recovery after the forced failure
+  takes six days instead of three; none occur afterwards. Drivers and reports are in
+  `rust/target/dem02-store/` (`full-checks.py`, `full-*`).
+
+The **service-store follow-up (2026-10-10)** applies the same rule to service stores. Their active
+slots followed the city's resident demand divided by all service capacity, while hourly service
+revenue is credited by staffed-capacity share; the funded census therefore did not decide which
+store earned the sales its customers were reserved for. Each service store now caches its census
+activity as well. The refresh, the demand snapshot and the budget diagnostics no longer compute
+any citywide store ratio, and refreshing the cache no longer reads households. Explicit work
+areas keep their resource-wide input-demand and export scales.
+
+- **Correctness.** Fresh release validation passes **2,288 library tests**, **all three growth
+  integrations** and the saved-town year. Every daily count and treasury in all five reports
+  matches the store-activity build; expansion and recovery are byte-identical, and the others
+  differ only in the service firms' reported worker-hour capacity (one hour in about 8,700),
+  because each small town has one store per service. The service regression now funds its
+  barber through census activity.
+- **10k timing** (store-activity build → this change, four alternating runs each): hourly
+  105.73 → 105.85 ms (p = 0.60, no change); daily 9.91 → 8.81 ms (−11.1%, p = 0.029); the largest
+  hourly sample rises from 151–155 to 157–161 ms. The day-15 city differs: 5,341 households,
+  10,668 residents and 7,134 employed against 5,330, 10,629 and 7,166, with one building fewer,
+  so the peak hour measures a different workload; it was not attributed further. Drivers and
+  logs are in `rust/target/dem02-service/`.
+
+The **explicit-work-area follow-up (2026-10-10)** completes the rule. Farms, mines and other
+explicit work areas took full activity whenever any border was connected, and otherwise the
+city's local input demand divided by all their output, from a serial pass over every building
+on each refresh. They now cache their census activity, which already prices exports, local
+buyers and financing. The cache refresh is a parallel O(buildings) copy with no citywide pass
+and no border flag; the flag's three `HouseholdSystem` parameters and the unused
+`has_connected_border_node` are removed.
+
+- **Correctness.** Fresh release validation passes **2,287 library tests** (one farm test merges
+  the former gateway and no-gateway cases into census-funded and unfunded cases) and **all
+  three growth integrations**. The year, two-year, expansion and recovery reports are
+  byte-identical to the service build. The saved town keeps identical daily counts; its firms'
+  cash moves by at most 0.1% and treasury ends 368 higher, with 20 single-household empty days
+  instead of 16, all sporadic.
+- **10k timing** (four alternating runs each): hourly 105.87 → 105.54 ms (p = 0.57) and daily
+  8.82 → 8.73 ms (p = 0.11), no significant change; day-15 records are identical because the
+  fixture has no explicit producers. Drivers and logs are in `rust/target/dem02-explicit/`.
+
+The **walking-proof shopping check (2026-10-10)** removes most of the remaining 10k hour. Each
+grocery attempt route-checked up to 24 nearby stores out and back through the full trip planner
+(about 8.8 µs of wall time each, 45 of the 85 ms household hour) before its serial pass bought
+from the first store with stock. The checks now first ask the walking proofs the customer market
+already caches for its consumer routing: a shared cyclic pedestrian component proves both
+directed walking legs in O(1), and the ordinary planner, which always allows walking, is then
+certain to succeed. Unproven pairs still run the full check, so results are exact. Store trip
+ends are prepared once per hourly store index; the proofs are used only when their building,
+entrance and network revisions match the live state (`ConsumerMarket::walking_proofs`).
+
+- **Correctness.** **2,287 library tests**, **all three growth integrations** and the
+  saved-town year pass, and **all five reports are byte-identical** to the explicit-work-area
+  build. The existing directed-connector regression already asserts that a proof never claims a
+  route the planner rejects.
+- **10k timing** (four alternating runs each, identical day-15 records): hourly
+  **105.61 → 34.18 ms (−67.6%, p = 0.029)**, largest hourly sample 155–161 → 56–59 ms; daily
+  8.85 → 8.60 ms (−2.9%, p = 0.029). Drivers and logs are in `rust/target/dem02-walk/`.
+
+The **first live 100k run (2026-10-10)** uses the existing `/100k` tier of the economy benchmark
+(103,055 residents, 76,138 buildings, built in 219 s) on the walking-proof build. It found a
+census crash after a building removal (`ECON-20`), now fixed: the hourly closure skips customer
+propagation when its business layout predates the live buildings, with all five reports
+byte-identical. The fixed build completes the tier (exit 0, about three hours of wall time):
+
+- `operational_hour` mean 647 ms (median 360 ms, largest sample 2.57 s), about 19× the 10k hour
+  for 10× the residents;
+- `daily_settlement` mean 10.74 s (median 6.29 s, largest 24.4 s), about 1,250× the 10k day;
+- employment falls from 70,145 to 36,495 by day 15 while residents grow to 104,534.
+
+A probe of the same city (temporary test with `METRUM_DEBUG_FILTER=economy`, removed) attributes
+both effects:
+
+- **Daily cost: workplace search.** Days 4–5 settle in 0.33 s; days 6–8 take 23.7–24.9 s, of
+  which 23.4–24.6 s is the midnight workplace pass's `option_build`. The daily route-cache flush
+  leaves 9,800–13,400 searching homes and 9,300–10,400 employed workers re-checking their jobs to
+  route against 340–440 open employers: about one million new commute estimates (21–25 s). The
+  same search costs 1.3–5.9 s in ordinary hours once unemployment rises. The work is
+  O(searchers × reachable employers), so it grows quadratically with city size. This is an open
+  `DEM-02`/`ECON-13` scaling item that needs a bounded employer search.
+- **Employment collapse: border throughput.** The single border road fulfils about 950–2,200
+  imports a day while 12,900–43,700 time out (day 3: 664 against 43,731). Firms starve of
+  inputs, bankruptcies start on day 8 (268, 849 and 1,286 bankruptcy log lines on days 9–11),
+  and employment falls from 71,131 to 35,545 by day 11. Under the rule that only road traffic
+  limits trade this is the correct outcome for that map, but the 100k tier cannot measure a
+  healthy economy until the fixture's road access scales with the city.
+
+The fixture now gives every 10,000 residents a border trunk (10 at 100k, alternating west and
+east; 10k keeps its single trunk and identical records). A 100k probe then holds 71,000–74,600
+employed through day 12. Its midnight censuses exposed `ECON-21`: business-customer validation
+quoted a freight carrier (about 1 ms each) for 42,880 buyer ports and then claimed nothing from
+42,848 of them, because their financing could not pay; the census took 42 s on day 7 and 82 s on
+day 8. A pure free-freight claim check now skips those route queries exactly. With it, the same
+probe keeps identical daily records and settles days 7–12 in 0.42, 10.7, 6.9, 5.0, 2.5 and 1.2 s
+(previously 42.4 and 85.6 s on days 7 and 8). Validation passes 2,289 library tests, three
+growth integrations and the saved-town year with all five reports byte-identical.
+
+Remaining 100k costs, measured in that probe:
+
+- **Workplace search.** Each hour about 2,000 searching homes estimate commutes to the 7–29
+  open employers near them: 13,000–31,000 new CCH estimates, 0.8–1.8 s of `option_build`. The
+  route cache is cleared whenever any building or entrance changes, which happens nearly every
+  hour in a live 100k city, so the same pairs are routed again. A trial kept entries across
+  unrelated changes, validated by signatures of both entrances (free-flow CCH costs and
+  speed-limit frontage times do not change between road edits). It kept all five growth reports
+  byte-identical but cut the probe's total search time only from 198 to 191 s, because the large
+  passes route new pairs (the build-time assignment alone is 24 s for 47,520 homes), and its
+  100k records diverged from day 10 (72,557 against 72,546 employed): some cached estimates
+  depend on more than the two entrances, most likely the per-query time budget. It was
+  reverted. A faster exact search needs a one-to-many query from the few open employers.
+- **One residual census.** Day 8's midnight census still spends 8.6 s in local funding.
+- **Stack depth.** One of the 100k probes aborted with a stack overflow on a 2 MB test thread
+  during the city build; reruns, including under gdb with the default stack and with and
+  without debug logging, did not reproduce it. Not yet attributed.
 
 The following full-suite/timing figures describe the preceding consumer/freight-route build.
 
