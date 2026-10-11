@@ -459,7 +459,6 @@ fn vacant_admission_snapshot() -> DailyDemandSnapshot {
         persistent_exit_eligible_household_count: 0,
         unhoused_household_ratio: 0.0,
         zero_budget_household_ratio: 0.0,
-        incoming_household_need: 1.0,
         committed_unmet_commercial_consumer_demand_by_resource: Vec::new(),
         connected_border_count: 1,
         city_treasury_balance: 100_000.0,
@@ -807,14 +806,12 @@ fn residential_need_counts_live_pull_and_committed_household_places() {
     let mut snapshot = vacant_admission_snapshot();
     snapshot.total_household_count = 8;
     snapshot.vacant_household_slots = 1;
-    snapshot.incoming_household_need = 0.0;
-    assert_eq!(residential_missing_household_slots(&snapshot), 0);
-    snapshot.incoming_household_need = 1.4;
-    assert_eq!(residential_missing_household_slots(&snapshot), 2);
+    assert_eq!(residential_missing_household_slots(&snapshot, 0), 0);
+    assert_eq!(residential_missing_household_slots(&snapshot, 2), 2);
     snapshot.vacant_household_slots = 0;
-    assert_eq!(residential_missing_household_slots(&snapshot), 3);
+    assert_eq!(residential_missing_household_slots(&snapshot, 2), 3);
     snapshot.under_construction_household_slots = 6;
-    assert_eq!(residential_missing_household_slots(&snapshot), 0);
+    assert_eq!(residential_missing_household_slots(&snapshot, 2), 0);
 }
 
 #[test]
@@ -822,12 +819,11 @@ fn residential_need_includes_displaced_households_before_spare_capacity() {
     let mut snapshot = vacant_admission_snapshot();
     snapshot.total_household_count = 100;
     snapshot.unhoused_household_count = 40;
-    snapshot.incoming_household_need = 5.0;
     snapshot.vacant_household_slots = 10;
     snapshot.under_construction_household_slots = 20;
-    assert_eq!(residential_missing_household_slots(&snapshot), 25);
+    assert_eq!(residential_missing_household_slots(&snapshot, 5), 25);
     snapshot.under_construction_household_slots = 45;
-    assert_eq!(residential_missing_household_slots(&snapshot), 0);
+    assert_eq!(residential_missing_household_slots(&snapshot, 5), 0);
 }
 
 #[test]
@@ -1301,8 +1297,13 @@ fn pension_arrivals_preserve_homes_for_constructing_workplaces() {
         elder_count: 1,
         ..Default::default()
     };
-    assert!(demand.claim_household_admission(elder, 1, 1, &policy));
-    assert!(demand.claim_household_admission(elder, 1, 1, &policy));
+    // The places' applicants bring 15 adults (`DEM-02-C`). The factory's workers and the
+    // store workers the arrivals' shopping needs fill single-adult places first.
+    let unreserved = demand.workforce_reservations.unreserved_ready_homes();
+    assert_eq!(unreserved, 3);
+    for _ in 0..unreserved {
+        assert!(demand.claim_household_admission(elder, 1, 1, &policy));
+    }
     assert!(!demand.claim_household_admission(elder, 1, 1, &policy));
     assert_eq!(
         demand.last_admission_diagnostics.worker_housing_rejections,
@@ -1363,8 +1364,15 @@ fn queued_homes_obey_deadlines_and_are_claimed_only_once() {
         !workforce.claim(12, 1),
         "the queued home cannot complete by this factory deadline"
     );
-    let slots = allocator.registry.household_capacity(&action.asset_id);
-    assert!(workforce.claim(24, slots));
+    // Each place supplies its applicant's adults net of the store workers their shopping
+    // needs (`DEM-02-C`), not one worker.
+    let project = &demand.queued_construction[0];
+    let store_workers = (f64::from(project.household_members)
+        * super::workforce::resident_store_labor(&demand.runtime_catalog))
+    .ceil() as u32;
+    let workers = project.household_workers - store_workers;
+    assert!(workers > 0);
+    assert!(workforce.claim(24, workers));
     assert!(
         !workforce.claim(24, 1),
         "another project cannot reuse the claimed housing"
@@ -1387,7 +1395,7 @@ fn queued_homes_obey_deadlines_and_are_claimed_only_once() {
                 None,
     );
     assert!(!workforce.claim(12, 1));
-    assert!(workforce.claim(24, slots));
+    assert!(workforce.claim(24, workers));
 }
 
 #[test]
@@ -1697,9 +1705,8 @@ fn runtime_snapshot_uses_existing_unemployed_before_new_household_job_pull() {
     assert!(snapshot.existing_unemployed_member_count >= snapshot.open_job_slots);
     assert_eq!(snapshot.move_in_job_slots, 0);
     assert_eq!(snapshot.move_in_job_slots, 0);
-    assert!(snapshot.move_in_job_equivalent_slots <= 0.001);
     assert!(
-        snapshot.incoming_household_need <= 0.001,
+        snapshot.move_in_job_equivalent_slots <= 0.001,
         "raw open jobs should not pull immigrants while existing unemployed adults can fill them"
     );
 }

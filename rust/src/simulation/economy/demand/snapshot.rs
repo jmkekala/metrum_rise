@@ -173,7 +173,6 @@ pub(super) struct DailyDemandSnapshot {
     pub(super) persistent_exit_eligible_household_count: u32,
     pub(super) unhoused_household_ratio: f32,
     pub(super) zero_budget_household_ratio: f32,
-    pub(super) incoming_household_need: f32,
     pub(super) under_construction_household_slots: u32,
     pub(super) constructing_by_use: [u32; 3],
     pub(super) queued_by_use: [u32; 3],
@@ -441,6 +440,7 @@ impl DailyDemandSnapshot {
         };
         // A household cannot finance its arrival with jobs its own future spending might
         // create. Only existing open jobs enter admission's finite recurring-income budget.
+        // Housing need converts them into homes with admission's applicant stream.
         let move_in_job_slots = net_open_job_slots;
         let move_in_job_equivalent_slots = net_open_job_slots as f32;
         let average_move_in_job_wage_per_day = if move_in_job_equivalent_slots <= EPSILON {
@@ -448,22 +448,13 @@ impl DailyDemandSnapshot {
         } else {
             net_open_job_wage_sum / move_in_job_equivalent_slots
         };
-        // One incoming adult per needed home is the same conservative assumption used by
-        // workforce reservations. No hypothetical family, regional cutoff or marginal shop
-        // wage determines construction. The empty town can offer its first home.
-        let incoming_household_need = if connected_border_count == 0 {
-            0.0
-        } else {
-            (net_open_job_slots as f32).max(if total_household_count == 0 { 1.0 } else { 0.0 })
-        };
 
         debug_log!(
             "spawn",
-            "daily_snapshot: border_nodes={} homes={} incoming_need={:.1} \
+            "daily_snapshot: border_nodes={} homes={} \
              live_jobs={} available_jobs={} pending_homes={}",
             connected_border_count,
             vacant_household_slots,
-            incoming_household_need,
             open_job_slots,
             move_in_job_slots,
             under_construction_household_slots,
@@ -497,7 +488,6 @@ impl DailyDemandSnapshot {
             persistent_exit_eligible_household_count,
             unhoused_household_ratio,
             zero_budget_household_ratio,
-            incoming_household_need,
             committed_unmet_commercial_consumer_demand_by_resource,
             under_construction_household_slots,
             constructing_by_use: building_accumulator.constructing_by_use,

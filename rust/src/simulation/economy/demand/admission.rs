@@ -7,10 +7,11 @@ use super::snapshot::DailyDemandSnapshot;
 use super::types::EPSILON;
 use crate::simulation::economy::agents::HouseholdAgeComposition;
 use crate::simulation::economy::fiscal::{CityFiscalPolicy, daily_property_tax};
+use crate::simulation::economy::households::{applicant_offer, applicant_offer_limit};
 use crate::simulation::zoning::ZoneType;
 
 /// Scalar budget reused for every candidate in a bounded admission batch.
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 pub(super) struct HouseholdAdmissionBudget {
     unreserved_homes: u32,
     worker_homes: u32,
@@ -130,6 +131,58 @@ mod tests {
         assert!(!budget.can_house(worker));
     }
 
+    // Homes whose applicant at offer `k` (household seed `k`) has exactly `adults` adults.
+    fn homes_offering(adults: u16, flat_size_m2: f32, offers: usize) -> Vec<usize> {
+        let mut seed = 0;
+        (0..offers)
+            .map(|offer| {
+                while applicant_offer(flat_size_m2, seed, offer)
+                    .is_none_or(|(_, composition)| composition.adult_count != adults)
+                {
+                    seed += 1;
+                }
+                seed
+            })
+            .collect()
+    }
+
+    #[test]
+    fn housing_need_counts_households_not_open_jobs() {
+        // DEM-02-C: admission charges every adult against the jobs, so couples staffing 40
+        // open jobs need 20 homes. One home per job left 79 homes vacant in a player save.
+        const FLAT_M2: f32 = 200.0;
+        let mut policy = policy();
+        policy.child_support_per_child_per_day = 0.0;
+        policy.pension_per_elder_per_day = 0.0;
+        let budget = HouseholdAdmissionBudget {
+            remaining_job_equivalents: 40.0,
+            net_wage_per_day: 10_000.0,
+            essentials_per_member: 30.0,
+            treasury: 100_000.0,
+            transfer_coverage_days: 30.0,
+            ..Default::default()
+        };
+        let couples = homes_offering(2, FLAT_M2, 64);
+        let need = |homes: &[usize]| {
+            budget.households_to_staff(&policy, 0, homes.len(), |position| {
+                (homes[position], FLAT_M2, 1)
+            })
+        };
+        assert_eq!(need(&couples), 20);
+        assert_eq!(need(&homes_offering(1, FLAT_M2, 64)), 40);
+        // Applicants the income check refuses take no homes.
+        let unpaid = HouseholdAdmissionBudget {
+            net_wage_per_day: 0.0,
+            ..budget
+        };
+        assert_eq!(
+            unpaid.households_to_staff(&policy, 0, couples.len(), |position| {
+                (couples[position], FLAT_M2, 1)
+            }),
+            0
+        );
+    }
+
     #[test]
     fn arrival_budget_charges_home_electricity_once_per_household() {
         let policy = policy();
@@ -232,5 +285,52 @@ impl HouseholdAdmissionBudget {
             self.unreserved_homes -= 1;
         }
         true
+    }
+
+    /// Arriving households needed to staff this budget's open jobs (`DEM-02-C`).
+    ///
+    /// Walks the applicant stream admission examines this hour: offer `k` goes to vacancy
+    /// position `(seed + k) mod homes` in admission's cursor order with household seed
+    /// `seed + k`. Offers the income check refuses are skipped; each accepted offer is one home.
+    /// The walk stops once accepted adults cover the open jobs, or after admission's offer
+    /// bound for that many arrivals. Homes are not a limit here: the result is a need, not a
+    /// batch. `home(position)` yields `(home seed, flat size, level)`. O(offers walked), no
+    /// allocation, and no routing: admission's border-route check is not repeated.
+    pub(super) fn households_to_staff(
+        &self,
+        policy: &CityFiscalPolicy,
+        seed: usize,
+        homes: usize,
+        home: impl Fn(usize) -> (usize, f32, u8),
+    ) -> u32 {
+        if homes == 0 || self.remaining_job_equivalents <= EPSILON {
+            return 0;
+        }
+        let mut walk = Self {
+            unreserved_homes: u32::MAX,
+            worker_homes: 0,
+            ..*self
+        };
+        let jobs = self.remaining_job_equivalents.ceil() as usize;
+        let mut cursor = seed;
+        let mut households = 0;
+        for attempt in 0..applicant_offer_limit(jobs) {
+            let position = cursor % homes;
+            // An accepted offer claims its place, so the next offer moves on as well.
+            cursor = position + 1;
+            let (home_seed, flat_size_m2, level) = home(position);
+            let Some((size, composition)) =
+                applicant_offer(flat_size_m2, home_seed, seed.saturating_add(attempt))
+            else {
+                continue;
+            };
+            if walk.claim(composition, size, level, policy) {
+                households += 1;
+                if walk.remaining_job_equivalents <= EPSILON {
+                    break;
+                }
+            }
+        }
+        households
     }
 }

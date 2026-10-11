@@ -277,9 +277,9 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   workplace finishes. Queued placement revalidates those claims before spending owner equity.
   Housing counts actual asset capacity; citywide pressure no longer gates growth or decline.
   Failed-site clearance preserves healthy vacant buildings; departures use individual eligibility.
-  The HUD shows actual project counts and concrete constraints. Candidate-site freight,
-  local buyer affordability/connectivity and full growth/performance acceptance remain
-  open under `DEM-02`; see [the current contract](archive/demand_history_2026-10-10.md#implementation-contract-and-progress).
+  The HUD shows actual project counts and concrete constraints. `DEM-02`'s three
+  [exit criteria](demand.md#exit-criteria) (second-mix year, 10k time budget, no housing
+  overbuild) pass on one build as of 2026-10-11.
 
 - **Asset editor ground**: the preview now has flat terrain with a 10 m × 10 m grid
   continuing beyond the lot, using the game's terrain shader and shared grass textures.
@@ -316,7 +316,7 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   Pre-73 saves retain cash and convert generation, but lack the new meters for their first partial day;
   see [validation and limitations](archive/economy_history_2026-10-10.md#electricity-validation-econ-14).
 
-- **Healthy city growth (`ECON-11`–`ECON-12` done; `ECON-13`–`ECON-14` and `DEM-02` in progress)**:
+- **Healthy city growth (`ECON-11`–`ECON-12` and `DEM-02` done; `ECON-13`–`ECON-14` in progress)**:
   The original saved-town replay stayed at seven residents through day 32 despite empty homes
   and high industrial pressure. Independent entry now removes the global startup-cash recovery
   dependency; the same save grows from 7 to 85 residents, with 69 employed, over 30 days.
@@ -937,13 +937,21 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- `DEM-02` done (2026-10-11): residential need and the workforce calendar count
+  arriving households and their adults from admission's own applicant stream, not one home or one
+  worker per job. The calendar credits those adults net of the store workers their shopping
+  needs, and a store short only of workers opens with the crew the calendar can supply.
+  `GrowthScenario::producer_town` adds a farm, mine and power-plant town. All three exit criteria
+  pass on one build; all library and growth tests pass; 10k timing is unchanged. See the
+  [exit-criteria status](demand.md#exit-criteria).
+
 - `DEM-02` level changes (2026-10-10): the upgrade family (`asset_set`) is optional. Zoned
   buildings without one change level to an unfamilied asset with the same zone, density and lot
   footprint at the next level, chosen by a stable per-site hash; family members stay within their
   family. A pre-zoned player save with four unfamilied level-2 houses now records 85 residential
   upgrades in 60 days (none before). Level changes now refresh the yard (hedge/planting) of the
-  new asset and play a 2.5 s render-only rise of the new model; the simulation swap stays
-  instant. See [level changes](demand.md#level-changes).
+  new asset and play a 2.5 s render-only rise of the new model (visually accepted in game); the
+  simulation swap stays instant. See [level changes](demand.md#level-changes).
 
 - Docs (2026-10-10): [`economy.md`](economy.md) and [`demand.md`](demand.md) are rewritten as
   current-state specifications. Their previous contents, including the `ECON-14`/`DEM-02`

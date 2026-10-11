@@ -40,6 +40,11 @@ pub(super) trait ProjectSupply {
     fn output_price(&self, _resource: u16) -> Option<f64> { None }
     /// Staffing established by the current quote, rather than a second market estimate.
     fn supported_workers(&self, fallback: u32) -> u32 { fallback }
+    /// Most workers a store's current probe may plan for (`DEM-02-C`); unlimited by default.
+    /// Reset by every `begin`, so only an explicit retry at the available crew sets it.
+    fn crew_cap(&self) -> u32 { u32::MAX }
+    /// Limits the current probe's store crew to the workers the calendar can supply.
+    fn set_crew_cap(&mut self, _workers: u32) {}
     /// Retains exact activity and area alongside the supported rounded workforce.
     fn set_supported_plan(&mut self, _plan: OperationPlan) {}
     /// Equity supplied by placement, independent of this site's transient input quotes.
@@ -214,6 +219,7 @@ pub(super) struct SiteSupply<'a> {
     goods_multiplier: f32,
     exports: f32,
     replacement_source: Option<usize>,
+    crew_cap: u32,
 }
 
 impl<'a> SiteSupply<'a> {
@@ -301,6 +307,7 @@ impl<'a> SiteSupply<'a> {
             reservations,
             vat,
             plan: OperationPlan { workers: 0, activity: 0.0, area: 1.0 },
+            crew_cap: u32::MAX,
             customer_quote: ProjectCustomers::default(),
             replacement: None,
             allocator,
@@ -334,6 +341,7 @@ impl<'a> SiteSupply<'a> {
         self.reservations.business.begin_revalidation();
         self.reservations.customers.begin_revalidation();
         self.plan = OperationPlan { workers: 0, activity: 0.0, area: 1.0 };
+        self.crew_cap = u32::MAX;
         self.exports = 0.0;
         self.replacement_source = None;
         self.customer_quote = ProjectCustomers::default();
@@ -371,7 +379,7 @@ impl<'a> SiteSupply<'a> {
         let projects = projects.filter(|project| project.active);
         self.prepare_project_market(projects.clone(), catalog, market, replay, policy,
             service_capacities, freight_capital);
-        self.reserve_queued(projects, catalog, replay, policy, |_, _| true);
+        self.reserve_queued(projects, catalog, replay, policy, |_, _| Ok(()));
     }
 
     /// Execution retains only queue purchases backed by workers from already placed homes.
@@ -396,7 +404,12 @@ impl<'a> SiteSupply<'a> {
             Some(self.reservations));
         workforce.reserve_existing();
         self.reserve_queued(projects, catalog, replay, policy, |project, workers| {
-            workforce.claim_by_hour(project.completion_hour.saturating_sub(elapsed), workers)
+            let deadline = project.completion_hour.saturating_sub(elapsed);
+            if workforce.claim_by_hour(deadline, workers) {
+                Ok(())
+            } else {
+                Err(workforce.available_by_hour(deadline))
+            }
         });
     }
 
@@ -533,7 +546,7 @@ impl<'a> SiteSupply<'a> {
         catalog: &RuntimeEconomyCatalog,
         market: &mut OutputAbsorptionContext,
         policy: &CityFiscalPolicy,
-        mut workforce: impl FnMut(&super::queued::QueuedConstruction, u32) -> bool,
+        mut workforce: impl FnMut(&super::queued::QueuedConstruction, u32) -> Result<(), u32>,
     ) {
         for project in projects {
             let Some(profile) = catalog.profile_by_runtime_id(project.profile_runtime_id) else {
@@ -544,30 +557,67 @@ impl<'a> SiteSupply<'a> {
             } else {
                 crate::simulation::zoning::ZoneType::Industrial
             };
-            let carrier = self.begin_entrance(project.entrance.clone(), None,
-                freight_goods_multiplier(profile, zone, self.tuning, self.minute_of_day));
-            self.reservations.staged_owner = self.project_owner(project.parcel_id);
-            self.buyer_site = self.reservations.staged_owner.zip(self.entrance.as_ref())
-                .and_then(|(owner, entrance)| self.reservations.business
-                    .prepared_site_at(owner, profile.runtime_id, entrance));
-            let prices = self.prices(catalog, zone, project.level, policy, carrier);
-            if super::spawn_need::project_covers_operation(
-                profile,
-                catalog,
-                market.market(),
-                prices,
-                self.tuning.owa_export_price_multiplier,
-                self,
-            ) && workforce(project, self.plan.workers) {
+            let mut claimed = self.probe_queued(project, profile, zone, catalog, market, policy,
+                None).then(|| workforce(project, self.plan.workers));
+            // The planner's rule again: a store short only of workers revalidates with the
+            // crew the calendar can still house (`DEM-02-C`). No queue state is saved for it.
+            if let Some(Err(available)) = claimed
+                && project.commercial
+                && available > 0
+            {
+                claimed = self.probe_queued(project, profile, zone, catalog, market, policy,
+                    Some(available)).then(|| workforce(project, self.plan.workers));
+            }
+            let crew_cap = self.crew_cap;
+            if matches!(claimed, Some(Ok(()))) {
                 self.reservations.queued_workers.push((project.parcel_id, self.plan.workers));
                 self.accept();
             } else {
                 self.reservations.queued_workers.push((project.parcel_id, 0));
                 self.reject();
             }
-            market.reserve_candidate(profile);
+            if crew_cap < profile.worker_capacity {
+                market.reserve_scaled_candidate(
+                    profile,
+                    crew_cap as f32 / profile.worker_capacity as f32,
+                );
+            } else {
+                market.reserve_candidate(profile);
+            }
         }
         self.reservations.queued_workers.sort_unstable_by_key(|&(parcel, _)| parcel);
+    }
+
+    // Starts a queued project's probe at its prepared door and checks its operation, with the
+    // store crew capped when `crew_cap` is set.
+    fn probe_queued(
+        &mut self,
+        project: &super::queued::QueuedConstruction,
+        profile: &EconomyProfileRuntime,
+        zone: crate::simulation::zoning::ZoneType,
+        catalog: &RuntimeEconomyCatalog,
+        market: &OutputAbsorptionContext,
+        policy: &CityFiscalPolicy,
+        crew_cap: Option<u32>,
+    ) -> bool {
+        let carrier = self.begin_entrance(project.entrance.clone(), None,
+            freight_goods_multiplier(profile, zone, self.tuning, self.minute_of_day));
+        if let Some(workers) = crew_cap {
+            self.crew_cap = workers;
+        }
+        self.reservations.staged_owner = self.project_owner(project.parcel_id);
+        self.buyer_site = self.reservations.staged_owner.zip(self.entrance.as_ref())
+            .and_then(|(owner, entrance)| self.reservations.business
+                .prepared_site_at(owner, profile.runtime_id, entrance));
+        let prices = self.prices(catalog, zone, project.level, policy, carrier);
+        super::spawn_need::project_covers_operation(
+            profile,
+            catalog,
+            market.market(),
+            prices,
+            self.tuning.owa_export_price_multiplier,
+            self,
+        )
     }
 
     /// Supplies the same non-input tariffs used by private entry and live hiring.
@@ -640,6 +690,8 @@ impl ProjectSupply for SiteSupply<'_> {
         Some(self.reservations.output_prices.iter().find(|&&(id, _)| id == resource).map_or(0.0, |&(_, price)| price))
     }
     fn supported_workers(&self, _fallback: u32) -> u32 { self.plan.workers }
+    fn crew_cap(&self) -> u32 { self.crew_cap }
+    fn set_crew_cap(&mut self, workers: u32) { self.crew_cap = workers; }
     fn set_supported_plan(&mut self, plan: OperationPlan) {
         self.plan = plan;
         self.reservations.staged_operation = None;

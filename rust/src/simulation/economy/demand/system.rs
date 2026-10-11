@@ -51,7 +51,7 @@ pub struct DemandSystem {
     /// Operational hour relative to which queued completion offsets were prepared.
     pub(super) queued_reference_hour: u64,
     pub(super) next_construction_start_hour: u64,
-    admission_budget: HouseholdAdmissionBudget,
+    pub(super) admission_budget: HouseholdAdmissionBudget,
     freight_border_nodes: Vec<u32>,
     /// Current outside applicant seed, derived from simulation time rather than accepted arrivals.
     pub(crate) admission_candidate_seed: usize,
@@ -295,6 +295,8 @@ impl DemandSystem {
 
         let mut admission_diagnostics = HouseholdAdmissionDiagnostics::from_snapshot(&snapshot);
         admission_diagnostics.planned_households = self.households_to_admit_today;
+        admission_diagnostics.incoming_household_need =
+            self.last_admission_diagnostics.incoming_household_need;
         self.last_admission_diagnostics = admission_diagnostics;
 
         let mut removal_diagnostics = HouseholdRemovalDiagnostics::from_snapshot(&snapshot);

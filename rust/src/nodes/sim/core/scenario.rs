@@ -20,7 +20,7 @@ mod diagnostics;
 pub use diagnostics::{GrowthBusinessCashFlow, GrowthBusinessOutcome, GrowthReport};
 
 use glam::DVec2;
-use godot::prelude::Vector3;
+use godot::prelude::{Vector2, Vector3};
 
 use super::frame::FRAME_DT_S;
 use super::road_commit::RoadCommitRequest;
@@ -29,6 +29,7 @@ use crate::assets::scan_pack_dir;
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::time::SIMULATION_SPEED_STEPS;
 use crate::simulation::zoning::ZoneType;
+use crate::assets::ZoneClass;
 use crate::simulation::zoning::cells::CellSelectionShape;
 use crate::simulation::zoning::profiles::ZoneDensity;
 
@@ -45,6 +46,10 @@ const ZONE_BRUSH: CellSelectionShape = CellSelectionShape::Brush {
 };
 // Keeps paint clear of junction corners, where frontage cells do not form.
 const JUNCTION_CLEARANCE_M: f64 = 30.0;
+const COAL_POWER_PLANT: &str = "kenney:building.power.coal_power_plant";
+// The authored plant's full staffing; funding is a fraction of it.
+const COAL_POWER_PLANT_WORKERS: f32 = 20.0;
+const PRODUCER_TOWN_POWER_WORKERS: f32 = 2.0;
 
 /// City state at one daily settlement.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -63,11 +68,22 @@ pub struct GrowthDayRecord {
     pub buildings: u32,
     /// City treasury balance after settlement.
     pub treasury: f64,
+    /// Vacant household places in standing homes (`DEM-02-C`).
+    pub vacant_homes: u32,
+    /// Vacant places housing construction retains for these households.
+    pub vacancy_reserve: u32,
+    /// Households without an operational home.
+    pub unhoused_households: u32,
+    /// Open jobs left after local unemployed adults, which arrivals must staff.
+    pub net_open_jobs: u32,
+    /// Households demand has removed since the scenario started.
+    pub departures: u32,
 }
 
 /// A small zoned town that grows only through simulated demand.
 pub struct GrowthScenario {
     core: SimCore,
+    departures: u32,
 }
 
 impl GrowthScenario {
@@ -116,7 +132,37 @@ impl GrowthScenario {
         }
 
         core.time.speed_multiplier = SIMULATION_SPEED_STEPS[SIMULATION_SPEED_STEPS.len() - 1];
-        Self { core }
+        Self {
+            core,
+            departures: 0,
+        }
+    }
+
+    /// The starter town's streets and paint plus player-placed producers (`DEM-02-A`): a
+    /// 4 ha grain farm, a 1 ha coal mine on a painted deposit and a coal power plant funded
+    /// for two workers, west of the town on the main street. The city treasury pays every
+    /// placement, as in a player's city; no households live there at the start.
+    ///
+    /// Sizes stay inside what the `ECON-14` producer matrices found supplied for a year: the
+    /// 4 ha farm minimum, a 1 ha mine and the two-worker plant the small town supports with a
+    /// working mine. Panics on a rejected placement, like [`Self::starter_town`].
+    pub fn producer_town() -> Self {
+        let mut scenario = Self::starter_town();
+        let core = &mut scenario.core;
+        place_producer_site(core, false, 4.0, -980.0);
+        place_producer_site(core, true, 1.0, -740.0);
+        let plant = core
+            .place_service_building_internal(COAL_POWER_PLANT, -560.0, 8.0)
+            .expect("power plant placement");
+        let building = &core.allocator.buildings[plant];
+        let (x, z) = (building.center_x, building.center_y);
+        assert!(core.set_building_service_funding_override_at(
+            x,
+            z,
+            "electricity",
+            PRODUCER_TOWN_POWER_WORKERS / COAL_POWER_PLANT_WORKERS,
+        ));
+        scenario
     }
 
     /// Current operational day.
@@ -152,8 +198,22 @@ impl GrowthScenario {
         report
     }
 
-    fn record(&self) -> GrowthDayRecord {
+    /// Largest household capacity among the installed residential assets: the most one
+    /// whole home can add to vacancy beyond the reserve.
+    pub fn largest_home_capacity(&self) -> u32 {
+        let registry = &self.core.allocator.registry;
+        registry
+            .buildings_for_zone(ZoneClass::Residential)
+            .iter()
+            .map(|asset| registry.household_capacity(asset))
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn record(&mut self) -> GrowthDayRecord {
         let city = self.core.daily_city_flow_diagnostics();
+        let (net_open_jobs, vacancy_reserve, removed) = self.core.demand.housing_balance();
+        self.departures += removed;
         GrowthDayRecord {
             day: self.core.time.day_index,
             households: city.active_households,
@@ -164,8 +224,53 @@ impl GrowthScenario {
                 .saturating_add(city.industrial_job_capacity),
             buildings: self.core.allocator.buildings.len() as u32,
             treasury: self.core.treasury.balance,
+            vacant_homes: city.vacant_household_slots,
+            vacancy_reserve,
+            unhoused_households: city.unhoused_households,
+            net_open_jobs,
+            departures: self.departures,
         }
     }
+}
+
+/// Places an explicit farm or mine at `(x, 8)` with a square-ish field or extraction area of
+/// `hectares` behind it, painting a coal deposit under a mine. The treasury pays as usual.
+fn place_producer_site(core: &mut SimCore, mine: bool, hectares: f32, x: f32) -> usize {
+    let asset = if mine {
+        "kenney:building.coal.mine"
+    } else {
+        "kenney:building.industrial.small_farm"
+    };
+    let owner = core
+        .place_industry_building_internal(asset, x, 8.0)
+        .expect("explicit producer placement");
+    let back = core.allocator.building_sites[owner]
+        .lot_footprint_world
+        .iter()
+        .map(|point| point.y)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let width = (hectares * 10_000.0).sqrt();
+    let depth = hectares * 10_000.0 / width;
+    let origin = Vector2::new(x - 10.0, back + 1.0);
+    let polygon = vec![
+        origin,
+        origin + Vector2::new(width, 0.0),
+        origin + Vector2::new(width, depth),
+        origin + Vector2::new(0.0, depth),
+    ];
+    if mine {
+        assert!(core.paint_world_coal_deposit_internal(
+            origin + Vector2::new(width, depth) * 0.5,
+            Vector2::new(width, depth).length() * 0.5 + 20.0,
+            100.0,
+        ));
+        core.commit_extractor_polygon_internal(owner, polygon)
+            .expect("coal extraction area");
+    } else {
+        core.commit_field_polygon_internal(owner, polygon)
+            .expect("grain field");
+    }
+    owner
 }
 
 pub(super) fn install_bootstrap_assets(core: &mut SimCore) {

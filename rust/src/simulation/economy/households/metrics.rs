@@ -4,7 +4,9 @@
 
 use super::{Household, REPLENISHMENT_SHOPPING_RETURNING, REPLENISHMENT_SHOPPING_TO_STORE};
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
-use crate::simulation::economy::agents::MAX_ADULTS_PER_HOUSEHOLD;
+use crate::simulation::economy::agents::{
+    HouseholdAgeComposition, MAX_ADULTS_PER_HOUSEHOLD, household_age_composition,
+};
 use crate::simulation::economy::definitions::{
     EconomyProfileRuntime, EconomyProfileRuntimeKind, HOUSEHOLD_DEMAND_PROFILE_ID,
     HOUSEHOLD_SUPPLY_RESOURCE_ID, ResourceRuntimeId, RuntimeEconomyCatalog, RuntimeEconomyTuning,
@@ -917,6 +919,73 @@ pub(crate) fn candidate_immigrant_household_size_for_vacancy(
         [stable_index(seed, STARTER_IMMIGRANT_HOUSEHOLD_SIZE_BUCKETS.len())];
 
     Some(requested_size.min(max_size).max(1))
+}
+
+/// Offers examined for a batch of `arrivals`: four per arrival, at least sixteen for a small
+/// town. Admission and the housing need walk share this bound.
+pub(crate) fn applicant_offer_limit(arrivals: usize) -> usize {
+    arrivals.saturating_mul(4).max(16)
+}
+
+/// The deterministic outside household offered one residential place: size and ages.
+///
+/// `home_seed` is the home's building index (its parcel id before placement) and
+/// `household_seed` the offer's position in the applicant stream. Admission, housing need and
+/// the workforce calendar read the same stream. `None` where the flat fits no household. O(1).
+pub(crate) fn applicant_offer(
+    flat_size_m2: f32,
+    home_seed: usize,
+    household_seed: usize,
+) -> Option<(u16, HouseholdAgeComposition)> {
+    let size = candidate_immigrant_household_size_for_vacancy(
+        flat_size_m2,
+        home_seed,
+        household_seed as u32,
+    )?;
+    Some((size, household_age_composition(home_seed, household_seed, size)))
+}
+
+/// Places `slots` of one home counted by the adults of the applicant offered each place,
+/// indexed `0..=MAX_ADULTS_PER_HOUSEHOLD`. A flat that fits no household counts nowhere.
+/// O(places).
+pub(crate) fn applicant_places_by_adults(
+    flat_size_m2: f32,
+    home_seed: usize,
+    slots: std::ops::Range<u32>,
+) -> [u32; MAX_ADULTS_PER_HOUSEHOLD as usize + 1] {
+    applicant_places_and_members(flat_size_m2, home_seed, slots).0
+}
+
+/// [`applicant_places_by_adults`] together with the applicants' total members. O(places).
+pub(crate) fn applicant_places_and_members(
+    flat_size_m2: f32,
+    home_seed: usize,
+    slots: std::ops::Range<u32>,
+) -> ([u32; MAX_ADULTS_PER_HOUSEHOLD as usize + 1], u32) {
+    let mut places = [0; MAX_ADULTS_PER_HOUSEHOLD as usize + 1];
+    let mut members = 0;
+    for slot in slots {
+        if let Some((size, composition)) = applicant_offer(flat_size_m2, home_seed, slot as usize)
+        {
+            places[usize::from(composition.adult_count)] += 1;
+            members += u32::from(size);
+        }
+    }
+    (places, members)
+}
+
+/// Adults the applicants for places `slots` of one home would bring. O(places).
+#[cfg(test)]
+pub(crate) fn applicant_workers(
+    flat_size_m2: f32,
+    home_seed: usize,
+    slots: std::ops::Range<u32>,
+) -> u32 {
+    applicant_places_by_adults(flat_size_m2, home_seed, slots)
+        .iter()
+        .enumerate()
+        .map(|(adults, &places)| adults as u32 * places)
+        .sum()
 }
 
 fn starter_household_required_area_m2(household_size: u16) -> f32 {

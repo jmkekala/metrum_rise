@@ -3,7 +3,6 @@
 //! Opt-in economic experiments using ordinary placement, production, freight and settlement.
 
 use super::*;
-use godot::prelude::Vector2;
 
 #[test]
 #[ignore = "manual saved-city diagnosis; requires METRUM_DIAG_SAVE, METRUM_DIAG_MODS and METRUM_DIAG_REPORT"]
@@ -35,7 +34,10 @@ fn diagnose_saved_city_growth() {
     );
     // Resume the loaded world without changing balances, zoning, staffing or demand rules.
     core.time.speed_multiplier = *SIMULATION_SPEED_STEPS.last().unwrap();
-    let mut scenario = GrowthScenario { core };
+    let mut scenario = GrowthScenario {
+        core,
+        departures: 0,
+    };
     let initial = scenario.record();
     let report = scenario.run_diagnosed_days(days);
     std::fs::write(
@@ -384,8 +386,8 @@ fn many_new_industrial_lots_respect_scarce_labor_and_earn_their_owner_capital() 
         .fold(0.0, f64::max);
 
     let report = scenario.run_diagnosed_days(270);
-    // Planning promises one adult per future home. After arrival, actual second adults
-    // legitimately permit more projects; the long-run equity bound uses observed workers.
+    // Planning promises each future home's applicant adults (`DEM-02-C`); admission may
+    // admit other families, so the long-run equity bound uses observed workers.
     let supplied_workers =
         unemployed + housed_adults(&scenario.core).saturating_sub(initial_adults);
     assert!(supplied_workers > 0 && supplied_workers < new_lots as u32 * min_workers);
@@ -449,41 +451,8 @@ fn many_new_industrial_lots_respect_scarce_labor_and_earn_their_owner_capital() 
 fn place_producer(scenario: &mut GrowthScenario, mine: bool, hectares: f32, x: f32) -> usize {
     let core = &mut scenario.core;
     let construction_before = core.treasury.lifetime_build_cost;
-    let asset = if mine {
-        "kenney:building.coal.mine"
-    } else {
-        "kenney:building.industrial.small_farm"
-    };
-    let owner = core
-        .place_industry_building_internal(asset, x, 8.0)
-        .expect("explicit producer placement");
-    let back = core.allocator.building_sites[owner]
-        .lot_footprint_world
-        .iter()
-        .map(|point| point.y)
-        .fold(f32::NEG_INFINITY, f32::max);
     // Large-site experiments use a larger world, keeping the field west of the same town.
-    let width = (hectares * 10_000.0).sqrt();
-    let depth = hectares * 10_000.0 / width;
-    let origin = Vector2::new(x - 10.0, back + 1.0);
-    let polygon = vec![
-        origin,
-        origin + Vector2::new(width, 0.0),
-        origin + Vector2::new(width, depth),
-        origin + Vector2::new(0.0, depth),
-    ];
-    if mine {
-        assert!(core.paint_world_coal_deposit_internal(
-            origin + Vector2::new(width, depth) * 0.5,
-            Vector2::new(width, depth).length() * 0.5 + 20.0,
-            100.0,
-        ));
-        core.commit_extractor_polygon_internal(owner, polygon)
-            .expect("coal extraction area");
-    } else {
-        core.commit_field_polygon_internal(owner, polygon)
-            .expect("grain field");
-    }
+    let owner = place_producer_site(core, mine, hectares, x);
     // Declared one-time infrastructure endowment: these cases isolate business operation.
     // The real placement charges stay in lifetime construction costs and report headers;
     // no money is added during the observed operating window or to a running business.
@@ -1115,5 +1084,57 @@ fn producer_household_shopping_trace() {
             }
             previous = Some(state);
         }
+    }
+}
+
+#[test]
+#[ignore = "manual DEM-02-C probe: residential land outlasts industrial land, as in the player save"]
+fn residential_rich_town_housing_balance() {
+    // Starter-town streets with residential paint on two full cross streets, but industry on
+    // one short frontage only, so housing need ends while residential sites remain.
+    let mut core = SimCore::new(WorldConfig::new(WORLD_SIZE_M, WORLD_SIZE_M, 40.0, 10.0));
+    core.precompute_road_mesh_data();
+    install_bootstrap_assets(&mut core);
+    let border_x = BORDER_INSET_M - core.heightmap.half_world_extents().0;
+    commit_road(&mut core, (border_x, 0.0), (MAIN_STREET_END_X_M, 0.0));
+    for x in CROSS_STREET_X_M {
+        commit_road(
+            &mut core,
+            (x, -CROSS_STREET_HALF_LENGTH_M),
+            (x, CROSS_STREET_HALF_LENGTH_M),
+        );
+    }
+    let border_y = core.heightmap.sample_height_world(border_x, 0.0);
+    let border = core.check_border_candidate_internal(Vector3::new(border_x, border_y, 0.0));
+    core.set_border_connection_internal(border as i32);
+    for x in [CROSS_STREET_X_M[0], CROSS_STREET_X_M[1]] {
+        paint_cross_street(&mut core, f64::from(x), ZoneType::Residential);
+    }
+    let east = f64::from(CROSS_STREET_X_M[2]);
+    paint(
+        &mut core,
+        ZoneType::Industrial,
+        ZONE_BRUSH,
+        &[DVec2::new(east, JUNCTION_CLEARANCE_M), DVec2::new(east, 90.0)],
+    );
+    paint(
+        &mut core,
+        ZoneType::Commercial,
+        ZONE_BRUSH,
+        &[DVec2::new(30.0, 0.0), DVec2::new(170.0, 0.0)],
+    );
+    core.time.speed_multiplier = SIMULATION_SPEED_STEPS[SIMULATION_SPEED_STEPS.len() - 1];
+    let mut scenario = GrowthScenario {
+        core,
+        departures: 0,
+    };
+    let largest = scenario.largest_home_capacity();
+    let days: u32 = std::env::var("METRUM_DIAG_DAYS").map_or(60, |n| n.parse().unwrap());
+    let report = scenario.run_diagnosed_days(days);
+    for record in &report.days {
+        eprintln!("RICH {record:?} largest_home={largest}");
+    }
+    if let Ok(path) = std::env::var("METRUM_DIAG_REPORT") {
+        std::fs::write(path, report.daily_report()).unwrap();
     }
 }

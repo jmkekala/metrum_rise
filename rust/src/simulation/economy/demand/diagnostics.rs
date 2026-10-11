@@ -3,6 +3,7 @@
 //! Demand diagnostics snapshots and debug logging.
 
 use super::snapshot::DailyDemandSnapshot;
+use super::spawn_need::residential_vacancy_reserve;
 use super::system::DemandSystem;
 use super::types::DemandUse;
 use crate::debug_log;
@@ -138,6 +139,18 @@ impl DemandSystem {
         &self.last_admission_diagnostics
     }
 
+    /// Housing balance of the latest pass (`DEM-02-C`): net open jobs arrivals must staff,
+    /// the vacant places housing construction retains, and households the latest daily pass
+    /// removed.
+    pub(crate) fn housing_balance(&self) -> (u32, u32, u32) {
+        let admission = &self.last_admission_diagnostics;
+        (
+            admission.move_in_job_slots,
+            residential_vacancy_reserve(admission.total_household_count),
+            self.last_removal_diagnostics.removed_households,
+        )
+    }
+
     /// Emits actual batch capacity and applicant decisions from the most recent hour.
     pub(crate) fn log_hourly_household_action_diagnostics(
         &self,
@@ -253,7 +266,8 @@ impl HouseholdAdmissionDiagnostics {
             total_household_count: snapshot.total_household_count,
             vacant_household_slots: snapshot.vacant_household_slots,
             connected_border_count: snapshot.connected_border_count,
-            incoming_household_need: snapshot.incoming_household_need,
+            // Residential planning fills in the applicant walk's result.
+            incoming_household_need: 0.0,
             open_job_slots: snapshot.open_job_slots,
             move_in_job_slots: snapshot.move_in_job_slots,
             physical_worker_capacity: snapshot.physical_worker_capacity,

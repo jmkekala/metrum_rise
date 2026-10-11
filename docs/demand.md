@@ -39,8 +39,118 @@ spawn credits and saved hysteresis are all removed (save formats 74–83).
 | Level changes through economic viability and shared claims | Live |
 | Paced failed-site clearance | Live |
 | Growth HUD explanations from recorded decisions | Live |
-| Second zoning/service mix, long-run affordability and broader expansion acceptance | Open (`DEM-02`, `ECON-14`) |
+| Acceptance: second-mix year, 10k time budget, no housing overbuild | All three pass on one uncommitted build ([status](#status-2026-10-11-one-working-tree-build-on-47c5a053)) ([status](#status-2026-10-11-one-working-tree-build-on-47c5a053)) |
 | 100k-scale growth costs (late-day household hour, one residual census) | Open (`ECON-13`) |
+
+### Exit criteria
+
+`DEM-02` is done when all three checks pass on one build. Populated-city scaling is not part of
+this acceptance and is tracked under `ECON-13`: execution under changing frontage prices,
+local-market scaling, the census per link of a profitability-failing supply chain, and the 100k
+costs.
+
+1. **Second-mix year (`DEM-02-A`).** A second `GrowthScenario` constructor builds a
+   producer-led town modelled on a pre-zoned player city: residential, commercial and industrial
+   paint plus a placed farm, coal mine and coal power plant, with no households at the start. A
+   test in `rust/tests/growth_scenario.rs` runs it for 365 days and asserts, as the starter-town
+   test does:
+   - two concurrent runs record identical days and accounting;
+   - city, business and household cash residuals stay below 0.1;
+   - residents and employment rise above day 1, and day 365 is not below day 275 on either;
+   - no business that opens goes bankrupt or needs replacement capital, and every opened profile
+     has positive operating cash over the last 90 days;
+   - over the last 90 days: no empty-household days, no unpaid household transfers and a
+     positive recurring city balance.
+
+   The mine is sized within what the `ECON-14` producer matrix found to stay supplied for a year.
+   Mine depletion and contraction stay with `ECON-14`.
+2. **10k time budget (`DEM-02-B`).** The [`ECON-13` recipe](economy.md#econ-13-economy-tick-baseline)
+   (`cargo bench --bench economy_tick_benchmark -- /10k`, `RAYON_NUM_THREADS=8`, pinned CPUs,
+   unprofiled release) measures at most **40 ms** per mean hour and **10 ms** per mean day. The
+   2026-10-10 baseline is 34.45 ms and 8.73 ms; the budget leaves about 15% for noise.
+3. **No housing overbuild (`DEM-02-C`).** One home per net open job overbuilt housing, because
+   admission charges every adult of an arriving family against those jobs. A player's 7-day
+   pre-zoned save showed it: 379 households with about 1.47 employed adults each, no open jobs,
+   no departures, and 79 vacant homes against a 38-home reserve, left vacant because industrial
+   land ran out while residential land remained.
+   - **Change (implemented 2026-10-11):** [incoming need](#residential) walks admission's
+     applicant stream and counts accepted households until their adults cover the net open jobs.
+     The [workforce calendar](#workforce-calendar) credits each future place with its
+     applicant's adults instead of one worker. Both cost O(offers or places walked), with no
+     measured city ratio.
+   - **Check:** `GrowthDayRecord` records end-of-day vacant homes, the vacancy reserve,
+     unhoused households, net open jobs and cumulative departures. Both growth scenarios assert
+     that on every day with no net open jobs, no unhoused households and no departures so far,
+     vacant homes ≤ vacancy reserve + the largest household capacity among the installed
+     residential assets. Planner tests cover two-adult applicants (40 open jobs need 20 homes,
+     single-adult ones 40, income-refused ones none) and calendar places offered to a couple or
+     an elder.
+
+   Vacancy above the reserve remains legitimate after departures or job losses, because healthy
+   vacant buildings are never cleared. A per-pass "need plus one building" bound is not enough:
+   every pass in the save above stayed within it.
+
+#### Status (2026-10-11, one working-tree build on `47c5a053`)
+
+Fresh results; release build.
+
+- **`DEM-02-A`: passes.** `GrowthScenario::producer_town` places a 4 ha farm, a 1 ha mine and a
+  coal power plant funded for two workers, paid from the treasury. Over 365 days both concurrent
+  runs match; all residuals stay below 0.1; the town reaches 83 households, 153 residents and
+  126/134 employed by day 4. Farm, mine, food processor, machinery factory, grocery, barber and
+  pharmacy all stay open with no bankruptcy or replacement capital and positive operating cash
+  over the last 90 days. The last 90 days have no empty-household day, no unpaid transfer and a
+  positive recurring balance. Residential land fills by day 4, so the year tests stability
+  rather than continued growth.
+- **`DEM-02-B`: passes.** The `ECON-13` recipe, run as four alternating unprofiled runs of each
+  build (`RAYON_NUM_THREADS=8`, `taskset -c 0,2,4,6,8,10,12,14`, `$BENCH_BINARY --bench /10k`),
+  measures **34.32 ms per mean hour and 8.71 ms per mean day** on the final build (per-run hours
+  34.27, 33.99, 34.67 and 34.36), against 34.48 / 8.70 ms for `47c5a053` (34.49, 34.43, 34.55
+  and 34.45). Exact permutation tests give p = 0.37 (hour) and p = 0.91 (day): no significant
+  change. Build-time and day-15 `GrowthDayRecord`s match on every shared field in all runs; the
+  fixture builds every zoned lot up front, so the new need has no site to act on.
+- **`DEM-02-C`: passes.** Vacancy stays within the bound in the producer town and over the
+  starter town's two years; the planner tests pass. Copies of the player's saves, replayed for
+  14 days on the final build:
+  - the 7-day save keeps its 79 vacant homes (reserve 38) and places no further building (306
+    before and after). The change stops further overbuild but cannot remove homes that already
+    stand, because healthy vacant buildings are never cleared;
+  - the empty pre-zoned save fills its residential land by day 3 and ends at 218 households with
+    2 vacant homes against a reserve of 22.
+
+  An ignored probe with ample residential land and one short industrial frontage
+  (`balance_cases::residential_rich_town_housing_balance`) shows the effect of each part:
+
+  | Build | Vacant homes / reserve, day 61 |
+  | --- | --- |
+  | Need walk only, one worker per calendar place | 17 / 5 |
+  | Need walk and applicant adults in the calendar | 6 / 6 |
+  | Final: adults net of store labor, store crews capped to supply | 8 / 6 (bound 7) |
+
+  The final build is one home over the probe's bound, accepted on review (2026-10-11). Its stores are fully staffed (grocery 7,
+  barber 1, pharmacy 1), and rounding store labor once over all hours changes nothing. The excess
+  comes from the calendar's applicants, which are not income-filtered: they bring fewer adults
+  than the families admission accepts (1.44 per household here). Filtering them needs the wage
+  of jobs that do not exist yet. The probe is not one of the criterion's two scenarios.
+
+  **Why the calendar needed two more rules.** Applicant adults alone:
+  - left the starter town without a grocery. On day 1 industry claimed every worker the land
+    could house. The grocery's crew is sized to its whole market and grew from 2 to 11 workers
+    as residents arrived, while spare supply ended at 9, so all 79 households had empty
+    pantries for two years;
+  - left a new food processor in `many_new_industrial_lots_…` at 80% of its reserved staffing.
+    The 20 workers arriving for 20 new jobs were partly taken by the incumbent grocery, whose
+    crew grew with the new residents.
+
+  Both arise because arrivals bring shoppers as well as workers. The calendar now credits
+  arrivals with their adults net of the store workers their members' consumption needs, and a
+  store short only of workers opens with the crew the calendar can supply (see
+  [Workforce calendar](#workforce-calendar) and
+  [Commercial and industrial](#commercial-and-industrial)). Each rule alone leaves one of the
+  two cases failing; together all library and growth tests pass, and the starter town reaches
+  83 households with a profitable grocery. Tried and reverted: keeping later industrial
+  proposals off a waiting store's crew held industry at 110 jobs and still left the grocery
+  2 workers short.
 
 ## Growth loop
 
@@ -125,7 +235,8 @@ first, then keeps one finite budget for the batch:
 
 **Offers.** The batch tries at most `max(16, 4 × capacity)` deterministic offers. Each varies
 family composition, size and home from an applicant seed that advances with simulation hours, so
-one refused family never blocks the stream. For each physically launchable offer:
+one refused family never blocks the stream. Housing need and the workforce calendar read the
+same applicant stream (`DEM-02-C`). For each physically launchable offer:
 
 - Employed adults are `min(adults, remaining job-equivalents)`.
 - Recurring income is employed adults × net wage, plus pension and child support scaled by
@@ -175,9 +286,22 @@ Homes are built to cover a concrete household need:
 ```text
 missing_slots = unhoused households + incoming need + vacancy reserve
               − (vacant homes + homes under construction)
-incoming need  = net open jobs (one incoming adult per job), or 1 for an empty connected town
+incoming need  = arriving households whose adults staff the net open jobs (below),
+                 at least 1 for an empty connected town
 vacancy reserve = ceil(10% of households)
 ```
+
+**Incoming need (`DEM-02-C`).** Admission charges every adult of an arriving family against the
+open jobs, so one home per job overbuilt housing. The planner instead walks the applicant stream
+admission examines this hour: offer `k` goes to vacancy position `(seed + k) mod vacancies` with
+household seed `seed + k`, where `seed = day × 24 + hour`. It runs each offer through a copy of
+admission's income budget, skips the refused ones, and stops once the accepted families' adults
+cover the net open jobs. The accepted offers are the incoming need. Homes do not limit the walk;
+it is bounded by admission's own `max(16, 4 × net open jobs)` offers. Before any home is vacant,
+this pass's legal home sites, in attachment order, stand in for the homes the offers would
+reach (keyed by parcel ID). The walk skips admission's border-route check. Cost:
+O(offers walked) per pass, with no allocation (`spawn_need.rs::incoming_household_need`,
+`HouseholdAdmissionBudget::households_to_staff`).
 
 Legal home sites are selected in attachment order until their actual household capacity covers
 the need. The remaining legal sites become optional homes. An optional home is built only if
@@ -200,6 +324,11 @@ before any claim is committed:
 3. **Inputs.** The proposal's inputs are reserved from residual local supply in recipe order,
    with local-first sourcing.
 4. **Workforce.** The calendar must supply the supported workers by construction completion.
+   A store (`Store` or `ServiceStore`) that passes every other check but cannot get its full
+   crew is assessed again with the crew the calendar can supply. It claims only that crew's
+   share of its output from the customer book, so the remaining customers stay available to
+   another store. Queued revalidation applies the same rule, so no extra queue state is saved
+   (`DEM-02-C`). The retry costs one more probe of the same site.
 
 If the preferred asset fails, other legal assets on the same lot are tried, for example a smaller
 factory or another service category. Cheat mode bypasses these economic checks but keeps site and
@@ -220,6 +349,19 @@ Claims are made in this order:
 1. Incumbent workplaces claim first, including their unmet hiring after completion.
 2. Constructing and queued projects claim next.
 3. New proposals claim last.
+
+A future place supplies the adults of the applicant the shared stream offers it
+(`households::applicant_offer`), keyed by building index, or by parcel ID before placement, and
+by place ordinal; an elder applicant supplies none (`DEM-02-C`). Arrivals also shop: each
+hour's arrival adults are reduced by `ceil(members × store labor per resident)`. Store labor per
+resident is the authored consumption rate of each resource households buy from stores, times the
+fewest workers per daily unit among the stores selling it (`workforce::resident_store_labor`).
+Individual future homes take whole store workers from a running total in matching order. Ready places are also counted
+by those adults. "Unreserved ready homes", which non-worker arrivals and residential
+downgrades may use, are the places left after claimed workers fill single-adult places first.
+That keeps as many homes reserved as the claims could need. A downgrade retires the
+calendar workers of the places it removes. Counting adults costs O(free places) in the existing
+parallel building pass and O(1) per claim.
 
 Projects cannot share workers or count homes that finish too late. Immediate level changes may
 claim only unemployed adults and already-ready homes.

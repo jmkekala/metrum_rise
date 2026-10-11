@@ -3,9 +3,14 @@
 //! Demand spawn-need accounting and hard spawn gates.
 
 use super::actions::{DemandSpawnAction, DemandSpawnCandidate};
+use super::admission::HouseholdAdmissionBudget;
 use super::snapshot::DailyDemandSnapshot;
 use super::types::{EPSILON, RESIDENTIAL_SPAWN_VACANT_SLOT_RESERVE_RATIO};
-use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
+use crate::simulation::buildings::allocator::{
+    Building, BuildingAllocator, baseline_private_zone_slot,
+};
+use crate::simulation::economy::fiscal::CityFiscalPolicy;
+use crate::simulation::zoning::ZoneType;
 use crate::simulation::economy::definitions::{
     EconomyProfileRuntime, EconomyProfileRuntimeKind, ResourceRuntimeId, RuntimeEconomyCatalog,
 };
@@ -16,18 +21,65 @@ use crate::simulation::economy::operation::{
 };
 
 /// Household capacity still needed after ready and committed homes are counted.
-pub(super) fn residential_missing_household_slots(snapshot: &DailyDemandSnapshot) -> u32 {
-    let incoming_slots = snapshot.incoming_household_need.ceil() as u32;
+/// `incoming_households` comes from [`incoming_household_need`].
+pub(super) fn residential_missing_household_slots(
+    snapshot: &DailyDemandSnapshot,
+    incoming_households: u32,
+) -> u32 {
     let reserve_slots = residential_vacancy_reserve(snapshot.total_household_count);
     snapshot
         .unhoused_household_count
-        .saturating_add(incoming_slots)
+        .saturating_add(incoming_households)
         .saturating_add(reserve_slots)
         .saturating_sub(
             snapshot
                 .vacant_household_slots
                 .saturating_add(snapshot.under_construction_household_slots),
         )
+}
+
+/// Arriving households whose adults staff the snapshot's open jobs (`DEM-02-C`).
+///
+/// One home per open job overbuilt housing: admission charges every adult of a household
+/// against the jobs. This walks admission's own applicant stream instead. Offers sample the
+/// residential vacancies admission will fill; with none, this pass's legal home candidates in
+/// attachment order stand in for the homes the offers would reach. An empty connected town
+/// still offers its first home. O(offers walked) <= O(max(16, 4 x open jobs)), no allocation.
+pub(super) fn incoming_household_need(
+    snapshot: &DailyDemandSnapshot,
+    allocator: &BuildingAllocator,
+    budget: &HouseholdAdmissionBudget,
+    policy: &CityFiscalPolicy,
+    seed: usize,
+    candidates: &[DemandSpawnCandidate],
+) -> u32 {
+    if snapshot.connected_border_count == 0 {
+        return 0;
+    }
+    let vacancies = baseline_private_zone_slot(ZoneType::Residential)
+        .filter(|_| !allocator.dirty_index)
+        .map_or(&[][..], |slot| allocator.vacancy_index[slot].as_slice());
+    let households = if !vacancies.is_empty() {
+        budget.households_to_staff(policy, seed, vacancies.len(), |position| {
+            let home = vacancies[position];
+            (home, allocator.flat_size_m2(home), allocator.buildings[home].level)
+        })
+    } else {
+        budget.households_to_staff(policy, seed, candidates.len(), |position| {
+            let action = &candidates[position].action;
+            let level = allocator
+                .registry
+                .get(&action.asset_id)
+                .and_then(|entry| entry.manifest.building.as_ref())
+                .map_or(1, |building| building.level);
+            (
+                action.parcel_id as usize,
+                allocator.registry.flat_size_m2(&action.asset_id),
+                level,
+            )
+        })
+    };
+    households.max(u32::from(snapshot.total_household_count == 0))
 }
 
 /// Vacant household places retained by both housing construction and downsizing.
@@ -384,10 +436,23 @@ fn project_operation_costs(
 ) -> Option<OperatingCosts> {
     // A replacement retains incumbents only within the target's physical job slots.
     let minimum_workers = minimum_workers.min(profile.worker_capacity);
-    if let Some(customers) = supply.customers(profile, 1.0, prices, exports) {
-        let workers = (profile.worker_capacity as f32 * customers.activity).ceil() as u32;
-        let workers = workers.max(minimum_workers);
-        let plan = OperationPlan { workers, activity: customers.activity, area: 1.0 };
+    // A store whose full crew cannot be housed may plan for the crew that can (`DEM-02-C`):
+    // it claims only the share of its output that crew serves, so the remaining customers
+    // stay available to another store. Other kinds keep their whole recipe.
+    let crew_cap = supply.crew_cap();
+    let share = if matches!(profile.kind,
+        EconomyProfileRuntimeKind::Store | EconomyProfileRuntimeKind::ServiceStore)
+        && crew_cap < profile.worker_capacity
+    {
+        crew_cap as f32 / profile.worker_capacity as f32
+    } else {
+        1.0
+    };
+    if let Some(customers) = supply.customers(profile, share, prices, exports) {
+        let activity = customers.activity * share;
+        let workers = (profile.worker_capacity as f32 * activity).ceil() as u32;
+        let workers = workers.max(minimum_workers).min(crew_cap);
+        let plan = OperationPlan { workers, activity, area: 1.0 };
         supply.set_supported_plan(plan);
         if workers == 0 { return None; }
         let mut costs = OperatingCosts::for_plan_with_input_quotes(profile,

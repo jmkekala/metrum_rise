@@ -1689,7 +1689,8 @@ fn queued_projects_revalidate_future_doors_and_prices_through_placement_and_relo
                 assert_eq!(factories.len(), 3);
                 factories[1].asset_id = middle_asset;
             }
-            for (index, home) in homes.iter().take(4).enumerate() {
+            // Applicants for these three homes' places bring 24 adults (`DEM-02-C`).
+            for (index, home) in homes.iter().take(3).enumerate() {
                 execute_test_construction(&mut core, home, ZoneType::Residential, index as u16 + 1);
             }
             for (index, action) in factories.iter().take(3).enumerate() {

@@ -9,9 +9,9 @@ use super::credits::advance_building_action_credit;
 use super::diagnostics::BuildingActionDiagnostics;
 use super::snapshot::{DailyDemandSnapshot, ResidentialOccupantSnapshot};
 use super::spawn_need::{
-    OutputAbsorptionContext, candidate_economy_profile, project_covers_operation,
-    replacement_market_covers_operation, residential_missing_household_slots,
-    residential_vacancy_reserve, select_residential_spawns,
+    OutputAbsorptionContext, candidate_economy_profile, incoming_household_need,
+    project_covers_operation, replacement_market_covers_operation,
+    residential_missing_household_slots, residential_vacancy_reserve, select_residential_spawns,
 };
 use super::system::DemandSystem;
 use super::supply::ProjectSupply;
@@ -27,7 +27,7 @@ use crate::simulation::economy::definitions::{RuntimeEconomyCatalog, RuntimeEcon
 use crate::simulation::economy::fiscal::{CityFiscalPolicy, daily_property_tax};
 use crate::simulation::economy::hiring::JobFunding;
 use crate::simulation::economy::households::{
-    local_utility_service_costs, output_area_scale_for_building,
+    applicant_places_by_adults, local_utility_service_costs, output_area_scale_for_building,
 };
 use crate::simulation::economy::operation::OperationPrices;
 use crate::simulation::network::graph::RegionGraph;
@@ -311,7 +311,16 @@ impl DemandSystem {
             // Only households need a capacity target; businesses claim their own shared
             // customers and workforce below. The minute queue paces physical placement.
             let housing_needed_slots = if use_kind == DemandUse::Residential {
-                let slots = residential_missing_household_slots(snapshot);
+                let incoming = incoming_household_need(
+                    snapshot,
+                    allocator,
+                    &self.admission_budget,
+                    fiscal_policy,
+                    self.admission_candidate_seed,
+                    &spawn_candidates,
+                );
+                self.last_admission_diagnostics.incoming_household_need = incoming as f32;
+                let slots = residential_missing_household_slots(snapshot, incoming);
                 if self.cheat_max_demands_enabled {
                     slots.max(1)
                 } else {
@@ -366,22 +375,40 @@ impl DemandSystem {
                 for mut candidate in spawn_candidates {
                     if !self.cheat_max_demands_enabled {
                         let parcel = candidate.action.parcel_id;
+                        let workforce = &self.workforce_reservations;
                         let mut rejection = |asset: &str| {
-                            let carrier_quote = supply.begin(parcel, asset);
-                            nonresidential_spawn_rejection(
-                                allocator,
-                                catalog,
-                                &absorption_context,
-                                &self.workforce_reservations,
-                                asset,
-                                completion_hour,
-                                OperationPrices {
-                                    carrier_quote: carrier_quote.unwrap_or(f32::INFINITY),
-                                    ..prices
-                                },
-                                economy_tuning.owa_export_price_multiplier,
-                                &mut supply,
-                            )
+                            let mut probe = |crew_cap: Option<u32>| {
+                                let carrier_quote = supply.begin(parcel, asset);
+                                if let Some(workers) = crew_cap {
+                                    supply.set_crew_cap(workers);
+                                }
+                                nonresidential_spawn_rejection(
+                                    allocator,
+                                    catalog,
+                                    &absorption_context,
+                                    workforce,
+                                    asset,
+                                    completion_hour,
+                                    OperationPrices {
+                                        carrier_quote: carrier_quote.unwrap_or(f32::INFINITY),
+                                        ..prices
+                                    },
+                                    economy_tuning.owa_export_price_multiplier,
+                                    &mut supply,
+                                )
+                            };
+                            let full = probe(None);
+                            // A store short only of workers may open with the crew the
+                            // calendar can house, serving that crew's share (`DEM-02-C`).
+                            if zone_type == ZoneType::Commercial
+                                && matches!(full, Some(SpawnRejection::Workforce))
+                            {
+                                let available = workforce.available(completion_hour);
+                                if available > 0 {
+                                    return probe(Some(available));
+                                }
+                            }
+                            full
                         };
                         if let Some(reason) = rejection(&candidate.action.asset_id) {
                             let alternative = allocator.select_demand_spawn_alternative(
@@ -427,7 +454,15 @@ impl DemandSystem {
                             supply.reject();
                             continue;
                         }
-                        absorption_context.reserve_candidate(profile);
+                        let crew_cap = supply.crew_cap();
+                        if crew_cap < profile.worker_capacity {
+                            absorption_context.reserve_scaled_candidate(
+                                profile,
+                                crew_cap as f32 / profile.worker_capacity as f32,
+                            );
+                        } else {
+                            absorption_context.reserve_candidate(profile);
+                        }
                     }
                     supply.accept();
                     selected.push(candidate.action);
@@ -603,9 +638,18 @@ impl DemandSystem {
                                 .registry
                                 .household_capacity(&candidate.action.target_asset_id),
                         );
+                    // Free places above the smaller capacity, by their applicants' adults.
+                    let capacity = allocator.household_capacity(candidate.building_idx);
+                    let retired = applicant_places_by_adults(
+                        allocator.flat_size_m2(candidate.building_idx),
+                        candidate.building_idx,
+                        (capacity - lost)
+                            .max(allocator.buildings[candidate.building_idx].occupancy)
+                            ..capacity,
+                    );
                     if lost > retirable_homes
                         || (arrivals_possible
-                            && !self.workforce_reservations.retire_ready_homes(lost))
+                            && !self.workforce_reservations.retire_ready_homes(retired))
                     {
                         continue;
                     }

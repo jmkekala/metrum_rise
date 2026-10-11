@@ -709,9 +709,13 @@ It then runs frame by frame at 32×. `rust/tests/growth_scenario.rs`:
 - `read_only_observer_preserves_growth`: observers do not change outcomes.
 - `starter_town_funds_industry_services_households_and_city_for_two_years`: the two-year
   healthy-growth acceptance, with firms reconciled individually.
+- `producer_town_grows_and_funds_its_firms_households_and_city_for_a_year`: `DEM-02-A`, using
+  `GrowthScenario::producer_town` (the same streets plus a placed farm, coal mine and power plant).
+
+Both two-year and producer-town tests also assert the `DEM-02-C` vacancy bound.
 
 The library suite adds scarce-labor expansion, recovery and two reload-continuation cases.
-`METRUM_GROWTH_{REPORT,LONG_REPORT,EXPANSION_REPORT,RECOVERY_REPORT}` write reports, and the
+`METRUM_GROWTH_{REPORT,LONG_REPORT,EXPANSION_REPORT,RECOVERY_REPORT}` and `METRUM_PRODUCER_TOWN_REPORT` write reports, and the
 saved-town replay (`diagnose_saved_city_growth`, ignored) uses `METRUM_DIAG_{SAVE,MODS,REPORT,DAYS}`
 with a copied save and read-only mods. Economic changes that must not alter behavior compare
 these five reports byte for byte.
@@ -736,6 +740,9 @@ deferred.
   test. Record build identity, worker settings, results and artifact paths with the change.
 - **Current baseline** (2026-10-10, `24705c42` plus shared workplace legs): 34.45 ms hourly and
   8.73 ms daily. Day 15 has 5,341 households and 7,134 employed.
+- **`DEM-02-C` housing need** (2026-10-11, uncommitted, four alternating runs against
+  `47c5a053`): 34.48 → 34.32 ms hourly (p = 0.37) and 8.70 → 8.71 ms daily (p = 0.91), with
+  identical day-15 records. See [`DEM-02-B`](demand.md#status-2026-10-11-one-working-tree-build-on-47c5a053).
 
 A populated timing fixture does not demonstrate organic growth or solvency. Larger tiers (100k)
 are diagnostic probes, not acceptance gates. Earlier fixtures and timings are in the

@@ -2612,6 +2612,9 @@ fn residential_downgrades_preserve_worker_housing_and_share_surplus() {
     let catalog = load_runtime_economy_catalog().unwrap();
     let tuning = load_runtime_economy_tuning().unwrap();
     let factory_profile = catalog.profile_for_id("machinery_factory_basic").unwrap();
+    // The two six-place homes offer applicants with 15 adults in 12 places, less the store
+    // workers their shopping needs (`DEM-02-C`): four jobs leave room for one smaller home,
+    // eight for none.
     for (kind, jobs, unhoused, connected, expected) in [
         ("surplus", 0, 0, true, 2),
         ("live", 4, 0, true, 1),

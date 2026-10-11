@@ -8,16 +8,14 @@ use crate::simulation::buildings::allocator::{
     BuildingAllocator, DemandSpawnPlacementRejection, baseline_private_zone_slot,
     resolve_building_economy_profile_binding_with_catalog, zone_class_to_zone_type,
 };
-use crate::simulation::economy::agents::{
-    AgentSystem, HouseholdAgeComposition, household_age_composition,
-};
+use crate::simulation::economy::agents::{AgentSystem, HouseholdAgeComposition};
 use crate::simulation::economy::definitions::{RuntimeEconomyCatalog, RuntimeEconomyTuning};
 use crate::simulation::economy::demand::{
     DemandBuildingActionKey, DemandBuildingActionPlan, DemandLevelChangeAction, DemandSpawnAction,
     DemandLevelChangeGuard,
 };
 use crate::simulation::economy::households::{
-    HouseholdSystem, candidate_immigrant_household_size_for_vacancy,
+    HouseholdSystem, applicant_offer, applicant_offer_limit,
 };
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::network::TransitNetwork;
@@ -351,10 +349,9 @@ impl BuildingAllocator {
         }
         let mut launched = 0;
         let mut arrival = None;
-        // Four offers per requested arrival, with at least sixteen for a small town.
         // Each lookup is O(1) over the existing vacancy index; rejection neither
         // reserves income nor prevents another home/family from being considered.
-        let attempt_limit = households_to_spawn.saturating_mul(4).max(16);
+        let attempt_limit = applicant_offer_limit(households_to_spawn);
         let mut cursor = next_household_id;
         for attempt in 0..attempt_limit {
             if launched == households_to_spawn {
@@ -368,11 +365,9 @@ impl BuildingAllocator {
             let home_idx = vacancies[position];
             cursor = position + 1;
             let household_seed = next_household_id.saturating_add(attempt);
-            let Some(household_size) = candidate_immigrant_household_size_for_vacancy(
-                self.flat_size_m2(home_idx),
-                home_idx,
-                household_seed as u32,
-            ) else {
+            let Some((household_size, composition)) =
+                applicant_offer(self.flat_size_m2(home_idx), home_idx, household_seed)
+            else {
                 continue;
             };
             let arrival =
@@ -389,7 +384,6 @@ impl BuildingAllocator {
                 }
                 continue;
             };
-            let composition = household_age_composition(home_idx, household_seed, household_size);
             if !claim_income(composition, household_size, self.buildings[home_idx].level) {
                 continue;
             }
@@ -1050,8 +1044,11 @@ impl BuildingAllocator {
             };
 
             let worker_rank = if prefer_worker_capable {
-                let composition =
-                    household_age_composition(building_idx, next_household_id, candidate_size);
+                let composition = crate::simulation::economy::agents::household_age_composition(
+                    building_idx,
+                    next_household_id,
+                    candidate_size,
+                );
                 if composition.adult_count > 0 { 0 } else { 1 }
             } else {
                 0

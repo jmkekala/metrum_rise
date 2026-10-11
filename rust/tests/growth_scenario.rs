@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Headless growth, recurring business income and municipal funding checks (`ECON-12`, `ECON-14`).
+//! Headless growth, recurring business income and municipal funding checks (`ECON-12`, `ECON-14`,
+//! `DEM-02`).
 //!
-//! Set `METRUM_GROWTH_REPORT` and `METRUM_GROWTH_LONG_REPORT` to text-file paths for the
-//! one- and two-year daily accounting. See `docs/economy.md#econ-12-growth-scenario`.
+//! Set `METRUM_GROWTH_REPORT`, `METRUM_GROWTH_LONG_REPORT` and `METRUM_PRODUCER_TOWN_REPORT` to
+//! text-file paths for the starter town's one- and two-year and the producer town's one-year
+//! daily accounting. See `docs/economy.md#econ-12-growth-scenario` and
+//! `docs/demand.md#exit-criteria`.
 
 use metrum_rise::nodes::sim::core::{GrowthDayRecord, GrowthReport, GrowthScenario};
 
@@ -57,12 +60,43 @@ fn monthly_trajectory(year: &[GrowthDayRecord]) -> String {
         .map(|r| {
             format!(
                 "day {:>3}: households {:>3}  residents {:>3}  employed {:>3}/{:>3} jobs  \
-                 buildings {:>3}  treasury {:>9.0}",
-                r.day, r.households, r.residents, r.employed, r.jobs, r.buildings, r.treasury
+                 buildings {:>3}  treasury {:>9.0}  vacant {:>3}/{:>3} reserve",
+                r.day,
+                r.households,
+                r.residents,
+                r.employed,
+                r.jobs,
+                r.buildings,
+                r.treasury,
+                r.vacant_homes,
+                r.vacancy_reserve
             )
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// `DEM-02-C`: while nothing has left and arrivals have no open job or homeless household to
+/// house, vacancy may exceed the reserve by at most one whole home of the largest kind.
+fn assert_no_housing_overbuild(days: &[GrowthDayRecord], largest_home: u32) {
+    assert!(largest_home > 0);
+    for day in days {
+        if day.departures > 0 {
+            break;
+        }
+        if day.net_open_jobs > 0 || day.unhoused_households > 0 {
+            continue;
+        }
+        assert!(
+            day.vacant_homes <= day.vacancy_reserve + largest_home,
+            "housing overbuilt on day {}: {} vacant homes, reserve {}, largest home {}: {day:?}\n{}",
+            day.day,
+            day.vacant_homes,
+            day.vacancy_reserve,
+            largest_home,
+            monthly_trajectory(days)
+        );
+    }
 }
 
 #[test]
@@ -132,6 +166,10 @@ fn starter_town_funds_industry_services_households_and_city_for_two_years() {
     if let Ok(path) = std::env::var("METRUM_GROWTH_LONG_REPORT") {
         std::fs::write(path, report.daily_report()).expect("write requested two-year report");
     }
+    assert_no_housing_overbuild(
+        &report.days,
+        GrowthScenario::starter_town().largest_home_capacity(),
+    );
     for profile in [
         "grocery_basic",
         "food_processor_basic",
@@ -191,4 +229,70 @@ fn starter_town_funds_industry_services_households_and_city_for_two_years() {
         end.residents >= established.residents && end.employed >= established.employed,
         "{report}"
     );
+}
+
+fn run_producer_year() -> (GrowthReport, u32) {
+    let mut scenario = GrowthScenario::producer_town();
+    let largest_home = scenario.largest_home_capacity();
+    (scenario.run_diagnosed_days(DAYS_PER_YEAR), largest_home)
+}
+
+#[test]
+fn producer_town_grows_and_funds_its_firms_households_and_city_for_a_year() {
+    // DEM-02-A: a pre-zoned town led by a placed farm, coal mine and power plant.
+    let ((report, largest_home), (second, _)) = rayon::join(run_producer_year, run_producer_year);
+    if let Ok(path) = std::env::var("METRUM_PRODUCER_TOWN_REPORT") {
+        std::fs::write(path, report.daily_report()).expect("write requested producer report");
+    }
+    assert_eq!(report.days.len(), DAYS_PER_YEAR as usize);
+    if let Some(day) = report
+        .days
+        .iter()
+        .zip(&second.days)
+        .position(|(a, b)| a != b)
+    {
+        panic!(
+            "runs diverge on day {}: {:?} vs {:?}",
+            report.days[day].day, report.days[day], second.days[day]
+        );
+    }
+    assert!(report.has_same_accounting(&second), "accounting diverged");
+    assert!(report.max_city_cash_residual() < 0.1, "{report}");
+    assert!(report.max_business_cash_residual() < 0.1, "{report}");
+    assert!(report.max_household_cash_residual() < 0.1, "{report}");
+    assert_individual_firms_reconcile(&report);
+
+    let first = &report.days[0];
+    let late = &report.days[DAYS_PER_YEAR as usize - 91];
+    let end = report.days.last().unwrap();
+    assert!(
+        end.residents > first.residents && end.employed > first.employed,
+        "{}\n{report}",
+        monthly_trajectory(&report.days)
+    );
+    assert!(
+        end.residents >= late.residents && end.employed >= late.employed,
+        "{}\n{report}",
+        monthly_trajectory(&report.days)
+    );
+
+    let profiles: std::collections::BTreeSet<_> = report
+        .business_outcomes()
+        .map(|firm| firm.profile_id.as_str())
+        .collect();
+    assert!(!profiles.is_empty(), "{report}");
+    for profile in profiles {
+        let all = report.business_cash_flow(profile, usize::MAX);
+        let last_quarter = report.business_cash_flow(profile, 90);
+        assert_eq!(all.bankruptcies, 0, "{profile}: {report}");
+        assert_eq!(all.replacement_startup_cash, 0.0, "{profile}: {report}");
+        assert!(
+            last_quarter.operating_cash_change > 0.0,
+            "{profile}: {report}"
+        );
+    }
+    assert_eq!(report.empty_household_days(90), 0, "{report}");
+    assert_eq!(report.unpaid_household_transfers(90), 0.0, "{report}");
+    assert!(report.recurring_city_balance(90) > 0.0, "{report}");
+    assert_no_housing_overbuild(&report.days, largest_home);
 }

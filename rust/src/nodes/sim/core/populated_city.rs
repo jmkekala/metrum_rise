@@ -86,6 +86,7 @@ pub struct PopulatedCityBuildTimes {
 /// A fully built, fully housed city whose economy ticks can be timed hour by hour.
 pub struct PopulatedCity {
     core: SimCore,
+    departures: u32,
 }
 
 impl PopulatedCity {
@@ -113,7 +114,10 @@ impl PopulatedCity {
         fill_lots(&mut core);
         times.lots = started.elapsed();
         core.time.speed_multiplier = SIMULATION_SPEED_STEPS[SIMULATION_SPEED_STEPS.len() - 1];
-        let mut city = Self { core };
+        let mut city = Self {
+            core,
+            departures: 0,
+        };
         let started = Instant::now();
         city.admit_households(residents);
         times.admission = started.elapsed();
@@ -128,6 +132,7 @@ impl PopulatedCity {
     /// City totals at the current clock, in the growth scenario's record form.
     pub fn record(&self) -> GrowthDayRecord {
         let city = self.core.daily_city_flow_diagnostics();
+        let (net_open_jobs, vacancy_reserve, _) = self.core.demand.housing_balance();
         GrowthDayRecord {
             day: self.core.time.day_index,
             households: city.active_households,
@@ -138,6 +143,11 @@ impl PopulatedCity {
                 .saturating_add(city.industrial_job_capacity),
             buildings: self.core.allocator.buildings.len() as u32,
             treasury: self.core.treasury.balance,
+            vacant_homes: city.vacant_household_slots,
+            vacancy_reserve,
+            unhoused_households: city.unhoused_households,
+            net_open_jobs,
+            departures: self.departures,
         }
     }
 
@@ -151,6 +161,9 @@ impl PopulatedCity {
             let frame = self.core.step_frame(FRAME_DT_S);
             if frame.hourly_ticks > 0 {
                 let midnight = frame.daily_ticks > 0;
+                if midnight {
+                    self.departures += self.core.demand.housing_balance().2;
+                }
                 return EconomyHourTimes {
                     hourly: Duration::from_secs_f64(frame.hourly_ms / 1000.0),
                     daily: midnight.then(|| Duration::from_secs_f64(frame.daily_ms / 1000.0)),

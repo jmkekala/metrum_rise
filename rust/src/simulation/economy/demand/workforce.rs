@@ -11,7 +11,11 @@ use super::queued::QueuedConstruction;
 use super::snapshot::{DailyDemandSnapshot, UnhousedWorkforce};
 use crate::simulation::buildings::allocator::{BuildingAllocator, construction_duration_hours};
 use crate::simulation::economy::definitions::{RuntimeEconomyCatalog, RuntimeEconomyTuning};
-use crate::simulation::economy::households::level_tuning_value;
+use crate::simulation::economy::agents::MAX_ADULTS_PER_HOUSEHOLD;
+use crate::simulation::economy::definitions::EconomyProfileRuntimeKind;
+use crate::simulation::economy::households::{applicant_places_and_members, level_tuning_value};
+#[cfg(test)]
+use crate::simulation::economy::households::applicant_workers;
 use crate::simulation::zoning::ZoneType;
 
 // A sum tree over operational hours, not buildings. A claim consumes the latest eligible
@@ -82,13 +86,19 @@ impl ReadySupply {
     }
 }
 
+// `order` is the building index, or the parcel id before placement; it also seeds the
+// applicant offered each place. Places `first_slot..first_slot + slots` are free.
 struct FutureHome {
     hour: usize,
     level: u8,
     order: u64,
     slots: u32,
+    first_slot: u32,
+    flat_size_m2: f32,
     threshold: f32,
     optional: Option<usize>,
+    // Adults supplied by arrivals after displaced residents claim their places.
+    arrival_workers: u32,
 }
 
 // Leaves retain household order; subtree maxima find the first affordable claimant
@@ -142,6 +152,14 @@ impl DisplacedHouseholds {
 pub(super) struct WorkforceReservations {
     homes: Vec<FutureHome>,
     homes_by_hour: Vec<AtomicU32>,
+    // Ready arrival places by their applicants' adults (`DEM-02-C`): the hour-zero worker
+    // supply in places, so claims in workers can still leave a count of free homes.
+    ready_places: [AtomicU32; MAX_ADULTS_PER_HOUSEHOLD as usize + 1],
+    // Arrival members per hour, whose own shopping needs store workers (`DEM-02-C`).
+    members_by_hour: Vec<AtomicU32>,
+    store_labor_per_resident: f64,
+    // Running store labor of individual future homes, in their matching order.
+    home_store_labor: f64,
     displaced: DisplacedHouseholds,
     optional_selected: Vec<bool>,
     arrivals_possible: bool,
@@ -206,12 +224,17 @@ impl WorkforceReservations {
         self.horizon = self.hours.len() - 1;
         self.new_start_hour = new_start_hour;
         let hours = self.hours.len();
-        for bins in [&mut self.homes_by_hour, &mut self.jobs_by_hour] {
+        for bins in [&mut self.homes_by_hour, &mut self.jobs_by_hour, &mut self.members_by_hour] {
             bins.resize_with(hours, || AtomicU32::new(0));
             for bin in bins {
                 bin.store(0, Ordering::Relaxed);
             }
         }
+        for places in &self.ready_places {
+            places.store(0, Ordering::Relaxed);
+        }
+        self.store_labor_per_resident = resident_store_labor(catalog);
+        self.home_store_labor = 0.0;
         self.committed.reset(hours);
         self.optional.reset(hours);
         self.optional_initial.resize(hours, 0);
@@ -228,6 +251,8 @@ impl WorkforceReservations {
             .residential_move_in_min_reserve_days_by_level;
         let match_displaced = !snapshot.unhoused_workforce.is_empty();
         let homes_by_hour = &self.homes_by_hour;
+        let members_by_hour = &self.members_by_hour;
+        let ready_places = &self.ready_places;
         let jobs_by_hour = &self.jobs_by_hour;
         self.homes
             .par_extend(allocator.buildings.par_iter().enumerate().filter_map(
@@ -255,26 +280,43 @@ impl WorkforceReservations {
                             Ordering::Relaxed,
                         );
                     }
-                    let slots = if building.is_under_construction() {
-                        allocator.registry.household_capacity(&building.asset_id)
+                    let (first_slot, capacity) = if building.is_under_construction() {
+                        (0, allocator.registry.household_capacity(&building.asset_id))
                     } else {
-                        allocator
-                            .household_capacity(idx)
-                            .saturating_sub(building.occupancy)
+                        (building.occupancy, allocator.household_capacity(idx))
                     };
+                    let slots = capacity.saturating_sub(first_slot);
+                    if slots == 0 {
+                        return None;
+                    }
+                    let flat_size_m2 = allocator.registry.flat_size_m2(&building.asset_id);
                     if !match_displaced {
-                        if arrivals_possible && slots > 0 {
-                            homes_by_hour[hour].fetch_add(slots, Ordering::Relaxed);
+                        // Each free place supplies the adults of the applicant offered it.
+                        if arrivals_possible {
+                            let (places, members) = applicant_places_and_members(
+                                flat_size_m2,
+                                idx,
+                                first_slot..capacity,
+                            );
+                            homes_by_hour[hour]
+                                .fetch_add(place_workers(&places), Ordering::Relaxed);
+                            members_by_hour[hour].fetch_add(members, Ordering::Relaxed);
+                            if hour == 0 {
+                                add_places(ready_places, &places);
+                            }
                         }
                         return None;
                     }
-                    (slots > 0).then(|| FutureHome {
+                    Some(FutureHome {
                         hour,
                         level: building.level,
                         order: idx as u64,
                         slots,
+                        first_slot,
+                        flat_size_m2,
                         threshold: level_tuning_value(thresholds, building.level),
                         optional: None,
+                        arrival_workers: 0,
                     })
                 },
             ));
@@ -283,7 +325,10 @@ impl WorkforceReservations {
             let hour = self.hours.binary_search(&project.completion_hour).unwrap();
             if project.household_slots > 0 && !match_displaced {
                 if arrivals_possible {
-                    self.homes_by_hour[hour].fetch_add(project.household_slots, Ordering::Relaxed);
+                    self.homes_by_hour[hour]
+                        .fetch_add(project.household_workers, Ordering::Relaxed);
+                    self.members_by_hour[hour]
+                        .fetch_add(project.household_members, Ordering::Relaxed);
                 }
             } else if project.household_slots > 0 {
                 self.homes.push(FutureHome {
@@ -291,8 +336,11 @@ impl WorkforceReservations {
                     level: project.level,
                     order: project.parcel_id,
                     slots: project.household_slots,
+                    first_slot: 0,
+                    flat_size_m2: project.flat_size_m2,
                     threshold: level_tuning_value(thresholds, project.level),
                     optional: None,
+                    arrival_workers: 0,
                 });
             }
             if let Some(profile) = catalog.profile_by_runtime_id(project.profile_runtime_id) {
@@ -307,7 +355,10 @@ impl WorkforceReservations {
         }
         self.jobs_by_hour[0].fetch_add(snapshot.open_job_slots, Ordering::Relaxed);
         for (hour, homes) in self.homes_by_hour.iter().enumerate() {
-            self.committed.add(hour, homes.load(Ordering::Relaxed));
+            let members = self.members_by_hour[hour].load(Ordering::Relaxed);
+            let store_workers = (f64::from(members) * self.store_labor_per_resident).ceil() as u32;
+            self.committed
+                .add(hour, homes.load(Ordering::Relaxed).saturating_sub(store_workers));
         }
     }
 
@@ -341,6 +392,8 @@ impl WorkforceReservations {
             level: authored.level,
             order: action.parcel_id,
             slots: allocator.registry.household_capacity(&action.asset_id),
+            first_slot: 0,
+            flat_size_m2: allocator.registry.flat_size_m2(&action.asset_id),
             threshold: level_tuning_value(
                 &tuning
                     .households
@@ -348,6 +401,7 @@ impl WorkforceReservations {
                 authored.level,
             ),
             optional,
+            arrival_workers: 0,
         });
     }
 
@@ -369,6 +423,21 @@ impl WorkforceReservations {
         let hour = self.project_hour(completion_hour);
         u64::from(self.unemployed) + self.committed.available(hour) + self.optional.available(hour)
             >= u64::from(workers)
+    }
+
+    /// Workers a project completing after `completion_hour` could still claim. O(log H).
+    pub(super) fn available(&self, completion_hour: u16) -> u32 {
+        self.available_at(self.project_hour(completion_hour))
+    }
+
+    /// [`Self::available`] for a queued deadline, as [`Self::claim_by_hour`] reads it.
+    pub(super) fn available_by_hour(&self, completion_hour: u64) -> u32 {
+        self.available_at(self.hours.partition_point(|&hour| hour <= completion_hour) - 1)
+    }
+
+    fn available_at(&self, hour: usize) -> u32 {
+        (u64::from(self.unemployed) + self.committed.available(hour) + self.optional.available(hour))
+            .min(u64::from(u32::MAX)) as u32
     }
 
     /// Atomically reserves a project's workforce; rejection leaves all supply untouched.
@@ -408,17 +477,40 @@ impl WorkforceReservations {
         u64::from(self.unemployed) + self.committed.available(0) >= u64::from(workers)
     }
     /// Ready vacancies left after all workplace claims; nonworker arrivals may use these.
+    /// Claimed workers occupy the fewest-adult worker places first, so as many places stay
+    /// reserved as the claims could need; places offered to non-workers are never needed. O(1).
     pub(super) fn unreserved_ready_homes(&self) -> u32 {
-        self.committed.sums[self.committed.leaves] as u32
+        let [idle, singles, couples] = self
+            .ready_places
+            .each_ref()
+            .map(|places| places.load(Ordering::Relaxed));
+        let supplied = singles + 2 * couples;
+        let claimed = supplied.saturating_sub(self.committed.sums[self.committed.leaves] as u32);
+        let needed = if claimed <= singles {
+            claimed
+        } else {
+            singles + (claimed - singles).div_ceil(2)
+        };
+        (idle + singles + couples).saturating_sub(needed)
     }
 
-    /// Removes only ready housing left after workplace claims, never local workers or future homes.
-    /// Rejected downsizing leaves the calendar unchanged; a successful claim costs O(log H).
-    pub(super) fn retire_ready_homes(&mut self, slots: u32) -> bool {
-        if self.unreserved_ready_homes() < slots {
+    /// Removes ready places, counted by their applicants' adults, left after workplace claims;
+    /// never local workers or future homes. Rejected downsizing leaves the calendar unchanged;
+    /// a successful claim costs O(log H).
+    pub(super) fn retire_ready_homes(
+        &mut self,
+        places: [u32; MAX_ADULTS_PER_HOUSEHOLD as usize + 1],
+    ) -> bool {
+        let workers = place_workers(&places);
+        if self.unreserved_ready_homes() < places.iter().sum::<u32>()
+            || self.committed.available(0) < u64::from(workers)
+        {
             return false;
         }
-        self.committed.take(0, slots);
+        self.committed.take(0, workers);
+        for (ready, retired) in self.ready_places.iter_mut().zip(places) {
+            *ready.get_mut() -= retired;
+        }
         true
     }
 
@@ -449,7 +541,7 @@ impl WorkforceReservations {
         }
         // Finite household/home claims are dependent and therefore serial. Each displaced
         // family is removed once: O(F log F + U log U + F log T), reusable scratch.
-        for home in &self.homes {
+        for home in &mut self.homes {
             let mut remaining = home.slots;
             let mut workers = 0;
             while remaining > 0 && !self.displaced.households.is_empty() {
@@ -464,7 +556,22 @@ impl WorkforceReservations {
                 workers = 0;
             }
             if self.arrivals_possible {
-                workers += remaining;
+                // Arrivals bring their applicants' adults, not one worker per place.
+                let end = home.first_slot + home.slots;
+                let (places, members) = applicant_places_and_members(
+                    home.flat_size_m2,
+                    home.order as usize,
+                    end - remaining..end,
+                );
+                if home.hour == 0 {
+                    add_places(&self.ready_places, &places);
+                }
+                // Whole store workers for the running total of arrivals' shopping.
+                let before = self.home_store_labor.ceil();
+                self.home_store_labor += f64::from(members) * self.store_labor_per_resident;
+                let store_workers = (self.home_store_labor.ceil() - before) as u32;
+                home.arrival_workers = place_workers(&places).saturating_sub(store_workers);
+                workers += home.arrival_workers;
             }
             if let Some(index) = home.optional {
                 // A home claimed by an existing resident must be built even if that
@@ -492,10 +599,13 @@ impl WorkforceReservations {
                 continue;
             }
             let remaining = self.optional.sums[self.optional.leaves + home.hour];
-            if u64::from(self.optional_initial[home.hour]) > remaining {
+            // A home whose applicants bring no adults cannot supply claimed workers.
+            if home.arrival_workers > 0
+                && u64::from(self.optional_initial[home.hour]) > remaining
+            {
                 self.optional_selected[index] = true;
                 self.optional_initial[home.hour] =
-                    self.optional_initial[home.hour].saturating_sub(home.slots);
+                    self.optional_initial[home.hour].saturating_sub(home.arrival_workers);
             }
         }
     }
@@ -506,9 +616,89 @@ impl WorkforceReservations {
     }
 }
 
+/// Store workers one resident's authored consumption needs (`DEM-02-C`): for each resource
+/// households buy from stores, the consumption rate times the fewest workers per daily unit
+/// among the stores selling it. Arrivals offer their adults net of this labor, so stores
+/// their shopping needs keep workers. O(profiles x ports), once per calendar reset.
+pub(super) fn resident_store_labor(catalog: &RuntimeEconomyCatalog) -> f64 {
+    let mut labor = 0.0;
+    for sink in catalog.all_profiles() {
+        if sink.kind != EconomyProfileRuntimeKind::DemandSink {
+            continue;
+        }
+        for input in &sink.inputs {
+            let per_unit = catalog
+                .all_profiles()
+                .iter()
+                .filter(|store| {
+                    matches!(
+                        store.kind,
+                        EconomyProfileRuntimeKind::Store | EconomyProfileRuntimeKind::ServiceStore
+                    ) && store.worker_capacity > 0
+                })
+                .filter_map(|store| {
+                    let port = store.output_port(input.resource_runtime_id)?;
+                    let output = store.net_output_units_per_day(port);
+                    (output > 0.0).then(|| f64::from(store.worker_capacity) / f64::from(output))
+                })
+                .min_by(f64::total_cmp);
+            if let Some(per_unit) = per_unit {
+                labor += f64::from(sink.consumption_rate_per_resident) * per_unit;
+            }
+        }
+    }
+    labor
+}
+
+fn place_workers(places: &[u32; MAX_ADULTS_PER_HOUSEHOLD as usize + 1]) -> u32 {
+    places
+        .iter()
+        .enumerate()
+        .map(|(adults, &count)| adults as u32 * count)
+        .sum()
+}
+
+fn add_places(
+    ready: &[AtomicU32; MAX_ADULTS_PER_HOUSEHOLD as usize + 1],
+    places: &[u32; MAX_ADULTS_PER_HOUSEHOLD as usize + 1],
+) {
+    for (ready, &count) in ready.iter().zip(places) {
+        ready.fetch_add(count, Ordering::Relaxed);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Fits only singles; a single is a working adult four times in five.
+    const SINGLE_FLAT_M2: f32 = 50.0;
+
+    // A future home whose applicants are all working singles, so each place supplies one
+    // worker. The applicant seed is searched from `order * 64`, preserving the given order.
+    fn home(
+        hour: usize,
+        level: u8,
+        order: u64,
+        slots: u32,
+        threshold: f32,
+        optional: Option<usize>,
+    ) -> FutureHome {
+        let order = (order * 64..)
+            .find(|&seed| applicant_workers(SINGLE_FLAT_M2, seed as usize, 0..slots) == slots)
+            .unwrap();
+        FutureHome {
+            hour,
+            level,
+            order,
+            slots,
+            first_slot: 0,
+            flat_size_m2: SINGLE_FLAT_M2,
+            threshold,
+            optional,
+            arrival_workers: 0,
+        }
+    }
 
     fn calendar(unemployed: u32) -> WorkforceReservations {
         let mut result = WorkforceReservations {
@@ -528,11 +718,12 @@ mod tests {
     fn downsizing_cannot_take_reserved_homes_workers_or_future_supply() {
         let mut supply = calendar(2);
         supply.committed.add(0, 5);
+        *supply.ready_places[1].get_mut() = 5; // Five ready places offered to working singles.
         supply.committed.add(12, 8);
         assert!(supply.claim_ready(5)); // Two residents and three ready homes.
-        assert!(!supply.retire_ready_homes(3));
+        assert!(!supply.retire_ready_homes([0, 3, 0]));
         assert_eq!(supply.unreserved_ready_homes(), 2);
-        assert!(supply.retire_ready_homes(2));
+        assert!(supply.retire_ready_homes([0, 2, 0]));
         assert!(!supply.claim_ready(1));
         assert!(supply.claim(12, 8));
     }
@@ -574,22 +765,8 @@ mod tests {
             },
         ]);
         // Level one is more expensive here: eligibility must not assume monotone levels.
-        supply.homes.push(FutureHome {
-            hour: 18,
-            level: 2,
-            order: 1,
-            slots: 2,
-            threshold: 2.0,
-            optional: None,
-        });
-        supply.homes.push(FutureHome {
-            hour: 6,
-            level: 1,
-            order: 2,
-            slots: 1,
-            threshold: 30.0,
-            optional: None,
-        });
+        supply.homes.push(home(18, 2, 1, 2, 2.0, None));
+        supply.homes.push(home(6, 1, 2, 1, 30.0, None));
         supply.reserve_existing();
         assert!(!supply.claim(5, 1));
         assert!(
@@ -614,14 +791,7 @@ mod tests {
         }]);
         supply.optional_selected.resize(3, false);
         for index in 0..3 {
-            supply.homes.push(FutureHome {
-                hour: 12,
-                level: 1,
-                order: index as u64,
-                slots: 1,
-                threshold: 2.0,
-                optional: Some(index),
-            });
+            supply.homes.push(home(12, 1, index as u64, 1, 2.0, Some(index)));
         }
         supply.reserve_existing();
         assert!(!supply.claim(12, 3));
@@ -636,20 +806,46 @@ mod tests {
     }
 
     #[test]
+    fn arrival_places_supply_their_applicants_adults() {
+        // DEM-02-C: a place offered to a couple supplies two workers, one offered to an
+        // elder none, so employers materialize only the home that staffs them.
+        const FAMILY_FLAT_M2: f32 = 200.0;
+        let couple = (0..)
+            .find(|&seed| applicant_workers(FAMILY_FLAT_M2, seed, 0..1) == 2)
+            .unwrap();
+        let elder = (0..)
+            .find(|&seed| applicant_workers(SINGLE_FLAT_M2, seed, 0..1) == 0)
+            .unwrap();
+        let mut supply = calendar(0);
+        supply.arrivals_possible = true;
+        supply.optional_selected.resize(2, false);
+        for (index, (seed, flat_size_m2)) in [(elder, SINGLE_FLAT_M2), (couple, FAMILY_FLAT_M2)]
+            .into_iter()
+            .enumerate()
+        {
+            supply.homes.push(FutureHome {
+                flat_size_m2,
+                optional: Some(index),
+                ..home(12, 1, 0, 1, 2.0, None)
+            });
+            supply.homes[index].order = seed as u64;
+        }
+        supply.reserve_existing();
+        assert!(!supply.claim(12, 3));
+        assert!(supply.claim(12, 2));
+        supply.select_optional_homes();
+        assert!(!supply.needs_home(0), "an elder's home supplies no workers");
+        assert!(supply.needs_home(1));
+    }
+
+    #[test]
     fn disconnected_town_can_rehouse_existing_workers_without_arrival_credits() {
         let mut supply = calendar(0);
         supply.displaced.reset(&[UnhousedWorkforce {
             reserve_days: 5.0,
             workers: 4,
         }]);
-        supply.homes.push(FutureHome {
-            hour: 12,
-            level: 1,
-            order: 0,
-            slots: 3,
-            threshold: 2.0,
-            optional: None,
-        });
+        supply.homes.push(home(12, 1, 0, 3, 2.0, None));
         supply.reserve_existing();
         assert!(supply.claim(12, 4));
         assert!(!supply.claim(12, 1));
@@ -676,14 +872,7 @@ mod tests {
                 supply.committed.reset(37);
                 supply.homes.clear();
                 for index in 0..homes {
-                    supply.homes.push(FutureHome {
-                        hour: 6 + index % 24,
-                        level: 1,
-                        order: index as u64,
-                        slots: 1,
-                        threshold: 2.0,
-                        optional: None,
-                    });
+                    supply.homes.push(home(6 + index % 24, 1, index as u64, 1, 2.0, None));
                 }
                 let start = Instant::now();
                 supply.reserve_existing();

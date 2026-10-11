@@ -10,6 +10,7 @@ use crate::simulation::buildings::allocator::{
     BuildingAllocator, BuildingEntrance, construction_duration_hours,
 };
 use crate::simulation::economy::definitions::RuntimeEconomyCatalog;
+use crate::simulation::economy::households::applicant_places_and_members;
 use crate::simulation::zoning::{ParcelId, ZoneType, ZoningSystem};
 
 /// A queued parcel's promised capacity and actual operational completion tick.
@@ -20,6 +21,12 @@ pub(super) struct QueuedConstruction {
     pub(super) parcel_id: u64,
     pub(super) completion_hour: u64,
     pub(super) household_slots: u32,
+    /// Adults the applicant stream offers these places, keyed by parcel (`DEM-02-C`).
+    pub(super) household_workers: u32,
+    /// Members of those applicants, whose shopping needs store workers.
+    pub(super) household_members: u32,
+    /// Authored flat size, for applicants offered places left after displaced residents.
+    pub(super) flat_size_m2: f32,
     /// Housing tier used for the same relocation threshold as completed homes.
     pub(super) level: u8,
     pub(super) profile_runtime_id: u16,
@@ -68,6 +75,18 @@ impl DemandSystem {
             else {
                 continue;
             };
+            let household_slots = if zone == ZoneType::Residential {
+                allocator.registry.household_capacity(&action.asset_id)
+            } else {
+                0
+            };
+            let flat_size_m2 = allocator.registry.flat_size_m2(&action.asset_id);
+            let (places, household_members) = applicant_places_and_members(
+                flat_size_m2,
+                action.parcel_id as usize,
+                0..household_slots,
+            );
+            let household_workers = places[1] + 2 * places[2];
             self.queued_construction.push(QueuedConstruction {
                 active: true,
                 level: authored.level,
@@ -78,11 +97,10 @@ impl DemandSystem {
                         authored.level,
                         &self.runtime_tuning,
                     )),
-                household_slots: if zone == ZoneType::Residential {
-                    allocator.registry.household_capacity(&action.asset_id)
-                } else {
-                    0
-                },
+                household_slots,
+                household_workers,
+                household_members,
+                flat_size_m2,
                 profile_runtime_id: candidate_economy_profile(
                     allocator,
                     &self.runtime_catalog,
