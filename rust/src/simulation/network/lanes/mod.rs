@@ -67,8 +67,15 @@ pub struct Lane {
     pub geometry: Vec<Vector3>,
     /// Total length in meters.
     pub length: f32,
-    /// Low-frequency cached frontage congestion penalty in seconds used only by exact access planning.
+    /// Frontage congestion penalty in seconds that economy prices read: freight, customer and
+    /// construction quotes. [`TransitNetwork::publish_frontage_prices`] copies it from
+    /// `live_frontage_delay_s` once per operational hour, so quotes stay fixed within the hour.
+    ///
+    /// [`TransitNetwork::publish_frontage_prices`]: crate::simulation::network::TransitNetwork::publish_frontage_prices
     pub frontage_delay_penalty_s: f32,
+    /// Smoothed frontage congestion penalty in seconds, updated once per simulated second from
+    /// live lane speeds. Agent trip planning reads it directly.
+    pub live_frontage_delay_s: f32,
     /// Cumulative distance at each geometry vertex: `cum_dist[i]` = distance from `geometry[0]` to `geometry[i]`.
     /// Used for O(log N) position interpolation via binary search.
     pub cum_dist: Vec<f32>,
@@ -89,6 +96,7 @@ impl Default for Lane {
             geometry: Vec::new(),
             length: 0.0,
             frontage_delay_penalty_s: 0.0,
+            live_frontage_delay_s: 0.0,
             cum_dist: Vec::new(),
             lane_type: LaneType::Vehicle,
             next_lanes: LaneSuccessors::default(),

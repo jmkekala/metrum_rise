@@ -129,6 +129,16 @@ pub(super) fn compile_runtime_catalog(
     validate_required_runtime_catalog(&catalog)?;
     (catalog.funding_phases, catalog.funding_phase_count) =
         super::supply_order::compile_phases(&catalog);
+    for profile in &catalog.profiles {
+        for output in &profile.outputs {
+            let slot = usize::from(output.resource_runtime_id);
+            if catalog.cheapest_seller_prices.len() <= slot {
+                catalog.cheapest_seller_prices.resize(slot + 1, f32::INFINITY);
+            }
+            let price = &mut catalog.cheapest_seller_prices[slot];
+            *price = price.min(profile.unit_price_currency);
+        }
+    }
     Ok(catalog)
 }
 

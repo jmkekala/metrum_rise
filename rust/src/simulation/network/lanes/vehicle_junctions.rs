@@ -184,6 +184,7 @@ pub fn build_vehicle_connections_at_node(
                 geometry: conn_geom,
                 length: conn_len,
                 frontage_delay_penalty_s: 0.0,
+                live_frontage_delay_s: 0.0,
                 cum_dist: conn_cum,
                 lane_type: LaneType::Vehicle,
                 next_lanes: LaneSuccessors::one(out_lid),

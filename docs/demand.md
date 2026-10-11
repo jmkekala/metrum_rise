@@ -39,7 +39,7 @@ spawn credits and saved hysteresis are all removed (save formats 74–83).
 | Level changes through economic viability and shared claims | Live |
 | Paced failed-site clearance | Live |
 | Growth HUD explanations from recorded decisions | Live |
-| Acceptance: second-mix year, 10k time budget, no housing overbuild | All three pass on one uncommitted build ([status](#status-2026-10-11-one-working-tree-build-on-47c5a053)) ([status](#status-2026-10-11-one-working-tree-build-on-47c5a053)) |
+| Acceptance: second-mix year, 10k time budget, no housing overbuild | Done: all three pass on one build (`01888e88`) ([status](#status-2026-10-11-one-working-tree-build-on-47c5a053)) ([status](#status-2026-10-11-one-working-tree-build-on-47c5a053)) |
 | 100k-scale growth costs (late-day household hour, one residual census) | Open (`ECON-13`) |
 
 ### Exit criteria

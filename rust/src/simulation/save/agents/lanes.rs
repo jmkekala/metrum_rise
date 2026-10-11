@@ -5,7 +5,7 @@
 use super::*;
 use crate::simulation::economy::agents::MODE_WALK;
 use crate::simulation::network::lanes::{LaneSystem, LaneType};
-use crate::simulation::save::schema::CONTINUATION_SAVE_VERSION;
+use crate::simulation::save::schema::{CONTINUATION_SAVE_VERSION, LIVE_FRONTAGE_DELAY_SAVE_VERSION};
 
 #[cfg(test)]
 mod tests;
@@ -21,7 +21,7 @@ pub(super) fn save_lane_references(
         "INSERT INTO network_runtime_state(singleton, frontage_delay_elapsed_s) VALUES (1, ?1)",
         [network.frontage_delay_elapsed_s],
     )?;
-    let mut stmt = tx.prepare("INSERT INTO saved_lanes(lane_id, edge_id, is_fwd, lane_idx, node_id, from_lane_id, to_lane_id, frontage_delay_penalty_s) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)")?;
+    let mut stmt = tx.prepare("INSERT INTO saved_lanes(lane_id, edge_id, is_fwd, lane_idx, node_id, from_lane_id, to_lane_id, frontage_delay_penalty_s, live_frontage_delay_s) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)")?;
     // Visit only live indexed lanes; incremental rebuilds leave tombstones in storage.
     // Each connector has one incoming road lane and one outgoing road lane.
     for edge_id in 0..graph.edge_count() {
@@ -38,7 +38,8 @@ pub(super) fn save_lane_references(
                 -1_i64,
                 -1_i64,
                 -1_i64,
-                lane.frontage_delay_penalty_s
+                lane.frontage_delay_penalty_s,
+                lane.live_frontage_delay_s
             ])?;
             for &conn_id in &lane.next_lanes {
                 let conn = &network.lane_system.lanes[conn_id];
@@ -58,7 +59,8 @@ pub(super) fn save_lane_references(
                     optional_node_to_db(graph, conn.node_id as u32, maps)?,
                     usize_to_i64(id)?,
                     usize_to_i64(to_id)?,
-                    conn.frontage_delay_penalty_s
+                    conn.frontage_delay_penalty_s,
+                    conn.live_frontage_delay_s
                 ])?;
             }
         }
@@ -158,17 +160,23 @@ pub(in crate::simulation::save) fn restore_lane_references(
             [],
             |row| row.get(0),
         )?;
-        let mut delays = conn.prepare(
-            "SELECT lane_id, frontage_delay_penalty_s FROM saved_lanes ORDER BY lane_id",
-        )?;
+        // Older saves held one delay that both prices and agents read.
+        let mut delays = conn.prepare(if version >= LIVE_FRONTAGE_DELAY_SAVE_VERSION {
+            "SELECT lane_id, frontage_delay_penalty_s, live_frontage_delay_s FROM saved_lanes ORDER BY lane_id"
+        } else {
+            "SELECT lane_id, frontage_delay_penalty_s, frontage_delay_penalty_s FROM saved_lanes ORDER BY lane_id"
+        })?;
         let mut rows = delays.query([])?;
         while let Some(row) = rows.next()? {
             let old = i64_to_usize(row.get(0)?)?;
-            let delay: f32 = row.get(1)?;
-            if !delay.is_finite() || delay < 0.0 {
+            let price: f32 = row.get(1)?;
+            let live: f32 = row.get(2)?;
+            if [price, live].iter().any(|delay| !delay.is_finite() || *delay < 0.0) {
                 return Err(SaveLoadError::custom("invalid saved frontage delay"));
             }
-            network.lane_system.lanes[remap[&old]].frontage_delay_penalty_s = delay;
+            let lane = &mut network.lane_system.lanes[remap[&old]];
+            lane.frontage_delay_penalty_s = price;
+            lane.live_frontage_delay_s = live;
         }
         if !network.frontage_delay_elapsed_s.is_finite() || network.frontage_delay_elapsed_s < 0.0 {
             return Err(SaveLoadError::custom("invalid saved frontage delay clock"));

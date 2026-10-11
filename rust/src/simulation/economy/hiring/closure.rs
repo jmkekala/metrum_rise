@@ -111,12 +111,19 @@ impl JobFunding {
     /// follow the longest reduced dependency chain. Scratch is retained; no city scan or
     /// allocation is added for each dependency link.
     pub(super) fn propagate_impossible_customers(&mut self, allocator: &BuildingAllocator,
-        network: &TransitNetwork, catalog: &RuntimeEconomyCatalog, tuning: &RuntimeEconomyTuning) {
+        network: &TransitNetwork, graph: &RegionGraph, catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning) {
         #[cfg(test)]
         if self.potential_customers.disabled { return; }
         // Propagation only skips censuses that replay would repeat. A pass that failed before
-        // reseeding the business book leaves the previous census's layout, so replay instead.
-        if !self.business.layout_matches(allocator, network) { return; }
+        // reseeding the business book (an input overclaim the repair could not replace) leaves
+        // the previous census's layout. Prepare this census's layout with an empty book, the
+        // O(buildings) layout work the complete-set check does; that check reseeds the book.
+        if !self.business.layout_matches(allocator, network) {
+            let Some(components) = self.input_supply.freight_components() else { return; };
+            self.business.reset(allocator, network, graph, components, catalog, 0,
+                self.customer_units.len(), |_| {});
+        }
         if !self.potential_customers.prepared {
             // Totals start from the census's initial limits; the seed check below then
             // marks every limit reduced by the failed proof that triggered this retry.

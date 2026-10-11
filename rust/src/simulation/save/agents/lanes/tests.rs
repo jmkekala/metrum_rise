@@ -148,6 +148,7 @@ fn snapshot_remaps_all_lane_roles_after_incremental_rebuild_and_edge_compaction(
         agents.job_lock_days[i] = 2;
         agents.consecutive_unpaid_days[i] = 1;
         network.lane_system.lanes[id].frontage_delay_penalty_s = id as f32 * 0.125;
+        network.lane_system.lanes[id].live_frontage_delay_s = id as f32 * 0.25;
     }
     network.frontage_delay_elapsed_s = 0.375;
     let allocator = BuildingAllocator::new();
@@ -207,6 +208,7 @@ fn snapshot_remaps_all_lane_roles_after_incremental_rebuild_and_edge_compaction(
             assert_eq!(old.is_fwd, new.is_fwd);
             assert_eq!(old.lane_type, new.lane_type);
             assert_eq!(old.frontage_delay_penalty_s, new.frontage_delay_penalty_s);
+            assert_eq!(old.live_frontage_delay_s, new.live_frontage_delay_s);
         }
         assert_eq!(
             (

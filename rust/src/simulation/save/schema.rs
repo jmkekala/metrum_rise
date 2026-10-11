@@ -6,7 +6,11 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 84;
+pub const SAVE_VERSION: i64 = 85;
+
+/// Lanes persist the live frontage delay apart from the hourly published economy price
+/// (`ECON-13-D`). Older continuation saves load both from the single saved delay.
+pub const LIVE_FRONTAGE_DELAY_SAVE_VERSION: i64 = 85;
 
 /// Household stock-check offsets are well mixed; older saves recompute theirs on load (`ECON-19`).
 pub const REPLENISHMENT_OFFSET_SAVE_VERSION: i64 = 84;
@@ -91,7 +95,8 @@ CREATE TABLE saved_lanes(
     node_id INTEGER NOT NULL,
     from_lane_id INTEGER NOT NULL,
     to_lane_id INTEGER NOT NULL,
-    frontage_delay_penalty_s REAL NOT NULL
+    frontage_delay_penalty_s REAL NOT NULL,
+    live_frontage_delay_s REAL NOT NULL
 );
 CREATE TABLE network_runtime_state(
     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),

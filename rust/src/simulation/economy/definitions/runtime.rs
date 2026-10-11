@@ -538,6 +538,8 @@ pub(crate) struct RuntimeEconomyCatalog {
     pub(super) funding_phases: Vec<usize>,
     /// Number of dependency phases, including mutually dependent recipes as one phase.
     pub(super) funding_phase_count: usize,
+    /// Lowest authored seller price of each output resource, indexed by runtime id.
+    pub(super) cheapest_seller_prices: Vec<f32>,
 }
 
 impl RuntimeEconomyCatalog {
@@ -605,6 +607,13 @@ impl RuntimeEconomyCatalog {
     /// Returns a slice of all compiled runtime profiles in this catalog.
     pub(crate) fn all_profiles(&self) -> &[EconomyProfileRuntime] {
         &self.profiles
+    }
+
+    /// Lowest authored unit price among recipes that output `resource`; infinite when no
+    /// recipe sells it. A local purchase never costs less per unit before the buyer's goods
+    /// multiplier and carrier fees. O(1).
+    pub(crate) fn cheapest_seller_price(&self, resource: ResourceRuntimeId) -> f32 {
+        self.cheapest_seller_prices.get(usize::from(resource)).copied().unwrap_or(f32::INFINITY)
     }
 }
 

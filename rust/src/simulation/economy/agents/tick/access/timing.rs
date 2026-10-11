@@ -106,7 +106,7 @@ pub(in crate::simulation::economy::agents::tick) fn frontage_time_s(
     } else {
         lane_d / lane.length
     };
-    Some(free_flow_time + penalty_ratio.max(0.0) * lane.frontage_delay_penalty_s)
+    Some(free_flow_time + penalty_ratio.max(0.0) * lane.live_frontage_delay_s)
 }
 
 /// Returns frontage travel time between two distances on one lane.
@@ -146,5 +146,5 @@ pub(in crate::simulation::economy::agents::tick) fn direct_frontage_segment_time
     }
 
     let penalty_ratio = segment_distance / lane.length;
-    Some(free_flow_time + penalty_ratio.max(0.0) * lane.frontage_delay_penalty_s)
+    Some(free_flow_time + penalty_ratio.max(0.0) * lane.live_frontage_delay_s)
 }

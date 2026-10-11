@@ -1198,8 +1198,8 @@ Use these exact rules:
 10. For `MODE_CAR`, frontage congestion penalty is:
    - if `lane.length <= 1e-6`, both frontage penalty terms are exactly `0.0`
    - if `lane.length > 1e-6`:
-     - `origin_frontage_penalty_time_s = ((lane.length - planned_attach_lane_d) / lane.length) * lane.frontage_delay_penalty_s`
-     - `destination_frontage_penalty_time_s = (planned_detach_lane_d / lane.length) * lane.frontage_delay_penalty_s`
+     - `origin_frontage_penalty_time_s = ((lane.length - planned_attach_lane_d) / lane.length) * lane.live_frontage_delay_s`
+     - `destination_frontage_penalty_time_s = (planned_detach_lane_d / lane.length) * lane.live_frontage_delay_s`
 11. Final frontage travel time is free-flow plus penalty:
    - `origin_frontage_time_s = origin_frontage_free_flow_time_s + origin_frontage_penalty_time_s`
    - `destination_frontage_time_s = destination_frontage_free_flow_time_s + destination_frontage_penalty_time_s`
@@ -1210,7 +1210,7 @@ Use these exact rules:
    - then do not price that candidate as `(lane.length - planned_attach_lane_d) + planned_detach_lane_d` plus a node-path between endpoints
    - instead price the live network segment directly as `planned_detach_lane_d - planned_attach_lane_d`
    - free-flow direct frontage time is `(planned_detach_lane_d - planned_attach_lane_d) / edge.speed_limit`
-   - direct frontage penalty time is `((planned_detach_lane_d - planned_attach_lane_d) / lane.length) * lane.frontage_delay_penalty_s` when `lane.length > 1e-6`; otherwise `0.0`
+   - direct frontage penalty time is `((planned_detach_lane_d - planned_attach_lane_d) / lane.length) * lane.live_frontage_delay_s` when `lane.length > 1e-6`; otherwise `0.0`
    - the node-path portion of `current_path` for that candidate is empty, but `ACCESS_ZERO_HOP_NODE_PATH` remains clear because `planned_attach_node != planned_detach_node`
    - this rule exists to allow same-edge same-lane travel between the exact attach and detach points without forcing a fake endpoint wrap
 
@@ -1221,10 +1221,10 @@ The authoritative road-graph path cost remains free-flow. Only `MODE_CAR` fronta
 Use this exact rule:
 
 1. Each vehicle lane owns one derived scalar:
-   - `lane.frontage_delay_penalty_s: f32`
-2. `lane.frontage_delay_penalty_s` is updated at fixed cadence:
+   - `lane.live_frontage_delay_s: f32`
+2. `lane.live_frontage_delay_s` is updated at fixed cadence:
    - `FRONTAGE_DELAY_UPDATE_S = 1.0`
-3. Only `lane_type == Vehicle` lanes participate. All foot lanes always have `frontage_delay_penalty_s = 0.0`.
+3. Only `lane_type == Vehicle` lanes participate. All foot lanes always have `live_frontage_delay_s = 0.0`.
 4. At each update, derive one raw observed lane delay from live lane traffic:
    - `lane_vehicle_count = number of MODE_CAR agents currently on that lane`
    - `lane_mean_speed_mps = arithmetic mean of current agent speeds for those cars`
@@ -1235,20 +1235,29 @@ Use this exact rule:
    - `observed_lane_time_s = lane.length / observed_speed_mps`
    - `raw_lane_delay_penalty_s = clamp(observed_lane_time_s - free_flow_lane_time_s, 0.0, 30.0)`
 7. Smooth the cached penalty with a fixed deterministic low-pass filter:
-   - `lane.frontage_delay_penalty_s = 0.75 * lane.frontage_delay_penalty_s + 0.25 * raw_lane_delay_penalty_s`
-8. If `edge.speed_limit <= 1e-6` or `lane.length <= 1e-6`, `lane.frontage_delay_penalty_s = 0.0`.
-9. Candidate evaluation uses only the latest cached `lane.frontage_delay_penalty_s`. It must not inspect raw live IDM neighbors, gap state, or leader-follower chains during planning.
+   - `lane.live_frontage_delay_s = 0.75 * lane.live_frontage_delay_s + 0.25 * raw_lane_delay_penalty_s`
+8. If `edge.speed_limit <= 1e-6` or `lane.length <= 1e-6`, `lane.live_frontage_delay_s = 0.0`.
+9. Candidate evaluation uses only the latest cached `lane.live_frontage_delay_s`. It must not inspect raw live IDM neighbors, gap state, or leader-follower chains during planning.
 10. `network_path_time_s` remains the exact CCH or accepted flow-field node-path cost in seconds with no dynamic congestion multiplier.
 
 This keeps dynamic traffic influence cheap and stable: full-network routing stays free-flow and deterministic, while building-adjacent car choices still see a low-frequency congestion signal.
+
+Economy prices use a second scalar, `lane.frontage_delay_penalty_s`, with the same frontage
+formulas. Freight, customer and construction quotes read it. `TransitNetwork::publish_frontage_prices`
+copies every lane's live delay into it at the start of each operational hour, before the hourly
+economy runs. `frontage_delay_revision` advances only when a published value changes. The live delay
+changes almost every simulated second, so pricing it directly would rebuild citywide censuses for
+every queued-construction check (`ECON-13-D`). Agent trip planning, including job-search commutes,
+keeps reading the live delay.
 
 Save format 75 preserves each live lane's smoothed delay and the network's fractional delay-update
 clock. Restore delays through the existing directed-lane/connector identity remap, after rebuilding
 lanes. The smoothing history and clock are continuation state: recreating them as zero shifts
 traffic sampling and therefore freight quotes even when road geometry and current traffic agree.
 Older saves lack this history and initialize it to zero. Save/load remains O(live lanes).
-The existing delay update advances a quote revision only when a smoothed value changes, without
-another traffic scan or allocation. Hiring refreshes its border quotes on that revision.
+Save format 85 stores the live and published delays separately; formats 75–84 load both from the
+single saved delay. Publication advances the quote revision only when a published value changes,
+without another traffic scan or allocation. Hiring refreshes its border quotes on that revision.
 
 CCH customization uses `edge.base_cost` alone, matching flow-field costs and the free-flow
 contract above. Freight caches border sweeps and node-to-node costs. Complete quotes carry the

@@ -142,7 +142,8 @@ pub struct TransitNetwork {
     pub flow_fields: FlowFieldSystem,
     /// Fixed-cadence accumulator for the frontage delay cache used by exact access planning.
     pub frontage_delay_elapsed_s: f32,
-    /// Derived quote invalidation epoch; advances only when a smoothed lane delay changes.
+    /// Derived quote invalidation epoch; advances only when a published economy frontage price
+    /// changes. Live per-second delay updates do not advance it.
     pub(crate) frontage_delay_revision: u64,
     /// Phase 1 road-surface ownership shell for compiled roadbed data and dirty tracking.
     pub road_surface: RoadSurfaceSystem,
@@ -237,6 +238,28 @@ impl TransitNetwork {
         self.profile_authored_edges.clear();
         zoning.clear();
         allocator.clear();
+    }
+
+    /// Publishes every lane's live frontage delay as the economy frontage price, at the start of
+    /// each operational hour.
+    ///
+    /// Economy quotes, censuses and queued-construction checks key their reuse on
+    /// `frontage_delay_revision`. The live delay changes almost every simulated second, so pricing
+    /// it directly would rebuild citywide censuses for each check. The revision advances only
+    /// when some published price changes. O(lanes), parallel and allocation-free.
+    pub fn publish_frontage_prices(&mut self) {
+        use rayon::prelude::*;
+        let changed = self
+            .lane_system
+            .lanes
+            .par_iter_mut()
+            .map(|lane| {
+                let changed = lane.frontage_delay_penalty_s != lane.live_frontage_delay_s;
+                lane.frontage_delay_penalty_s = lane.live_frontage_delay_s;
+                changed
+            })
+            .reduce(|| false, |a, b| a | b);
+        self.frontage_delay_revision = self.frontage_delay_revision.wrapping_add(u64::from(changed));
     }
 
     /// Adds a new road segment to the network from pre-prepared physical geometry.

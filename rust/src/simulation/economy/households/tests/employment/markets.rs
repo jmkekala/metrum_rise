@@ -822,10 +822,12 @@ fn unprofitable_supplier_cycles_match_replay_within_their_depth() {
     let mut tuning = (*load_runtime_economy_tuning().unwrap()).clone();
     tuning.owa_import_price_multiplier = 10.0;
     tuning.owa_export_price_multiplier = 0.0;
-    // Link 0 buys dearer goods than it sells; its failure is financial, not a demand limit.
-    // Profit can recover in a later census, so no ceiling may assume it. The withdrawal
-    // still moves one link per census, exactly as full replay does.
-    for length in [2, 8] {
+    // Link 0 buys dearer goods than it sells. Its current profit could recover in a later
+    // pass, so no ceiling may assume that; but even its cheapest possible inputs cost more
+    // than its best possible sales, which proves a zero ceiling up front. Its suppliers then
+    // lose their only possible buyer and the withdrawal crosses the whole loop in one
+    // propagation instead of one census per link (`ECON-13-C`).
+    for length in [2, 8, 64] {
         for units in [160.0, 199.8] {
             let mut market = financing_links(length, true, units, None, 0);
             let mut replay = financing_links(length, true, units, None, 0);
@@ -835,8 +837,7 @@ fn unprofitable_supplier_cycles_match_replay_within_their_depth() {
                 replay.refresh(&tuning);
                 assert_links_match_replay(&market, &replay, 0..length);
                 assert_eq!(&market.funding.capacities[..length], vec![0; length]);
-                assert!(market.funding.closure_passes <= length.max(2), "length={length}");
-                assert_eq!(market.funding.propagation_rounds, 0, "an unprofitable cycle has no demand limit");
+                assert!(market.funding.closure_passes <= 2, "length={length}");
             }
         }
     }
@@ -879,6 +880,7 @@ fn benchmark_combined_financing_cascades() {
         let cold = Instant::now();
         market.refresh(&tuning);
         let cold_ms = cold.elapsed().as_secs_f64() * 1_000.0;
+        let cold_passes = market.funding.closure_passes;
         let mut samples = [0.0_f64; 15];
         let mut passes = [0; 15];
         for round in 0..18 {
@@ -888,6 +890,6 @@ fn benchmark_combined_financing_cascades() {
             if round >= 3 { samples[round - 3] = elapsed; passes[round - 3] = market.funding.closure_passes; }
         }
         samples.sort_by(f64::total_cmp);
-        eprintln!("combined_financing_cascade case={case} length={length} background={background} setup_ms={setup_ms:.3} cold_ms={cold_ms:.3} warm_median_ms={:.3} warm_max_ms={:.3} passes={passes:?}", samples[7], samples[14]);
+        eprintln!("combined_financing_cascade case={case} length={length} background={background} setup_ms={setup_ms:.3} cold_ms={cold_ms:.3} cold_passes={cold_passes} warm_median_ms={:.3} warm_max_ms={:.3} passes={passes:?}", samples[7], samples[14]);
     }
 }

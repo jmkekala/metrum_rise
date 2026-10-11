@@ -137,7 +137,7 @@ fn busy_city_continues_identically_after_save_load() {
             .lane_system
             .lanes
             .iter()
-            .any(|lane| lane.frontage_delay_penalty_s > 0.0)
+            .any(|lane| lane.live_frontage_delay_s > 0.0)
     );
     assert_growth_continues_after_reload(source);
 }

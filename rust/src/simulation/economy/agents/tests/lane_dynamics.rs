@@ -284,12 +284,12 @@ fn test_frontage_delay_cache_respects_fixed_cadence() {
 
     agents.update_frontage_delay_cache(&mut network, &graph, 0.5);
     assert_eq!(
-        network.lane_system.lanes[fwd_lane].frontage_delay_penalty_s,
+        network.lane_system.lanes[fwd_lane].live_frontage_delay_s,
         0.0
     );
 
     agents.update_frontage_delay_cache(&mut network, &graph, 0.5);
-    let penalty = network.lane_system.lanes[fwd_lane].frontage_delay_penalty_s;
+    let penalty = network.lane_system.lanes[fwd_lane].live_frontage_delay_s;
     let expected =
         expected_frontage_delay_penalty_s(&network, &graph, edge_idx, fwd_lane, observed_speed, 1);
     assert!(
@@ -315,7 +315,7 @@ fn test_frontage_delay_cache_keeps_foot_lanes_at_zero() {
         })
         .expect("foot lane");
     assert_eq!(
-        network.lane_system.lanes[foot_lane].frontage_delay_penalty_s,
+        network.lane_system.lanes[foot_lane].live_frontage_delay_s,
         0.0
     );
 }
@@ -330,7 +330,7 @@ fn test_frontage_delay_cache_applies_multiple_fixed_cadence_steps() {
     place_on_lane(&mut agents, edge_idx, fwd_lane, 50.0, observed_speed);
 
     agents.update_frontage_delay_cache(&mut network, &graph, 2.0);
-    let penalty = network.lane_system.lanes[fwd_lane].frontage_delay_penalty_s;
+    let penalty = network.lane_system.lanes[fwd_lane].live_frontage_delay_s;
     let expected =
         expected_frontage_delay_penalty_s(&network, &graph, edge_idx, fwd_lane, observed_speed, 2);
     assert!(
@@ -342,7 +342,7 @@ fn test_frontage_delay_cache_applies_multiple_fixed_cadence_steps() {
 #[test]
 fn test_frontage_delay_cache_decays_without_agents() {
     let (mut network, mut graph, edge_idx, fwd_lane) = setup_straight_road();
-    network.lane_system.lanes[fwd_lane].frontage_delay_penalty_s = 10.0;
+    network.lane_system.lanes[fwd_lane].live_frontage_delay_s = 10.0;
 
     let mut agents = AgentSystem::new();
     let mut allocator = BuildingAllocator::new();
@@ -354,7 +354,7 @@ fn test_frontage_delay_cache_decays_without_agents() {
         &test_clock(0, 0),
     );
 
-    let penalty = network.lane_system.lanes[fwd_lane].frontage_delay_penalty_s;
+    let penalty = network.lane_system.lanes[fwd_lane].live_frontage_delay_s;
     assert!(
         (penalty - 7.5).abs() < 0.01,
         "expected empty-lane penalty to decay toward zero, got {penalty:.3}"

@@ -24,6 +24,7 @@ fn hash_lane_shape(lanes: &LaneSystem, lane_id: usize, hash: &mut DefaultHasher)
     lane.node_id.hash(hash);
     lane.length.to_bits().hash(hash);
     lane.frontage_delay_penalty_s.to_bits().hash(hash);
+    lane.live_frontage_delay_s.to_bits().hash(hash);
     crosswalk.map(|crosswalk| crosswalk.edge_id).hash(hash);
     crosswalk
         .and_then(|crosswalk| crosswalk.marking)

@@ -1883,8 +1883,10 @@ fn business_planning_prices_the_actual_freight_route() {
 #[ignore = "manual release locality of queued-project validation; setup and census timed separately"]
 fn benchmark_queued_project_validation() {
     use std::hint::black_box;
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
+    const WARM_CHECKS: usize = 1_024;
+    const PUBLISHED_CHECKS: usize = 16;
     for background in [0, 2_048, 16_384, 131_072] {
         let (mut core, homes, factories) = construction_execution_fixture();
         execute_test_construction(&mut core, &homes[0], ZoneType::Residential, 1);
@@ -1910,24 +1912,51 @@ fn benchmark_queued_project_validation() {
                 &core.fiscal_policy,
             )
         };
+        // One simulated second of the live delay cache from a check-specific congestion state:
+        // every vehicle lane changes, as in a busy city's per-second update.
+        let live_revision = |core: &mut SimCore, index: usize| {
+            for lane in &mut core.transit_network.lane_system.lanes {
+                lane.live_frontage_delay_s = 1.0 + (index % 17) as f32;
+            }
+            core.agents.update_frontage_delay_cache(
+                &mut core.transit_network,
+                &core.region_graph,
+                1.0,
+            );
+        };
         let balance = core.treasury.balance;
-        let mut samples = [[0.0_f64; 2]; 9];
+        let mut samples = [[0.0_f64; 3]; 9];
         for round in 0..12 {
             core.demand.invalidate_construction_execution();
             let start = Instant::now();
             assert!(black_box(prepare(&mut core, 0)).is_ok());
             let cold_ms = start.elapsed().as_secs_f64() * 1_000.0;
-            let start = Instant::now();
-            for index in 0..1_024 {
+            let mut warm = Duration::ZERO;
+            for index in 0..WARM_CHECKS {
                 // Uncommitted permits model placement rejection: repeat checks must neither
                 // spend owner money nor claim workers/customers nor rebuild the city census.
+                live_revision(&mut core, index);
+                let start = Instant::now();
                 assert!(black_box(prepare(&mut core, index)).is_ok());
+                warm += start.elapsed();
             }
-            let warm_ms = start.elapsed().as_secs_f64() * 1_000.0;
+            // The hourly publication is the only revision prices see; each one pays a census.
+            let mut published = Duration::ZERO;
+            for index in 0..PUBLISHED_CHECKS {
+                live_revision(&mut core, index);
+                core.transit_network.publish_frontage_prices();
+                let start = Instant::now();
+                assert!(black_box(prepare(&mut core, index)).is_ok());
+                published += start.elapsed();
+            }
             assert_eq!(core.treasury.balance, balance);
             assert_eq!(core.allocator.buildings.len(), background + 2);
             if round >= 3 {
-                samples[round - 3] = [cold_ms, warm_ms];
+                samples[round - 3] = [
+                    cold_ms,
+                    warm.as_secs_f64() * 1_000.0,
+                    published.as_secs_f64() * 1_000.0 / PUBLISHED_CHECKS as f64,
+                ];
             }
         }
         let median = |column| {
@@ -1936,11 +1965,56 @@ fn benchmark_queued_project_validation() {
             values[4]
         };
         eprintln!(
-            "queued_validation background={background} checks=1024 census_and_first_check_ms={:.3} warm_checks_ms={:.3}",
+            "queued_validation background={background} census_and_first_check_ms={:.3} \
+             warm_checks_after_live_revisions={WARM_CHECKS}_ms={:.3} \
+             check_after_published_revision_ms={:.3}",
             median(0),
-            median(1)
+            median(1),
+            median(2)
         );
     }
+}
+
+#[test]
+fn live_frontage_delay_reaches_queued_checks_only_when_published() {
+    let (mut core, homes, factories) = construction_execution_fixture();
+    execute_test_construction(&mut core, &homes[0], ZoneType::Residential, 1);
+    execute_test_construction(&mut core, &homes[1], ZoneType::Residential, 2);
+    let prepare = |core: &mut SimCore| {
+        core.demand.prepare_queued_spawn(
+            &factories[0],
+            ZoneType::Industrial,
+            &core.allocator,
+            &core.households,
+            &core.region_graph,
+            3,
+            &core.transit_network,
+            &mut core.logistics,
+            &core.zoning,
+            core.treasury.balance,
+            &core.fiscal_policy,
+        )
+    };
+    assert!(prepare(&mut core).is_ok());
+    let revision = core.transit_network.frontage_delay_revision;
+    // Per-second congestion anywhere, including the project's own frontage, leaves every
+    // price-keyed cache and the warm check unchanged until the operational hour publishes it.
+    for lane in &mut core.transit_network.lane_system.lanes {
+        lane.live_frontage_delay_s = 1_000_000.0;
+    }
+    core.agents.update_frontage_delay_cache(&mut core.transit_network, &core.region_graph, 1.0);
+    assert_eq!(core.transit_network.frontage_delay_revision, revision);
+    assert!(prepare(&mut core).is_ok());
+    core.transit_network.publish_frontage_prices();
+    assert_ne!(core.transit_network.frontage_delay_revision, revision);
+    assert!(matches!(
+        prepare(&mut core),
+        Err("market-cannot-fund-operation")
+    ));
+    // Publishing unchanged prices is not a revision.
+    let revision = core.transit_network.frontage_delay_revision;
+    core.transit_network.publish_frontage_prices();
+    assert_eq!(core.transit_network.frontage_delay_revision, revision);
 }
 
 #[test]

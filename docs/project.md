@@ -937,6 +937,15 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- `ECON-13` (2026-10-11): economy prices read a per-lane frontage delay published once per
+  operational hour (`TransitNetwork::publish_frontage_prices`); agent trips keep the per-second
+  live delay; save format 85 stores both. The funding census pins operations that cannot profit
+  even at their best possible prices, and customer propagation prepares the business layout
+  itself, so a loss-making supply cycle resolves in 2 censuses at any length. `ECON-13-A`, `C`
+  and `D` pass; `B` (100k scaling) is blocked on job search and census-spike decisions. 10k
+  timing, records and growth reports are unchanged. See the
+  [status](economy.md#status-2026-10-11-one-working-tree-build-on-01888e88).
+
 - `DEM-02` done (2026-10-11): residential need and the workforce calendar count
   arriving households and their adults from admission's own applicant stream, not one home or one
   worker per job. The calendar credits those adults net of the store workers their shopping

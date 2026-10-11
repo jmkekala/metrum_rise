@@ -494,6 +494,8 @@ impl SimCore {
             .saturating_sub(1)
             .saturating_mul(24)
             .saturating_add(u32::from(minute_of_day / 60));
+        // Every economy consumer this hour prices the same frontage delays (`ECON-13-D`).
+        self.transit_network.publish_frontage_prices();
         self.allocator.advance_construction_hour();
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));

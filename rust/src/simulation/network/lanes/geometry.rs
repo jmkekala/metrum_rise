@@ -144,6 +144,7 @@ pub fn build_one_lane(
         geometry,
         length,
         frontage_delay_penalty_s: 0.0,
+        live_frontage_delay_s: 0.0,
         cum_dist,
         lane_type,
         next_lanes: LaneSuccessors::default(),

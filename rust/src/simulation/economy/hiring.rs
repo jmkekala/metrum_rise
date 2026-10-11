@@ -13,10 +13,10 @@ use super::households::{
     output_area_scale_for_building, physical_worker_capacity_for_profile,
     service_funded_worker_capacity,
 };
-use super::logistics::{RecurringSupply, ShipmentSystem, building_outputs_can_export_to_owa, freight_goods_multiplier, freight_price_phase};
+use super::logistics::{RecurringSupply, ShipmentSystem, building_outputs_can_export_to_owa, freight_goods_multiplier, freight_price_phase, imported_input_unit_price};
 use super::operation::{
-    FundedOperation, OperatingCosts, OperationPlan, OperationPrices, working_capital_assets,
-    working_capital_assets_at_prices,
+    FundedOperation, OperatingCosts, OperationPlan, OperationPrices, purchased_input_units,
+    working_capital_assets, working_capital_assets_at_prices,
 };
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::network::{TransitNetwork, graph::RegionGraph};
@@ -587,16 +587,24 @@ impl JobFunding {
         self.closure_activity.resize(count, 1.0);
         self.service_flags.resize(count, false);
         self.offered_activity.resize(count, 1.0);
+        #[cfg(test)]
+        let profit_proof = !self.potential_customers.disabled;
+        #[cfg(not(test))]
+        let profit_proof = true;
         self.closure_ceilings.par_iter_mut().zip(&mut self.closure_activity)
             .zip(&mut self.offered_activity).zip(&mut self.service_flags)
-            .zip(&allocator.buildings).zip(&self.freight_capital).with_min_len(MARKET_CHUNK)
-            .for_each(|(((((ceiling, activity), offered), service), building), &cargo)| {
+            .zip(&allocator.buildings).zip(&self.freight_capital).zip(&self.carrier_quotes)
+            .with_min_len(MARKET_CHUNK)
+            .for_each(|((((((ceiling, activity), offered), service), building), &cargo), &carrier)| {
                 *service = allocator.is_city_service_building(building);
                 *ceiling = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
-                    .filter(|profile| *service || !cannot_fund_one_worker(building, profile, cargo))
+                    .filter(|profile| *service || !(cannot_fund_one_worker(building, profile, cargo)
+                        || (profit_proof && cannot_profit_at_best_prices(building, profile, catalog,
+                            tuning, carrier, minute_of_day))))
                     .map_or(0, |profile| physical_worker_capacity_for_profile(building, profile));
                 *activity = 1.0;
-                *offered = 1.0;
+                // A proven zero ceiling never produces, so buyers never stage its output.
+                *offered = if *ceiling == 0 { 0.0 } else { 1.0 };
             });
         #[cfg(test)]
         { self.closure_passes = 0; self.propagation_rounds = 0; }
@@ -845,7 +853,7 @@ impl JobFunding {
             self.publish_business_deliveries(allocator, catalog, graph);
             break;
         }
-        self.propagate_impossible_customers(allocator, network, catalog, tuning);
+        self.propagate_impossible_customers(allocator, network, graph, catalog, tuning);
         self.offered_activity.clone_from(&self.activities);
         // Attribute failed local proofs to this pass before the next import pass starts.
         lap(6);
@@ -1069,6 +1077,46 @@ fn cannot_fund_one_worker(building: &Building, profile: &EconomyProfileRuntime, 
     profile.inputs.iter().chain(&profile.outputs)
         .all(|port| building.inventory_units(port.resource_runtime_id) == 0.0)
         && f64::from(building.operating_budget) + cargo < f64::from(profile.average_daily_wage())
+}
+
+// Bounds the rounding of the f32 quotes that `cannot_profit_at_best_prices` dominates.
+const PROFIT_BOUND_SLACK: f64 = 64.0 * f32::EPSILON as f64;
+
+// Revenue and purchased inputs are both linear in activity. Per unit of activity, sales earn
+// at most every net output at the better of the local and export price, and each purchased
+// input costs at least its cheapest authored seller or the outside price, both at this site's
+// goods multiplier. Payroll, overhead and carriers only add cost. These prices are fixed for
+// the census, so when the best revenue cannot exceed the cheapest inputs, no supplier
+// withdrawal, customer change or recovered rival can fund any plan. A zero closure ceiling
+// states that proof up front, as for `cannot_fund_one_worker`; capacities are unchanged.
+// O(I + O) per building, allocation-free.
+fn cannot_profit_at_best_prices(building: &Building, profile: &EconomyProfileRuntime,
+    catalog: &RuntimeEconomyCatalog, tuning: &RuntimeEconomyTuning, carrier_quote: Option<f32>,
+    minute_of_day: u16) -> bool {
+    let goods_multiplier = freight_goods_multiplier(profile, building.zone_type, tuning, minute_of_day);
+    if !goods_multiplier.is_finite() { return false; }
+    let area = output_area_scale_for_building(building, profile);
+    let exports = building_outputs_can_export_to_owa(building, profile) && carrier_quote.is_some()
+        && tuning.owa_export_price_multiplier > 0.0;
+    let revenue: f64 = profile.outputs.iter().map(|output| {
+        let export = if exports {
+            catalog.unit_price_for_resource(output.resource_runtime_id).unwrap_or(0.0)
+                * tuning.owa_export_price_multiplier
+        } else { 0.0 };
+        f64::from(profile.net_output_units_per_day(output) * area)
+            * f64::from(profile.unit_price_currency.max(export))
+    }).sum();
+    let production = OperationPlan { workers: 0, activity: 1.0, area }.production(profile);
+    let mut inputs = 0.0_f64;
+    for input in &profile.inputs {
+        let units = purchased_input_units(profile, input, production);
+        if units <= 0.0 { continue; }
+        let local = catalog.cheapest_seller_price(input.resource_runtime_id) * goods_multiplier;
+        let outside = carrier_quote.map_or(f32::INFINITY, |_| imported_input_unit_price(
+            catalog, tuning, input.resource_runtime_id, goods_multiplier));
+        inputs += f64::from(units) * f64::from(local.min(outside));
+    }
+    revenue * (1.0 + PROFIT_BOUND_SLACK) < inputs
 }
 
 fn funded_private_operation(

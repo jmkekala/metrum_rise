@@ -38,11 +38,10 @@ Status, 2026-10-10. The healthy-growth redesign agreed on 2026-10-05 is largely 
 - failed businesses are cleared and replaced; households leave through one individual exit
   policy.
 
-Open under `ECON-14` and `DEM-02` ([`roadmap.md`](roadmap.md)): acceptance scenarios beyond the
-starter town (scarce-labor expansion review, a second zoning/service mix, long-run
-affordability), additional funded economic activities, and 100k-scale costs (the late-day
-household hour, one residual census). Healthy-growth acceptance is defined
-[below](#healthy-growth-acceptance).
+`DEM-02` closed on 2026-10-11 ([`demand.md`](demand.md#exit-criteria)). What remains is tracked by
+runnable exit criteria: performance and scaling under [`ECON-13`](#econ-13-exit-criteria), and
+economic health beyond the starter towns under [`ECON-14`](#econ-14-exit-criteria).
+Healthy-growth acceptance is defined [below](#healthy-growth-acceptance).
 
 ## Core principles
 
@@ -440,6 +439,15 @@ answer to "how much of this operation can run":
 - **Business buyers:** business buyers claim inputs from local suppliers in recipe order, with
   jointly checked financing (`customers/business.rs`). Suppliers of buyers that cannot pay are
   withdrawn; cyclic groups resolve in stable building order (`hiring/closure.rs`).
+- **Up-front proofs:** an operation gets a zero ceiling before the first pass when it cannot fund
+  one worker, or when its best possible revenue per unit of activity does not exceed its
+  cheapest possible purchased inputs. The best revenue counts every net output at the better of
+  the local and export price. The cheapest input takes the cheapest authored seller or the
+  outside price, at the site's goods multiplier. These prices are fixed for the census, so full
+  replay could never fund such an operation either. Its suppliers then lose that possible buyer
+  through customer propagation, which prepares the business layout itself when a pass ended
+  before validation. A loss-making dependency cycle therefore resolves in two censuses at any
+  length (`ECON-13-C`).
 - **City services:** they use their explicit fiscal funding limit. Unfinished and inactive
   private employers advertise no live jobs.
 
@@ -740,13 +748,130 @@ deferred.
   test. Record build identity, worker settings, results and artifact paths with the change.
 - **Current baseline** (2026-10-10, `24705c42` plus shared workplace legs): 34.45 ms hourly and
   8.73 ms daily. Day 15 has 5,341 households and 7,134 employed.
-- **`DEM-02-C` housing need** (2026-10-11, uncommitted, four alternating runs against
+- **`DEM-02-C` housing need** (2026-10-11, `01888e88`, four alternating runs against
   `47c5a053`): 34.48 → 34.32 ms hourly (p = 0.37) and 8.70 → 8.71 ms daily (p = 0.91), with
   identical day-15 records. See [`DEM-02-B`](demand.md#status-2026-10-11-one-working-tree-build-on-47c5a053).
+- **`ECON-13` hourly frontage prices and profit proof** (2026-10-11, working tree on
+  `01888e88`, four alternating runs): 34.95 → 34.93 ms hourly (p = 0.94) and 8.90 → 8.98 ms
+  daily (p = 0.26), with identical day-15 records. See the
+  [exit-criteria status](#status-2026-10-11-one-working-tree-build-on-01888e88).
 
-A populated timing fixture does not demonstrate organic growth or solvency. Larger tiers (100k)
-are diagnostic probes, not acceptance gates. Earlier fixtures and timings are in the
-[archive](archive/economy_history_2026-10-10.md#econ-13-economy-tick-baseline).
+A populated timing fixture does not demonstrate organic growth or solvency. Earlier fixtures and
+timings are in the [archive](archive/economy_history_2026-10-10.md#econ-13-economy-tick-baseline).
+
+#### `ECON-13` exit criteria
+
+`ECON-13` is done when all four checks pass on one build. The 1M tier stays deferred and is not
+part of this acceptance.
+
+1. **10k budget (`ECON-13-A`).** The recipe above measures at most **40 ms** per mean hour and
+   **10 ms** per mean day, with identical `GrowthDayRecord`s across runs. **PASS** (see status
+   below): 34.93 / 8.98 ms.
+2. **Linear 100k scaling (`ECON-13-B`).** On one build, `-- /100k` measures a mean operational
+   hour at most 10× and a mean daily settlement at most 10× the same build's `/10k` values,
+   with identical records across two runs. An older, economically inert fixture met the hour
+   (3.1×) but not the day (15×). **BLOCKED** (see status below): on the live-economy fixture the
+   hour is 26× and the day 411×, identically at `01888e88`. Most of the excess comes from job
+   search across a sparse open-job supply and from funding-census spikes. Fixing them needs the
+   decisions named in the status.
+3. **Bounded census cascades (`ECON-13-C`).** A profitability-failing dependency chain resolves
+   in a number of funding censuses that does not grow with chain length. The existing
+   `benchmark_combined_financing_cascades` cycle case must need at most **3 censuses** at chain
+   lengths 4, 16 and 64 (was 4/16/64, one per link). Results must match full replay bit for
+   bit, as the existing cascade regressions require. **PASS** (see status below): 2/2/2.
+4. **Price-change locality (`ECON-13-D`).** The frontage congestion delay is recomputed every
+   simulated second. After any frontage-delay revision, a warm queued-construction check costs
+   at most 1.2× as much at 131,072 background buildings as at 16,384. Before the fix, every
+   revision invalidated the queued execution epoch and paid a full census (12.5–13 ms at
+   131,072). One-time census cost is reported separately from the repeated check. **PASS**
+   (see status below): 1.02×.
+
+##### Status 2026-10-11 (one working-tree build on `01888e88`)
+
+All runs use one release build of the working tree, `RAYON_NUM_THREADS=8` and
+`taskset -c 0,2,4,6,8,10,12,14`, on an otherwise idle machine. Logs are under
+`$ARTIFACTS/econ13/final`.
+
+- **`ECON-13-A` PASS.** The recipe above, four alternating runs each of `01888e88` and the working
+  tree (`$BENCH_BINARY --bench --noplot /10k`): hour 34.95 → **34.93 ms** (p = 0.94), day 8.90 →
+  **8.98 ms** (p = 0.26). All eight runs end with the same day-15 record: 5,341 households,
+  10,668 residents, 7,134 employed. The five growth reports (`METRUM_GROWTH_REPORT`, `_LONG_`,
+  `_EXPANSION_`, `_RECOVERY_` and `METRUM_PRODUCER_TOWN_REPORT`) are byte-identical to HEAD's,
+  so neither change alters a growth trajectory.
+- **`ECON-13-B` BLOCKED.** Same build, two runs each, records identical between runs (day 15:
+  10k 5,341 households / 7,134 employed; 100k 54,393 / 70,351):
+
+  | Tier | Hour, run 1 / 2 | Day, run 1 / 2 |
+  |---|---:|---:|
+  | 10k | 36.52 / 34.37 ms | 8.82 / 8.82 ms |
+  | 100k | 910.5 / 908.8 ms | 3.635 / 3.628 s |
+  | Ratio | **25–26×** | **411–412×** |
+
+  `01888e88` measures the same 100k city (hour 934.6 ms, day 3.626 s, identical day-15 record),
+  so the failure predates this work. A third 100k run with economy timing logs and per-phase
+  daily timers (`diag-100k.log`; logging inflates absolute times) located the cost:
+
+  - **Job search.** The 100k city has 26–153 open job entries against 141k jobs. Each hour
+    700–2,900 homes search, at 1.5–3.8 s. A search ranks 24 options with exact commutes and can
+    stop early only once it holds them, so with fewer open workplaces than that it routes every
+    reachable one (about 19 routes per searching home). Job locks set during the build's
+    admission expire together, so from day 6 on, re-searches of about 8,000 homes at once recur
+    (1.7–6.0 s each). The daily household settlement takes 70–100 ms on days 2–5 and
+    0.6–10 s on days 6 and 8–15. At 10k, job search averages 0.2 ms per hour.
+  - **Funding-census spikes.** In some hours the census's local funding step takes 2.2–8.3 s,
+    against its usual 20–37 ms (about 2 ms at 10k). The midnight demand pass, which runs a
+    census, grows from 22 ms to 0.3–1.8 s on days 11–15. The trigger is not yet identified.
+  - **Steady growth.** In ordinary hours, household trips are 18×, logistics 20× (input
+    shipments 132×, with late-run spikes to 300+ ms) and the census 40×. Border carrier quotes
+    take 16.7 ms against 0.2 ms, because the fixture adds one `OWA` border per 10,000
+    residents and each building takes the minimum over all borders. CCH searches grow
+    linearly (about 0.3M per day at 10k, 2.5M at 100k), at a similar 90–156 heap pops per search,
+    so part of the steady excess is the larger working set.
+
+  Decisions needed before this can pass: (1) whether job search may stop or cache below
+  exact 24-option ranking when open jobs are scarce, and whether the fixture should spread
+  initial job locks rather than expire them together; (2) whether the bound uses a fixed `OWA`
+  border count, or work counts instead of wall-clock time, given the cache effects above. The
+  census spikes need their own investigation first.
+- **`ECON-13-D` PASS.** Measured first at 10k on the pre-change build: the live delay revised 60
+  times per simulated hour (once per simulated second, which is one authored minute), and in
+  the producer town 10 of 22 queued checks over 30 days rebuilt the census only for that
+  revision. The fixed 10k fixture has no queued checks, so it paid none. Economy prices now read
+  `Lane::frontage_delay_penalty_s`, which `TransitNetwork::publish_frontage_prices` copies from
+  the live delay at the start of each operational hour. Agent trips keep the live delay
+  ([entrance and exit](entrance_and_exit.md#exact-frontage-congestion-penalty-cache)). The
+  revision now advances once per hour, and the producer town's frontage-only rebuilds drop to
+  zero (22 → 12 rebuilds). 10k day-4 and producer-town day-31 records are unchanged. Save
+  format 85 keeps both delays. The per-lane pass of the live update now runs in parallel; the
+  per-agent speed sum stays serial, so its f32 summation order does not depend on the worker
+  count. `$TEST_BINARY --ignored --nocapture benchmark_queued_project_validation` changes every
+  vehicle lane's live delay before each of 1,024 warm checks:
+
+  | Background buildings | Census + first check | 1,024 warm checks | Check after an hourly publish |
+  |---:|---:|---:|---:|
+  | 16,384 | 1.363 ms | 0.917 ms | 1.464 ms |
+  | 131,072 | 12.927 ms | 0.934 ms | 13.291 ms |
+
+  Warm checks: 131,072 / 16,384 = **1.02×**. Each hourly publish still pays one census, which the
+  hourly census at that boundary pays anyway. `live_frontage_delay_reaches_queued_checks_only_when_published`
+  pins that a live revision anywhere, including the project's own frontage, leaves the revision
+  and the warm check unchanged until the publish, after which the check reprices.
+- **`ECON-13-C` PASS.** `$TEST_BINARY --ignored --nocapture benchmark_combined_financing_cascades`
+  cycle case, censuses per refresh:
+
+  | Length | Before (cold / warm) | Now, background 0 (cold / warm) | Now, background 16,384 (cold / warm) |
+  |---:|---:|---:|---:|
+  | 4 | 4 / 4 | 2 / 2 | 2 / 2 |
+  | 16 | 16 / 16 | 2 / 2 | 2 / 2 |
+  | 64 | 64 / 64 | 2 / 2 | 2 / 2 |
+
+  The 64-link cold census at 16,384 background buildings takes 1.8 ms (was 26–27 ms). Two
+  changes in the [funding census](#funding-census-econ-17): the up-front profit proof pins the
+  loss-making link, and propagation prepares the business layout when the pass that failed
+  never reached validation. A zero-ceiling operation also starts with zero offered output. The
+  rival cases stay at 2. `unprofitable_supplier_cycles_match_replay_within_their_depth` now runs
+  lengths 2, 8 and 64 against full replay (proof and propagation disabled), with identical
+  results and at most 2 censuses. All other cascade replay regressions pass unchanged.
 
 ### Healthy-growth acceptance
 
@@ -764,6 +889,36 @@ Population alone is insufficient. Scenarios must expose:
 Run beyond startup windows, include recovery after a supply interruption, and test more than one
 zoning/service mix. Passing by raising the starting treasury, or by repeatedly replacing insolvent
 businesses, is not acceptance. Mature stability is valid when capacity is satisfied.
+
+#### `ECON-14` exit criteria
+
+`ECON-14` is done when all three checks pass on one build. Each is a test in
+`rust/tests/growth_scenario.rs` or a non-ignored library scenario. A failure caused by design is
+recorded here with evidence rather than tuned away. Already covered elsewhere: a second
+zoning/service mix (`DEM-02-A`, `producer_town`), recovery after a business failure
+(`bankrupt_grocery_is_cleared_and_replaced_without_rezoning`) and scarce-labor expansion
+(`many_new_industrial_lots_respect_scarce_labor_and_earn_their_owner_capital`).
+
+1. **Finite-resource closure (`ECON-14-A`).** The starter town with the `producer_balance_matrix`
+   20 ha coal mine runs two years. Within 60 days of the mine's last sale, its former workers are
+   re-employed or have left through the household exit policy. Over the last 90 days of year two
+   there are no empty-household days, no unpaid household transfers and a positive recurring city
+   balance. Last measured: 40 unemployed adults and 182 empty-household days in year two.
+2. **Oversized producer warning (`ECON-14-B`).** A producer the town cannot staff or fund is
+   flagged before the player pays for it. Losing money without rescue is intended:
+   `hundred_hectare_start_distinguishes_mechanized_farm_from_labor_intensive_mine` pins that a
+   100 ha mine in the starter town spends its owner's capital while the 100 ha farm trades
+   sustainably. The check: the placement preview for that 100 ha mine reports the limiting
+   reason (labor, operating income or working capital) from the same operation check that
+   private entry uses, and the 100 ha farm's preview reports none. Whether the preview warns or
+   refuses is a design decision.
+3. **Pension-funded households (`ECON-14-C`).** A scenario whose arrivals include pension-funded
+   elder households runs one year. Pension and child-support transfers stay fully paid, elder
+   households have no empty-household days over the last 90 days, and the recurring city balance
+   stays positive. It covers the open pensioner-affordability question.
+
+Additional funded economic activities and the broader demand redesign move to later tracks; they
+are not part of `ECON-14`.
 
 ## Retired mechanisms
 
