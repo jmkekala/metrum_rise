@@ -559,21 +559,47 @@ fn service_placement_and_undo_register_fiscal_capacity_before_the_hourly_census(
             .place_service_building_internal("kenney:building.power.coal_power_plant", -700.0, 8.0)
             .unwrap();
         assert_eq!(core.allocator.buildings[plant].worker_count, 0);
-        assert_eq!(core.households.job_funding.service_capacities[plant], (20.0 * fraction).ceil() as u32);
-        assert_eq!(core.households.job_funding.capacities.get(plant).copied().unwrap_or(0), 0);
+        assert_eq!(
+            core.households.job_funding.service_capacities[plant],
+            (20.0 * fraction).ceil() as u32
+        );
+        assert_eq!(
+            core.households
+                .job_funding
+                .capacities
+                .get(plant)
+                .copied()
+                .unwrap_or(0),
+            0
+        );
         assert!(core.push_building_removal_undo(plant));
         let before = core.treasury.balance;
         assert!(core.allocator.remove_building_for_bulldoze(
-            plant, &mut core.zoning, &mut core.agents, &mut core.households,
-            &mut core.logistics, &mut core.treasury.balance,
+            plant,
+            &mut core.zoning,
+            &mut core.agents,
+            &mut core.households,
+            &mut core.logistics,
+            &mut core.treasury.balance,
         ));
         core.publish_pending_building_site_changes();
         core.seal_building_removal_undo(core.treasury.balance - before);
         assert!(core.set_service_funding("electricity", 1.0 - fraction));
         assert!(core.undo_action_internal());
-        assert_eq!(core.households.job_funding.service_capacities[plant], (20.0 * (1.0 - fraction)).ceil() as u32,
-            "undo uses current fiscal policy before the next hourly pass");
-        assert_eq!(core.households.job_funding.capacities.get(plant).copied().unwrap_or(0), 0);
+        assert_eq!(
+            core.households.job_funding.service_capacities[plant],
+            (20.0 * (1.0 - fraction)).ceil() as u32,
+            "undo uses current fiscal policy before the next hourly pass"
+        );
+        assert_eq!(
+            core.households
+                .job_funding
+                .capacities
+                .get(plant)
+                .copied()
+                .unwrap_or(0),
+            0
+        );
     }
 }
 
@@ -1115,7 +1141,10 @@ fn residential_rich_town_housing_balance() {
         &mut core,
         ZoneType::Industrial,
         ZONE_BRUSH,
-        &[DVec2::new(east, JUNCTION_CLEARANCE_M), DVec2::new(east, 90.0)],
+        &[
+            DVec2::new(east, JUNCTION_CLEARANCE_M),
+            DVec2::new(east, 90.0),
+        ],
     );
     paint(
         &mut core,

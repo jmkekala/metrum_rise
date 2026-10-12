@@ -16,8 +16,8 @@ use super::candidate::{
     candidate_lane_id, entrance_pair_supports_mode, mode_choice_cost_for,
     price_trip_without_network,
 };
-use super::types::BuiltTripPlan;
 use super::candidate::{SharedNetworkQuotes, TripQueryScratch};
+use super::types::BuiltTripPlan;
 use crate::simulation::buildings::allocator::{BuildingAllocator, BuildingEntrance};
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
@@ -36,8 +36,15 @@ pub(crate) fn plan_building_origin_trip(
     graph: &RegionGraph,
     pathfind_count: &AtomicU32,
 ) -> Option<BuiltTripPlan> {
-    let mut chosen = building_trip_candidate(current_building, target_building, has_car,
-        allocator, transit_network, graph, pathfind_count)?;
+    let mut chosen = building_trip_candidate(
+        current_building,
+        target_building,
+        has_car,
+        allocator,
+        transit_network,
+        graph,
+        pathfind_count,
+    )?;
 
     let target_zone = allocator.buildings[target_building].zone_type;
     let (current_path, access_flags) = build_exact_path_for_candidate(
@@ -66,9 +73,15 @@ pub(crate) fn plan_building_origin_trip(
 
 // Every returned candidate has an exact CCH/connector proof. Feasibility callers can
 // use that proof without allocating the persistent route that only a travelling agent needs.
-fn building_trip_candidate(current_building: usize, target_building: usize, has_car: bool,
-    allocator: &BuildingAllocator, transit_network: &TransitNetwork, graph: &RegionGraph,
-    pathfind_count: &AtomicU32) -> Option<PlannedTripCandidate> {
+fn building_trip_candidate(
+    current_building: usize,
+    target_building: usize,
+    has_car: bool,
+    allocator: &BuildingAllocator,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    pathfind_count: &AtomicU32,
+) -> Option<PlannedTripCandidate> {
     if current_building >= allocator.buildings.len()
         || target_building >= allocator.buildings.len()
         || current_building >= allocator.entrances.len()
@@ -193,7 +206,14 @@ pub(crate) fn plan_building_to_border_trip(
                 0.0
             } else {
                 pathfind_count.fetch_add(1, Ordering::Relaxed);
-                scratch.cch_cost(planned_attach_node, border_node, usize::MAX, MODE_CAR, transit_network, graph)?
+                scratch.cch_cost(
+                    planned_attach_node,
+                    border_node,
+                    usize::MAX,
+                    MODE_CAR,
+                    transit_network,
+                    graph,
+                )?
             };
             let total_cost_s = egress_local_time_s + origin_frontage_time_s + network_path_time_s;
             if !total_cost_s.is_finite() {
@@ -226,7 +246,9 @@ pub(crate) fn plan_building_to_border_trip(
 
         let chosen = best_candidate?;
         let current_path = scratch.finish_path();
-        if chosen.planned_attach_node != border_node && current_path.len() < 2 { return None; }
+        if chosen.planned_attach_node != border_node && current_path.len() < 2 {
+            return None;
+        }
 
         Some(BuiltTripPlan {
             mode: MODE_CAR,
@@ -255,8 +277,16 @@ pub(crate) fn building_origin_trip_is_feasible(
     graph: &RegionGraph,
     pathfind_count: &AtomicU32,
 ) -> bool {
-    building_trip_candidate(current_building, target_building, has_car,
-        allocator, transit_network, graph, pathfind_count).is_some()
+    building_trip_candidate(
+        current_building,
+        target_building,
+        has_car,
+        allocator,
+        transit_network,
+        graph,
+        pathfind_count,
+    )
+    .is_some()
 }
 
 /// Estimates physical travel seconds, rounded up and saturated to the commute-cache range.
@@ -322,8 +352,12 @@ impl BuildingTripEnds {
 
     /// Walking departure/arrival geometry for feasibility proofs, without projecting car
     /// lanes. General routing must still use the ordinary all-mode ends on a failed proof.
-    pub(crate) fn walking_pair(building: usize, allocator: &BuildingAllocator,
-        network: &TransitNetwork, graph: &RegionGraph) -> [Self; 2] {
+    pub(crate) fn walking_pair(
+        building: usize,
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> [Self; 2] {
         if building >= allocator.buildings.len() || building >= allocator.entrances.len() {
             return Default::default();
         }
@@ -352,13 +386,22 @@ impl BuildingTripEnds {
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
     ) -> Self {
-        Self::at_entrance_for_modes(entrance, origin, transit_network, graph, &[MODE_WALK, MODE_CAR])
+        Self::at_entrance_for_modes(
+            entrance,
+            origin,
+            transit_network,
+            graph,
+            &[MODE_WALK, MODE_CAR],
+        )
     }
 
     /// Pedestrian departure/arrival ends of an actual or proposed door, sharing projection.
     /// Car fallback must prepare the complete ends through [`Self::at_entrance`].
-    pub(crate) fn walking_pair_at_entrance(entrance: &BuildingEntrance,
-        network: &TransitNetwork, graph: &RegionGraph) -> [Self; 2] {
+    pub(crate) fn walking_pair_at_entrance(
+        entrance: &BuildingEntrance,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> [Self; 2] {
         TripEnd::pair(MODE_WALK, entrance, network, graph).map(|walk| {
             let mut ends = Self::default();
             ends.ends[usize::from(MODE_WALK)] = walk;
@@ -366,8 +409,13 @@ impl BuildingTripEnds {
         })
     }
 
-    fn at_entrance_for_modes(entrance: &BuildingEntrance, origin: bool,
-        transit_network: &TransitNetwork, graph: &RegionGraph, modes: &[u8]) -> Self {
+    fn at_entrance_for_modes(
+        entrance: &BuildingEntrance,
+        origin: bool,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+        modes: &[u8],
+    ) -> Self {
         let mut ends = Self::default();
         if entrance.edge_idx >= graph.edge_count() || graph.edge(entrance.edge_idx).deleted {
             return ends;
@@ -387,39 +435,75 @@ impl BuildingTripEnds {
 
     /// Proves a directed walking trip from a cached cyclic lane component in O(1).
     /// False means unproven, not unreachable; callers must retain ordinary route fallback.
-    pub(crate) fn has_proven_walk_to(&self, destination: &Self,
-        reachability: &super::reachability::PedestrianReachability) -> bool {
+    pub(crate) fn has_proven_walk_to(
+        &self,
+        destination: &Self,
+        reachability: &super::reachability::PedestrianReachability,
+    ) -> bool {
         NODE_RANK_PAIRS.into_iter().any(|(from, to)| {
-            self.get(MODE_WALK, from).zip(destination.get(MODE_WALK, to))
+            self.get(MODE_WALK, from)
+                .zip(destination.get(MODE_WALK, to))
                 .is_some_and(|(from, to)| from.has_proven_walk_to(to, reachability))
         })
     }
 
     /// Cyclic pedestrian groups for the two validated lane ends; MAX means unproven.
     /// Caching these two ids avoids rebuilding door geometry for each family quote.
-    pub(crate) fn walking_groups(&self,
-        reachability: &super::reachability::PedestrianReachability) -> [usize; 2] {
-        NODE_RANKS.map(|rank| self.get(MODE_WALK, rank)
-            .map_or(usize::MAX, |end| end.walking_group(reachability)))
+    pub(crate) fn walking_groups(
+        &self,
+        reachability: &super::reachability::PedestrianReachability,
+    ) -> [usize; 2] {
+        NODE_RANKS.map(|rank| {
+            self.get(MODE_WALK, rank)
+                .map_or(usize::MAX, |end| end.walking_group(reachability))
+        })
     }
 
     /// Tests shopping feasibility with the ordinary direct-leg rules and exact network
     /// reachability. Cost-only CCH and connector traversal reuse prepared search storage.
-    pub(crate) fn can_reach(&self, destination: &Self, has_car: bool,
-        network: &TransitNetwork, graph: &RegionGraph,
+    pub(crate) fn can_reach(
+        &self,
+        destination: &Self,
+        has_car: bool,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
         walking: &mut super::reachability::PedestrianReachability,
-        query: &mut crate::simulation::pathing::cch::CchQueryScratch) -> bool {
+        query: &mut crate::simulation::pathing::cch::CchQueryScratch,
+    ) -> bool {
         for mode in [MODE_WALK, MODE_CAR] {
-            if mode == MODE_CAR && !has_car { continue; }
+            if mode == MODE_CAR && !has_car {
+                continue;
+            }
             for (from, to) in NODE_RANK_PAIRS {
-                let (Some(origin), Some(destination)) = (self.get(mode, from), destination.get(mode, to)) else { continue; };
-                match price_trip_without_network(mode, from, to, origin, destination,
-                    network, graph, f32::INFINITY) {
+                let (Some(origin), Some(destination)) =
+                    (self.get(mode, from), destination.get(mode, to))
+                else {
+                    continue;
+                };
+                match price_trip_without_network(
+                    mode,
+                    from,
+                    to,
+                    origin,
+                    destination,
+                    network,
+                    graph,
+                    f32::INFINITY,
+                ) {
                     TripLeg::Priced(Some(_)) => return true,
-                    TripLeg::Priced(None) => {},
+                    TripLeg::Priced(None) => {}
                     TripLeg::Network { .. } => {
-                        if super::candidate::network_leg_is_reachable(mode, origin, destination,
-                            network, graph, walking, query) { return true; }
+                        if super::candidate::network_leg_is_reachable(
+                            mode,
+                            origin,
+                            destination,
+                            network,
+                            graph,
+                            walking,
+                            query,
+                        ) {
+                            return true;
+                        }
                     }
                 }
             }
@@ -520,8 +604,18 @@ pub(crate) fn estimate_trip_seconds_between(
     shared: Option<&SharedNetworkQuotes>,
 ) -> TripEstimate {
     super::candidate::TripQueryScratch::with(transit_network, graph, |scratch| {
-        estimate_trip_seconds_with_scratch(origin, destination, has_car, transit_network,
-            graph, pathfind_count, network_speed_bound_ms, budget_s, shared, scratch)
+        estimate_trip_seconds_with_scratch(
+            origin,
+            destination,
+            has_car,
+            transit_network,
+            graph,
+            pathfind_count,
+            network_speed_bound_ms,
+            budget_s,
+            shared,
+            scratch,
+        )
     })
 }
 

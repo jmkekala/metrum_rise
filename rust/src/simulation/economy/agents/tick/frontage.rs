@@ -3,11 +3,11 @@
 //! Per-second live frontage delay updates used by agent access planning.
 
 use super::super::MODE_CAR;
-use rayon::prelude::*;
 use crate::simulation::economy::agents::data::AgentSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::lanes::LaneType;
+use rayon::prelude::*;
 
 const FRONTAGE_DELAY_UPDATE_S: f32 = 1.0;
 

@@ -102,7 +102,10 @@ impl RoadSurfaceSystem {
         Self::append_polygon_collection_debug_literal(
             dump,
             terrain,
-            &piece.sidewalk_surface_polygons().cloned().collect::<Vec<_>>(),
+            &piece
+                .sidewalk_surface_polygons()
+                .cloned()
+                .collect::<Vec<_>>(),
         );
         dump.push_str(",\n");
         dump.push_str("      \"material_footprint_coverage\": ");
@@ -351,7 +354,10 @@ impl RoadSurfaceSystem {
             &piece.curb_surface_polygons().cloned().collect::<Vec<_>>(),
         );
         let sidewalk = Self::node_material_partition_shapes(
-            &piece.sidewalk_surface_polygons().cloned().collect::<Vec<_>>(),
+            &piece
+                .sidewalk_surface_polygons()
+                .cloned()
+                .collect::<Vec<_>>(),
         );
 
         dump.push('{');

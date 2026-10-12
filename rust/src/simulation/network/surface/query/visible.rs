@@ -217,9 +217,7 @@ impl RoadSurfaceSystem {
             let height_offset_m =
                 self.node_piece_integrated_surface_offset_m(graph, node_id, terrain);
 
-            for polygon in piece
-                .surface_polygons()
-            {
+            for polygon in piece.surface_polygons() {
                 Self::visit_visual_polygon_triangles(polygon, &mut |triangle| {
                     if let Some(height_m) = Self::triangle_height_at_xz(&triangle, point) {
                         keep_min_height(&mut best_height_m, height_m - height_offset_m);

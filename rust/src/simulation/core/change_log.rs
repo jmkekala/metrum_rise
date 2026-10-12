@@ -23,7 +23,8 @@ impl IndexChangeLog {
         if self.entries.len() >= MAX_ENTRIES {
             self.clear(revision.wrapping_sub(1));
         }
-        self.entries.extend(indices.into_iter().map(|index| (revision, index)));
+        self.entries
+            .extend(indices.into_iter().map(|index| (revision, index)));
     }
 
     /// Marks a change to `revision` whose affected indices are unknown.
@@ -42,7 +43,9 @@ impl IndexChangeLog {
         if since < self.floor || since > current {
             return false;
         }
-        let first = self.entries.partition_point(|&(revision, _)| revision <= since);
+        let first = self
+            .entries
+            .partition_point(|&(revision, _)| revision <= since);
         out.extend(self.entries[first..].iter().map(|&(_, index)| index));
         out.sort_unstable();
         out.dedup();
@@ -72,7 +75,10 @@ mod tests {
         log.record(4, [1]);
         assert!(log.changes_since(3, 4, &mut out));
         assert_eq!(out, [1]);
-        assert!(!log.changes_since(5, 4, &mut out), "a cursor ahead of the store is foreign");
+        assert!(
+            !log.changes_since(5, 4, &mut out),
+            "a cursor ahead of the store is foreign"
+        );
     }
 
     #[test]

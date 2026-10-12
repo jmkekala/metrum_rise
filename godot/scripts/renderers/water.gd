@@ -130,8 +130,8 @@ var _terrain_debug_enabled: bool:
 	get:
 		return MetrumDebug.is_enabled("terrain")
 var _terrain_debug_verbose: bool = false
+# Cached because LOD selection reads it per patch; `_on_visual_mode_changed` refreshes it.
 var _terrain_force_lod1: bool = false
-var _water_visual_debug_mode: int = 0
 var _water_mesh_lod_refresh_elapsed_s: float = 0.0
 var _water_lod_refresh_camera_valid: bool = false
 var _water_lod_refresh_last_camera_position: Vector3 = Vector3.ZERO
@@ -174,6 +174,9 @@ var _water_debug_border_rebuilds: int = 0
 var _water_debug_residency_changes: int = 0
 
 func _ready() -> void:
+	var console := get_node_or_null("/root/DebugConsole")
+	if console != null:
+		console.visual_mode_changed.connect(_on_visual_mode_changed)
 	rebuild_from_simulation_state()
 
 func rebuild_from_simulation_state() -> void:
@@ -185,8 +188,7 @@ func rebuild_from_simulation_state() -> void:
 	var terrain_cell_m: float = float(patch_layout.get("terrain_cell_m", 1.0))
 	terrain_patch_span_m = terrain_cell_m * float(terrain_patch_interval_cells)
 	_terrain_debug_verbose = MetrumDebug.startup_mode("terrain_verbose")
-	_terrain_force_lod1 = MetrumDebug.startup_mode("terrain_force_lod1")
-	_water_visual_debug_mode = _terrain_visual_debug_mode_from_startup()
+	_terrain_force_lod1 = MetrumDebug.visual_mode_index("terrain_force_lod1") != 0
 	_water_mesh_lod_refresh_elapsed_s = 0.0
 	_water_lod_refresh_camera_valid = false
 	_record_lod_perf_counters(0, 0, 0, 0)
@@ -209,8 +211,17 @@ func rebuild_from_simulation_state() -> void:
 	if _terrain_debug_enabled:
 		_water_debug_log(
 			"renderer ready force_lod1=%s visual=%d"
-			% [str(_terrain_force_lod1), _water_visual_debug_mode]
+			% [str(_terrain_force_lod1), MetrumDebug.visual_mode_index("terrain_visual")]
 		)
+
+## Water residency follows the terrain's resident patches; only the forced LOD is its own.
+## LOD refresh otherwise waits for camera movement, so it is due now.
+func _on_visual_mode_changed(mode: String) -> void:
+	if mode != "terrain_force_lod1":
+		return
+	_terrain_force_lod1 = MetrumDebug.visual_mode_index("terrain_force_lod1") != 0
+	_water_lod_refresh_camera_valid = false
+	_water_mesh_lod_refresh_elapsed_s = WATER_PATCH_MESH_LOD_REFRESH_INTERVAL_S
 
 func _process(delta: float) -> void:
 	var frame_start_us := Time.get_ticks_usec()
@@ -636,7 +647,6 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 	)
 	material.set_shader_parameter("water_surface_smoothing", WATER_DISPLAY_SURFACE_SMOOTHING)
 	material.set_shader_parameter("water_surface_blend_radius_texels", WATER_DISPLAY_SURFACE_BLEND_RADIUS_TEXELS)
-	material.set_shader_parameter("water_visual_debug_mode", _water_visual_debug_mode)
 	material.set_shader_parameter("water_debug_patch_key", Vector2(key.x, key.y))
 	material.set_shader_parameter("water_debug_lod_step", float(initial_lod_step))
 	material.set_shader_parameter("watermap_texture_size", Vector2(texture_width, texture_height))
@@ -2545,36 +2555,6 @@ func _current_terrain_border_revision() -> int:
 		return int(terrain_node.get_border_revision())
 	return -1
 
-func _terrain_visual_debug_mode_from_startup() -> int:
-	var value := String(MetrumDebug.startup_mode("terrain_visual"))
-	if value.is_empty() or value == "0" or value == "off" or value == "false":
-		return 0
-	if value.is_valid_int():
-		return clampi(value.to_int(), 0, 10)
-	match value:
-		"patch", "patches":
-			return 1
-		"lod", "lods":
-			return 2
-		"height":
-			return 3
-		"relief":
-			return 4
-		"shore", "shoreline":
-			return 5
-		"water", "depth", "water-depth":
-			return 6
-		"water-lod":
-			return 7
-		"water-patch":
-			return 8
-		"water-material", "water-mat", "material-water":
-			return 9
-		"lighting", "light", "sun":
-			return 10
-		_:
-			return 0
-
 func _record_water_debug_frame(
 	delta: float,
 	frame_elapsed_ms: float,
@@ -2619,7 +2599,7 @@ func _record_water_debug_frame(
 			average_border_ms,
 			average_height_rebind_ms,
 			str(_terrain_force_lod1),
-			_water_visual_debug_mode,
+			MetrumDebug.visual_mode_index("terrain_visual"),
 		]
 	)
 	_reset_water_debug_counters()

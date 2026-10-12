@@ -25,9 +25,9 @@ pub(crate) use runtime::{
     ResourceRuntimeId, RuntimeEconomyCatalog, RuntimeEconomyTuning, RuntimeResourcePort,
     WorkTimingProfile,
 };
-pub(crate) use runtime_loader::{load_runtime_economy_catalog, load_runtime_economy_tuning};
 #[cfg(test)]
 pub(crate) use runtime_loader::compile_test_catalog;
+pub(crate) use runtime_loader::{load_runtime_economy_catalog, load_runtime_economy_tuning};
 pub(crate) use serde_helpers::deserialize_unsigned_from_number;
 
 /// Required demand-sink profile that owns household supply consumption and stock targets.

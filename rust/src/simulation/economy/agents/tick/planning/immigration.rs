@@ -10,11 +10,11 @@ use super::super::access::{
     projected_lane_distance_for_entrance,
 };
 use super::super::lane_nav::lane_origin_node;
+use super::candidate::TripQueryScratch;
 use super::candidate::{
     NODE_RANKS, PlannedTripCandidate, candidate_better, candidate_lane_id, mode_choice_cost_for,
 };
 use super::types::BuiltTripPlan;
-use super::candidate::TripQueryScratch;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
@@ -58,7 +58,8 @@ pub(crate) fn plan_immigration_trip(
             if planned_detach_lane_id == usize::MAX {
                 continue;
             }
-            if lane_origin_node(planned_detach_lane_id, transit_network, graph)? != planned_detach_node
+            if lane_origin_node(planned_detach_lane_id, transit_network, graph)?
+                != planned_detach_node
             {
                 continue;
             }
@@ -91,9 +92,17 @@ pub(crate) fn plan_immigration_trip(
                 0.0
             } else {
                 pathfind_count.fetch_add(1, Ordering::Relaxed);
-                scratch.cch_cost(border_node, planned_detach_node, usize::MAX, MODE_CAR, transit_network, graph)?
+                scratch.cch_cost(
+                    border_node,
+                    planned_detach_node,
+                    usize::MAX,
+                    MODE_CAR,
+                    transit_network,
+                    graph,
+                )?
             };
-            let total_cost_s = network_path_time_s + destination_frontage_time_s + ingress_local_time_s;
+            let total_cost_s =
+                network_path_time_s + destination_frontage_time_s + ingress_local_time_s;
             let candidate = PlannedTripCandidate {
                 total_cost_s,
                 mode_choice_cost_s: mode_choice_cost_for(MODE_CAR, total_cost_s),
@@ -122,7 +131,9 @@ pub(crate) fn plan_immigration_trip(
         let mut access_flags = ACCESS_PLAN_VALID | ACCESS_IMMIGRATION_ORIGIN;
         if chosen.planned_attach_node == chosen.planned_detach_node {
             access_flags |= ACCESS_ZERO_HOP_NODE_PATH;
-        } else if current_path.len() < 2 { return None; }
+        } else if current_path.len() < 2 {
+            return None;
+        }
 
         Some(BuiltTripPlan {
             mode: MODE_CAR,

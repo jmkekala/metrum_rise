@@ -1043,7 +1043,13 @@ fn hourly_pass_does_not_admit_without_external_connection() {
     let graph = RegionGraph::new();
     let mut demand = DemandSystem::new();
 
-    demand.run_hourly_pass(&allocator, &mut households, &graph, &empty_zoning(), 1_000.0);
+    demand.run_hourly_pass(
+        &allocator,
+        &mut households,
+        &graph,
+        &empty_zoning(),
+        1_000.0,
+    );
 
     assert_eq!(demand.last_admission_diagnostics.connected_border_count, 0);
 
@@ -1149,7 +1155,9 @@ fn constructing_workplace_plans_homes_without_admission_income() {
     let mut factory = building(ZoneType::Industrial, 0.0, 0, 0, asset);
     let catalog = load_runtime_economy_catalog().unwrap();
     let tuning = load_runtime_economy_tuning().unwrap();
-    factory.operating_budget = catalog.profile_for_id("food_processor_basic").unwrap()
+    factory.operating_budget = catalog
+        .profile_for_id("food_processor_basic")
+        .unwrap()
         .zoned_startup_budget(&catalog, tuning.owa_import_price_multiplier);
     factory.construction_total_hours = 12;
     factory.construction_remaining_hours = 12;
@@ -1226,7 +1234,15 @@ fn queued_workplace_reserves_homes_without_admitting_households() {
             (61, ZoneType::Industrial, &action),
             (62, ZoneType::Industrial, &action),
         ],
-        |action| allocator.demand_site_entrance(action.parcel_id, &action.asset_id, &zoning, &graph, &network.lane_system),
+        |action| {
+            allocator.demand_site_entrance(
+                action.parcel_id,
+                &action.asset_id,
+                &zoning,
+                &graph,
+                &network.lane_system,
+            )
+        },
     );
     assert_eq!(
         demand.queued_construction.len(),
@@ -1262,7 +1278,15 @@ fn queued_workplace_reserves_homes_without_admitting_households() {
                 .enumerate()
                 .map(|(index, home)| (62 + index as u64, ZoneType::Residential, home)),
         ),
-        |action| allocator.demand_site_entrance(action.parcel_id, &action.asset_id, &zoning, &graph, &network.lane_system),
+        |action| {
+            allocator.demand_site_entrance(
+                action.parcel_id,
+                &action.asset_id,
+                &zoning,
+                &graph,
+                &network.lane_system,
+            )
+        },
     );
     demand.run_hourly_pass(&allocator, &mut households, &graph, &zoning, 100_000.0);
     assert!(demand.building_actions.residential.spawns.is_empty());
@@ -1288,7 +1312,13 @@ fn pension_arrivals_preserve_homes_for_constructing_workplaces() {
     network.lane_system.rebuild(&mut graph);
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
     let mut demand = DemandSystem::new();
-    demand.run_hourly_pass(&allocator, &mut households, &graph, &empty_zoning(), 100_000.0);
+    demand.run_hourly_pass(
+        &allocator,
+        &mut households,
+        &graph,
+        &empty_zoning(),
+        100_000.0,
+    );
     assert_eq!(demand.last_admission_diagnostics.vacant_household_slots, 12);
     assert_eq!(demand.last_admission_diagnostics.move_in_job_slots, 0);
     let mut policy = CityFiscalPolicy::from_runtime_tuning(demand.runtime_tuning());
@@ -1357,7 +1387,7 @@ fn queued_homes_obey_deadlines_and_are_claimed_only_once() {
         &snapshot,
         &demand.queued_construction,
         demand.next_construction_start_hour,
-                None,
+        None,
     );
     workforce.reserve_existing();
     assert!(
@@ -1392,7 +1422,7 @@ fn queued_homes_obey_deadlines_and_are_claimed_only_once() {
         &snapshot,
         &demand.queued_construction,
         demand.next_construction_start_hour,
-                None,
+        None,
     );
     assert!(!workforce.claim(12, 1));
     assert!(workforce.claim(24, workers));
@@ -1637,9 +1667,14 @@ fn job_funding_changes_do_not_release_employed_workers_to_new_projects() {
 fn unhoused_employees_do_not_consume_housed_unemployed_workers() {
     let mut allocator = BuildingAllocator::new();
     let home = register_test_asset(&mut allocator, "unemployment_home", ZoneType::Residential);
-    let employer = register_test_asset(&mut allocator, "unemployment_factory", ZoneType::Industrial);
-    allocator.buildings.push(building(ZoneType::Residential, 0.0, 1, 0, home));
-    allocator.buildings.push(building(ZoneType::Industrial, 0.0, 0, 3, employer));
+    let employer =
+        register_test_asset(&mut allocator, "unemployment_factory", ZoneType::Industrial);
+    allocator
+        .buildings
+        .push(building(ZoneType::Residential, 0.0, 1, 0, home));
+    allocator
+        .buildings
+        .push(building(ZoneType::Industrial, 0.0, 0, 3, employer));
     allocator.rebuild_zone_index();
     let mut households = HouseholdSystem::new();
     let mut housed = housed_household(0, 3, 1_000.0, 3.0);
@@ -1649,8 +1684,11 @@ fn unhoused_employees_do_not_consume_housed_unemployed_workers() {
     households.households.extend([housed, displaced]);
     households.job_funding.capacities = vec![0, 3];
     let snapshot = DailyDemandSnapshot::from_runtime(
-        &allocator, &households, &graph_with_connected_border(),
-        &load_builtin_demand_config().unwrap(), 100_000.0,
+        &allocator,
+        &households,
+        &graph_with_connected_border(),
+        &load_builtin_demand_config().unwrap(),
+        100_000.0,
     );
     assert_eq!(snapshot.existing_unemployed_member_count, 2);
     assert_eq!(snapshot.unhoused_workforce.len(), 1);
@@ -3255,20 +3293,35 @@ fn machinery_demand_comes_from_operating_customers_and_reserves_new_factories() 
     farm.economy_profile_runtime_id = farm_profile.runtime_id;
     farm.work_area_scale = 400.0;
     farm.commercial_activity_floor_scale = 1.0;
-    farm.worker_count = crate::simulation::economy::households::physical_worker_capacity_for_profile(
-        &farm, farm_profile,
-    );
+    farm.worker_count =
+        crate::simulation::economy::households::physical_worker_capacity_for_profile(
+            &farm,
+            farm_profile,
+        );
     farm.operating_budget = 10_000_000.0;
     farm.center_x = 25.0;
     farm.center_y = 20.0;
     farm.frontage_t = 0.5;
     allocator.buildings.push(farm);
     allocator.rebuild_entrance_cache(&funding_graph, &network.lane_system);
-    let refresh = |households: &mut HouseholdSystem, allocator: &BuildingAllocator,
-                   logistics: &mut crate::simulation::economy::logistics::ShipmentSystem| {
-        households.job_funding.refresh(allocator, &households.households, logistics,
-            &network, &funding_graph, &catalog, &tuning, &policy, &[], 100_000.0, 420);
-    };
+    let refresh =
+        |households: &mut HouseholdSystem,
+         allocator: &BuildingAllocator,
+         logistics: &mut crate::simulation::economy::logistics::ShipmentSystem| {
+            households.job_funding.refresh(
+                allocator,
+                &households.households,
+                logistics,
+                &network,
+                &funding_graph,
+                &catalog,
+                &tuning,
+                &policy,
+                &[],
+                100_000.0,
+                420,
+            );
+        };
     refresh(&mut households, &allocator, &mut logistics);
     let snapshot =
         DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, 100_000.0);

@@ -18,8 +18,8 @@ mod order;
 mod query;
 mod sweep;
 mod topology;
-use layout::{NodeSlices, VehicleTurns};
 pub(crate) use bounds::CchCarCostBounds;
+use layout::{NodeSlices, VehicleTurns};
 pub(crate) use query::buckets::{CchBucketSource, CchBuckets};
 #[cfg(test)]
 pub(crate) use query::restricted::{

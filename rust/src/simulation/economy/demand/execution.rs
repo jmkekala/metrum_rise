@@ -70,13 +70,21 @@ impl ConstructionExecution {
         self.reservations.customers.reject_revalidation();
         if std::mem::take(&mut self.books_lent) {
             self.reservations.end_book_pass();
-            std::mem::swap(&mut self.funding.customers, &mut self.reservations.customers);
+            std::mem::swap(
+                &mut self.funding.customers,
+                &mut self.reservations.customers,
+            );
             std::mem::swap(&mut self.funding.business, &mut self.reservations.business);
             #[cfg(test)]
             if let Some(lent) = self.lent_fingerprint.take() {
-                assert_eq!([self.funding.customers.live_fingerprint_for_test(),
-                    self.funding.business.live_fingerprint_for_test()], lent,
-                    "an execution epoch must return its census books exactly");
+                assert_eq!(
+                    [
+                        self.funding.customers.live_fingerprint_for_test(),
+                        self.funding.business.live_fingerprint_for_test()
+                    ],
+                    lent,
+                    "an execution epoch must return its census books exactly"
+                );
             }
         }
     }
@@ -124,7 +132,10 @@ impl DemandSystem {
             network.cch_graph.build_generation,
             network.cch_graph.metric_revision,
             network.frontage_delay_revision,
-            crate::simulation::economy::logistics::freight_price_phase(&self.runtime_tuning, (now % 1440) as u16),
+            crate::simulation::economy::logistics::freight_price_phase(
+                &self.runtime_tuning,
+                (now % 1440) as u16,
+            ),
             zoning.overlay_revision(),
         );
         let mut permit = QueuedSpawnPermit {
@@ -148,32 +159,55 @@ impl DemandSystem {
         let duration = construction_duration_hours(zone, authored.level, &self.runtime_tuning);
         let level = authored.level;
         let profile_id = profile.runtime_id;
-        if let Ok(index) = self.queued_construction.binary_search_by_key(&action.parcel_id,
-            |project| project.parcel_id) {
+        if let Ok(index) = self
+            .queued_construction
+            .binary_search_by_key(&action.parcel_id, |project| project.parcel_id)
+        {
             let project = &mut self.queued_construction[index];
             if project.active {
-                let entrance = allocator.demand_site_entrance(action.parcel_id, &action.asset_id,
-                    zoning, graph, &network.lane_system);
-                if project.entrance != entrance || project.profile_runtime_id != profile_id
-                    || project.level != level {
+                let entrance = allocator.demand_site_entrance(
+                    action.parcel_id,
+                    &action.asset_id,
+                    zoning,
+                    graph,
+                    &network.lane_system,
+                );
+                if project.entrance != entrance
+                    || project.profile_runtime_id != profile_id
+                    || project.level != level
+                {
                     project.entrance = entrance;
                     project.profile_runtime_id = profile_id;
                     project.level = level;
                     project.commercial = zone == ZoneType::Commercial;
-                    project.completion_hour = current.0.saturating_add(u64::from(duration))
+                    project.completion_hour = current
+                        .0
+                        .saturating_add(u64::from(duration))
                         .saturating_sub(self.queued_reference_hour);
                     self.construction_execution.epoch = None;
                 }
             }
         }
-        self.prepare_execution_market(current, allocator, households, graph, now,
-            network, logistics, zoning, treasury, policy);
-        let profile = self.runtime_catalog.profile_by_runtime_id(profile_id).unwrap();
+        self.prepare_execution_market(
+            current, allocator, households, graph, now, network, logistics, zoning, treasury,
+            policy,
+        );
+        let profile = self
+            .runtime_catalog
+            .profile_by_runtime_id(profile_id)
+            .unwrap();
         let execution = &mut self.construction_execution;
-        execution.reservations.reject(&mut execution.funding.input_supply, allocator, graph);
-        if self.queued_construction.binary_search_by_key(&action.parcel_id,
-            |project| project.parcel_id).is_ok_and(|index| self.queued_construction[index].active) {
-            let operation = execution.reservations.project_operation(action.parcel_id, zoning)
+        execution
+            .reservations
+            .reject(&mut execution.funding.input_supply, allocator, graph);
+        if self
+            .queued_construction
+            .binary_search_by_key(&action.parcel_id, |project| project.parcel_id)
+            .is_ok_and(|index| self.queued_construction[index].active)
+        {
+            let operation = execution
+                .reservations
+                .project_operation(action.parcel_id, zoning)
                 .filter(|operation| operation.profile == profile_id)
                 .ok_or("queued-operation-not-supported")?;
             // This epoch has already proved the entire queue against placed housing and
@@ -199,16 +233,13 @@ impl DemandSystem {
             graph,
             logistics,
             &self.runtime_tuning,
-            &execution.borders, &self.runtime_catalog, (now % 1440) as u16, policy.household_vat_rate,
+            &execution.borders,
+            &self.runtime_catalog,
+            (now % 1440) as u16,
+            policy.household_vat_rate,
         );
         let carrier_quote = supply.begin(action.parcel_id, &action.asset_id);
-        let prices = supply.prices(
-            &self.runtime_catalog,
-            zone,
-            level,
-            policy,
-            carrier_quote,
-        );
+        let prices = supply.prices(&self.runtime_catalog, zone, level, policy, carrier_quote);
         if !project_covers_operation(
             profile,
             &self.runtime_catalog,
@@ -235,9 +266,17 @@ impl DemandSystem {
 
     // One census per execution epoch; successful actions keep the books and owner namespace.
     fn prepare_execution_market(
-        &mut self, current: Epoch, allocator: &BuildingAllocator,
-        households: &HouseholdSystem, graph: &RegionGraph, now: u64, network: &TransitNetwork,
-        logistics: &mut ShipmentSystem, zoning: &ZoningSystem, treasury: f64, policy: &CityFiscalPolicy,
+        &mut self,
+        current: Epoch,
+        allocator: &BuildingAllocator,
+        households: &HouseholdSystem,
+        graph: &RegionGraph,
+        now: u64,
+        network: &TransitNetwork,
+        logistics: &mut ShipmentSystem,
+        zoning: &ZoningSystem,
+        treasury: f64,
+        policy: &CityFiscalPolicy,
     ) {
         let execution = &mut self.construction_execution;
         if execution.epoch != Some(current) {
@@ -264,7 +303,8 @@ impl DemandSystem {
                         .copied()
                         .unwrap_or(0)
                         .min(physical)
-                }, (now % 1440) as u16,
+                },
+                (now % 1440) as u16,
             );
             let mut snapshot = DailyDemandSnapshot::from_runtime_with_funding(
                 allocator,
@@ -280,14 +320,28 @@ impl DemandSystem {
             snapshot.reserve_queued_construction(&self.runtime_catalog, &self.queued_construction);
             #[cfg(test)]
             if super::system::VERIFY_LIVE_PASSES.load(std::sync::atomic::Ordering::Relaxed) {
-                execution.lent_fingerprint = Some([execution.funding.customers.live_fingerprint_for_test(),
-                    execution.funding.business.live_fingerprint_for_test()]);
+                execution.lent_fingerprint = Some([
+                    execution.funding.customers.live_fingerprint_for_test(),
+                    execution.funding.business.live_fingerprint_for_test(),
+                ]);
             }
             // Lend the fresh census books to the epoch instead of copying them.
-            std::mem::swap(&mut execution.funding.customers, &mut execution.reservations.customers);
-            std::mem::swap(&mut execution.funding.business, &mut execution.reservations.business);
-            execution.reservations.begin_book_pass(&execution.funding, allocator, &self.runtime_catalog,
-                &self.runtime_tuning, policy, (now % 1440) as u16);
+            std::mem::swap(
+                &mut execution.funding.customers,
+                &mut execution.reservations.customers,
+            );
+            std::mem::swap(
+                &mut execution.funding.business,
+                &mut execution.reservations.business,
+            );
+            execution.reservations.begin_book_pass(
+                &execution.funding,
+                allocator,
+                &self.runtime_catalog,
+                &self.runtime_tuning,
+                policy,
+                (now % 1440) as u16,
+            );
             execution.books_lent = true;
             logistics.prepare_site_carrier_quotes(allocator, network, graph, &execution.borders);
             let mut supply = SiteSupply::new(
@@ -299,11 +353,16 @@ impl DemandSystem {
                 graph,
                 logistics,
                 &self.runtime_tuning,
-                &execution.borders, &self.runtime_catalog, (now % 1440) as u16, policy.household_vat_rate,
+                &execution.borders,
+                &self.runtime_catalog,
+                (now % 1440) as u16,
+                policy.household_vat_rate,
             );
             let queue_order = self.queued_supply_order.as_slice();
             supply.reserve_execution_projects(
-                queue_order.iter().map(|&index| &self.queued_construction[index]),
+                queue_order
+                    .iter()
+                    .map(|&index| &self.queued_construction[index]),
                 &self.runtime_catalog,
                 &snapshot,
                 &mut execution.replay_market,
@@ -337,7 +396,9 @@ impl DemandSystem {
             execution.epoch = None;
             return;
         } else if !permit.reserved {
-            execution.reservations.accept(&mut execution.funding.input_supply);
+            execution
+                .reservations
+                .accept(&mut execution.funding.input_supply);
             let claimed = execution.workforce.claim(permit.duration, permit.workers);
             debug_assert!(claimed, "placement cannot change the prepared workforce");
             if let Some(profile) = self.runtime_catalog.profile_by_runtime_id(permit.profile) {
@@ -361,27 +422,46 @@ impl DemandSystem {
 
     /// Current execution-epoch proof of a queued or constructing project, if prepared.
     #[cfg(test)]
-    pub(crate) fn project_proof_for_test(&self, parcel: u64, zoning: &ZoningSystem)
-        -> Option<(u32, [u64; 2], Vec<(u16, Option<usize>, u64, u32, u32)>)> {
+    pub(crate) fn project_proof_for_test(
+        &self,
+        parcel: u64,
+        zoning: &ZoningSystem,
+    ) -> Option<(u32, [u64; 2], Vec<(u16, Option<usize>, u64, u32, u32)>)> {
         let execution = &self.construction_execution;
-        execution.reservations.project_proof_for_test(&execution.funding.input_supply, parcel,
-            zoning, &self.runtime_catalog, &self.runtime_tuning)
+        execution.reservations.project_proof_for_test(
+            &execution.funding.input_supply,
+            parcel,
+            zoning,
+            &self.runtime_catalog,
+            &self.runtime_tuning,
+        )
     }
 
     /// Removes a failed queue entry and ends its provisional proof before later execution.
     /// The next check revalidates commitments which may have depended on this customer.
-    pub(crate) fn reject_queued_spawn(&mut self, action: &DemandSpawnAction,
-        allocator: &BuildingAllocator, graph: &RegionGraph) {
+    pub(crate) fn reject_queued_spawn(
+        &mut self,
+        action: &DemandSpawnAction,
+        allocator: &BuildingAllocator,
+        graph: &RegionGraph,
+    ) {
         let retired = self.retire_queued_construction(action.parcel_id);
         let execution = &mut self.construction_execution;
-        execution.reservations.reject(&mut execution.funding.input_supply, allocator, graph);
+        execution
+            .reservations
+            .reject(&mut execution.funding.input_supply, allocator, graph);
         if let Some(profile) = retired.and_then(|id| self.runtime_catalog.profile_by_runtime_id(id))
-            && let Some(market) = &mut execution.market {
+            && let Some(market) = &mut execution.market
+        {
             market.release_candidate(profile, 1.0);
         }
-        if retired.is_some() && execution.reservations.queued_workers
-            .binary_search_by_key(&action.parcel_id, |&(parcel, _)| parcel)
-            .is_ok_and(|index| execution.reservations.queued_workers[index].1 > 0) {
+        if retired.is_some()
+            && execution
+                .reservations
+                .queued_workers
+                .binary_search_by_key(&action.parcel_id, |&(parcel, _)| parcel)
+                .is_ok_and(|index| execution.reservations.queued_workers[index].1 > 0)
+        {
             execution.epoch = None;
         }
     }

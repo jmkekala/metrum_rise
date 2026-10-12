@@ -133,7 +133,9 @@ pub(super) fn compile_runtime_catalog(
         for output in &profile.outputs {
             let slot = usize::from(output.resource_runtime_id);
             if catalog.cheapest_seller_prices.len() <= slot {
-                catalog.cheapest_seller_prices.resize(slot + 1, f32::INFINITY);
+                catalog
+                    .cheapest_seller_prices
+                    .resize(slot + 1, f32::INFINITY);
             }
             let price = &mut catalog.cheapest_seller_prices[slot];
             *price = price.min(profile.unit_price_currency);

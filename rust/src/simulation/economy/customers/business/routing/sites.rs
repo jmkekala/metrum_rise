@@ -3,8 +3,8 @@
 //! Prepared replacement/project buyer doors over the existing customer bucket index.
 
 use super::*;
-use std::ops::Range;
 use crate::simulation::buildings::allocator::DemandSiteEntranceKey;
+use std::ops::Range;
 
 /// One caller-selected buyer recipe and actual door, prepared before candidate proofs.
 #[derive(Clone, Debug)]
@@ -21,7 +21,14 @@ pub(crate) struct PreparedBusinessSite {
 impl PreparedBusinessSite {
     /// Associates a candidate's stable commitment owner with its recipe and proposed door.
     pub(crate) fn new(owner: usize, key: &str, profile: u16, entrance: BuildingEntrance) -> Self {
-        Self { owner, key: key.to_owned(), profile, entrance, entrance_key: None, access: None }
+        Self {
+            owner,
+            key: key.to_owned(),
+            profile,
+            entrance,
+            entrance_key: None,
+            access: None,
+        }
     }
 
     /// Commitment owner; rows sort by owner, then [`Self::key`].
@@ -46,10 +53,14 @@ impl PreparedBusinessSite {
     }
 
     /// Searches the previous sorted sites without allocating or scanning other owners.
-    pub(crate) fn retained_entrance<'a>(sites: &'a [Self], owner: usize, key: &str)
-        -> Option<(DemandSiteEntranceKey, &'a BuildingEntrance)> {
-        let index = sites.binary_search_by(|site|
-            site.owner.cmp(&owner).then(site.key.as_str().cmp(key))).ok()?;
+    pub(crate) fn retained_entrance<'a>(
+        sites: &'a [Self],
+        owner: usize,
+        key: &str,
+    ) -> Option<(DemandSiteEntranceKey, &'a BuildingEntrance)> {
+        let index = sites
+            .binary_search_by(|site| site.owner.cmp(&owner).then(site.key.as_str().cmp(key)))
+            .ok()?;
         let site = &sites[index];
         Some((site.entrance_key?, &site.entrance))
     }
@@ -83,36 +94,63 @@ impl BusinessMarket {
     /// A changed live layout re-derives ports and indices from the retained rows.
     /// Layout work is O(prepared ports log ports + live ports) plus access for new rows;
     /// unchanged revisions are O(1). Finance never rebuilds buckets inside a proposal.
-    pub(crate) fn prepare_sites(&mut self, caller_revision: &[u64],
-        catalog: &RuntimeEconomyCatalog, components: &ModeComponentIndex, graph: &RegionGraph,
-        factory: impl FnOnce(Vec<PreparedBusinessSite>, Option<&[u64]>) -> Vec<PreparedBusinessSite>) {
+    pub(crate) fn prepare_sites(
+        &mut self,
+        caller_revision: &[u64],
+        catalog: &RuntimeEconomyCatalog,
+        components: &ModeComponentIndex,
+        graph: &RegionGraph,
+        factory: impl FnOnce(Vec<PreparedBusinessSite>, Option<&[u64]>) -> Vec<PreparedBusinessSite>,
+    ) {
         debug_assert!(!self.budgets.revalidation.is_active() && self.budgets.staged.is_empty());
         let entries_current = self.sites.key.as_deref() == Some(caller_revision);
-        if entries_current && self.sites.layout == Some(self.revision) { return; }
-        let timing = crate::debug::Channel::EconomyPhases.enabled().then(std::time::Instant::now);
+        if entries_current && self.sites.layout == Some(self.revision) {
+            return;
+        }
+        let timing = crate::debug::Channel::EconomyPhases
+            .enabled()
+            .then(std::time::Instant::now);
         if !entries_current {
             let previous = std::mem::take(&mut self.sites.entries);
             self.sites.entries = factory(previous, self.sites.key.as_deref());
             self.sites.key = Some(caller_revision.to_vec());
             crate::debug::work::add(crate::debug::work::Work::BuyerSiteRebuilds, 1);
             // Linear for the already-ordered rows the planner returns.
-            self.sites.entries.sort_unstable_by(|a, b| a.owner.cmp(&b.owner).then(a.key.cmp(&b.key)));
-            assert!(self.sites.entries.windows(2).all(|pair| (pair[0].owner, &pair[0].key) != (pair[1].owner, &pair[1].key)),
-                "prepared buyer keys must be unique");
+            self.sites
+                .entries
+                .sort_unstable_by(|a, b| a.owner.cmp(&b.owner).then(a.key.cmp(&b.key)));
+            assert!(
+                self.sites
+                    .entries
+                    .windows(2)
+                    .all(|pair| (pair[0].owner, &pair[0].key) != (pair[1].owner, &pair[1].key)),
+                "prepared buyer keys must be unique"
+            );
         }
         let factory_ms = timing.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0);
         // Components follow the network topology; door chunks follow the retained entrance.
         let topology = self.revision.map(|own| own.2);
         if self.sites.access_topology != topology {
-            self.sites.entries.iter_mut().for_each(|site| site.access = None);
+            self.sites
+                .entries
+                .iter_mut()
+                .for_each(|site| site.access = None);
             self.sites.access_topology = topology;
         }
-        self.sites.entries.par_iter_mut().filter(|site| site.access.is_none()).for_each(|site| {
-            site.access = Some(Access {
-                chunk: chunk_for_point(site.entrance.door_pos.x, site.entrance.door_pos.y),
-                components: components.entrance_components(&site.entrance, graph, TransitFlags::CAR),
+        self.sites
+            .entries
+            .par_iter_mut()
+            .filter(|site| site.access.is_none())
+            .for_each(|site| {
+                site.access = Some(Access {
+                    chunk: chunk_for_point(site.entrance.door_pos.x, site.entrance.door_pos.y),
+                    components: components.entrance_components(
+                        &site.entrance,
+                        graph,
+                        TransitFlags::CAR,
+                    ),
+                });
             });
-        });
         let live_ports = self.buyer_ports.last().map_or(0, |ports| ports.end);
         self.identities.truncate(live_ports);
         self.port_access.truncate(live_ports);
@@ -123,9 +161,18 @@ impl BusinessMarket {
         for (index, site) in self.sites.entries.iter().enumerate() {
             let first = self.identities.len();
             if let Some(profile) = catalog.profile_by_runtime_id(site.profile) {
-                self.identities.extend(profile.inputs.iter().map(|input| (site.owner, input.resource_runtime_id)));
-                self.port_access.extend(std::iter::repeat_n(site.access.unwrap(), profile.inputs.len()));
-                self.port_sites.extend(std::iter::repeat_n(Some(index), profile.inputs.len()));
+                self.identities.extend(
+                    profile
+                        .inputs
+                        .iter()
+                        .map(|input| (site.owner, input.resource_runtime_id)),
+                );
+                self.port_access.extend(std::iter::repeat_n(
+                    site.access.unwrap(),
+                    profile.inputs.len(),
+                ));
+                self.port_sites
+                    .extend(std::iter::repeat_n(Some(index), profile.inputs.len()));
             }
             self.sites.ports.push(first..self.identities.len());
         }
@@ -133,8 +180,14 @@ impl BusinessMarket {
         self.reset_site_ports(live_ports);
         self.sites.layout = Some(self.revision);
         if let Some(start) = timing {
-            crate::debug_log!("economy_phases", "buyer_sites_detail entries={} rows_changed={} factory_ms={:.3} layout_ms={:.3}",
-                self.sites.entries.len(), !entries_current, factory_ms, start.elapsed().as_secs_f64() * 1000.0 - factory_ms);
+            crate::debug_log!(
+                "economy_phases",
+                "buyer_sites_detail entries={} rows_changed={} factory_ms={:.3} layout_ms={:.3}",
+                self.sites.entries.len(),
+                !entries_current,
+                factory_ms,
+                start.elapsed().as_secs_f64() * 1000.0 - factory_ms
+            );
         }
     }
 
@@ -148,7 +201,11 @@ impl BusinessMarket {
         self.port_available.resize(ports, 0);
         self.port_masks.resize(ports, 0);
         self.visited.resize(ports, 0);
-        debug_assert!(self.account_ports.iter().all(|&port| port < live_ports || port == usize::MAX));
+        debug_assert!(
+            self.account_ports
+                .iter()
+                .all(|&port| port < live_ports || port == usize::MAX)
+        );
         self.indices.sites.par_iter_mut().for_each(|index| {
             index.reset_available(|_| false);
             index.reset_query_masks(|_| 0);
@@ -157,15 +214,27 @@ impl BusinessMarket {
 
     /// Finds a prepared owner/key pair in O(log sites), without allocation or a city scan.
     pub(crate) fn prepared_site(&self, owner: usize, key: &str) -> Option<usize> {
-        self.sites.entries.binary_search_by(|site| site.owner.cmp(&owner).then(site.key.as_str().cmp(key))).ok()
+        self.sites
+            .entries
+            .binary_search_by(|site| site.owner.cmp(&owner).then(site.key.as_str().cmp(key)))
+            .ok()
     }
 
     /// Resolves a queued recipe at its retained actual door without copying an asset name.
     /// O(log sites + this owner's authored alternatives); unrelated parcels are not visited.
-    pub(crate) fn prepared_site_at(&self, owner: usize, profile: u16,
-        entrance: &BuildingEntrance) -> Option<usize> {
-        let first = self.sites.entries.partition_point(|site| site.owner < owner);
-        self.sites.entries[first..].iter().take_while(|site| site.owner == owner)
+    pub(crate) fn prepared_site_at(
+        &self,
+        owner: usize,
+        profile: u16,
+        entrance: &BuildingEntrance,
+    ) -> Option<usize> {
+        let first = self
+            .sites
+            .entries
+            .partition_point(|site| site.owner < owner);
+        self.sites.entries[first..]
+            .iter()
+            .take_while(|site| site.owner == owner)
             .position(|site| site.profile == profile && site.entrance == *entrance)
             .map(|offset| first + offset)
     }
@@ -174,9 +243,14 @@ impl BusinessMarket {
     /// The enclosing journal restores previous account-to-port mappings on rejection.
     /// Test harness: runtime sites reseed through `reprice_buyer_inputs`/`seed_new_buyer_inputs`.
     #[cfg(test)]
-    pub(crate) fn replace_buyer_at_site(&mut self, site: usize, headroom: [f64; 2],
-        input_tranches: usize, seed: impl FnOnce(&mut BusinessBudgets),
-        affected: impl FnMut(usize, u16, f64, f64)) -> Result<(), usize> {
+    pub(crate) fn replace_buyer_at_site(
+        &mut self,
+        site: usize,
+        headroom: [f64; 2],
+        input_tranches: usize,
+        seed: impl FnOnce(&mut BusinessBudgets),
+        affected: impl FnMut(usize, u16, f64, f64),
+    ) -> Result<(), usize> {
         let owner = self.sites.entries[site].owner;
         self.replace_inputs_at(owner, Some(site), headroom, input_tranches, seed, affected)
     }
@@ -185,26 +259,47 @@ impl BusinessMarket {
     /// when its own geometry changes. O(ports log ports) over the selected port range.
     pub(super) fn rebuild_indices(&mut self, resources: usize, sites: bool) {
         #[cfg(test)]
-        { self.index_builds += 1; }
-        let ports = if sites { self.indices.live_ports..self.identities.len() } else { 0..self.indices.live_ports };
-        let mut entries: Vec<Vec<ReachableBucketEntry>> = (0..resources).map(|_| Vec::new()).collect();
+        {
+            self.index_builds += 1;
+        }
+        let ports = if sites {
+            self.indices.live_ports..self.identities.len()
+        } else {
+            0..self.indices.live_ports
+        };
+        let mut entries: Vec<Vec<ReachableBucketEntry>> =
+            (0..resources).map(|_| Vec::new()).collect();
         for port in ports {
             let access = self.port_access[port];
-            access.components.append_bucket_entries(&mut entries[self.identities[port].1 as usize], access.chunk, port);
+            access.components.append_bucket_entries(
+                &mut entries[self.identities[port].1 as usize],
+                access.chunk,
+                port,
+            );
         }
-        let indices = if sites { &mut self.indices.sites } else { &mut self.indices.live };
+        let indices = if sites {
+            &mut self.indices.sites
+        } else {
+            &mut self.indices.live
+        };
         indices.resize_with(resources, Default::default);
-        indices.par_iter_mut().zip(entries).for_each(|(index, entries)| {
-            *index = ReachableBucketIndex::from_entries(entries);
-            index.enable_reservations();
-        });
+        indices
+            .par_iter_mut()
+            .zip(entries)
+            .for_each(|(index, entries)| {
+                *index = ReachableBucketIndex::from_entries(entries);
+                index.enable_reservations();
+            });
     }
 
     /// Snapshots only overwritten mappings; appended rows disappear with account rollback.
     pub(super) fn set_account_port(&mut self, slot: usize, port: usize) {
-        if self.account_ports[slot] == port { return; }
+        if self.account_ports[slot] == port {
+            return;
+        }
         if self.port_checkpoint.is_some_and(|len| slot < len)
-            && self.port_changed[slot] != self.port_generation {
+            && self.port_changed[slot] != self.port_generation
+        {
             self.port_changed[slot] = self.port_generation;
             self.previous_ports[slot] = self.account_ports[slot];
         }

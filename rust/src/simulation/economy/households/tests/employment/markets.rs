@@ -26,10 +26,22 @@ impl MarketFixture {
         let catalog = load_runtime_economy_catalog().unwrap();
         let mut graph = RegionGraph::new();
         let mut allocator = BuildingAllocator::new();
-        let home = register_test_asset(&mut allocator, "test", "market_home", ZoneClass::Residential);
-        let commercial = register_test_asset(&mut allocator, "test", "market_shop", ZoneClass::Commercial);
-        let industrial = register_test_asset(&mut allocator, "test", "market_factory", ZoneClass::Industrial);
-        let farm = register_test_utility_asset(&mut allocator, "test", "market_farm", "grain_farm_basic");
+        let home = register_test_asset(
+            &mut allocator,
+            "test",
+            "market_home",
+            ZoneClass::Residential,
+        );
+        let commercial =
+            register_test_asset(&mut allocator, "test", "market_shop", ZoneClass::Commercial);
+        let industrial = register_test_asset(
+            &mut allocator,
+            "test",
+            "market_factory",
+            ZoneClass::Industrial,
+        );
+        let farm =
+            register_test_utility_asset(&mut allocator, "test", "market_farm", "grain_farm_basic");
         let mut families = Vec::new();
         for (district, &regime) in regimes.iter().enumerate() {
             let x = district as f32 * 1024.0;
@@ -37,19 +49,36 @@ impl MarketFixture {
             let b = graph.add_node(Vector3::new(x + 400.0, 0.0, 0.0), NodeType::Junction);
             let edge = graph.add_edge(make_road_edge(a, b, x - 100.0, x + 400.0));
             for household in 0..HOMES {
-                let mut building = make_building(x + household as f32 * 4.0,
-                    ZoneType::Residential, &home, 0.0);
+                let mut building = make_building(
+                    x + household as f32 * 4.0,
+                    ZoneType::Residential,
+                    &home,
+                    0.0,
+                );
                 building.edge_idx = edge;
                 let mut family = make_household(allocator.buildings.len(), 2, 0.0, 0.0);
-                family.gross_daily_wages = if regime == 3 { 0.0 }
-                    else if regime == 1 { 60.0 } else { 240.0 };
+                family.gross_daily_wages = if regime == 3 {
+                    0.0
+                } else if regime == 1 {
+                    60.0
+                } else {
+                    240.0
+                };
                 family.employed_adults = u16::from(regime != 3);
                 family.shopping_has_car = household % 2 == 0;
                 allocator.buildings.push(building);
                 families.push(family);
             }
-            for (firm, id) in ["grain_farm_basic", "food_processor_basic", "grocery_basic",
-                "personal_service_small", "machinery_factory_basic"].into_iter().enumerate() {
+            for (firm, id) in [
+                "grain_farm_basic",
+                "food_processor_basic",
+                "grocery_basic",
+                "personal_service_small",
+                "machinery_factory_basic",
+            ]
+            .into_iter()
+            .enumerate()
+            {
                 let profile = catalog.profile_for_id(id).unwrap();
                 let (zone, asset) = match firm {
                     0 => (ZoneType::None, &farm),
@@ -61,7 +90,11 @@ impl MarketFixture {
                 building.economy_profile_runtime_id = profile.runtime_id;
                 building.work_area_scale = if firm == 0 { 10.0 } else { 1.0 };
                 building.worker_count = physical_worker_capacity_for_profile(&building, profile);
-                building.operating_budget = if regime == 2 && firm == 1 { 0.0 } else { 100_000.0 };
+                building.operating_budget = if regime == 2 && firm == 1 {
+                    0.0
+                } else {
+                    100_000.0
+                };
                 allocator.buildings.push(building);
             }
         }
@@ -71,41 +104,77 @@ impl MarketFixture {
         network.cch_graph = CchGraph::build(&graph);
         allocator.rebuild_zone_index();
         allocator.rebuild_entrance_cache(&graph, &network.lane_system);
-        Self { catalog, graph, network, allocator, families, funding: JobFunding::default(),
-            logistics: ShipmentSystem::new() }
+        Self {
+            catalog,
+            graph,
+            network,
+            allocator,
+            families,
+            funding: JobFunding::default(),
+            logistics: ShipmentSystem::new(),
+        }
     }
 
     fn refresh(&mut self, tuning: &RuntimeEconomyTuning) {
-        self.funding.refresh(&self.allocator, &self.families, &mut self.logistics,
-            &self.network, &self.graph, &self.catalog, tuning,
-            &CityFiscalPolicy::from_runtime_tuning(tuning), &[], 0.0, 420);
+        self.funding.refresh(
+            &self.allocator,
+            &self.families,
+            &mut self.logistics,
+            &self.network,
+            &self.graph,
+            &self.catalog,
+            tuning,
+            &CityFiscalPolicy::from_runtime_tuning(tuning),
+            &[],
+            0.0,
+            420,
+        );
     }
 
     fn district(&self, district: usize) -> Vec<(u32, u32, Vec<(usize, u16, u64)>)> {
         let first = district * DISTRICT;
-        (first + HOMES..first + DISTRICT).map(|source| {
-            let building = &self.allocator.buildings[source];
-            let profile = self.catalog.profile_by_runtime_id(building.economy_profile_runtime_id).unwrap();
-            let activity = self.funding.input_demand_scale(source, building, profile, false);
-            let mut deliveries = Vec::new();
-            self.funding.input_supply.visit_dependents(source, |buyer, resource, units| {
-                assert!((first..first + DISTRICT).contains(&buyer),
-                    "a disconnected buyer cannot reserve this district's output");
-                deliveries.push((buyer - first, resource, units.to_bits()));
-            });
-            deliveries.sort_unstable();
-            (self.funding.capacities[source], activity.to_bits(), deliveries)
-        }).collect()
+        (first + HOMES..first + DISTRICT)
+            .map(|source| {
+                let building = &self.allocator.buildings[source];
+                let profile = self
+                    .catalog
+                    .profile_by_runtime_id(building.economy_profile_runtime_id)
+                    .unwrap();
+                let activity = self
+                    .funding
+                    .input_demand_scale(source, building, profile, false);
+                let mut deliveries = Vec::new();
+                self.funding
+                    .input_supply
+                    .visit_dependents(source, |buyer, resource, units| {
+                        assert!(
+                            (first..first + DISTRICT).contains(&buyer),
+                            "a disconnected buyer cannot reserve this district's output"
+                        );
+                        deliveries.push((buyer - first, resource, units.to_bits()));
+                    });
+                deliveries.sort_unstable();
+                (
+                    self.funding.capacities[source],
+                    activity.to_bits(),
+                    deliveries,
+                )
+            })
+            .collect()
     }
 
     fn assert_same_funding(&self, other: &Self) {
         assert_eq!(self.funding.capacities, other.funding.capacities);
-        self.funding.customers.assert_same_accounts_for_test(&other.funding.customers);
+        self.funding
+            .customers
+            .assert_same_accounts_for_test(&other.funding.customers);
         for district in 0..self.allocator.buildings.len() / DISTRICT {
             assert_eq!(self.district(district), other.district(district));
             for owner in district * DISTRICT + HOMES..(district + 1) * DISTRICT {
-                assert_eq!(self.funding.business.financing(owner).map(f64::to_bits),
-                    other.funding.business.financing(owner).map(f64::to_bits));
+                assert_eq!(
+                    self.funding.business.financing(owner).map(f64::to_bits),
+                    other.funding.business.financing(owner).map(f64::to_bits)
+                );
             }
         }
     }
@@ -115,24 +184,43 @@ impl MarketFixture {
 fn disconnected_populated_markets_keep_local_financing_and_customer_claims() {
     let mut tuning = (*load_runtime_economy_tuning().unwrap()).clone();
     tuning.owa_export_price_multiplier = 0.0;
-    let expected: Vec<_> = (0..4).map(|regime| {
-        let mut market = MarketFixture::new(&[regime]);
-        market.refresh(&tuning);
-        let result = market.district(0);
-        market.refresh(&tuning);
-        assert_eq!(market.district(0), result, "warm replay, regime {regime}");
-        result
-    }).collect();
-    assert!(expected[0][2].0 > 0, "funded families must support a grocery");
-    assert_eq!(expected[2][1].0, 0, "staffing cannot replace processor financing");
-    assert!(expected[3].iter().all(|firm| firm.0 == 0), "unfunded demand cannot sustain a chain");
-    for regimes in [vec![0, 1, 2, 3], vec![3, 2, 1, 0], (0..32).map(|i| (i % 4) as u8).collect()] {
+    let expected: Vec<_> = (0..4)
+        .map(|regime| {
+            let mut market = MarketFixture::new(&[regime]);
+            market.refresh(&tuning);
+            let result = market.district(0);
+            market.refresh(&tuning);
+            assert_eq!(market.district(0), result, "warm replay, regime {regime}");
+            result
+        })
+        .collect();
+    assert!(
+        expected[0][2].0 > 0,
+        "funded families must support a grocery"
+    );
+    assert_eq!(
+        expected[2][1].0, 0,
+        "staffing cannot replace processor financing"
+    );
+    assert!(
+        expected[3].iter().all(|firm| firm.0 == 0),
+        "unfunded demand cannot sustain a chain"
+    );
+    for regimes in [
+        vec![0, 1, 2, 3],
+        vec![3, 2, 1, 0],
+        (0..32).map(|i| (i % 4) as u8).collect(),
+    ] {
         let mut market = MarketFixture::new(&regimes);
         for _ in 0..2 {
             market.refresh(&tuning);
             for (district, &regime) in regimes.iter().enumerate() {
-                assert_eq!(market.district(district), expected[regime as usize],
-                    "district {district}, regime {regime}, {} disconnected markets", regimes.len());
+                assert_eq!(
+                    market.district(district),
+                    expected[regime as usize],
+                    "district {district}, regime {regime}, {} disconnected markets",
+                    regimes.len()
+                );
             }
         }
     }
@@ -147,17 +235,25 @@ fn household_quote_prefix_reuse_matches_ordinary_requotation_through_market_chan
     let mut ordinary = MarketFixture::new(&regimes);
     ordinary.funding.disable_household_quote_replay();
     let mut reused = 0;
-    for (cash, income, delay) in [(100_000.0, 1.0, 0.0), (0.0, 1.0, 0.0),
-        (100_000.0, 0.25, 40.0), (100_000.0, 0.0, 0.0), (100_000.0, 1.0, 0.0)] {
+    for (cash, income, delay) in [
+        (100_000.0, 1.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (100_000.0, 0.25, 40.0),
+        (100_000.0, 0.0, 0.0),
+        (100_000.0, 1.0, 0.0),
+    ] {
         for market in [&mut cached, &mut ordinary] {
             for (district, &regime) in regimes.iter().enumerate() {
                 market.allocator.buildings[district * DISTRICT + HOMES + 1].operating_budget =
                     if regime == 2 { 0.0 } else { cash };
                 for household in &mut market.families[district * HOMES..(district + 1) * HOMES] {
-                    household.gross_daily_wages = [240.0, 60.0, 240.0, 0.0][regime as usize] * income;
+                    household.gross_daily_wages =
+                        [240.0, 60.0, 240.0, 0.0][regime as usize] * income;
                 }
             }
-            for lane in &mut market.network.lane_system.lanes { lane.frontage_delay_penalty_s = delay; }
+            for lane in &mut market.network.lane_system.lanes {
+                lane.frontage_delay_penalty_s = delay;
+            }
             market.network.frontage_delay_revision += 1;
             market.refresh(&tuning);
         }
@@ -166,18 +262,37 @@ fn household_quote_prefix_reuse_matches_ordinary_requotation_through_market_chan
         for district in 0..regimes.len() {
             assert_eq!(cached.district(district), ordinary.district(district));
             for owner in district * DISTRICT + HOMES..(district + 1) * DISTRICT {
-                assert_eq!(cached.funding.business.financing(owner).map(f64::to_bits),
-                    ordinary.funding.business.financing(owner).map(f64::to_bits));
-                let profile = cached.catalog.profile_by_runtime_id(
-                    cached.allocator.buildings[owner].economy_profile_runtime_id).unwrap();
+                assert_eq!(
+                    cached.funding.business.financing(owner).map(f64::to_bits),
+                    ordinary.funding.business.financing(owner).map(f64::to_bits)
+                );
+                let profile = cached
+                    .catalog
+                    .profile_by_runtime_id(
+                        cached.allocator.buildings[owner].economy_profile_runtime_id,
+                    )
+                    .unwrap();
                 for output in &profile.outputs {
-                    assert_eq!(cached.funding.customers.reserved_units(owner, output.resource_runtime_id).to_bits(),
-                        ordinary.funding.customers.reserved_units(owner, output.resource_runtime_id).to_bits());
+                    assert_eq!(
+                        cached
+                            .funding
+                            .customers
+                            .reserved_units(owner, output.resource_runtime_id)
+                            .to_bits(),
+                        ordinary
+                            .funding
+                            .customers
+                            .reserved_units(owner, output.resource_runtime_id)
+                            .to_bits()
+                    );
                 }
             }
         }
     }
-    assert!(reused > 0, "the comparison must exercise unchanged quote prefixes");
+    assert!(
+        reused > 0,
+        "the comparison must exercise unchanged quote prefixes"
+    );
 }
 
 #[test]
@@ -185,17 +300,45 @@ fn household_cross_census_reuse_matches_fresh_claims_after_each_input_changes() 
     use crate::simulation::economy::definitions::compile_test_catalog;
 
     let authored = include_str!("../../../../../../../economy/profiles.toml");
-    let start = authored.find("[[profiles]]\nid = \"grocery_basic\"").unwrap();
+    let start = authored
+        .find("[[profiles]]\nid = \"grocery_basic\"")
+        .unwrap();
     let end = start + authored[start + 1..].find("\n[[profiles]]").unwrap() + 1;
-    let alternate = authored[start..end].replace("grocery_basic", "expensive_grocery")
+    let alternate = authored[start..end]
+        .replace("grocery_basic", "expensive_grocery")
         .replace("unit_price_currency = 25.0", "unit_price_currency = 37.0");
-    let alternate_catalog = std::sync::Arc::new(
-        compile_test_catalog(&format!("{authored}\n{alternate}")).unwrap());
+    let alternate_catalog =
+        std::sync::Arc::new(compile_test_catalog(&format!("{authored}\n{alternate}")).unwrap());
     let mut replayed = 0;
-    for change in ["unchanged", "income", "cash", "members", "unhoused", "empty",
-        "home", "car", "adults", "price", "quantity", "basket", "vat", "tax", "treasury",
-        "frontage", "frontage_revision", "entrance_revision", "seller_position", "home_position", "home_local_position",
-        "unrelated_building", "topology", "door", "removed_family", "new_family", "clear"] {
+    for change in [
+        "unchanged",
+        "income",
+        "cash",
+        "members",
+        "unhoused",
+        "empty",
+        "home",
+        "car",
+        "adults",
+        "price",
+        "quantity",
+        "basket",
+        "vat",
+        "tax",
+        "treasury",
+        "frontage",
+        "frontage_revision",
+        "entrance_revision",
+        "seller_position",
+        "home_position",
+        "home_local_position",
+        "unrelated_building",
+        "topology",
+        "door",
+        "removed_family",
+        "new_family",
+        "clear",
+    ] {
         let mut tuning = (*load_runtime_economy_tuning().unwrap()).clone();
         tuning.owa_export_price_multiplier = 0.0;
         let mut policy = CityFiscalPolicy::from_runtime_tuning(&tuning);
@@ -224,17 +367,43 @@ fn household_cross_census_reuse_matches_fresh_claims_after_each_input_changes() 
                 "empty" => market.families[0].member_count = 0,
                 "home" => market.families[0].home_building_id = DISTRICT,
                 "car" => market.families[0].shopping_has_car = !market.families[0].shopping_has_car,
-                "adults" => { market.families[0].adult_count = 0; market.families[0].elder_count = 0; }
-                "price" => market.allocator.buildings[HOMES + 2].economy_profile_runtime_id =
-                    market.catalog.profile_for_id("expensive_grocery").unwrap().runtime_id,
-                "quantity" => market.catalog = std::sync::Arc::new(compile_test_catalog(
-                    &format!("{}\n{alternate}", authored.replace(&authored[start..end],
-                        &authored[start..end].replace("units_per_day = 200.0", "units_per_day = 100.0")))).unwrap()),
-                "basket" => market.catalog = std::sync::Arc::new(compile_test_catalog(
-                    &format!("{authored}\n{alternate}").replace("consumption_rate_per_resident = 1.0",
-                        "consumption_rate_per_resident = 0.5")).unwrap()),
+                "adults" => {
+                    market.families[0].adult_count = 0;
+                    market.families[0].elder_count = 0;
+                }
+                "price" => {
+                    market.allocator.buildings[HOMES + 2].economy_profile_runtime_id = market
+                        .catalog
+                        .profile_for_id("expensive_grocery")
+                        .unwrap()
+                        .runtime_id
+                }
+                "quantity" => {
+                    market.catalog = std::sync::Arc::new(
+                        compile_test_catalog(&format!(
+                            "{}\n{alternate}",
+                            authored.replace(
+                                &authored[start..end],
+                                &authored[start..end]
+                                    .replace("units_per_day = 200.0", "units_per_day = 100.0")
+                            )
+                        ))
+                        .unwrap(),
+                    )
+                }
+                "basket" => {
+                    market.catalog = std::sync::Arc::new(
+                        compile_test_catalog(&format!("{authored}\n{alternate}").replace(
+                            "consumption_rate_per_resident = 1.0",
+                            "consumption_rate_per_resident = 0.5",
+                        ))
+                        .unwrap(),
+                    )
+                }
                 "frontage" => {
-                    for lane in &mut market.network.lane_system.lanes { lane.frontage_delay_penalty_s = 1_000_000.0; }
+                    for lane in &mut market.network.lane_system.lanes {
+                        lane.frontage_delay_penalty_s = 1_000_000.0;
+                    }
                     market.network.frontage_delay_revision += 1;
                 }
                 "frontage_revision" => market.network.frontage_delay_revision += 1,
@@ -244,7 +413,11 @@ fn household_cross_census_reuse_matches_fresh_claims_after_each_input_changes() 
                     market.allocator.bump_entrance_ref_revision();
                 }
                 "home_position" | "home_local_position" => {
-                    let distance = if change == "home_position" { 512.0 } else { 0.25 };
+                    let distance = if change == "home_position" {
+                        512.0
+                    } else {
+                        0.25
+                    };
                     market.allocator.buildings[0].center_x += distance;
                     market.allocator.entrances[0].door_pos.x += distance;
                     market.allocator.bump_entrance_ref_revision();
@@ -252,22 +425,33 @@ fn household_cross_census_reuse_matches_fresh_claims_after_each_input_changes() 
                 "unrelated_building" => {
                     // An unoccupied home adds no recipe output or family budget. Existing
                     // seller entrances and every household's indexed membership stay exact.
-                    market.allocator.buildings.push(market.allocator.buildings[0].clone());
+                    market
+                        .allocator
+                        .buildings
+                        .push(market.allocator.buildings[0].clone());
                     market.allocator.rebuild_zone_index();
-                    market.allocator.rebuild_entrance_cache(&market.graph, &market.network.lane_system);
+                    market
+                        .allocator
+                        .rebuild_entrance_cache(&market.graph, &market.network.lane_system);
                 }
                 "topology" => {
                     market.graph.edge_mut(0).allowed_types = TransitFlags::CAR;
                     market.graph.rebuild_adjacency_list();
                     market.network.lane_system.rebuild(&mut market.graph);
                     market.network.rebuild_cch_and_check(&market.graph);
-                    market.allocator.rebuild_entrance_cache(&market.graph, &market.network.lane_system);
+                    market
+                        .allocator
+                        .rebuild_entrance_cache(&market.graph, &market.network.lane_system);
                 }
                 "door" => {
                     market.allocator.buildings[HOMES + 2].edge_idx = usize::MAX;
-                    market.allocator.rebuild_entrance_cache(&market.graph, &market.network.lane_system);
+                    market
+                        .allocator
+                        .rebuild_entrance_cache(&market.graph, &market.network.lane_system);
                 }
-                "removed_family" => { market.families.pop(); }
+                "removed_family" => {
+                    market.families.pop();
+                }
                 "new_family" => market.families.push(market.families[0].clone()),
                 "clear" => market.funding.clear(),
                 "unchanged" | "vat" | "tax" | "treasury" => {}
@@ -288,9 +472,22 @@ fn household_cross_census_reuse_matches_fresh_claims_after_each_input_changes() 
             for market in [&mut cached, &mut ordinary] {
                 // A prefix can have changed after the prior census. Preserve dependencies
                 // of rejected quotes too when traffic publishes another revision.
-                if round == 2 { market.network.frontage_delay_revision += 1; }
-                market.funding.refresh(&market.allocator, &market.families, &mut market.logistics,
-                    &market.network, &market.graph, &market.catalog, &tuning, &policy, &[], treasury, 420);
+                if round == 2 {
+                    market.network.frontage_delay_revision += 1;
+                }
+                market.funding.refresh(
+                    &market.allocator,
+                    &market.families,
+                    &mut market.logistics,
+                    &market.network,
+                    &market.graph,
+                    &market.catalog,
+                    &tuning,
+                    &policy,
+                    &[],
+                    treasury,
+                    420,
+                );
             }
             cached.assert_same_funding(&ordinary);
             // Forking after each changed input must match an independent deep copy,
@@ -298,48 +495,93 @@ fn household_cross_census_reuse_matches_fresh_claims_after_each_input_changes() 
             fork.copy_reservations_from(&cached.funding.customers);
             assert!(fork.receipt_capacity_for_test() >= retained_capacity);
             let mut fresh = cached.funding.customers.clone();
-            for book in [&mut fork, &mut fresh] { book.prepare_project_owners(1_024, 1_024); }
+            for book in [&mut fork, &mut fresh] {
+                book.prepare_project_owners(1_024, 1_024);
+            }
             fork.assert_same_accounts_for_test(&fresh);
             let seller = HOMES + 2;
-            let profile = cached.catalog.profile_by_runtime_id(
-                cached.allocator.buildings[seller].economy_profile_runtime_id).unwrap();
+            let profile = cached
+                .catalog
+                .profile_by_runtime_id(
+                    cached.allocator.buildings[seller].economy_profile_runtime_id,
+                )
+                .unwrap();
             for requested in [1.0, 40.0, 10_000.0] {
                 for book in [&mut fork, &mut fresh] {
                     book.begin_revalidation();
                     book.release_owner(seller);
                 }
                 for output in &profile.outputs {
-                    let quote = |book: &mut crate::simulation::economy::customers::ConsumerMarket| {
-                        book.claim_reachable(&cached.allocator.entrances[seller], output.resource_runtime_id,
-                            requested, profile.unit_price_currency * (1.0 + policy.household_vat_rate),
-                            &cached.allocator, &cached.network, &cached.graph)
-                    };
-                    assert_eq!(quote(&mut fork).to_bits(), quote(&mut fresh).to_bits(),
-                        "fork quote differs: {change}, round={round}");
+                    let quote =
+                        |book: &mut crate::simulation::economy::customers::ConsumerMarket| {
+                            book.claim_reachable(
+                                &cached.allocator.entrances[seller],
+                                output.resource_runtime_id,
+                                requested,
+                                profile.unit_price_currency * (1.0 + policy.household_vat_rate),
+                                &cached.allocator,
+                                &cached.network,
+                                &cached.graph,
+                            )
+                        };
+                    assert_eq!(
+                        quote(&mut fork).to_bits(),
+                        quote(&mut fresh).to_bits(),
+                        "fork quote differs: {change}, round={round}"
+                    );
                 }
-                for book in [&mut fork, &mut fresh] { book.accept_for(seller); }
+                for book in [&mut fork, &mut fresh] {
+                    book.accept_for(seller);
+                }
                 fork.assert_same_accounts_for_test(&fresh);
-                for book in [&mut fork, &mut fresh] { book.reject_revalidation(); }
+                for book in [&mut fork, &mut fresh] {
+                    book.reject_revalidation();
+                }
                 fork.assert_same_accounts_for_test(&fresh);
             }
-            if matches!(change, "entrance_revision" | "seller_position" | "unrelated_building"
-                | "home_position" | "home_local_position" | "car") {
-                let expected = u64::from(round == 0 && matches!(change, "home_position" | "home_local_position"));
-                assert_eq!(cached.funding.customers.access_resamples_for_test() - resamples_before, expected,
-                    "only changed household geometry needs reconstruction: {change}, round={round}");
+            if matches!(
+                change,
+                "entrance_revision"
+                    | "seller_position"
+                    | "unrelated_building"
+                    | "home_position"
+                    | "home_local_position"
+                    | "car"
+            ) {
+                let expected = u64::from(
+                    round == 0 && matches!(change, "home_position" | "home_local_position"),
+                );
+                assert_eq!(
+                    cached.funding.customers.access_resamples_for_test() - resamples_before,
+                    expected,
+                    "only changed household geometry needs reconstruction: {change}, round={round}"
+                );
             }
             assert_eq!(ordinary.funding.household_cross_census_replays(), 0);
-            if matches!(change, "frontage_revision" | "entrance_revision" | "unrelated_building" | "home_local_position") {
-                assert!(cached.funding.household_cross_census_replays() > 0,
-                    "unchanged walking-proven claims survive unrelated revisions: {change}");
+            if matches!(
+                change,
+                "frontage_revision"
+                    | "entrance_revision"
+                    | "unrelated_building"
+                    | "home_local_position"
+            ) {
+                assert!(
+                    cached.funding.household_cross_census_replays() > 0,
+                    "unchanged walking-proven claims survive unrelated revisions: {change}"
+                );
             }
             if round == 0 && change == "seller_position" {
-                assert!(cached.funding.household_quote_replay_counts().1 > 0,
-                    "a changed seller entrance must reconstruct its claim prefix");
+                assert!(
+                    cached.funding.household_quote_replay_counts().1 > 0,
+                    "a changed seller entrance must reconstruct its claim prefix"
+                );
             }
         }
     }
-    assert!(replayed > 0, "unchanged censuses must actually exercise retained claims");
+    assert!(
+        replayed > 0,
+        "unchanged censuses must actually exercise retained claims"
+    );
 }
 
 #[test]
@@ -351,22 +593,36 @@ fn freight_connectivity_and_frontage_prices_revalidate_populated_markets() {
     tuning.owa_import_price_multiplier = 1.2;
     tuning.owa_export_price_multiplier = 0.0;
     let authored = include_str!("../../../../../../../economy/profiles.toml");
-    let start = authored.find("[[profiles]]\nid = \"food_processor_basic\"").unwrap();
+    let start = authored
+        .find("[[profiles]]\nid = \"food_processor_basic\"")
+        .unwrap();
     let end = start + authored[start + 1..].find("\n[[profiles]]").unwrap() + 1;
-    let regional = authored[start..end].replace("food_processor_basic", "regional_food")
+    let regional = authored[start..end]
+        .replace("food_processor_basic", "regional_food")
         .replace("unit_price_currency = 12.0", "unit_price_currency = 13.0");
-    let authored = authored.replace("id = \"packaged_food\"\nquantity_unit = \"kg\"",
-        "id = \"packaged_food\"\nquantity_unit = \"kg\"\nimport_unit_price_currency = 12.0");
+    let authored = authored.replace(
+        "id = \"packaged_food\"\nquantity_unit = \"kg\"",
+        "id = \"packaged_food\"\nquantity_unit = \"kg\"\nimport_unit_price_currency = 12.0",
+    );
     let mut market = MarketFixture::new(&[0, 2]);
-    market.catalog = std::sync::Arc::new(compile_test_catalog(&format!("{authored}\n{regional}")).unwrap());
+    market.catalog =
+        std::sync::Arc::new(compile_test_catalog(&format!("{authored}\n{regional}")).unwrap());
     let factory = HOMES + 1;
     let distant_shop = DISTRICT + HOMES + 2;
     let regional = market.catalog.profile_for_id("regional_food").unwrap();
-    let food = market.catalog.resource_runtime_id_for_id("packaged_food").unwrap();
-    assert_ne!(regional.unit_price_currency, market.catalog.unit_price_for_resource(food).unwrap());
+    let food = market
+        .catalog
+        .resource_runtime_id_for_id("packaged_food")
+        .unwrap();
+    assert_ne!(
+        regional.unit_price_currency,
+        market.catalog.unit_price_for_resource(food).unwrap()
+    );
     market.allocator.buildings[factory].economy_profile_runtime_id = regional.runtime_id;
     // This bridge changes freight reachability; pedestrian catchments retain their own demand.
-    for family in &mut market.families { family.shopping_has_car = false; }
+    for family in &mut market.families {
+        family.shopping_has_car = false;
+    }
     market.refresh(&tuning);
     let isolated = [market.district(0), market.district(1)];
     assert!(market.funding.capacities[factory] > 0);
@@ -378,47 +634,83 @@ fn freight_connectivity_and_frontage_prices_revalidate_populated_markets() {
         market.graph.rebuild_adjacency_list();
         market.network.lane_system.rebuild(&mut market.graph);
         market.network.rebuild_cch_and_check(&market.graph);
-        market.allocator.rebuild_entrance_cache(&market.graph, &market.network.lane_system);
+        market
+            .allocator
+            .rebuild_entrance_cache(&market.graph, &market.network.lane_system);
     };
     rebuild(&mut market);
     market.refresh(&tuning);
-    let carrier = market.logistics.customer_carrier_quote(&market.allocator.entrances[factory],
-        &market.allocator.entrances[distant_shop], Some(factory), Some(distant_shop),
-        &market.allocator, &market.network, &market.graph, &tuning);
-    assert!(carrier.is_some(), "the connected fixture must have a legal directed freight route");
-    assert!(market.funding.capacities[factory] > isolated[0][1].0,
+    let carrier = market.logistics.customer_carrier_quote(
+        &market.allocator.entrances[factory],
+        &market.allocator.entrances[distant_shop],
+        Some(factory),
+        Some(distant_shop),
+        &market.allocator,
+        &market.network,
+        &market.graph,
+        &tuning,
+    );
+    assert!(
+        carrier.is_some(),
+        "the connected fixture must have a legal directed freight route"
+    );
+    assert!(
+        market.funding.capacities[factory] > isolated[0][1].0,
         "reachable financed buyers must support additional output: isolated={:?}, connected={:?}/{:?}, sales={:?}, carrier={carrier:?}",
-        isolated, &market.funding.capacities[HOMES..DISTRICT],
+        isolated,
+        &market.funding.capacities[HOMES..DISTRICT],
         &market.funding.capacities[DISTRICT + HOMES..2 * DISTRICT],
-        market.funding.business.sales(factory, food, 200.0));
+        market.funding.business.sales(factory, food, 200.0)
+    );
     let mut cross_district = 0.0;
-    market.funding.input_supply.visit_dependents(factory, |buyer, resource, units| {
-        if buyer == distant_shop && resource == food { cross_district += units; }
-    });
+    market
+        .funding
+        .input_supply
+        .visit_dependents(factory, |buyer, resource, units| {
+            if buyer == distant_shop && resource == food {
+                cross_district += units;
+            }
+        });
     assert_eq!(cross_district, 100.0);
     let grocery = market.catalog.profile_for_id("grocery_basic").unwrap();
     let receiving = freight_goods_multiplier(grocery, ZoneType::Commercial, &tuning, 420);
     let sales = market.funding.business.sales(factory, food, 200.0);
     assert_eq!(sales.units, 200.0);
-    assert_eq!(sales.revenue, 200.0 * f64::from(13.0 * receiving),
-        "seller receipts use actual goods prices and exclude carrier charges");
+    assert_eq!(
+        sales.revenue,
+        200.0 * f64::from(13.0 * receiving),
+        "seller receipts use actual goods prices and exclude carrier charges"
+    );
     let capacities = market.funding.capacities.clone();
     let finance = market.funding.business.financing(distant_shop);
     for delay in [40.0, 1_000_000.0, 0.0] {
-        for lane in &mut market.network.lane_system.lanes { lane.frontage_delay_penalty_s = delay; }
+        for lane in &mut market.network.lane_system.lanes {
+            lane.frontage_delay_penalty_s = delay;
+        }
         market.network.frontage_delay_revision += 1;
         market.refresh(&tuning);
         if delay == 40.0 {
-            assert!(market.funding.business.financing(distant_shop)[0] < finance[0],
-                "unchanged geometry must not preserve an obsolete freight quote");
+            assert!(
+                market.funding.business.financing(distant_shop)[0] < finance[0],
+                "unchanged geometry must not preserve an obsolete freight quote"
+            );
         } else if delay > 0.0 {
             assert_eq!(market.funding.capacities[factory], 0);
             assert_eq!(market.funding.capacities[distant_shop], 0);
-            assert_eq!(market.funding.business.sales(factory, food, 200.0).units, 0.0);
+            assert_eq!(
+                market.funding.business.sales(factory, food, 200.0).units,
+                0.0
+            );
         } else {
             assert_eq!(market.funding.capacities, capacities);
-            assert_eq!(market.funding.business.financing(distant_shop).map(f64::to_bits),
-                finance.map(f64::to_bits));
+            assert_eq!(
+                market
+                    .funding
+                    .business
+                    .financing(distant_shop)
+                    .map(f64::to_bits),
+                finance.map(f64::to_bits)
+            );
             assert_eq!(market.funding.business.sales(factory, food, 200.0), sales);
         }
     }
@@ -427,14 +719,20 @@ fn freight_connectivity_and_frontage_prices_revalidate_populated_markets() {
     rebuild(&mut market);
     market.refresh(&tuning);
     assert_eq!(market.funding.capacities[factory], isolated[0][1].0);
-    assert_eq!(market.funding.business.sales(factory, food, 200.0).units, 100.0,
-        "weak connectivity cannot retain a now-unreachable customer");
+    assert_eq!(
+        market.funding.business.sales(factory, food, 200.0).units,
+        100.0,
+        "weak connectivity cannot retain a now-unreachable customer"
+    );
     // Isolated subsystem topology mutation, followed by all dependent cache rebuilds.
     market.graph.edge_mut(bridge).deleted = true;
     rebuild(&mut market);
     market.refresh(&tuning);
-    assert_eq!([market.district(0), market.district(1)], isolated,
-        "removing the freight connection must withdraw its customer and source commitments");
+    assert_eq!(
+        [market.district(0), market.district(1)],
+        isolated,
+        "removing the freight connection must withdraw its customer and source commitments"
+    );
 }
 
 #[test]
@@ -445,7 +743,9 @@ fn benchmark_populated_mixed_market_funding() {
     tuning.owa_export_price_multiplier = 0.0;
     let mut reference = MarketFixture::new(&[0, 1, 2, 3]);
     reference.refresh(&tuning);
-    let expected: Vec<_> = (0..4).map(|district| reference.district(district)).collect();
+    let expected: Vec<_> = (0..4)
+        .map(|district| reference.district(district))
+        .collect();
     for districts in [4, 16, 64, 256, 1_024] {
         let regimes: Vec<_> = (0..districts).map(|index| (index % 4) as u8).collect();
         let setup = Instant::now();
@@ -470,8 +770,13 @@ fn benchmark_populated_mixed_market_funding() {
             assert_eq!(market.district(district), expected[regime as usize]);
         }
         samples.sort_by(f64::total_cmp);
-        eprintln!("mixed_market_funding districts={districts} households={} buildings={} setup_ms={setup_ms:.3} first_refresh_ms={first_ms:.3} warm_median_ms={:.3} warm_max_ms={:.3} closure_passes={passes:?}",
-            market.families.len(), market.allocator.buildings.len(), samples[7], samples[14]);
+        eprintln!(
+            "mixed_market_funding districts={districts} households={} buildings={} setup_ms={setup_ms:.3} first_refresh_ms={first_ms:.3} warm_median_ms={:.3} warm_max_ms={:.3} closure_passes={passes:?}",
+            market.families.len(),
+            market.allocator.buildings.len(),
+            samples[7],
+            samples[14]
+        );
     }
 }
 
@@ -483,26 +788,47 @@ fn financing_chain(length: usize, background: usize) -> MarketFixture {
 // market closes the loop with business goods only, so every link sells only to its successor;
 // `units` below 200 gives each link a gain below one. Prices rise along the links unless one
 // uniform price makes every link profitable at full activity.
-fn financing_links(length: usize, cyclic: bool, units: f32, price: Option<u32>, background: usize)
-    -> MarketFixture {
+fn financing_links(
+    length: usize,
+    cyclic: bool,
+    units: f32,
+    price: Option<u32>,
+    background: usize,
+) -> MarketFixture {
     use crate::simulation::economy::definitions::compile_test_catalog;
     use std::fmt::Write;
     assert!(length >= 2);
     let authored = include_str!("../../../../../../../economy/profiles.toml");
-    let start = authored.find("[[profiles]]\nid = \"food_processor_basic\"").unwrap();
+    let start = authored
+        .find("[[profiles]]\nid = \"food_processor_basic\"")
+        .unwrap();
     let end = start + authored[start + 1..].find("\n[[profiles]]").unwrap() + 1;
-    let recipe = authored[start..end].replace("worker_capacity = 10", "worker_capacity = 1")
-        .replace("[[profiles.inputs]]\nresource = \"machinery\"\nunits_per_day = 2.0", "");
+    let recipe = authored[start..end]
+        .replace("worker_capacity = 10", "worker_capacity = 1")
+        .replace(
+            "[[profiles.inputs]]\nresource = \"machinery\"\nunits_per_day = 2.0",
+            "",
+        );
     let mut catalog = authored.to_owned();
     catalog.push_str("\n[[resources]]\nid = \"chain_feed\"\nquantity_unit = \"kg\"\nshipment_batch_kg = 50.0\nruntime_id = 10\nimport_unit_price_currency = 0.01\n");
     for index in 0..length - usize::from(!cyclic) {
         writeln!(catalog, "\n[[resources]]\nid = \"chain_goods_{index}\"\nquantity_unit = \"kg\"\nshipment_batch_kg = 50.0\nruntime_id = {}\nimport_unit_price_currency = {}.0", index + 11, 2 * (index + 1)).unwrap();
     }
     for index in 0..length {
-        let input = if index > 0 { format!("chain_goods_{}", index - 1) }
-            else if cyclic { format!("chain_goods_{}", length - 1) } else { "chain_feed".to_owned() };
-        let output = if index + 1 == length && !cyclic { "household_supplies".to_owned() } else { format!("chain_goods_{index}") };
-        let mut link = recipe.replace("food_processor_basic", &format!("chain_{index}"))
+        let input = if index > 0 {
+            format!("chain_goods_{}", index - 1)
+        } else if cyclic {
+            format!("chain_goods_{}", length - 1)
+        } else {
+            "chain_feed".to_owned()
+        };
+        let output = if index + 1 == length && !cyclic {
+            "household_supplies".to_owned()
+        } else {
+            format!("chain_goods_{index}")
+        };
+        let mut link = recipe
+            .replace("food_processor_basic", &format!("chain_{index}"))
             .replace("\"grain\"", &format!("\"{input}\""))
             .replace("\"packaged_food\"", &format!("\"{output}\""));
         if cyclic {
@@ -510,9 +836,13 @@ fn financing_links(length: usize, cyclic: bool, units: f32, price: Option<u32>, 
                 "resource = \"{input}\"\nunits_per_day = {units:?}\n\n[[profiles.inputs]]\nresource = \"chain_feed\"\nunits_per_day = {:?}",
                 200.0 - units));
         }
-        catalog.push_str(&link
-            .replace("unit_price_currency = 12.0", &format!("unit_price_currency = {}.0",
-                price.unwrap_or(2 * (index as u32 + 1)))));
+        catalog.push_str(&link.replace(
+            "unit_price_currency = 12.0",
+            &format!(
+                "unit_price_currency = {}.0",
+                price.unwrap_or(2 * (index as u32 + 1))
+            ),
+        ));
     }
     let catalog = std::sync::Arc::new(compile_test_catalog(&catalog).unwrap());
     let mut graph = RegionGraph::new();
@@ -520,17 +850,32 @@ fn financing_links(length: usize, cyclic: bool, units: f32, price: Option<u32>, 
     let b = graph.add_node(Vector3::new(1_000.0, 0.0, 0.0), NodeType::Junction);
     graph.add_edge(make_road_edge(a, b, 0.0, 1_000.0));
     let mut allocator = BuildingAllocator::new();
-    let factory = register_test_asset(&mut allocator, "test", "chain_factory", ZoneClass::Industrial);
+    let factory = register_test_asset(
+        &mut allocator,
+        "test",
+        "chain_factory",
+        ZoneClass::Industrial,
+    );
     let home = register_test_asset(&mut allocator, "test", "chain_home", ZoneClass::Residential);
     for index in 0..length {
-        let mut building = make_building(20.0 + index as f32 * 4.0, ZoneType::Industrial, &factory, 0.0);
-        building.economy_profile_runtime_id = catalog.profile_for_id(&format!("chain_{index}")).unwrap().runtime_id;
+        let mut building = make_building(
+            20.0 + index as f32 * 4.0,
+            ZoneType::Industrial,
+            &factory,
+            0.0,
+        );
+        building.economy_profile_runtime_id = catalog
+            .profile_for_id(&format!("chain_{index}"))
+            .unwrap()
+            .runtime_id;
         building.worker_count = 1;
         building.operating_budget = 1_000_000.0;
         allocator.buildings.push(building);
     }
     for _ in 0..=background {
-        allocator.buildings.push(make_building(10.0, ZoneType::Residential, &home, 0.0));
+        allocator
+            .buildings
+            .push(make_building(10.0, ZoneType::Residential, &home, 0.0));
     }
     let mut family = make_household(length, 200, 0.0, 0.0);
     family.employed_adults = 200;
@@ -539,8 +884,15 @@ fn financing_links(length: usize, cyclic: bool, units: f32, price: Option<u32>, 
     network.cch_graph = CchGraph::build(&graph);
     allocator.rebuild_zone_index();
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
-    MarketFixture { catalog, graph, network, allocator, families: vec![family],
-        funding: JobFunding::default(), logistics: ShipmentSystem::new() }
+    MarketFixture {
+        catalog,
+        graph,
+        network,
+        allocator,
+        families: vec![family],
+        funding: JobFunding::default(),
+        logistics: ShipmentSystem::new(),
+    }
 }
 
 #[test]
@@ -552,17 +904,32 @@ fn removed_buildings_invalidate_the_possible_buyer_layout_until_reseeded() {
     market.families[0].gross_daily_wages = 1_000_000.0;
     market.families[0].budget = 1_000_000.0;
     market.refresh(&tuning);
-    assert!(market.funding.business.layout_matches(&market.allocator, &market.network));
+    assert!(
+        market
+            .funding
+            .business
+            .layout_matches(&market.allocator, &market.network)
+    );
     // A swap-removed last building leaves the census's layout naming a missing owner, which
     // crashed customer propagation in a 100k city when a pass ended before reseeding.
     market.allocator.buildings.pop();
     market.allocator.entrances.pop();
     market.allocator.bump_entrance_ref_revision();
-    assert!(!market.funding.business.layout_matches(&market.allocator, &market.network));
+    assert!(
+        !market
+            .funding
+            .business
+            .layout_matches(&market.allocator, &market.network)
+    );
     market.families[0].gross_daily_wages = 0.0;
     market.families[0].budget = 0.0;
     market.refresh(&tuning);
-    assert!(market.funding.business.layout_matches(&market.allocator, &market.network));
+    assert!(
+        market
+            .funding
+            .business
+            .layout_matches(&market.allocator, &market.network)
+    );
     assert_eq!(&market.funding.capacities[..4], &[0; 4]);
 }
 
@@ -581,21 +948,39 @@ fn downstream_income_withdrawal_and_recovery_revalidate_the_complete_supplier_ch
             replay.families[0] = market.families[0].clone();
             market.refresh(&tuning);
             replay.refresh(&tuning);
-            assert!(market.funding.closure_passes <= 2,
-                "zero-customer propagation must not replay the census for each supplier link");
+            assert!(
+                market.funding.closure_passes <= 2,
+                "zero-customer propagation must not replay the census for each supplier link"
+            );
             assert_eq!(market.funding.capacities, replay.funding.capacities);
-            market.funding.customers.assert_same_accounts_for_test(&replay.funding.customers);
-            assert_eq!(&market.funding.capacities[..length], vec![u32::from(income > 0.0); length],
-                "length={length}, income={income}");
+            market
+                .funding
+                .customers
+                .assert_same_accounts_for_test(&replay.funding.customers);
+            assert_eq!(
+                &market.funding.capacities[..length],
+                vec![u32::from(income > 0.0); length],
+                "length={length}, income={income}"
+            );
             for source in 0..length {
-                assert_eq!(market.funding.business.financing(source).map(f64::to_bits),
-                    replay.funding.business.financing(source).map(f64::to_bits));
+                assert_eq!(
+                    market.funding.business.financing(source).map(f64::to_bits),
+                    replay.funding.business.financing(source).map(f64::to_bits)
+                );
                 let mut deliveries = Vec::new();
-                market.funding.input_supply.visit_dependents(source, |buyer, _, units|
-                    deliveries.push((buyer, units)));
-                assert_eq!(deliveries, if income > 0.0 && source + 1 < length {
-                    vec![(source + 1, 200.0)]
-                } else { vec![] }, "source={source}, length={length}, income={income}");
+                market
+                    .funding
+                    .input_supply
+                    .visit_dependents(source, |buyer, _, units| deliveries.push((buyer, units)));
+                assert_eq!(
+                    deliveries,
+                    if income > 0.0 && source + 1 < length {
+                        vec![(source + 1, 200.0)]
+                    } else {
+                        vec![]
+                    },
+                    "source={source}, length={length}, income={income}"
+                );
             }
         }
     }
@@ -608,8 +993,11 @@ fn partial_downstream_income_caps_the_supplier_chain_without_a_census_per_link()
     tuning.owa_export_price_multiplier = 0.0;
     // Incomes at which the end operation sells part of its output, then fails after its
     // partial sales have already capped the chain (end price scales with chain length).
-    for (length, partial, failing) in [(2, 7_750.0, 7_500.0), (8, 11_250.0, 10_500.0),
-        (32, 25_000.0, 24_500.0)] {
+    for (length, partial, failing) in [
+        (2, 7_750.0, 7_500.0),
+        (8, 11_250.0, 10_500.0),
+        (32, 25_000.0, 24_500.0),
+    ] {
         let mut market = financing_chain(length, 0);
         let mut replay = financing_chain(length, 0);
         replay.funding.disable_customer_cascade();
@@ -619,29 +1007,66 @@ fn partial_downstream_income_caps_the_supplier_chain_without_a_census_per_link()
             replay.families[0] = market.families[0].clone();
             market.refresh(&tuning);
             replay.refresh(&tuning);
-            assert!(market.funding.closure_passes <= 3,
-                "positive customer limits must not replay the census for each supplier link");
+            assert!(
+                market.funding.closure_passes <= 3,
+                "positive customer limits must not replay the census for each supplier link"
+            );
             if income == partial {
-                assert!(replay.funding.closure_passes >= length, "fixture must exercise the cascade");
+                assert!(
+                    replay.funding.closure_passes >= length,
+                    "fixture must exercise the cascade"
+                );
             }
             assert_eq!(market.funding.capacities, replay.funding.capacities);
-            market.funding.customers.assert_same_accounts_for_test(&replay.funding.customers);
+            market
+                .funding
+                .customers
+                .assert_same_accounts_for_test(&replay.funding.customers);
             for source in 0..length {
                 let building = &market.allocator.buildings[source];
-                let profile = market.catalog.profile_by_runtime_id(building.economy_profile_runtime_id).unwrap();
-                assert_eq!(market.funding.input_demand_scale(source, building, profile, false).to_bits(),
-                    replay.funding.input_demand_scale(source, building, profile, false).to_bits());
-                assert_eq!(market.funding.business.financing(source).map(f64::to_bits),
-                    replay.funding.business.financing(source).map(f64::to_bits));
+                let profile = market
+                    .catalog
+                    .profile_by_runtime_id(building.economy_profile_runtime_id)
+                    .unwrap();
+                assert_eq!(
+                    market
+                        .funding
+                        .input_demand_scale(source, building, profile, false)
+                        .to_bits(),
+                    replay
+                        .funding
+                        .input_demand_scale(source, building, profile, false)
+                        .to_bits()
+                );
+                assert_eq!(
+                    market.funding.business.financing(source).map(f64::to_bits),
+                    replay.funding.business.financing(source).map(f64::to_bits)
+                );
                 let [mut deliveries, mut expected] = [Vec::new(), Vec::new()];
-                market.funding.input_supply.visit_dependents(source, |buyer, _, units|
-                    deliveries.push((buyer, units.to_bits())));
-                replay.funding.input_supply.visit_dependents(source, |buyer, _, units|
-                    expected.push((buyer, units.to_bits())));
-                assert_eq!(deliveries, expected, "source={source}, length={length}, income={income}");
+                market
+                    .funding
+                    .input_supply
+                    .visit_dependents(source, |buyer, _, units| {
+                        deliveries.push((buyer, units.to_bits()))
+                    });
+                replay
+                    .funding
+                    .input_supply
+                    .visit_dependents(source, |buyer, _, units| {
+                        expected.push((buyer, units.to_bits()))
+                    });
+                assert_eq!(
+                    deliveries, expected,
+                    "source={source}, length={length}, income={income}"
+                );
                 if income == partial {
-                    let activity = market.funding.input_demand_scale(source, building, profile, false);
-                    assert!(activity > 0.0 && activity < 1.0, "length={length}, activity={activity}");
+                    let activity = market
+                        .funding
+                        .input_demand_scale(source, building, profile, false);
+                    assert!(
+                        activity > 0.0 && activity < 1.0,
+                        "length={length}, activity={activity}"
+                    );
                 }
             }
         }
@@ -650,9 +1075,15 @@ fn partial_downstream_income_caps_the_supplier_chain_without_a_census_per_link()
 
 fn with_disconnected_customer_chain(mut market: MarketFixture, length: usize) -> MarketFixture {
     let first = market.allocator.buildings.len();
-    let a = market.graph.add_node(Vector3::new(2_000.0, 0.0, 0.0), NodeType::Border);
-    let b = market.graph.add_node(Vector3::new(3_000.0, 0.0, 0.0), NodeType::Junction);
-    let edge = market.graph.add_edge(make_road_edge(a, b, 2_000.0, 3_000.0));
+    let a = market
+        .graph
+        .add_node(Vector3::new(2_000.0, 0.0, 0.0), NodeType::Border);
+    let b = market
+        .graph
+        .add_node(Vector3::new(3_000.0, 0.0, 0.0), NodeType::Junction);
+    let edge = market
+        .graph
+        .add_edge(make_road_edge(a, b, 2_000.0, 3_000.0));
     for index in 0..=length {
         let mut building = market.allocator.buildings[index].clone();
         building.center_x += 2_000.0;
@@ -668,7 +1099,9 @@ fn with_disconnected_customer_chain(mut market: MarketFixture, length: usize) ->
     market.network.lane_system.rebuild(&mut market.graph);
     market.network.rebuild_cch_and_check(&market.graph);
     market.allocator.rebuild_zone_index();
-    market.allocator.rebuild_entrance_cache(&market.graph, &market.network.lane_system);
+    market
+        .allocator
+        .rebuild_entrance_cache(&market.graph, &market.network.lane_system);
     market
 }
 
@@ -688,20 +1121,39 @@ fn disconnected_healthy_customers_do_not_support_a_failed_supplier_chain() {
             market.refresh(&tuning);
             replay.refresh(&tuning);
             assert_eq!(market.funding.capacities, replay.funding.capacities);
-            market.funding.customers.assert_same_accounts_for_test(&replay.funding.customers);
+            market
+                .funding
+                .customers
+                .assert_same_accounts_for_test(&replay.funding.customers);
             for (first, funded) in [(0, income > 0.0), (length + 1, true)] {
-                assert!(market.funding.closure_passes <= 2,
-                    "disconnected customers must not force a census for each failed supplier link");
-                assert_eq!(&market.funding.capacities[first..first + length], vec![u32::from(funded); length]);
+                assert!(
+                    market.funding.closure_passes <= 2,
+                    "disconnected customers must not force a census for each failed supplier link"
+                );
+                assert_eq!(
+                    &market.funding.capacities[first..first + length],
+                    vec![u32::from(funded); length]
+                );
                 for source in first..first + length {
-                    assert_eq!(market.funding.business.financing(source).map(f64::to_bits),
-                        replay.funding.business.financing(source).map(f64::to_bits));
+                    assert_eq!(
+                        market.funding.business.financing(source).map(f64::to_bits),
+                        replay.funding.business.financing(source).map(f64::to_bits)
+                    );
                     let mut deliveries = Vec::new();
-                    market.funding.input_supply.visit_dependents(source, |buyer, _, units|
-                        deliveries.push((buyer, units)));
-                    assert_eq!(deliveries, if funded && source + 1 < first + length {
-                        vec![(source + 1, 200.0)]
-                    } else { vec![] });
+                    market
+                        .funding
+                        .input_supply
+                        .visit_dependents(source, |buyer, _, units| {
+                            deliveries.push((buyer, units))
+                        });
+                    assert_eq!(
+                        deliveries,
+                        if funded && source + 1 < first + length {
+                            vec![(source + 1, 200.0)]
+                        } else {
+                            vec![]
+                        }
+                    );
                 }
             }
         }
@@ -761,10 +1213,19 @@ fn benchmark_chain_cases(disconnected: bool) {
     let mut tuning = (*load_runtime_economy_tuning().unwrap()).clone();
     tuning.owa_import_price_multiplier = 10.0;
     tuning.owa_export_price_multiplier = 0.0;
-    for (length, background) in [(4, 0), (16, 0), (64, 0), (4, 16_384), (16, 16_384), (64, 16_384)] {
+    for (length, background) in [
+        (4, 0),
+        (16, 0),
+        (64, 0),
+        (4, 16_384),
+        (16, 16_384),
+        (64, 16_384),
+    ] {
         let setup = Instant::now();
         let mut market = financing_chain(length, background);
-        if disconnected { market = with_disconnected_customer_chain(market, length); }
+        if disconnected {
+            market = with_disconnected_customer_chain(market, length);
+        }
         let setup_ms = setup.elapsed().as_secs_f64() * 1_000.0;
         let cold = Instant::now();
         market.refresh(&tuning);
@@ -775,19 +1236,30 @@ fn benchmark_chain_cases(disconnected: bool) {
             let start = Instant::now();
             market.refresh(&tuning);
             let elapsed = start.elapsed().as_secs_f64() * 1_000.0;
-            if round >= 3 { samples[round - 3] = elapsed; passes[round - 3] = market.funding.closure_passes; }
-            assert!(market.funding.capacities[..length + background + 1].iter().all(|&workers| workers == 0));
+            if round >= 3 {
+                samples[round - 3] = elapsed;
+                passes[round - 3] = market.funding.closure_passes;
+            }
+            assert!(
+                market.funding.capacities[..length + background + 1]
+                    .iter()
+                    .all(|&workers| workers == 0)
+            );
             if disconnected {
-                assert!(market.funding.capacities[length + background + 1..2 * length + background + 1]
-                    .iter().all(|&workers| workers == 1));
+                assert!(
+                    market.funding.capacities[length + background + 1..2 * length + background + 1]
+                        .iter()
+                        .all(|&workers| workers == 1)
+                );
             }
         }
         samples.sort_by(f64::total_cmp);
-        eprintln!("financing_cascade length={length} background={background} disconnected={disconnected} setup_ms={setup_ms:.3} cold_ms={cold_ms:.3} warm_median_ms={:.3} warm_max_ms={:.3} passes={passes:?}", samples[7], samples[14]);
+        eprintln!(
+            "financing_cascade length={length} background={background} disconnected={disconnected} setup_ms={setup_ms:.3} cold_ms={cold_ms:.3} warm_median_ms={:.3} warm_max_ms={:.3} passes={passes:?}",
+            samples[7], samples[14]
+        );
     }
 }
-
-
 
 #[test]
 #[ignore = "manual release partial financing-cascade depth/background scaling; setup excluded"]
@@ -797,8 +1269,12 @@ fn benchmark_partial_financing_cascade_depth() {
     tuning.owa_import_price_multiplier = 10.0;
     tuning.owa_export_price_multiplier = 0.0;
     // Partial end-customer incomes from the replay regression; every link stays partly active.
-    for (length, income, background) in [(8, 11_250.0, 0), (32, 25_000.0, 0),
-        (8, 11_250.0, 16_384), (32, 25_000.0, 16_384)] {
+    for (length, income, background) in [
+        (8, 11_250.0, 0),
+        (32, 25_000.0, 0),
+        (8, 11_250.0, 16_384),
+        (32, 25_000.0, 16_384),
+    ] {
         let setup = Instant::now();
         let mut market = financing_chain(length, background);
         market.families[0].gross_daily_wages = income;
@@ -813,14 +1289,23 @@ fn benchmark_partial_financing_cascade_depth() {
             let start = Instant::now();
             market.refresh(&tuning);
             let elapsed = start.elapsed().as_secs_f64() * 1_000.0;
-            if round >= 3 { samples[round - 3] = elapsed; passes[round - 3] = market.funding.closure_passes; }
-            assert!(market.funding.capacities[..length].iter().all(|&workers| workers == 1));
+            if round >= 3 {
+                samples[round - 3] = elapsed;
+                passes[round - 3] = market.funding.closure_passes;
+            }
+            assert!(
+                market.funding.capacities[..length]
+                    .iter()
+                    .all(|&workers| workers == 1)
+            );
         }
         samples.sort_by(f64::total_cmp);
-        eprintln!("partial_financing_cascade length={length} background={background} setup_ms={setup_ms:.3} cold_ms={cold_ms:.3} warm_median_ms={:.3} warm_max_ms={:.3} passes={passes:?}", samples[7], samples[14]);
+        eprintln!(
+            "partial_financing_cascade length={length} background={background} setup_ms={setup_ms:.3} cold_ms={cold_ms:.3} warm_median_ms={:.3} warm_max_ms={:.3} passes={passes:?}",
+            samples[7], samples[14]
+        );
     }
 }
-
 
 // Adds a cashless rival beside every link of the first chain, on the same road.
 fn with_cashless_rivals(mut market: MarketFixture, length: usize) -> MarketFixture {
@@ -831,31 +1316,66 @@ fn with_cashless_rivals(mut market: MarketFixture, length: usize) -> MarketFixtu
         market.allocator.buildings.push(rival);
     }
     market.allocator.rebuild_zone_index();
-    market.allocator.rebuild_entrance_cache(&market.graph, &market.network.lane_system);
+    market
+        .allocator
+        .rebuild_entrance_cache(&market.graph, &market.network.lane_system);
     market
 }
 
 // Compares every published link quantity with full replay: workers, recipe activity,
 // financing and exact deliveries.
-fn assert_links_match_replay(market: &MarketFixture, replay: &MarketFixture, links: impl Iterator<Item = usize>) {
+fn assert_links_match_replay(
+    market: &MarketFixture,
+    replay: &MarketFixture,
+    links: impl Iterator<Item = usize>,
+) {
     assert_eq!(market.funding.capacities, replay.funding.capacities);
-    market.funding.customers.assert_same_accounts_for_test(&replay.funding.customers);
+    market
+        .funding
+        .customers
+        .assert_same_accounts_for_test(&replay.funding.customers);
     for source in links {
         let building = &market.allocator.buildings[source];
-        let profile = market.catalog.profile_by_runtime_id(building.economy_profile_runtime_id).unwrap();
-        assert_eq!(market.funding.input_demand_scale(source, building, profile, false).to_bits(),
-            replay.funding.input_demand_scale(source, building, profile, false).to_bits());
-        assert_eq!(market.funding.business.financing(source).map(f64::to_bits),
-            replay.funding.business.financing(source).map(f64::to_bits));
+        let profile = market
+            .catalog
+            .profile_by_runtime_id(building.economy_profile_runtime_id)
+            .unwrap();
+        assert_eq!(
+            market
+                .funding
+                .input_demand_scale(source, building, profile, false)
+                .to_bits(),
+            replay
+                .funding
+                .input_demand_scale(source, building, profile, false)
+                .to_bits()
+        );
+        assert_eq!(
+            market.funding.business.financing(source).map(f64::to_bits),
+            replay.funding.business.financing(source).map(f64::to_bits)
+        );
         let [mut deliveries, mut expected] = [Vec::new(), Vec::new()];
-        market.funding.input_supply.visit_dependents(source, |buyer, _, units| deliveries.push((buyer, units.to_bits())));
-        replay.funding.input_supply.visit_dependents(source, |buyer, _, units| expected.push((buyer, units.to_bits())));
+        market
+            .funding
+            .input_supply
+            .visit_dependents(source, |buyer, _, units| {
+                deliveries.push((buyer, units.to_bits()))
+            });
+        replay
+            .funding
+            .input_supply
+            .visit_dependents(source, |buyer, _, units| {
+                expected.push((buyer, units.to_bits()))
+            });
         assert_eq!(deliveries, expected, "source={source}");
     }
 }
 
 fn rival_cascade(length: usize, background: usize) -> MarketFixture {
-    with_cashless_rivals(with_disconnected_customer_chain(financing_chain(length, background), length), length)
+    with_cashless_rivals(
+        with_disconnected_customer_chain(financing_chain(length, background), length),
+        length,
+    )
 }
 
 #[test]
@@ -876,16 +1396,35 @@ fn cashless_rivals_do_not_hold_zero_or_partial_cascades_open() {
             replay.families[0] = market.families[0].clone();
             market.refresh(&tuning);
             replay.refresh(&tuning);
-            assert!(market.funding.closure_passes <= 2, "length={length}, income={income}");
+            assert!(
+                market.funding.closure_passes <= 2,
+                "length={length}, income={income}"
+            );
             if income < 1_000_000.0 && length > 2 {
-                assert!(replay.funding.closure_passes >= length, "fixture must exercise the cascade");
+                assert!(
+                    replay.funding.closure_passes >= length,
+                    "fixture must exercise the cascade"
+                );
             }
             // Both chains and every rival; the homes between them carry no recipe.
-            assert_links_match_replay(&market, &replay,
-                (0..length).chain(length + 1..2 * length + 1).chain(links - length..links));
-            assert!(market.funding.capacities[links - length..].iter().all(|&workers| workers == 0));
-            assert!(market.funding.capacities[length + 1..2 * length + 1].iter().all(|&workers| workers == 1),
-                "the disconnected healthy chain stays funded");
+            assert_links_match_replay(
+                &market,
+                &replay,
+                (0..length)
+                    .chain(length + 1..2 * length + 1)
+                    .chain(links - length..links),
+            );
+            assert!(
+                market.funding.capacities[links - length..]
+                    .iter()
+                    .all(|&workers| workers == 0)
+            );
+            assert!(
+                market.funding.capacities[length + 1..2 * length + 1]
+                    .iter()
+                    .all(|&workers| workers == 1),
+                "the disconnected healthy chain stays funded"
+            );
         }
     }
 }
@@ -925,8 +1464,10 @@ fn unprofitable_supplier_cycles_match_replay_within_their_depth() {
             market.refresh(&tuning);
             replay.refresh(&tuning);
             assert_links_match_replay(&market, &replay, 0..length);
-            assert!(market.funding.closure_passes <= 2 && market.funding.propagation_rounds <= 1,
-                "length={length}, units={units}");
+            assert!(
+                market.funding.closure_passes <= 2 && market.funding.propagation_rounds <= 1,
+                "length={length}, units={units}"
+            );
         }
     }
 }
@@ -938,14 +1479,31 @@ fn benchmark_combined_financing_cascades() {
     let mut tuning = (*load_runtime_economy_tuning().unwrap()).clone();
     tuning.owa_import_price_multiplier = 10.0;
     tuning.owa_export_price_multiplier = 0.0;
-    let incomes = |length| match length { 8 => 11_250.0, 32 => 25_000.0, _ => 0.0 };
-    for (case, length, background) in [("rivals", 8, 0), ("rivals", 32, 0), ("rivals", 64, 0),
-        ("rivals", 8, 16_384), ("rivals", 32, 16_384), ("rivals", 64, 16_384),
-        ("cycle", 4, 0), ("cycle", 16, 0), ("cycle", 64, 0), ("cycle", 4, 16_384), ("cycle", 16, 16_384),
-        ("cycle", 64, 16_384)] {
+    let incomes = |length| match length {
+        8 => 11_250.0,
+        32 => 25_000.0,
+        _ => 0.0,
+    };
+    for (case, length, background) in [
+        ("rivals", 8, 0),
+        ("rivals", 32, 0),
+        ("rivals", 64, 0),
+        ("rivals", 8, 16_384),
+        ("rivals", 32, 16_384),
+        ("rivals", 64, 16_384),
+        ("cycle", 4, 0),
+        ("cycle", 16, 0),
+        ("cycle", 64, 0),
+        ("cycle", 4, 16_384),
+        ("cycle", 16, 16_384),
+        ("cycle", 64, 16_384),
+    ] {
         let setup = Instant::now();
-        let mut market = if case == "rivals" { rival_cascade(length, background) }
-            else { financing_links(length, true, 199.8, None, background) };
+        let mut market = if case == "rivals" {
+            rival_cascade(length, background)
+        } else {
+            financing_links(length, true, 199.8, None, background)
+        };
         // Rival chains alternate partial or zero end income; 64 links use the zero cascade.
         market.families[0].gross_daily_wages = incomes(length);
         market.families[0].budget = incomes(length);
@@ -960,9 +1518,15 @@ fn benchmark_combined_financing_cascades() {
             let start = Instant::now();
             market.refresh(&tuning);
             let elapsed = start.elapsed().as_secs_f64() * 1_000.0;
-            if round >= 3 { samples[round - 3] = elapsed; passes[round - 3] = market.funding.closure_passes; }
+            if round >= 3 {
+                samples[round - 3] = elapsed;
+                passes[round - 3] = market.funding.closure_passes;
+            }
         }
         samples.sort_by(f64::total_cmp);
-        eprintln!("combined_financing_cascade case={case} length={length} background={background} setup_ms={setup_ms:.3} cold_ms={cold_ms:.3} cold_passes={cold_passes} warm_median_ms={:.3} warm_max_ms={:.3} passes={passes:?}", samples[7], samples[14]);
+        eprintln!(
+            "combined_financing_cascade case={case} length={length} background={background} setup_ms={setup_ms:.3} cold_ms={cold_ms:.3} cold_passes={cold_passes} warm_median_ms={:.3} warm_max_ms={:.3} passes={passes:?}",
+            samples[7], samples[14]
+        );
     }
 }

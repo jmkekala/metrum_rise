@@ -40,8 +40,6 @@ var debug_mesh: ImmediateMesh
 var debug_labels: Array = []
 var show_paths = false
 var _debug_overlay_visible := false
-var _pedestrian_vat_debug_mode := 0
-var _pedestrian_vat_debug_mode_name := ""
 
 func _ready():
 	# --- Walker MultiMeshes — VAT (Vertex Animation Texture) pipeline ---
@@ -74,11 +72,11 @@ func _ready():
 	}
 
 	var walk_shader = preload("res://scripts/shaders/pedestrian_walk.gdshader")
-	_pedestrian_vat_debug_mode_name = _pedestrian_debug_mode_name()
-	_pedestrian_vat_debug_mode = _pedestrian_debug_mode_from(_pedestrian_vat_debug_mode_name)
-	if _pedestrian_vat_debug_mode != 0:
-		print("Pedestrian VAT debug mode: ", _pedestrian_vat_debug_mode_name)
-		print("  ", _pedestrian_debug_mode_description(_pedestrian_vat_debug_mode))
+	var console := get_node_or_null("/root/DebugConsole")
+	if console != null:
+		console.visual_mode_changed.connect(_on_visual_mode_changed)
+	# The VAT debug view index is the shader's `debug_mode`.
+	var pedestrian_vat_debug_mode := MetrumDebug.visual_mode_index("pedestrian_vat")
 
 	for p_type in person_meshes:
 		var gltf_doc   := GLTFDocument.new()
@@ -130,7 +128,7 @@ func _ready():
 		mat.set_shader_parameter("albedo_texture", _load_source_texture(person_palettes[p_type]))
 		mat.set_shader_parameter("num_frames",     WALKER_VAT_FRAMES)
 		mat.set_shader_parameter("albedo_tint",    person_tints[p_type])
-		mat.set_shader_parameter("debug_mode",     _pedestrian_vat_debug_mode)
+		mat.set_shader_parameter("debug_mode",     pedestrian_vat_debug_mode)
 		mat.set_shader_parameter("reverse_phase",  WALKER_VAT_REVERSE_PHASE)
 		mmi.material_override = mat
 
@@ -325,38 +323,12 @@ func _hide_debug_labels() -> void:
 	for label in debug_labels:
 		label.visible = false
 
-func _pedestrian_debug_mode_name() -> String:
-	var mode := String(MetrumDebug.startup_mode("pedestrian_vat"))
-	var args := OS.get_cmdline_user_args()
-	for i in range(args.size()):
-		var arg := str(args[i]).strip_edges().to_lower()
-		if arg.begins_with("--pedestrian-vat-debug="):
-			mode = arg.trim_prefix("--pedestrian-vat-debug=")
-		elif arg == "--pedestrian-vat-debug" and i + 1 < args.size():
-			mode = str(args[i + 1]).strip_edges().to_lower()
-	return mode
-
-func _pedestrian_debug_mode_from(mode: String) -> int:
-	match mode:
-		"rest":
-			return 1
-		"uv":
-			return 2
-		"off", "offset", "offsets":
-			return 3
-		_:
-			return 0
-
-func _pedestrian_debug_mode_description(mode: int) -> String:
-	match mode:
-		1:
-			return "rest disables animation/VAT offsets; rigid sliding is expected."
-		2:
-			return "uv colors vertex-id UVs; animation offsets stay disabled."
-		3:
-			return "off/offset shows VAT offset magnitude while applying offsets; normal textures are hidden."
-		_:
-			return ""
+func _on_visual_mode_changed(mode: String) -> void:
+	if mode != "pedestrian_vat":
+		return
+	var debug_mode := MetrumDebug.visual_mode_index("pedestrian_vat")
+	for mmi in walker_mmis.values():
+		(mmi.material_override as ShaderMaterial).set_shader_parameter("debug_mode", debug_mode)
 
 func _load_source_texture(path: String) -> Texture2D:
 	if texture_cache.has(path):

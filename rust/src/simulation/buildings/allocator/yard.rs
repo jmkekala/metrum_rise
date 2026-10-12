@@ -60,15 +60,17 @@ impl BuildingAllocator {
         let Some(building) = self.buildings.get(building_idx) else {
             return;
         };
-        let Some(manifest) = self.registry.get(&building.asset_id).map(|entry| &entry.manifest)
+        let Some(manifest) = self
+            .registry
+            .get(&building.asset_id)
+            .map(|entry| &entry.manifest)
         else {
             return;
         };
         let Some(data) = manifest.building.as_ref() else {
             return;
         };
-        if building.parcel_id == 0 || (data.yard_hedge.is_none() && data.yard_planting.is_empty())
-        {
+        if building.parcel_id == 0 || (data.yard_hedge.is_none() && data.yard_planting.is_empty()) {
             return;
         }
         let frontage = manifest.building_frontage_forward();
@@ -79,12 +81,17 @@ impl BuildingAllocator {
                     .iter()
                     .map(|surface| surface.vertices.clone())
                     .collect();
-                let structures: Vec<_> =
-                    manifest.mesh_parts.iter().filter_map(structure_footprint).collect();
+                let structures: Vec<_> = manifest
+                    .mesh_parts
+                    .iter()
+                    .filter_map(structure_footprint)
+                    .collect();
                 let entrance = manifest
                     .anchors
                     .iter()
-                    .find(|anchor| anchor.anchor_type == AnchorType::Entrance && anchor.name == "main")
+                    .find(|anchor| {
+                        anchor.anchor_type == AnchorType::Entrance && anchor.name == "main"
+                    })
                     .map(|anchor| [anchor.position[0], anchor.position[2]]);
                 let lot = YardLot {
                     half_width_m: f32::from(building.width_cells) * zone_cell_m * 0.5,
@@ -94,7 +101,8 @@ impl BuildingAllocator {
                     entrance,
                     structures: &structures,
                 };
-                let world = |p: [f32; 2]| building_local_xz_pos(building, [p[0], 0.0, p[1]], frontage);
+                let world =
+                    |p: [f32; 2]| building_local_xz_pos(building, [p[0], 0.0, p[1]], frontage);
                 plan_yard_hedge(&lot, &yard.edges)
                     .into_iter()
                     .map(|row| YardHedgeRowWorld {

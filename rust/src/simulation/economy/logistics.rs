@@ -35,6 +35,9 @@ pub use self::data::{
 };
 pub(crate) use self::quantization::{export_dispatch_target_kg, quantize_requested_amount};
 pub(crate) use self::recurring_supply::{ProjectedSupplySource, RecurringSupply};
-pub(crate) use self::resource::{building_outputs_can_export_to_owa, building_outputs_can_supply_local_inputs, freight_goods_multiplier, imported_input_unit_price};
-pub(crate) use self::timing::freight_price_phase;
+pub(crate) use self::resource::{
+    building_outputs_can_export_to_owa, building_outputs_can_supply_local_inputs,
+    freight_goods_multiplier, imported_input_unit_price,
+};
 pub(crate) use self::routing::collect_connected_border_nodes;
+pub(crate) use self::timing::freight_price_phase;

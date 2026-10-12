@@ -46,7 +46,8 @@ pub(super) fn compile_phases(catalog: &RuntimeEconomyCatalog) -> (Vec<usize>, us
 }
 
 fn phases(outgoing: &[Vec<usize>], incoming: &[Vec<usize>]) -> (Vec<usize>, usize) {
-    let (groups, count) = crate::simulation::pathing::components::strong_components(outgoing, incoming);
+    let (groups, count) =
+        crate::simulation::pathing::components::strong_components(outgoing, incoming);
     // Visit each group once, retaining every member's outgoing edges. Using depth
     // rather than arbitrary group ids preserves building priority across sibling recipes.
     let mut members = vec![Vec::new(); count];

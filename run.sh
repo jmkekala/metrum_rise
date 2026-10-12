@@ -18,9 +18,11 @@
 #                        Replay pinned Kuopio terrain cases and audit road profiles (diagnostic)
 #
 # Debug modes:
-#   These set the startup state of the debug channels. In game, the key left of "1"
-#   (§ on Nordic layouts) opens the debug console: switch channels at runtime, read,
-#   filter, copy, or dump the log to user://debug/. See docs/debug.md.
+#   These set the startup state of the debug channels and visual modes. In game, the key
+#   left of "1" (§ on Nordic layouts) opens the debug console: switch channels and visual
+#   modes (terrain-visual, visuals, building-sites-visual, pedestrian VAT, terrain-lod1,
+#   terrain-full) at runtime, read, filter, copy, or dump the log to user://debug/.
+#   The options below only pick the starting value of a visual mode. See docs/debug.md.
 #   --debug              General debug channels (stdout); terrain, buildings, perf,
 #                        traffic, sim and lighting are opt-in
 #   --debug <category>   Only the named channels (stdout), comma-separated
@@ -60,7 +62,7 @@
 #   --pedestrian-vat-debug=<mode>
 #                        Pedestrian VAT material debug. Modes:
 #                        rest = no VAT animation, uv = vertex IDs,
-#                        off = VAT offset magnitude overlay.
+#                        offsets = VAT offset magnitude overlay.
 #   --debug-world-editor Alias for --debug world-editor
 #                        Shows world-editor create/open/save/tool activity (stdout)
 #   --debug-sim          Hourly simulation summaries (stdout)
@@ -598,14 +600,14 @@ case "$BUILDING_SITE_VISUAL_DEBUG_MODE" in
 esac
 
 case "$PEDESTRIAN_VAT_DEBUG_MODE" in
-    rest|uv|off|"")
+    rest|uv|offsets|off|"")
         ;;
-    offset|offsets)
-        PEDESTRIAN_VAT_DEBUG_MODE="off"
+    offset)
+        PEDESTRIAN_VAT_DEBUG_MODE="offsets"
         ;;
     *)
         echo "Error: unknown pedestrian VAT debug mode '$PEDESTRIAN_VAT_DEBUG_MODE'." >&2
-        echo "Valid modes: rest, uv, off" >&2
+        echo "Valid modes: rest, uv, offsets, off" >&2
         exit 2
         ;;
 esac
@@ -978,7 +980,8 @@ if [ $TEST -eq 1 ]; then
         road_junction_preview_test road_preview_stream_test vegetation_invalidation_test \
         vegetation_edit_test vegetation_appearance_test vegetation_land_cover_test \
         new_game_dialog_test day_cycle_test camera_save_load_test \
-        zoning_road_tool_test zoning_cells_tool_test zoning_reference_test debug_console_test; do
+        zoning_road_tool_test zoning_cells_tool_test zoning_reference_test debug_console_test \
+        debug_visual_modes_test; do
         bridge_test_command=(godot --headless --path "$asset_test_project" --script "res://tests/${bridge_test_script}.gd")
         # This regression probes inputs that previously stalled the simulation thread.
         if [ "$bridge_test_script" = simulation_speed_input_test ]; then
@@ -1019,10 +1022,19 @@ if [ $TEST -eq 1 ]; then
             --audio-driver Dummy --resolution 128x128 --script res://tests/terrain_overlay_shader_test.gd; then
             exit 1
         fi
+        # Headless cannot show what the shaders receive; this run reads the debug-view globals.
+        if ! xvfb-run -a godot --display-driver x11 --rendering-method gl_compatibility \
+            --audio-driver Dummy --resolution 128x128 --script res://tests/debug_visual_modes_test.gd; then
+            exit 1
+        fi
     elif [ "$METRUM_PLATFORM" = "linux" ] && [ -n "$DISPLAY" ]; then
         echo "Running rendered terrain shader tests on $DISPLAY..."
         if ! godot --display-driver x11 --rendering-method gl_compatibility \
             --audio-driver Dummy --resolution 128x128 --script res://tests/terrain_overlay_shader_test.gd; then
+            exit 1
+        fi
+        if ! godot --display-driver x11 --rendering-method gl_compatibility \
+            --audio-driver Dummy --resolution 128x128 --script res://tests/debug_visual_modes_test.gd; then
             exit 1
         fi
     elif [ "$METRUM_PLATFORM" = "linux" ]; then

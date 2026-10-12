@@ -2,8 +2,8 @@
 
 //! Household record storage and building-reference maintenance.
 
-use std::sync::atomic::{AtomicU32, AtomicUsize};
 use rayon::prelude::*;
+use std::sync::atomic::{AtomicU32, AtomicUsize};
 
 use super::metrics::household_supply_resource_runtime_id;
 use super::replenishment::{
@@ -347,8 +347,12 @@ impl HouseholdSystem {
         if mapping.len() == 1 {
             let (&old, &new) = mapping.iter().next().unwrap();
             self.households.par_iter_mut().for_each(|household| {
-                if household.home_building_id == old { household.home_building_id = new; }
-                if household.reserved_store_building_id == old { household.reserved_store_building_id = new; }
+                if household.home_building_id == old {
+                    household.home_building_id = new;
+                }
+                if household.reserved_store_building_id == old {
+                    household.reserved_store_building_id = new;
+                }
             });
         } else if !mapping.is_empty() {
             self.households.par_iter_mut().for_each(|household| {

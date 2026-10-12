@@ -40,7 +40,10 @@ const CASES: [Case; 3] = [
     // The north-east corner bend becomes a T.
     Case {
         name: "bend_to_t",
-        points: [(EAST_EDGE_X, TOP_ROW_Z), (EAST_EDGE_X + EXTENSION_M, TOP_ROW_Z)],
+        points: [
+            (EAST_EDGE_X, TOP_ROW_Z),
+            (EAST_EDGE_X + EXTENSION_M, TOP_ROW_Z),
+        ],
     },
     // A new T on the edge street 25 m from the T junctions on either side.
     Case {
@@ -72,10 +75,7 @@ fn cold_node_edit_latency() {
     // Gameplay keeps undo history; the benchmark city does not.
     core.benchmark_mode = false;
     for case in &CASES {
-        let points = case
-            .points
-            .map(|(x, z)| Vector3::new(x, 0.0, z))
-            .to_vec();
+        let points = case.points.map(|(x, z)| Vector3::new(x, 0.0, z)).to_vec();
         let mut samples = [Samples::default(), Samples::default()];
         let mut expected: Option<LocalProducts> = None;
         for repetition in 0..REPETITIONS * 2 {
@@ -179,7 +179,10 @@ fn set_neighbourhood_topologies(core: &mut SimCore, centre: Vector3, warm: bool)
         surface.mark_node_dirty(&core.region_graph, node);
     }
     finalize_network(core);
-    let topologies = &core.transit_network.road_surface.compiled_visual_node_topologies;
+    let topologies = &core
+        .transit_network
+        .road_surface
+        .compiled_visual_node_topologies;
     assert!(nodes.iter().all(|node| topologies.contains_key(node)));
 }
 

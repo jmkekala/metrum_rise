@@ -10,8 +10,8 @@ use crate::simulation::network::surface::{RoadSurfaceSystem, RoadVec3};
 use godot::prelude::{Vector2, Vector3};
 use i_overlay::core::{fill_rule::FillRule, overlay_rule::OverlayRule};
 use i_overlay::float::single::SingleFloatOverlay;
-use std::collections::{HashMap, HashSet};
 use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
 
 /// Prepared polygon used for exact positive-area overlap, including concave shapes and containment.
 #[derive(Clone, Debug)]
@@ -37,7 +37,11 @@ impl PolygonFootprint<'static> {
     pub(crate) fn from_precise_points(points: impl Iterator<Item = [f64; 2]>) -> Self {
         let points: Vec<_> = points.collect();
         let (min, max) = precise_bounds(points.iter().copied());
-        Self { points: Cow::Owned(points), min, max }
+        Self {
+            points: Cow::Owned(points),
+            min,
+            max,
+        }
     }
 
     fn from_road(points: &[RoadVec3]) -> Self {
@@ -50,7 +54,11 @@ impl<'a> PolygonFootprint<'a> {
     /// Bounds and overlap semantics are identical to the owned persistent representation.
     pub(crate) fn from_precise_slice(points: &'a [[f64; 2]]) -> Self {
         let (min, max) = precise_bounds(points.iter().copied());
-        Self { points: Cow::Borrowed(points), min, max }
+        Self {
+            points: Cow::Borrowed(points),
+            min,
+            max,
+        }
     }
 
     /// Tests occupied interiors; shared edges and vertices are permitted.
@@ -387,17 +395,28 @@ mod tests {
     #[test]
     fn borrowed_footprints_preserve_owned_bounds_and_exact_overlap() {
         for offset in [-8192.0, -512.0, 0.0, 512.0, 8192.0] {
-            let points = [[0.0, 0.0], [30.0, 0.0], [30.0, 10.0],
-                [10.0, 10.0], [10.0, 30.0], [0.0, 30.0]]
-                .map(|[x, z]| [x + offset, z + offset]);
+            let points = [
+                [0.0, 0.0],
+                [30.0, 0.0],
+                [30.0, 10.0],
+                [10.0, 10.0],
+                [10.0, 30.0],
+                [0.0, 30.0],
+            ]
+            .map(|[x, z]| [x + offset, z + offset]);
             let borrowed = PolygonFootprint::from_precise_slice(&points);
             let owned = PolygonFootprint::from_precise_points(points.into_iter());
             assert!(matches!(borrowed.points, Cow::Borrowed(_)));
             assert_eq!(borrowed.points.as_ptr(), points.as_ptr());
             assert_eq!((borrowed.min, borrowed.max), (owned.min, owned.max));
-            for (x, z, size) in [(1.0, 1.0, 2.0), (-1.0, -1.0, 40.0),
-                (15.0, 15.0, 5.0), (30.0, 0.0, 5.0), (29.999999, 0.0, 5.0),
-                (30.000001, 0.0, 5.0)] {
+            for (x, z, size) in [
+                (1.0, 1.0, 2.0),
+                (-1.0, -1.0, 40.0),
+                (15.0, 15.0, 5.0),
+                (30.0, 0.0, 5.0),
+                (29.999999, 0.0, 5.0),
+                (30.000001, 0.0, 5.0),
+            ] {
                 let query = [[x, z], [x + size, z], [x + size, z + size], [x, z + size]]
                     .map(|[x, z]| [x + offset, z + offset]);
                 let query_borrowed = PolygonFootprint::from_precise_slice(&query);

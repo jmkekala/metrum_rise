@@ -98,7 +98,8 @@ fn assert_hillside_bend_grade(segment_count: usize) {
     surface.compile_dirty(&graph, &terrain);
 
     let piece = assert_compiled_bend_piece(&surface, &graph, bend);
-    let asphalt_y_range_m = visual_polygon_y_range_m(&piece.road_surface_polygons().cloned().collect::<Vec<_>>());
+    let asphalt_y_range_m =
+        visual_polygon_y_range_m(&piece.road_surface_polygons().cloned().collect::<Vec<_>>());
     assert!(
         asphalt_y_range_m > 0.75,
         "a hillside bend must not impose a horizontal height-range limit: range={asphalt_y_range_m:.6}"

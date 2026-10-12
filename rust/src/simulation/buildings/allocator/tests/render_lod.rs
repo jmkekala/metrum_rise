@@ -179,7 +179,11 @@ fn building_lod_level_change_rises_in_real_time_and_settles() {
     assert!(sunk < rising && rising < 0.0, "{sunk} < {rising} < 0");
     renderer.acknowledge();
     assert!(renderer.update(&allocator, [0, 0, 0, 0], camera(64.0), 0.0, at(2600)));
-    assert_eq!(y(&renderer), 0.0, "the frame after the rise settles on the support plane");
+    assert_eq!(
+        y(&renderer),
+        0.0,
+        "the frame after the rise settles on the support plane"
+    );
     renderer.acknowledge();
     assert!(!renderer.update(&allocator, [0, 0, 0, 0], camera(64.0), 0.0, at(2700)));
 }

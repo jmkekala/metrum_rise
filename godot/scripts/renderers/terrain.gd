@@ -199,6 +199,8 @@ var _road_debug_enabled: bool:
 	get:
 		return MetrumDebug.is_enabled("road")
 var _terrain_debug_verbose: bool = false
+# Visual debug residency modes, cached because residency and LOD selection read them per patch.
+# The debug console changes them through `_on_visual_mode_changed`.
 var _terrain_force_full_world: bool = false
 var _terrain_force_lod1: bool = false
 var _terrain_mesh_lod_refresh_elapsed_s: float = 0.0
@@ -240,14 +242,15 @@ var _terrain_debug_dirty_batches: int = 0
 var _terrain_debug_dirty_patch_total: int = 0
 var _terrain_debug_last_cull_far_m: float = 0.0
 var _terrain_debug_last_desired_bounds: Dictionary = {}
-var _terrain_visual_debug_mode: int = 0
-var _terrain_grass_visual_debug_mode: int = 0
 
 # Per-world bake of the position-only ground noise that terrain.gdshader reads.
 var _world_noise := TerrainWorldNoise.new()
 
 func _ready() -> void:
 	add_child(_world_noise)
+	var console := get_node_or_null("/root/DebugConsole")
+	if console != null:
+		console.visual_mode_changed.connect(_on_visual_mode_changed)
 	rebuild_from_simulation_state()
 
 func rebuild_from_simulation_state() -> void:
@@ -261,10 +264,7 @@ func rebuild_from_simulation_state() -> void:
 	terrain_cell_m = float(patch_layout.get("terrain_cell_m", 1.0))
 	patch_span_m = terrain_cell_m * float(patch_interval_cells)
 	_terrain_debug_verbose = MetrumDebug.startup_mode("terrain_verbose")
-	_terrain_force_full_world = MetrumDebug.startup_mode("terrain_force_full_world")
-	_terrain_force_lod1 = MetrumDebug.startup_mode("terrain_force_lod1")
-	_terrain_visual_debug_mode = _terrain_visual_debug_mode_from_startup()
-	_terrain_grass_visual_debug_mode = _terrain_grass_visual_debug_mode_from_startup()
+	_read_residency_debug_modes()
 	_terrain_mesh_lod_refresh_elapsed_s = 0.0
 	_terrain_lod_refresh_camera_valid = false
 	_record_lod_perf_counters(0, 0, 0, 0)
@@ -311,20 +311,27 @@ func rebuild_from_simulation_state() -> void:
 				float(patch_layout.get("chunk_span_m", 0.0)),
 				str(_terrain_force_full_world),
 				str(_terrain_force_lod1),
-				_terrain_visual_debug_mode,
+				MetrumDebug.visual_mode_index("terrain_visual"),
 			]
 		)
-	if _terrain_visual_debug_mode != 0:
-		MetrumDebug.log(
-			"terrain",
-			"terrain_visual_debug_mode=%d source=%s"
-			% [_terrain_visual_debug_mode, MetrumDebug.startup_mode("terrain_visual")]
-		)
-	if _terrain_grass_visual_debug_mode != 0:
-		MetrumDebug.log(
-			"terrain",
-			"grass_visual_debug_mode=%d source=%s"
-			% [_terrain_grass_visual_debug_mode, MetrumDebug.startup_mode("terrain_grass")]
+
+func _read_residency_debug_modes() -> void:
+	_terrain_force_full_world = MetrumDebug.visual_mode_index("terrain_force_full_world") != 0
+	_terrain_force_lod1 = MetrumDebug.visual_mode_index("terrain_force_lod1") != 0
+
+## Residency and LOD selection read the cached flags, so the next residency sync loads or drops
+## patches through the normal per-frame budget. LOD refresh otherwise waits for camera movement,
+## so it is due now: every resident patch is checked against the new target LOD.
+func _on_visual_mode_changed(mode: String) -> void:
+	if mode != "terrain_force_full_world" and mode != "terrain_force_lod1":
+		return
+	_read_residency_debug_modes()
+	_terrain_lod_refresh_camera_valid = false
+	_terrain_mesh_lod_refresh_elapsed_s = PATCH_MESH_LOD_REFRESH_INTERVAL_S
+	if _terrain_debug_enabled:
+		_terrain_debug_log(
+			"residency debug force_full_world=%s force_lod1=%s"
+			% [str(_terrain_force_full_world), str(_terrain_force_lod1)]
 		)
 
 func _process(delta: float) -> void:
@@ -1002,10 +1009,8 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 	material.set_shader_parameter("height_scale", HEIGHT_SCALE)
 	material.set_shader_parameter("height_is_baked", height_is_baked)
 	material.set_shader_parameter("world_size", terrain_world_size)
-	material.set_shader_parameter("terrain_visual_debug_mode", _terrain_visual_debug_mode)
 	material.set_shader_parameter("terrain_debug_patch_key", Vector2(key.x, key.y))
 	material.set_shader_parameter("terrain_debug_lod_step", float(initial_lod_step))
-	material.set_shader_parameter("terrain_grass_visual_debug_mode", _terrain_grass_visual_debug_mode)
 	material.set_shader_parameter(
 		"scene_shadow_max_distance_m", SceneLightingConfig.shadow_max_distance_m()
 	)
@@ -3504,7 +3509,7 @@ func _process_water_patch_texture_sync_queue(
 			missing_count += 1
 		remaining_budget -= 1
 
-	if processed_count > 0 and _terrain_debug_enabled and (_terrain_debug_verbose or _terrain_visual_debug_mode >= 6):
+	if processed_count > 0 and _terrain_debug_enabled and (_terrain_debug_verbose or MetrumDebug.visual_mode_index("terrain_visual") >= 6):
 		_terrain_debug_log(
 			"watermap_sync source=water_renderer_texture processed=%d updated=%d missing=%d queued=%d depth_nonzero=%d elapsed_ms=%.3f"
 			% [
@@ -4564,66 +4569,6 @@ func _road_geometry_baked_mesh_stats_label(patch_data: Dictionary) -> String:
 		normal_label,
 	]
 
-func _terrain_visual_debug_mode_from_startup() -> int:
-	var value := String(MetrumDebug.startup_mode("terrain_visual"))
-	if value.is_empty() or value == "0" or value == "off" or value == "false":
-		return 0
-	if value.is_valid_int():
-		return clampi(value.to_int(), 0, 10)
-	match value:
-		"patch", "patches":
-			return 1
-		"lod", "lods":
-			return 2
-		"height":
-			return 3
-		"relief":
-			return 4
-		"shore", "shoreline":
-			return 5
-		"water", "depth", "water-depth":
-			return 6
-		"water-lod":
-			return 7
-		"water-patch":
-			return 8
-		"water-material", "water-mat", "material-water":
-			return 9
-		"lighting", "light", "sun":
-			return 10
-		_:
-			return 0
-
-func _terrain_grass_visual_debug_mode_from_startup() -> int:
-	var value := String(MetrumDebug.startup_mode("terrain_grass"))
-	if value.is_empty() or value == "0" or value == "off" or value == "false":
-		return 0
-	if value.is_valid_int():
-		return clampi(value.to_int(), 0, 10)
-	match value:
-		"raw", "albedo":
-			return 1
-		"macro":
-			return 2
-		"mid":
-			return 3
-		"micro":
-			return 4
-		"fade", "fades", "visibility":
-			return 5
-		"material", "composite":
-			return 6
-		"height":
-			return 7
-		"mask", "grass-mask":
-			return 8
-		"luminance", "luma", "brightness":
-			return 9
-		"footprint", "footprints":
-			return 10
-		_:
-			return 0
-
 func _record_terrain_debug_frame(
 	delta: float,
 	frame_elapsed_ms: float,
@@ -4689,7 +4634,7 @@ func _record_terrain_debug_frame(
 			average_water_sync_ms,
 			str(_terrain_force_full_world),
 			str(_terrain_force_lod1),
-			_terrain_visual_debug_mode,
+			MetrumDebug.visual_mode_index("terrain_visual"),
 		]
 	)
 	_reset_terrain_debug_counters()

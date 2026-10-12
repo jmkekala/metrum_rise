@@ -10,8 +10,8 @@ use crate::simulation::economy::definitions::{
     RuntimeEconomyCatalog, RuntimeEconomyTuning, load_runtime_economy_catalog,
     load_runtime_economy_tuning,
 };
-use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::TransitNetwork;
+use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::TransitFlags;
 
 use super::data::ShipmentSystem;

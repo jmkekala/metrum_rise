@@ -152,7 +152,11 @@ impl FlowField {
     ///
     /// The path ends at the source node (a building frontage node).
     pub fn build_path(&self, from_node: u32, max_hops: usize) -> Option<Vec<u32>> {
-        if self.next_node.get(from_node as usize).is_none_or(|&node| node == u32::MAX) {
+        if self
+            .next_node
+            .get(from_node as usize)
+            .is_none_or(|&node| node == u32::MAX)
+        {
             return None;
         }
         let mut path = Vec::with_capacity(32);
@@ -162,7 +166,12 @@ impl FlowField {
 
     /// Follows the same bounded chain into caller-owned storage. Route planners reserve
     /// `max_hops + 1` entries before querying so rejected alternatives allocate nothing.
-    pub(crate) fn build_path_in(&self, from_node: u32, max_hops: usize, path: &mut Vec<u32>) -> Option<()> {
+    pub(crate) fn build_path_in(
+        &self,
+        from_node: u32,
+        max_hops: usize,
+        path: &mut Vec<u32>,
+    ) -> Option<()> {
         path.clear();
         let from_idx = from_node as usize;
         if from_idx >= self.next_node.len() || self.next_node[from_idx] == u32::MAX {

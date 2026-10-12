@@ -11,8 +11,8 @@ use crate::simulation::buildings::allocator::{
 use crate::simulation::economy::agents::{AgentSystem, HouseholdAgeComposition};
 use crate::simulation::economy::definitions::{RuntimeEconomyCatalog, RuntimeEconomyTuning};
 use crate::simulation::economy::demand::{
-    DemandBuildingActionKey, DemandBuildingActionPlan, DemandLevelChangeAction, DemandSpawnAction,
-    DemandLevelChangeGuard,
+    DemandBuildingActionKey, DemandBuildingActionPlan, DemandLevelChangeAction,
+    DemandLevelChangeGuard, DemandSpawnAction,
 };
 use crate::simulation::economy::households::{
     HouseholdSystem, applicant_offer, applicant_offer_limit,
@@ -497,7 +497,8 @@ impl BuildingAllocator {
             // Despawns can remap entrances. Refresh once per zone batch, never per proposal;
             // accepted replacements retain their prepared doors in the economic proof.
             if (!use_plan.downgrades.is_empty() || !use_plan.upgrades.is_empty())
-                && self.entrances_dirty {
+                && self.entrances_dirty
+            {
                 self.rebuild_entrance_cache(graph, &network.lane_system);
             }
             for action in use_plan.downgrades.iter().chain(&use_plan.upgrades) {
@@ -506,8 +507,17 @@ impl BuildingAllocator {
                 else {
                     continue;
                 };
-                let Some(permit) = level_changes.prepare(building_idx, action, self,
-                    households, logistics, zoning, *treasury_balance) else { continue; };
+                let Some(permit) = level_changes.prepare(
+                    building_idx,
+                    action,
+                    self,
+                    households,
+                    logistics,
+                    zoning,
+                    *treasury_balance,
+                ) else {
+                    continue;
+                };
                 let applied = self
                     .apply_level_change_action(
                         building_idx,

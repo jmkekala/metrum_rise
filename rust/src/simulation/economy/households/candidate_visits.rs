@@ -42,7 +42,9 @@ impl CandidateVisits {
 
     /// Checks membership without consuming a scan-limit slot.
     pub(super) fn contains(&self, entry_idx: usize) -> bool {
-        self.seen_entries.get(entry_idx).is_some_and(|&epoch| epoch == self.seen_epoch)
+        self.seen_entries
+            .get(entry_idx)
+            .is_some_and(|&epoch| epoch == self.seen_epoch)
     }
 
     /// Marks an in-range entry and returns whether this is its first visit.
@@ -66,14 +68,21 @@ mod tests {
     fn bounded_multimode_visits_match_original_linear_duplicate_checks() {
         let mut visits = CandidateVisits::new();
         for entries in [0, 1, 24, 127, 599] {
-            let streams: [Vec<usize>; 2] = std::array::from_fn(|mode|
-                (0..entries * 3).map(|i| (i * 37 + mode * 17) % entries).collect());
+            let streams: [Vec<usize>; 2] = std::array::from_fn(|mode| {
+                (0..entries * 3)
+                    .map(|i| (i * 37 + mode * 17) % entries)
+                    .collect()
+            });
             for limit in [0, 1, 24, 384] {
                 let mut expected = Vec::new();
                 for stream in &streams {
                     for &entry in stream {
-                        if expected.contains(&entry) { continue; }
-                        if expected.len() == limit { break; }
+                        if expected.contains(&entry) {
+                            continue;
+                        }
+                        if expected.len() == limit {
+                            break;
+                        }
                         expected.push(entry);
                     }
                 }
@@ -81,8 +90,12 @@ mod tests {
                 let mut actual = Vec::new();
                 for stream in &streams {
                     for &entry in stream {
-                        if visits.contains(entry) { continue; }
-                        if actual.len() == limit { break; }
+                        if visits.contains(entry) {
+                            continue;
+                        }
+                        if actual.len() == limit {
+                            break;
+                        }
                         assert!(visits.mark_seen(entry));
                         actual.push(entry);
                     }
@@ -105,12 +118,25 @@ mod tests {
                 let start = Instant::now();
                 let mut accepted = 0;
                 for _ in 0..128 {
-                    if candidate == 1 { visits.begin_query(384); } else { seen.clear(); }
+                    if candidate == 1 {
+                        visits.begin_query(384);
+                    } else {
+                        seen.clear();
+                    }
                     for index in 0..768 {
                         let entry = black_box(index % 384);
                         let fresh = if candidate == 1 {
-                            if visits.contains(entry) { false } else { visits.mark_seen(entry) }
-                        } else if seen.contains(&entry) { false } else { seen.push(entry); true };
+                            if visits.contains(entry) {
+                                false
+                            } else {
+                                visits.mark_seen(entry)
+                            }
+                        } else if seen.contains(&entry) {
+                            false
+                        } else {
+                            seen.push(entry);
+                            true
+                        };
                         accepted += usize::from(fresh);
                     }
                 }
@@ -118,8 +144,11 @@ mod tests {
                 samples[candidate].push(start.elapsed().as_secs_f64() * 1e6 / 128.0);
             }
         }
-        eprintln!("CANDIDATE_VISITS_BENCH {}", serde_json::json!({
-            "linear_us": samples[0], "labels_us": samples[1], "accepted_equal": true }));
+        eprintln!(
+            "CANDIDATE_VISITS_BENCH {}",
+            serde_json::json!({
+            "linear_us": samples[0], "labels_us": samples[1], "accepted_equal": true })
+        );
     }
 
     #[test]
@@ -147,5 +176,4 @@ mod tests {
             assert_eq!(scratch.seen_entries.capacity(), capacity);
         });
     }
-
 }

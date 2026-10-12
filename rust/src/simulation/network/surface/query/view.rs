@@ -247,14 +247,13 @@ impl RoadSurfaceSystem {
         &self,
         overlaps: impl Fn(&[super::super::backend::RoadVec3]) -> bool,
     ) -> bool {
-        self.compiled_visual_span_pieces.values().any(|piece| {
-            piece
-                .surface_polygons()
-                .any(|quad| overlaps(quad.points()))
-        }) || self.compiled_visual_node_pieces.values().any(|piece| {
-            piece
-                .surface_polygons()
-                .any(|polygon| overlaps(&polygon.points_world))
-        })
+        self.compiled_visual_span_pieces
+            .values()
+            .any(|piece| piece.surface_polygons().any(|quad| overlaps(quad.points())))
+            || self.compiled_visual_node_pieces.values().any(|piece| {
+                piece
+                    .surface_polygons()
+                    .any(|polygon| overlaps(&polygon.points_world))
+            })
     }
 }

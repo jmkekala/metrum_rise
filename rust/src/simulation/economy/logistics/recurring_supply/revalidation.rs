@@ -59,7 +59,9 @@ struct PassCheckpoint {
 
 impl Revalidation {
     /// Whether an outer operation still owns provisional inner commits.
-    pub(super) fn is_active(&self) -> bool { self.checkpoint.is_some() }
+    pub(super) fn is_active(&self) -> bool {
+        self.checkpoint.is_some()
+    }
 
     /// Prepares at most one undo entry per original source, owner and receipt arena slot.
     pub(super) fn prepare(&mut self, sources: usize, owners: usize, receipts: usize) {
@@ -67,16 +69,20 @@ impl Revalidation {
         self.source_seen.resize(sources, 0);
         self.owner_seen.resize(owners, 0);
         self.receipt_seen.resize(receipts, 0);
-        self.sources.reserve(sources.saturating_sub(self.sources.len()));
-        self.owners.reserve(owners.saturating_sub(self.owners.len()));
-        self.receipts.reserve(receipts.saturating_sub(self.receipts.len()));
+        self.sources
+            .reserve(sources.saturating_sub(self.sources.len()));
+        self.owners
+            .reserve(owners.saturating_sub(self.owners.len()));
+        self.receipts
+            .reserve(receipts.saturating_sub(self.receipts.len()));
     }
 
     /// Mirrors growth of the indexed receipt arena without discarding any active snapshots.
     pub(super) fn follow_receipts(&mut self, capacity: usize) {
         if !self.receipt_seen.is_empty() && capacity > self.receipt_seen.len() {
             self.receipt_seen.resize(capacity, 0);
-            self.receipts.reserve(capacity.saturating_sub(self.receipts.len()));
+            self.receipts
+                .reserve(capacity.saturating_sub(self.receipts.len()));
         }
     }
 
@@ -105,7 +111,10 @@ impl RecurringSupply {
     pub(crate) fn begin_revalidation(&mut self) {
         debug_assert!(self.staged.is_empty() && self.released.is_empty());
         let journal = &mut self.revalidation;
-        assert!(journal.checkpoint.is_none(), "only owner quotes may nest inside revalidation");
+        assert!(
+            journal.checkpoint.is_none(),
+            "only owner quotes may nest inside revalidation"
+        );
         debug_assert!(journal.source_seen.len() >= self.remaining.len());
         debug_assert!(journal.owner_seen.len() >= self.owner_receipts.len());
         debug_assert!(journal.receipt_seen.len() >= self.committed.len());
@@ -129,16 +138,28 @@ impl RecurringSupply {
     /// Rejects the active inner quote, then restores exact source balances and both directions
     /// of every touched receipt link. Work follows changed sources/owners/receipts, plus bucket
     /// updates; unrelated buildings are neither copied nor scanned. Arena growth is truncated.
-    pub(crate) fn reject_revalidation(&mut self, allocator: &BuildingAllocator, graph: &RegionGraph) {
+    pub(crate) fn reject_revalidation(
+        &mut self,
+        allocator: &BuildingAllocator,
+        graph: &RegionGraph,
+    ) {
         self.reject(allocator, graph);
-        let Some((len, free)) = self.revalidation.checkpoint.take() else { return; };
+        let Some((len, free)) = self.revalidation.checkpoint.take() else {
+            return;
+        };
         while let Some(source) = self.revalidation.sources.pop() {
             self.remaining[source.slot] = source.remaining;
             self.production[source.slot] = source.production;
             self.source_receipts[source.slot] = source.first_receipt;
             if self.active[source.slot] != source.active {
                 self.active[source.slot] = source.active;
-                self.set_available(source.source, source.resource, source.active, allocator, graph);
+                self.set_available(
+                    source.source,
+                    source.resource,
+                    source.active,
+                    allocator,
+                    graph,
+                );
             }
         }
         for (owner, first, last) in self.revalidation.owners.drain(..) {
@@ -155,47 +176,76 @@ impl RecurringSupply {
     /// Captures a source's balance and reverse receipt head before their first outer mutation.
     pub(super) fn journal_source(&mut self, source: usize, resource: u16, slot: usize) {
         let pass = &mut self.revalidation.pass;
-        if let Some(checkpoint) = pass.checkpoint && slot < checkpoint.slots
-            && pass.source_seen[slot] != pass.generation {
+        if let Some(checkpoint) = pass.checkpoint
+            && slot < checkpoint.slots
+            && pass.source_seen[slot] != pass.generation
+        {
             pass.source_seen[slot] = pass.generation;
-            pass.sources.push(Source { slot, source, resource, remaining: self.remaining[slot],
-                production: self.production[slot], active: self.active[slot],
-                first_receipt: self.source_receipts[slot] });
+            pass.sources.push(Source {
+                slot,
+                source,
+                resource,
+                remaining: self.remaining[slot],
+                production: self.production[slot],
+                active: self.active[slot],
+                first_receipt: self.source_receipts[slot],
+            });
         }
         let journal = &mut self.revalidation;
-        if journal.checkpoint.is_none() || journal.source_seen[slot] == journal.generation { return; }
+        if journal.checkpoint.is_none() || journal.source_seen[slot] == journal.generation {
+            return;
+        }
         journal.source_seen[slot] = journal.generation;
-        journal.sources.push(Source { slot, source, resource, remaining: self.remaining[slot],
+        journal.sources.push(Source {
+            slot,
+            source,
+            resource,
+            remaining: self.remaining[slot],
             production: self.production[slot],
-            active: self.active[slot], first_receipt: self.source_receipts[slot] });
+            active: self.active[slot],
+            first_receipt: self.source_receipts[slot],
+        });
     }
 
     /// Captures an owner's input-chain endpoints before retirement or extension.
     pub(super) fn journal_owner(&mut self, owner: usize) {
         let pass = &mut self.revalidation.pass;
-        if let Some(checkpoint) = pass.checkpoint && owner < checkpoint.owners
-            && pass.owner_seen[owner] != pass.generation {
+        if let Some(checkpoint) = pass.checkpoint
+            && owner < checkpoint.owners
+            && pass.owner_seen[owner] != pass.generation
+        {
             pass.owner_seen[owner] = pass.generation;
-            pass.owners.push((owner, self.owner_receipts[owner], self.owner_tails[owner]));
+            pass.owners
+                .push((owner, self.owner_receipts[owner], self.owner_tails[owner]));
         }
         let journal = &mut self.revalidation;
-        if journal.checkpoint.is_none() || journal.owner_seen[owner] == journal.generation { return; }
+        if journal.checkpoint.is_none() || journal.owner_seen[owner] == journal.generation {
+            return;
+        }
         journal.owner_seen[owner] = journal.generation;
-        journal.owners.push((owner, self.owner_receipts[owner], self.owner_tails[owner]));
+        journal
+            .owners
+            .push((owner, self.owner_receipts[owner], self.owner_tails[owner]));
     }
 
     /// Captures a pre-existing arena cell before recycling or editing either receipt link.
     /// Cells appended inside this transaction need no snapshot: rejection truncates them.
     pub(super) fn journal_receipt(&mut self, index: usize) {
         let pass = &mut self.revalidation.pass;
-        if let Some(checkpoint) = pass.checkpoint && index < checkpoint.receipts
-            && pass.receipt_seen[index] != pass.generation {
+        if let Some(checkpoint) = pass.checkpoint
+            && index < checkpoint.receipts
+            && pass.receipt_seen[index] != pass.generation
+        {
             pass.receipt_seen[index] = pass.generation;
             pass.receipts.push((index, self.committed[index]));
         }
         let journal = &mut self.revalidation;
-        let Some((len, _)) = journal.checkpoint else { return; };
-        if index >= len || journal.receipt_seen[index] == journal.generation { return; }
+        let Some((len, _)) = journal.checkpoint else {
+            return;
+        };
+        if index >= len || journal.receipt_seen[index] == journal.generation {
+            return;
+        }
         journal.receipt_seen[index] = journal.generation;
         journal.receipts.push((index, self.committed[index]));
     }
@@ -215,7 +265,9 @@ impl RecurringSupply {
     /// Opens a planning pass over the live book in O(resources) amortized: snapshot storage
     /// follows the live row counts and is retained across passes.
     pub(crate) fn begin_pass(&mut self) {
-        debug_assert!(self.staged.is_empty() && self.released.is_empty() && !self.revalidation.is_active());
+        debug_assert!(
+            self.staged.is_empty() && self.released.is_empty() && !self.revalidation.is_active()
+        );
         debug_assert!(!self.projected_enabled());
         let pass = &mut self.revalidation.pass;
         assert!(pass.checkpoint.is_none(), "planning passes do not nest");
@@ -230,8 +282,12 @@ impl RecurringSupply {
         pass.owner_seen.resize(self.owner_receipts.len(), 0);
         pass.receipt_seen.resize(self.committed.len(), 0);
         pass.nearest_incumbents.clone_from(&self.nearest_incumbents);
-        pass.checkpoint = Some(PassCheckpoint { receipts: self.committed.len(), free_receipt: self.free_receipt,
-            slots: self.remaining.len(), owners: self.owner_receipts.len() });
+        pass.checkpoint = Some(PassCheckpoint {
+            receipts: self.committed.len(),
+            free_receipt: self.free_receipt,
+            slots: self.remaining.len(),
+            owners: self.owner_receipts.len(),
+        });
     }
 
     /// Rejects any open proof, then restores every pre-pass source, owner chain and receipt
@@ -240,14 +296,22 @@ impl RecurringSupply {
     pub(crate) fn end_pass(&mut self, allocator: &BuildingAllocator, graph: &RegionGraph) {
         self.reject_revalidation(allocator, graph);
         self.reject(allocator, graph);
-        let Some(checkpoint) = self.revalidation.pass.checkpoint.take() else { return; };
+        let Some(checkpoint) = self.revalidation.pass.checkpoint.take() else {
+            return;
+        };
         while let Some(source) = self.revalidation.pass.sources.pop() {
             self.remaining[source.slot] = source.remaining;
             self.production[source.slot] = source.production;
             self.source_receipts[source.slot] = source.first_receipt;
             if self.active[source.slot] != source.active {
                 self.active[source.slot] = source.active;
-                self.set_available(source.source, source.resource, source.active, allocator, graph);
+                self.set_available(
+                    source.source,
+                    source.resource,
+                    source.active,
+                    allocator,
+                    graph,
+                );
             }
         }
         let pass = &mut self.revalidation.pass;
@@ -274,7 +338,10 @@ impl RecurringSupply {
     /// Retained journal capacities for regression checks; never used to decide feasibility.
     #[cfg(test)]
     pub(crate) fn revalidation_storage(&self) -> [usize; 3] {
-        [self.revalidation.sources.capacity(), self.revalidation.owners.capacity(),
-            self.revalidation.receipts.capacity()]
+        [
+            self.revalidation.sources.capacity(),
+            self.revalidation.owners.capacity(),
+            self.revalidation.receipts.capacity(),
+        ]
     }
 }

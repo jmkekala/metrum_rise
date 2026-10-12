@@ -732,8 +732,14 @@ fn logged_loop_bend_does_not_assign_sidewalk_join_outside_height_field() {
 
 fn assert_bend_material_partition_keeps_sidewalk_visible(piece: &RoadSurfaceVisualNodePiece) {
     let footprint_area_m2 = visual_polygon_union_area_m2(&piece.outer_boundary_loops);
-    let asphalt_area_m2 = visual_polygon_union_area_m2(&piece.road_surface_polygons().cloned().collect::<Vec<_>>());
-    let sidewalk_area_m2 = visual_polygon_union_area_m2(&piece.sidewalk_surface_polygons().cloned().collect::<Vec<_>>());
+    let asphalt_area_m2 =
+        visual_polygon_union_area_m2(&piece.road_surface_polygons().cloned().collect::<Vec<_>>());
+    let sidewalk_area_m2 = visual_polygon_union_area_m2(
+        &piece
+            .sidewalk_surface_polygons()
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
     let asphalt_ratio = asphalt_area_m2 / footprint_area_m2;
     let sidewalk_ratio = sidewalk_area_m2 / footprint_area_m2;
 

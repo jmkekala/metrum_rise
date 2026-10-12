@@ -139,10 +139,7 @@ pub(in crate::simulation::network::surface::tests) fn node_top_coverage_details_
     let footprint_contours = overlay_contours_from_polygons(&piece.outer_boundary_loops);
     let footprint_shapes = RoadSurfaceSystem::overlay_union_contours(&footprint_contours)
         .expect("node footprint overlay union should succeed");
-    let top_contours = overlay_contours_from_top_polygons(
-        piece
-            .surface_polygons()
-    );
+    let top_contours = overlay_contours_from_top_polygons(piece.surface_polygons());
     let top_shapes = RoadSurfaceSystem::overlay_union_contours(&top_contours)
         .expect("node top overlay union should succeed");
     let missing_shapes = RoadSurfaceSystem::overlay_binary_shapes(

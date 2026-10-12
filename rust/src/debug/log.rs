@@ -159,7 +159,8 @@ pub fn format_line(out: &mut String, line: &LogLine) {
     );
 }
 
-/// Writes the channel state, startup modes and every buffered line as a plain-text report.
+/// Writes the channel state, visual and startup modes and every buffered line as a plain-text
+/// report.
 pub fn write_dump(path: &std::path::Path) -> std::io::Result<()> {
     let mut out = String::new();
     let _ = writeln!(out, "# Metrum Rise debug dump");
@@ -169,9 +170,13 @@ pub fn write_dump(path: &std::path::Path) -> std::io::Result<()> {
         let state = if channel.enabled() { "on" } else { "off" };
         let _ = writeln!(out, "{:<18} {state}", channel.tag());
     }
+    out.push_str("\n## Visual modes\n");
+    for mode in super::visual::MODES {
+        let _ = writeln!(out, "{}={}", mode.name, mode.value_name(mode.index()));
+    }
     out.push_str("\n## Startup modes\n");
-    for (name, value) in super::startup_modes() {
-        let _ = writeln!(out, "{name}={value}");
+    for (name, on) in super::startup_modes() {
+        let _ = writeln!(out, "{name}={}", if *on { "on" } else { "off" });
     }
     out.push_str("\n## Log\n");
     {

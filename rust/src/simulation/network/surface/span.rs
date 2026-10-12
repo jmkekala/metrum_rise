@@ -15,8 +15,7 @@ pub use quads::SpanQuad;
 use super::{
     IncidentEdgeSide, IncidentMouthProfile, RoadSurfaceBandKind, RoadSurfaceEarthworkFaceSource,
     RoadSurfaceEarthworkRenderFace, RoadSurfaceEarthworkSupportPolicy, RoadSurfaceSection,
-    RoadSurfaceSystem,
-    RoadSurfaceTerrainClipLoop, RoadSurfaceVisualPolygon, SurfaceTriangleGrid,
+    RoadSurfaceSystem, RoadSurfaceTerrainClipLoop, RoadSurfaceVisualPolygon, SurfaceTriangleGrid,
     backend::RoadVec3, band_semantics::band_kind_sort_key,
 };
 use crate::simulation::network::graph::RegionGraph;
@@ -308,7 +307,10 @@ impl RoadSurfaceVisualSpanPiece {
     // Retained lists are built by pushing; drop their spare capacity once, at publication size.
     fn shrink_retained(&mut self) {
         self.outer_boundary_loops.shrink_to_fit();
-        for regions in [&mut self.span_owned_regions, &mut self.span_earthwork_support_regions] {
+        for regions in [
+            &mut self.span_owned_regions,
+            &mut self.span_earthwork_support_regions,
+        ] {
             if let Some(regions) = Arc::get_mut(regions) {
                 regions.shrink_to_fit();
             }
@@ -412,11 +414,8 @@ impl RoadSurfaceSystem {
                     Vec::new(),
                 )
             } else {
-                let mut clearance_regions = self.resolve_span_regions_for_ranges(
-                    &sections,
-                    &earthwork_ranges,
-                    edge.class,
-                )?;
+                let mut clearance_regions =
+                    self.resolve_span_regions_for_ranges(&sections, &earthwork_ranges, edge.class)?;
                 Self::sort_span_owned_regions(&sections, &mut clearance_regions.regions);
                 let terrain_clip_boundary_loops = match edge.class {
                     EdgeClass::Standard => visible_terrain_clip_boundary_loops,

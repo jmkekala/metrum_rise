@@ -4,10 +4,10 @@
 
 use crate::simulation::economy::operation::InputRequirement;
 
-mod routing;
-mod revalidation;
 mod buyers;
 mod repricing;
+mod revalidation;
+mod routing;
 pub(crate) use routing::{BusinessMarket, PreparedBusinessSite};
 
 #[derive(Clone, Copy, Debug)]
@@ -80,7 +80,12 @@ impl BusinessBudgets {
         self.buyer_tails.clone_from(&source.buyer_tails);
         self.finance.clone_from(&source.finance);
         self.committed.clone_from(&source.committed);
-        self.committed.reserve(source.committed.capacity().saturating_sub(self.committed.len()));
+        self.committed.reserve(
+            source
+                .committed
+                .capacity()
+                .saturating_sub(self.committed.len()),
+        );
         self.owners.clone_from(&source.owners);
         self.free_receipt = source.free_receipt;
         self.releasing_owner = None;
@@ -90,9 +95,15 @@ impl BusinessBudgets {
         self.staged_finance.clear();
         self.staged_finance.reserve(self.finance.len());
         self.finance_staged.clone_from(&source.finance_staged);
-        crate::debug::work::add(crate::debug::work::Work::ReservationRowsCopied, (self.accounts.len()
-            + 2 * self.buyer_accounts.len() + 2 * self.finance.len() + self.committed.len()
-            + self.owners.len() + self.staged_slots.len()) as u64);
+        crate::debug::work::add(
+            crate::debug::work::Work::ReservationRowsCopied,
+            (self.accounts.len()
+                + 2 * self.buyer_accounts.len()
+                + 2 * self.finance.len()
+                + self.committed.len()
+                + self.owners.len()
+                + self.staged_slots.len()) as u64,
+        );
     }
 
     /// Prepares sparse storage before visiting input ports. `input_ports` includes all live
@@ -192,21 +203,29 @@ impl BusinessBudgets {
             if slot != usize::MAX {
                 *next = self.accounts[slot].next_buyer;
                 let next_buyer = *next;
-                debug_assert!(self.accounts[slot].units == 0.0
-                    && self.accounts[slot].first_receipt == usize::MAX);
+                debug_assert!(
+                    self.accounts[slot].units == 0.0
+                        && self.accounts[slot].first_receipt == usize::MAX
+                );
                 self.journal_account(slot);
-                self.accounts[slot] = Account { next_buyer, ..account };
+                self.accounts[slot] = Account {
+                    next_buyer,
+                    ..account
+                };
                 return Some(slot);
             }
         }
         let slot = self.accounts.len();
-        assert!(!self.revalidation.is_active() || slot < self.accounts.capacity(),
-            "prepare replacement account storage before beginning its proof");
+        assert!(
+            !self.revalidation.is_active() || slot < self.accounts.capacity(),
+            "prepare replacement account storage before beginning its proof"
+        );
         self.journal_buyer(buyer);
         self.accounts.push(account);
         let previous = self.buyer_tails[buyer];
-        if previous == usize::MAX { self.buyer_accounts[buyer] = slot; }
-        else {
+        if previous == usize::MAX {
+            self.buyer_accounts[buyer] = slot;
+        } else {
             self.journal_account(previous);
             self.accounts[previous].next_buyer = slot;
         }
@@ -218,14 +237,19 @@ impl BusinessBudgets {
     /// Prepares appended input tranches and their journals between complete operation proofs.
     pub(super) fn reserve_accounts(&mut self, required: usize) {
         debug_assert!(!self.revalidation.is_active() && self.staged.is_empty());
-        self.accounts.reserve(required.saturating_sub(self.accounts.len()));
+        self.accounts
+            .reserve(required.saturating_sub(self.accounts.len()));
         self.prepare_revalidation();
         self.prepare_repricing();
     }
 
     /// Exact preflight for new input accounts; capacity cannot decide economic feasibility.
     /// On exhaustion the caller must reject the outer proof, prepare storage, and replay it.
-    pub(super) fn check_replacement_capacity(&self, buyer: usize, tranches: usize) -> Result<(), usize> {
+    pub(super) fn check_replacement_capacity(
+        &self,
+        buyer: usize,
+        tranches: usize,
+    ) -> Result<(), usize> {
         let mut existing = 0;
         let mut slot = self.buyer_accounts[buyer];
         while slot != usize::MAX {
@@ -233,15 +257,26 @@ impl BusinessBudgets {
             slot = self.accounts[slot].next_buyer;
         }
         let required = self.accounts.len() + tranches.saturating_sub(existing);
-        if required > self.accounts.capacity() { Err(required) } else { Ok(()) }
+        if required > self.accounts.capacity() {
+            Err(required)
+        } else {
+            Ok(())
+        }
     }
 
     /// Reuses this buyer's withdrawn account slots in quote order before appending more.
     /// Repeated accepted revalidation therefore retains its peak tranche count, not history.
-    pub(super) fn replace_inputs(&mut self, buyer: usize, tranches: usize,
-        seed: impl FnOnce(&mut Self)) {
-        debug_assert!(self.revalidation.is_active() && self.staged.is_empty()
-            && self.replacing_inputs.is_none());
+    pub(super) fn replace_inputs(
+        &mut self,
+        buyer: usize,
+        tranches: usize,
+        seed: impl FnOnce(&mut Self),
+    ) {
+        debug_assert!(
+            self.revalidation.is_active()
+                && self.staged.is_empty()
+                && self.replacing_inputs.is_none()
+        );
         self.replacing_inputs = Some((buyer, self.buyer_accounts[buyer], tranches));
         seed(self);
         self.replacing_inputs = None;
@@ -286,15 +321,25 @@ impl BusinessBudgets {
     /// credit savings before that delivery exists; actual prices enter through repricing.
     /// More expensive goods/freight and lost stock value debit proven financing, affine in
     /// claimed units at the operation's already-quantized batch.
-    pub(crate) fn claim_opportunity(&mut self, slot: usize, requested: f64,
-        seller_price: f32, carrier_quote: f32) -> f64 {
+    pub(crate) fn claim_opportunity(
+        &mut self,
+        slot: usize,
+        requested: f64,
+        seller_price: f32,
+        carrier_quote: f32,
+    ) -> f64 {
         self.claim_priced(slot, requested, seller_price, carrier_quote, true)
     }
 
     /// Reserves a coupled replacement's finite quantity before its complete-set proof.
     /// Temporary negative financing cannot escape the enclosing revalidation transaction.
-    pub(super) fn claim_joint_opportunity(&mut self, slot: usize, requested: f64,
-        seller_price: f32, carrier_quote: f32) -> f64 {
+    pub(super) fn claim_joint_opportunity(
+        &mut self,
+        slot: usize,
+        requested: f64,
+        seller_price: f32,
+        carrier_quote: f32,
+    ) -> f64 {
         debug_assert!(self.revalidation.is_active());
         self.claim_priced(slot, requested, seller_price, carrier_quote, false)
     }
@@ -302,9 +347,22 @@ impl BusinessBudgets {
     /// Whether a seller can claim any units at a proven lower bound on its carrier price.
     /// Claims only shrink as the carrier quote grows, so `false` excludes every actual route.
     /// Pure; O(1), including the same physical-quantity rounding as an ordinary claim.
-    pub(crate) fn claimable_at_carrier_lower_bound(&self, slot: usize, requested: f64,
-        seller_price: f32, minimum_carrier: f32, require_finance: bool) -> bool {
-        self.priced_claim(slot, requested, seller_price, minimum_carrier, require_finance).is_some()
+    pub(crate) fn claimable_at_carrier_lower_bound(
+        &self,
+        slot: usize,
+        requested: f64,
+        seller_price: f32,
+        minimum_carrier: f32,
+        require_finance: bool,
+    ) -> bool {
+        self.priced_claim(
+            slot,
+            requested,
+            seller_price,
+            minimum_carrier,
+            require_finance,
+        )
+        .is_some()
     }
 
     /// Conservative existence test for any request at this exact goods price and free freight.
@@ -313,18 +371,33 @@ impl BusinessBudgets {
     pub(super) fn potentially_claimable(&self, slot: usize, seller_price: f32) -> bool {
         let account = self.accounts[slot];
         let finance = self.finance[account.buyer];
-        if !(finance[0] > 0.0 && finance[1] >= 0.0) { return false; }
+        if !(finance[0] > 0.0 && finance[1] >= 0.0) {
+            return false;
+        }
         let Some((mut units, margin, capital, _)) =
-            self.priced_claim(slot, account.units, seller_price, 0.0, false) else { return false; };
-        if margin > 0.0 && finance[0].is_finite() { units = units.min(finance[0] / margin); }
-        if capital > 0.0 && finance[1].is_finite() { units = units.min(finance[1] / capital); }
+            self.priced_claim(slot, account.units, seller_price, 0.0, false)
+        else {
+            return false;
+        };
+        if margin > 0.0 && finance[0].is_finite() {
+            units = units.min(finance[0] / margin);
+        }
+        if capital > 0.0 && finance[1].is_finite() {
+            units = units.min(finance[1] / capital);
+        }
         units > 0.0 && account.units - units != account.units
     }
 
     // Units, margin delta, capital delta and unit goods price of a claim, without staging it.
     // Both deltas are non-decreasing in the carrier quote, so the units are non-increasing.
-    fn priced_claim(&self, slot: usize, requested: f64, seller_price: f32, carrier_quote: f32,
-        require_finance: bool) -> Option<(f64, f64, f64, f32)> {
+    fn priced_claim(
+        &self,
+        slot: usize,
+        requested: f64,
+        seller_price: f32,
+        carrier_quote: f32,
+        require_finance: bool,
+    ) -> Option<(f64, f64, f64, f32)> {
         let account = self.accounts[slot];
         let goods = seller_price * account.goods_multiplier;
         if requested <= 0.0
@@ -357,7 +430,11 @@ impl BusinessBudgets {
             // quantities. Round down before committing money, not later when material is moved.
             if units < quantity_limit {
                 let physical = units as f32;
-                units = f64::from(if f64::from(physical) > units { physical.next_down() } else { physical });
+                units = f64::from(if f64::from(physical) > units {
+                    physical.next_down()
+                } else {
+                    physical
+                });
             }
             // Division and multiplication may round in opposite directions. Step to the next
             // representable quantity until the original strict/non-strict contracts both hold.
@@ -375,11 +452,21 @@ impl BusinessBudgets {
         Some((units, margin_delta, capital_delta, goods))
     }
 
-    fn claim_priced(&mut self, slot: usize, requested: f64,
-        seller_price: f32, carrier_quote: f32, require_finance: bool) -> f64 {
-        let Some((units, margin_delta, capital_delta, goods)) =
-            self.priced_claim(slot, requested, seller_price, carrier_quote, require_finance)
-        else {
+    fn claim_priced(
+        &mut self,
+        slot: usize,
+        requested: f64,
+        seller_price: f32,
+        carrier_quote: f32,
+        require_finance: bool,
+    ) -> f64 {
+        let Some((units, margin_delta, capital_delta, goods)) = self.priced_claim(
+            slot,
+            requested,
+            seller_price,
+            carrier_quote,
+            require_finance,
+        ) else {
             return 0.0;
         };
         let account = self.accounts[slot];
@@ -417,12 +504,27 @@ impl BusinessBudgets {
         self.journal_account(slot);
         self.journal_owner(source);
         let account = self.accounts[slot];
-        self.insert_receipt(source, usize::MAX, Receipt { account: slot, units: account.units,
-            margin: 0.0, capital: 0.0, goods: account.units * account.goods,
-            quote: [account.goods as f32, (account.carrier * f64::from(account.batch)) as f32],
-            input_origin: true,
-            next: usize::MAX, seller: usize::MAX, previous: usize::MAX,
-            next_account: usize::MAX, previous_account: usize::MAX });
+        self.insert_receipt(
+            source,
+            usize::MAX,
+            Receipt {
+                account: slot,
+                units: account.units,
+                margin: 0.0,
+                capital: 0.0,
+                goods: account.units * account.goods,
+                quote: [
+                    account.goods as f32,
+                    (account.carrier * f64::from(account.batch)) as f32,
+                ],
+                input_origin: true,
+                next: usize::MAX,
+                seller: usize::MAX,
+                previous: usize::MAX,
+                next_account: usize::MAX,
+                previous_account: usize::MAX,
+            },
+        );
         self.accounts[slot].units = 0.0;
     }
 
@@ -444,7 +546,11 @@ impl BusinessBudgets {
             while remaining > 0.0 && index != usize::MAX {
                 let receipt = self.committed[index];
                 index = receipt.next;
-                if receipt.input_origin != input_origin || self.accounts[receipt.account].resource != resource { continue; }
+                if receipt.input_origin != input_origin
+                    || self.accounts[receipt.account].resource != resource
+                {
+                    continue;
+                }
                 let units = remaining.min(receipt.units);
                 remaining -= units;
                 sold += units;
@@ -458,7 +564,8 @@ impl BusinessBudgets {
     /// proof replays from its original accounts; capacity never decides economic feasibility.
     pub(crate) fn reserve_receipts(&mut self, required: usize) {
         debug_assert!(!self.revalidation.is_active());
-        self.committed.reserve(required.saturating_sub(self.committed.len()));
+        self.committed
+            .reserve(required.saturating_sub(self.committed.len()));
         self.revalidation.follow_receipts(self.committed.capacity());
         self.prepare_repricing();
     }
@@ -468,13 +575,21 @@ impl BusinessBudgets {
     /// The enclosing proof must prepare more storage and replay before publishing any result.
     pub(crate) fn try_extend_for(&mut self, owner: usize) -> Result<(), usize> {
         debug_assert!(self.releasing_owner.is_none());
-        let added = self.staged.iter().filter(|change| change.acquired.units > 0.0).count();
+        let added = self
+            .staged
+            .iter()
+            .filter(|change| change.acquired.units > 0.0)
+            .count();
         let required = self.committed.len() + added;
-        if required > self.committed.capacity() { return Err(required); }
+        if required > self.committed.capacity() {
+            return Err(required);
+        }
         self.journal_owner(owner);
         for staged in 0..self.staged.len() {
             let receipt = self.staged[staged].acquired;
-            if receipt.units <= 0.0 { continue; }
+            if receipt.units <= 0.0 {
+                continue;
+            }
             self.insert_receipt(owner, usize::MAX, receipt);
         }
         self.finish();
@@ -515,7 +630,11 @@ impl BusinessBudgets {
     /// touched buyers before accepting its outer journal.
     pub(super) fn commit_joint_for(&mut self, owner: usize) -> Result<(), usize> {
         debug_assert!(self.revalidation.is_active());
-        let added = self.staged.iter().filter(|change| change.acquired.units > 0.0).count();
+        let added = self
+            .staged
+            .iter()
+            .filter(|change| change.acquired.units > 0.0)
+            .count();
         let mut reusable = 0;
         for first in [self.owners[owner], self.free_receipt] {
             let mut index = first;
@@ -525,7 +644,9 @@ impl BusinessBudgets {
             }
         }
         let required = self.committed.len() + added.saturating_sub(reusable);
-        if required > self.committed.capacity() { return Err(required); }
+        if required > self.committed.capacity() {
+            return Err(required);
+        }
         self.commit_for(owner);
         Ok(())
     }
@@ -550,7 +671,8 @@ impl BusinessBudgets {
     }
 
     fn can_accept(&self) -> bool {
-        self.staged_finance.iter()
+        self.staged_finance
+            .iter()
             .all(|&(buyer, _)| self.finance[buyer][0] > 0.0 && self.finance[buyer][1] >= 0.0)
     }
 
@@ -620,17 +742,30 @@ mod tests {
         let mut book = BusinessBudgets::default();
         book.reset(1, 1, 1, 1);
         let slot = input(1, 1_000.0, &mut book);
-        for finance in [[0.0, 0.0], [f64::MIN_POSITIVE, 0.0], [0.01, 0.01],
-            [100.0, 120.0], [f64::INFINITY, f64::INFINITY]] {
+        for finance in [
+            [0.0, 0.0],
+            [f64::MIN_POSITIVE, 0.0],
+            [0.01, 0.01],
+            [100.0, 120.0],
+            [f64::INFINITY, f64::INFINITY],
+        ] {
             book.set_finance(0, finance);
             for requested in [f64::MIN_POSITIVE, 0.001, 1.0, 100.0] {
                 for goods in [0.0, 9.0, 10.0, 10.000_001, 12.0] {
                     for lower in [0.0_f32, 4.0, 49.999_996, 50.0, 50.000_004, 100.0] {
                         for actual in [lower, lower.next_up(), lower + 1.0, lower + 10_000.0] {
                             for require_finance in [false, true] {
-                                if book.priced_claim(slot, requested, goods, actual, require_finance).is_some() {
-                                    assert!(book.claimable_at_carrier_lower_bound(slot, requested,
-                                        goods, lower, require_finance));
+                                if book
+                                    .priced_claim(slot, requested, goods, actual, require_finance)
+                                    .is_some()
+                                {
+                                    assert!(book.claimable_at_carrier_lower_bound(
+                                        slot,
+                                        requested,
+                                        goods,
+                                        lower,
+                                        require_finance
+                                    ));
                                 }
                             }
                         }
@@ -650,16 +785,32 @@ mod tests {
             book.accounts[slot].units = remaining;
             for exposure in [-10.0, 0.0, 0.1, 4.0] {
                 book.accounts[slot].stock_exposure = exposure;
-                for headroom in [[0.0, 0.0], [1e-110, 1e-110], [1e-100, 1e-100],
-                    [f64::MIN_POSITIVE, 0.0], [0.01, 0.01], [100.0, 120.0],
-                    [f64::INFINITY, f64::INFINITY]] {
+                for headroom in [
+                    [0.0, 0.0],
+                    [1e-110, 1e-110],
+                    [1e-100, 1e-100],
+                    [f64::MIN_POSITIVE, 0.0],
+                    [0.01, 0.01],
+                    [100.0, 120.0],
+                    [f64::INFINITY, f64::INFINITY],
+                ] {
                     book.set_finance(0, headroom);
                     for price in [0.0, 9.0, 10.0, 10.000_001, 12.0] {
-                        for request in [f64::MIN_POSITIVE, remaining * 0.001, remaining * 0.5, remaining] {
+                        for request in [
+                            f64::MIN_POSITIVE,
+                            remaining * 0.001,
+                            remaining * 0.5,
+                            remaining,
+                        ] {
                             for carrier in [0.0, 0.01, 50.0, 100.0] {
-                                if book.priced_claim(slot, request, price, carrier, true).is_some() {
-                                    assert!(book.potentially_claimable(slot, price),
-                                        "{remaining} {exposure} {headroom:?} {price} {request} {carrier}");
+                                if book
+                                    .priced_claim(slot, request, price, carrier, true)
+                                    .is_some()
+                                {
+                                    assert!(
+                                        book.potentially_claimable(slot, price),
+                                        "{remaining} {exposure} {headroom:?} {price} {request} {carrier}"
+                                    );
                                 }
                             }
                         }

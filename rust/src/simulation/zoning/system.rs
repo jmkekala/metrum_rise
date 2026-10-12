@@ -205,15 +205,23 @@ impl ZoningSystem {
     // Occupancy changes whose parcels are unknown; incremental consumers rebuild.
     fn bump_overlay_occupancy_revision(&mut self) {
         self.overlay_occupancy_revision = self.overlay_occupancy_revision.wrapping_add(1);
-        self.occupancy_changes.clear(self.overlay_occupancy_revision);
+        self.occupancy_changes
+            .clear(self.overlay_occupancy_revision);
     }
 
     // One parcel's occupancy changed; its current storage row is logged.
     fn record_parcel_occupancy_change(&mut self, parcel_id: u64) {
         self.overlay_occupancy_revision = self.overlay_occupancy_revision.wrapping_add(1);
-        match self.parcels.storage_index(super::ParcelId::from_raw(parcel_id)) {
-            Some(index) => self.occupancy_changes.record(self.overlay_occupancy_revision, [index]),
-            None => self.occupancy_changes.clear(self.overlay_occupancy_revision),
+        match self
+            .parcels
+            .storage_index(super::ParcelId::from_raw(parcel_id))
+        {
+            Some(index) => self
+                .occupancy_changes
+                .record(self.overlay_occupancy_revision, [index]),
+            None => self
+                .occupancy_changes
+                .clear(self.overlay_occupancy_revision),
         }
     }
 
@@ -221,7 +229,8 @@ impl ZoningSystem {
     /// Returns false when a change in between could not name its rows. Storage rows are
     /// valid only while [`Self::parcel_layout_revision`] is unchanged.
     pub(crate) fn occupancy_changes_since(&self, since: u64, out: &mut Vec<usize>) -> bool {
-        self.occupancy_changes.changes_since(since, self.overlay_occupancy_revision, out)
+        self.occupancy_changes
+            .changes_since(since, self.overlay_occupancy_revision, out)
     }
 
     /// Revision of parcel storage order, geometry and zone profiles; occupancy excluded.

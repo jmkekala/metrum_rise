@@ -13,9 +13,7 @@ use crate::simulation::economy::definitions::{
     RuntimeResourcePort,
 };
 use crate::simulation::economy::reduction::ordered_fold;
-use crate::simulation::economy::resource_totals::{
-    add_resource_amount, resource_amount,
-};
+use crate::simulation::economy::resource_totals::{add_resource_amount, resource_amount};
 use crate::simulation::work_area::{
     minimum_work_area_workers, profile_kind_uses_explicit_work_area, sanitize_work_area_scale,
     scaled_work_area_worker_capacity,
@@ -119,14 +117,21 @@ pub(crate) fn affordable_consumer_residents(
 ) -> f64 {
     let basket = consumer_basket_cost(catalog, policy.household_vat_rate);
     let mut equivalent_residents = 0.0;
-    visit_consumer_budgets(households, allocator, catalog, tuning, policy, treasury_balance,
+    visit_consumer_budgets(
+        households,
+        allocator,
+        catalog,
+        tuning,
+        policy,
+        treasury_balance,
         |_, members, spending| {
             equivalent_residents += if basket > 0.0 {
                 (spending / basket).min(f64::from(members))
             } else {
                 f64::from(members)
             };
-        });
+        },
+    );
     equivalent_residents
 }
 
@@ -662,7 +667,9 @@ pub(crate) fn funded_input_demand_scale(
     funded_activity: f32,
 ) -> f32 {
     let capacity = physical_worker_capacity_for_profile(building, profile).max(1);
-    funded_activity.min(building.worker_count as f32 / capacity as f32).clamp(0.0, 1.0)
+    funded_activity
+        .min(building.worker_count as f32 / capacity as f32)
+        .clamp(0.0, 1.0)
         * output_area_scale_for_building(building, profile)
 }
 
@@ -942,7 +949,10 @@ pub(crate) fn applicant_offer(
         home_seed,
         household_seed as u32,
     )?;
-    Some((size, household_age_composition(home_seed, household_seed, size)))
+    Some((
+        size,
+        household_age_composition(home_seed, household_seed, size),
+    ))
 }
 
 /// Places `slots` of one home counted by the adults of the applicant offered each place,
@@ -965,8 +975,7 @@ pub(crate) fn applicant_places_and_members(
     let mut places = [0; MAX_ADULTS_PER_HOUSEHOLD as usize + 1];
     let mut members = 0;
     for slot in slots {
-        if let Some((size, composition)) = applicant_offer(flat_size_m2, home_seed, slot as usize)
-        {
+        if let Some((size, composition)) = applicant_offer(flat_size_m2, home_seed, slot as usize) {
             places[usize::from(composition.adult_count)] += 1;
             members += u32::from(size);
         }

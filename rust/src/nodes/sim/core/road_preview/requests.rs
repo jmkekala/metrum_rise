@@ -43,7 +43,9 @@ pub(crate) fn road_preview_channel() -> (RoadPreviewSender, RoadPreviewReceiver)
 impl RoadPreviewSender {
     /// Replaces pending work in O(1), without waiting for the running geometry compile.
     pub(crate) fn submit(&self, mut request: RoadPreviewRequest) -> bool {
-        request.enqueued_at = crate::debug::Channel::Perf.enabled().then(std::time::Instant::now);
+        request.enqueued_at = crate::debug::Channel::Perf
+            .enabled()
+            .then(std::time::Instant::now);
         *self
             .pending
             .lock()

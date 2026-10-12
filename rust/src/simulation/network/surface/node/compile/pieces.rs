@@ -129,8 +129,8 @@ impl RoadSurfaceSystem {
                 .chain(node_regions.curb_surface_polygons.iter())
                 .chain(node_regions.sidewalk_surface_polygons.iter()),
         );
-        let (earthwork_outer_boundary_loops, render_earthwork_faces) =
-            self.build_closed_earthwork_geometry_from_boundary_segments(
+        let (earthwork_outer_boundary_loops, render_earthwork_faces) = self
+            .build_closed_earthwork_geometry_from_boundary_segments(
                 &node_regions.earthwork_boundary_segments,
                 terrain,
                 top_surface_shapes.as_ref(),
@@ -266,14 +266,8 @@ impl RoadSurfaceSystem {
         if cached_piece.node_id != node_id || cached_piece.kind != input.kind {
             return None;
         }
-        let top_surface_shapes = Self::top_surface_overlay_shapes(
-            cached_piece
-                .surface_polygons()
-        );
-        let (
-            mut earthwork_outer_boundary_loops,
-            mut render_earthwork_faces,
-        ) = self
+        let top_surface_shapes = Self::top_surface_overlay_shapes(cached_piece.surface_polygons());
+        let (mut earthwork_outer_boundary_loops, mut render_earthwork_faces) = self
             .build_closed_earthwork_geometry_from_boundary_segments(
                 earthwork_boundary_segments,
                 terrain,

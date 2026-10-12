@@ -131,10 +131,13 @@ impl DemandSystem {
 
     /// Retires one consumed queue entry and returns its recipe without moving owner identities.
     pub(super) fn retire_queued_construction(&mut self, parcel: u64) -> Option<u16> {
-        if let Ok(index) = self.queued_construction
-            .binary_search_by_key(&parcel, |project| project.parcel_id) {
+        if let Ok(index) = self
+            .queued_construction
+            .binary_search_by_key(&parcel, |project| project.parcel_id)
+        {
             let project = &mut self.queued_construction[index];
-            return std::mem::replace(&mut project.active, false).then_some(project.profile_runtime_id);
+            return std::mem::replace(&mut project.active, false)
+                .then_some(project.profile_runtime_id);
         }
         None
     }
@@ -159,7 +162,9 @@ impl DailyDemandSnapshot {
         queued: &[QueuedConstruction],
     ) {
         for project in queued {
-            if !project.active { continue; }
+            if !project.active {
+                continue;
+            }
             let index = if project.household_slots > 0 {
                 0
             } else if project.commercial {

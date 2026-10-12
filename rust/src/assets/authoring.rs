@@ -247,7 +247,9 @@ pub(crate) fn yard_hedge_rows(data: &Value, structures: &[[[f32; 2]; 2]]) -> Val
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|surface| super::asset::YardPlantKind::from_name(text(surface, "material")).is_none())
+        .filter(|surface| {
+            super::asset::YardPlantKind::from_name(text(surface, "material")).is_none()
+        })
         .map(|surface| {
             surface["vertices"]
                 .as_array()
@@ -257,10 +259,14 @@ pub(crate) fn yard_hedge_rows(data: &Value, structures: &[[[f32; 2]; 2]]) -> Val
                 .collect()
         })
         .collect();
-    let entrance = data["anchors"].as_array().into_iter().flatten().find_map(|anchor| {
-        (text(anchor, "anchor_type") == "entrance" && text(anchor, "name") == "main")
-            .then(|| pair(&anchor["position"], 0, 2))
-    });
+    let entrance = data["anchors"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find_map(|anchor| {
+            (text(anchor, "anchor_type") == "entrance" && text(anchor, "name") == "main")
+                .then(|| pair(&anchor["position"], 0, 2))
+        });
     let frontage = if data["frontage_forward"].is_array() {
         pair(&data["frontage_forward"], 0, 2)
     } else {

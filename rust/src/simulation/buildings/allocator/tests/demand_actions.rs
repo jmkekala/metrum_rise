@@ -212,7 +212,8 @@ fn test_demand_building_spawn_plan_executes_from_hourly_budget() {
             demand.runtime_tuning(),
         ),
         &[],
-        100_000.0, 420,
+        100_000.0,
+        420,
     );
     for _ in 0..24 {
         demand.run_hourly_pass(&allocator, &mut households, &graph, &zoning, 1_000.0);
@@ -252,11 +253,11 @@ fn test_demand_building_spawn_plan_executes_from_hourly_budget() {
 
 #[test]
 fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() {
+    use crate::simulation::buildings::allocator::yard::YardEvent;
     use crate::simulation::economy::demand::{
         DemandBuildingActionKey, DemandBuildingActionPlan, DemandLevelChangeAction,
         DemandSpawnAction, DemandSystem,
     };
-    use crate::simulation::buildings::allocator::yard::YardEvent;
     use godot::prelude::Vector3;
 
     let mut allocator = BuildingAllocator::new();
@@ -277,7 +278,12 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         2,
     );
     // Only the level-2 asset lines its yard, so level changes must lay and clear the hedge.
-    let mut hedged = allocator.registry.get(&residential_level_2).unwrap().manifest.clone();
+    let mut hedged = allocator
+        .registry
+        .get(&residential_level_2)
+        .unwrap()
+        .manifest
+        .clone();
     hedged.building.as_mut().unwrap().yard_hedge = Some(crate::assets::asset::YardHedge {
         hedge: crate::assets::asset::YardHedgeKind::Low,
         edges: crate::assets::asset::LotEdge::ALL.to_vec(),
@@ -506,7 +512,10 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
     assert!(
         matches!(
             upgraded.as_slice(),
-            [YardEvent::Removed(_), YardEvent::Placed { hedge: Some(_), .. }]
+            [
+                YardEvent::Removed(_),
+                YardEvent::Placed { hedge: Some(_), .. }
+            ]
         ),
         "upgrade must replace the old yard with the target's hedge: {upgraded:?}"
     );
@@ -520,7 +529,11 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
     recorded.sort_unstable();
     let mut expected = vec![occupied_parcels[0], occupied_parcels[1]];
     expected.sort_unstable();
-    assert_eq!((total, recorded), (2, expected), "both level changes are presented");
+    assert_eq!(
+        (total, recorded),
+        (2, expected),
+        "both level changes are presented"
+    );
 
     // A later terrain edit cannot authorize a new asset footprint at an unsupported fixed pad.
     let mut blocked_terrain = terrain.clone();

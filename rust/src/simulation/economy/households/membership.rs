@@ -20,15 +20,22 @@ impl HouseholdSystem {
     pub(crate) fn rebuild_household_shopping_access(&mut self, agents: &AgentSystem) {
         self.reset_shopping_car_scratch();
         let flags = &self.shopping_car_scratch;
-        agents.household_id.par_iter().zip(agents.age_group.par_iter())
-            .zip(agents.has_car.par_iter()).for_each(|((&household, &age), &has_car)| {
+        agents
+            .household_id
+            .par_iter()
+            .zip(agents.age_group.par_iter())
+            .zip(agents.has_car.par_iter())
+            .for_each(|((&household, &age), &has_car)| {
                 if household < flags.len() && has_car && age_group_can_shop(age) {
                     flags[household].store(1, Ordering::Relaxed);
                 }
             });
-        self.households.par_iter_mut().zip(flags).for_each(|(household, flag)| {
-            household.shopping_has_car = flag.load(Ordering::Relaxed) != 0;
-        });
+        self.households
+            .par_iter_mut()
+            .zip(flags)
+            .for_each(|(household, flag)| {
+                household.shopping_has_car = flag.load(Ordering::Relaxed) != 0;
+            });
     }
 
     /// Repairs the moved resident's active shopper reference in O(1) after an agent swap-remove.
@@ -103,29 +110,31 @@ impl HouseholdSystem {
             .zip(agents.work_building.par_iter())
             .zip(agents.age_group.par_iter())
             .zip(agents.has_car.par_iter())
-            .for_each(|(((&household_id, &work_building), &age_group), &has_car)| {
-                if household_id < household_count {
-                    member_count_scratch[household_id].fetch_add(1, Ordering::Relaxed);
-                    if has_car && age_group_can_shop(age_group) {
-                        shopping_car_scratch[household_id].store(1, Ordering::Relaxed);
+            .for_each(
+                |(((&household_id, &work_building), &age_group), &has_car)| {
+                    if household_id < household_count {
+                        member_count_scratch[household_id].fetch_add(1, Ordering::Relaxed);
+                        if has_car && age_group_can_shop(age_group) {
+                            shopping_car_scratch[household_id].store(1, Ordering::Relaxed);
+                        }
+                        match age_group {
+                            AGE_CHILD => {
+                                child_count_scratch[household_id].fetch_add(1, Ordering::Relaxed);
+                            }
+                            AGE_ADULT => {
+                                adult_count_scratch[household_id].fetch_add(1, Ordering::Relaxed);
+                            }
+                            AGE_ELDER => {
+                                elder_count_scratch[household_id].fetch_add(1, Ordering::Relaxed);
+                            }
+                            _ => {}
+                        }
                     }
-                    match age_group {
-                        AGE_CHILD => {
-                            child_count_scratch[household_id].fetch_add(1, Ordering::Relaxed);
-                        }
-                        AGE_ADULT => {
-                            adult_count_scratch[household_id].fetch_add(1, Ordering::Relaxed);
-                        }
-                        AGE_ELDER => {
-                            elder_count_scratch[household_id].fetch_add(1, Ordering::Relaxed);
-                        }
-                        _ => {}
+                    if age_group_can_work(age_group) && work_building < building_count {
+                        worker_count_scratch[work_building].fetch_add(1, Ordering::Relaxed);
                     }
-                }
-                if age_group_can_work(age_group) && work_building < building_count {
-                    worker_count_scratch[work_building].fetch_add(1, Ordering::Relaxed);
-                }
-            });
+                },
+            );
 
         self.households
             .par_iter_mut()

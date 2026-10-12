@@ -938,6 +938,13 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- Debug visual modes (2026-10-12, `DEBUG-02`): the terrain, grass, building-site, pedestrian VAT
+  and terrain residency (force LOD1, full world) debug views now switch at runtime from the
+  console's Visual modes pickers or the `visual` command. Launch flags set only the starting
+  value. Terrain and grass views are global shader uniforms, so a switch touches no patch
+  material. Residency switches go through normal streaming, with no teardown. Mode names and
+  parsing moved to Rust (`debug::visual`), and the `pedestrian_vat` offsets view is now
+  `offsets`, since `off` means no view. See [`debug.md`](debug.md#visual-modes).
 - Debug system (2026-10-12, `DEBUG-01`): Rust and GDScript debug output now share one fixed
   channel registry in a single atomic, so a disabled call is one relaxed load with no
   allocation. Enabled lines keep their `[DEBUG:<tag>]` stdout text and also join a 4096-line log.

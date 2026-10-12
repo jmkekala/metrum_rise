@@ -150,9 +150,7 @@ impl RoadSurfaceVisualSpanPiece {
     }
 
     /// Sidewalk top quads in render order.
-    pub fn sidewalk_surface_polygons(
-        &self,
-    ) -> impl ExactSizeIterator<Item = SpanQuad> + '_ {
+    pub fn sidewalk_surface_polygons(&self) -> impl ExactSizeIterator<Item = SpanQuad> + '_ {
         self.role_quads(RoadSurfaceSpanRegionRole::NonRoad)
     }
 
@@ -197,11 +195,16 @@ impl RoadSurfaceVisualSpanPiece {
             let region = item >> 1;
             // The two triangles of one polygon are consecutive within each grid cell.
             // Repeated polygons across cells are harmless; no per-query set is needed.
-            if region == previous { return false; }
+            if region == previous {
+                return false;
+            }
             previous = region;
             let corners = self.span_owned_regions[region as usize].corners(&self.sections);
-            keep(&corners) && test(SpanQuad::from_corners(corners)
-                .expect("span regions are only resolved for valid strip quads"))
+            keep(&corners)
+                && test(
+                    SpanQuad::from_corners(corners)
+                        .expect("span regions are only resolved for valid strip quads"),
+                )
         })
     }
 
@@ -252,10 +255,7 @@ impl RoadSurfaceSystem {
                 .filter(|&index| regions[index as usize].role() == role)
                 .collect();
             order.sort_by(|&a, &b| {
-                Self::visual_points_ordering(
-                    quads[a as usize].points(),
-                    quads[b as usize].points(),
-                )
+                Self::visual_points_ordering(quads[a as usize].points(), quads[b as usize].points())
             });
             order.into_boxed_slice()
         })

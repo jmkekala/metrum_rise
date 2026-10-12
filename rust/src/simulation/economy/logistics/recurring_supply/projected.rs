@@ -3,9 +3,9 @@
 //! Prepared recipe/door variants for supply changes inside construction transactions.
 
 use super::*;
+use crate::simulation::buildings::allocator::DemandSiteEntranceKey;
 use crate::simulation::economy::accessibility::{BuildingModeComponents, ReachableBucketIndex};
 use std::ops::Range;
-use crate::simulation::buildings::allocator::DemandSiteEntranceKey;
 
 /// A proposed supplier retains its actual recipe and door independently of the live building.
 /// Preparation owns this data; source handles never masquerade as allocator building indices.
@@ -23,7 +23,14 @@ pub(crate) struct ProjectedSupplySource {
 impl ProjectedSupplySource {
     /// Records a specific replacement candidate during pass preparation, before quotations.
     pub(crate) fn new(owner: usize, asset: &str, profile: u16, entrance: BuildingEntrance) -> Self {
-        Self { owner, asset: asset.to_owned(), profile, entrance, entrance_key: None, access: None }
+        Self {
+            owner,
+            asset: asset.to_owned(),
+            profile,
+            entrance,
+            entrance_key: None,
+            access: None,
+        }
     }
 
     /// Live building owner; rows sort by owner, then [`Self::key`].
@@ -48,10 +55,19 @@ impl ProjectedSupplySource {
     }
 
     /// Searches the previous sorted variants without allocating or scanning other owners.
-    pub(crate) fn retained_entrance<'a>(sources: &'a [Self], owner: usize, asset: &str)
-        -> Option<(DemandSiteEntranceKey, &'a BuildingEntrance)> {
-        let index = sources.binary_search_by(|source|
-            source.owner.cmp(&owner).then(source.asset.as_str().cmp(asset))).ok()?;
+    pub(crate) fn retained_entrance<'a>(
+        sources: &'a [Self],
+        owner: usize,
+        asset: &str,
+    ) -> Option<(DemandSiteEntranceKey, &'a BuildingEntrance)> {
+        let index = sources
+            .binary_search_by(|source| {
+                source
+                    .owner
+                    .cmp(&owner)
+                    .then(source.asset.as_str().cmp(asset))
+            })
+            .ok()?;
         let source = &sources[index];
         Some((source.entrance_key?, &source.entrance))
     }
@@ -89,65 +105,112 @@ impl RecurringSupply {
         factory: impl FnOnce(Vec<ProjectedSupplySource>, Option<&[u64]>) -> Vec<ProjectedSupplySource>,
     ) {
         debug_assert!(!self.revalidation.is_active() && self.staged.is_empty());
-        debug_assert!(!self.projected.enabled && self.released.is_empty(), "prepare once after a live fork");
-        let Some(components) = &self.components else { return; };
+        debug_assert!(
+            !self.projected.enabled && self.released.is_empty(),
+            "prepare once after a live fork"
+        );
+        let Some(components) = &self.components else {
+            return;
+        };
         let base = self.offsets.len() - 1;
         let first_slot = self.offsets[base];
         let projected = &mut self.projected;
         let layout = (geometry_revision(self.revision), first_slot);
         let rows_current = projected.key.as_deref() == Some(caller_revision);
         if !rows_current || projected.layout != Some(layout) {
-            let timing = crate::debug::Channel::EconomyPhases.enabled().then(std::time::Instant::now);
+            let timing = crate::debug::Channel::EconomyPhases
+                .enabled()
+                .then(std::time::Instant::now);
             if !rows_current {
                 let previous = std::mem::take(&mut projected.sources);
                 projected.sources = factory(previous, projected.key.as_deref());
                 projected.key = Some(caller_revision.to_vec());
                 crate::debug::work::add(crate::debug::work::Work::SupplierSourceRebuilds, 1);
                 // Linear for the already-ordered rows the planner returns.
-                projected.sources.sort_unstable_by(|a, b| a.owner.cmp(&b.owner).then(a.asset.cmp(&b.asset)));
-                debug_assert!(projected.sources.windows(2).all(|pair|
-                    (pair[0].owner, &pair[0].asset) != (pair[1].owner, &pair[1].asset)));
+                projected
+                    .sources
+                    .sort_unstable_by(|a, b| a.owner.cmp(&b.owner).then(a.asset.cmp(&b.asset)));
+                debug_assert!(projected.sources.windows(2).all(|pair| (
+                    pair[0].owner,
+                    &pair[0].asset
+                ) != (
+                    pair[1].owner,
+                    &pair[1].asset
+                )));
             }
             let factory_ms = timing.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0);
             // Components follow the network topology; door chunks follow the retained entrance.
             let topology = layout.0.map(|revision| revision.2);
             if projected.access_topology != topology {
-                projected.sources.iter_mut().for_each(|source| source.access = None);
+                projected
+                    .sources
+                    .iter_mut()
+                    .for_each(|source| source.access = None);
                 projected.access_topology = topology;
             }
-            projected.sources.par_iter_mut().filter(|source| source.access.is_none()).for_each(|source| {
-                source.access = Some((chunk_for_point(source.entrance.door_pos.x, source.entrance.door_pos.y),
-                    components.entrance_components(&source.entrance, graph, TransitFlags::CAR)));
-            });
+            projected
+                .sources
+                .par_iter_mut()
+                .filter(|source| source.access.is_none())
+                .for_each(|source| {
+                    source.access = Some((
+                        chunk_for_point(source.entrance.door_pos.x, source.entrance.door_pos.y),
+                        components.entrance_components(&source.entrance, graph, TransitFlags::CAR),
+                    ));
+                });
             projected.offsets.clear();
             projected.offsets.reserve(projected.sources.len() + 1);
             projected.offsets.push(first_slot);
-            let owners = projected.sources.last().map_or(base, |source| base.max(source.owner + 1));
+            let owners = projected
+                .sources
+                .last()
+                .map_or(base, |source| base.max(source.owner + 1));
             projected.owners.resize(owners, 0..0);
             projected.owners.fill(0..0);
             // Prefix offsets and owner ranges depend on the previous source in stable order.
             for (index, source) in projected.sources.iter().enumerate() {
-                let count = catalog.profile_by_runtime_id(source.profile).map_or(0, |p| p.outputs.len());
+                let count = catalog
+                    .profile_by_runtime_id(source.profile)
+                    .map_or(0, |p| p.outputs.len());
                 projected.offsets.push(projected.offsets[index] + count);
                 let range = &mut projected.owners[source.owner];
-                if range.start == range.end { range.start = index; }
+                if range.start == range.end {
+                    range.start = index;
+                }
                 range.end = index + 1;
             }
-            let entries = projected.sources.par_iter().enumerate().flat_map_iter(|(index, source)| {
-                let (chunk, access) = source.access.unwrap();
-                let (values, count) = access.raw_parts();
-                let outputs = catalog.profile_by_runtime_id(source.profile).map_or(&[][..], |p| p.outputs.as_slice());
-                outputs.iter().flat_map(move |output| {
-                    (0..count).map(move |component| (output.resource_runtime_id,
-                        ReachableBucketEntry::new(values[component], chunk, base + index)))
+            let entries = projected
+                .sources
+                .par_iter()
+                .enumerate()
+                .flat_map_iter(|(index, source)| {
+                    let (chunk, access) = source.access.unwrap();
+                    let (values, count) = access.raw_parts();
+                    let outputs = catalog
+                        .profile_by_runtime_id(source.profile)
+                        .map_or(&[][..], |p| p.outputs.as_slice());
+                    outputs.iter().flat_map(move |output| {
+                        (0..count).map(move |component| {
+                            (
+                                output.resource_runtime_id,
+                                ReachableBucketEntry::new(values[component], chunk, base + index),
+                            )
+                        })
+                    })
                 })
-            }).collect();
+                .collect();
             projected.index = SupplierCandidateIndex::from_entries(entries);
             projected.index.enable_reservations();
             projected.layout = Some(layout);
             if let Some(start) = timing {
-                crate::debug_log!("economy_phases", "supplier_sources_detail sources={} rows_changed={} factory_ms={:.3} layout_ms={:.3}",
-                    projected.sources.len(), !rows_current, factory_ms, start.elapsed().as_secs_f64() * 1000.0 - factory_ms);
+                crate::debug_log!(
+                    "economy_phases",
+                    "supplier_sources_detail sources={} rows_changed={} factory_ms={:.3} layout_ms={:.3}",
+                    projected.sources.len(),
+                    !rows_current,
+                    factory_ms,
+                    start.elapsed().as_secs_f64() * 1000.0 - factory_ms
+                );
             }
         }
         projected.index.disable_all();
@@ -168,8 +231,14 @@ impl RecurringSupply {
 
     /// Finds the prepared variant in this owner's range, without a city or catalogue scan.
     pub(crate) fn projected_source(&self, owner: usize, asset: &str) -> Option<usize> {
-        if !self.projected.enabled { return None; }
-        self.projected.owners.get(owner)?.clone().find(|&index| self.projected.sources[index].asset == asset)
+        if !self.projected.enabled {
+            return None;
+        }
+        self.projected
+            .owners
+            .get(owner)?
+            .clone()
+            .find(|&index| self.projected.sources[index].asset == asset)
             .map(|index| self.offsets.len() - 1 + index)
     }
 
@@ -188,9 +257,16 @@ impl RecurringSupply {
         graph: &RegionGraph,
     ) {
         debug_assert!(self.staged.is_empty() && self.released.is_empty());
-        debug_assert!(self.revalidation.is_active(), "source replacement belongs to an enclosing proof");
-        let Some(profile) = self.source_profile(source, allocator, catalog) else { return; };
-        let Some(range) = self.source_range(source) else { return; };
+        debug_assert!(
+            self.revalidation.is_active(),
+            "source replacement belongs to an enclosing proof"
+        );
+        let Some(profile) = self.source_profile(source, allocator, catalog) else {
+            return;
+        };
+        let Some(range) = self.source_range(source) else {
+            return;
+        };
         for (slot, output) in range.zip(&profile.outputs) {
             let produced = f64::from(profile.net_output_units_per_day(output) * area * activity);
             let available = (produced - household(output.resource_runtime_id)).max(0.0);
@@ -206,10 +282,14 @@ impl RecurringSupply {
     }
 
     /// Drops pass-specific eligibility, keeping variant geometry for the next warm fork.
-    pub(super) fn clear_projected_sources(&mut self) { self.projected.enabled = false; }
+    pub(super) fn clear_projected_sources(&mut self) {
+        self.projected.enabled = false;
+    }
 
     /// Whether the current book includes prepared variant quantities.
-    pub(super) fn projected_enabled(&self) -> bool { self.projected.enabled }
+    pub(super) fn projected_enabled(&self) -> bool {
+        self.projected.enabled
+    }
 
     /// Whether any prepared variant currently has unreserved production.
     #[cfg(test)]
@@ -219,71 +299,143 @@ impl RecurringSupply {
 
     /// Resource-compatible proposed doors; disabled passes never expose stale eligibility.
     pub(super) fn projected_buckets(&self, resource: u16) -> Option<&ReachableBucketIndex> {
-        self.projected.enabled.then(|| self.projected.index.buckets_for_resource(resource)).flatten()
+        self.projected
+            .enabled
+            .then(|| self.projected.index.buckets_for_resource(resource))
+            .flatten()
     }
 
     /// Maps a supply handle to its real commitment owner, including unplaced recipe variants.
     pub(super) fn source_owner(&self, source: usize) -> usize {
         let base = self.offsets.len().saturating_sub(1);
-        if source < base { source } else { self.projected.sources[source - base].owner }
+        if source < base {
+            source
+        } else {
+            self.projected.sources[source - base].owner
+        }
     }
 
     /// Sparse quantity range for an original or prepared source handle.
     pub(super) fn source_range(&self, source: usize) -> Option<Range<usize>> {
         let base = self.offsets.len().saturating_sub(1);
-        let (offsets, index) = if source < base { (&self.offsets, source) }
-            else if self.projected.enabled { (&self.projected.offsets, source - base) }
-            else { return None; };
+        let (offsets, index) = if source < base {
+            (&self.offsets, source)
+        } else if self.projected.enabled {
+            (&self.projected.offsets, source - base)
+        } else {
+            return None;
+        };
         Some(*offsets.get(index)?..*offsets.get(index + 1)?)
     }
 
     /// Uses the candidate's actual recipe rather than the incumbent's output ports or price.
-    pub(super) fn source_profile<'c>(&self, source: usize, allocator: &BuildingAllocator,
-        catalog: &'c RuntimeEconomyCatalog) -> Option<&'c EconomyProfileRuntime> {
+    pub(super) fn source_profile<'c>(
+        &self,
+        source: usize,
+        allocator: &BuildingAllocator,
+        catalog: &'c RuntimeEconomyCatalog,
+    ) -> Option<&'c EconomyProfileRuntime> {
         let base = self.offsets.len().saturating_sub(1);
-        let profile = if source < base { allocator.buildings.get(source)?.economy_profile_runtime_id }
-            else if self.projected.enabled { self.projected.sources.get(source - base)?.profile }
-            else { return None; };
+        let profile = if source < base {
+            allocator.buildings.get(source)?.economy_profile_runtime_id
+        } else if self.projected.enabled {
+            self.projected.sources.get(source - base)?.profile
+        } else {
+            return None;
+        };
         catalog.profile_by_runtime_id(profile)
     }
 
     /// Source geometry for exact direction, frontage delay and straight-line pruning.
-    pub(super) fn source_entrance<'a>(&'a self, source: usize,
-        allocator: &'a BuildingAllocator) -> Option<&'a BuildingEntrance> {
+    pub(super) fn source_entrance<'a>(
+        &'a self,
+        source: usize,
+        allocator: &'a BuildingAllocator,
+    ) -> Option<&'a BuildingEntrance> {
         let base = self.offsets.len().saturating_sub(1);
-        if source < base { allocator.entrances.get(source) }
-        else if self.projected.enabled { self.projected.sources.get(source - base).map(|s| &s.entrance) }
-        else { None }
+        if source < base {
+            allocator.entrances.get(source)
+        } else if self.projected.enabled {
+            self.projected
+                .sources
+                .get(source - base)
+                .map(|s| &s.entrance)
+        } else {
+            None
+        }
     }
 
     /// Live pairs keep their complete-route cache; proposed doors use prepared node-cost scratch.
-    pub(super) fn source_route(&self, source: usize, buyer: Option<usize>, entrance: &BuildingEntrance,
-        allocator: &BuildingAllocator, network: &TransitNetwork, graph: &RegionGraph,
-        routes: &mut FreightRouteCache) -> Option<f32> {
+    pub(super) fn source_route(
+        &self,
+        source: usize,
+        buyer: Option<usize>,
+        entrance: &BuildingEntrance,
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+        routes: &mut FreightRouteCache,
+    ) -> Option<f32> {
         if source < self.offsets.len().saturating_sub(1) {
-            if let Some(buyer) = buyer { routes.between_buildings(source, buyer, allocator, network, graph) }
-            else { routes.to_site(source, entrance, allocator, network, graph) }
+            if let Some(buyer) = buyer {
+                routes.between_buildings(source, buyer, allocator, network, graph)
+            } else {
+                routes.to_site(source, entrance, allocator, network, graph)
+            }
         } else {
-            routes.between_entrances(self.source_entrance(source, allocator)?, entrance, network, graph)
+            routes.between_entrances(
+                self.source_entrance(source, allocator)?,
+                entrance,
+                network,
+                graph,
+            )
         }
     }
 
     /// Updates only the fixed variant entry; rollback uses the same source handle and door.
-    pub(super) fn set_projected_available(&mut self, source: usize, resource: u16,
-        available: bool, graph: &RegionGraph) {
-        let Some(components) = &self.components else { return; };
-        let Some(variant) = self.projected.sources.get(source - (self.offsets.len() - 1)) else { return; };
+    pub(super) fn set_projected_available(
+        &mut self,
+        source: usize,
+        resource: u16,
+        available: bool,
+        graph: &RegionGraph,
+    ) {
+        let Some(components) = &self.components else {
+            return;
+        };
+        let Some(variant) = self
+            .projected
+            .sources
+            .get(source - (self.offsets.len() - 1))
+        else {
+            return;
+        };
         let chunk = chunk_for_point(variant.entrance.door_pos.x, variant.entrance.door_pos.y);
-        for &component in components.entrance_components(&variant.entrance, graph, TransitFlags::CAR).as_slice() {
-            self.projected.index.set_available(resource, ReachableBucketEntry::new(component, chunk, source), available);
+        for &component in components
+            .entrance_components(&variant.entrance, graph, TransitFlags::CAR)
+            .as_slice()
+        {
+            self.projected.index.set_available(
+                resource,
+                ReachableBucketEntry::new(component, chunk, source),
+                available,
+            );
         }
     }
 
     /// Retained quantity/query capacities for allocation regressions, never admission decisions.
     #[cfg(test)]
     pub(crate) fn projected_storage(&self) -> [usize; 9] {
-        [self.remaining.capacity(), self.production.capacity(), self.active.capacity(),
-            self.source_receipts.capacity(), self.staged.capacity(), self.offers.capacity(),
-            self.projected.sources.capacity(), self.projected.offsets.capacity(), self.projected.owners.capacity()]
+        [
+            self.remaining.capacity(),
+            self.production.capacity(),
+            self.active.capacity(),
+            self.source_receipts.capacity(),
+            self.staged.capacity(),
+            self.offers.capacity(),
+            self.projected.sources.capacity(),
+            self.projected.offsets.capacity(),
+            self.projected.owners.capacity(),
+        ]
     }
 }

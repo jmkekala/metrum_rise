@@ -58,6 +58,14 @@ grass_world_noise_bounds={
 "type": "vec4",
 "value": Vector4(0, 0, 1, 1)
 }
+terrain_visual_debug_mode={
+"type": "int",
+"value": 0
+}
+terrain_grass_visual_debug_mode={
+"type": "int",
+"value": 0
+}
 
 [rendering]
 

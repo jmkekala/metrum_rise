@@ -235,10 +235,7 @@ fn assert_terrain_clip_loops_cover_node_top_footprint_bounds(
             .compiled_visual_node_pieces()
             .values()
             .filter(|piece| piece.kind == RoadSurfaceVisualNodePieceKind::Terminal)
-            .flat_map(|piece| {
-                piece
-                    .surface_polygons()
-            })
+            .flat_map(|piece| piece.surface_polygons())
             .flat_map(|polygon| polygon.points_world.iter())
             .map(|point| (point.x, point.z)),
     )

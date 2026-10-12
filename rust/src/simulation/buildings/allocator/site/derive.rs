@@ -148,10 +148,18 @@ impl BuildingAllocator {
             .par_iter()
             .with_min_len(4_096)
             .map(|site| (site_radius_m(site), 1))
-            .reduce(|| (0.0, 0), |a, b| {
-                if a.0 == b.0 { (a.0, a.1 + b.1) }
-                else if a.0 > b.0 { a } else { b }
-            });
+            .reduce(
+                || (0.0, 0),
+                |a, b| {
+                    if a.0 == b.0 {
+                        (a.0, a.1 + b.1)
+                    } else if a.0 > b.0 {
+                        a
+                    } else {
+                        b
+                    }
+                },
+            );
     }
 
     pub(super) fn derive_building_site_client(
@@ -238,7 +246,9 @@ impl BuildingAllocator {
                     .map(|area| {
                         area.vertices
                             .iter()
-                            .map(|&[x, z]| building_local_xz_pos(building, [x, 0.0, z], frontage_forward))
+                            .map(|&[x, z]| {
+                                building_local_xz_pos(building, [x, 0.0, z], frontage_forward)
+                            })
                             .collect()
                     })
                     .collect()

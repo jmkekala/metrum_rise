@@ -20,8 +20,8 @@ use crate::simulation::economy::operation::{InputRequirement, InputSupplyCosts};
 use crate::simulation::network::{TransitNetwork, graph::RegionGraph, types::TransitFlags};
 use rayon::prelude::*;
 
-mod revalidation;
 mod projected;
+mod revalidation;
 pub(crate) use projected::ProjectedSupplySource;
 
 type LayoutRevision = (u64, u64, u32, u64, usize);
@@ -29,7 +29,8 @@ type GeometryRevision = (u64, u64, u32, usize);
 
 // Route prices change without changing resource membership, doors or weak components.
 fn geometry_revision(revision: Option<LayoutRevision>) -> Option<GeometryRevision> {
-    revision.map(|(buildings, entrances, topology, _, count)| (buildings, entrances, topology, count))
+    revision
+        .map(|(buildings, entrances, topology, _, count)| (buildings, entrances, topology, count))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -109,7 +110,9 @@ impl RecurringSupply {
     /// Diagnostic totals: nearest searches, candidate visits, route quotes, region/ring
     /// checks, retained-offer hits and staffing retries. Production carries no counters.
     #[cfg(test)]
-    pub(crate) fn search_counts_for_test(&self) -> [u64; 6] { self.search_counts }
+    pub(crate) fn search_counts_for_test(&self) -> [u64; 6] {
+        self.search_counts
+    }
 
     /// Prepares temporary project owners outside input quotation loops.
     pub(crate) fn prepare_owners(&mut self, owners: usize, input_ports: usize) {
@@ -119,14 +122,23 @@ impl RecurringSupply {
         }
         let receipts = self.committed.len() + 2 * (self.remaining.len() + input_ports);
         self.reserve_receipts(receipts);
-        self.revalidation.prepare(self.remaining.len(), self.owner_receipts.len(), self.committed.capacity());
+        self.revalidation.prepare(
+            self.remaining.len(),
+            self.owner_receipts.len(),
+            self.committed.capacity(),
+        );
     }
 
     /// Grows receipt and owner-withdrawal storage only between complete proposal attempts.
     pub(crate) fn reserve_receipts(&mut self, required: usize) {
         debug_assert!(!self.revalidation.is_active());
-        self.committed.reserve(required.saturating_sub(self.committed.len()));
-        self.released.reserve(self.committed.capacity().saturating_sub(self.released.len()));
+        self.committed
+            .reserve(required.saturating_sub(self.committed.len()));
+        self.released.reserve(
+            self.committed
+                .capacity()
+                .saturating_sub(self.released.len()),
+        );
         self.revalidation.follow_receipts(self.committed.capacity());
     }
 
@@ -143,7 +155,10 @@ impl RecurringSupply {
 
     fn check_receipt_capacity(&self, added: usize, retired: Option<usize>) -> Result<(), usize> {
         let mut missing = added;
-        for first in [retired.map_or(usize::MAX, |owner| self.owner_receipts[owner]), self.free_receipt] {
+        for first in [
+            retired.map_or(usize::MAX, |owner| self.owner_receipts[owner]),
+            self.free_receipt,
+        ] {
             let mut index = first;
             while index != usize::MAX && missing > 0 {
                 missing -= 1;
@@ -151,7 +166,11 @@ impl RecurringSupply {
             }
         }
         let required = self.committed.len() + missing;
-        if required > self.committed.capacity() { Err(required) } else { Ok(()) }
+        if required > self.committed.capacity() {
+            Err(required)
+        } else {
+            Ok(())
+        }
     }
 
     /// Invalidates the source view after job-state removal, remapping, or reload.
@@ -188,7 +207,10 @@ impl RecurringSupply {
     ) {
         debug_assert!(source.staged.is_empty());
         debug_assert!(!self.revalidation.is_active() && !source.revalidation.is_active());
-        debug_assert!(!source.projected_enabled(), "construction forks the live supply census");
+        debug_assert!(
+            !source.projected_enabled(),
+            "construction forks the live supply census"
+        );
         if geometry_revision(self.revision) != geometry_revision(source.revision) {
             // Layout changes need fresh membership, not a second financial copy or loss
             // of the larger project arenas prepared by the preceding construction pass.
@@ -197,7 +219,8 @@ impl RecurringSupply {
             self.doors.clone_from(&source.doors);
             self.index.clone_from(&source.index);
             self.components.clone_from(&source.components);
-            self.nearest_incumbents.clone_from(&source.nearest_incumbents);
+            self.nearest_incumbents
+                .clone_from(&source.nearest_incumbents);
             self.receipt_capacity = self.receipt_capacity.max(source.receipt_capacity);
             self.staged.reserve(source.remaining.len());
             self.released.reserve(source.remaining.len());
@@ -216,7 +239,8 @@ impl RecurringSupply {
         self.released.clear();
         self.releasing_owner = None;
         self.committed.clone_from(&source.committed);
-        self.committed.reserve(self.receipt_capacity.saturating_sub(self.committed.len()));
+        self.committed
+            .reserve(self.receipt_capacity.saturating_sub(self.committed.len()));
         self.owner_receipts.clone_from(&source.owner_receipts);
         self.owner_tails.clone_from(&source.owner_tails);
         self.source_receipts.clone_from(&source.source_receipts);
@@ -248,9 +272,15 @@ impl RecurringSupply {
                 }
             }
         }
-        crate::debug::work::add(crate::debug::work::Work::ReservationRowsCopied, (self.committed.len()
-            + 2 * self.owner_receipts.len() + self.source_receipts.len() + self.remaining.len()
-            + self.production.len() + self.active.len()) as u64);
+        crate::debug::work::add(
+            crate::debug::work::Work::ReservationRowsCopied,
+            (self.committed.len()
+                + 2 * self.owner_receipts.len()
+                + self.source_receipts.len()
+                + self.remaining.len()
+                + self.production.len()
+                + self.active.len()) as u64,
+        );
     }
 
     /// Whether any funded staffed source has a positive remaining production rate.
@@ -268,16 +298,24 @@ impl RecurringSupply {
                 .output_port(input.resource_runtime_id)
                 .map_or(0.0, |output| output.units_per_day);
             input.units_per_day > internal
-                && [self.index.buckets_for_resource(input.resource_runtime_id),
-                    self.projected_buckets(input.resource_runtime_id)].into_iter()
-                    .flatten().any(|buckets| buckets.has_available())
+                && [
+                    self.index.buckets_for_resource(input.resource_runtime_id),
+                    self.projected_buckets(input.resource_runtime_id),
+                ]
+                .into_iter()
+                .flatten()
+                .any(|buckets| buckets.has_available())
         })
     }
 
     /// Visits existing source membership for a resource/component, including depleted or
     /// unfunded sources. Work follows that component's entries; no query storage is allocated.
-    pub(crate) fn visit_possible_sources(&self, resource: ResourceRuntimeId, component: u32,
-        visit: impl FnMut(usize)) {
+    pub(crate) fn visit_possible_sources(
+        &self,
+        resource: ResourceRuntimeId,
+        component: u32,
+        visit: impl FnMut(usize),
+    ) {
         if let Some(buckets) = self.index.buckets_for_resource(resource) {
             buckets.visit_component_members(component, visit);
         }
@@ -302,12 +340,16 @@ impl RecurringSupply {
         self.committed.clear();
         self.released.clear();
         self.releasing_owner = None;
-        self.owner_receipts.resize(allocator.buildings.len(), usize::MAX);
+        self.owner_receipts
+            .resize(allocator.buildings.len(), usize::MAX);
         self.owner_receipts
             .par_iter_mut()
             .for_each(|head| *head = usize::MAX);
-        self.owner_tails.resize(allocator.buildings.len(), usize::MAX);
-        self.owner_tails.par_iter_mut().for_each(|tail| *tail = usize::MAX);
+        self.owner_tails
+            .resize(allocator.buildings.len(), usize::MAX);
+        self.owner_tails
+            .par_iter_mut()
+            .for_each(|tail| *tail = usize::MAX);
         self.free_receipt = usize::MAX;
         self.prices.clear();
         self.offers.clear();
@@ -342,8 +384,13 @@ impl RecurringSupply {
             self.remaining.resize(*self.offsets.last().unwrap(), 0.0);
             self.receipt_capacity += 2 * self.remaining.len();
             self.doors.clear();
-            self.doors.extend((0..allocator.buildings.len())
-                .map(|source| allocator.entrances.get(source).map(|entrance| entrance.door_pos)));
+            self.doors
+                .extend((0..allocator.buildings.len()).map(|source| {
+                    allocator
+                        .entrances
+                        .get(source)
+                        .map(|entrance| entrance.door_pos)
+                }));
             let components = ModeComponentIndex::build(graph, TransitFlags::CAR);
             // Inactive/unfinished sources remain geometrically indexed. Hourly quantities
             // enable them only when they have actual staffed, funded net production.
@@ -357,8 +404,13 @@ impl RecurringSupply {
             );
             self.index.enable_reservations();
             let doors = &self.doors;
-            self.index.enable_spatial_bounds(|source|
-                doors.get(source).copied().flatten().map(|door| [door.x, door.y]));
+            self.index.enable_spatial_bounds(|source| {
+                doors
+                    .get(source)
+                    .copied()
+                    .flatten()
+                    .map(|door| [door.x, door.y])
+            });
             self.active.resize(self.remaining.len(), true);
             self.active.fill(true);
             self.components = Some(components);
@@ -409,10 +461,16 @@ impl RecurringSupply {
         // Warm-start estimate only; census commits preflight and grow exactly.
         let estimate = self.receipt_capacity;
         #[cfg(test)]
-        let estimate = if self.discard_receipt_estimate { self.committed.shrink_to_fit(); 0 } else { estimate };
+        let estimate = if self.discard_receipt_estimate {
+            self.committed.shrink_to_fit();
+            0
+        } else {
+            estimate
+        };
         self.committed.reserve(estimate);
         self.released.reserve(self.remaining.len());
-        self.source_receipts.resize(self.remaining.len(), usize::MAX);
+        self.source_receipts
+            .resize(self.remaining.len(), usize::MAX);
         self.source_receipts.fill(usize::MAX);
     }
 
@@ -443,7 +501,8 @@ impl RecurringSupply {
             return;
         }
         for (port, output) in profile.outputs.iter().enumerate() {
-            let rate = profile.net_output_units_per_day(output) * output_area_scale_for_building(building, profile);
+            let rate = profile.net_output_units_per_day(output)
+                * output_area_scale_for_building(building, profile);
             let added = f64::from(rate * current) - f64::from(rate * previous);
             let slot = self.offsets[source] + port;
             self.journal_source(source, output.resource_runtime_id, slot);
@@ -452,7 +511,13 @@ impl RecurringSupply {
             let available = self.remaining[slot] > 0.0;
             if self.active[slot] != available {
                 self.active[slot] = available;
-                self.set_available(source, output.resource_runtime_id, available, allocator, graph);
+                self.set_available(
+                    source,
+                    output.resource_runtime_id,
+                    available,
+                    allocator,
+                    graph,
+                );
             }
         }
     }
@@ -466,8 +531,13 @@ impl RecurringSupply {
     /// An outer journal restores exact quantities and both receipt chains on rejection.
     /// Caller prepares one affected-owner slot/flag per owner and clears touched flags after
     /// use. O(output slots + withdrawn flows + affected owners' flows), without allocation.
-    pub(crate) fn withdraw_overclaims(&mut self, owners: &mut Vec<usize>, seen: &mut [bool],
-        allocator: &BuildingAllocator, graph: &RegionGraph) {
+    pub(crate) fn withdraw_overclaims(
+        &mut self,
+        owners: &mut Vec<usize>,
+        seen: &mut [bool],
+        allocator: &BuildingAllocator,
+        graph: &RegionGraph,
+    ) {
         debug_assert!(self.revalidation.is_active());
         debug_assert!(owners.is_empty() && self.staged.is_empty() && self.released.is_empty());
         for slot in 0..self.remaining.len() {
@@ -488,7 +558,10 @@ impl RecurringSupply {
                 }
                 if !seen[receipt.owner] {
                     seen[receipt.owner] = true;
-                    assert!(owners.len() < owners.capacity(), "input repairs require owner preparation");
+                    assert!(
+                        owners.len() < owners.capacity(),
+                        "input repairs require owner preparation"
+                    );
                     owners.push(receipt.owner);
                 }
                 index = receipt.next_from_source;
@@ -501,12 +574,15 @@ impl RecurringSupply {
                 let receipt = self.committed[index];
                 if receipt.units == 0.0 {
                     self.journal_owner(owner);
-                    if previous == usize::MAX { self.owner_receipts[owner] = receipt.next_from_owner; }
-                    else {
+                    if previous == usize::MAX {
+                        self.owner_receipts[owner] = receipt.next_from_owner;
+                    } else {
                         self.journal_receipt(previous);
                         self.committed[previous].next_from_owner = receipt.next_from_owner;
                     }
-                    if self.owner_tails[owner] == index { self.owner_tails[owner] = previous; }
+                    if self.owner_tails[owner] == index {
+                        self.owner_tails[owner] = previous;
+                    }
                     self.retire_receipt(index, receipt);
                     if self.source_receipts[receipt.slot] == usize::MAX {
                         self.remaining[receipt.slot] = self.production[receipt.slot];
@@ -514,9 +590,17 @@ impl RecurringSupply {
                     let available = self.remaining[receipt.slot] > 0.0;
                     if self.active[receipt.slot] != available {
                         self.active[receipt.slot] = available;
-                        self.set_available(receipt.source, receipt.resource, available, allocator, graph);
+                        self.set_available(
+                            receipt.source,
+                            receipt.resource,
+                            available,
+                            allocator,
+                            graph,
+                        );
                     }
-                } else { previous = index; }
+                } else {
+                    previous = index;
+                }
                 index = receipt.next_from_owner;
             }
         }
@@ -536,8 +620,12 @@ impl RecurringSupply {
         graph: &RegionGraph,
     ) {
         debug_assert!(self.staged.is_empty() && self.released.is_empty());
-        if before == after { return; }
-        let Some(slot) = self.slot(allocator, catalog, source, resource) else { return; };
+        if before == after {
+            return;
+        }
+        let Some(slot) = self.slot(allocator, catalog, source, resource) else {
+            return;
+        };
         self.journal_source(source, resource, slot);
         self.remaining[slot] += before - after;
         self.production[slot] += before - after;
@@ -608,7 +696,9 @@ impl RecurringSupply {
     /// in O(1) per offer; clearing a retry costs O(claims * log bucket size + input ports).
     pub(crate) fn retry(&mut self, allocator: &BuildingAllocator, graph: &RegionGraph) {
         #[cfg(test)]
-        { self.search_counts[5] += 1; }
+        {
+            self.search_counts[5] += 1;
+        }
         while let Some(claim) = self.staged.pop() {
             self.restore(claim, allocator, graph);
         }
@@ -655,7 +745,9 @@ impl RecurringSupply {
     /// Records a live owner's accepted input flows for a later replacement quote.
     /// O(claims), using the pass's preallocated sparse receipt arena.
     pub(crate) fn accept_for(&mut self, owner: usize) {
-        debug_assert!(self.owner_receipts[owner] == usize::MAX || self.releasing_owner == Some(owner));
+        debug_assert!(
+            self.owner_receipts[owner] == usize::MAX || self.releasing_owner == Some(owner)
+        );
         self.retire_owner(owner);
         self.releasing_owner = None;
         for index in 0..self.staged.len() {
@@ -680,11 +772,19 @@ impl RecurringSupply {
         self.journal_source(claim.source, claim.resource, claim.slot);
         self.journal_owner(owner);
         let next_from_source = self.source_receipts[claim.slot];
-        let receipt = Claim { owner, next_from_source, next_from_owner: usize::MAX,
-            previous_from_source: usize::MAX, ..claim };
+        let receipt = Claim {
+            owner,
+            next_from_source,
+            next_from_owner: usize::MAX,
+            previous_from_source: usize::MAX,
+            ..claim
+        };
         let index = if self.free_receipt == usize::MAX {
             let index = self.committed.len();
-            assert!(index < self.committed.capacity(), "input receipts require capacity preflight");
+            assert!(
+                index < self.committed.capacity(),
+                "input receipts require capacity preflight"
+            );
             self.committed.push(receipt);
             index
         } else {
@@ -700,8 +800,9 @@ impl RecurringSupply {
         }
         self.source_receipts[claim.slot] = index;
         let last = self.owner_tails[owner];
-        if last == usize::MAX { self.owner_receipts[owner] = index; }
-        else {
+        if last == usize::MAX {
+            self.owner_receipts[owner] = index;
+        } else {
             self.journal_receipt(last);
             self.committed[last].next_from_owner = index;
         }
@@ -718,14 +819,26 @@ impl RecurringSupply {
     /// production. O(source ports + changed eligibility * log bucket size), no route query
     /// or per-delivery allocation after `prepare_customer_deliveries`. A storage shortage
     /// returns the exact required arena size before changing any source or receipt.
-    pub(crate) fn commit_customer_delivery(&mut self, source: usize, buyer: usize,
-        resource: ResourceRuntimeId, requested: f64, quote: [f32; 2],
-        allocator: &BuildingAllocator, catalog: &RuntimeEconomyCatalog, graph: &RegionGraph) -> Result<(), usize> {
+    pub(crate) fn commit_customer_delivery(
+        &mut self,
+        source: usize,
+        buyer: usize,
+        resource: ResourceRuntimeId,
+        requested: f64,
+        quote: [f32; 2],
+        allocator: &BuildingAllocator,
+        catalog: &RuntimeEconomyCatalog,
+        graph: &RegionGraph,
+    ) -> Result<(), usize> {
         debug_assert!(self.staged.is_empty() && self.released.is_empty());
-        let Some(slot) = self.slot(allocator, catalog, source, resource) else { return Ok(()); };
+        let Some(slot) = self.slot(allocator, catalog, source, resource) else {
+            return Ok(());
+        };
         let previous = self.remaining[slot];
         let units = requested.min(previous);
-        if units <= 0.0 { return Ok(()); }
+        if units <= 0.0 {
+            return Ok(());
+        }
         self.check_receipt_capacity(1, None)?;
         self.journal_source(source, resource, slot);
         self.remaining[slot] -= units;
@@ -733,9 +846,22 @@ impl RecurringSupply {
             self.active[slot] = false;
             self.set_available(source, resource, false, allocator, graph);
         }
-        self.append_receipt(Claim { source, resource, slot, previous, units, owner: buyer,
-            next_from_owner: usize::MAX, next_from_source: usize::MAX,
-            previous_from_source: usize::MAX, unit_price: quote[0], carrier_quote: quote[1] }, buyer);
+        self.append_receipt(
+            Claim {
+                source,
+                resource,
+                slot,
+                previous,
+                units,
+                owner: buyer,
+                next_from_owner: usize::MAX,
+                next_from_source: usize::MAX,
+                previous_from_source: usize::MAX,
+                unit_price: quote[0],
+                carrier_quote: quote[1],
+            },
+            buyer,
+        );
         Ok(())
     }
 
@@ -758,11 +884,13 @@ impl RecurringSupply {
             self.source_receipts[receipt.slot] = receipt.next_from_source;
         } else {
             self.journal_receipt(receipt.previous_from_source);
-            self.committed[receipt.previous_from_source].next_from_source = receipt.next_from_source;
+            self.committed[receipt.previous_from_source].next_from_source =
+                receipt.next_from_source;
         }
         if receipt.next_from_source != usize::MAX {
             self.journal_receipt(receipt.next_from_source);
-            self.committed[receipt.next_from_source].previous_from_source = receipt.previous_from_source;
+            self.committed[receipt.next_from_source].previous_from_source =
+                receipt.previous_from_source;
         }
         self.committed[index].next_from_owner = self.free_receipt;
         self.free_receipt = index;
@@ -779,14 +907,21 @@ impl RecurringSupply {
     pub(crate) fn shrink_receipt_storage_for_test(&mut self) {
         debug_assert!(!self.revalidation.is_active());
         self.committed.shrink_to_fit();
-        self.revalidation.prepare(self.remaining.len(), self.owner_receipts.len(), self.committed.capacity());
+        self.revalidation.prepare(
+            self.remaining.len(),
+            self.owner_receipts.len(),
+            self.committed.capacity(),
+        );
     }
 
     /// Visits only this source's committed buyers, including each resource's exact quantity.
     /// Cost is O(source ports + current input flows), without a citywide buyer scan,
     /// replacement-history traversal or per-visit allocation.
-    pub(crate) fn visit_dependents(&self, source: usize,
-        mut visit: impl FnMut(usize, ResourceRuntimeId, f64)) {
+    pub(crate) fn visit_dependents(
+        &self,
+        source: usize,
+        mut visit: impl FnMut(usize, ResourceRuntimeId, f64),
+    ) {
         let Some(range) = self.source_range(source) else {
             return;
         };
@@ -804,14 +939,23 @@ impl RecurringSupply {
 
     /// Output already promised to current or prospective workers of accepted buyers.
     /// O(source output ports + that output's current receipts), without allocation.
-    pub(crate) fn committed_output(&self, source: usize, resource: ResourceRuntimeId,
-        allocator: &BuildingAllocator, catalog: &RuntimeEconomyCatalog) -> f64 {
-        let Some(slot) = self.slot(allocator, catalog, source, resource) else { return 0.0; };
+    pub(crate) fn committed_output(
+        &self,
+        source: usize,
+        resource: ResourceRuntimeId,
+        allocator: &BuildingAllocator,
+        catalog: &RuntimeEconomyCatalog,
+    ) -> f64 {
+        let Some(slot) = self.slot(allocator, catalog, source, resource) else {
+            return 0.0;
+        };
         let mut index = self.source_receipts[slot];
         let mut units = 0.0;
         while index != usize::MAX {
             let receipt = self.committed[index];
-            if Some(receipt.owner) != self.releasing_owner { units += receipt.units; }
+            if Some(receipt.owner) != self.releasing_owner {
+                units += receipt.units;
+            }
             index = receipt.next_from_source;
         }
         units
@@ -852,8 +996,13 @@ impl RecurringSupply {
     /// Removes only one source's deliveries to an affected buyer, retaining every other
     /// input receipt and price. O(owner flows + changed flows * log bucket size), without
     /// allocation or unrelated-owner scans. Requires outer revalidation for exact rollback.
-    pub(crate) fn release_source_from_owner(&mut self, owner: usize, source: usize,
-        allocator: &BuildingAllocator, graph: &RegionGraph) {
+    pub(crate) fn release_source_from_owner(
+        &mut self,
+        owner: usize,
+        source: usize,
+        allocator: &BuildingAllocator,
+        graph: &RegionGraph,
+    ) {
         debug_assert!(self.revalidation.is_active());
         debug_assert!(self.staged.is_empty() && self.released.is_empty());
         debug_assert!(self.releasing_owner.is_none());
@@ -871,7 +1020,9 @@ impl RecurringSupply {
                     self.journal_receipt(previous);
                     self.committed[previous].next_from_owner = receipt.next_from_owner;
                 }
-                if self.owner_tails[owner] == index { self.owner_tails[owner] = previous; }
+                if self.owner_tails[owner] == index {
+                    self.owner_tails[owner] = previous;
+                }
                 self.retire_receipt(index, receipt);
                 if self.source_receipts[receipt.slot] == usize::MAX {
                     // No claims remain. Restore the exact production quantity rather than
@@ -883,7 +1034,9 @@ impl RecurringSupply {
                     self.active[receipt.slot] = available;
                     self.set_available(source, receipt.resource, available, allocator, graph);
                 }
-            } else { previous = index; }
+            } else {
+                previous = index;
+            }
             index = receipt.next_from_owner;
         }
     }
@@ -899,21 +1052,39 @@ impl RecurringSupply {
     /// Visits the retained local quote tranches and real outside residual of an input.
     /// The callback receives source identity, daily units, goods price and carrier price.
     /// O(owner flows), in original quote order; returns false for unavailable residual supply.
-    pub(crate) fn visit_input_sources(&self, owner: usize, input: InputRequirement,
-        imported_price: f32, outside: Option<f32>,
-        mut visit: impl FnMut(Option<usize>, f64, f32, f32)) -> bool {
+    pub(crate) fn visit_input_sources(
+        &self,
+        owner: usize,
+        input: InputRequirement,
+        imported_price: f32,
+        outside: Option<f32>,
+        mut visit: impl FnMut(Option<usize>, f64, f32, f32),
+    ) -> bool {
         let mut needed = f64::from(input.daily_units);
-        let mut index = self.owner_receipts.get(owner).copied().unwrap_or(usize::MAX);
+        let mut index = self
+            .owner_receipts
+            .get(owner)
+            .copied()
+            .unwrap_or(usize::MAX);
         while needed > 0.0 && index != usize::MAX {
             let receipt = self.committed[index];
             index = receipt.next_from_owner;
-            if receipt.resource != input.resource { continue; }
+            if receipt.resource != input.resource {
+                continue;
+            }
             let units = needed.min(receipt.units);
             needed -= units;
-            visit(Some(self.source_owner(receipt.source)), units, receipt.unit_price, receipt.carrier_quote);
+            visit(
+                Some(self.source_owner(receipt.source)),
+                units,
+                receipt.unit_price,
+                receipt.carrier_quote,
+            );
         }
         if needed > 0.0 {
-            let Some(carrier) = outside else { return false; };
+            let Some(carrier) = outside else {
+                return false;
+            };
             visit(None, needed, imported_price, carrier);
         }
         true
@@ -939,33 +1110,57 @@ impl RecurringSupply {
     /// Reprices a retained owner's input requirement from its accepted supplier receipts.
     /// Unclaimed units use the caller's real outside quote. O(owner input flows), without
     /// allocating, searching the city, changing reservations or valuing freight as stock.
-    pub(crate) fn owner_input_costs(&self, owner: usize, input: InputRequirement,
-        imported_price: f32, outside: Option<f32>) -> InputSupplyCosts {
-        if input.daily_units <= 0.0 { return input.at_prices(imported_price, 0.0); }
+    pub(crate) fn owner_input_costs(
+        &self,
+        owner: usize,
+        input: InputRequirement,
+        imported_price: f32,
+        outside: Option<f32>,
+    ) -> InputSupplyCosts {
+        if input.daily_units <= 0.0 {
+            return input.at_prices(imported_price, 0.0);
+        }
         if input.replenishment_batch_units.is_none() {
-            return InputSupplyCosts { goods: f64::INFINITY, ..Default::default() };
+            return InputSupplyCosts {
+                goods: f64::INFINITY,
+                ..Default::default()
+            };
         }
         let (needed, mut costs) = self.retained_input_costs(owner, input);
         if needed > 0.0 {
             if let Some(carrier) = outside {
                 costs += input.at_prices_for_units(needed, imported_price, carrier);
-            } else { costs.goods = f64::INFINITY; }
+            } else {
+                costs.goods = f64::INFINITY;
+            }
         }
         costs
     }
 
-    fn retained_input_costs(&self, owner: usize, input: InputRequirement) -> (f64, InputSupplyCosts) {
+    fn retained_input_costs(
+        &self,
+        owner: usize,
+        input: InputRequirement,
+    ) -> (f64, InputSupplyCosts) {
         let mut needed = f64::from(input.daily_units);
         let mut costs = InputSupplyCosts::default();
-        let mut index = self.owner_receipts.get(owner).copied().unwrap_or(usize::MAX);
+        let mut index = self
+            .owner_receipts
+            .get(owner)
+            .copied()
+            .unwrap_or(usize::MAX);
         while index != usize::MAX {
             let receipt = self.committed[index];
             index = receipt.next_from_owner;
-            if receipt.resource != input.resource { continue; }
+            if receipt.resource != input.resource {
+                continue;
+            }
             let units = needed.min(receipt.units);
             needed -= units;
             costs += input.at_prices_for_units(units, receipt.unit_price, receipt.carrier_quote);
-            if needed == 0.0 { break; }
+            if needed == 0.0 {
+                break;
+            }
         }
         (needed, costs)
     }
@@ -990,13 +1185,18 @@ impl RecurringSupply {
         goods_multiplier: f32,
     ) -> InputSupplyCosts {
         if input.daily_units > 0.0 && !goods_multiplier.is_finite() {
-            return InputSupplyCosts { goods: f64::INFINITY, buffer: f64::INFINITY,
-                ..Default::default() };
+            return InputSupplyCosts {
+                goods: f64::INFINITY,
+                buffer: f64::INFINITY,
+                ..Default::default()
+            };
         }
-        let imported_price = super::imported_input_unit_price(catalog, tuning, input.resource, goods_multiplier);
+        let imported_price =
+            super::imported_input_unit_price(catalog, tuning, input.resource, goods_multiplier);
         if input.daily_units <= 0.0 {
             // Internally replenished circulation stock needs valuation, not a recurring order.
-            self.prices.push((input.resource, f64::from(imported_price)));
+            self.prices
+                .push((input.resource, f64::from(imported_price)));
             return input.at_prices(imported_price, 0.0);
         }
         let Some(batch) = input.replenishment_batch_units else {
@@ -1009,7 +1209,8 @@ impl RecurringSupply {
         // supply. Buffer/freight exposure continues to use the complete input requirement.
         let (mut needed, mut result) = retained_owner.map_or_else(
             || (f64::from(input.daily_units), InputSupplyCosts::default()),
-            |owner| self.retained_input_costs(owner, input));
+            |owner| self.retained_input_costs(owner, input),
+        );
         while needed > 0.0 {
             let choice = self.next_offer(
                 input.resource,
@@ -1111,7 +1312,9 @@ impl RecurringSupply {
             self.input_offers[list].next = offer.next;
             if self.remaining[offer.slot] > 0.0 {
                 #[cfg(test)]
-                { self.search_counts[4] += 1; }
+                {
+                    self.search_counts[4] += 1;
+                }
                 return Some((offer.source, offer.slot, offer.seconds));
             }
         }
@@ -1164,22 +1367,31 @@ impl RecurringSupply {
         // candidate that can beat it is still checked, so this changes search cost,
         // never route eligibility or deterministic route/price/index ordering.
         let incumbent = self.nearest_incumbents[resource as usize];
-        let mut best = incumbent
-            .and_then(|source| {
-                // Projected membership can shrink between forks. Validate the handle
-                // before reading its owner; a stale bound has no current supply slot.
-                let slot = self.slot(allocator, catalog, source, resource)?;
-                if self.remaining[slot] <= 0.0 || Some(self.source_owner(source)) == buyer
-                    || Some(self.source_owner(source)) == excluded {
-                    return None;
-                }
-                #[cfg(test)]
-                { counts[2] += 1; }
-                let seconds = self.source_route(source, buyer, entrance, allocator, network, graph, routes)?;
-                Some((source, slot, seconds))
-            });
-        for buckets in [self.index.buckets_for_resource(resource), self.projected_buckets(resource)]
-            .into_iter().flatten() {
+        let mut best = incumbent.and_then(|source| {
+            // Projected membership can shrink between forks. Validate the handle
+            // before reading its owner; a stale bound has no current supply slot.
+            let slot = self.slot(allocator, catalog, source, resource)?;
+            if self.remaining[slot] <= 0.0
+                || Some(self.source_owner(source)) == buyer
+                || Some(self.source_owner(source)) == excluded
+            {
+                return None;
+            }
+            #[cfg(test)]
+            {
+                counts[2] += 1;
+            }
+            let seconds =
+                self.source_route(source, buyer, entrance, allocator, network, graph, routes)?;
+            Some((source, slot, seconds))
+        });
+        for buckets in [
+            self.index.buckets_for_resource(resource),
+            self.projected_buckets(resource),
+        ]
+        .into_iter()
+        .flatten()
+        {
             buckets.scan_nearest_bounded(
                 components,
                 entrance.door_pos.x,
@@ -1187,7 +1399,9 @@ impl RecurringSupply {
                 |event| match event {
                     BoundedScanEvent::Item { item_idx: source } => {
                         #[cfg(test)]
-                        { counts[1] += 1; }
+                        {
+                            counts[1] += 1;
+                        }
                         if Some(self.source_owner(source)) == buyer
                             || Some(self.source_owner(source)) == excluded
                             || best.is_some_and(|best| best.0 == source)
@@ -1197,7 +1411,9 @@ impl RecurringSupply {
                         if let Some((_, _, seconds)) = best {
                             let door = match self.doors.get(source) {
                                 Some(&door) => door,
-                                None => self.source_entrance(source, allocator).map(|origin| origin.door_pos),
+                                None => self
+                                    .source_entrance(source, allocator)
+                                    .map(|origin| origin.door_pos),
                             };
                             let Some(door) = door else {
                                 return true;
@@ -1219,20 +1435,29 @@ impl RecurringSupply {
                             return true;
                         }
                         #[cfg(test)]
-                        { counts[2] += 1; }
-                        let seconds = self.source_route(source, buyer, entrance, allocator, network, graph, routes);
+                        {
+                            counts[2] += 1;
+                        }
+                        let seconds = self.source_route(
+                            source, buyer, entrance, allocator, network, graph, routes,
+                        );
                         if let Some(seconds) = seconds {
                             // Equal routes have the same carrier fee. Only read prices on
                             // a time tie; ordinary nearest-route searches need no extra lookup.
                             if best.is_none_or(|current| {
-                                seconds.total_cmp(&current.2)
+                                seconds
+                                    .total_cmp(&current.2)
                                     .then_with(|| {
                                         let price = |index: usize| {
-                                            self.source_profile(index, allocator, catalog).unwrap().unit_price_currency
+                                            self.source_profile(index, allocator, catalog)
+                                                .unwrap()
+                                                .unit_price_currency
                                         };
                                         price(source).total_cmp(&price(current.0))
                                     })
-                                    .then_with(|| self.source_owner(source).cmp(&self.source_owner(current.0)))
+                                    .then_with(|| {
+                                        self.source_owner(source).cmp(&self.source_owner(current.0))
+                                    })
                                     .then_with(|| source.cmp(&current.0))
                                     .is_lt()
                             }) {
@@ -1242,22 +1467,31 @@ impl RecurringSupply {
                         true
                     }
                     // Every member of a rejected region fails the item prune above.
-                    BoundedScanEvent::Region { min_distance_sq: next_min_distance_sq }
-                    | BoundedScanEvent::RingComplete { next_min_distance_sq } => {
+                    BoundedScanEvent::Region {
+                        min_distance_sq: next_min_distance_sq,
+                    }
+                    | BoundedScanEvent::RingComplete {
+                        next_min_distance_sq,
+                    } => {
                         #[cfg(test)]
-                        { counts[3] += 1; }
+                        {
+                            counts[3] += 1;
+                        }
                         best.is_none_or(|(_, _, seconds)| {
-                            lower_bound_travel_seconds(next_min_distance_sq, self.max_speed) <= seconds
+                            lower_bound_travel_seconds(next_min_distance_sq, self.max_speed)
+                                <= seconds
                         })
-                    },
+                    }
                 },
             );
         }
         self.nearest_incumbents[resource as usize] = best.map(|(source, _, _)| source);
         #[cfg(test)]
         {
-            for (total, count) in self.search_counts.iter_mut().zip(counts) { *total += count; }
-            use crate::debug::work::{add, Work};
+            for (total, count) in self.search_counts.iter_mut().zip(counts) {
+                *total += count;
+            }
+            use crate::debug::work::{Work, add};
             add(Work::SupplierSearches, counts[0]);
             add(Work::SupplierCandidates, counts[1]);
             add(Work::SupplierRoutes, counts[2]);
@@ -1292,7 +1526,8 @@ fn fill_production_rates(
         else {
             continue;
         };
-        let activity = production_activity(building, profile, funded.get(index).copied().unwrap_or(0.0));
+        let activity =
+            production_activity(building, profile, funded.get(index).copied().unwrap_or(0.0));
         let area = output_area_scale_for_building(building, profile);
         for (output, value) in profile.outputs.iter().zip(
             &mut remaining[offsets[index] - offsets[first]..offsets[index + 1] - offsets[first]],

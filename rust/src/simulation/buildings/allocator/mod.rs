@@ -21,7 +21,9 @@ mod tests;
 #[cfg(test)]
 pub(crate) use tests::support::indexed_test_building;
 
-pub(crate) use entrance::{BuildingEntranceKey, DemandSiteEntranceKey, FreightEntranceAccess, building_local_xz_basis};
+pub(crate) use entrance::{
+    BuildingEntranceKey, DemandSiteEntranceKey, FreightEntranceAccess, building_local_xz_basis,
+};
 pub(crate) use lifecycle::DemandBuildingActionExecution;
 pub(crate) use placement::BuildingSiteEnvironment;
 pub(crate) use placement::ExplicitServicePlacementPreview;
@@ -241,8 +243,7 @@ pub struct Building {
     /// This day's electricity delivered to workplaces and residences, in kWh.
     pub daily_electricity: crate::simulation::economy::electricity::BuildingElectricityUsage,
     /// Last completed day's consumption, retained for building inspection.
-    pub recent_electricity:
-        crate::simulation::economy::electricity::BuildingElectricityUsage,
+    pub recent_electricity: crate::simulation::economy::electricity::BuildingElectricityUsage,
     /// Realized production fraction for this hour, rebuilt by the owning production pass.
     pub hourly_economy_activity: f32,
     /// Aggregate utility power service units consumed from this building during the current day.
@@ -897,13 +898,15 @@ impl BuildingAllocator {
     // Revision step whose only changed building rows are `indices`, including removed rows.
     fn record_building_changes(&mut self, indices: impl IntoIterator<Item = usize>) {
         self.building_ref_revision = self.building_ref_revision.wrapping_add(1);
-        self.building_changes.record(self.building_ref_revision, indices);
+        self.building_changes
+            .record(self.building_ref_revision, indices);
     }
 
     /// Writes the building rows changed since `since` into `out`, sorted and deduplicated.
     /// Returns false when some change in between could not name its rows.
     pub(crate) fn building_changes_since(&self, since: u64, out: &mut Vec<usize>) -> bool {
-        self.building_changes.changes_since(since, self.building_ref_revision, out)
+        self.building_changes
+            .changes_since(since, self.building_ref_revision, out)
     }
 
     /// Advances the derived entrance-reference revision.

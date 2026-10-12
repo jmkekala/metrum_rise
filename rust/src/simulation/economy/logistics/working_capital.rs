@@ -12,19 +12,33 @@ impl ShipmentSystem {
     /// A proven lower carrier price for rejecting unaffordable business offers before routing.
     /// Prepared CCH integer potentials preserve f32 rounding; unavailable proofs return zero.
     /// O(1), without allocation or a route search. Prepare with the existing site quote batch.
-    pub(crate) fn customer_carrier_lower_bound(&self, source: &BuildingEntrance,
-        destination: &BuildingEntrance, network: &TransitNetwork, graph: &RegionGraph,
-        tuning: &RuntimeEconomyTuning) -> f32 {
+    pub(crate) fn customer_carrier_lower_bound(
+        &self,
+        source: &BuildingEntrance,
+        destination: &BuildingEntrance,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+        tuning: &RuntimeEconomyTuning,
+    ) -> f32 {
         if !(tuning.operational_clock.seconds_per_day.is_finite()
             && tuning.operational_clock.seconds_per_day > 0.0
             && tuning.logistics.dispatch_fee_currency.is_finite()
             && tuning.logistics.dispatch_fee_currency >= 0.0
             && tuning.logistics.vehicle_hour_cost_currency.is_finite()
-            && tuning.logistics.vehicle_hour_cost_currency >= 0.0) { return 0.0; }
-        self.freight_route_cache.minimum_entrance_network_cost(source, destination, network, graph)
+            && tuning.logistics.vehicle_hour_cost_currency >= 0.0)
+        {
+            return 0.0;
+        }
+        self.freight_route_cache
+            .minimum_entrance_network_cost(source, destination, network, graph)
             .filter(|seconds| seconds.is_finite())
-            .map_or(0.0, |seconds| super::timing::freight_cost(seconds,
-                tuning.operational_clock.seconds_per_day, &tuning.logistics))
+            .map_or(0.0, |seconds| {
+                super::timing::freight_cost(
+                    seconds,
+                    tuning.operational_clock.seconds_per_day,
+                    &tuning.logistics,
+                )
+            })
     }
 
     /// Diagnostic request/hit/replacement-miss counts; absent from production builds.
@@ -55,16 +69,33 @@ impl ShipmentSystem {
     ) -> Option<f32> {
         // Replacement owners retain their identity while quoting a different door. Only an
         // exact live entrance may enter the allocator-indexed route/geometry caches.
-        let source_building = source_building.filter(|&index| allocator.entrances.get(index) == Some(source));
-        let destination_building = destination_building.filter(|&index| allocator.entrances.get(index) == Some(destination));
+        let source_building =
+            source_building.filter(|&index| allocator.entrances.get(index) == Some(source));
+        let destination_building = destination_building
+            .filter(|&index| allocator.entrances.get(index) == Some(destination));
         let seconds = match (source_building, destination_building) {
-            (Some(from), Some(to)) => self.freight_route_cache.between_buildings(from, to, allocator, network, graph),
-            (Some(from), None) => self.freight_route_cache.to_site(from, destination, allocator, network, graph),
-            (None, Some(to)) => self.freight_route_cache.from_site(source, to, allocator, network, graph),
-            (None, None) => self.freight_route_cache.between_entrances(source, destination, network, graph),
+            (Some(from), Some(to)) => self
+                .freight_route_cache
+                .between_buildings(from, to, allocator, network, graph),
+            (Some(from), None) => {
+                self.freight_route_cache
+                    .to_site(from, destination, allocator, network, graph)
+            }
+            (None, Some(to)) => self
+                .freight_route_cache
+                .from_site(source, to, allocator, network, graph),
+            (None, None) => {
+                self.freight_route_cache
+                    .between_entrances(source, destination, network, graph)
+            }
         };
-        seconds.map(|seconds| super::timing::freight_cost(
-                seconds, tuning.operational_clock.seconds_per_day, &tuning.logistics))
+        seconds.map(|seconds| {
+            super::timing::freight_cost(
+                seconds,
+                tuning.operational_clock.seconds_per_day,
+                &tuning.logistics,
+            )
+        })
     }
 
     /// Stages a finite recurring input quote using the same revision-scoped freight routes.
@@ -117,8 +148,20 @@ impl ShipmentSystem {
         graph: &RegionGraph,
         goods_multiplier: f32,
     ) -> crate::simulation::economy::operation::InputSupplyCosts {
-        supply.quote(input, buyer, Some(owner), entrance, outside_quote, allocator, catalog,
-            tuning, network, graph, &mut self.freight_route_cache, goods_multiplier)
+        supply.quote(
+            input,
+            buyer,
+            Some(owner),
+            entrance,
+            outside_quote,
+            allocator,
+            catalog,
+            tuning,
+            network,
+            graph,
+            &mut self.freight_route_cache,
+            goods_multiplier,
+        )
     }
 
     /// Prepares shared border sweeps once per road revision for prospective-site pricing.
@@ -133,9 +176,14 @@ impl ShipmentSystem {
         borders: &[u32],
     ) {
         self.refresh_freight_route_cache(allocator, network);
-        self.freight_route_cache.prepare_buildings(allocator.buildings.len());
         self.freight_route_cache
-            .prepare_border_costs(borders, allocator.buildings.len(), network, graph);
+            .prepare_buildings(allocator.buildings.len());
+        self.freight_route_cache.prepare_border_costs(
+            borders,
+            allocator.buildings.len(),
+            network,
+            graph,
+        );
     }
 
     /// Prices a proposed door using the same physical route and fee as live dispatch.
@@ -174,13 +222,20 @@ impl ShipmentSystem {
         quotes: &mut [Option<f32>],
     ) {
         self.refresh_freight_route_cache(allocator, network);
-        self.freight_route_cache.prepare_buildings(allocator.buildings.len());
         self.freight_route_cache
-            .prepare_border_costs(borders, allocator.buildings.len(), network, graph);
-        self.freight_route_cache.prepare_access_for(allocator, network, graph, |index| {
-            catalog.profile_by_runtime_id(allocator.buildings[index].economy_profile_runtime_id)
-                .is_some_and(|profile| profile.worker_capacity > 0)
-        });
+            .prepare_buildings(allocator.buildings.len());
+        self.freight_route_cache.prepare_border_costs(
+            borders,
+            allocator.buildings.len(),
+            network,
+            graph,
+        );
+        self.freight_route_cache
+            .prepare_access_for(allocator, network, graph, |index| {
+                catalog
+                    .profile_by_runtime_id(allocator.buildings[index].economy_profile_runtime_id)
+                    .is_some_and(|profile| profile.worker_capacity > 0)
+            });
         quotes
             .par_iter_mut()
             .enumerate()

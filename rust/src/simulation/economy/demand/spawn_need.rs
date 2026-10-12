@@ -9,11 +9,11 @@ use super::types::{EPSILON, RESIDENTIAL_SPAWN_VACANT_SLOT_RESERVE_RATIO};
 use crate::simulation::buildings::allocator::{
     Building, BuildingAllocator, baseline_private_zone_slot,
 };
-use crate::simulation::economy::fiscal::CityFiscalPolicy;
-use crate::simulation::zoning::ZoneType;
 use crate::simulation::economy::definitions::{
     EconomyProfileRuntime, EconomyProfileRuntimeKind, ResourceRuntimeId, RuntimeEconomyCatalog,
 };
+use crate::simulation::economy::fiscal::CityFiscalPolicy;
+use crate::simulation::zoning::ZoneType;
 
 use crate::simulation::economy::operation::{
     InputRequirement, InputSupplyCosts, OperatingCosts, OperationPlan, OperationPrices,
@@ -62,7 +62,11 @@ pub(super) fn incoming_household_need(
     let households = if !vacancies.is_empty() {
         budget.households_to_staff(policy, seed, vacancies.len(), |position| {
             let home = vacancies[position];
-            (home, allocator.flat_size_m2(home), allocator.buildings[home].level)
+            (
+                home,
+                allocator.flat_size_m2(home),
+                allocator.buildings[home].level,
+            )
         })
     } else {
         budget.households_to_staff(policy, seed, candidates.len(), |position| {
@@ -162,8 +166,13 @@ impl OutputMarket<'_> {
         })
     }
 
-    fn attainable_revenue(&self, resource: ResourceRuntimeId, output: f32,
-        local_price: f32, export_price: f32) -> f64 {
+    fn attainable_revenue(
+        &self,
+        resource: ResourceRuntimeId,
+        output: f32,
+        local_price: f32,
+        export_price: f32,
+    ) -> f64 {
         let local = output.min(self.unmet_units(resource));
         f64::from(local) * f64::from(local_price)
             + if self.export_expansion_available() {
@@ -387,7 +396,9 @@ pub(super) fn replacement_market_covers_operation(
         paid_cargo,
         |resource| supply.input_price(resource, catalog, prices),
         |resource| {
-            if let Some(price) = supply.output_price(resource) { return price; }
+            if let Some(price) = supply.output_price(resource) {
+                return price;
+            }
             let output = profile
                 .output_port(resource)
                 .map_or(0.0, |port| profile.net_output_units_per_day(port));
@@ -402,9 +413,12 @@ pub(super) fn replacement_market_covers_operation(
             } else {
                 0.0
             };
-            market.attainable_revenue(resource, output, profile.unit_price_currency,
-                catalog.unit_price_for_resource(resource).unwrap_or(0.0) * exports)
-                / f64::from(output)
+            market.attainable_revenue(
+                resource,
+                output,
+                profile.unit_price_currency,
+                catalog.unit_price_for_resource(resource).unwrap_or(0.0) * exports,
+            ) / f64::from(output)
         },
     );
     supply.fund(profile, prices, costs, capital)
@@ -440,9 +454,10 @@ fn project_operation_costs(
     // it claims only the share of its output that crew serves, so the remaining customers
     // stay available to another store. Other kinds keep their whole recipe.
     let crew_cap = supply.crew_cap();
-    let share = if matches!(profile.kind,
-        EconomyProfileRuntimeKind::Store | EconomyProfileRuntimeKind::ServiceStore)
-        && crew_cap < profile.worker_capacity
+    let share = if matches!(
+        profile.kind,
+        EconomyProfileRuntimeKind::Store | EconomyProfileRuntimeKind::ServiceStore
+    ) && crew_cap < profile.worker_capacity
     {
         crew_cap as f32 / profile.worker_capacity as f32
     } else {
@@ -452,18 +467,35 @@ fn project_operation_costs(
         let activity = customers.activity * share;
         let workers = (profile.worker_capacity as f32 * activity).ceil() as u32;
         let workers = workers.max(minimum_workers).min(crew_cap);
-        let plan = OperationPlan { workers, activity, area: 1.0 };
+        let plan = OperationPlan {
+            workers,
+            activity,
+            area: 1.0,
+        };
         supply.set_supported_plan(plan);
-        if workers == 0 { return None; }
-        let mut costs = OperatingCosts::for_plan_with_input_quotes(profile,
-            plan, prices,
-            |_, _| 0.0, |input| supply.quote(input, catalog, prices));
+        if workers == 0 {
+            return None;
+        }
+        let mut costs = OperatingCosts::for_plan_with_input_quotes(
+            profile,
+            plan,
+            prices,
+            |_, _| 0.0,
+            |input| supply.quote(input, catalog, prices),
+        );
         costs.freight += customers.export_freight;
         costs.working_capital += customers.export_freight;
         return (customers.revenue > costs.total()).then_some(costs);
     }
-    market_operation_costs(profile, catalog, market, prices, exports, minimum_workers,
-        |input| supply.quote(input, catalog, prices))
+    market_operation_costs(
+        profile,
+        catalog,
+        market,
+        prices,
+        exports,
+        minimum_workers,
+        |input| supply.quote(input, catalog, prices),
+    )
 }
 
 /// Isolated tariff fixture; runtime project quotes also claim reachable customers.
@@ -478,7 +510,10 @@ pub(super) fn market_covers_operation_with_input_quotes(
 ) -> bool {
     // Opening equity pays inventory and settlement timing; it never enters sales.
     market_operation_costs(profile, catalog, market, prices, exports, 0, input_quote).is_some_and(
-        |costs| f64::from(profile.zoned_startup_budget(catalog, prices.imports)) >= costs.working_capital,
+        |costs| {
+            f64::from(profile.zoned_startup_budget(catalog, prices.imports))
+                >= costs.working_capital
+        },
     )
 }
 
@@ -493,13 +528,7 @@ fn market_operation_costs(
 ) -> Option<OperatingCosts> {
     match profile.kind {
         EconomyProfileRuntimeKind::Store | EconomyProfileRuntimeKind::ServiceStore => {
-            commercial_operation_in_market(
-                profile,
-                market,
-                prices,
-                minimum_workers,
-                input_quote,
-            )
+            commercial_operation_in_market(profile, market, prices, minimum_workers, input_quote)
         }
         EconomyProfileRuntimeKind::Processor | EconomyProfileRuntimeKind::Producer => {
             industrial_operation_in_market(profile, catalog, market, prices, exports, input_quote)
@@ -550,10 +579,11 @@ fn commercial_operation_in_market(
         .outputs
         .iter()
         .map(|port| {
-            f64::from(absorption
-                .unmet_units(port.resource_runtime_id)
-                .min(profile.net_output_units_per_day(port) * activity))
-                * f64::from(profile.unit_price_currency)
+            f64::from(
+                absorption
+                    .unmet_units(port.resource_runtime_id)
+                    .min(profile.net_output_units_per_day(port) * activity),
+            ) * f64::from(profile.unit_price_currency)
         })
         .sum();
     let costs = OperatingCosts::for_plan_with_input_quotes(
@@ -636,35 +666,53 @@ pub(super) fn constructing_area_covers_operation(
         building, profile,
     );
     if workers == 0 || area <= 0.0 {
-        supply.set_supported_plan(OperationPlan { workers: 0, activity: 0.0, area });
+        supply.set_supported_plan(OperationPlan {
+            workers: 0,
+            activity: 0.0,
+            area,
+        });
         return false;
     }
     let costs = if let Some(customers) = supply.customers(profile, area, prices, exports) {
         let workers = (workers as f32 * customers.activity).ceil() as u32;
-        let plan = OperationPlan { workers, activity: customers.activity, area };
+        let plan = OperationPlan {
+            workers,
+            activity: customers.activity,
+            area,
+        };
         supply.set_supported_plan(plan);
-        if workers == 0 { return false; }
-        let mut costs = OperatingCosts::for_plan_with_input_quotes(profile,
-            plan, prices,
-            |_, _| 0.0, |input| supply.quote(input, catalog, prices));
+        if workers == 0 {
+            return false;
+        }
+        let mut costs = OperatingCosts::for_plan_with_input_quotes(
+            profile,
+            plan,
+            prices,
+            |_, _| 0.0,
+            |input| supply.quote(input, catalog, prices),
+        );
         costs.freight += customers.export_freight;
         costs.working_capital += customers.export_freight;
         (customers.revenue > costs.total()).then_some(costs)
     } else {
-        supply.set_supported_plan(OperationPlan { workers, activity: 1.0, area });
-        industrial_operation_for_plan(
-        profile,
-        catalog,
-        market,
-        OperationPlan {
+        supply.set_supported_plan(OperationPlan {
             workers,
             activity: 1.0,
             area,
-        },
-        prices,
-        exports,
-        |input| supply.quote(input, catalog, prices),
-    )
+        });
+        industrial_operation_for_plan(
+            profile,
+            catalog,
+            market,
+            OperationPlan {
+                workers,
+                activity: 1.0,
+                area,
+            },
+            prices,
+            exports,
+            |input| supply.quote(input, catalog, prices),
+        )
     };
     let Some(costs) = costs else {
         return false;
@@ -675,16 +723,21 @@ pub(super) fn constructing_area_covers_operation(
         paid_cargo,
         |resource| supply.input_price(resource, catalog, prices),
         |resource| {
-            if let Some(price) = supply.output_price(resource) { return price; }
+            if let Some(price) = supply.output_price(resource) {
+                return price;
+            }
             let units = profile
                 .output_port(resource)
                 .map_or(0.0, |port| profile.net_output_units_per_day(port) * area);
             if units <= EPSILON {
                 return 0.0;
             }
-            market.attainable_revenue(resource, units, profile.unit_price_currency,
-                catalog.unit_price_for_resource(resource).unwrap_or(0.0) * exports)
-                / f64::from(units)
+            market.attainable_revenue(
+                resource,
+                units,
+                profile.unit_price_currency,
+                catalog.unit_price_for_resource(resource).unwrap_or(0.0) * exports,
+            ) / f64::from(units)
         },
     );
     supply.fund(profile, prices, costs, capital)
@@ -707,9 +760,10 @@ fn industrial_operation_for_plan(
                 port.resource_runtime_id,
                 profile.net_output_units_per_day(port) * plan.area * plan.activity,
                 profile.unit_price_currency,
-                exports * catalog
-                .unit_price_for_resource(port.resource_runtime_id)
-                .unwrap_or(0.0),
+                exports
+                    * catalog
+                        .unit_price_for_resource(port.resource_runtime_id)
+                        .unwrap_or(0.0),
             )
         })
         .sum();

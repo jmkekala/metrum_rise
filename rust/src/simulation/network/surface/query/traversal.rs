@@ -124,9 +124,7 @@ impl RoadSurfaceSystem {
             return;
         }
 
-        for polygon in piece
-            .surface_polygons()
-        {
+        for polygon in piece.surface_polygons() {
             Self::visit_visual_polygon_triangles(polygon, visitor);
         }
     }

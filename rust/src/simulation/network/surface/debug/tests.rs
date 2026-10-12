@@ -61,16 +61,22 @@ fn mouth_seam_debug_matches_vertical_step_anchors_by_material() {
     };
 
     let mut piece = empty_node_piece();
-    piece.push_test_surface_polygon(RoadSurfaceBandKind::Carriageway, polygon(vec![
-        RoadVec3::new(0.0, 0.0, 0.0),
-        RoadVec3::new(1.0, 0.0, 0.0),
-        RoadVec3::new(0.0, 0.0, -1.0),
-    ]));
-    piece.push_test_surface_polygon(RoadSurfaceBandKind::CurbOrShoulder, polygon(vec![
-        RoadVec3::new(-1.0, 0.12, -1.0),
-        RoadVec3::new(1.0, 0.12, 1.0),
-        RoadVec3::new(-1.0, 0.12, 1.0),
-    ]));
+    piece.push_test_surface_polygon(
+        RoadSurfaceBandKind::Carriageway,
+        polygon(vec![
+            RoadVec3::new(0.0, 0.0, 0.0),
+            RoadVec3::new(1.0, 0.0, 0.0),
+            RoadVec3::new(0.0, 0.0, -1.0),
+        ]),
+    );
+    piece.push_test_surface_polygon(
+        RoadSurfaceBandKind::CurbOrShoulder,
+        polygon(vec![
+            RoadVec3::new(-1.0, 0.12, -1.0),
+            RoadVec3::new(1.0, 0.12, 1.0),
+            RoadVec3::new(-1.0, 0.12, 1.0),
+        ]),
+    );
 
     let material_blind = RoadSurfaceSystem::closest_debug_top_vertex(
         curb_anchor,

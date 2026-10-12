@@ -21,12 +21,11 @@ impl RoadSurfaceSystem {
         let mut render_earthwork_faces = Vec::new();
 
         for boundary_segments in boundary_segment_loops {
-            let Some((outer_loop, render_faces)) = self
-                .build_closed_earthwork_loop_geometry(
-                    boundary_segments,
-                    terrain,
-                    top_surface_shapes,
-                )?
+            let Some((outer_loop, render_faces)) = self.build_closed_earthwork_loop_geometry(
+                boundary_segments,
+                terrain,
+                top_surface_shapes,
+            )?
             else {
                 continue;
             };

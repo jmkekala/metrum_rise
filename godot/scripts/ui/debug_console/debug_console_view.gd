@@ -10,6 +10,7 @@ extends PanelContainer
 const UIStyle := preload("res://scripts/ui/ui_style.gd")
 
 signal channel_toggled(channel: String, on: bool)
+signal visual_mode_selected(mode: String, value: String)
 signal chip_toggled(channel: String, shown: bool)
 signal filter_changed(text: String)
 signal command_submitted(text: String)
@@ -39,6 +40,8 @@ var _filter: LineEdit
 var _log: RichTextLabel
 var _perf: Label
 var _channel_toggles: VBoxContainer
+var _visual_grid: GridContainer
+var _visual_pickers := {}
 var _modes: Label
 var _command: LineEdit
 var _status: Label
@@ -60,7 +63,7 @@ func _ready() -> void:
 	_tabs.add_child(_build_log_tab())
 	_tabs.add_child(_build_perf_tab())
 	_tabs.add_child(_build_channels_tab())
-	_command = _line_edit("Command: help, channel <name> on|off, dump, clear")
+	_command = _line_edit("Command: help, channel <name> on|off, visual <mode> <value>, dump, clear")
 	_command.text_submitted.connect(_on_command_submitted)
 	root.add_child(_command)
 	_status = _label("")
@@ -93,6 +96,32 @@ func set_channel_state(channel: String, on: bool) -> void:
 	var toggle: CheckButton = _toggle_buttons.get(channel)
 	if toggle != null and toggle.button_pressed != on:
 		toggle.set_pressed_no_signal(on)
+
+## Creates one value picker per visual mode; `values` maps each mode to its value names.
+func set_visual_modes(modes: PackedStringArray, values: Dictionary) -> void:
+	for mode in modes:
+		_visual_grid.add_child(_label(mode))
+		var picker := OptionButton.new()
+		picker.focus_mode = Control.FOCUS_NONE
+		picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		UIStyle.set_font_size(picker, FONT_SIZE)
+		for value in values.get(mode, PackedStringArray()):
+			picker.add_item(value)
+		picker.item_selected.connect(
+			func(index: int) -> void: visual_mode_selected.emit(mode, picker.get_item_text(index))
+		)
+		_visual_grid.add_child(picker)
+		_visual_pickers[mode] = picker
+
+## Shows a visual mode's value without emitting `visual_mode_selected`.
+func set_visual_mode_state(mode: String, value: String) -> void:
+	var picker: OptionButton = _visual_pickers.get(mode)
+	if picker == null:
+		return
+	for i in picker.item_count:
+		if picker.get_item_text(i) == value:
+			picker.select(i)
+			return
 
 ## Lists the startup-only modes; they are read-only for this session.
 func set_startup_modes(modes: Dictionary) -> void:
@@ -189,6 +218,12 @@ func _build_channels_tab() -> Control:
 	tab.add_child(column)
 	_channel_toggles = VBoxContainer.new()
 	column.add_child(_channel_toggles)
+	var visual_heading := _label("Visual modes")
+	visual_heading.add_theme_color_override("font_color", UIStyle.TEXT_SECTION)
+	column.add_child(visual_heading)
+	_visual_grid = GridContainer.new()
+	_visual_grid.columns = 2
+	column.add_child(_visual_grid)
 	var heading := _label("Startup modes (read-only, set at launch)")
 	heading.add_theme_color_override("font_color", UIStyle.TEXT_SECTION)
 	column.add_child(heading)

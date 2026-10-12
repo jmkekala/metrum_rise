@@ -506,12 +506,17 @@ impl SimCore {
     pub(crate) fn register_service_input_capacity(&mut self, building_idx: usize) {
         let building = &self.allocator.buildings[building_idx];
         if self.allocator.is_city_service_building(building)
-            && let Some(profile) = self.demand.runtime_catalog()
+            && let Some(profile) = self
+                .demand
+                .runtime_catalog()
                 .profile_by_runtime_id(building.economy_profile_runtime_id)
         {
             let funding = self.effective_electricity_funding_for_building(building_idx);
             self.households.job_funding.register_pending_service(
-                building_idx, building, profile, funding,
+                building_idx,
+                building,
+                profile,
+                funding,
             );
             self.demand.invalidate_construction_execution();
         }
@@ -530,7 +535,8 @@ impl SimCore {
             self.demand.runtime_tuning(),
             &self.fiscal_policy,
             funding,
-            self.treasury.balance, self.time.minute_of_day,
+            self.treasury.balance,
+            self.time.minute_of_day,
         );
     }
 

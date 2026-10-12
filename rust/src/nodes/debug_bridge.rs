@@ -6,7 +6,7 @@
 //! editor share one channel state and one ordered log. Every method is static and thread-safe;
 //! GDScript calls them as `MetrumDebug.method(...)`.
 
-use crate::debug::{self, Channel, Source, StartupValue, log};
+use crate::debug::{self, Channel, Source, log, visual};
 use godot::classes::ProjectSettings;
 use godot::prelude::*;
 
@@ -95,7 +95,7 @@ impl MetrumDebug {
         log::clear();
     }
 
-    /// Writes channel state, startup modes and the buffered log to `path` (a `user://` or
+    /// Writes channel state, visual and startup modes and the buffered log to `path` (a `user://` or
     /// absolute path), creating folders as needed. Returns the absolute path, or an empty
     /// string on failure after pushing a warning.
     #[func]
@@ -110,34 +110,71 @@ impl MetrumDebug {
         }
     }
 
-    /// Startup-only debug modes as `name -> bool | String`, in a fixed order. These come
-    /// from `METRUM_DEBUG_*` variables at launch and do not change at runtime.
+    /// Startup-only debug switches as `name -> bool`, in a fixed order. These come from
+    /// `METRUM_DEBUG_*` variables at launch and do not change at runtime.
     #[func]
     pub fn startup_modes() -> VarDictionary {
         let mut modes = VarDictionary::new();
-        for (name, value) in debug::startup_modes() {
-            modes.set(*name, startup_variant(value));
+        for (name, on) in debug::startup_modes() {
+            modes.set(*name, *on);
         }
         modes
     }
 
-    /// One startup-only debug mode: a bool switch or a lowercased mode name. Unknown names
-    /// return `false`.
+    /// One startup-only debug switch. Unknown names are `false`.
     #[func]
-    pub fn startup_mode(name: GString) -> Variant {
-        debug::startup_mode(&name.to_string()).map_or(false.to_variant(), startup_variant)
+    pub fn startup_mode(name: GString) -> bool {
+        debug::startup_mode(&name.to_string())
+    }
+
+    /// Every visual debug mode name in console order. Unlike startup modes, these switch at
+    /// runtime; launch variables only set the starting value.
+    #[func]
+    pub fn visual_mode_names() -> PackedStringArray {
+        visual::MODES
+            .iter()
+            .map(|mode| GString::from(mode.name))
+            .collect()
+    }
+
+    /// The value names a visual mode accepts, in index order with `off` first. Empty for
+    /// unknown modes.
+    #[func]
+    pub fn visual_mode_values(name: GString) -> PackedStringArray {
+        visual::mode(&name.to_string()).map_or_else(PackedStringArray::new, |mode| {
+            mode.values
+                .iter()
+                .map(|value| GString::from(*value))
+                .collect()
+        })
+    }
+
+    /// The selected value name of a visual mode; unknown modes are `off`.
+    #[func]
+    pub fn visual_mode(name: GString) -> GString {
+        visual::mode(&name.to_string())
+            .map_or("off", |mode| mode.value_name(mode.index()))
+            .into()
+    }
+
+    /// The selected value index of a visual mode, which is also the shader's mode number;
+    /// `0` is off and unknown modes are `0`.
+    #[func]
+    pub fn visual_mode_index(name: GString) -> i64 {
+        visual::mode(&name.to_string()).map_or(0, |mode| i64::from(mode.index()))
+    }
+
+    /// Switches a visual mode by value name, alias or index. Returns `false`, with the
+    /// reason logged on `events`, for an unknown mode or value. Renderers apply the change
+    /// through `DebugConsole.set_visual_mode`, which calls this.
+    #[func]
+    pub fn set_visual_mode(name: GString, value: GString) -> bool {
+        visual::set(&name.to_string(), &value.to_string()).is_ok()
     }
 
     /// Returns `true` when the game was launched with `METRUM_DEBUG=1`.
     #[func]
     pub fn is_debug_session() -> bool {
         debug::debug_session()
-    }
-}
-
-fn startup_variant(value: &StartupValue) -> Variant {
-    match value {
-        StartupValue::Flag(on) => on.to_variant(),
-        StartupValue::Text(text) => text.to_variant(),
     }
 }

@@ -238,7 +238,11 @@ impl AssetAuthoringPolicy {
     /// array of `min_x, min_z, max_x, max_z` quadruples: the walls the rows keep off, which the
     /// game reads from imported bounds and the editor from the meshes it shows.
     #[func]
-    pub fn yard_hedge_rows_json(&self, document: GString, structures: PackedFloat32Array) -> GString {
+    pub fn yard_hedge_rows_json(
+        &self,
+        document: GString,
+        structures: PackedFloat32Array,
+    ) -> GString {
         let Ok(data) = serde_json::from_str::<Value>(&document.to_string()) else {
             return GString::from("[]");
         };
@@ -247,7 +251,11 @@ impl AssetAuthoringPolicy {
             .chunks_exact(4)
             .map(|c| [[c[0], c[1]], [c[2], c[3]]])
             .collect();
-        GString::from(authoring::yard_hedge_rows(&data, &walls).to_string().as_str())
+        GString::from(
+            authoring::yard_hedge_rows(&data, &walls)
+                .to_string()
+                .as_str(),
+        )
     }
 
     /// Preview a conversion with an exact change list. Applying it requires UI confirmation.

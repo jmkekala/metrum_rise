@@ -13,8 +13,8 @@ use super::spawn_need::{
     project_covers_operation, replacement_market_covers_operation,
     residential_missing_household_slots, residential_vacancy_reserve, select_residential_spawns,
 };
-use super::system::DemandSystem;
 use super::supply::ProjectSupply;
+use super::system::DemandSystem;
 use super::types::{DemandUse, EPSILON};
 use super::viability::{
     building_is_viable_for_downgrade, building_is_viable_for_upgrade, level_change_is_compatible,
@@ -81,12 +81,26 @@ fn nonresidential_spawn_rejection(
         supply.reject();
         return Some(SpawnRejection::Customers);
     };
-    if !project_covers_operation(profile, catalog, absorption.market(), prices, exports, supply) {
+    if !project_covers_operation(
+        profile,
+        catalog,
+        absorption.market(),
+        prices,
+        exports,
+        supply,
+    ) {
         let no_customers = supply.supported_workers(absorption.candidate_workers(profile)) == 0;
         supply.reject();
-        return Some(if no_customers { SpawnRejection::Customers } else { SpawnRejection::OperatingIncome });
+        return Some(if no_customers {
+            SpawnRejection::Customers
+        } else {
+            SpawnRejection::OperatingIncome
+        });
     }
-    if !workforce.can_claim(completion_hour, supply.supported_workers(absorption.candidate_workers(profile))) {
+    if !workforce.can_claim(
+        completion_hour,
+        supply.supported_workers(absorption.candidate_workers(profile)),
+    ) {
         supply.reject();
         return Some(SpawnRejection::Workforce);
     }
@@ -190,8 +204,11 @@ fn reserve_business_level_change(
             0.0
         },
         supply,
-    ) || !workforce.claim_ready(supply.supported_workers(market.candidate_workers(target)).saturating_sub(reserved_workers))
-    {
+    ) || !workforce.claim_ready(
+        supply
+            .supported_workers(market.candidate_workers(target))
+            .saturating_sub(reserved_workers),
+    ) {
         supply.reject();
         return false;
     }
@@ -320,7 +337,9 @@ impl DemandSystem {
                 &residential_occupants,
                 zone_type,
             );
-            if let Some(begin) = existing_begin { existing_ms += begin.elapsed().as_secs_f64() * 1_000.0; }
+            if let Some(begin) = existing_begin {
+                existing_ms += begin.elapsed().as_secs_f64() * 1_000.0;
+            }
             let spawn_candidate_count = spawn_candidates.len();
             let upgrade_candidate_count = existing_candidates.upgrades.len();
             let downgrade_candidate_count = existing_candidates.downgrades.len();
@@ -359,20 +378,12 @@ impl DemandSystem {
                 );
                 spawn_not_needed = spawn_candidate_count.saturating_sub(selected.len());
                 for action in &selected {
-                    self.workforce_reservations.add_home(
-                        allocator,
-                        economy_tuning,
-                        action,
-                        false,
-                    );
+                    self.workforce_reservations
+                        .add_home(allocator, economy_tuning, action, false);
                 }
                 for action in &optional_homes {
-                    self.workforce_reservations.add_home(
-                        allocator,
-                        economy_tuning,
-                        action,
-                        true,
-                    );
+                    self.workforce_reservations
+                        .add_home(allocator, economy_tuning, action, true);
                 }
                 self.workforce_reservations.reserve_existing();
                 selected
@@ -464,7 +475,9 @@ impl DemandSystem {
                         if !self.cheat_max_demands_enabled
                             && !self.workforce_reservations.claim(
                                 completion_hour,
-                                supply.supported_workers(absorption_context.candidate_workers(profile)),
+                                supply.supported_workers(
+                                    absorption_context.candidate_workers(profile),
+                                ),
                             )
                         {
                             spawn_rejected_workforce += 1;
@@ -660,8 +673,7 @@ impl DemandSystem {
                     let retired = applicant_places_by_adults(
                         allocator.flat_size_m2(candidate.building_idx),
                         candidate.building_idx,
-                        (capacity - lost)
-                            .max(allocator.buildings[candidate.building_idx].occupancy)
+                        (capacity - lost).max(allocator.buildings[candidate.building_idx].occupancy)
                             ..capacity,
                     );
                     if lost > retirable_homes
@@ -710,8 +722,15 @@ impl DemandSystem {
         }
         supply.reject();
         lap(3);
-        crate::debug_log!("economy_phases", "demand_planning_detail assets_ms={:.3} spawn_sites_ms={:.3} workforce_ms={:.3} existing_ms={:.3} decisions_ms={:.3}",
-            times[0], times[1], times[2], existing_ms, times[3] - existing_ms);
+        crate::debug_log!(
+            "economy_phases",
+            "demand_planning_detail assets_ms={:.3} spawn_sites_ms={:.3} workforce_ms={:.3} existing_ms={:.3} decisions_ms={:.3}",
+            times[0],
+            times[1],
+            times[2],
+            existing_ms,
+            times[3] - existing_ms
+        );
     }
 
     pub(super) fn collect_existing_building_candidates(

@@ -964,12 +964,15 @@ pub fn get_asset_manifest_json_internal(
                 })
             }));
         }
-        obj["yard_hedge_edges"] = serde_json::json!(
-            b.yard_hedge.as_ref().map_or_else(
-                || LotEdge::ALL.iter().map(|edge| edge.name()).collect::<Vec<_>>(),
-                |yard| yard.edges.iter().map(|edge| edge.name()).collect()
-            )
-        );
+        obj["yard_hedge_edges"] = serde_json::json!(b.yard_hedge.as_ref().map_or_else(
+            || {
+                LotEdge::ALL
+                    .iter()
+                    .map(|edge| edge.name())
+                    .collect::<Vec<_>>()
+            },
+            |yard| yard.edges.iter().map(|edge| edge.name()).collect()
+        ));
     }
 
     serde_json::to_string(&obj).unwrap_or_default()
@@ -977,7 +980,10 @@ pub fn get_asset_manifest_json_internal(
 
 // A `[[x, z], ...]` TOML array.
 fn toml_polygon(vertices: &[[f32; 2]]) -> String {
-    let points: Vec<_> = vertices.iter().map(|[x, z]| format!("[{x}, {z}]")).collect();
+    let points: Vec<_> = vertices
+        .iter()
+        .map(|[x, z]| format!("[{x}, {z}]"))
+        .collect();
     format!("[{}]", points.join(", "))
 }
 
@@ -1272,7 +1278,13 @@ mod tests {
         data["yard_hedge_edges"] = serde_json::json!(["left", "front"]);
         let params: ExportParams = serde_json::from_value(data.clone()).unwrap();
         let manifest = AssetManifest::from_str(&build_asset_toml(&params).unwrap()).unwrap();
-        let yard = manifest.building.as_ref().unwrap().yard_hedge.clone().unwrap();
+        let yard = manifest
+            .building
+            .as_ref()
+            .unwrap()
+            .yard_hedge
+            .clone()
+            .unwrap();
         assert_eq!(yard.hedge, YardHedgeKind::Medium);
         // Written in manifest order, whatever order the editor listed them in.
         assert_eq!(yard.edges, vec![LotEdge::Front, LotEdge::Left]);
@@ -1297,12 +1309,18 @@ mod tests {
         let areas = &manifest.building.as_ref().unwrap().yard_planting;
         assert_eq!(areas.len(), 1);
         assert_eq!(areas[0].plants, YardPlantKind::Trees);
-        assert_eq!(areas[0].vertices, vec![[-8.0, -9.0], [8.0, -9.0], [8.0, -4.0]]);
-        assert_eq!(manifest.site_surfaces.len(), 1, "a planting area is not paving");
+        assert_eq!(
+            areas[0].vertices,
+            vec![[-8.0, -9.0], [8.0, -9.0], [8.0, -4.0]]
+        );
+        assert_eq!(
+            manifest.site_surfaces.len(),
+            1,
+            "a planting area is not paving"
+        );
         assert!(validate_asset_params_internal(&data.to_string()).is_empty());
         // An area outside the lot fails validation as a surface would.
-        data["site_surfaces"] =
-            serde_json::json!([{"material": "bushes", "vertices": [[0.0, 0.0], [30.0, 0.0], [0.0, 3.0]]}]);
+        data["site_surfaces"] = serde_json::json!([{"material": "bushes", "vertices": [[0.0, 0.0], [30.0, 0.0], [0.0, 3.0]]}]);
         assert!(!validate_asset_params_internal(&data.to_string()).is_empty());
     }
 

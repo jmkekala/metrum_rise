@@ -976,7 +976,10 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     conn.execute("UPDATE households SET replenishment_offset_hours = 23", [])
         .unwrap();
     let current = load_from_sqlite(&path, &allocator.registry).expect("load current offsets");
-    assert_eq!(current.households.households[0].replenishment_offset_hours, 23);
+    assert_eq!(
+        current.households.households[0].replenishment_offset_hours,
+        23
+    );
     conn.execute("UPDATE save_meta SET version = 83", [])
         .unwrap();
     let migrated = load_from_sqlite(&path, &allocator.registry).expect("load old offsets");
@@ -1220,8 +1223,10 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     assert_eq!(loaded.households.households[0].adult_count, 2);
     assert_eq!(loaded.households.households[0].employed_adults, 1);
     assert_eq!(loaded.households.households[0].gross_daily_wages, 137.125);
-    assert!(loaded.households.households[0].shopping_has_car,
-        "shopping car eligibility is rebuilt from the persisted adult agents");
+    assert!(
+        loaded.households.households[0].shopping_has_car,
+        "shopping car eligibility is rebuilt from the persisted adult agents"
+    );
     assert_eq!(loaded.households.households[0].elder_count, 0);
     assert_eq!(loaded.agents.len(), 2);
     assert_eq!(loaded.agents.age_group[0], AGE_ADULT);

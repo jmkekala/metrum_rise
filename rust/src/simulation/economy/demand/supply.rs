@@ -6,22 +6,25 @@ use super::spawn_need::{
     OutputAbsorptionContext, candidate_economy_profile, constructing_area_covers_operation,
 };
 use crate::simulation::buildings::allocator::{BuildingAllocator, BuildingEntrance};
-use crate::simulation::economy::definitions::{RuntimeEconomyCatalog, RuntimeEconomyTuning};
 use crate::simulation::economy::customers::ConsumerMarket;
 use crate::simulation::economy::customers::business::{BusinessMarket, PreparedBusinessSite};
 use crate::simulation::economy::definitions::EconomyProfileRuntime;
+use crate::simulation::economy::definitions::{RuntimeEconomyCatalog, RuntimeEconomyTuning};
 use crate::simulation::economy::fiscal::{CityFiscalPolicy, daily_property_tax};
 use crate::simulation::economy::households::{
     local_utility_service_costs, output_area_scale_for_building,
     physical_worker_capacity_for_profile,
 };
-use crate::simulation::economy::logistics::{ProjectedSupplySource, RecurringSupply, ShipmentSystem, freight_goods_multiplier};
-use rayon::prelude::*;
+use crate::simulation::economy::logistics::{
+    ProjectedSupplySource, RecurringSupply, ShipmentSystem, freight_goods_multiplier,
+};
 use crate::simulation::economy::operation::{
-    FundedOperation, InputRequirement, InputSupplyCosts, OperatingCosts, OperationPlan, OperationPrices, export_freight,
+    FundedOperation, InputRequirement, InputSupplyCosts, OperatingCosts, OperationPlan,
+    OperationPrices, export_freight,
 };
 use crate::simulation::network::{TransitNetwork, graph::RegionGraph};
 use crate::simulation::zoning::{ParcelId, ZoningSystem};
+use rayon::prelude::*;
 
 mod buyers;
 mod replacements;
@@ -33,31 +36,55 @@ use storage::StorageRequirement;
 /// One proposed operation stages inputs until every independent admission check passes.
 pub(super) trait ProjectSupply {
     /// Full reachable output claims and their supported activity/net sales, when available.
-    fn customers(&mut self, _profile: &EconomyProfileRuntime, _area: f32,
-        _prices: OperationPrices, _exports: f32) -> Option<ProjectCustomers> {
+    fn customers(
+        &mut self,
+        _profile: &EconomyProfileRuntime,
+        _area: f32,
+        _prices: OperationPrices,
+        _exports: f32,
+    ) -> Option<ProjectCustomers> {
         None
     }
     /// Actual mixed local/export value retained by the customer quotation.
-    fn output_price(&self, _resource: u16) -> Option<f64> { None }
+    fn output_price(&self, _resource: u16) -> Option<f64> {
+        None
+    }
     /// Staffing established by the current quote, rather than a second market estimate.
-    fn supported_workers(&self, fallback: u32) -> u32 { fallback }
+    fn supported_workers(&self, fallback: u32) -> u32 {
+        fallback
+    }
     /// Most workers a store's current probe may plan for (`DEM-02-C`); unlimited by default.
     /// Reset by every `begin`, so only an explicit retry at the available crew sets it.
-    fn crew_cap(&self) -> u32 { u32::MAX }
+    fn crew_cap(&self) -> u32 {
+        u32::MAX
+    }
     /// Limits the current probe's store crew to the workers the calendar can supply.
     fn set_crew_cap(&mut self, _workers: u32) {}
     /// Retains exact activity and area alongside the supported rounded workforce.
     fn set_supported_plan(&mut self, _plan: OperationPlan) {}
     /// Equity supplied by placement, independent of this site's transient input quotes.
-    fn startup_capital(&self, profile: &EconomyProfileRuntime, catalog: &RuntimeEconomyCatalog,
-        prices: OperationPrices) -> f64 {
+    fn startup_capital(
+        &self,
+        profile: &EconomyProfileRuntime,
+        catalog: &RuntimeEconomyCatalog,
+        prices: OperationPrices,
+    ) -> f64 {
         f64::from(profile.zoned_startup_budget(catalog, prices.imports))
     }
     /// Records the candidate's own financing proof before dependency/placement commitment.
-    fn fund(&mut self, _profile: &EconomyProfileRuntime, _prices: OperationPrices,
-        costs: OperatingCosts, capital: f64) -> bool { capital >= costs.working_capital }
+    fn fund(
+        &mut self,
+        _profile: &EconomyProfileRuntime,
+        _prices: OperationPrices,
+        costs: OperatingCosts,
+        capital: f64,
+    ) -> bool {
+        capital >= costs.working_capital
+    }
     /// Replayed staffing columns; absent only for isolated numeric fixtures.
-    fn reservations(&self) -> Option<&ProjectReservations> { None }
+    fn reservations(&self) -> Option<&ProjectReservations> {
+        None
+    }
     /// Rolls back the preceding probe and prepares the proposed asset's actual door.
     fn begin(&mut self, parcel: u64, asset: &str) -> Option<f32>;
     /// Prices a replacement after temporarily releasing that incumbent's input claims.
@@ -125,36 +152,77 @@ pub(super) struct ProjectReservations {
 
 impl ProjectReservations {
     /// Finds an unplaced operation using the fixed owner namespace retained across appends.
-    pub(super) fn project_operation(&self, parcel: u64, zoning: &ZoningSystem) -> Option<FundedOperation> {
+    pub(super) fn project_operation(
+        &self,
+        parcel: u64,
+        zoning: &ZoningSystem,
+    ) -> Option<FundedOperation> {
         let index = zoning.parcels.storage_index(ParcelId::from_raw(parcel))?;
-        self.operations.get(self.owner_base + index).copied().flatten()
+        self.operations
+            .get(self.owner_base + index)
+            .copied()
+            .flatten()
     }
 
     /// Prepared project proof for exact reload comparisons: workers, financing headroom bits
     /// and each recorded input source/quantity/price receipt, in receipt order.
     #[cfg(test)]
-    pub(super) fn project_proof_for_test(&self, book: &RecurringSupply, parcel: u64,
-        zoning: &ZoningSystem, catalog: &RuntimeEconomyCatalog, tuning: &RuntimeEconomyTuning)
-        -> Option<(u32, [u64; 2], Vec<(u16, Option<usize>, u64, u32, u32)>)> {
+    pub(super) fn project_proof_for_test(
+        &self,
+        book: &RecurringSupply,
+        parcel: u64,
+        zoning: &ZoningSystem,
+        catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning,
+    ) -> Option<(u32, [u64; 2], Vec<(u16, Option<usize>, u64, u32, u32)>)> {
         let operation = self.project_operation(parcel, zoning)?;
         let owner = self.owner_base + zoning.parcels.storage_index(ParcelId::from_raw(parcel))?;
         let profile = catalog.profile_by_runtime_id(operation.profile)?;
         let mut sources = Vec::new();
-        OperatingCosts::for_plan_with_input_quotes(profile, operation.plan, operation.prices,
-            |_, _| 0.0, |input| {
-                book.visit_input_sources(owner, input,
-                    catalog.unit_price_for_resource(input.resource).unwrap_or(0.0) * tuning.owa_import_price_multiplier,
-                    Some(operation.prices.carrier_quote), |source, units, goods, carrier|
-                        sources.push((input.resource, source, units.to_bits(), goods.to_bits(), carrier.to_bits())));
+        OperatingCosts::for_plan_with_input_quotes(
+            profile,
+            operation.plan,
+            operation.prices,
+            |_, _| 0.0,
+            |input| {
+                book.visit_input_sources(
+                    owner,
+                    input,
+                    catalog
+                        .unit_price_for_resource(input.resource)
+                        .unwrap_or(0.0)
+                        * tuning.owa_import_price_multiplier,
+                    Some(operation.prices.carrier_quote),
+                    |source, units, goods, carrier| {
+                        sources.push((
+                            input.resource,
+                            source,
+                            units.to_bits(),
+                            goods.to_bits(),
+                            carrier.to_bits(),
+                        ))
+                    },
+                );
                 Default::default()
-            });
-        Some((operation.plan.workers, operation.headroom.map(f64::to_bits), sources))
+            },
+        );
+        Some((
+            operation.plan.workers,
+            operation.headroom.map(f64::to_bits),
+            sources,
+        ))
     }
 
     /// Forks both customer books from the same completed financing proof.
-    pub(super) fn reset(&mut self, funding: &crate::simulation::economy::hiring::JobFunding,
-        allocator: &BuildingAllocator, catalog: &RuntimeEconomyCatalog, tuning: &RuntimeEconomyTuning,
-        fiscal: &CityFiscalPolicy, minute: u16) {
+    pub(super) fn reset(
+        &mut self,
+        funding: &crate::simulation::economy::hiring::JobFunding,
+        allocator: &BuildingAllocator,
+        catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning,
+        fiscal: &CityFiscalPolicy,
+        minute: u16,
+    ) {
         self.customers.copy_reservations_from(&funding.customers);
         self.business.copy_reservations_from(&funding.business);
         self.prepare_pass_rows(funding, allocator, catalog, tuning, fiscal, minute);
@@ -163,18 +231,31 @@ impl ProjectReservations {
     /// Opens a planning pass on live customer books already moved into this owner, without
     /// copying them. The caller must close it with [`Self::end_live_pass`] before returning
     /// the books. Opening is O(1) amortized beyond the per-pass operation rows.
-    pub(super) fn begin_live_pass(&mut self, funding: &crate::simulation::economy::hiring::JobFunding,
-        inputs: &mut RecurringSupply, allocator: &BuildingAllocator, catalog: &RuntimeEconomyCatalog,
-        tuning: &RuntimeEconomyTuning, fiscal: &CityFiscalPolicy, minute: u16) {
+    pub(super) fn begin_live_pass(
+        &mut self,
+        funding: &crate::simulation::economy::hiring::JobFunding,
+        inputs: &mut RecurringSupply,
+        allocator: &BuildingAllocator,
+        catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning,
+        fiscal: &CityFiscalPolicy,
+        minute: u16,
+    ) {
         inputs.begin_pass();
         self.begin_book_pass(funding, allocator, catalog, tuning, fiscal, minute);
     }
 
     /// Opens a pass on lent customer and business books only. Their rollback restores rows
     /// without reading the allocator, so it stays exact across later building edits.
-    pub(super) fn begin_book_pass(&mut self, funding: &crate::simulation::economy::hiring::JobFunding,
-        allocator: &BuildingAllocator, catalog: &RuntimeEconomyCatalog, tuning: &RuntimeEconomyTuning,
-        fiscal: &CityFiscalPolicy, minute: u16) {
+    pub(super) fn begin_book_pass(
+        &mut self,
+        funding: &crate::simulation::economy::hiring::JobFunding,
+        allocator: &BuildingAllocator,
+        catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning,
+        fiscal: &CityFiscalPolicy,
+        minute: u16,
+    ) {
         self.customers.begin_pass();
         self.business.begin_pass();
         self.prepare_pass_rows(funding, allocator, catalog, tuning, fiscal, minute);
@@ -182,8 +263,12 @@ impl ProjectReservations {
 
     /// Restores the live books exactly as [`Self::begin_live_pass`] found them, in
     /// O(rows the pass touched). Temporary project rows are truncated.
-    pub(super) fn end_live_pass(&mut self, inputs: &mut RecurringSupply, allocator: &BuildingAllocator,
-        graph: &RegionGraph) {
+    pub(super) fn end_live_pass(
+        &mut self,
+        inputs: &mut RecurringSupply,
+        allocator: &BuildingAllocator,
+        graph: &RegionGraph,
+    ) {
         self.reject(inputs, allocator, graph);
         self.end_book_pass();
         inputs.end_pass(allocator, graph);
@@ -197,20 +282,35 @@ impl ProjectReservations {
     }
 
     // Per-pass owner rows; neither book is copied here.
-    fn prepare_pass_rows(&mut self, funding: &crate::simulation::economy::hiring::JobFunding,
-        allocator: &BuildingAllocator, catalog: &RuntimeEconomyCatalog, tuning: &RuntimeEconomyTuning,
-        fiscal: &CityFiscalPolicy, minute: u16) {
+    fn prepare_pass_rows(
+        &mut self,
+        funding: &crate::simulation::economy::hiring::JobFunding,
+        allocator: &BuildingAllocator,
+        catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning,
+        fiscal: &CityFiscalPolicy,
+        minute: u16,
+    ) {
         self.prepared = false;
         self.staged_owner = None;
         self.staged_operation = None;
         self.staged_committed = false;
         self.reset_owner_slots(allocator.buildings.len());
-        let utilities = local_utility_service_costs(catalog).map(|p| p * tuning.owa_import_price_multiplier);
-        self.operations[..allocator.buildings.len()].par_iter_mut().enumerate().for_each(|(index, operation)| {
-            let building = &allocator.buildings[index];
-            *operation = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
-                .and_then(|profile| funding.funded_operation(index, building, profile, utilities, tuning, fiscal, minute));
-        });
+        let utilities =
+            local_utility_service_costs(catalog).map(|p| p * tuning.owa_import_price_multiplier);
+        self.operations[..allocator.buildings.len()]
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(index, operation)| {
+                let building = &allocator.buildings[index];
+                *operation = catalog
+                    .profile_by_runtime_id(building.economy_profile_runtime_id)
+                    .and_then(|profile| {
+                        funding.funded_operation(
+                            index, building, profile, utilities, tuning, fiscal, minute,
+                        )
+                    });
+            });
         self.reset_sites(funding, allocator, catalog, tuning, minute);
     }
 
@@ -222,19 +322,35 @@ impl ProjectReservations {
             self.sites[owner] = None;
         }
         if live < self.live_owners {
-            self.operations[live..self.live_owners].par_iter_mut().for_each(|row| *row = None);
-            self.sites[live..self.live_owners].par_iter_mut().for_each(|row| *row = None);
+            self.operations[live..self.live_owners]
+                .par_iter_mut()
+                .for_each(|row| *row = None);
+            self.sites[live..self.live_owners]
+                .par_iter_mut()
+                .for_each(|row| *row = None);
         }
-        if self.operations.len() < live { self.operations.resize(live, None); }
-        if self.sites.len() < live { self.sites.resize(live, None); }
+        if self.operations.len() < live {
+            self.operations.resize(live, None);
+        }
+        if self.sites.len() < live {
+            self.sites.resize(live, None);
+        }
         self.live_owners = live;
     }
 
     /// Commits the exact staged owner after placement or a planning acceptance succeeds.
     pub(super) fn accept(&mut self, book: &mut RecurringSupply) {
-        let Some(owner) = self.staged_owner.take() else { return; };
-        assert!(self.staged_operation.is_some(), "accepted project must retain its financing proof");
-        assert!(self.staged_committed, "capacity-checked inner commits must precede publication");
+        let Some(owner) = self.staged_owner.take() else {
+            return;
+        };
+        assert!(
+            self.staged_operation.is_some(),
+            "accepted project must retain its financing proof"
+        );
+        assert!(
+            self.staged_committed,
+            "capacity-checked inner commits must precede publication"
+        );
         book.accept_revalidation();
         self.business.accept_revalidation();
         self.customers.accept_revalidation();
@@ -248,8 +364,12 @@ impl ProjectReservations {
     }
 
     /// Restores all provisional markets after an economic or physical placement rejection.
-    pub(super) fn reject(&mut self, book: &mut RecurringSupply,
-        allocator: &BuildingAllocator, graph: &RegionGraph) {
+    pub(super) fn reject(
+        &mut self,
+        book: &mut RecurringSupply,
+        allocator: &BuildingAllocator,
+        graph: &RegionGraph,
+    ) {
         book.reject_revalidation(allocator, graph);
         self.customers.reject_revalidation();
         self.business.reject_revalidation();
@@ -305,31 +425,65 @@ impl<'a> SiteSupply<'a> {
         vat: f32,
     ) -> Self {
         if !reservations.prepared {
-            let mut phase = crate::debug::Channel::EconomyPhases.enabled().then(std::time::Instant::now);
-            let mut lap = || phase.as_mut().map_or(0.0, |previous| {
-                let elapsed = previous.elapsed().as_secs_f64() * 1_000.0;
-                *previous = std::time::Instant::now();
-                elapsed
-            });
+            let mut phase = crate::debug::Channel::EconomyPhases
+                .enabled()
+                .then(std::time::Instant::now);
+            let mut lap = || {
+                phase.as_mut().map_or(0.0, |previous| {
+                    let elapsed = previous.elapsed().as_secs_f64() * 1_000.0;
+                    *previous = std::time::Instant::now();
+                    elapsed
+                })
+            };
             // A pass can replay a queue and select at most one new project per parcel.
             // Existing construction and replacements retain their live building owner.
             let owners = allocator.buildings.len() + 2 * zoning.parcels().len();
             crate::debug::work::add(crate::debug::work::Work::OwnerSlotsPrepared, owners as u64);
-            let outputs = catalog.all_profiles().iter().map(|profile| profile.outputs.len()).max().unwrap_or(0);
-            let inputs = catalog.all_profiles().iter().map(|profile| profile.inputs.len()).max().unwrap_or(0);
+            let outputs = catalog
+                .all_profiles()
+                .iter()
+                .map(|profile| profile.outputs.len())
+                .max()
+                .unwrap_or(0);
+            let inputs = catalog
+                .all_profiles()
+                .iter()
+                .map(|profile| profile.inputs.len())
+                .max()
+                .unwrap_or(0);
             let key = site_rows::site_rows_key(allocator, zoning, network);
             let mut changes = site_rows::SiteRowChanges::default();
             let base = allocator.buildings.len();
             let parcel_count = zoning.parcels().len();
-            let entrance = |parcel: u64, asset: &str,
-                previous: Option<(crate::simulation::buildings::allocator::DemandSiteEntranceKey, &BuildingEntrance)>|
-                allocator.demand_site_entrance_reusing(parcel,
-                asset, zoning, graph, &network.lane_system, network.cch_graph.build_generation, previous);
+            let entrance = |parcel: u64,
+                            asset: &str,
+                            previous: Option<(
+                crate::simulation::buildings::allocator::DemandSiteEntranceKey,
+                &BuildingEntrance,
+            )>| {
+                allocator.demand_site_entrance_reusing(
+                    parcel,
+                    asset,
+                    zoning,
+                    graph,
+                    &network.lane_system,
+                    network.cch_graph.build_generation,
+                    previous,
+                )
+            };
             // Variants a live building could become, in this building's own recipe order.
-            let variants = |building: usize| [Some(allocator.buildings[building].asset_id.as_str()),
-                allocator.downgrade_target(&allocator.buildings[building]),
-                allocator.upgrade_target(&allocator.buildings[building])].into_iter().flatten();
-            let suppliers = |owner: usize, previous: &[ProjectedSupplySource], out: &mut Vec<ProjectedSupplySource>| {
+            let variants = |building: usize| {
+                [
+                    Some(allocator.buildings[building].asset_id.as_str()),
+                    allocator.downgrade_target(&allocator.buildings[building]),
+                    allocator.upgrade_target(&allocator.buildings[building]),
+                ]
+                .into_iter()
+                .flatten()
+            };
+            let suppliers = |owner: usize,
+                             previous: &[ProjectedSupplySource],
+                             out: &mut Vec<ProjectedSupplySource>| {
                 let building = &allocator.buildings[owner];
                 out.extend(variants(owner).filter_map(|asset| {
                     let profile = candidate_economy_profile(allocator, catalog, asset)?;
@@ -344,16 +498,37 @@ impl<'a> SiteSupply<'a> {
             book.prepare_projected_sources(catalog, graph, &key, |previous, previous_key| {
                 let incremental = changes.collect(previous_key, &key, allocator, zoning);
                 let rows = if incremental {
-                    changes.merge(previous, base, parcel_count, ProjectedSupplySource::owner,
-                        ProjectedSupplySource::set_owner, ProjectedSupplySource::key,
-                        |owner, held| collect_rows(|out| if owner < base { suppliers(owner, held, out) }))
+                    changes.merge(
+                        previous,
+                        base,
+                        parcel_count,
+                        ProjectedSupplySource::owner,
+                        ProjectedSupplySource::set_owner,
+                        ProjectedSupplySource::key,
+                        |owner, held| {
+                            collect_rows(|out| {
+                                if owner < base {
+                                    suppliers(owner, held, out)
+                                }
+                            })
+                        },
+                    )
                 } else {
-                    let mut rows = par_collect_rows(base, |owner, out| suppliers(owner, &previous, out));
-                    rows.sort_unstable_by(|a, b| a.owner().cmp(&b.owner()).then(a.key().cmp(b.key())));
+                    let mut rows =
+                        par_collect_rows(base, |owner, out| suppliers(owner, &previous, out));
+                    rows.sort_unstable_by(|a, b| {
+                        a.owner().cmp(&b.owner()).then(a.key().cmp(b.key()))
+                    });
                     rows
                 };
-                crate::debug::work::add(crate::debug::work::Work::SupplierSourcesBuilt,
-                    if incremental { changes.changed_owners() } else { rows.len() } as u64);
+                crate::debug::work::add(
+                    crate::debug::work::Work::SupplierSourcesBuilt,
+                    if incremental {
+                        changes.changed_owners()
+                    } else {
+                        rows.len()
+                    } as u64,
+                );
                 rows
             });
             let suppliers_ms = lap();
@@ -363,72 +538,171 @@ impl<'a> SiteSupply<'a> {
             if let Some(components) = book.freight_components() {
                 let assets = std::sync::OnceLock::new();
                 // Previous rows are looked up under `old_owner`, their numbering when prepared.
-                let parcel_buyers = |index: usize, previous: &[PreparedBusinessSite], old_owner: usize,
-                    out: &mut Vec<PreparedBusinessSite>| {
-                    let parcel = &zoning.parcels()[index];
-                    if !parcel.is_available() { return; }
-                    let assets = assets.get_or_init(|| allocator.collect_spawn_asset_candidates_by_profile(zoning, catalog));
-                    out.extend(assets.get(&parcel.zone_profile_runtime_id()).into_iter()
-                        .flat_map(|assets| assets.fitting_assets(parcel, zoning))
-                        .filter_map(|asset| {
-                            let profile = candidate_economy_profile(allocator, catalog, asset)?;
-                            if profile.inputs.is_empty() { return None; }
-                            let (key, entrance) = entrance(parcel.id().raw(), asset,
-                                PreparedBusinessSite::retained_entrance(previous, old_owner, asset))?;
-                            Some(PreparedBusinessSite::new(base + index,
-                                asset, profile.runtime_id, entrance).with_entrance_key(key))
-                        }));
-                };
-                let building_buyers = |owner: usize, previous: &[PreparedBusinessSite], out: &mut Vec<PreparedBusinessSite>| {
-                    let building = &allocator.buildings[owner];
-                    out.extend(variants(owner).filter_map(|asset| {
-                        let profile = candidate_economy_profile(allocator, catalog, asset)?;
-                        if profile.inputs.is_empty() { return None; }
-                        let (key, entrance) = entrance(building.parcel_id, asset,
-                            PreparedBusinessSite::retained_entrance(previous, owner, asset))?;
-                        Some(PreparedBusinessSite::new(owner, asset, profile.runtime_id, entrance).with_entrance_key(key))
-                    }));
-                };
-                reservations.business.prepare_sites(&key, catalog, components, graph, |previous, previous_key| {
-                    let incremental = changes.collect(previous_key, &key, allocator, zoning);
-                    let rows = if incremental {
-                        let old_base = previous_key.map_or(base, |key| key[7] as usize);
-                        changes.merge(previous, base, parcel_count, PreparedBusinessSite::owner,
-                            PreparedBusinessSite::set_owner, PreparedBusinessSite::key, |owner, held|
-                                collect_rows(|out| if owner < base { building_buyers(owner, held, out) }
-                                    else { parcel_buyers(owner - base, held, old_base + owner - base, out) }))
-                    } else {
-                        let mut rows = par_collect_rows(parcel_count,
-                            |index, out| parcel_buyers(index, &previous, base + index, out));
-                        rows.append(&mut par_collect_rows(base, |owner, out| building_buyers(owner, &previous, out)));
-                        rows.sort_unstable_by(|a, b| a.owner().cmp(&b.owner()).then(a.key().cmp(b.key())));
-                        rows
+                let parcel_buyers =
+                    |index: usize,
+                     previous: &[PreparedBusinessSite],
+                     old_owner: usize,
+                     out: &mut Vec<PreparedBusinessSite>| {
+                        let parcel = &zoning.parcels()[index];
+                        if !parcel.is_available() {
+                            return;
+                        }
+                        let assets = assets.get_or_init(|| {
+                            allocator.collect_spawn_asset_candidates_by_profile(zoning, catalog)
+                        });
+                        out.extend(
+                            assets
+                                .get(&parcel.zone_profile_runtime_id())
+                                .into_iter()
+                                .flat_map(|assets| assets.fitting_assets(parcel, zoning))
+                                .filter_map(|asset| {
+                                    let profile =
+                                        candidate_economy_profile(allocator, catalog, asset)?;
+                                    if profile.inputs.is_empty() {
+                                        return None;
+                                    }
+                                    let (key, entrance) = entrance(
+                                        parcel.id().raw(),
+                                        asset,
+                                        PreparedBusinessSite::retained_entrance(
+                                            previous, old_owner, asset,
+                                        ),
+                                    )?;
+                                    Some(
+                                        PreparedBusinessSite::new(
+                                            base + index,
+                                            asset,
+                                            profile.runtime_id,
+                                            entrance,
+                                        )
+                                        .with_entrance_key(key),
+                                    )
+                                }),
+                        );
                     };
-                    crate::debug::work::add(crate::debug::work::Work::BuyerSitesBuilt,
-                        if incremental { changes.changed_owners() } else { rows.len() } as u64);
-                    rows
-                });
+                let building_buyers =
+                    |owner: usize,
+                     previous: &[PreparedBusinessSite],
+                     out: &mut Vec<PreparedBusinessSite>| {
+                        let building = &allocator.buildings[owner];
+                        out.extend(variants(owner).filter_map(|asset| {
+                            let profile = candidate_economy_profile(allocator, catalog, asset)?;
+                            if profile.inputs.is_empty() {
+                                return None;
+                            }
+                            let (key, entrance) = entrance(
+                                building.parcel_id,
+                                asset,
+                                PreparedBusinessSite::retained_entrance(previous, owner, asset),
+                            )?;
+                            Some(
+                                PreparedBusinessSite::new(
+                                    owner,
+                                    asset,
+                                    profile.runtime_id,
+                                    entrance,
+                                )
+                                .with_entrance_key(key),
+                            )
+                        }));
+                    };
+                reservations.business.prepare_sites(
+                    &key,
+                    catalog,
+                    components,
+                    graph,
+                    |previous, previous_key| {
+                        let incremental = changes.collect(previous_key, &key, allocator, zoning);
+                        let rows = if incremental {
+                            let old_base = previous_key.map_or(base, |key| key[7] as usize);
+                            changes.merge(
+                                previous,
+                                base,
+                                parcel_count,
+                                PreparedBusinessSite::owner,
+                                PreparedBusinessSite::set_owner,
+                                PreparedBusinessSite::key,
+                                |owner, held| {
+                                    collect_rows(|out| {
+                                        if owner < base {
+                                            building_buyers(owner, held, out)
+                                        } else {
+                                            parcel_buyers(
+                                                owner - base,
+                                                held,
+                                                old_base + owner - base,
+                                                out,
+                                            )
+                                        }
+                                    })
+                                },
+                            )
+                        } else {
+                            let mut rows = par_collect_rows(parcel_count, |index, out| {
+                                parcel_buyers(index, &previous, base + index, out)
+                            });
+                            rows.append(&mut par_collect_rows(base, |owner, out| {
+                                building_buyers(owner, &previous, out)
+                            }));
+                            rows.sort_unstable_by(|a, b| {
+                                a.owner().cmp(&b.owner()).then(a.key().cmp(b.key()))
+                            });
+                            rows
+                        };
+                        crate::debug::work::add(
+                            crate::debug::work::Work::BuyerSitesBuilt,
+                            if incremental {
+                                changes.changed_owners()
+                            } else {
+                                rows.len()
+                            } as u64,
+                        );
+                        rows
+                    },
+                );
             }
             let buyers_ms = lap();
-            reservations.business.prepare_owners(owners, owners * outputs);
-            reservations.business.prepare_project_inputs(book.project_input_tranche_capacity(owners * inputs));
-            reservations.customers.prepare_project_owners(owners, owners * outputs);
+            reservations
+                .business
+                .prepare_owners(owners, owners * outputs);
+            reservations
+                .business
+                .prepare_project_inputs(book.project_input_tranche_capacity(owners * inputs));
+            reservations
+                .customers
+                .prepare_project_owners(owners, owners * outputs);
             reservations.output_prices.reserve(outputs);
-            if reservations.operations.len() < owners { reservations.operations.resize(owners, None); }
-            if reservations.sites.len() < owners { reservations.sites.resize(owners, None); }
-            reservations.project_owners.reserve(owners - allocator.buildings.len());
+            if reservations.operations.len() < owners {
+                reservations.operations.resize(owners, None);
+            }
+            if reservations.sites.len() < owners {
+                reservations.sites.resize(owners, None);
+            }
+            reservations
+                .project_owners
+                .reserve(owners - allocator.buildings.len());
             reservations.replacement_proof.prepare(owners);
             reservations.owner_base = allocator.buildings.len();
             reservations.prepared = true;
             let owner_storage_ms = lap();
-            crate::debug_log!("economy_phases", "site_preparation_detail suppliers_ms={:.3} supply_storage_ms={:.3} buyers_ms={:.3} owner_storage_ms={:.3}",
-                suppliers_ms, supply_storage_ms, buyers_ms, owner_storage_ms);
+            crate::debug_log!(
+                "economy_phases",
+                "site_preparation_detail suppliers_ms={:.3} supply_storage_ms={:.3} buyers_ms={:.3} owner_storage_ms={:.3}",
+                suppliers_ms,
+                supply_storage_ms,
+                buyers_ms,
+                owner_storage_ms
+            );
         }
         Self {
             book,
             reservations,
             vat,
-            plan: OperationPlan { workers: 0, activity: 0.0, area: 1.0 },
+            plan: OperationPlan {
+                workers: 0,
+                activity: 0.0,
+                area: 1.0,
+            },
             crew_cap: u32::MAX,
             customer_quote: ProjectCustomers::default(),
             replacement: None,
@@ -462,21 +736,28 @@ impl<'a> SiteSupply<'a> {
         self.book.begin_revalidation();
         self.reservations.business.begin_revalidation();
         self.reservations.customers.begin_revalidation();
-        self.plan = OperationPlan { workers: 0, activity: 0.0, area: 1.0 };
+        self.plan = OperationPlan {
+            workers: 0,
+            activity: 0.0,
+            area: 1.0,
+        };
         self.crew_cap = u32::MAX;
         self.exports = 0.0;
         self.replacement_source = None;
         self.customer_quote = ProjectCustomers::default();
         self.goods_multiplier = goods_multiplier;
-        self.carrier = entrance.as_ref().and_then(|entrance| {
-            self.logistics.site_carrier_quote(
-                entrance,
-                self.network,
-                self.graph,
-                self.borders,
-                self.tuning,
-            )
-        }).filter(|_| goods_multiplier.is_finite());
+        self.carrier = entrance
+            .as_ref()
+            .and_then(|entrance| {
+                self.logistics.site_carrier_quote(
+                    entrance,
+                    self.network,
+                    self.graph,
+                    self.borders,
+                    self.tuning,
+                )
+            })
+            .filter(|_| goods_multiplier.is_finite());
         self.entrance = entrance;
         self.buyer = buyer;
         self.buyer_site = None;
@@ -499,8 +780,15 @@ impl<'a> SiteSupply<'a> {
         freight_capital: &[f64],
     ) {
         let projects = projects.filter(|project| project.active);
-        self.prepare_project_market(projects.clone(), catalog, market, replay, policy,
-            service_capacities, freight_capital);
+        self.prepare_project_market(
+            projects.clone(),
+            catalog,
+            market,
+            replay,
+            policy,
+            service_capacities,
+            freight_capital,
+        );
         self.reserve_queued(projects, catalog, replay, policy, |_, _| Ok(()));
     }
 
@@ -520,10 +808,24 @@ impl<'a> SiteSupply<'a> {
         elapsed: u64,
     ) {
         let projects = projects.filter(|project| project.active);
-        self.prepare_project_market(projects.clone(), catalog, &snapshot.output_absorption,
-            replay, policy, service_capacities, freight_capital);
-        workforce.reset(self.allocator, catalog, self.tuning, snapshot, &[], 0,
-            Some(self.reservations));
+        self.prepare_project_market(
+            projects.clone(),
+            catalog,
+            &snapshot.output_absorption,
+            replay,
+            policy,
+            service_capacities,
+            freight_capital,
+        );
+        workforce.reset(
+            self.allocator,
+            catalog,
+            self.tuning,
+            snapshot,
+            &[],
+            0,
+            Some(self.reservations),
+        );
         workforce.reserve_existing();
         self.reserve_queued(projects, catalog, replay, policy, |project, workers| {
             let deadline = project.completion_hour.saturating_sub(elapsed);
@@ -545,10 +847,14 @@ impl<'a> SiteSupply<'a> {
         service_capacities: &[u32],
         freight_capital: &[f64],
     ) {
-        self.reservations.building_workers.resize(self.allocator.buildings.len(), 0);
+        self.reservations
+            .building_workers
+            .resize(self.allocator.buildings.len(), 0);
         self.reservations.building_workers.fill(0);
         self.reservations.queued_workers.clear();
-        self.reservations.queued_workers.reserve(projects.clone().count());
+        self.reservations
+            .queued_workers
+            .reserve(projects.clone().count());
         replay.copy_from(market);
         // Ordered capacity updates share resource totals, like the subsequent finite claims.
         for building in &self.allocator.buildings {
@@ -587,9 +893,16 @@ impl<'a> SiteSupply<'a> {
                 continue;
             };
             let service = self.allocator.is_city_service_building(building);
-            let carrier =
-                self.begin_entrance(self.allocator.entrances.get(index).cloned(), Some(index),
-                    freight_goods_multiplier(profile, building.zone_type, self.tuning, self.minute_of_day));
+            let carrier = self.begin_entrance(
+                self.allocator.entrances.get(index).cloned(),
+                Some(index),
+                freight_goods_multiplier(
+                    profile,
+                    building.zone_type,
+                    self.tuning,
+                    self.minute_of_day,
+                ),
+            );
             let prices = self.prices(catalog, building.zone_type, building.level, policy, carrier);
             let scale = output_area_scale_for_building(building, profile);
             if service {
@@ -615,9 +928,14 @@ impl<'a> SiteSupply<'a> {
                         |input| self.quote(input, catalog, prices),
                     );
                     if costs.inputs.is_finite() && costs.freight.is_finite() {
-                        self.set_supported_plan(OperationPlan { workers,
-                            activity: workers as f32 / physical.max(1) as f32, area: scale });
-                        if !self.fund_operation(profile, prices, costs, f64::INFINITY, true) { break; }
+                        self.set_supported_plan(OperationPlan {
+                            workers,
+                            activity: workers as f32 / physical.max(1) as f32,
+                            area: scale,
+                        });
+                        if !self.fund_operation(profile, prices, costs, f64::INFINITY, true) {
+                            break;
+                        }
                         self.reservations.building_workers[index] = workers;
                         self.accept();
                         break;
@@ -652,8 +970,8 @@ impl<'a> SiteSupply<'a> {
                     )
                 };
             if viable {
-                self.reservations.building_workers[index] = self.supported_workers(
-                    physical_worker_capacity_for_profile(building, profile));
+                self.reservations.building_workers[index] =
+                    self.supported_workers(physical_worker_capacity_for_profile(building, profile));
                 self.accept();
             } else {
                 self.reject();
@@ -679,23 +997,37 @@ impl<'a> SiteSupply<'a> {
             } else {
                 crate::simulation::zoning::ZoneType::Industrial
             };
-            let mut claimed = self.probe_queued(project, profile, zone, catalog, market, policy,
-                None).then(|| workforce(project, self.plan.workers));
+            let mut claimed = self
+                .probe_queued(project, profile, zone, catalog, market, policy, None)
+                .then(|| workforce(project, self.plan.workers));
             // The planner's rule again: a store short only of workers revalidates with the
             // crew the calendar can still house (`DEM-02-C`). No queue state is saved for it.
             if let Some(Err(available)) = claimed
                 && project.commercial
                 && available > 0
             {
-                claimed = self.probe_queued(project, profile, zone, catalog, market, policy,
-                    Some(available)).then(|| workforce(project, self.plan.workers));
+                claimed = self
+                    .probe_queued(
+                        project,
+                        profile,
+                        zone,
+                        catalog,
+                        market,
+                        policy,
+                        Some(available),
+                    )
+                    .then(|| workforce(project, self.plan.workers));
             }
             let crew_cap = self.crew_cap;
             if matches!(claimed, Some(Ok(()))) {
-                self.reservations.queued_workers.push((project.parcel_id, self.plan.workers));
+                self.reservations
+                    .queued_workers
+                    .push((project.parcel_id, self.plan.workers));
                 self.accept();
             } else {
-                self.reservations.queued_workers.push((project.parcel_id, 0));
+                self.reservations
+                    .queued_workers
+                    .push((project.parcel_id, 0));
                 self.reject();
             }
             if crew_cap < profile.worker_capacity {
@@ -707,7 +1039,9 @@ impl<'a> SiteSupply<'a> {
                 market.reserve_candidate(profile);
             }
         }
-        self.reservations.queued_workers.sort_unstable_by_key(|&(parcel, _)| parcel);
+        self.reservations
+            .queued_workers
+            .sort_unstable_by_key(|&(parcel, _)| parcel);
     }
 
     // Starts a queued project's probe at its prepared door and checks its operation, with the
@@ -722,15 +1056,24 @@ impl<'a> SiteSupply<'a> {
         policy: &CityFiscalPolicy,
         crew_cap: Option<u32>,
     ) -> bool {
-        let carrier = self.begin_entrance(project.entrance.clone(), None,
-            freight_goods_multiplier(profile, zone, self.tuning, self.minute_of_day));
+        let carrier = self.begin_entrance(
+            project.entrance.clone(),
+            None,
+            freight_goods_multiplier(profile, zone, self.tuning, self.minute_of_day),
+        );
         if let Some(workers) = crew_cap {
             self.crew_cap = workers;
         }
         self.reservations.staged_owner = self.project_owner(project.parcel_id);
-        self.buyer_site = self.reservations.staged_owner.zip(self.entrance.as_ref())
-            .and_then(|(owner, entrance)| self.reservations.business
-                .prepared_site_at(owner, profile.runtime_id, entrance));
+        self.buyer_site = self
+            .reservations
+            .staged_owner
+            .zip(self.entrance.as_ref())
+            .and_then(|(owner, entrance)| {
+                self.reservations
+                    .business
+                    .prepared_site_at(owner, profile.runtime_id, entrance)
+            });
         let prices = self.prices(catalog, zone, project.level, policy, carrier);
         super::spawn_need::project_covers_operation(
             profile,
@@ -755,7 +1098,12 @@ impl<'a> SiteSupply<'a> {
             utilities: local_utility_service_costs(catalog)
                 .map(|p| p * self.tuning.owa_import_price_multiplier),
             property_tax: daily_property_tax(zone, level, policy),
-            imports: self.tuning.owa_import_price_multiplier * if self.goods_multiplier.is_finite() { self.goods_multiplier } else { 1.0 },
+            imports: self.tuning.owa_import_price_multiplier
+                * if self.goods_multiplier.is_finite() {
+                    self.goods_multiplier
+                } else {
+                    1.0
+                },
             carrier_quote: carrier.unwrap_or(f32::INFINITY),
             truck_payload: self.tuning.logistics.truck_payload_kg,
         }
@@ -763,71 +1111,152 @@ impl<'a> SiteSupply<'a> {
 }
 
 impl ProjectSupply for SiteSupply<'_> {
-    fn customers(&mut self, profile: &EconomyProfileRuntime, area: f32,
-        prices: OperationPrices, exports: f32) -> Option<ProjectCustomers> {
+    fn customers(
+        &mut self,
+        profile: &EconomyProfileRuntime,
+        area: f32,
+        prices: OperationPrices,
+        exports: f32,
+    ) -> Option<ProjectCustomers> {
         self.reservations.staged_operation = None;
         use crate::simulation::economy::definitions::EconomyProfileRuntimeKind;
-        let exportable = self.carrier.is_some() && exports > 0.0 && matches!(profile.kind,
-            EconomyProfileRuntimeKind::Processor | EconomyProfileRuntimeKind::Producer
-            | EconomyProfileRuntimeKind::Extractor | EconomyProfileRuntimeKind::FieldProducer);
+        let exportable = self.carrier.is_some()
+            && exports > 0.0
+            && matches!(
+                profile.kind,
+                EconomyProfileRuntimeKind::Processor
+                    | EconomyProfileRuntimeKind::Producer
+                    | EconomyProfileRuntimeKind::Extractor
+                    | EconomyProfileRuntimeKind::FieldProducer
+            );
         self.exports = if exportable { exports } else { 0.0 };
         let mut quote = ProjectCustomers::default();
         self.reservations.output_prices.clear();
         if let Some(entrance) = &self.entrance {
             for port in &profile.outputs {
                 let output = profile.net_output_units_per_day(port) * area;
-                if output <= 0.0 { continue; }
+                if output <= 0.0 {
+                    continue;
+                }
                 let household = self.reservations.customers.claim_reachable(
-                    entrance, port.resource_runtime_id, f64::from(output),
+                    entrance,
+                    port.resource_runtime_id,
+                    f64::from(output),
                     profile.unit_price_currency * (1.0 + self.vat),
-                    self.allocator, self.network, self.graph);
+                    self.allocator,
+                    self.network,
+                    self.graph,
+                );
                 let business = if profile.kind != EconomyProfileRuntimeKind::ServiceStore
-                    && let Some(components) = self.book.freight_components() {
+                    && let Some(components) = self.book.freight_components()
+                {
                     if let Some(owner) = self.replacement {
-                        self.reservations.business.claim_reachable_joint(entrance, owner,
-                            port.resource_runtime_id, (f64::from(output) - household).max(0.0),
-                            profile.unit_price_currency, components, self.allocator, self.logistics,
-                            self.network, self.graph, self.tuning)
-                    } else { self.reservations.business.claim_reachable(entrance, self.reservations.staged_owner,
-                        port.resource_runtime_id, (f64::from(output) - household).max(0.0),
-                        profile.unit_price_currency, components, self.allocator, self.logistics,
-                        self.network, self.graph, self.tuning) }
-                } else { Default::default() };
+                        self.reservations.business.claim_reachable_joint(
+                            entrance,
+                            owner,
+                            port.resource_runtime_id,
+                            (f64::from(output) - household).max(0.0),
+                            profile.unit_price_currency,
+                            components,
+                            self.allocator,
+                            self.logistics,
+                            self.network,
+                            self.graph,
+                            self.tuning,
+                        )
+                    } else {
+                        self.reservations.business.claim_reachable(
+                            entrance,
+                            self.reservations.staged_owner,
+                            port.resource_runtime_id,
+                            (f64::from(output) - household).max(0.0),
+                            profile.unit_price_currency,
+                            components,
+                            self.allocator,
+                            self.logistics,
+                            self.network,
+                            self.graph,
+                            self.tuning,
+                        )
+                    }
+                } else {
+                    Default::default()
+                };
                 let local = household + business.units;
-                let exported = if exportable { (f64::from(output) - local).max(0.0) } else { 0.0 };
-                let revenue = household * f64::from(profile.unit_price_currency) + business.revenue
-                    + exported * f64::from(self.catalog.unit_price_for_resource(port.resource_runtime_id)
-                        .unwrap_or(0.0) * exports);
-                quote.activity = quote.activity.max(((local + exported) / f64::from(output)) as f32);
+                let exported = if exportable {
+                    (f64::from(output) - local).max(0.0)
+                } else {
+                    0.0
+                };
+                let revenue = household * f64::from(profile.unit_price_currency)
+                    + business.revenue
+                    + exported
+                        * f64::from(
+                            self.catalog
+                                .unit_price_for_resource(port.resource_runtime_id)
+                                .unwrap_or(0.0)
+                                * exports,
+                        );
+                quote.activity = quote
+                    .activity
+                    .max(((local + exported) / f64::from(output)) as f32);
                 quote.revenue += revenue;
-                quote.export_freight += export_freight(profile, port, output, exported as f32, prices);
-                self.reservations.output_prices.push((port.resource_runtime_id, revenue / f64::from(output)));
+                quote.export_freight +=
+                    export_freight(profile, port, output, exported as f32, prices);
+                self.reservations
+                    .output_prices
+                    .push((port.resource_runtime_id, revenue / f64::from(output)));
             }
         }
-        if self.replacement.is_none() && !self.reservations.business.can_accept() { quote = ProjectCustomers::default(); }
+        if self.replacement.is_none() && !self.reservations.business.can_accept() {
+            quote = ProjectCustomers::default();
+        }
         self.customer_quote = quote;
         Some(quote)
     }
     fn output_price(&self, resource: u16) -> Option<f64> {
-        Some(self.reservations.output_prices.iter().find(|&&(id, _)| id == resource).map_or(0.0, |&(_, price)| price))
+        Some(
+            self.reservations
+                .output_prices
+                .iter()
+                .find(|&&(id, _)| id == resource)
+                .map_or(0.0, |&(_, price)| price),
+        )
     }
-    fn supported_workers(&self, _fallback: u32) -> u32 { self.plan.workers }
-    fn crew_cap(&self) -> u32 { self.crew_cap }
-    fn set_crew_cap(&mut self, workers: u32) { self.crew_cap = workers; }
+    fn supported_workers(&self, _fallback: u32) -> u32 {
+        self.plan.workers
+    }
+    fn crew_cap(&self) -> u32 {
+        self.crew_cap
+    }
+    fn set_crew_cap(&mut self, workers: u32) {
+        self.crew_cap = workers;
+    }
     fn set_supported_plan(&mut self, plan: OperationPlan) {
         self.plan = plan;
         self.reservations.staged_operation = None;
     }
-    fn startup_capital(&self, profile: &EconomyProfileRuntime, catalog: &RuntimeEconomyCatalog,
-        _prices: OperationPrices) -> f64 {
+    fn startup_capital(
+        &self,
+        profile: &EconomyProfileRuntime,
+        catalog: &RuntimeEconomyCatalog,
+        _prices: OperationPrices,
+    ) -> f64 {
         f64::from(profile.zoned_startup_budget(catalog, self.tuning.owa_import_price_multiplier))
     }
-    fn fund(&mut self, profile: &EconomyProfileRuntime, prices: OperationPrices,
-        costs: OperatingCosts, capital: f64) -> bool {
+    fn fund(
+        &mut self,
+        profile: &EconomyProfileRuntime,
+        prices: OperationPrices,
+        costs: OperatingCosts,
+        capital: f64,
+    ) -> bool {
         self.fund_operation(profile, prices, costs, capital, false)
     }
 
-    fn reservations(&self) -> Option<&ProjectReservations> { Some(self.reservations) }
+    fn reservations(&self) -> Option<&ProjectReservations> {
+        Some(self.reservations)
+    }
     fn begin_replacement(&mut self, owner: usize, parcel: u64, asset: &str) -> Option<f32> {
         let carrier = self.begin(parcel, asset);
         self.withdraw_replacement(owner);
@@ -859,19 +1288,32 @@ impl ProjectSupply for SiteSupply<'_> {
             &self.network.lane_system,
         );
         let profile = candidate_economy_profile(self.allocator, self.catalog, asset);
-        let zone = self.allocator.registry.get(asset)
+        let zone = self
+            .allocator
+            .registry
+            .get(asset)
             .and_then(|entry| entry.manifest.building.as_ref())
             .and_then(|building| building.zone_type)
-            .map_or(crate::simulation::zoning::ZoneType::None, |zone| match zone {
-                crate::assets::asset::ZoneClass::Commercial => crate::simulation::zoning::ZoneType::Commercial,
-                crate::assets::asset::ZoneClass::Industrial => crate::simulation::zoning::ZoneType::Industrial,
-                _ => crate::simulation::zoning::ZoneType::None,
-            });
-        let multiplier = profile.map_or(f32::INFINITY,
-            |profile| freight_goods_multiplier(profile, zone, self.tuning, self.minute_of_day));
+            .map_or(
+                crate::simulation::zoning::ZoneType::None,
+                |zone| match zone {
+                    crate::assets::asset::ZoneClass::Commercial => {
+                        crate::simulation::zoning::ZoneType::Commercial
+                    }
+                    crate::assets::asset::ZoneClass::Industrial => {
+                        crate::simulation::zoning::ZoneType::Industrial
+                    }
+                    _ => crate::simulation::zoning::ZoneType::None,
+                },
+            );
+        let multiplier = profile.map_or(f32::INFINITY, |profile| {
+            freight_goods_multiplier(profile, zone, self.tuning, self.minute_of_day)
+        });
         let carrier = self.begin_entrance(entrance, None, multiplier);
         self.reservations.staged_owner = self.project_owner(parcel);
-        self.buyer_site = self.reservations.staged_owner
+        self.buyer_site = self
+            .reservations
+            .staged_owner
             .and_then(|owner| self.reservations.business.prepared_site(owner, asset));
         carrier
     }
@@ -901,7 +1343,8 @@ impl ProjectSupply for SiteSupply<'_> {
             catalog,
             self.tuning,
             self.network,
-            self.graph, self.goods_multiplier,
+            self.graph,
+            self.goods_multiplier,
         )
     }
 
@@ -910,7 +1353,8 @@ impl ProjectSupply for SiteSupply<'_> {
         self.replacement = None;
     }
     fn reject(&mut self) {
-        self.reservations.reject(self.book, self.allocator, self.graph);
+        self.reservations
+            .reject(self.book, self.allocator, self.graph);
         self.replacement = None;
     }
 }
@@ -943,9 +1387,16 @@ fn collect_rows<T>(fill: impl FnOnce(&mut Vec<T>)) -> Vec<T> {
 
 // Full rebuild over `owners`, one buffer per Rayon split rather than per owner.
 fn par_collect_rows<T: Send>(owners: usize, fill: impl Fn(usize, &mut Vec<T>) + Sync) -> Vec<T> {
-    (0..owners).into_par_iter()
-        .fold(Vec::new, |mut rows, owner| { fill(owner, &mut rows); rows })
-        .reduce(Vec::new, |mut rows, mut more| { rows.append(&mut more); rows })
+    (0..owners)
+        .into_par_iter()
+        .fold(Vec::new, |mut rows, owner| {
+            fill(owner, &mut rows);
+            rows
+        })
+        .reduce(Vec::new, |mut rows, mut more| {
+            rows.append(&mut more);
+            rows
+        })
 }
 
 #[cfg(test)]
@@ -954,14 +1405,34 @@ mod tests {
 
     fn populate(book: &mut ProjectReservations, owner: usize) {
         book.operations[owner] = Some(FundedOperation {
-            profile: 1, plan: OperationPlan { workers: owner as u32, activity: 0.5, area: 1.0 },
-            prices: OperationPrices { utilities: [1.0; 3], property_tax: 2.0, imports: 1.0,
-                carrier_quote: 3.0, truck_payload: 1_000.0 }, headroom: [4.0, 5.0],
+            profile: 1,
+            plan: OperationPlan {
+                workers: owner as u32,
+                activity: 0.5,
+                area: 1.0,
+            },
+            prices: OperationPrices {
+                utilities: [1.0; 3],
+                property_tax: 2.0,
+                imports: 1.0,
+                carrier_quote: 3.0,
+                truck_payload: 1_000.0,
+            },
+            headroom: [4.0, 5.0],
         });
-        book.sites[owner] = Some(OperationSite { entrance: None, buyer: Some(owner),
-            buyer_site: None, source: Some(owner), goods_multiplier: 1.0, exports: 1.0,
-            future: owner >= book.live_owners, public: false });
-        if owner >= book.live_owners { book.project_owners.push(owner); }
+        book.sites[owner] = Some(OperationSite {
+            entrance: None,
+            buyer: Some(owner),
+            buyer_site: None,
+            source: Some(owner),
+            goods_multiplier: 1.0,
+            exports: 1.0,
+            future: owner >= book.live_owners,
+            public: false,
+        });
+        if owner >= book.live_owners {
+            book.project_owners.push(owner);
+        }
     }
 
     #[test]
@@ -976,16 +1447,28 @@ mod tests {
             assert_eq!(book.sites.len(), 24);
             for owner in 0..24 {
                 let retained = owner < live.min(previous_live);
-                assert_eq!(book.operations[owner].is_some(), retained, "operation {owner}, live {live}");
-                assert_eq!(book.sites[owner].is_some(), retained, "site {owner}, live {live}");
+                assert_eq!(
+                    book.operations[owner].is_some(),
+                    retained,
+                    "operation {owner}, live {live}"
+                );
+                assert_eq!(
+                    book.sites[owner].is_some(),
+                    retained,
+                    "site {owner}, live {live}"
+                );
                 if retained {
                     assert_eq!(book.operations[owner].unwrap().plan.workers, owner as u32);
                     assert_eq!(book.sites[owner].as_ref().unwrap().source, Some(owner));
                 }
             }
             assert!(book.project_owners.is_empty());
-            for owner in 0..live { populate(&mut book, owner); }
-            for owner in [live, live + 3, 23] { populate(&mut book, owner); }
+            for owner in 0..live {
+                populate(&mut book, owner);
+            }
+            for owner in [live, live + 3, 23] {
+                populate(&mut book, owner);
+            }
         }
     }
 
@@ -997,7 +1480,11 @@ mod tests {
         const REPEATS: usize = 16;
         for projects in [1_024, 16_384, 131_072] {
             for pair in 0..9 {
-                for sparse in if pair % 2 == 0 { [false, true] } else { [true, false] } {
+                for sparse in if pair % 2 == 0 {
+                    [false, true]
+                } else {
+                    [true, false]
+                } {
                     let mut book = ProjectReservations::default();
                     book.reset_owner_slots(LIVE);
                     book.operations.resize(LIVE + projects, None);
@@ -1005,7 +1492,9 @@ mod tests {
                     book.project_owners.reserve(projects);
                     let start = Instant::now();
                     for _ in 0..REPEATS {
-                        for offset in 0..8 { populate(&mut book, LIVE + offset); }
+                        for offset in 0..8 {
+                            populate(&mut book, LIVE + offset);
+                        }
                         if sparse {
                             book.reset_owner_slots(LIVE);
                         } else {
@@ -1020,7 +1509,9 @@ mod tests {
                     let reset_ns = start.elapsed().as_nanos() as f64 / REPEATS as f64;
                     assert!(book.operations.iter().all(Option::is_none));
                     assert!(book.sites.iter().all(Option::is_none));
-                    eprintln!("PROJECT_SLOTS {{\"projects\":{projects},\"pair\":{pair},\"sparse\":{sparse},\"reset_ns\":{reset_ns}}}");
+                    eprintln!(
+                        "PROJECT_SLOTS {{\"projects\":{projects},\"pair\":{pair},\"sparse\":{sparse},\"reset_ns\":{reset_ns}}}"
+                    );
                 }
             }
         }

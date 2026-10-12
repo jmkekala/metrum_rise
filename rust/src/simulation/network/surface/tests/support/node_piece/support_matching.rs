@@ -24,9 +24,7 @@ pub(in crate::simulation::network::surface::tests) fn assert_outer_boundary_vert
 ) {
     let (missing_area_m2, extra_area_m2, budget_m2, missing_shapes, extra_shapes) =
         node_top_coverage_details_m2(piece);
-    let top_polygons = piece
-        .surface_polygons()
-        .collect::<Vec<_>>();
+    let top_polygons = piece.surface_polygons().collect::<Vec<_>>();
     let top_vertices = visible_top_vertices(piece);
     assert!(
         !top_vertices.is_empty(),
@@ -188,9 +186,7 @@ fn closest_visible_top_boundary_point(
 pub(in crate::simulation::network::surface::tests) fn assert_outer_boundary_vertices_use_visible_top_boundary_support(
     piece: &RoadSurfaceVisualNodePiece,
 ) {
-    let top_polygons = piece
-        .surface_polygons()
-        .collect::<Vec<_>>();
+    let top_polygons = piece.surface_polygons().collect::<Vec<_>>();
     for boundary_point in piece
         .outer_boundary_loops
         .iter()

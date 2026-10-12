@@ -221,15 +221,28 @@ fn fractional_multimode_routes_match_independent_dijkstra_and_edge_witnesses() {
                                 .find_path_in(start, end, incoming, &graph, mask, &mut scratch)
                                 .map(|(c, d, _)| (c, d));
                             let mut fresh = CchPathScratch::default();
-                            let uncached = cch.find_path_in(start, end, incoming, &graph, mask, &mut fresh)
-                                .map(|(cost, distance, nodes)| (cost.to_bits(), distance.to_bits(), nodes));
-                            assert_eq!(uncached, actual.map(|(cost, distance)|
-                                (cost.to_bits(), distance.to_bits(), scratch.nodes())),
-                                "retained endpoint labels changed costs or witnesses");
+                            let uncached = cch
+                                .find_path_in(start, end, incoming, &graph, mask, &mut fresh)
+                                .map(|(cost, distance, nodes)| {
+                                    (cost.to_bits(), distance.to_bits(), nodes)
+                                });
+                            assert_eq!(
+                                uncached,
+                                actual.map(|(cost, distance)| (
+                                    cost.to_bits(),
+                                    distance.to_bits(),
+                                    scratch.nodes()
+                                )),
+                                "retained endpoint labels changed costs or witnesses"
+                            );
                             assert_eq!(fresh.selected_edges(), scratch.selected_edges());
-                            if mask == TransitFlags::CAR && let Some((cost, _)) = actual {
-                                assert!(cost_bounds.cost(start, end, &cch).unwrap() <= cost,
-                                    "integer potential exceeded rounded car query");
+                            if mask == TransitFlags::CAR
+                                && let Some((cost, _)) = actual
+                            {
+                                assert!(
+                                    cost_bounds.cost(start, end, &cch).unwrap() <= cost,
+                                    "integer potential exceeded rounded car query"
+                                );
                             }
                             targets.query_source(&cch, start, incoming, &mut source);
                             let batch = targets.path_in(
@@ -244,12 +257,27 @@ fn fractional_multimode_routes_match_independent_dijkstra_and_edge_witnesses() {
                                 actual.map(|(cost, _)| (cost, scratch.nodes())),
                                 "bucket witness differs"
                             );
-                            let normalized = cch.find_path_in(start, end,
-                                cch.source_context(start, incoming, mask), &graph, mask, &mut batch_path)
-                                .map(|(cost, distance, path)| (cost.to_bits(), distance.to_bits(), path));
-                            assert_eq!(normalized, actual.map(|(cost, distance)|
-                                (cost.to_bits(), distance.to_bits(), scratch.nodes())),
-                                "canonical source context changed the exact query");
+                            let normalized = cch
+                                .find_path_in(
+                                    start,
+                                    end,
+                                    cch.source_context(start, incoming, mask),
+                                    &graph,
+                                    mask,
+                                    &mut batch_path,
+                                )
+                                .map(|(cost, distance, path)| {
+                                    (cost.to_bits(), distance.to_bits(), path)
+                                });
+                            assert_eq!(
+                                normalized,
+                                actual.map(|(cost, distance)| (
+                                    cost.to_bits(),
+                                    distance.to_bits(),
+                                    scratch.nodes()
+                                )),
+                                "canonical source context changed the exact query"
+                            );
                             assert_eq!(source.capacities(), capacity);
                             assert_eq!(
                                 actual.is_some(),

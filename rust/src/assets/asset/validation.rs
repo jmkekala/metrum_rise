@@ -272,7 +272,13 @@ impl AssetManifest {
                 validate_building_site_surface(&self.asset_id, b, surface)?;
             }
             for area in &b.yard_planting {
-                validate_lot_polygon(&self.asset_id, b, "yard planting area", &area.name, &area.vertices)?;
+                validate_lot_polygon(
+                    &self.asset_id,
+                    b,
+                    "yard planting area",
+                    &area.name,
+                    &area.vertices,
+                )?;
             }
         } else if !self.mesh_parts.is_empty() {
             return Err(ManifestError::Validation(format!(
@@ -580,7 +586,13 @@ fn validate_building_site_surface(
             asset_id, surface.name, surface.y_m
         )));
     }
-    validate_lot_polygon(asset_id, building, "site surface", &surface.name, &surface.vertices)
+    validate_lot_polygon(
+        asset_id,
+        building,
+        "site surface",
+        &surface.name,
+        &surface.vertices,
+    )
 }
 
 // A polygon on the building's lot: at least three finite vertices inside the lot, a non-zero

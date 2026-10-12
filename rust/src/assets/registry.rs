@@ -676,12 +676,22 @@ mod tests {
         register("family_1", house, (2, 2), "low", 1, Some("family"));
         register("lonely_1", house, (2, 2), "low", 1, Some("lonely"));
 
-        let ups: Vec<_> = (0..4).map(|key| reg.next_level("base:house_a", key)).collect();
+        let ups: Vec<_> = (0..4)
+            .map(|key| reg.next_level("base:house_a", key))
+            .collect();
         assert_eq!(
             ups,
-            [Some("base:villa_a"), Some("base:villa_b"), Some("base:villa_a"), Some("base:villa_b")]
+            [
+                Some("base:villa_a"),
+                Some("base:villa_b"),
+                Some("base:villa_a"),
+                Some("base:villa_b")
+            ]
         );
-        assert_eq!(reg.next_level("base:house_a", 7), reg.next_level("base:house_a", 7));
+        assert_eq!(
+            reg.next_level("base:house_a", 7),
+            reg.next_level("base:house_a", 7)
+        );
         assert_eq!(reg.prev_level("base:villa_b", 1), Some("base:house_b"));
         assert_eq!(reg.prev_level("base:house_a", 0), None);
         assert_eq!(reg.next_level("base:villa_a", 0), None);

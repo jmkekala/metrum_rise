@@ -375,12 +375,15 @@ fn benchmark_populated_cch_batches() {
 #[test]
 #[ignore = "release exact border-quote comparison; populated fixture setup excluded"]
 fn benchmark_populated_border_quotes() {
-    use crate::simulation::economy::definitions::{load_runtime_economy_catalog, load_runtime_economy_tuning};
+    use crate::simulation::economy::definitions::{
+        load_runtime_economy_catalog, load_runtime_economy_tuning,
+    };
     use crate::simulation::economy::logistics::{ShipmentSystem, collect_connected_border_nodes};
     use rayon::prelude::*;
 
     let residents = std::env::var("METRUM_CCH_BENCH_RESIDENTS")
-        .map(|value| value.parse().unwrap()).unwrap_or(10_000);
+        .map(|value| value.parse().unwrap())
+        .unwrap_or(10_000);
     let mut city = PopulatedCity::build(residents);
     let allocator = &city.core.allocator;
     let graph = &city.core.region_graph;
@@ -389,12 +392,22 @@ fn benchmark_populated_border_quotes() {
     let tuning = load_runtime_economy_tuning().unwrap();
     let mut borders = Vec::new();
     collect_connected_border_nodes(graph, &mut borders);
-    let costs = network.cch_graph.costs_from_each(&borders, graph, TransitFlags::CAR);
+    let costs = network
+        .cch_graph
+        .costs_from_each(&borders, graph, TransitFlags::CAR);
     let mut quotes = vec![None; allocator.buildings.len()];
     let mut expected = quotes.clone();
     let mut logistics = ShipmentSystem::new();
     let cold = Instant::now();
-    logistics.write_border_carrier_quotes(allocator, network, graph, &borders, &catalog, &tuning, &mut quotes);
+    logistics.write_border_carrier_quotes(
+        allocator,
+        network,
+        graph,
+        &borders,
+        &catalog,
+        &tuning,
+        &mut quotes,
+    );
     let cold_us = cold.elapsed().as_secs_f64() * 1e6;
     for revision in 0..2 {
         if revision != 0 {
@@ -403,29 +416,60 @@ fn benchmark_populated_border_quotes() {
             }
             network.publish_frontage_prices();
         }
-        let original = |quotes: &mut [Option<f32>]| quotes.par_iter_mut().enumerate().for_each(|(index, quote)| {
-            *quote = None;
-            if !catalog.profile_by_runtime_id(allocator.buildings[index].economy_profile_runtime_id)
-                .is_some_and(|profile| profile.worker_capacity > 0) { return; }
-            *quote = borders.iter().zip(&costs).filter_map(|(&border, costs)| {
-                allocator.freight_car_eta_from_border_costs(border, index, costs, network, graph)
-            }).min_by(f32::total_cmp).map(|seconds| {
-                // Original carrier formula, applied after the per-border ETA minimum.
-                let hours = f64::from(seconds) * 48.0 / tuning.operational_clock.seconds_per_day;
-                tuning.logistics.dispatch_fee_currency
-                    + (hours * f64::from(tuning.logistics.vehicle_hour_cost_currency)) as f32
-            });
-        });
+        let original = |quotes: &mut [Option<f32>]| {
+            quotes
+                .par_iter_mut()
+                .enumerate()
+                .for_each(|(index, quote)| {
+                    *quote = None;
+                    if !catalog
+                        .profile_by_runtime_id(
+                            allocator.buildings[index].economy_profile_runtime_id,
+                        )
+                        .is_some_and(|profile| profile.worker_capacity > 0)
+                    {
+                        return;
+                    }
+                    *quote = borders
+                        .iter()
+                        .zip(&costs)
+                        .filter_map(|(&border, costs)| {
+                            allocator.freight_car_eta_from_border_costs(
+                                border, index, costs, network, graph,
+                            )
+                        })
+                        .min_by(f32::total_cmp)
+                        .map(|seconds| {
+                            // Original carrier formula, applied after the per-border ETA minimum.
+                            let hours = f64::from(seconds) * 48.0
+                                / tuning.operational_clock.seconds_per_day;
+                            tuning.logistics.dispatch_fee_currency
+                                + (hours * f64::from(tuning.logistics.vehicle_hour_cost_currency))
+                                    as f32
+                        });
+                })
+        };
         let mut before = Vec::new();
         let mut after = Vec::new();
         for sample in 0..11 {
             // Alternate order so a persistent cache-temperature advantage is not credited.
-            for candidate in if sample % 2 == 0 { [false, true] } else { [true, false] } {
+            for candidate in if sample % 2 == 0 {
+                [false, true]
+            } else {
+                [true, false]
+            } {
                 let start = Instant::now();
                 for _ in 0..4 {
                     if candidate {
-                        logistics.write_border_carrier_quotes(allocator, network, graph,
-                            &borders, &catalog, &tuning, &mut quotes);
+                        logistics.write_border_carrier_quotes(
+                            allocator,
+                            network,
+                            graph,
+                            &borders,
+                            &catalog,
+                            &tuning,
+                            &mut quotes,
+                        );
                         black_box(&quotes);
                     } else {
                         original(&mut expected);
@@ -433,13 +477,25 @@ fn benchmark_populated_border_quotes() {
                     }
                 }
                 let elapsed = start.elapsed().as_secs_f64() * 1e6 / 4.0;
-                if candidate { after.push(elapsed); } else { before.push(elapsed); }
+                if candidate {
+                    after.push(elapsed);
+                } else {
+                    before.push(elapsed);
+                }
             }
         }
-        assert!(quotes.iter().zip(&expected).all(|(a,b)| a.map(f32::to_bits) == b.map(f32::to_bits)));
-        eprintln!("BORDER_QUOTE_BENCH {}", serde_json::json!({"residents":residents,
+        assert!(
+            quotes
+                .iter()
+                .zip(&expected)
+                .all(|(a, b)| a.map(f32::to_bits) == b.map(f32::to_bits))
+        );
+        eprintln!(
+            "BORDER_QUOTE_BENCH {}",
+            serde_json::json!({"residents":residents,
             "buildings":quotes.len(),"borders":borders.len(),"revision":revision,
-            "cold_us":cold_us,"original_us":before,"minimum_us":after,"bits_equal":true}));
+            "cold_us":cold_us,"original_us":before,"minimum_us":after,"bits_equal":true})
+        );
     }
 }
 
@@ -459,12 +515,17 @@ fn benchmark_populated_cell_preparation() {
     use glam::DVec2;
 
     let residents = std::env::var("METRUM_CCH_BENCH_RESIDENTS")
-        .map(|value| value.parse().unwrap()).unwrap_or(10_000);
+        .map(|value| value.parse().unwrap())
+        .unwrap_or(10_000);
     let repeats = std::env::var("METRUM_ECON_BENCH_REPEATS")
-        .map(|value| value.parse().unwrap()).unwrap_or(44);
+        .map(|value| value.parse().unwrap())
+        .unwrap_or(44);
     let mut city = PopulatedCity::build(residents);
     // An interior point queues exactly the same 512 m neighborhood as a local removal.
-    let bounds = CellBounds { min: DVec2::new(100.0, -400.0), max: DVec2::new(120.0, -380.0) };
+    let bounds = CellBounds {
+        min: DVec2::new(100.0, -400.0),
+        max: DVec2::new(120.0, -380.0),
+    };
     city.core.zoning.mark_cell_lots_dirty(bounds);
     black_box(city.core.prepare_cell_lots_internal());
     let cells = city.core.zoning.cells.saved_cells();
@@ -476,24 +537,33 @@ fn benchmark_populated_cell_preparation() {
         let start = Instant::now();
         let report = city.core.prepare_cell_lots_internal();
         samples.push(start.elapsed().as_secs_f64() * 1000.0);
-        assert!(report.created.is_empty() && report.retired.is_empty() && report.reattached.is_empty());
+        assert!(
+            report.created.is_empty() && report.retired.is_empty() && report.reattached.is_empty()
+        );
     }
     profile_control("disable");
     assert_eq!(cells, city.core.zoning.cells.saved_cells());
     assert_eq!(parcels, city.core.zoning.parcels.parcels().len());
-    eprintln!("CELL_PREPARATION_BENCH {}", serde_json::json!({
-        "residents":residents,"samples_ms":samples,"unchanged_products":true}));
+    eprintln!(
+        "CELL_PREPARATION_BENCH {}",
+        serde_json::json!({
+        "residents":residents,"samples_ms":samples,"unchanged_products":true})
+    );
 }
 
 #[test]
 #[ignore = "release populated funding attribution; fixture and frames excluded"]
 fn benchmark_populated_funding_preparation() {
-    use crate::simulation::economy::definitions::{load_runtime_economy_catalog, load_runtime_economy_tuning};
+    use crate::simulation::economy::definitions::{
+        load_runtime_economy_catalog, load_runtime_economy_tuning,
+    };
 
     let residents = std::env::var("METRUM_CCH_BENCH_RESIDENTS")
-        .map(|value| value.parse().unwrap()).unwrap_or(10_000);
+        .map(|value| value.parse().unwrap())
+        .unwrap_or(10_000);
     let repeats = std::env::var("METRUM_ECON_BENCH_REPEATS")
-        .map(|value| value.parse().unwrap()).unwrap_or(44);
+        .map(|value| value.parse().unwrap())
+        .unwrap_or(44);
     let mut city = PopulatedCity::build(residents);
     let core = &mut city.core;
     let catalog = load_runtime_economy_catalog().unwrap();
@@ -507,17 +577,30 @@ fn benchmark_populated_funding_preparation() {
         // invalidation while keeping the exact household and firm inputs fixed.
         core.transit_network.frontage_delay_revision += 1;
         let start = Instant::now();
-        core.households.job_funding.refresh(&core.allocator, &core.households.households,
-            &mut core.logistics, &core.transit_network, &core.region_graph, &catalog, &tuning,
-            &core.fiscal_policy, &service, core.treasury.balance, 60);
+        core.households.job_funding.refresh(
+            &core.allocator,
+            &core.households.households,
+            &mut core.logistics,
+            &core.transit_network,
+            &core.region_graph,
+            &catalog,
+            &tuning,
+            &core.fiscal_policy,
+            &service,
+            core.treasury.balance,
+            60,
+        );
         samples.push(start.elapsed().as_secs_f64() * 1000.0);
         black_box(&core.households.job_funding.capacities);
     }
     profile_control("disable");
     let after = core.logistics.node_cache_counts_for_test();
     let counts = std::array::from_fn::<_, 3, _>(|i| after[i] - before[i]);
-    eprintln!("FUNDING_PREPARATION_BENCH {}", serde_json::json!({
-        "residents":residents,"samples_ms":samples,"node_requests_hits_replacement_misses":counts}));
+    eprintln!(
+        "FUNDING_PREPARATION_BENCH {}",
+        serde_json::json!({
+        "residents":residents,"samples_ms":samples,"node_requests_hits_replacement_misses":counts})
+    );
 }
 
 #[test]
@@ -533,57 +616,109 @@ fn benchmark_populated_midnight_boundaries() {
 }
 
 fn profile_populated_boundaries(midnight: bool) {
-    use crate::simulation::core::time::TimeSystem;
     use super::super::frame::FRAME_DT_S;
+    use crate::simulation::core::time::TimeSystem;
 
-    struct DailyProfile { armed: bool }
+    struct DailyProfile {
+        armed: bool,
+    }
     impl super::super::frame::EconomyObserver for DailyProfile {
         fn hourly_economy(&mut self, _core: &super::SimCore) {
             // At midnight the existing observer fires after the operational hour and
             // immediately before daily settlement. Leave fixture/intervening hours off.
-            if self.armed { profile_control("enable"); }
+            if self.armed {
+                profile_control("enable");
+            }
         }
     }
     let daily_only = midnight && std::env::var_os("METRUM_ECON_PROFILE_DAILY_ONLY").is_some();
 
     let residents = std::env::var("METRUM_CCH_BENCH_RESIDENTS")
-        .map(|value| value.parse().unwrap()).unwrap_or(100_000);
+        .map(|value| value.parse().unwrap())
+        .unwrap_or(100_000);
     let mut city = PopulatedCity::build(residents);
     crate::debug::init();
     // Debug channels stay quiet outside the sampled boundary frames.
     let diagnostics = crate::debug::mask();
     crate::debug::set_mask(0);
     let count = std::env::var("METRUM_ECON_BENCH_REPEATS")
-        .map(|value| value.parse().unwrap()).unwrap_or(if midnight { 3 } else { 23 });
+        .map(|value| value.parse().unwrap())
+        .unwrap_or(if midnight { 3 } else { 23 });
     let mut samples = Vec::with_capacity(count);
     let before = city.core.logistics.node_cache_counts_for_test();
     let building_before = city.core.logistics.building_cache_counts_for_test();
-    let customer_before = city.core.households.job_funding.customers.refresh_counts_for_test();
-    let business_before = city.core.households.job_funding.business.quote_counts_for_test();
-    let causes_before = city.core.households.job_funding.business.rejection_causes_for_test();
-    let supply_before = city.core.households.job_funding.input_supply.search_counts_for_test();
-    let access_before = city.core.households.job_funding.customers.access_resamples_for_test();
+    let customer_before = city
+        .core
+        .households
+        .job_funding
+        .customers
+        .refresh_counts_for_test();
+    let business_before = city
+        .core
+        .households
+        .job_funding
+        .business
+        .quote_counts_for_test();
+    let causes_before = city
+        .core
+        .households
+        .job_funding
+        .business
+        .rejection_causes_for_test();
+    let supply_before = city
+        .core
+        .households
+        .job_funding
+        .input_supply
+        .search_counts_for_test();
+    let access_before = city
+        .core
+        .households
+        .job_funding
+        .customers
+        .access_resamples_for_test();
     while samples.len() < count {
         let time = &city.core.time;
         // Preview the exact clock calculation without changing the actual simulation.
-        let mut preview = TimeSystem { time_elapsed: time.time_elapsed,
-            speed_multiplier: time.speed_multiplier, day_index: time.day_index,
-            minute_of_day: time.minute_of_day, seconds_per_day: time.seconds_per_day };
-        let boundary = preview.process_delta(FRAME_DT_S).iter_elapsed_minutes()
-            .any(|(_, minute)| if midnight { minute == 0 } else { minute != 0 && minute % 60 == 0 });
+        let mut preview = TimeSystem {
+            time_elapsed: time.time_elapsed,
+            speed_multiplier: time.speed_multiplier,
+            day_index: time.day_index,
+            minute_of_day: time.minute_of_day,
+            seconds_per_day: time.seconds_per_day,
+        };
+        let boundary = preview
+            .process_delta(FRAME_DT_S)
+            .iter_elapsed_minutes()
+            .any(|(_, minute)| {
+                if midnight {
+                    minute == 0
+                } else {
+                    minute != 0 && minute % 60 == 0
+                }
+            });
         if boundary {
             crate::debug::set_mask(diagnostics);
-            if !daily_only { profile_control("enable"); }
+            if !daily_only {
+                profile_control("enable");
+            }
         }
         let frame = if daily_only {
-            city.core.step_frame_observed(FRAME_DT_S, &mut DailyProfile { armed: boundary })
-        } else { city.core.step_frame(FRAME_DT_S) };
+            city.core
+                .step_frame_observed(FRAME_DT_S, &mut DailyProfile { armed: boundary })
+        } else {
+            city.core.step_frame(FRAME_DT_S)
+        };
         if boundary {
             profile_control("disable");
             crate::debug::set_mask(0);
             assert_eq!(frame.hourly_ticks, 1);
             assert_eq!(frame.daily_ticks, usize::from(midnight));
-            samples.push(if midnight { frame.daily_ms } else { frame.hourly_ms });
+            samples.push(if midnight {
+                frame.daily_ms
+            } else {
+                frame.hourly_ms
+            });
         }
     }
     // Sampling includes the one agent frame immediately before each hourly tick; the other
@@ -593,16 +728,41 @@ fn profile_populated_boundaries(midnight: bool) {
     let after = city.core.logistics.node_cache_counts_for_test();
     let counts = std::array::from_fn::<_, 3, _>(|i| after[i] - before[i]);
     let building_after = city.core.logistics.building_cache_counts_for_test();
-    let building_counts = std::array::from_fn::<_, 4, _>(|i| building_after[i] - building_before[i]);
-    let customer_after = city.core.households.job_funding.customers.refresh_counts_for_test();
-    let customer_counts = std::array::from_fn::<_, 7, _>(|i| customer_after[i] - customer_before[i]);
-    let business_after = city.core.households.job_funding.business.quote_counts_for_test();
-    let business_counts = std::array::from_fn::<_, 3, _>(|i| business_after[i] - business_before[i]);
-    let causes_after = city.core.households.job_funding.business.rejection_causes_for_test();
+    let building_counts =
+        std::array::from_fn::<_, 4, _>(|i| building_after[i] - building_before[i]);
+    let customer_after = city
+        .core
+        .households
+        .job_funding
+        .customers
+        .refresh_counts_for_test();
+    let customer_counts =
+        std::array::from_fn::<_, 7, _>(|i| customer_after[i] - customer_before[i]);
+    let business_after = city
+        .core
+        .households
+        .job_funding
+        .business
+        .quote_counts_for_test();
+    let business_counts =
+        std::array::from_fn::<_, 3, _>(|i| business_after[i] - business_before[i]);
+    let causes_after = city
+        .core
+        .households
+        .job_funding
+        .business
+        .rejection_causes_for_test();
     let rejection_causes = std::array::from_fn::<_, 5, _>(|i| causes_after[i] - causes_before[i]);
-    let supply_after = city.core.households.job_funding.input_supply.search_counts_for_test();
+    let supply_after = city
+        .core
+        .households
+        .job_funding
+        .input_supply
+        .search_counts_for_test();
     let supply_counts = std::array::from_fn::<_, 6, _>(|i| supply_after[i] - supply_before[i]);
-    eprintln!("BOUNDARY_BENCH {}", serde_json::json!({
+    eprintln!(
+        "BOUNDARY_BENCH {}",
+        serde_json::json!({
         "residents":residents,"midnight":midnight,"daily_only_profile":daily_only,"samples_ms":samples,
         "node_requests_hits_replacement_misses_all_intervening_frames":counts,
         "building_requests_hits_replacement_misses_stale_all_intervening_frames":building_counts,
@@ -610,7 +770,8 @@ fn profile_populated_boundaries(midnight: bool) {
         "business_rejected_accounts_quantity_finance_free_carrier_all_intervening_frames":rejection_causes,
         "supply_nearest_candidates_routes_regions_reused_retries_all_intervening_frames":supply_counts,
         "customer_access_resamples_all_intervening_frames":city.core.households.job_funding.customers.access_resamples_for_test() - access_before,
-        "customer_refreshes_retained_budget_network_home_geometry_price_all_intervening_frames":customer_counts}));
+        "customer_refreshes_retained_budget_network_home_geometry_price_all_intervening_frames":customer_counts})
+    );
     eprintln!("boundary final {:?}", city.record());
 }
 
@@ -620,21 +781,26 @@ fn benchmark_populated_work_counts() {
     use crate::debug::work::{WORK_COUNT, WORK_NAMES, snapshot};
 
     let residents = std::env::var("METRUM_CCH_BENCH_RESIDENTS")
-        .map(|value| value.parse().unwrap()).unwrap_or(10_000);
+        .map(|value| value.parse().unwrap())
+        .unwrap_or(10_000);
     // One demand-hour day plus the benchmark's ten settlement days.
     let days = std::env::var("METRUM_ECON_WORK_DAYS")
-        .map(|value| value.parse().unwrap()).unwrap_or(11);
+        .map(|value| value.parse().unwrap())
+        .unwrap_or(11);
     // Each live planning pass is checked against a full book fingerprint unless skipped.
     if std::env::var_os("METRUM_SKIP_PASS_VERIFY").is_some() {
-        crate::simulation::economy::demand::VERIFY_LIVE_PASSES.store(false, std::sync::atomic::Ordering::Relaxed);
+        crate::simulation::economy::demand::VERIFY_LIVE_PASSES
+            .store(false, std::sync::atomic::Ordering::Relaxed);
     }
     let mut city = PopulatedCity::build(residents);
     // METRUM_DEBUG_FILTER=economy_phases adds aggregate phase timings after the build.
     crate::debug::init();
-    let scale = |city: &PopulatedCity| serde_json::json!({
+    let scale = |city: &PopulatedCity| {
+        serde_json::json!({
         "buildings":city.core.allocator.buildings.len(),
         "parcels":city.core.zoning.parcels().len(),
-        "households":city.core.households.households.len()});
+        "households":city.core.households.households.len()})
+    };
     let initial = scale(&city);
     let mut totals = [0u64; WORK_COUNT];
     for day in 0..days {
@@ -643,18 +809,34 @@ fn benchmark_populated_work_counts() {
         let daily_ms = loop {
             let hour = city.advance_hour();
             hourly_ms += hour.hourly.as_secs_f64() * 1000.0;
-            if let Some(daily) = hour.daily { break daily.as_secs_f64() * 1000.0; }
+            if let Some(daily) = hour.daily {
+                break daily.as_secs_f64() * 1000.0;
+            }
         };
         let after = snapshot();
-        let counts: serde_json::Map<_, _> = WORK_NAMES.iter().zip(before.iter().zip(after))
-            .map(|(name, (before, after))| (name.to_string(), (after - before).into())).collect();
-        for (total, (before, after)) in totals.iter_mut().zip(before.iter().zip(after)) { *total += after - before; }
-        eprintln!("WORK_DAY {}", serde_json::json!({"residents":residents,"day":day,
-            "hourly_ms":hourly_ms,"daily_ms":daily_ms,"counts":counts}));
+        let counts: serde_json::Map<_, _> = WORK_NAMES
+            .iter()
+            .zip(before.iter().zip(after))
+            .map(|(name, (before, after))| (name.to_string(), (after - before).into()))
+            .collect();
+        for (total, (before, after)) in totals.iter_mut().zip(before.iter().zip(after)) {
+            *total += after - before;
+        }
+        eprintln!(
+            "WORK_DAY {}",
+            serde_json::json!({"residents":residents,"day":day,
+            "hourly_ms":hourly_ms,"daily_ms":daily_ms,"counts":counts})
+        );
     }
-    let totals: serde_json::Map<_, _> = WORK_NAMES.iter().zip(totals)
-        .map(|(name, total)| (name.to_string(), total.into())).collect();
-    eprintln!("WORK_TOTAL {}", serde_json::json!({"residents":residents,"days":days,
-        "initial":initial,"final":scale(&city),"counts":totals}));
+    let totals: serde_json::Map<_, _> = WORK_NAMES
+        .iter()
+        .zip(totals)
+        .map(|(name, total)| (name.to_string(), total.into()))
+        .collect();
+    eprintln!(
+        "WORK_TOTAL {}",
+        serde_json::json!({"residents":residents,"days":days,
+        "initial":initial,"final":scale(&city),"counts":totals})
+    );
     eprintln!("work final {:?}", city.record());
 }

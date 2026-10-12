@@ -3,11 +3,16 @@
 ## In-game debug console: a left-anchored drop-down over every scene, toggled by the key left
 ## of "1" (§ on Nordic layouts, ` on US layouts).
 ##
-## An autoload controller over `MetrumDebug`, which owns channel state and the shared log in
-## Rust. While open it reads new log lines each frame, refreshes the Perf tab twice a second and
-## runs console commands; while closed it does no work beyond watching for its key. The events
-## logger is installed once here so warnings and errors are kept even with the console closed.
+## An autoload controller over `MetrumDebug`, which owns channel state, visual modes and the
+## shared log in Rust. While open it reads new log lines each frame, refreshes the Perf tab twice
+## a second and runs console commands; while closed it does no work beyond watching for its key.
+## The events logger is installed once here so warnings and errors are kept even with the console
+## closed. Visual mode switches go through `set_visual_mode`, which applies shader globals and
+## tells renderers through `visual_mode_changed`, so nothing polls for them per frame.
 extends CanvasLayer
+
+## Emitted after a visual debug mode takes a new value. Renderers that cache a mode re-read it.
+signal visual_mode_changed(mode: String)
 
 const DebugConsoleView := preload("res://scripts/ui/debug_console/debug_console_view.gd")
 const DebugEventLogger := preload("res://scripts/ui/debug_console/debug_event_logger.gd")
@@ -20,7 +25,12 @@ const READ_BATCH := 512
 const MAX_MODEL_LINES := 4096
 const DUMP_DIR := "user://debug"
 
-const HELP_TEXT := "help | channel | channel <name> on|off | dump | clear"
+const HELP_TEXT := "help | channel | channel <name> on|off | visual | visual <mode> <value> | visual off | dump | clear"
+# Visual modes read by shaders as global uniforms; the mode index is the shader's mode number.
+const SHADER_GLOBAL_MODES := {
+	"terrain_visual": "terrain_visual_debug_mode",
+	"terrain_grass": "terrain_grass_visual_debug_mode",
+}
 
 var _view: DebugConsoleView
 var _open := false
@@ -43,7 +53,15 @@ func _ready() -> void:
 		locked[channel] = MetrumDebug.is_locked(channel)
 	_view.set_channels(MetrumDebug.channel_names(), locked)
 	_view.set_startup_modes(MetrumDebug.startup_modes())
+	var visual_values := {}
+	for mode in MetrumDebug.visual_mode_names():
+		visual_values[mode] = MetrumDebug.visual_mode_values(mode)
+	_view.set_visual_modes(MetrumDebug.visual_mode_names(), visual_values)
+	# Launch values reach the shaders here, before the game scene builds its materials.
+	for mode in SHADER_GLOBAL_MODES:
+		_apply_shader_global(mode)
 	_view.channel_toggled.connect(_on_channel_toggled)
+	_view.visual_mode_selected.connect(_on_visual_mode_selected)
 	_view.chip_toggled.connect(_on_chip_toggled)
 	_view.filter_changed.connect(_on_filter_changed)
 	_view.command_submitted.connect(_run_command)
@@ -85,6 +103,7 @@ func set_open(open: bool) -> void:
 	var height := get_viewport().get_visible_rect().size.y
 	if open:
 		_sync_channel_states()
+		_sync_visual_states()
 		_perf_elapsed_s = PERF_REFRESH_S
 		_view.visible = true
 		_view.position.y = -height
@@ -99,6 +118,24 @@ func set_open(open: bool) -> void:
 ## Returns `true` while the console is shown.
 func is_open() -> bool:
 	return _open
+
+## Switches a visual debug mode by value name, alias or index, then applies it: shader globals
+## directly, everything else through `visual_mode_changed`. Returns `false` for an unknown mode
+## or value, whose reason Rust logs on `events`. Selecting the current value changes nothing.
+func set_visual_mode(mode: String, value: String) -> bool:
+	var before := MetrumDebug.visual_mode_index(mode)
+	if not MetrumDebug.set_visual_mode(mode, value):
+		return false
+	_view.set_visual_mode_state(mode, MetrumDebug.visual_mode(mode))
+	if MetrumDebug.visual_mode_index(mode) == before:
+		return true
+	if SHADER_GLOBAL_MODES.has(mode):
+		_apply_shader_global(mode)
+	visual_mode_changed.emit(mode)
+	return true
+
+func _apply_shader_global(mode: String) -> void:
+	RenderingServer.global_shader_parameter_set(SHADER_GLOBAL_MODES[mode], MetrumDebug.visual_mode_index(mode))
 
 func _process(delta: float) -> void:
 	_read_new_lines()
@@ -152,6 +189,14 @@ func _sync_channel_states() -> void:
 	for channel in MetrumDebug.channel_names():
 		_view.set_channel_state(channel, MetrumDebug.is_enabled(channel))
 
+func _sync_visual_states() -> void:
+	for mode in MetrumDebug.visual_mode_names():
+		_view.set_visual_mode_state(mode, MetrumDebug.visual_mode(mode))
+
+func _on_visual_mode_selected(mode: String, value: String) -> void:
+	set_visual_mode(mode, value)
+	_view.set_status("%s = %s" % [mode, MetrumDebug.visual_mode(mode)])
+
 func _on_channel_toggled(channel: String, on: bool) -> void:
 	MetrumDebug.set_enabled(channel, on)
 	_view.set_channel_state(channel, MetrumDebug.is_enabled(channel))
@@ -177,6 +222,8 @@ func _run_command(text: String) -> void:
 			_view.set_status(HELP_TEXT)
 		"channel", "ch":
 			_channel_command(words)
+		"visual", "vis":
+			_visual_command(words)
 		"dump":
 			_dump()
 		"clear":
@@ -204,6 +251,32 @@ func _channel_command(words: PackedStringArray) -> void:
 		return
 	_view.set_channel_state(channel, on)
 	_view.set_status("%s %s" % [channel, words[2].to_lower()])
+
+func _visual_command(words: PackedStringArray) -> void:
+	var modes := MetrumDebug.visual_mode_names()
+	if words.size() == 1:
+		var states := PackedStringArray()
+		for mode in modes:
+			states.append("%s=%s" % [mode, MetrumDebug.visual_mode(mode)])
+		_view.set_status(" ".join(states))
+		return
+	var mode := words[1].to_lower()
+	if words.size() == 2 and mode == "off":
+		for each in modes:
+			set_visual_mode(each, "off")
+		_view.set_status("Visual modes off.")
+		return
+	if not modes.has(mode):
+		_view.set_status("Unknown visual mode '%s'. Modes: %s" % [mode, ", ".join(modes)])
+		return
+	var values := " | ".join(MetrumDebug.visual_mode_values(mode))
+	if words.size() < 3:
+		_view.set_status("Usage: visual %s %s" % [mode, values])
+		return
+	if not set_visual_mode(mode, words[2]):
+		_view.set_status("Unknown value '%s'. Usage: visual %s %s" % [words[2], mode, values])
+		return
+	_view.set_status("%s = %s" % [mode, MetrumDebug.visual_mode(mode)])
 
 func _copy_visible() -> void:
 	var text := PackedStringArray()

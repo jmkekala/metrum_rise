@@ -22,7 +22,11 @@ static BUILTIN_RUNTIME: OnceLock<Result<RuntimeDefinitions, String>> = OnceLock:
 pub(crate) fn compile_test_catalog(source: &str) -> Result<RuntimeEconomyCatalog, String> {
     let profiles: ProfilesFile = toml::from_str(source).map_err(|error| error.to_string())?;
     validate_runtime_tuning(&profiles.runtime_tuning)?;
-    compile_runtime_catalog(&profiles.profiles, &profiles.resources, &profiles.runtime_tuning)
+    compile_runtime_catalog(
+        &profiles.profiles,
+        &profiles.resources,
+        &profiles.runtime_tuning,
+    )
 }
 
 /// Loads the shipped economy-side runtime tuning from `economy/profiles.toml`.

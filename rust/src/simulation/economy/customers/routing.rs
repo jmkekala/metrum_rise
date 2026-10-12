@@ -3,7 +3,9 @@
 //! Spatially indexed household claims with exact directed shopping access.
 
 use super::ConsumerBudgets;
-use crate::simulation::buildings::allocator::{BuildingAllocator, BuildingEntrance, BuildingEntranceKey};
+use crate::simulation::buildings::allocator::{
+    BuildingAllocator, BuildingEntrance, BuildingEntranceKey,
+};
 use crate::simulation::economy::accessibility::{
     BuildingModeComponents, ModeComponentIndex, ReachableBucketEntry, ReachableBucketIndex,
     ReachableBucketScanEvent, ReachableReservation, chunk_for_point,
@@ -64,35 +66,61 @@ impl ConsumerMarket {
     /// Lifetime refresh/retention counts followed by overlapping budget, network, home
     /// access, fallback-geometry and fallback-price invalidations; diagnostics only.
     #[cfg(test)]
-    pub(crate) fn refresh_counts_for_test(&self) -> [u64; 7] { self.refresh_counts }
+    pub(crate) fn refresh_counts_for_test(&self) -> [u64; 7] {
+        self.refresh_counts
+    }
 
     /// Household geometry reconstructions across all refreshes; diagnostics only.
     #[cfg(test)]
-    pub(crate) fn access_resamples_for_test(&self) -> u64 { self.access_resamples }
+    pub(crate) fn access_resamples_for_test(&self) -> u64 {
+        self.access_resamples
+    }
 
     /// Full membership rebuilds; changing car availability must only refill eligibility.
     #[cfg(test)]
-    pub(crate) fn index_builds_for_test(&self) -> u64 { self.index_builds }
+    pub(crate) fn index_builds_for_test(&self) -> u64 {
+        self.index_builds
+    }
 
     /// Walking proofs built for the current network; `None` before the first census or
     /// after a network change it has not seen. Buildings are not inputs to lane connectivity;
     /// callers prepare their current entrance geometry separately. O(1).
-    pub(crate) fn walking_proofs(&self, network: &TransitNetwork) -> Option<&PedestrianReachability> {
-        (self.walking_revision == Some((network.cch_graph.build_generation,
-            network.cch_graph.metric_revision, network.lane_system.revision())))
-            .then_some(&self.walking)
+    pub(crate) fn walking_proofs(
+        &self,
+        network: &TransitNetwork,
+    ) -> Option<&PedestrianReachability> {
+        (self.walking_revision
+            == Some((
+                network.cch_graph.build_generation,
+                network.cch_graph.metric_revision,
+                network.lane_system.revision(),
+            )))
+        .then_some(&self.walking)
     }
 
     /// Reuses the census's exact home proof after checking household, door and network inputs.
     /// O(1), allocation-free; a missing or stale census leaves callers on ordinary preparation.
-    pub(crate) fn household_walking_access(&self, household: usize, home: usize,
-        allocator: &BuildingAllocator, network: &TransitNetwork) -> Option<BuildingWalkingAccess> {
+    pub(crate) fn household_walking_access(
+        &self,
+        household: usize,
+        home: usize,
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+    ) -> Option<BuildingWalkingAccess> {
         self.walking_proofs(network)?;
         let access = self.access.get(household)?;
-        if access.home != home || !access.can_shop || home >= allocator.buildings.len() { return None; }
+        if access.home != home || !access.can_shop || home >= allocator.buildings.len() {
+            return None;
+        }
         let key = BuildingEntranceKey::new(allocator.entrances.get(home)?);
-        if self.access_entrances.get(household) != Some(&Some(key)) { return None; }
-        Some(BuildingWalkingAccess::from_groups(access.walk_origins, access.walk_destinations, access.walk_nodes))
+        if self.access_entrances.get(household) != Some(&Some(key)) {
+            return None;
+        }
+        Some(BuildingWalkingAccess::from_groups(
+            access.walk_origins,
+            access.walk_destinations,
+            access.walk_nodes,
+        ))
     }
 
     /// Withdraws all customer accounts and access, retaining reusable account allocations.
@@ -121,7 +149,9 @@ impl ConsumerMarket {
         network: &TransitNetwork,
         graph: &RegionGraph,
     ) {
-        if self.refresh(households, allocator, catalog, tuning, policy, treasury, network, graph) {
+        if self.refresh(
+            households, allocator, catalog, tuning, policy, treasury, network, graph,
+        ) {
             self.reset_claims();
         }
     }
@@ -140,7 +170,8 @@ impl ConsumerMarket {
         network: &TransitNetwork,
         graph: &RegionGraph,
     ) -> bool {
-        let budgets_unchanged = self.budgets
+        let budgets_unchanged = self
+            .budgets
             .prepare_budgets(households, allocator, catalog, tuning, policy, treasury);
         self.query.prepare(&network.cch_graph, graph);
         let output_ports = allocator
@@ -162,8 +193,11 @@ impl ConsumerMarket {
         let changed = self.revision != Some(revision) || walking_changed;
         if walking_changed {
             self.walking = PedestrianReachability::build(network, graph);
-            self.walking_revision = Some((network.cch_graph.build_generation,
-                network.cch_graph.metric_revision, network.lane_system.revision()));
+            self.walking_revision = Some((
+                network.cch_graph.build_generation,
+                network.cch_graph.metric_revision,
+                network.lane_system.revision(),
+            ));
             self.components = Some([
                 ModeComponentIndex::build(graph, TransitFlags::FOOT),
                 ModeComponentIndex::build(graph, TransitFlags::CAR),
@@ -189,15 +223,25 @@ impl ConsumerMarket {
                 }
                 let home = household.home_building_id;
                 let building = can_shop.then(|| allocator.buildings.get(home)).flatten();
-                let entrance = building.and_then(|_| allocator.entrances.get(home)).map(BuildingEntranceKey::new);
-                let chunk = building.map_or((0, 0), |building| chunk_for_point(building.center_x, building.center_y));
+                let entrance = building
+                    .and_then(|_| allocator.entrances.get(home))
+                    .map(BuildingEntranceKey::new);
+                let chunk = building.map_or((0, 0), |building| {
+                    chunk_for_point(building.center_x, building.center_y)
+                });
                 // A global building revision usually changes only a few homes. Existing
                 // access is exact while this household, door, chunk and lane graph match.
                 // Keep the dependency key separate from Access: a moved door can still
                 // produce the same walking proof and retain the same household claim book.
-                if !walking_changed && access.home == home
-                    && access.can_shop == can_shop && access.chunk == chunk && *sampled_entrance == entrance {
-                    if access.has_car == household.shopping_has_car { return (false, false, 0); }
+                if !walking_changed
+                    && access.home == home
+                    && access.can_shop == can_shop
+                    && access.chunk == chunk
+                    && *sampled_entrance == entrance
+                {
+                    if access.has_car == household.shopping_has_car {
+                        return (false, false, 0);
+                    }
                     // Physical component membership survives a car leaving or returning.
                     // Resetting account eligibility below applies the current car flag.
                     access.has_car = household.shopping_has_car;
@@ -211,11 +255,15 @@ impl ConsumerMarket {
                     ..Default::default()
                 };
                 if can_shop && let Some(building) = allocator.buildings.get(next.home) {
-                    if let Some(edge) = allocator.entrances.get(next.home)
-                        .and_then(|entrance| graph.get_edge(entrance.edge_idx)) {
+                    if let Some(edge) = allocator
+                        .entrances
+                        .get(next.home)
+                        .and_then(|entrance| graph.get_edge(entrance.edge_idx))
+                    {
                         next.walk_nodes = [edge.start_node, edge.end_node];
                     }
-                    let [origin, destination] = BuildingTripEnds::walking_pair(next.home, allocator, network, graph);
+                    let [origin, destination] =
+                        BuildingTripEnds::walking_pair(next.home, allocator, network, graph);
                     next.walk_origins = origin.walking_groups(&self.walking);
                     next.walk_destinations = destination.walking_groups(&self.walking);
                     next.chunk = chunk_for_point(building.center_x, building.center_y);
@@ -226,24 +274,37 @@ impl ConsumerMarket {
                         TransitFlags::FOOT,
                     );
                     next.components[1] = components[1].building_components(
-                        allocator, graph, next.home, TransitFlags::CAR,
+                        allocator,
+                        graph,
+                        next.home,
+                        TransitFlags::CAR,
                     );
                 }
-                let membership_changed = access.chunk != next.chunk || access.components != next.components;
+                let membership_changed =
+                    access.chunk != next.chunk || access.components != next.components;
                 // Reservation positions depend only on indexed household/component/chunk
                 // membership, not on unrelated building additions or entrance revisions.
-                if !membership_changed { next.reservations = access.reservations; }
+                if !membership_changed {
+                    next.reservations = access.reservations;
+                }
                 let access_changed = *access != next;
                 *access = next;
                 (access_changed, membership_changed, 1)
             })
-            .reduce(|| (false, false, 0), |a, b| (a.0 | b.0, a.1 | b.1, a.2 + b.2));
+            .reduce(
+                || (false, false, 0),
+                |a, b| (a.0 | b.0, a.1 | b.1, a.2 + b.2),
+            );
         #[cfg(test)]
-        { self.access_resamples += _resamples; }
+        {
+            self.access_resamples += _resamples;
+        }
         let count = self.budgets.categories.len();
         if length_changed || membership_changed || self.indices.len() != count {
             #[cfg(test)]
-            { self.index_builds += 1; }
+            {
+                self.index_builds += 1;
+            }
             self.indices.resize_with(count, Default::default);
             self.indices.par_iter_mut().for_each(|indices| {
                 for (mode, index) in indices.iter_mut().enumerate() {
@@ -262,14 +323,24 @@ impl ConsumerMarket {
             // Every category has identical membership and stable sorted bucket positions.
             // Availability differs, so only the immutable positions are shared across them.
             if let Some(indices) = self.indices.first() {
-                self.access.par_iter_mut().enumerate().for_each(|(household, access)| {
-                    access.reservations = std::array::from_fn(|mode| std::array::from_fn(|rank| {
-                        access.components[mode].as_slice().get(rank).and_then(|&component| {
-                            indices[mode].reservation(ReachableBucketEntry::new(
-                                component, access.chunk, household))
-                        })
-                    }));
-                });
+                self.access
+                    .par_iter_mut()
+                    .enumerate()
+                    .for_each(|(household, access)| {
+                        access.reservations = std::array::from_fn(|mode| {
+                            std::array::from_fn(|rank| {
+                                access.components[mode].as_slice().get(rank).and_then(
+                                    |&component| {
+                                        indices[mode].reservation(ReachableBucketEntry::new(
+                                            component,
+                                            access.chunk,
+                                            household,
+                                        ))
+                                    },
+                                )
+                            })
+                        });
+                    });
             }
         }
         // Walking-only claims depend on these exact home access groups and chunk order.
@@ -277,20 +348,31 @@ impl ConsumerMarket {
         // unrelated building edits therefore need not discard an unchanged customer book.
         // Any ordinary trip fallback also depends on local geometry/prices, so it retains
         // the broader revision guard, including rejected quotes from earlier attempts.
-        let retained = budgets_unchanged && !walking_changed && !length_changed && !access_changed
+        let retained = budgets_unchanged
+            && !walking_changed
+            && !length_changed
+            && !access_changed
             && (!changed || !self.frontage_sensitive)
-            && (!self.frontage_sensitive || self.frontage_revision == network.frontage_delay_revision);
+            && (!self.frontage_sensitive
+                || self.frontage_revision == network.frontage_delay_revision);
         #[cfg(test)]
         for (count, occurred) in self.refresh_counts.iter_mut().zip([
-            true, retained, !budgets_unchanged, walking_changed, length_changed || access_changed,
+            true,
+            retained,
+            !budgets_unchanged,
+            walking_changed,
+            length_changed || access_changed,
             changed && self.frontage_sensitive,
             self.frontage_sensitive && self.frontage_revision != network.frontage_delay_revision,
-        ]) { *count += u64::from(occurred); }
+        ]) {
+            *count += u64::from(occurred);
+        }
         if !retained {
             self.frontage_sensitive = false;
             self.reset_claims();
         }
-        self.budgets.prepare_owners(allocator.buildings.len(), output_ports);
+        self.budgets
+            .prepare_owners(allocator.buildings.len(), output_ports);
         self.visited.resize(households.len(), 0);
         self.revision = Some(revision);
         self.frontage_revision = network.frontage_delay_revision;
@@ -310,7 +392,8 @@ impl ConsumerMarket {
                 for (mode, index) in indices.iter_mut().enumerate() {
                     index.reset_available(|household| {
                         let funds = self.budgets.funds[household * count + category];
-                        funds.units > 0.0 && funds.gross_spending > 0.0
+                        funds.units > 0.0
+                            && funds.gross_spending > 0.0
                             && (mode == 0 || self.access[household].has_car)
                     });
                 }
@@ -337,9 +420,14 @@ impl ConsumerMarket {
             // component/chunk equality also preserves source reservation positions.
             let same_membership = self.access.len() == source.access.len()
                 && self.indices.len() == source.indices.len()
-                && self.access.par_iter().zip(&source.access).all(|(a, b)|
-                    a.chunk == b.chunk && a.components == b.components);
-            if !same_membership { self.indices.clone_from(&source.indices); }
+                && self
+                    .access
+                    .par_iter()
+                    .zip(&source.access)
+                    .all(|(a, b)| a.chunk == b.chunk && a.components == b.components);
+            if !same_membership {
+                self.indices.clone_from(&source.indices);
+            }
             if self.walking_revision != source.walking_revision {
                 self.walking.clone_from(&source.walking);
                 self.walking.prepare_query();
@@ -370,7 +458,8 @@ impl ConsumerMarket {
                 for (mode, index) in indices.iter_mut().enumerate() {
                     index.reset_available(|household| {
                         let account = self.budgets.funds[household * count + category];
-                        account.units > 0.0 && account.gross_spending > 0.0
+                        account.units > 0.0
+                            && account.gross_spending > 0.0
                             && (mode == 0 || self.access[household].has_car)
                     });
                 }
@@ -392,10 +481,14 @@ impl ConsumerMarket {
     }
 
     /// Starts the household part of an enclosing replacement/revalidation proof.
-    pub(crate) fn begin_revalidation(&mut self) { self.budgets.begin_revalidation(); }
+    pub(crate) fn begin_revalidation(&mut self) {
+        self.budgets.begin_revalidation();
+    }
 
     /// Publishes all accepted owner changes in the enclosing proof.
-    pub(crate) fn accept_revalidation(&mut self) { self.budgets.accept_revalidation(); }
+    pub(crate) fn accept_revalidation(&mut self) {
+        self.budgets.accept_revalidation();
+    }
 
     /// Restores exact accounts, owner receipts and only affected spatial eligibility.
     pub(crate) fn reject_revalidation(&mut self) {
@@ -455,13 +548,21 @@ impl ConsumerMarket {
 
     /// Observes actual arena growth in forced runtime replay tests.
     #[cfg(test)]
-    pub(crate) fn receipt_capacity_for_test(&self) -> usize { self.budgets.committed.capacity() }
+    pub(crate) fn receipt_capacity_for_test(&self) -> usize {
+        self.budgets.committed.capacity()
+    }
 
     /// Compares exact family balances and owner purchases independently of receipt cell reuse.
     #[cfg(test)]
     pub(crate) fn assert_same_accounts_for_test(&self, other: &Self) {
-        let balances = |market: &Self| market.budgets.funds.iter()
-            .map(|funds| (funds.units.to_bits(), funds.gross_spending.to_bits())).collect::<Vec<_>>();
+        let balances = |market: &Self| {
+            market
+                .budgets
+                .funds
+                .iter()
+                .map(|funds| (funds.units.to_bits(), funds.gross_spending.to_bits()))
+                .collect::<Vec<_>>()
+        };
         assert_eq!(balances(self), balances(other));
         let purchases = |market: &Self| {
             let mut result = Vec::new();
@@ -469,8 +570,12 @@ impl ConsumerMarket {
                 let mut cell = first;
                 while cell != usize::MAX {
                     let receipt = market.budgets.committed[cell];
-                    result.push((owner, receipt.slot, receipt.acquired.units.to_bits(),
-                        receipt.acquired.gross_spending.to_bits()));
+                    result.push((
+                        owner,
+                        receipt.slot,
+                        receipt.acquired.units.to_bits(),
+                        receipt.acquired.gross_spending.to_bits(),
+                    ));
                     cell = receipt.next;
                 }
             }
@@ -507,7 +612,10 @@ impl ConsumerMarket {
         let Some(components) = self.components.as_ref() else {
             return 0.0;
         };
-        if !self.indices[category].iter().any(ReachableBucketIndex::has_available) {
+        if !self.indices[category]
+            .iter()
+            .any(ReachableBucketIndex::has_available)
+        {
             return 0.0;
         }
         self.visit = self.visit.wrapping_add(1);
@@ -515,10 +623,12 @@ impl ConsumerMarket {
             self.visited.par_iter_mut().for_each(|value| *value = 0);
             self.visit = 1;
         }
-        let [origin, destination] = BuildingTripEnds::walking_pair_at_entrance(entrance, network, graph);
+        let [origin, destination] =
+            BuildingTripEnds::walking_pair_at_entrance(entrance, network, graph);
         let origin_groups = origin.walking_groups(&self.walking);
         let destination_groups = destination.walking_groups(&self.walking);
-        let nodes = graph.get_edge(entrance.edge_idx)
+        let nodes = graph
+            .get_edge(entrance.edge_idx)
             .map_or([u32::MAX; 2], |edge| [edge.start_node, edge.end_node]);
         let mut claimed = 0.0;
         let mut fallback_ends = None;
@@ -549,25 +659,50 @@ impl ConsumerMarket {
                         return true;
                     }
                     let access = self.access[household];
-                    let outward = shares_walk_group(access.walk_origins, access.walk_nodes, destination_groups, nodes);
-                    let homeward = shares_walk_group(origin_groups, nodes, access.walk_destinations, access.walk_nodes);
+                    let outward = shares_walk_group(
+                        access.walk_origins,
+                        access.walk_nodes,
+                        destination_groups,
+                        nodes,
+                    );
+                    let homeward = shares_walk_group(
+                        origin_groups,
+                        nodes,
+                        access.walk_destinations,
+                        access.walk_nodes,
+                    );
                     if outward && homeward {
-                        claimed += self.budgets.claim(household, resource, requested - claimed, gross_price);
+                        claimed += self.budgets.claim(
+                            household,
+                            resource,
+                            requested - claimed,
+                            gross_price,
+                        );
                         return claimed < requested;
                     }
-                    let [origin, destination] = fallback_ends.get_or_insert_with(|| [
-                        BuildingTripEnds::at_entrance(entrance, true, network, graph),
-                        BuildingTripEnds::at_entrance(entrance, false, network, graph),
-                    ]);
+                    let [origin, destination] = fallback_ends.get_or_insert_with(|| {
+                        [
+                            BuildingTripEnds::at_entrance(entrance, true, network, graph),
+                            BuildingTripEnds::at_entrance(entrance, false, network, graph),
+                        ]
+                    });
                     let home_origin =
                         BuildingTripEnds::origin(access.home, allocator, network, graph);
                     let home_destination =
                         BuildingTripEnds::destination(access.home, allocator, network, graph);
                     let mut reachable = |from: &BuildingTripEnds, to: &BuildingTripEnds| {
-                        if from.has_proven_walk_to(to, &self.walking) { return true; }
+                        if from.has_proven_walk_to(to, &self.walking) {
+                            return true;
+                        }
                         self.frontage_sensitive = true;
-                        from.can_reach(to, access.has_car, network, graph,
-                            &mut self.walking, &mut self.query)
+                        from.can_reach(
+                            to,
+                            access.has_car,
+                            network,
+                            graph,
+                            &mut self.walking,
+                            &mut self.query,
+                        )
                     };
                     if (outward || reachable(&home_origin, destination))
                         && (homeward || reachable(origin, &home_destination))
@@ -595,7 +730,13 @@ impl ConsumerMarket {
             } else {
                 self.budgets.funds[claim.slot]
             };
-            sync_account(&mut self.indices, &self.access, categories, claim.slot, funds);
+            sync_account(
+                &mut self.indices,
+                &self.access,
+                categories,
+                claim.slot,
+                funds,
+            );
         }
     }
 
@@ -646,7 +787,8 @@ impl ConsumerMarket {
         let count = self.budgets.categories.len();
         let access = &self.access;
         let indices = &mut self.indices;
-        self.budgets.visit_pass_funds(|slot, funds| sync_account(indices, access, count, slot, funds));
+        self.budgets
+            .visit_pass_funds(|slot, funds| sync_account(indices, access, count, slot, funds));
         self.budgets.end_pass();
         let pass = &mut self.pass;
         if std::mem::take(&mut pass.open) {
@@ -667,23 +809,35 @@ struct PassWalking {
     open: bool,
 }
 
-fn sync_account(indices: &mut [[ReachableBucketIndex; 2]], access: &[Access],
-    categories: usize, slot: usize, funds: super::Funds) {
+fn sync_account(
+    indices: &mut [[ReachableBucketIndex; 2]],
+    access: &[Access],
+    categories: usize,
+    slot: usize,
+    funds: super::Funds,
+) {
     let household = slot / categories;
     let category = slot % categories;
     let available = funds.units > 0.0 && funds.gross_spending > 0.0;
     let access = access[household];
     for (mode, reservations) in access.reservations.iter().enumerate() {
         for &reservation in reservations.iter().flatten() {
-            indices[category][mode].set_reserved_available(reservation,
-                available && (mode == 0 || access.has_car));
+            indices[category][mode]
+                .set_reserved_available(reservation, available && (mode == 0 || access.has_car));
         }
     }
 }
 
-fn shares_walk_group(from: [usize; 2], from_nodes: [u32; 2], to: [usize; 2], to_nodes: [u32; 2]) -> bool {
+fn shares_walk_group(
+    from: [usize; 2],
+    from_nodes: [u32; 2],
+    to: [usize; 2],
+    to_nodes: [u32; 2],
+) -> bool {
     from.into_iter().enumerate().any(|(origin, group)| {
-        group != usize::MAX && to.into_iter().enumerate()
-            .any(|(destination, target)| group == target && from_nodes[origin] != to_nodes[destination])
+        group != usize::MAX
+            && to.into_iter().enumerate().any(|(destination, target)| {
+                group == target && from_nodes[origin] != to_nodes[destination]
+            })
     })
 }

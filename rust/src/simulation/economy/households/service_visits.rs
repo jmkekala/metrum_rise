@@ -4,15 +4,15 @@
 
 use std::sync::atomic::AtomicU32;
 
-use super::data::{Household, HouseholdSystem};
 use super::candidate_visits::CandidateVisits;
+use super::data::{Household, HouseholdSystem};
 use super::metrics::{
     OPERATIONAL_HOURS_PER_DAY, building_operation_factors, economy_profile_for_building,
 };
 use super::replenishment::{
     REPLENISHMENT_FULFILLED, REPLENISHMENT_SHOPPING_RETURNING, REPLENISHMENT_SHOPPING_TO_STORE,
-    REPLENISHMENT_STABLE, ShoppingShortlist, proven_shopping_walk,
-    shopping_route_is_feasible, squared_building_distance, prepare_walking_access,
+    REPLENISHMENT_STABLE, ShoppingShortlist, prepare_walking_access, proven_shopping_walk,
+    shopping_route_is_feasible, squared_building_distance,
 };
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
@@ -131,7 +131,9 @@ impl<'a> ServiceVisitIndex<'a> {
                     chunk: chunk_for_point(building.center_x, building.center_y),
                     foot_components,
                     car_components,
-                    walking_access: walking.map(|walking| prepare_walking_access(idx, allocator, network, graph, walking)),
+                    walking_access: walking.map(|walking| {
+                        prepare_walking_access(idx, allocator, network, graph, walking)
+                    }),
                 })
             })
             .collect();
@@ -187,8 +189,11 @@ impl<'a> ServiceVisitIndex<'a> {
             visits.begin_query(self.entries.len());
             let mut inspected = 0;
             let home = &allocator.buildings[home_idx];
-            let prepared_home = home_access.or_else(|| self.walking
-                .map(|walking| prepare_walking_access(home_idx, allocator, transit_network, graph, walking)));
+            let prepared_home = home_access.or_else(|| {
+                self.walking.map(|walking| {
+                    prepare_walking_access(home_idx, allocator, transit_network, graph, walking)
+                })
+            });
             let home_foot_components =
                 foot_components.building_components(allocator, graph, home_idx, TransitFlags::FOOT);
             self.scan_candidate_bucket(
@@ -210,8 +215,12 @@ impl<'a> ServiceVisitIndex<'a> {
             );
 
             if has_car {
-                let home_car_components =
-                    car_components.building_components(allocator, graph, home_idx, TransitFlags::CAR);
+                let home_car_components = car_components.building_components(
+                    allocator,
+                    graph,
+                    home_idx,
+                    TransitFlags::CAR,
+                );
                 self.scan_candidate_bucket(
                     &self.car_buckets,
                     home_car_components,
@@ -264,23 +273,28 @@ impl<'a> ServiceVisitIndex<'a> {
                     }
                     visits.mark_seen(item_idx);
                     *inspected += 1;
-                    let distance = squared_building_distance(origin_x, origin_y,
-                        &allocator.buildings[entry.building_idx]);
+                    let distance = squared_building_distance(
+                        origin_x,
+                        origin_y,
+                        &allocator.buildings[entry.building_idx],
+                    );
                     let Some(position) = candidates.insertion(entry.building_idx, distance) else {
                         diagnostics.rejected_outside_shortlist += 1;
                         return true;
                     };
-                    if !proven_shopping_walk(self.walking, prepared_home, entry.walking_access.as_ref())
-                        && !shopping_route_is_feasible(
-                            home_idx,
-                            entry.building_idx,
-                            has_car,
-                            allocator,
-                            transit_network,
-                            graph,
-                            pathfind_count,
-                        )
-                    {
+                    if !proven_shopping_walk(
+                        self.walking,
+                        prepared_home,
+                        entry.walking_access.as_ref(),
+                    ) && !shopping_route_is_feasible(
+                        home_idx,
+                        entry.building_idx,
+                        has_car,
+                        allocator,
+                        transit_network,
+                        graph,
+                        pathfind_count,
+                    ) {
                         diagnostics.rejected_unreachable += 1;
                         return true;
                     }
@@ -579,7 +593,12 @@ fn plan_visible_service_visit(
     let home_idx = agents.home_building[request.visitor_agent_id];
     service_index.fill_route_feasible_candidates(
         home_idx,
-        customers.household_walking_access(request.household_id, home_idx, allocator, transit_network),
+        customers.household_walking_access(
+            request.household_id,
+            home_idx,
+            allocator,
+            transit_network,
+        ),
         has_car,
         allocator,
         transit_network,

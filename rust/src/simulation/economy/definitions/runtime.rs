@@ -546,9 +546,11 @@ impl RuntimeEconomyCatalog {
     /// Stable local-funding phase; mutually dependent recipes share a phase, while
     /// downstream recipes follow all their suppliers. Invalid/non-economic ids use phase zero.
     pub(crate) fn funding_phase(&self, runtime_id: u16) -> usize {
-        runtime_id.checked_sub(1)
+        runtime_id
+            .checked_sub(1)
             .and_then(|index| self.funding_phases.get(index as usize))
-            .copied().unwrap_or(0)
+            .copied()
+            .unwrap_or(0)
     }
 
     /// Number of authored dependency phases, independent of placed city size.
@@ -613,7 +615,10 @@ impl RuntimeEconomyCatalog {
     /// recipe sells it. A local purchase never costs less per unit before the buyer's goods
     /// multiplier and carrier fees. O(1).
     pub(crate) fn cheapest_seller_price(&self, resource: ResourceRuntimeId) -> f32 {
-        self.cheapest_seller_prices.get(usize::from(resource)).copied().unwrap_or(f32::INFINITY)
+        self.cheapest_seller_prices
+            .get(usize::from(resource))
+            .copied()
+            .unwrap_or(f32::INFINITY)
     }
 }
 

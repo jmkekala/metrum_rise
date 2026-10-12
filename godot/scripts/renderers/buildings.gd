@@ -30,7 +30,8 @@ var building_debug_enabled: bool:
 	get:
 		return MetrumDebug.is_enabled("buildings")
 var building_site_dump_enabled: bool = false
-var building_site_visual_mode: String = ""
+# `off` or `material`; the debug console changes it through `_on_visual_mode_changed`.
+var building_site_visual_mode := "off"
 var building_site_debug_materials: Dictionary = {}
 
 var show_foundations := false
@@ -66,15 +67,15 @@ func _load_enabled_packs() -> void:
 
 func _ready() -> void:
 	building_site_dump_enabled = MetrumDebug.startup_mode("building_sites_dump")
-	building_site_visual_mode = _building_site_visual_mode_from_startup()
+	building_site_visual_mode = MetrumDebug.visual_mode("building_sites_visual")
+	var console := get_node_or_null("/root/DebugConsole")
+	if console != null:
+		console.visual_mode_changed.connect(_on_visual_mode_changed)
 	if building_debug_enabled:
 		MetrumDebug.log(
 			"buildings",
 			"enabled site_visual_mode=%s site_dump=%s"
-			% [
-				building_site_visual_mode if not building_site_visual_mode.is_empty() else "off",
-				str(building_site_dump_enabled),
-			]
+			% [building_site_visual_mode, str(building_site_dump_enabled)]
 		)
 	elif _building_site_visual_debug_enabled():
 		MetrumDebug.log("buildings", "site visual overlay enabled mode=%s" % [building_site_visual_mode])
@@ -386,7 +387,17 @@ func _building_site_debug_material(role: String, color: Color) -> StandardMateri
 	return mat
 
 func _building_site_visual_debug_enabled() -> bool:
-	return not building_site_visual_mode.is_empty() and building_site_visual_mode != "off"
+	return building_site_visual_mode != "off"
+
+## The ground instance carries its material as an override; the surface meshes carry theirs per
+## surface, so a forced site frame rebuilds them with the new materials on the next frame.
+func _on_visual_mode_changed(mode: String) -> void:
+	if mode != "building_sites_visual":
+		return
+	building_site_visual_mode = MetrumDebug.visual_mode("building_sites_visual")
+	if building_site_ground_instance != null:
+		building_site_ground_instance.material_override = _building_site_ground_material()
+	building_site_revision = -1
 
 func _print_building_site_debug(
 	data: Dictionary,
@@ -419,7 +430,7 @@ func _print_building_site_debug(
 		% [
 			int(data.get("revision", building_site_revision)),
 			debug_sites.size(),
-			building_site_visual_mode if not building_site_visual_mode.is_empty() else "off",
+			building_site_visual_mode,
 		]
 	)
 	MetrumDebug.log(
@@ -647,14 +658,3 @@ func _packed_vector2_label(value) -> String:
 		parts.append(_vector2_label(point))
 	return "[" + ", ".join(parts) + "]"
 
-func _building_site_visual_mode_from_startup() -> String:
-	var value := String(MetrumDebug.startup_mode("building_sites_visual"))
-	if value.is_empty() or value == "0" or value == "false":
-		return ""
-	match value:
-		"material", "materials", "source", "sources":
-			return "material"
-		"off":
-			return "off"
-		_:
-			return "material"

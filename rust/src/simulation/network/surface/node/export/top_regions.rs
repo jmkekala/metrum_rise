@@ -32,7 +32,9 @@ impl RoadSurfaceSystem {
 
     // `top_polygons_from_owned_regions_by_material` as sorted indices into `owned_regions`:
     // asphalt, curb, then sidewalk, each stably by `visual_polygon_ordering`.
-    pub(super) fn top_polygon_order_by_material(owned_regions: &[NodeOwnedRegion]) -> [Box<[u32]>; 3] {
+    pub(super) fn top_polygon_order_by_material(
+        owned_regions: &[NodeOwnedRegion],
+    ) -> [Box<[u32]>; 3] {
         let material = |kind| match kind {
             RoadSurfaceBandKind::Carriageway => 0,
             RoadSurfaceBandKind::CurbOrShoulder => 1,

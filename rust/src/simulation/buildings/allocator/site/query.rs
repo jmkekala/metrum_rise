@@ -100,12 +100,17 @@ impl BuildingAllocator {
     /// Records terrain changes for every site and cell exclusions only for explicit sites.
     /// Ordinary parcels own their cell claims; clearing occupancy already queues their local
     /// frontage revalidation. Geometry work is bounded by edited sites, not their union's area.
-    pub(crate) fn record_building_site_change(&mut self, building_idx: usize,
-        bounds: Option<(f32, f32, f32, f32)>) {
+    pub(crate) fn record_building_site_change(
+        &mut self,
+        building_idx: usize,
+        bounds: Option<(f32, f32, f32, f32)>,
+    ) {
         self.accumulate_pending_site_dirty_bounds(bounds);
-        if self.buildings.get(building_idx).is_some_and(|building|
-            building.parcel_id == 0 && building.zone_type == crate::simulation::zoning::ZoneType::None)
-            && let Some(bounds) = bounds {
+        if self.buildings.get(building_idx).is_some_and(|building| {
+            building.parcel_id == 0
+                && building.zone_type == crate::simulation::zoning::ZoneType::None
+        }) && let Some(bounds) = bounds
+        {
             self.cell_site_dirty_bounds.push(bounds);
         }
     }
@@ -128,8 +133,11 @@ impl BuildingAllocator {
     /// trees. Wild vegetation keeps the whole support clear through
     /// [`Self::sample_building_site_height`]. Same bounded chunk lookup.
     pub(crate) fn building_site_blocks_yard_plant(&self, pos: Vector2) -> bool {
-        self.site_at(pos, |site| site.contains_point(pos).then(|| site.blocks_yard_plant(pos)))
-            .unwrap_or(false)
+        self.site_at(pos, |site| {
+            site.contains_point(pos)
+                .then(|| site.blocks_yard_plant(pos))
+        })
+        .unwrap_or(false)
     }
 
     /// Whether `pos` lies in a building's yard planting area. Same bounded chunk lookup.
@@ -145,7 +153,11 @@ impl BuildingAllocator {
 
     // The lowest-index site for which `probe` answers at `pos`, through the 512 m chunk index;
     // a linear scan only while the index is being rebuilt.
-    fn site_at<T>(&self, pos: Vector2, probe: impl Fn(&BuildingSiteClient) -> Option<T>) -> Option<T> {
+    fn site_at<T>(
+        &self,
+        pos: Vector2,
+        probe: impl Fn(&BuildingSiteClient) -> Option<T>,
+    ) -> Option<T> {
         if self.dirty_index
             || self.building_sites.len() != self.buildings.len()
             || self.building_chunks.is_empty()

@@ -218,7 +218,12 @@ impl CchGraph {
             return None;
         }
         scratch.prepare(self, graph);
-        let fwd_key = Some((self.metric_revision, mask, start, self.source_context(start, incoming, mask)));
+        let fwd_key = Some((
+            self.metric_revision,
+            mask,
+            start,
+            self.source_context(start, incoming, mask),
+        ));
         let bwd_key = Some((self.metric_revision, mask, end));
         let forward = &mut scratch.fwd_data;
         let backward = &mut scratch.bwd_data;
@@ -271,9 +276,18 @@ impl CchGraph {
     /// Pedestrian queries ignore vehicle turns; unrestricted origins ignore incoming edges.
     /// Restricted vehicle origins retain the original edge, including nonincident sentinels.
     pub(crate) fn source_context(&self, start: u32, incoming: usize, mask: u8) -> usize {
-        if mask == TransitFlags::FOOT || !self.turns.restricted.get(start as usize).copied().unwrap_or(false) {
+        if mask == TransitFlags::FOOT
+            || !self
+                .turns
+                .restricted
+                .get(start as usize)
+                .copied()
+                .unwrap_or(false)
+        {
             usize::MAX
-        } else { incoming }
+        } else {
+            incoming
+        }
     }
 
     /// Quotes a route in O(H log H + A_H), for H ancestors and their A_H upward arcs.
@@ -444,15 +458,29 @@ mod endpoint_tests {
     fn grid() -> RegionGraph {
         let mut graph = RegionGraph::new();
         for node in 0..289 {
-            graph.add_node(Vector3::new((node % 17) as f32, 0.0, (node / 17) as f32), NodeType::Junction);
+            graph.add_node(
+                Vector3::new((node % 17) as f32, 0.0, (node / 17) as f32),
+                NodeType::Junction,
+            );
         }
         for node in 0..289 {
-            for target in [((node % 17) < 16).then_some(node + 1), (node < 272).then_some(node + 17)]
-                .into_iter().flatten() {
-                graph.add_edge(Edge { start_node: node, end_node: target,
-                    base_cost: 1.0 + (node % 7) as f32 / 13.0, physical_length: 1.0,
+            for target in [
+                ((node % 17) < 16).then_some(node + 1),
+                (node < 272).then_some(node + 17),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                graph.add_edge(Edge {
+                    start_node: node,
+                    end_node: target,
+                    base_cost: 1.0 + (node % 7) as f32 / 13.0,
+                    physical_length: 1.0,
                     allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
-                    fwd_lanes: 1, bkw_lanes: 1, ..Default::default() });
+                    fwd_lanes: 1,
+                    bkw_lanes: 1,
+                    ..Default::default()
+                });
             }
         }
         graph.rebuild_adjacency_list();
@@ -468,10 +496,17 @@ mod endpoint_tests {
         let capacity = scratch.query.capacities();
         for phase in 0..4 {
             match phase {
-                1 => { graph.edge_mut(0).base_cost *= 3.0; cch.customize(&graph); },
-                2 => { scratch.query = scratch.query.clone(); },
-                3 => { scratch.query.roll_epochs_over(); },
-                _ => {},
+                1 => {
+                    graph.edge_mut(0).base_cost *= 3.0;
+                    cch.customize(&graph);
+                }
+                2 => {
+                    scratch.query = scratch.query.clone();
+                }
+                3 => {
+                    scratch.query.roll_epochs_over();
+                }
+                _ => {}
             }
             for (start, end, mode, retained) in [
                 (0, 288, TransitFlags::CAR, [false, false]),
@@ -482,15 +517,24 @@ mod endpoint_tests {
                 (0, 288, TransitFlags::CAR, [false, false]),
             ] {
                 let before = [scratch.query.fwd_data.epoch, scratch.query.bwd_data.epoch];
-                let actual = cch.find_path_in(start, end, usize::MAX, &graph, mode, &mut scratch)
-                    .map(|(cost, distance, nodes)| (cost.to_bits(), distance.to_bits(), nodes.to_vec()));
+                let actual = cch
+                    .find_path_in(start, end, usize::MAX, &graph, mode, &mut scratch)
+                    .map(|(cost, distance, nodes)| {
+                        (cost.to_bits(), distance.to_bits(), nodes.to_vec())
+                    });
                 let mut fresh = CchPathScratch::default();
-                let expected = cch.find_path_in(start, end, usize::MAX, &graph, mode, &mut fresh)
-                    .map(|(cost, distance, nodes)| (cost.to_bits(), distance.to_bits(), nodes.to_vec()));
+                let expected = cch
+                    .find_path_in(start, end, usize::MAX, &graph, mode, &mut fresh)
+                    .map(|(cost, distance, nodes)| {
+                        (cost.to_bits(), distance.to_bits(), nodes.to_vec())
+                    });
                 assert_eq!(actual, expected);
                 assert_eq!(scratch.selected_edges(), fresh.selected_edges());
                 let after = [scratch.query.fwd_data.epoch, scratch.query.bwd_data.epoch];
-                assert_eq!(std::array::from_fn::<_, 2, _>(|side| before[side] == after[side]), retained);
+                assert_eq!(
+                    std::array::from_fn::<_, 2, _>(|side| before[side] == after[side]),
+                    retained
+                );
                 assert_eq!(scratch.query.capacities(), capacity);
             }
         }
@@ -508,23 +552,58 @@ mod endpoint_tests {
         let mut scratch = CchQueryScratch::default();
         scratch.prepare(&cch, &graph);
         for group in [1, 2, 16] {
-            let queries: Vec<_> = (0..4_096).map(|index|
-                (((index / group * 13) % 289) as u32, ((index * 37 + 1) % 289) as u32)).collect();
-            let expected: Vec<_> = queries.iter().map(|&(start, end)| {
-                scratch.fwd_key = None; scratch.bwd_key = None;
-                cch.find_cost(start, end, usize::MAX, &graph, TransitFlags::CAR, &mut scratch).map(f32::to_bits)
-            }).collect();
+            let queries: Vec<_> = (0..4_096)
+                .map(|index| {
+                    (
+                        ((index / group * 13) % 289) as u32,
+                        ((index * 37 + 1) % 289) as u32,
+                    )
+                })
+                .collect();
+            let expected: Vec<_> = queries
+                .iter()
+                .map(|&(start, end)| {
+                    scratch.fwd_key = None;
+                    scratch.bwd_key = None;
+                    cch.find_cost(
+                        start,
+                        end,
+                        usize::MAX,
+                        &graph,
+                        TransitFlags::CAR,
+                        &mut scratch,
+                    )
+                    .map(f32::to_bits)
+                })
+                .collect();
             for pair in 0..11 {
-                for retained in if pair % 2 == 0 { [false, true] } else { [true, false] } {
+                for retained in if pair % 2 == 0 {
+                    [false, true]
+                } else {
+                    [true, false]
+                } {
                     let begin = Instant::now();
                     for (&(start, end), &expected) in queries.iter().zip(&expected) {
-                        if !retained { scratch.fwd_key = None; scratch.bwd_key = None; }
-                        let actual = cch.find_cost(start, end, usize::MAX, &graph, TransitFlags::CAR, &mut scratch);
+                        if !retained {
+                            scratch.fwd_key = None;
+                            scratch.bwd_key = None;
+                        }
+                        let actual = cch.find_cost(
+                            start,
+                            end,
+                            usize::MAX,
+                            &graph,
+                            TransitFlags::CAR,
+                            &mut scratch,
+                        );
                         assert_eq!(black_box(actual.map(f32::to_bits)), expected);
                     }
-                    eprintln!("CCH_ENDPOINT {}", serde_json::json!({ "group": group,
+                    eprintln!(
+                        "CCH_ENDPOINT {}",
+                        serde_json::json!({ "group": group,
                         "pair": pair, "retained": retained,
-                        "query_ns": begin.elapsed().as_secs_f64() * 1e9 / queries.len() as f64 }));
+                        "query_ns": begin.elapsed().as_secs_f64() * 1e9 / queries.len() as f64 })
+                    );
                 }
             }
         }

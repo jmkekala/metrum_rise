@@ -81,12 +81,26 @@ pub(crate) fn snapshot() -> [u64; WORK_COUNT] {
 /// Stable report names, in counter order.
 #[cfg(test)]
 pub(crate) const WORK_NAMES: [&str; WORK_COUNT] = [
-    "planning_passes", "live_censuses", "planner_censuses", "execution_censuses",
-    "census_buildings", "reservation_rows_copied", "owner_slots_prepared",
-    "supplier_source_rebuilds", "supplier_sources_built", "buyer_site_rebuilds",
-    "buyer_sites_built", "spawn_parcels_scanned", "supplier_searches", "supplier_candidates",
-    "supplier_routes", "job_search_keys", "cch_point_searches", "cch_bucket_sources",
-    "staffing_operations", "staffing_trials",
+    "planning_passes",
+    "live_censuses",
+    "planner_censuses",
+    "execution_censuses",
+    "census_buildings",
+    "reservation_rows_copied",
+    "owner_slots_prepared",
+    "supplier_source_rebuilds",
+    "supplier_sources_built",
+    "buyer_site_rebuilds",
+    "buyer_sites_built",
+    "spawn_parcels_scanned",
+    "supplier_searches",
+    "supplier_candidates",
+    "supplier_routes",
+    "job_search_keys",
+    "cch_point_searches",
+    "cch_bucket_sources",
+    "staffing_operations",
+    "staffing_trials",
 ];
 
 /// Hashes a value's `Debug` rendering without building the string. Test-only exact state

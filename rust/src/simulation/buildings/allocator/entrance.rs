@@ -51,10 +51,20 @@ impl BuildingEntranceKey {
             edge: entrance.edge_idx,
             side: entrance.side,
             frontage: entrance.vehicle_frontage_access,
-            geometry: [entrance.entrance_s_m, entrance.door_pos.x, entrance.door_pos.y,
-                entrance.curb_pos.x, entrance.curb_pos.y].map(f32::to_bits),
-            lanes: [entrance.foot_lane_fwd, entrance.foot_lane_bkw,
-                entrance.car_lane_fwd, entrance.car_lane_bkw],
+            geometry: [
+                entrance.entrance_s_m,
+                entrance.door_pos.x,
+                entrance.door_pos.y,
+                entrance.curb_pos.x,
+                entrance.curb_pos.y,
+            ]
+            .map(f32::to_bits),
+            lanes: [
+                entrance.foot_lane_fwd,
+                entrance.foot_lane_bkw,
+                entrance.car_lane_fwd,
+                entrance.car_lane_bkw,
+            ],
             flags: entrance.flags,
         }
     }
@@ -91,38 +101,93 @@ struct FreightAccessEnd {
 
 impl FreightEntranceAccess {
     /// Projects each usable car lane once; storage is fixed and query-local allocation is absent.
-    pub(crate) fn new(entrance: &BuildingEntrance, network: &TransitNetwork, graph: &RegionGraph) -> Self {
-        let mut access = Self { edge_idx: entrance.edge_idx, ..Self::default() };
-        let Some(edge) = graph.get_edge(entrance.edge_idx).filter(|edge| !edge.deleted) else {
+    pub(crate) fn new(
+        entrance: &BuildingEntrance,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> Self {
+        let mut access = Self {
+            edge_idx: entrance.edge_idx,
+            ..Self::default()
+        };
+        let Some(edge) = graph
+            .get_edge(entrance.edge_idx)
+            .filter(|edge| !edge.deleted)
+        else {
             return access;
         };
-        for (rank, lane_id) in [entrance.car_lane_fwd, entrance.car_lane_bkw].into_iter().enumerate() {
-            if lane_id == INVALID_LANE_ID { continue; }
-            let Some(lane_d) = projected_lane_distance_for_entrance(entrance, lane_id, network, graph) else { continue; };
-            let Some(distance) = local_access_distance_car(entrance, lane_id, lane_d, network, graph) else { continue; };
-            let arrival_node = if rank == 0 { edge.start_node } else { edge.end_node };
-            let departure_node = if rank == 0 { edge.end_node } else { edge.start_node };
-            let end = FreightAccessEnd { node: arrival_node, lane_id, lane_d,
-                local_time_s: local_access_time_s(distance) };
+        for (rank, lane_id) in [entrance.car_lane_fwd, entrance.car_lane_bkw]
+            .into_iter()
+            .enumerate()
+        {
+            if lane_id == INVALID_LANE_ID {
+                continue;
+            }
+            let Some(lane_d) =
+                projected_lane_distance_for_entrance(entrance, lane_id, network, graph)
+            else {
+                continue;
+            };
+            let Some(distance) =
+                local_access_distance_car(entrance, lane_id, lane_d, network, graph)
+            else {
+                continue;
+            };
+            let arrival_node = if rank == 0 {
+                edge.start_node
+            } else {
+                edge.end_node
+            };
+            let departure_node = if rank == 0 {
+                edge.end_node
+            } else {
+                edge.start_node
+            };
+            let end = FreightAccessEnd {
+                node: arrival_node,
+                lane_id,
+                lane_d,
+                local_time_s: local_access_time_s(distance),
+            };
             if lane_origin_node(lane_id, network, graph) == Some(arrival_node) {
                 access.arrival[rank] = Some(end);
             }
             if lane_terminal_node(lane_id, network, graph) == Some(departure_node) {
-                access.departure[1 - rank] = Some(FreightAccessEnd { node: departure_node, ..end });
+                access.departure[1 - rank] = Some(FreightAccessEnd {
+                    node: departure_node,
+                    ..end
+                });
             }
         }
         access
     }
 
     /// Prices a directed delivery using prepared access and current frontage penalties.
-    pub(crate) fn eta_to(&self, destination: &Self, network: &TransitNetwork, graph: &RegionGraph,
-        mut network_time_s: impl FnMut(u32, u32) -> Option<f32>) -> Option<f32> {
+    pub(crate) fn eta_to(
+        &self,
+        destination: &Self,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+        mut network_time_s: impl FnMut(u32, u32) -> Option<f32>,
+    ) -> Option<f32> {
         let mut best: Option<FreightCarCandidate> = None;
         for origin_rank in [0_u8, 1_u8] {
             for destination_rank in [0_u8, 1_u8] {
-                let Some(candidate) = freight_candidate_between_access(origin_rank, destination_rank,
-                    self, destination, network, graph, &mut network_time_s) else { continue; };
-                if best.as_ref().is_none_or(|current| freight_candidate_better(&candidate, current)) {
+                let Some(candidate) = freight_candidate_between_access(
+                    origin_rank,
+                    destination_rank,
+                    self,
+                    destination,
+                    network,
+                    graph,
+                    &mut network_time_s,
+                ) else {
+                    continue;
+                };
+                if best
+                    .as_ref()
+                    .is_none_or(|current| freight_candidate_better(&candidate, current))
+                {
                     best = Some(candidate);
                 }
             }
@@ -132,13 +197,21 @@ impl FreightEntranceAccess {
 
     /// Prices arrivals from a prepared network-cost table, preserving border ETA arithmetic.
     /// The table includes zero at each allowed source, and unreachable nodes return `None`.
-    pub(crate) fn eta_from_network(&self, network: &TransitNetwork, graph: &RegionGraph,
-        mut cost_to: impl FnMut(u32) -> Option<f32>) -> Option<f32> {
-        self.arrival.iter().flatten().filter_map(|end| {
-            let frontage = frontage_time_s(end.lane_id, end.lane_d, false, network, graph)?;
-            let seconds = cost_to(end.node)? + frontage + end.local_time_s;
-            seconds.is_finite().then_some(seconds)
-        }).min_by(f32::total_cmp)
+    pub(crate) fn eta_from_network(
+        &self,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+        mut cost_to: impl FnMut(u32) -> Option<f32>,
+    ) -> Option<f32> {
+        self.arrival
+            .iter()
+            .flatten()
+            .filter_map(|end| {
+                let frontage = frontage_time_s(end.lane_id, end.lane_d, false, network, graph)?;
+                let seconds = cost_to(end.node)? + frontage + end.local_time_s;
+                seconds.is_finite().then_some(seconds)
+            })
+            .min_by(f32::total_cmp)
     }
 }
 
@@ -154,9 +227,10 @@ impl BuildingAllocator {
     pub(crate) fn rebuild_entrance_cache(&mut self, graph: &RegionGraph, lanes: &LaneSystem) {
         let traffic_debug = crate::debug::Channel::Traffic.enabled();
         let old_entrances = traffic_debug.then(|| self.entrances.clone());
-        self.buildings.par_iter().map(|building| {
-            Self::derive_building_entrance(building, graph, lanes, &self.registry)
-        }).collect_into_vec(&mut self.entrances);
+        self.buildings
+            .par_iter()
+            .map(|building| Self::derive_building_entrance(building, graph, lanes, &self.registry))
+            .collect_into_vec(&mut self.entrances);
         self.entrances_dirty = false;
         self.bump_entrance_ref_revision();
         if let Some(old_entrances) = old_entrances.as_deref() {
@@ -171,9 +245,10 @@ impl BuildingAllocator {
         lanes: &LaneSystem,
         registry: &crate::assets::AssetRegistry,
     ) {
-        self.buildings.par_iter().map(|building| {
-            Self::derive_building_entrance(building, graph, lanes, registry)
-        }).collect_into_vec(&mut self.entrances);
+        self.buildings
+            .par_iter()
+            .map(|building| Self::derive_building_entrance(building, graph, lanes, registry))
+            .collect_into_vec(&mut self.entrances);
         self.entrances_dirty = false;
         self.bump_entrance_ref_revision();
     }
@@ -265,7 +340,10 @@ impl BuildingAllocator {
         let door = Self::site_door_position(center, facing, Some(asset));
         let key = DemandSiteEntranceKey {
             door: door.map(|door| [door.x.to_bits(), door.y.to_bits()]),
-            edge: parcel.edge_idx(), side: parcel.side(), topology, lanes: lanes.revision(),
+            edge: parcel.edge_idx(),
+            side: parcel.side(),
+            topology,
+            lanes: lanes.revision(),
         };
         let entrance = match previous {
             Some((old, entrance)) if old == key => entrance.clone(),
@@ -283,26 +361,42 @@ impl BuildingAllocator {
         graph: &RegionGraph,
         lanes: &LaneSystem,
     ) -> BuildingEntrance {
-        Self::derive_door_entrance(Self::site_door_position(center, facing, asset_entry),
-            edge_idx, side, graph, lanes)
+        Self::derive_door_entrance(
+            Self::site_door_position(center, facing, asset_entry),
+            edge_idx,
+            side,
+            graph,
+            lanes,
+        )
     }
 
-    fn site_door_position(center: Vector2, facing: Vector2,
-        asset_entry: Option<&crate::assets::registry::AssetEntry>) -> Option<Vector2> {
+    fn site_door_position(
+        center: Vector2,
+        facing: Vector2,
+        asset_entry: Option<&crate::assets::registry::AssetEntry>,
+    ) -> Option<Vector2> {
         let asset = asset_entry?;
         let anchor = main_entrance_anchor(asset.manifest.anchors.as_slice())?;
-        let (basis_x, basis_z) = building_local_xz_basis(facing, asset.manifest.building_frontage_forward());
+        let (basis_x, basis_z) =
+            building_local_xz_basis(facing, asset.manifest.building_frontage_forward());
         Some(center + basis_x * anchor.position[0] + basis_z * anchor.position[2])
     }
 
-    fn derive_door_entrance(door: Option<Vector2>, edge_idx: usize, side: i8,
-        graph: &RegionGraph, lanes: &LaneSystem) -> BuildingEntrance {
+    fn derive_door_entrance(
+        door: Option<Vector2>,
+        edge_idx: usize,
+        side: i8,
+        graph: &RegionGraph,
+        lanes: &LaneSystem,
+    ) -> BuildingEntrance {
         let mut entrance = BuildingEntrance {
             edge_idx,
             side,
             ..BuildingEntrance::default()
         };
-        let Some(door) = door else { return entrance; };
+        let Some(door) = door else {
+            return entrance;
+        };
         entrance.door_pos = door;
         entrance.curb_pos = entrance.door_pos;
         let Some(edge) = graph.get_edge(edge_idx) else {
@@ -344,7 +438,11 @@ impl BuildingAllocator {
         let origin_entrance = &self.entrances[source_idx];
         let destination_entrance = &self.entrances[destination_idx];
         Self::freight_car_eta_between_entrances(
-            origin_entrance, destination_entrance, transit_network, graph, network_time_s,
+            origin_entrance,
+            destination_entrance,
+            transit_network,
+            graph,
+            network_time_s,
         )
     }
 
@@ -360,7 +458,9 @@ impl BuildingAllocator {
     ) -> Option<f32> {
         FreightEntranceAccess::new(origin_entrance, transit_network, graph).eta_to(
             &FreightEntranceAccess::new(destination_entrance, transit_network, graph),
-            transit_network, graph, &mut network_time_s,
+            transit_network,
+            graph,
+            &mut network_time_s,
         )
     }
 

@@ -18,30 +18,58 @@ pub(crate) struct BuildingWalkingAccess {
 
 impl Default for BuildingWalkingAccess {
     fn default() -> Self {
-        Self { origins: [usize::MAX; 2], destinations: [usize::MAX; 2], nodes: [u32::MAX; 2] }
+        Self {
+            origins: [usize::MAX; 2],
+            destinations: [usize::MAX; 2],
+            nodes: [u32::MAX; 2],
+        }
     }
 }
 
 impl BuildingWalkingAccess {
     /// Wraps already validated node-ranked groups from an existing access census.
-    pub(crate) fn from_groups(origins: [usize; 2], destinations: [usize; 2], nodes: [u32; 2]) -> Self {
-        Self { origins, destinations, nodes }
+    pub(crate) fn from_groups(
+        origins: [usize; 2],
+        destinations: [usize; 2],
+        nodes: [u32; 2],
+    ) -> Self {
+        Self {
+            origins,
+            destinations,
+            nodes,
+        }
     }
 
     /// Uses exactly the ordinary planner's pedestrian geometry and finite-frontage checks.
-    pub(crate) fn at_entrance(entrance: &crate::simulation::buildings::allocator::BuildingEntrance,
-        network: &TransitNetwork, graph: &RegionGraph, walking: &PedestrianReachability) -> Self {
-        let [origin, destination] = super::trip::BuildingTripEnds::walking_pair_at_entrance(entrance, network, graph);
-        let nodes = graph.get_edge(entrance.edge_idx)
+    pub(crate) fn at_entrance(
+        entrance: &crate::simulation::buildings::allocator::BuildingEntrance,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+        walking: &PedestrianReachability,
+    ) -> Self {
+        let [origin, destination] =
+            super::trip::BuildingTripEnds::walking_pair_at_entrance(entrance, network, graph);
+        let nodes = graph
+            .get_edge(entrance.edge_idx)
             .map_or([u32::MAX; 2], |edge| [edge.start_node, edge.end_node]);
-        Self::from_groups(origin.walking_groups(walking), destination.walking_groups(walking), nodes)
+        Self::from_groups(
+            origin.walking_groups(walking),
+            destination.walking_groups(walking),
+            nodes,
+        )
     }
 
     /// Proves one directed trip without accepting a cycle in place of a zero-hop connector.
     pub(crate) fn proves_to(self, destination: Self) -> bool {
         self.origins.into_iter().enumerate().any(|(from, group)| {
-            group != usize::MAX && destination.destinations.into_iter().enumerate().any(|(to, target)|
-                group == target && self.nodes[from] != destination.nodes[to])
+            group != usize::MAX
+                && destination
+                    .destinations
+                    .into_iter()
+                    .enumerate()
+                    .any(|(to, target)| {
+                        group == target && self.nodes[from] != destination.nodes[to]
+                    })
         })
     }
 }
@@ -129,8 +157,14 @@ impl PedestrianReachability {
                 }
             }
         }
-        Self { groups, cyclic, outgoing: group_edges, visited: vec![0; count],
-            visit: 0, pending: Vec::with_capacity(count) }
+        Self {
+            groups,
+            cyclic,
+            outgoing: group_edges,
+            visited: vec![0; count],
+            visit: 0,
+            pending: Vec::with_capacity(count),
+        }
     }
 
     /// Preserves the graph-bounded traversal reserve after a construction-market fork.
@@ -143,8 +177,12 @@ impl PedestrianReachability {
     /// visits only the reachable condensed graph, O(groups + connectors) worst case.
     /// Mark-before-push bounds reusable stack storage by group count, without query allocations.
     pub(super) fn reaches(&mut self, from: usize, to: usize) -> bool {
-        let (Some(&from), Some(&to)) = (self.groups.get(from), self.groups.get(to)) else { return false; };
-        if from == to { return self.cyclic[from]; }
+        let (Some(&from), Some(&to)) = (self.groups.get(from), self.groups.get(to)) else {
+            return false;
+        };
+        if from == to {
+            return self.cyclic[from];
+        }
         self.visit = self.visit.wrapping_add(1);
         if self.visit == 0 {
             self.visited.fill(0);
@@ -155,7 +193,9 @@ impl PedestrianReachability {
         self.visited[from] = self.visit;
         while let Some(group) = self.pending.pop() {
             for &target in &self.outgoing[group] {
-                if target == to { return true; }
+                if target == to {
+                    return true;
+                }
                 if self.visited[target] != self.visit {
                     self.visited[target] = self.visit;
                     self.pending.push(target);
@@ -173,6 +213,10 @@ impl PedestrianReachability {
     }
 
     pub(super) fn cyclic_group(&self, lane: usize) -> usize {
-        self.groups.get(lane).copied().filter(|&group| self.cyclic[group]).unwrap_or(usize::MAX)
+        self.groups
+            .get(lane)
+            .copied()
+            .filter(|&group| self.cyclic[group])
+            .unwrap_or(usize::MAX)
     }
 }

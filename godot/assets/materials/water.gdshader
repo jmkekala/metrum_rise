@@ -25,7 +25,8 @@ uniform float water_refraction_strength = 0.010;
 uniform float water_refraction_mix = 0.13;
 uniform float water_surface_smoothing = 0.94;
 uniform float water_surface_blend_radius_texels = 1.0;
-uniform int water_visual_debug_mode = 0;
+// Shares the terrain view selector; the console switches both with one global.
+global uniform int terrain_visual_debug_mode;
 global uniform vec3 scene_sun_direction;
 global uniform vec4 scene_sun_color : source_color;
 global uniform vec4 scene_sky_color : source_color;
@@ -498,14 +499,14 @@ vec3 water_lighting_debug_color(
 
 vec3 water_visual_debug_color(vec2 patch_uv, float depth_m, float shore_mask) {
 	vec3 debug_color = vec3(0.0);
-	if (water_visual_debug_mode == 1 || water_visual_debug_mode == 8) {
+	if (terrain_visual_debug_mode == 1 || terrain_visual_debug_mode == 8) {
 		debug_color = water_debug_patch_color(water_debug_patch_key);
-	} else if (water_visual_debug_mode == 2 || water_visual_debug_mode == 7) {
+	} else if (terrain_visual_debug_mode == 2 || terrain_visual_debug_mode == 7) {
 		debug_color = water_debug_lod_color(water_debug_lod_step);
-	} else if (water_visual_debug_mode == 3) {
+	} else if (terrain_visual_debug_mode == 3) {
 		float terrain_height = sample_terrain_world_height(var_centered_uv);
 		debug_color = vec3(clamp(terrain_height / max(height_scale, 0.001), 0.0, 1.0));
-	} else if (water_visual_debug_mode == 5) {
+	} else if (terrain_visual_debug_mode == 5) {
 		debug_color = vec3(shore_mask, depth_m > 0.001 ? 0.45 : 0.0, 1.0 - shore_mask);
 	} else {
 		float depth_visibility = smoothstep(0.0, 6.0, depth_m);
@@ -568,8 +569,8 @@ void fragment() {
 		* (0.40 + depth_factor * 0.60);
 	vec3 sky_reflection = mix(sky_reflection_color.rgb, scene_sky_color.rgb, 0.65);
 
-	if (water_visual_debug_mode > 0) {
-		if (water_visual_debug_mode == 9) {
+	if (terrain_visual_debug_mode > 0) {
+		if (terrain_visual_debug_mode == 9) {
 			ALBEDO = water_material_debug_color(
 				UV,
 				depth_tint,
@@ -578,7 +579,7 @@ void fragment() {
 				foam_amount,
 				normal_debug_strength
 			);
-		} else if (water_visual_debug_mode == 10) {
+		} else if (terrain_visual_debug_mode == 10) {
 			ALBEDO = water_lighting_debug_color(
 				UV,
 				world_normal,

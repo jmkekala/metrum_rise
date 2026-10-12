@@ -84,15 +84,79 @@ pub(super) const PRESETS: &[BrushPreset] = &[
     // mesh the seed picks is only an unnamed two-to-one mix of pine and spruce and the mixes
     // below write their ratios down. They stay here because they are what the generator plants
     // and therefore what a repaint of a cleared cell has to match to collapse back to no edit.
-    BrushPreset { accept: 0.36, scale: DEFAULT_SCALE, mix: &[MixEntry { weight: 1, species: 0, variants: &[] }] },
-    BrushPreset { accept: 0.36, scale: DEFAULT_SCALE, mix: &[MixEntry { weight: 1, species: 1, variants: &[] }] },
-    BrushPreset { accept: 0.18, scale: DEFAULT_SCALE, mix: &[MixEntry { weight: 1, species: 2, variants: &[] }] },
-    BrushPreset { accept: 0.18, scale: DEFAULT_SCALE, mix: &[MixEntry { weight: 1, species: 3, variants: &[] }] },
+    BrushPreset {
+        accept: 0.36,
+        scale: DEFAULT_SCALE,
+        mix: &[MixEntry {
+            weight: 1,
+            species: 0,
+            variants: &[],
+        }],
+    },
+    BrushPreset {
+        accept: 0.36,
+        scale: DEFAULT_SCALE,
+        mix: &[MixEntry {
+            weight: 1,
+            species: 1,
+            variants: &[],
+        }],
+    },
+    BrushPreset {
+        accept: 0.18,
+        scale: DEFAULT_SCALE,
+        mix: &[MixEntry {
+            weight: 1,
+            species: 2,
+            variants: &[],
+        }],
+    },
+    BrushPreset {
+        accept: 0.18,
+        scale: DEFAULT_SCALE,
+        mix: &[MixEntry {
+            weight: 1,
+            species: 3,
+            variants: &[],
+        }],
+    },
     // 4 Pine, 5 Spruce, 6 Birch, 7 Aspen: one named tree, pinned over the seed's choice.
-    BrushPreset { accept: 0.36, scale: DEFAULT_SCALE, mix: &[MixEntry { weight: 1, species: 0, variants: PINE_OR_BIRCH }] },
-    BrushPreset { accept: 0.36, scale: DEFAULT_SCALE, mix: &[MixEntry { weight: 1, species: 0, variants: SPRUCE_OR_ASPEN }] },
-    BrushPreset { accept: 0.36, scale: DEFAULT_SCALE, mix: &[MixEntry { weight: 1, species: 1, variants: PINE_OR_BIRCH }] },
-    BrushPreset { accept: 0.36, scale: DEFAULT_SCALE, mix: &[MixEntry { weight: 1, species: 1, variants: SPRUCE_OR_ASPEN }] },
+    BrushPreset {
+        accept: 0.36,
+        scale: DEFAULT_SCALE,
+        mix: &[MixEntry {
+            weight: 1,
+            species: 0,
+            variants: PINE_OR_BIRCH,
+        }],
+    },
+    BrushPreset {
+        accept: 0.36,
+        scale: DEFAULT_SCALE,
+        mix: &[MixEntry {
+            weight: 1,
+            species: 0,
+            variants: SPRUCE_OR_ASPEN,
+        }],
+    },
+    BrushPreset {
+        accept: 0.36,
+        scale: DEFAULT_SCALE,
+        mix: &[MixEntry {
+            weight: 1,
+            species: 1,
+            variants: PINE_OR_BIRCH,
+        }],
+    },
+    BrushPreset {
+        accept: 0.36,
+        scale: DEFAULT_SCALE,
+        mix: &[MixEntry {
+            weight: 1,
+            species: 1,
+            variants: SPRUCE_OR_ASPEN,
+        }],
+    },
     // 8, 9 and 10 are the three mixes, which the brush numbers rather than names.
     //
     // 8 is a managed stand. The weights are Finnish growing stock: pine leads, spruce follows,
@@ -102,10 +166,26 @@ pub(super) const PRESETS: &[BrushPreset] = &[
         accept: 0.25,
         scale: DEFAULT_SCALE,
         mix: &[
-            MixEntry { weight: 50, species: 0, variants: PINE_OR_BIRCH },
-            MixEntry { weight: 30, species: 0, variants: SPRUCE_OR_ASPEN },
-            MixEntry { weight: 15, species: 1, variants: PINE_OR_BIRCH },
-            MixEntry { weight: 5, species: 1, variants: SPRUCE_OR_ASPEN },
+            MixEntry {
+                weight: 50,
+                species: 0,
+                variants: PINE_OR_BIRCH,
+            },
+            MixEntry {
+                weight: 30,
+                species: 0,
+                variants: SPRUCE_OR_ASPEN,
+            },
+            MixEntry {
+                weight: 15,
+                species: 1,
+                variants: PINE_OR_BIRCH,
+            },
+            MixEntry {
+                weight: 5,
+                species: 1,
+                variants: SPRUCE_OR_ASPEN,
+            },
         ],
     },
     // 9 is scattered broadleaf-led trees, about 62 stems/ha, which reads as standing apart
@@ -115,10 +195,26 @@ pub(super) const PRESETS: &[BrushPreset] = &[
         accept: 0.0125,
         scale: (0.95, 1.45),
         mix: &[
-            MixEntry { weight: 45, species: 1, variants: PINE_OR_BIRCH },
-            MixEntry { weight: 25, species: 1, variants: SPRUCE_OR_ASPEN },
-            MixEntry { weight: 20, species: 0, variants: PINE_OR_BIRCH },
-            MixEntry { weight: 10, species: 0, variants: SPRUCE_OR_ASPEN },
+            MixEntry {
+                weight: 45,
+                species: 1,
+                variants: PINE_OR_BIRCH,
+            },
+            MixEntry {
+                weight: 25,
+                species: 1,
+                variants: SPRUCE_OR_ASPEN,
+            },
+            MixEntry {
+                weight: 20,
+                species: 0,
+                variants: PINE_OR_BIRCH,
+            },
+            MixEntry {
+                weight: 10,
+                species: 0,
+                variants: SPRUCE_OR_ASPEN,
+            },
         ],
     },
     // 10 is small trees at moderate spacing: a narrow birch-and-pine set at about 220
@@ -128,29 +224,157 @@ pub(super) const PRESETS: &[BrushPreset] = &[
         accept: 0.06,
         scale: (0.45, 0.75),
         mix: &[
-            MixEntry { weight: 65, species: 1, variants: PINE_OR_BIRCH },
-            MixEntry { weight: 35, species: 0, variants: PINE_OR_BIRCH },
+            MixEntry {
+                weight: 65,
+                species: 1,
+                variants: PINE_OR_BIRCH,
+            },
+            MixEntry {
+                weight: 35,
+                species: 0,
+                variants: PINE_OR_BIRCH,
+            },
         ],
     },
     // 11 to 16 are yard shrubs: one named plant each, at about one plant per 6 to 12 m².
-    BrushPreset { accept: 0.03, scale: SHRUB_SCALE, mix: &[MixEntry { weight: 1, species: 2, variants: LILAC }] },
-    BrushPreset { accept: 0.06, scale: SHRUB_SCALE, mix: &[MixEntry { weight: 1, species: 2, variants: SPIREA }] },
-    BrushPreset { accept: 0.06, scale: SHRUB_SCALE, mix: &[MixEntry { weight: 1, species: 2, variants: ROSE }] },
-    BrushPreset { accept: 0.05, scale: SHRUB_SCALE, mix: &[MixEntry { weight: 1, species: 2, variants: COTONEASTER }] },
-    BrushPreset { accept: 0.04, scale: SHRUB_SCALE, mix: &[MixEntry { weight: 1, species: 2, variants: MUGO }] },
-    BrushPreset { accept: 0.06, scale: SHRUB_SCALE, mix: &[MixEntry { weight: 1, species: 2, variants: JUNIPER }] },
+    BrushPreset {
+        accept: 0.03,
+        scale: SHRUB_SCALE,
+        mix: &[MixEntry {
+            weight: 1,
+            species: 2,
+            variants: LILAC,
+        }],
+    },
+    BrushPreset {
+        accept: 0.06,
+        scale: SHRUB_SCALE,
+        mix: &[MixEntry {
+            weight: 1,
+            species: 2,
+            variants: SPIREA,
+        }],
+    },
+    BrushPreset {
+        accept: 0.06,
+        scale: SHRUB_SCALE,
+        mix: &[MixEntry {
+            weight: 1,
+            species: 2,
+            variants: ROSE,
+        }],
+    },
+    BrushPreset {
+        accept: 0.05,
+        scale: SHRUB_SCALE,
+        mix: &[MixEntry {
+            weight: 1,
+            species: 2,
+            variants: COTONEASTER,
+        }],
+    },
+    BrushPreset {
+        accept: 0.04,
+        scale: SHRUB_SCALE,
+        mix: &[MixEntry {
+            weight: 1,
+            species: 2,
+            variants: MUGO,
+        }],
+    },
+    BrushPreset {
+        accept: 0.06,
+        scale: SHRUB_SCALE,
+        mix: &[MixEntry {
+            weight: 1,
+            species: 2,
+            variants: JUNIPER,
+        }],
+    },
     // 17, 18 and 19 are hedge modules, which plant_vegetation_line lays end to end at full size.
-    BrushPreset { accept: 0.0, scale: (1.0, 1.0), mix: &[MixEntry { weight: 1, species: 2, variants: HEDGE_LOW }] },
-    BrushPreset { accept: 0.0, scale: (1.0, 1.0), mix: &[MixEntry { weight: 1, species: 2, variants: HEDGE_MID }] },
-    BrushPreset { accept: 0.0, scale: (1.0, 1.0), mix: &[MixEntry { weight: 1, species: 2, variants: HEDGE_TALL }] },
+    BrushPreset {
+        accept: 0.0,
+        scale: (1.0, 1.0),
+        mix: &[MixEntry {
+            weight: 1,
+            species: 2,
+            variants: HEDGE_LOW,
+        }],
+    },
+    BrushPreset {
+        accept: 0.0,
+        scale: (1.0, 1.0),
+        mix: &[MixEntry {
+            weight: 1,
+            species: 2,
+            variants: HEDGE_MID,
+        }],
+    },
+    BrushPreset {
+        accept: 0.0,
+        scale: (1.0, 1.0),
+        mix: &[MixEntry {
+            weight: 1,
+            species: 2,
+            variants: HEDGE_TALL,
+        }],
+    },
     // 20 to 25 are yard flowers: peony, lupine, phlox, hydrangea, rhododendron and a clump of
     // summer bedding plants, a little denser than the shrubs because each is a smaller clump.
-    BrushPreset { accept: 0.08, scale: SHRUB_SCALE, mix: &[MixEntry { weight: 1, species: 2, variants: PEONY }] },
-    BrushPreset { accept: 0.10, scale: SHRUB_SCALE, mix: &[MixEntry { weight: 1, species: 2, variants: LUPINE }] },
-    BrushPreset { accept: 0.10, scale: SHRUB_SCALE, mix: &[MixEntry { weight: 1, species: 2, variants: PHLOX }] },
-    BrushPreset { accept: 0.05, scale: SHRUB_SCALE, mix: &[MixEntry { weight: 1, species: 2, variants: HYDRANGEA }] },
-    BrushPreset { accept: 0.04, scale: SHRUB_SCALE, mix: &[MixEntry { weight: 1, species: 2, variants: RHODODENDRON }] },
-    BrushPreset { accept: 0.15, scale: SHRUB_SCALE, mix: &[MixEntry { weight: 1, species: 2, variants: SUMMER_FLOWERS }] },
+    BrushPreset {
+        accept: 0.08,
+        scale: SHRUB_SCALE,
+        mix: &[MixEntry {
+            weight: 1,
+            species: 2,
+            variants: PEONY,
+        }],
+    },
+    BrushPreset {
+        accept: 0.10,
+        scale: SHRUB_SCALE,
+        mix: &[MixEntry {
+            weight: 1,
+            species: 2,
+            variants: LUPINE,
+        }],
+    },
+    BrushPreset {
+        accept: 0.10,
+        scale: SHRUB_SCALE,
+        mix: &[MixEntry {
+            weight: 1,
+            species: 2,
+            variants: PHLOX,
+        }],
+    },
+    BrushPreset {
+        accept: 0.05,
+        scale: SHRUB_SCALE,
+        mix: &[MixEntry {
+            weight: 1,
+            species: 2,
+            variants: HYDRANGEA,
+        }],
+    },
+    BrushPreset {
+        accept: 0.04,
+        scale: SHRUB_SCALE,
+        mix: &[MixEntry {
+            weight: 1,
+            species: 2,
+            variants: RHODODENDRON,
+        }],
+    },
+    BrushPreset {
+        accept: 0.15,
+        scale: SHRUB_SCALE,
+        mix: &[MixEntry {
+            weight: 1,
+            species: 2,
+            variants: SUMMER_FLOWERS,
+        }],
+    },
 ];
 
 /// Borrows one preset, or `None` when the ordinal names none.
@@ -176,7 +400,10 @@ impl BrushPreset {
 
     /// Whether this preset plants hedge modules, which only a line may lay.
     pub(super) fn is_hedge(&self) -> bool {
-        self.mix[0].variants.first().is_some_and(|&v| hedge_index(self.mix[0].species, v + 1).is_some())
+        self.mix[0]
+            .variants
+            .first()
+            .is_some_and(|&v| hedge_index(self.mix[0].species, v + 1).is_some())
     }
 
     /// Picks the species and the biased variant pin for one proposal.
@@ -275,7 +502,9 @@ impl PlantClass {
     /// until the preset's own density is reached.
     pub(super) fn stamp_limit(self, radius: f32) -> usize {
         let area = std::f32::consts::PI * radius * radius;
-        (area / (160.0 * self.spacing() * self.spacing())).ceil().max(1.0) as usize
+        (area / (160.0 * self.spacing() * self.spacing()))
+            .ceil()
+            .max(1.0) as usize
     }
 
     /// Radius limit bounds two proposals per cell to at most 169,362 darts.

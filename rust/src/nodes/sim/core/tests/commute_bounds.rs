@@ -40,7 +40,12 @@ fn bounded_commute_estimates_match_exhaustive_estimates() {
     };
     let homes = buildings_of(|zone| zone == ZoneType::Residential);
     let jobs = buildings_of(|zone| matches!(zone, ZoneType::Commercial | ZoneType::Industrial));
-    assert!(homes.len() > 500 && jobs.len() > 100, "{} homes, {} jobs", homes.len(), jobs.len());
+    assert!(
+        homes.len() > 500 && jobs.len() > 100,
+        "{} homes, {} jobs",
+        homes.len(),
+        jobs.len()
+    );
 
     let job_ends: Vec<_> = jobs
         .iter()
@@ -92,8 +97,15 @@ fn bounded_commute_estimates_match_exhaustive_estimates() {
                     f32::from(exact_s) * 0.5,
                 ] {
                     match estimate_trip_seconds_between(
-                        &home_ends, ends, has_car, network, graph, &pathfinds, speed_bound,
-                        budget_s, Some(&shared),
+                        &home_ends,
+                        ends,
+                        has_car,
+                        network,
+                        graph,
+                        &pathfinds,
+                        speed_bound,
+                        budget_s,
+                        Some(&shared),
                     ) {
                         TripEstimate::Seconds(seconds) => assert_eq!(
                             seconds, exact,
@@ -114,5 +126,8 @@ fn bounded_commute_estimates_match_exhaustive_estimates() {
     }
     assert!(routed > 10_000, "only {routed} reachable pairs checked");
     assert!(over_budget > 0, "no budget ever pruned a pair");
-    assert!(shared.len() > 0, "no bounded estimate retained a network leg");
+    assert!(
+        shared.len() > 0,
+        "no bounded estimate retained a network leg"
+    );
 }

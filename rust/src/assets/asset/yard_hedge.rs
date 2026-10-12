@@ -119,7 +119,12 @@ pub fn structure_footprint(part: &super::MeshPart) -> Option<[[f32; 2]; 2]> {
     let [min, max] = part.imported_bounds?;
     let transform = part.local_transform();
     let mut rect = [[f32::INFINITY; 2], [f32::NEG_INFINITY; 2]];
-    for (x, z) in [(min[0], min[2]), (min[0], max[2]), (max[0], max[2]), (max[0], min[2])] {
+    for (x, z) in [
+        (min[0], min[2]),
+        (min[0], max[2]),
+        (max[0], max[2]),
+        (max[0], min[2]),
+    ] {
         let p = transform.transform_point3(glam::Vec3::new(x, 0.0, z));
         rect[0] = [rect[0][0].min(p.x), rect[0][1].min(p.z)];
         rect[1] = [rect[1][0].max(p.x), rect[1][1].max(p.z)];
@@ -176,9 +181,18 @@ pub fn plan_yard_hedge(lot: &YardLot<'_>, edges: &[LotEdge]) -> Vec<YardHedgeRow
         // Each row as (start, end, offset along it -> point).
         let (length, point): (f32, Box<dyn Fn(f32) -> [f32; 2]>) = match edge {
             LotEdge::Front => (2.0 * across, Box::new(move |s| at(front_line, s - across))),
-            LotEdge::Back => (2.0 * across, Box::new(move |s| at(-along_front, s - across))),
-            LotEdge::Left => (front_line + along_front, Box::new(move |s| at(s - along_front, -across))),
-            LotEdge::Right => (front_line + along_front, Box::new(move |s| at(s - along_front, across))),
+            LotEdge::Back => (
+                2.0 * across,
+                Box::new(move |s| at(-along_front, s - across)),
+            ),
+            LotEdge::Left => (
+                front_line + along_front,
+                Box::new(move |s| at(s - along_front, -across)),
+            ),
+            LotEdge::Right => (
+                front_line + along_front,
+                Box::new(move |s| at(s - along_front, across)),
+            ),
         };
         let entrance_s = (edge == LotEdge::Front)
             .then_some(lot.entrance)
@@ -187,7 +201,10 @@ pub fn plan_yard_hedge(lot: &YardLot<'_>, edges: &[LotEdge]) -> Vec<YardHedgeRow
         let blocked = |s: f32| {
             let p = point(s);
             entrance_s.is_some_and(|e| (s - e).abs() < ENTRANCE_GAP_HALF_M)
-                || lot.surfaces.iter().any(|polygon| near_polygon(p, polygon, SURFACE_CLEAR_M))
+                || lot
+                    .surfaces
+                    .iter()
+                    .any(|polygon| near_polygon(p, polygon, SURFACE_CLEAR_M))
                 || lot.structures.iter().any(|&[a, b]| {
                     near_polygon(p, &[a, [a[0], b[1]], b, [b[0], a[1]]], SURFACE_CLEAR_M)
                 })
@@ -281,9 +298,15 @@ mod tests {
         // Left piece, the piece between door and driveway, and right piece; cut ends do not join.
         assert_eq!(rows.len(), 3, "{rows:?}");
         let xs: Vec<_> = rows.iter().map(|row| (row.from[0], row.to[0])).collect();
-        assert_eq!(xs, vec![(-10.0, -5.0), (-3.0, 1.25), (6.75, 10.0)], "{rows:?}");
         assert_eq!(
-            rows.iter().map(|row| (row.join_from, row.join_to)).collect::<Vec<_>>(),
+            xs,
+            vec![(-10.0, -5.0), (-3.0, 1.25), (6.75, 10.0)],
+            "{rows:?}"
+        );
+        assert_eq!(
+            rows.iter()
+                .map(|row| (row.join_from, row.join_to))
+                .collect::<Vec<_>>(),
             vec![(true, false), (false, false), (false, true)]
         );
     }

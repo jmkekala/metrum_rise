@@ -21,8 +21,8 @@ use std::collections::BinaryHeap;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 mod query;
-pub(crate) use query::{SharedNetworkQuotes, TripQueryScratch};
 pub(super) use query::RouteStart;
+pub(crate) use query::{SharedNetworkQuotes, TripQueryScratch};
 
 #[cfg(test)]
 mod owned_oracle;
@@ -181,33 +181,47 @@ impl TripEnd {
             lane_id,
             lane_d,
             local_time_s,
-            frontage_time_s: frontage_time_s(
-                mode,
-                lane_id,
-                lane_d,
-                origin,
-                transit_network,
-                graph,
-            ),
+            frontage_time_s: frontage_time_s(mode, lane_id, lane_d, origin, transit_network, graph),
         })
     }
 
     /// Departure/arrival ranks for one door and mode, projecting each lane only once.
     /// Local geometry is direction-independent; node validity and frontage prices are not.
-    pub(super) fn pair(mode: u8, entrance: &BuildingEntrance,
-        network: &TransitNetwork, graph: &RegionGraph) -> [[Option<Self>; 2]; 2] {
+    pub(super) fn pair(
+        mode: u8,
+        entrance: &BuildingEntrance,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> [[Option<Self>; 2]; 2] {
         let origins = NODE_RANKS.map(|rank| Self::new(mode, rank, entrance, true, network, graph));
         let destinations = NODE_RANKS.map(|rank| {
             let Some(origin) = origins[usize::from(1 - rank)] else {
                 return Self::new(mode, rank, entrance, false, network, graph);
             };
             let edge = graph.edge(entrance.edge_idx);
-            let node = if rank == 0 { edge.start_node } else { edge.end_node };
-            if lane_origin_node(origin.lane_id, network, graph) != Some(node) { return None; }
+            let node = if rank == 0 {
+                edge.start_node
+            } else {
+                edge.end_node
+            };
+            if lane_origin_node(origin.lane_id, network, graph) != Some(node) {
+                return None;
+            }
             let pos = graph.node(node).pos;
-            Some(Self { node, node_x: pos.x, node_z: pos.z,
-                frontage_time_s: frontage_time_s(mode, origin.lane_id, origin.lane_d,
-                    false, network, graph), ..origin })
+            Some(Self {
+                node,
+                node_x: pos.x,
+                node_z: pos.z,
+                frontage_time_s: frontage_time_s(
+                    mode,
+                    origin.lane_id,
+                    origin.lane_d,
+                    false,
+                    network,
+                    graph,
+                ),
+                ..origin
+            })
         });
         [origins, destinations]
     }
@@ -218,8 +232,11 @@ impl TripEnd {
         Some(self.local_time_s + self.frontage_time_s?)
     }
 
-    pub(super) fn has_proven_walk_to(&self, destination: &Self,
-        reachability: &super::reachability::PedestrianReachability) -> bool {
+    pub(super) fn has_proven_walk_to(
+        &self,
+        destination: &Self,
+        reachability: &super::reachability::PedestrianReachability,
+    ) -> bool {
         self.network_departure_s().is_some_and(f32::is_finite)
             && destination.network_departure_s().is_some_and(f32::is_finite)
             // At a shared node the ordinary planner requires the direct connector;
@@ -228,14 +245,21 @@ impl TripEnd {
             && reachability.proves(self.lane_id, destination.lane_id)
     }
 
-    pub(super) fn walking_group(&self, reachability: &super::reachability::PedestrianReachability) -> usize {
+    pub(super) fn walking_group(
+        &self,
+        reachability: &super::reachability::PedestrianReachability,
+    ) -> usize {
         if self.network_departure_s().is_some_and(f32::is_finite) {
             reachability.cyclic_group(self.lane_id)
-        } else { usize::MAX }
+        } else {
+            usize::MAX
+        }
     }
 
     /// Graph node used by this validated trip attachment.
-    pub(super) fn network_node(&self) -> u32 { self.node }
+    pub(super) fn network_node(&self) -> u32 {
+        self.node
+    }
 
     /// Network node this end attaches to or detaches from.
     pub(super) fn node_pos(&self) -> (f32, f32) {
@@ -322,8 +346,17 @@ pub(super) fn network_leg_is_reachable(
     walking: &mut super::reachability::PedestrianReachability,
     query: &mut crate::simulation::pathing::cch::CchQueryScratch,
 ) -> bool {
-    network.cch_graph.find_cost(origin.node, destination.node, origin.edge_idx,
-        graph, transit_flags_for_mode(mode), query).is_some()
+    network
+        .cch_graph
+        .find_cost(
+            origin.node,
+            destination.node,
+            origin.edge_idx,
+            graph,
+            transit_flags_for_mode(mode),
+            query,
+        )
+        .is_some()
         && (mode == MODE_CAR || walking.reaches(origin.lane_id, destination.lane_id))
 }
 
@@ -382,12 +415,22 @@ pub(super) fn combine_trip_ends(
 
     if origin.node != destination.node {
         return TripQueryScratch::with(transit_network, graph, |scratch| {
-            scratch.combine(mode, origin_rank, destination_rank, origin, destination,
-                transit_network, graph, pathfind_count, None)
+            scratch.combine(
+                mode,
+                origin_rank,
+                destination_rank,
+                origin,
+                destination,
+                transit_network,
+                graph,
+                pathfind_count,
+                None,
+            )
         });
     }
     if mode != MODE_CAR
-        && !connector_to_lane_exists(origin.lane_id, destination.lane_id, transit_network) {
+        && !connector_to_lane_exists(origin.lane_id, destination.lane_id, transit_network)
+    {
         return None;
     }
 
@@ -506,26 +549,52 @@ pub(super) fn build_exact_path_for_candidate(
             transit_network.flow_fields.foot(target_zone)
         };
         if let Some(field) = flow_field
-            && field.nearest_building.get(candidate.planned_attach_node as usize) == Some(&target_building)
-            && let Some(path) = scratch.flow_path(field, candidate, transit_network, graph, <[u32]>::to_vec) {
+            && field
+                .nearest_building
+                .get(candidate.planned_attach_node as usize)
+                == Some(&target_building)
+            && let Some(path) =
+                scratch.flow_path(field, candidate, transit_network, graph, <[u32]>::to_vec)
+        {
             return Some((path, ACCESS_PLAN_VALID | ACCESS_PATH_FROM_FLOW_FIELD));
         }
         pathfind_count.fetch_add(1, Ordering::Relaxed);
-        scratch.network_path(candidate.mode, candidate.planned_attach_node,
-            candidate.planned_detach_node, RouteStart::Lane(candidate.planned_attach_lane_id),
-            candidate.planned_detach_lane_id, transit_network, graph, <[u32]>::to_vec)
-            .ok().map(|(_, path)| (path, ACCESS_PLAN_VALID))
+        scratch
+            .network_path(
+                candidate.mode,
+                candidate.planned_attach_node,
+                candidate.planned_detach_node,
+                RouteStart::Lane(candidate.planned_attach_lane_id),
+                candidate.planned_detach_lane_id,
+                transit_network,
+                graph,
+                <[u32]>::to_vec,
+            )
+            .ok()
+            .map(|(_, path)| (path, ACCESS_PLAN_VALID))
     })
 }
 
 /// Checks a stored path using prepared lane-frontier storage.
 #[cfg(test)]
-pub(super) fn pedestrian_path_has_lane_connectors(path: &[u32], attach: usize, detach: usize,
-    network: &TransitNetwork, graph: &RegionGraph) -> bool {
-    TripQueryScratch::with(network, graph, |scratch| scratch.has_connectors(path,
-        path.first().copied().unwrap_or(u32::MAX), RouteStart::Lane(attach), detach, network, graph))
+pub(super) fn pedestrian_path_has_lane_connectors(
+    path: &[u32],
+    attach: usize,
+    detach: usize,
+    network: &TransitNetwork,
+    graph: &RegionGraph,
+) -> bool {
+    TripQueryScratch::with(network, graph, |scratch| {
+        scratch.has_connectors(
+            path,
+            path.first().copied().unwrap_or(u32::MAX),
+            RouteStart::Lane(attach),
+            detach,
+            network,
+            graph,
+        )
+    })
 }
-
 
 fn collect_connector_targets_to_edge(
     from_lane_id: usize,
@@ -581,7 +650,6 @@ fn connector_to_lane_exists(
     })
 }
 
-
 fn visit_pedestrian_successors(
     state: &PedestrianSearchState,
     transit_network: &TransitNetwork,
@@ -625,7 +693,6 @@ fn visit_pedestrian_successors(
         });
     }
 }
-
 
 #[derive(Copy, Clone, PartialEq)]
 struct PedestrianSearchState {
@@ -823,15 +890,26 @@ pub(super) fn best_trip_candidate_for_mode(
     }
     // These four lane ends are immutable throughout the four rank combinations. Keep
     // the original candidate order and arithmetic while avoiding repeated projection.
-    let origins = NODE_RANKS.map(|rank|
-        TripEnd::new(mode, rank, origin_entrance, true, transit_network, graph));
-    let destinations = NODE_RANKS.map(|rank|
-        TripEnd::new(mode, rank, destination_entrance, false, transit_network, graph));
+    let origins = NODE_RANKS
+        .map(|rank| TripEnd::new(mode, rank, origin_entrance, true, transit_network, graph));
+    let destinations = NODE_RANKS.map(|rank| {
+        TripEnd::new(
+            mode,
+            rank,
+            destination_entrance,
+            false,
+            transit_network,
+            graph,
+        )
+    });
     let mut best: Option<PlannedTripCandidate> = None;
     for (origin_rank, destination_rank) in NODE_RANK_PAIRS {
-        let (Some(origin), Some(destination)) =
-            (&origins[usize::from(origin_rank)], &destinations[usize::from(destination_rank)])
-            else { continue; };
+        let (Some(origin), Some(destination)) = (
+            &origins[usize::from(origin_rank)],
+            &destinations[usize::from(destination_rank)],
+        ) else {
+            continue;
+        };
         if let Some(candidate) = combine_trip_ends(
             mode,
             origin_rank,

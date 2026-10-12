@@ -141,7 +141,9 @@ impl LaneSystem {
 
     /// Changes whenever physical lane IDs or connector topology are rebuilt, even when
     /// terrain authoring leaves the CCH hierarchy unchanged. Building edits do not change it.
-    pub(crate) fn revision(&self) -> u64 { self.revision }
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision
+    }
 
     /// Street crossing walked by connector `lane_id`, when the connector is a single crosswalk.
     pub fn crosswalk(&self, lane_id: usize) -> Option<LaneCrosswalk> {

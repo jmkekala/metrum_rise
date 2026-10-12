@@ -102,8 +102,18 @@ fn small_integer_contours_match_repeated_conversion_at_grid_contacts() {
         for axis in [DVec2::X, DVec2::new(0.8, 0.6), DVec2::new(1.0, 1.0)] {
             let frame = GridFrame::new(origin, axis, 10.0).unwrap();
             let a = frame.corners(0, 0);
-            for offset in [-10.0, -0.000001, -0.00000049, 0.0, 0.00000049, 0.000001, 10.0] {
-                let b = frame.corners(1, 0).map(|point| point + axis.normalize() * offset);
+            for offset in [
+                -10.0,
+                -0.000001,
+                -0.00000049,
+                0.0,
+                0.00000049,
+                0.000001,
+                10.0,
+            ] {
+                let b = frame
+                    .corners(1, 0)
+                    .map(|point| point + axis.normalize() * offset);
                 for count in [3, 4] {
                     let mut padded_a = a.to_vec();
                     let mut padded_b = b[..count].to_vec();
@@ -170,37 +180,56 @@ fn negative_coordinates_and_chunk_boundaries_pick_once() {
 #[test]
 fn other_frame_queries_match_filtered_spatial_order_and_footprints() {
     let mut store = CellStore::default();
-    let frames = [GridFrame::new(DVec2::ZERO, DVec2::X, 10.0).unwrap(),
+    let frames = [
+        GridFrame::new(DVec2::ZERO, DVec2::X, 10.0).unwrap(),
         GridFrame::new(DVec2::new(0.0, 1.0), DVec2::X, 10.0).unwrap(),
-        GridFrame::new(DVec2::new(-3.2, 6.7), DVec2::new(0.8, 0.6), 10.0).unwrap()];
+        GridFrame::new(DVec2::new(-3.2, 6.7), DVec2::new(0.8, 0.6), 10.0).unwrap(),
+    ];
     for frame in frames {
         let grid = store.register_frame(frame);
         for x in [-52, -1, 0, 7, 8, 51, 52] {
             for y in [-52, -1, 0, 7, 8, 51, 52] {
                 let key = CellKey { grid, x, y };
                 store.insert(key);
-                if (x + y) % 3 == 0 { store.set_profile(key, 1); }
+                if (x + y) % 3 == 0 {
+                    store.set_profile(key, 1);
+                }
             }
         }
     }
     let absent = GridFrame::new(DVec2::new(0.5, 0.5), DVec2::X, 10.0).unwrap();
     for excluded in frames.into_iter().chain([absent]) {
-        for centre in [DVec2::ZERO, DVec2::splat(512.0), DVec2::splat(-512.0),
-            DVec2::new(-80.0, 70.0)] {
+        for centre in [
+            DVec2::ZERO,
+            DVec2::splat(512.0),
+            DVec2::splat(-512.0),
+            DVec2::new(-80.0, 70.0),
+        ] {
             for radius in [0.0, 0.000001, 10.0, 90.0, 1100.0] {
-                let bounds = CellBounds { min: centre - DVec2::splat(radius),
-                    max: centre + DVec2::splat(radius) };
+                let bounds = CellBounds {
+                    min: centre - DVec2::splat(radius),
+                    max: centre + DVec2::splat(radius),
+                };
                 for reserved_only in [false, true] {
                     let mut expected = Vec::new();
                     let mut visit = |key: CellKey| {
                         let frame = store.frame(key.grid).unwrap();
-                        if frame != excluded { expected.push((key, frame.corners(key.x, key.y))); }
+                        if frame != excluded {
+                            expected.push((key, frame.corners(key.x, key.y)));
+                        }
                     };
-                    if reserved_only { store.visit_reserved_in_bounds(bounds, &mut visit); }
-                    else { store.visit_in_bounds(bounds, &mut visit); }
+                    if reserved_only {
+                        store.visit_reserved_in_bounds(bounds, &mut visit);
+                    } else {
+                        store.visit_in_bounds(bounds, &mut visit);
+                    }
                     let mut actual = Vec::new();
-                    store.visit_other_frame_footprints_in_bounds(bounds, excluded, reserved_only,
-                        |key, corners| actual.push((key, corners)));
+                    store.visit_other_frame_footprints_in_bounds(
+                        bounds,
+                        excluded,
+                        reserved_only,
+                        |key, corners| actual.push((key, corners)),
+                    );
                     assert_eq!(actual, expected);
                 }
             }

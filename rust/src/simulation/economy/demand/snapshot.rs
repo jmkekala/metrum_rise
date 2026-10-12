@@ -17,13 +17,12 @@ use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
 use crate::simulation::economy::fiscal::{CityFiscalPolicy, tax_amount};
+use crate::simulation::economy::hiring::JobFunding;
 use crate::simulation::economy::households::{
     Household, HouseholdSystem, active_worker_capacity_for_profile_with_floor_scale,
-    affordable_consumer_residents,
-    commercial_activity_signal_for_city, household_is_housed, household_reserve_days,
-    output_area_scale_for_building,
+    affordable_consumer_residents, commercial_activity_signal_for_city, household_is_housed,
+    household_reserve_days, output_area_scale_for_building,
 };
-use crate::simulation::economy::hiring::JobFunding;
 use crate::simulation::economy::reduction::ordered_fold;
 use crate::simulation::economy::resource_totals::{
     add_resource_amount, merge_resource_amounts, resource_amount,
@@ -236,8 +235,17 @@ impl DailyDemandSnapshot {
         fiscal_policy: &CityFiscalPolicy,
         treasury_balance: f64,
     ) -> Self {
-        Self::from_runtime_with_funding(allocator, households, graph, config, catalog,
-            tuning, fiscal_policy, treasury_balance, &households.job_funding)
+        Self::from_runtime_with_funding(
+            allocator,
+            households,
+            graph,
+            config,
+            catalog,
+            tuning,
+            fiscal_policy,
+            treasury_balance,
+            &households.job_funding,
+        )
     }
 
     /// Builds jobs and business purchases from the same freshly validated operation book.
@@ -668,7 +676,10 @@ impl BuildingSnapshotAccumulator {
                 }
             }
             let input_capacity_scale = job_funding.input_demand_scale(
-                idx, building, profile, allocator.is_city_service_building(building),
+                idx,
+                building,
+                profile,
+                allocator.is_city_service_building(building),
             );
             for input_port in &profile.inputs {
                 // Maintenance supplied by this recipe is already excluded from net output.

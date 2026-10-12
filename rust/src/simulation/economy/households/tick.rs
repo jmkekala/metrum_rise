@@ -29,7 +29,11 @@ impl HouseholdSystem {
         fiscal_policy: &CityFiscalPolicy,
         on_delivery: impl FnMut(&crate::simulation::economy::logistics::Shipment, &BuildingAllocator),
     ) -> FiscalRevenue {
-        let timing_category = if debug::Channel::EconomyPhases.enabled() { debug::Channel::EconomyPhases } else { debug::Channel::Economy };
+        let timing_category = if debug::Channel::EconomyPhases.enabled() {
+            debug::Channel::EconomyPhases
+        } else {
+            debug::Channel::Economy
+        };
         let timing_enabled = timing_category.enabled();
         let total_start = Instant::now();
         let mut phase_start = total_start;
@@ -77,7 +81,8 @@ impl HouseholdSystem {
             service_funding_by_building,
             logistics,
             fiscal_policy,
-            *treasury_balance, minute_of_day,
+            *treasury_balance,
+            minute_of_day,
         );
         let workplace_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
@@ -127,7 +132,11 @@ impl HouseholdSystem {
         fiscal_policy: &CityFiscalPolicy,
         on_wages_paid: impl FnOnce(&AgentSystem, &BuildingAllocator),
     ) -> FiscalRevenue {
-        let timing_category = if debug::Channel::EconomyPhases.enabled() { debug::Channel::EconomyPhases } else { debug::Channel::Economy };
+        let timing_category = if debug::Channel::EconomyPhases.enabled() {
+            debug::Channel::EconomyPhases
+        } else {
+            debug::Channel::Economy
+        };
         let timing_enabled = timing_category.enabled();
         let total_start = Instant::now();
         let mut phase_start = total_start;
@@ -200,7 +209,8 @@ impl HouseholdSystem {
             service_funding_by_building,
             logistics,
             fiscal_policy,
-            *treasury_balance, 0,
+            *treasury_balance,
+            0,
         );
         let workplace_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();

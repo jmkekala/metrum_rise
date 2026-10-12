@@ -14,10 +14,15 @@ pub(super) fn mark_dirty(dirty: &mut Vec<usize>, flags: &mut [bool], buyer: usiz
 
 fn account_mask(budgets: &BusinessBudgets, classes: &[Vec<u32>], slot: usize) -> u64 {
     let account = budgets.accounts[slot];
-    if account.units <= 0.0 { return 0; }
-    classes[account.resource as usize].iter().enumerate().fold(0, |mask, (bit, &price)| {
-        mask | (u64::from(budgets.potentially_claimable(slot, f32::from_bits(price))) << bit)
-    })
+    if account.units <= 0.0 {
+        return 0;
+    }
+    classes[account.resource as usize]
+        .iter()
+        .enumerate()
+        .fold(0, |mask, (bit, &price)| {
+            mask | (u64::from(budgets.potentially_claimable(slot, f32::from_bits(price))) << bit)
+        })
 }
 
 impl BusinessMarket {
@@ -26,23 +31,37 @@ impl BusinessMarket {
     // the ordinary scan. This bounds per-account preparation by 64 pure affordability tests.
     /// Collects up to 64 exact authored prices per resource outside candidate queries.
     pub(super) fn prepare_price_classes(&mut self, catalog: &RuntimeEconomyCatalog) {
-        self.price_classes.resize_with(catalog.resource_count() + 1, Vec::new);
+        self.price_classes
+            .resize_with(catalog.resource_count() + 1, Vec::new);
         self.price_classes.iter_mut().for_each(Vec::clear);
         for profile in catalog.all_profiles() {
             for output in &profile.outputs {
                 let classes = &mut self.price_classes[output.resource_runtime_id as usize];
                 let price = profile.unit_price_currency.to_bits();
-                if classes.len() < 64 && !classes.contains(&price) { classes.push(price); }
+                if classes.len() < 64 && !classes.contains(&price) {
+                    classes.push(price);
+                }
             }
         }
-        self.price_classes.iter_mut().for_each(|classes| classes.sort_unstable());
+        self.price_classes
+            .iter_mut()
+            .for_each(|classes| classes.sort_unstable());
     }
 
     /// Reserves one dirty-list entry per buyer before any transactional mutation.
     pub(super) fn prepare_finance_mask_storage(&mut self) {
         self.buyer_dirty.resize(self.budgets.finance.len(), false);
-        self.dirty_buyers.reserve(self.buyer_dirty.len().saturating_sub(self.dirty_buyers.len()));
-        self.account_masks.reserve(self.budgets.accounts.capacity().saturating_sub(self.account_masks.len()));
+        self.dirty_buyers.reserve(
+            self.buyer_dirty
+                .len()
+                .saturating_sub(self.dirty_buyers.len()),
+        );
+        self.account_masks.reserve(
+            self.budgets
+                .accounts
+                .capacity()
+                .saturating_sub(self.account_masks.len()),
+        );
     }
 
     /// Defers one buyer's eligibility refresh until restored or staged budgets are readable.
@@ -54,9 +73,12 @@ impl BusinessMarket {
     pub(super) fn reset_finance_masks(&mut self) {
         self.prepare_finance_mask_storage();
         self.account_masks.resize(self.budgets.accounts.len(), 0);
-        self.account_masks.par_iter_mut().enumerate().for_each(|(slot, mask)| {
-            *mask = account_mask(&self.budgets, &self.price_classes, slot);
-        });
+        self.account_masks
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(slot, mask)| {
+                *mask = account_mask(&self.budgets, &self.price_classes, slot);
+            });
         self.port_masks.resize(self.identities.len(), 0);
         self.port_masks.fill(0);
         // Account tranches share recipe ports; their OR reduction retains deterministic order.
@@ -73,9 +95,14 @@ impl BusinessMarket {
     /// Returns the exact price class, falling back to ordinary scanning for unknown prices.
     pub(super) fn finance_query_mask(&self, resource: u16, price: f32) -> Option<u64> {
         #[cfg(test)]
-        if self.disable_finance_masks { return None; }
-        self.price_classes.get(resource as usize)?.binary_search(&price.to_bits())
-            .ok().map(|bit| 1u64 << bit)
+        if self.disable_finance_masks {
+            return None;
+        }
+        self.price_classes
+            .get(resource as usize)?
+            .binary_search(&price.to_bits())
+            .ok()
+            .map(|bit| 1u64 << bit)
     }
 
     // Refresh after rollback has restored the budgets, never from provisional snapshots.
@@ -105,7 +132,10 @@ impl BusinessMarket {
                 let resource = self.identities[port].1;
                 let index = self.indices.port_mut(resource, port);
                 for &component in access.components.as_slice() {
-                    index.set_query_mask(ReachableBucketEntry::new(component, access.chunk, port), self.port_masks[port]);
+                    index.set_query_mask(
+                        ReachableBucketEntry::new(component, access.chunk, port),
+                        self.port_masks[port],
+                    );
                 }
                 slot = self.budgets.accounts[slot].next_buyer;
             }

@@ -8,9 +8,9 @@ use super::households::{Household, consumer_basket_cost, visit_consumer_budgets}
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use rayon::prelude::*;
 
-mod routing;
-mod revalidation;
 pub(crate) mod business;
+mod revalidation;
+mod routing;
 pub(crate) use routing::ConsumerMarket;
 
 #[derive(Clone, Copy, Debug)]
@@ -146,11 +146,15 @@ impl ConsumerBudgets {
         }
         let mut unchanged = self.households.len() == households.len()
             && self.categories.len() == self.previous_categories.len()
-            && self.categories.iter().zip(&self.previous_categories).all(|(a, b)| {
-                a.resource == b.resource
-                    && a.units_per_resident.to_bits() == b.units_per_resident.to_bits()
-                    && a.budget_share.to_bits() == b.budget_share.to_bits()
-            });
+            && self
+                .categories
+                .iter()
+                .zip(&self.previous_categories)
+                .all(|(a, b)| {
+                    a.resource == b.resource
+                        && a.units_per_resident.to_bits() == b.units_per_resident.to_bits()
+                        && a.budget_share.to_bits() == b.budget_share.to_bits()
+                });
         self.households.resize(households.len(), (0, 0.0));
         let mut next_household = 0;
         self.affordable_residents = 0.0;
@@ -209,7 +213,9 @@ impl ConsumerBudgets {
                             // Match the physical f32 consumption product before keeping
                             // an f64 reservation ledger. Promoting the authored rate first
                             // can turn 1000 * 0.1 into 100.00000149 and an extra employee.
-                            units: f64::from(f32::from(members) * category.units_per_resident as f32),
+                            units: f64::from(
+                                f32::from(members) * category.units_per_resident as f32,
+                            ),
                             gross_spending: budget,
                         };
                     }
@@ -261,8 +267,14 @@ impl ConsumerBudgets {
         self.free_receipt = source.free_receipt;
         self.releasing_owner = None;
         self.affordable_residents = source.affordable_residents;
-        crate::debug::work::add(crate::debug::work::Work::ReservationRowsCopied, (self.households.len()
-            + self.funds.len() + self.staged_slots.len() + self.committed.len() + self.owners.len()) as u64);
+        crate::debug::work::add(
+            crate::debug::work::Work::ReservationRowsCopied,
+            (self.households.len()
+                + self.funds.len()
+                + self.staged_slots.len()
+                + self.committed.len()
+                + self.owners.len()) as u64,
+        );
     }
 
     fn stage(&mut self, slot: usize) -> usize {
@@ -309,7 +321,10 @@ impl ConsumerBudgets {
                 };
                 let index = if self.free_receipt == usize::MAX {
                     let index = self.committed.len();
-                    assert!(index < self.committed.capacity(), "household receipts require capacity preflight");
+                    assert!(
+                        index < self.committed.capacity(),
+                        "household receipts require capacity preflight"
+                    );
                     self.committed.push(receipt);
                     index
                 } else {
@@ -327,7 +342,11 @@ impl ConsumerBudgets {
     }
 
     fn check_accept_capacity(&self, owner: usize) -> Result<(), usize> {
-        let mut missing = self.staged.iter().filter(|claim| claim.acquired.units > 0.0).count();
+        let mut missing = self
+            .staged
+            .iter()
+            .filter(|claim| claim.acquired.units > 0.0)
+            .count();
         for first in [self.owners[owner], self.free_receipt] {
             let mut index = first;
             while index != usize::MAX && missing > 0 {
@@ -336,12 +355,17 @@ impl ConsumerBudgets {
             }
         }
         let required = self.committed.len() + missing;
-        if required > self.committed.capacity() { Err(required) } else { Ok(()) }
+        if required > self.committed.capacity() {
+            Err(required)
+        } else {
+            Ok(())
+        }
     }
 
     fn reserve_receipts(&mut self, required: usize) {
         debug_assert!(!self.revalidation.is_active());
-        self.committed.reserve(required.saturating_sub(self.committed.len()));
+        self.committed
+            .reserve(required.saturating_sub(self.committed.len()));
         self.revalidation.follow_receipts(self.committed.capacity());
     }
 
@@ -359,13 +383,19 @@ impl ConsumerBudgets {
     }
 
     fn reserved_units(&self, owner: usize, resource: u16) -> f64 {
-        let Some(&category) = self.category_by_resource.get(resource as usize) else { return 0.0; };
-        if category == usize::MAX { return 0.0; }
+        let Some(&category) = self.category_by_resource.get(resource as usize) else {
+            return 0.0;
+        };
+        if category == usize::MAX {
+            return 0.0;
+        }
         let mut units = 0.0;
         let mut index = self.owners.get(owner).copied().unwrap_or(usize::MAX);
         while index != usize::MAX {
             let receipt = self.committed[index];
-            if receipt.slot % self.categories.len() == category { units += receipt.acquired.units; }
+            if receipt.slot % self.categories.len() == category {
+                units += receipt.acquired.units;
+            }
             index = receipt.next;
         }
         units
@@ -434,7 +464,9 @@ impl ConsumerBudgets {
 
     /// Commits a completely funded operation's customers in O(touched accounts).
     pub(crate) fn accept(&mut self) {
-        if let Some(owner) = self.releasing_owner.take() { self.retire(owner); }
+        if let Some(owner) = self.releasing_owner.take() {
+            self.retire(owner);
+        }
         for claim in &self.staged {
             self.staged_slots[claim.slot] = usize::MAX;
         }

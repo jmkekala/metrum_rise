@@ -25,11 +25,11 @@ use godot::prelude::{Vector2, Vector3};
 use super::frame::FRAME_DT_S;
 use super::road_commit::RoadCommitRequest;
 use super::state::SimCore;
+use crate::assets::ZoneClass;
 use crate::assets::scan_pack_dir;
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::time::SIMULATION_SPEED_STEPS;
 use crate::simulation::zoning::ZoneType;
-use crate::assets::ZoneClass;
 use crate::simulation::zoning::cells::CellSelectionShape;
 use crate::simulation::zoning::profiles::ZoneDensity;
 

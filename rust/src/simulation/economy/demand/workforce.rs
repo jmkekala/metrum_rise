@@ -10,12 +10,12 @@ use super::actions::DemandSpawnAction;
 use super::queued::QueuedConstruction;
 use super::snapshot::{DailyDemandSnapshot, UnhousedWorkforce};
 use crate::simulation::buildings::allocator::{BuildingAllocator, construction_duration_hours};
-use crate::simulation::economy::definitions::{RuntimeEconomyCatalog, RuntimeEconomyTuning};
 use crate::simulation::economy::agents::MAX_ADULTS_PER_HOUSEHOLD;
 use crate::simulation::economy::definitions::EconomyProfileRuntimeKind;
-use crate::simulation::economy::households::{applicant_places_and_members, level_tuning_value};
+use crate::simulation::economy::definitions::{RuntimeEconomyCatalog, RuntimeEconomyTuning};
 #[cfg(test)]
 use crate::simulation::economy::households::applicant_workers;
+use crate::simulation::economy::households::{applicant_places_and_members, level_tuning_value};
 use crate::simulation::zoning::ZoneType;
 
 // A sum tree over operational hours, not buildings. A claim consumes the latest eligible
@@ -224,7 +224,11 @@ impl WorkforceReservations {
         self.horizon = self.hours.len() - 1;
         self.new_start_hour = new_start_hour;
         let hours = self.hours.len();
-        for bins in [&mut self.homes_by_hour, &mut self.jobs_by_hour, &mut self.members_by_hour] {
+        for bins in [
+            &mut self.homes_by_hour,
+            &mut self.jobs_by_hour,
+            &mut self.members_by_hour,
+        ] {
             bins.resize_with(hours, || AtomicU32::new(0));
             for bin in bins {
                 bin.store(0, Ordering::Relaxed);
@@ -276,7 +280,8 @@ impl WorkforceReservations {
                         jobs_by_hour[hour].fetch_add(
                             reservations.map_or_else(
                                 || snapshot.output_absorption.committed_workers(profile),
-                                |claims| claims.building_workers.get(idx).copied().unwrap_or(0)),
+                                |claims| claims.building_workers.get(idx).copied().unwrap_or(0),
+                            ),
                             Ordering::Relaxed,
                         );
                     }
@@ -321,7 +326,9 @@ impl WorkforceReservations {
                 },
             ));
         for project in queued {
-            if !project.active { continue; }
+            if !project.active {
+                continue;
+            }
             let hour = self.hours.binary_search(&project.completion_hour).unwrap();
             if project.household_slots > 0 && !match_displaced {
                 if arrivals_possible {
@@ -347,8 +354,14 @@ impl WorkforceReservations {
                 self.jobs_by_hour[hour].fetch_add(
                     reservations.map_or_else(
                         || snapshot.output_absorption.committed_workers(profile),
-                        |claims| claims.queued_workers.binary_search_by_key(&project.parcel_id, |&(parcel, _)| parcel)
-                            .ok().map_or(0, |index| claims.queued_workers[index].1)),
+                        |claims| {
+                            claims
+                                .queued_workers
+                                .binary_search_by_key(&project.parcel_id, |&(parcel, _)| parcel)
+                                .ok()
+                                .map_or(0, |index| claims.queued_workers[index].1)
+                        },
+                    ),
                     Ordering::Relaxed,
                 );
             }
@@ -357,8 +370,10 @@ impl WorkforceReservations {
         for (hour, homes) in self.homes_by_hour.iter().enumerate() {
             let members = self.members_by_hour[hour].load(Ordering::Relaxed);
             let store_workers = (f64::from(members) * self.store_labor_per_resident).ceil() as u32;
-            self.committed
-                .add(hour, homes.load(Ordering::Relaxed).saturating_sub(store_workers));
+            self.committed.add(
+                hour,
+                homes.load(Ordering::Relaxed).saturating_sub(store_workers),
+            );
         }
     }
 
@@ -436,8 +451,10 @@ impl WorkforceReservations {
     }
 
     fn available_at(&self, hour: usize) -> u32 {
-        (u64::from(self.unemployed) + self.committed.available(hour) + self.optional.available(hour))
-            .min(u64::from(u32::MAX)) as u32
+        (u64::from(self.unemployed)
+            + self.committed.available(hour)
+            + self.optional.available(hour))
+        .min(u64::from(u32::MAX)) as u32
     }
 
     /// Atomically reserves a project's workforce; rejection leaves all supply untouched.
@@ -454,8 +471,11 @@ impl WorkforceReservations {
     /// The final prepared source bin covers later deadlines without allocating empty hours.
     pub(super) fn claim_by_hour(&mut self, completion_hour: u64, workers: u32) -> bool {
         let hour = self.hours.partition_point(|&hour| hour <= completion_hour) - 1;
-        if u64::from(self.unemployed) + self.committed.available(hour)
-            + self.optional.available(hour) < u64::from(workers) {
+        if u64::from(self.unemployed)
+            + self.committed.available(hour)
+            + self.optional.available(hour)
+            < u64::from(workers)
+        {
             return false;
         }
         self.take(hour, workers);
@@ -600,9 +620,7 @@ impl WorkforceReservations {
             }
             let remaining = self.optional.sums[self.optional.leaves + home.hour];
             // A home whose applicants bring no adults cannot supply claimed workers.
-            if home.arrival_workers > 0
-                && u64::from(self.optional_initial[home.hour]) > remaining
-            {
+            if home.arrival_workers > 0 && u64::from(self.optional_initial[home.hour]) > remaining {
                 self.optional_selected[index] = true;
                 self.optional_initial[home.hour] =
                     self.optional_initial[home.hour].saturating_sub(home.arrival_workers);
@@ -791,7 +809,9 @@ mod tests {
         }]);
         supply.optional_selected.resize(3, false);
         for index in 0..3 {
-            supply.homes.push(home(12, 1, index as u64, 1, 2.0, Some(index)));
+            supply
+                .homes
+                .push(home(12, 1, index as u64, 1, 2.0, Some(index)));
         }
         supply.reserve_existing();
         assert!(!supply.claim(12, 3));
@@ -872,7 +892,9 @@ mod tests {
                 supply.committed.reset(37);
                 supply.homes.clear();
                 for index in 0..homes {
-                    supply.homes.push(home(6 + index % 24, 1, index as u64, 1, 2.0, None));
+                    supply
+                        .homes
+                        .push(home(6 + index % 24, 1, index as u64, 1, 2.0, None));
                 }
                 let start = Instant::now();
                 supply.reserve_existing();

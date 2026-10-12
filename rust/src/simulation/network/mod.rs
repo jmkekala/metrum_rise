@@ -259,7 +259,9 @@ impl TransitNetwork {
                 changed
             })
             .reduce(|| false, |a, b| a | b);
-        self.frontage_delay_revision = self.frontage_delay_revision.wrapping_add(u64::from(changed));
+        self.frontage_delay_revision = self
+            .frontage_delay_revision
+            .wrapping_add(u64::from(changed));
     }
 
     /// Adds a new road segment to the network from pre-prepared physical geometry.

@@ -62,12 +62,16 @@ pub(crate) fn freight_price_phase(
     tuning: &crate::simulation::economy::definitions::RuntimeEconomyTuning,
     minute_of_day: u16,
 ) -> u16 {
-    tuning.operational_clock.freight_profiles.iter()
+    tuning
+        .operational_clock
+        .freight_profiles
+        .iter()
         .filter(|profile| profile.outside_window_cost_multiplier != 1.0)
         .flat_map(|profile| &profile.preferred_windows)
         .flat_map(|window| [window.start_minute, window.end_minute])
         .filter(|&boundary| boundary <= minute_of_day)
-        .max().unwrap_or(0)
+        .max()
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -78,11 +82,26 @@ mod tests {
     #[test]
     fn price_phase_changes_only_at_authored_receiving_boundaries() {
         let tuning = load_runtime_economy_tuning().unwrap();
-        assert_eq!(freight_price_phase(&tuning, 420), freight_price_phase(&tuning, 479));
-        assert_ne!(freight_price_phase(&tuning, 419), freight_price_phase(&tuning, 420));
-        assert_ne!(freight_price_phase(&tuning, 479), freight_price_phase(&tuning, 480));
-        assert_eq!(freight_price_phase(&tuning, 480), freight_price_phase(&tuning, 1079));
-        assert_ne!(freight_price_phase(&tuning, 1079), freight_price_phase(&tuning, 1080));
+        assert_eq!(
+            freight_price_phase(&tuning, 420),
+            freight_price_phase(&tuning, 479)
+        );
+        assert_ne!(
+            freight_price_phase(&tuning, 419),
+            freight_price_phase(&tuning, 420)
+        );
+        assert_ne!(
+            freight_price_phase(&tuning, 479),
+            freight_price_phase(&tuning, 480)
+        );
+        assert_eq!(
+            freight_price_phase(&tuning, 480),
+            freight_price_phase(&tuning, 1079)
+        );
+        assert_ne!(
+            freight_price_phase(&tuning, 1079),
+            freight_price_phase(&tuning, 1080)
+        );
     }
 
     #[test]

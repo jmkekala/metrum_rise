@@ -22,7 +22,8 @@ fn snapshot_uses_funded_recipe_activity_instead_of_rounded_jobs_or_owner_assets(
     network.lane_system.rebuild(&mut graph);
     network.rebuild_cch_and_check(&graph);
     let mut allocator = BuildingAllocator::new();
-    let home_asset = register_test_asset(&mut allocator, "funded_buyer_home", ZoneType::Residential);
+    let home_asset =
+        register_test_asset(&mut allocator, "funded_buyer_home", ZoneType::Residential);
     let shop_asset = register_test_asset(&mut allocator, "funded_buyer_shop", ZoneType::Commercial);
     let mut home = building(ZoneType::Residential, 0.0, 1, 0, home_asset);
     home.center_x = 10.0;
@@ -42,7 +43,9 @@ fn snapshot_uses_funded_recipe_activity_instead_of_rounded_jobs_or_owner_assets(
     family.gross_daily_wages = 10_000.0;
     households.households.push(family);
     let food = catalog.resource_runtime_id_for_id("packaged_food").unwrap();
-    let supplies = catalog.resource_runtime_id_for_id("household_supplies").unwrap();
+    let supplies = catalog
+        .resource_runtime_id_for_id("household_supplies")
+        .unwrap();
     let mut logistics = ShipmentSystem::new();
     for (workers, cash, income, stock, expected) in [
         (3, 100_000.0, 10_000.0, 0.0, 30.0),
@@ -54,55 +57,140 @@ fn snapshot_uses_funded_recipe_activity_instead_of_rounded_jobs_or_owner_assets(
         allocator.buildings[1].operating_budget = cash;
         allocator.buildings[1].set_inventory_units(food, stock);
         households.households[0].gross_daily_wages = income;
-        households.job_funding.refresh(&allocator, &households.households, &mut logistics,
-            &network, &graph, &catalog, &tuning, &policy, &[], 100_000.0, 420);
+        households.job_funding.refresh(
+            &allocator,
+            &households.households,
+            &mut logistics,
+            &network,
+            &graph,
+            &catalog,
+            &tuning,
+            &policy,
+            &[],
+            100_000.0,
+            420,
+        );
         if income > 0.0 && cash > 0.0 {
             assert_eq!(households.job_funding.capacities[1], 3);
         } else {
             assert_eq!(households.job_funding.capacities[1], 0);
         }
         let snapshot = DailyDemandSnapshot::from_runtime_with_catalog(
-            &allocator, &households, &graph, &config, &catalog, &tuning, &policy, 100_000.0);
-        assert!((snapshot.output_absorption.unmet_units(food) - expected).abs() < 0.001,
-            "workers={workers} cash={cash} income={income} stock={stock}");
-        assert_eq!(snapshot.output_absorption.unmet_units(supplies), 0.0,
-            "the shop retains its full output commitment through its staffing search");
+            &allocator,
+            &households,
+            &graph,
+            &config,
+            &catalog,
+            &tuning,
+            &policy,
+            100_000.0,
+        );
+        assert!(
+            (snapshot.output_absorption.unmet_units(food) - expected).abs() < 0.001,
+            "workers={workers} cash={cash} income={income} stock={stock}"
+        );
+        assert_eq!(
+            snapshot.output_absorption.unmet_units(supplies),
+            0.0,
+            "the shop retains its full output commitment through its staffing search"
+        );
         if expected > 0.0 {
             for units in [1.0, 30.0, 31.0] {
-                let costs = logistics.quote_recurring_input(&mut households.job_funding.input_supply,
-                    InputRequirement { resource: supplies, daily_units: units, buffer_units: units * 2.0,
-                        replenishment_batch_units: Some(40.0) },
-                    Some(0), &allocator.entrances[0], None, &allocator, &catalog, &tuning, &network, &graph, 1.0);
-                assert!(costs.goods.is_infinite(),
-                    "the 30 funded units already belong to households, not additional business buyers");
-                households.job_funding.input_supply.reject(&allocator, &graph);
+                let costs = logistics.quote_recurring_input(
+                    &mut households.job_funding.input_supply,
+                    InputRequirement {
+                        resource: supplies,
+                        daily_units: units,
+                        buffer_units: units * 2.0,
+                        replenishment_batch_units: Some(40.0),
+                    },
+                    Some(0),
+                    &allocator.entrances[0],
+                    None,
+                    &allocator,
+                    &catalog,
+                    &tuning,
+                    &network,
+                    &graph,
+                    1.0,
+                );
+                assert!(
+                    costs.goods.is_infinite(),
+                    "the 30 funded units already belong to households, not additional business buyers"
+                );
+                households
+                    .job_funding
+                    .input_supply
+                    .reject(&allocator, &graph);
             }
         } else {
             assert!(!households.job_funding.input_supply.has_offers());
         }
     }
-    tuning.operational_clock.freight_profiles.iter_mut()
-        .find(|profile| profile.id == "daytime_receive").unwrap()
+    tuning
+        .operational_clock
+        .freight_profiles
+        .iter_mut()
+        .find(|profile| profile.id == "daytime_receive")
+        .unwrap()
         .outside_window_cost_multiplier = 10.0;
     allocator.buildings[1].worker_count = 3;
     allocator.buildings[1].operating_budget = 100_000.0;
     allocator.buildings[1].set_inventory_units(food, 0.0);
     households.households[0].gross_daily_wages = 10_000.0;
     for (minute, jobs) in [(420, 3), (419, 0), (1080, 0), (420, 3)] {
-        households.job_funding.refresh(&allocator, &households.households, &mut logistics,
-            &network, &graph, &catalog, &tuning, &policy, &[], 100_000.0, minute);
-        assert_eq!(households.job_funding.capacities[1], jobs,
-            "live jobs must pay the receiving window's actual goods price at {minute}");
+        households.job_funding.refresh(
+            &allocator,
+            &households.households,
+            &mut logistics,
+            &network,
+            &graph,
+            &catalog,
+            &tuning,
+            &policy,
+            &[],
+            100_000.0,
+            minute,
+        );
+        assert_eq!(
+            households.job_funding.capacities[1], jobs,
+            "live jobs must pay the receiving window's actual goods price at {minute}"
+        );
     }
     let mut revalidated = crate::simulation::economy::hiring::JobFunding::default();
-    revalidated.refresh(&allocator, &households.households, &mut logistics,
-        &network, &graph, &catalog, &tuning, &policy, &[], 100_000.0, 419);
-    let current = DailyDemandSnapshot::from_runtime_with_funding(&allocator, &households,
-        &graph, &config, &catalog, &tuning, &policy, 100_000.0, &revalidated);
-    assert_eq!(current.output_absorption.unmet_units(food), 0.0,
-        "a refreshed market cannot retain yesterday's funded input customers");
-    assert_eq!(households.job_funding.capacities[1], 3,
-        "the independent employment view still represents the earlier price interval");
+    revalidated.refresh(
+        &allocator,
+        &households.households,
+        &mut logistics,
+        &network,
+        &graph,
+        &catalog,
+        &tuning,
+        &policy,
+        &[],
+        100_000.0,
+        419,
+    );
+    let current = DailyDemandSnapshot::from_runtime_with_funding(
+        &allocator,
+        &households,
+        &graph,
+        &config,
+        &catalog,
+        &tuning,
+        &policy,
+        100_000.0,
+        &revalidated,
+    );
+    assert_eq!(
+        current.output_absorption.unmet_units(food),
+        0.0,
+        "a refreshed market cannot retain yesterday's funded input customers"
+    );
+    assert_eq!(
+        households.job_funding.capacities[1], 3,
+        "the independent employment view still represents the earlier price interval"
+    );
 }
 
 #[test]
@@ -179,7 +267,8 @@ fn construction_shares_live_queued_and_placed_local_input_claims() {
             &tuning,
             &policy,
             &[],
-            100_000.0, 420,
+            100_000.0,
+            420,
         );
         assert_eq!(households.job_funding.capacities[0], farm_workers);
         if commitment == "live" {
@@ -225,7 +314,8 @@ fn construction_shares_live_queued_and_placed_local_input_claims() {
             BuildingSiteEnvironment {
                 road_surface: &surface,
                 terrain: &terrain,
-            }, 420,
+            },
+            420,
         );
         if commitment != "new" {
             assert!(
@@ -234,27 +324,75 @@ fn construction_shares_live_queued_and_placed_local_input_claims() {
             );
             if commitment == "queued" {
                 for _ in 0..3 {
-                    assert!(demand.prepare_queued_spawn(&actions[0], ZoneType::Industrial,
-                        &allocator, &households, &graph, 1, &network, &mut logistics,
-                        &zoning, 100_000.0, &policy).is_ok(),
-                        "a queued operation retains its financed claims without reserving twice");
+                    assert!(
+                        demand
+                            .prepare_queued_spawn(
+                                &actions[0],
+                                ZoneType::Industrial,
+                                &allocator,
+                                &households,
+                                &graph,
+                                1,
+                                &network,
+                                &mut logistics,
+                                &zoning,
+                                100_000.0,
+                                &policy
+                            )
+                            .is_ok(),
+                        "a queued operation retains its financed claims without reserving twice"
+                    );
                     // The planning pass returns the live books; the execution epoch replays
                     // the same queue into its own books.
-                    let purchases = demand.construction_execution.reservations.business
-                        .sales(0, farm_profile.outputs[0].resource_runtime_id, f64::INFINITY);
+                    let purchases = demand.construction_execution.reservations.business.sales(
+                        0,
+                        farm_profile.outputs[0].resource_runtime_id,
+                        f64::INFINITY,
+                    );
                     assert_eq!(purchases.units, 200.0);
-                    assert_eq!(purchases.revenue, 200.0 * f64::from(farm_profile.unit_price_currency),
-                        "queued input demand retains the actual local seller price, not the import tariff");
-                    assert!(demand.prepare_queued_spawn(&actions[1], ZoneType::Industrial,
-                        &allocator, &households, &graph, 1, &network, &mut logistics,
-                        &zoning, 100_000.0, &policy).is_err(),
-                        "another project cannot consume the queued buyer's material reservation");
+                    assert_eq!(
+                        purchases.revenue,
+                        200.0 * f64::from(farm_profile.unit_price_currency),
+                        "queued input demand retains the actual local seller price, not the import tariff"
+                    );
+                    assert!(
+                        demand
+                            .prepare_queued_spawn(
+                                &actions[1],
+                                ZoneType::Industrial,
+                                &allocator,
+                                &households,
+                                &graph,
+                                1,
+                                &network,
+                                &mut logistics,
+                                &zoning,
+                                100_000.0,
+                                &policy
+                            )
+                            .is_err(),
+                        "another project cannot consume the queued buyer's material reservation"
+                    );
                 }
                 demand.reject_queued_spawn(&actions[0], &allocator, &graph);
-                assert!(demand.prepare_queued_spawn(&actions[1], ZoneType::Industrial,
-                    &allocator, &households, &graph, 1, &network, &mut logistics,
-                    &zoning, 100_000.0, &policy).is_ok(),
-                    "failed placement returns the original queue customer's material and labour");
+                assert!(
+                    demand
+                        .prepare_queued_spawn(
+                            &actions[1],
+                            ZoneType::Industrial,
+                            &allocator,
+                            &households,
+                            &graph,
+                            1,
+                            &network,
+                            &mut logistics,
+                            &zoning,
+                            100_000.0,
+                            &policy
+                        )
+                        .is_ok(),
+                    "failed placement returns the original queue customer's material and labour"
+                );
             }
             continue;
         }
@@ -286,21 +424,41 @@ fn construction_shares_live_queued_and_placed_local_input_claims() {
         }
         if commitment == "new" {
             let window = Arc::make_mut(&mut demand.runtime_tuning)
-                .operational_clock.freight_profiles.iter_mut()
-                .find(|profile| profile.id == "always_open").unwrap();
+                .operational_clock
+                .freight_profiles
+                .iter_mut()
+                .find(|profile| profile.id == "always_open")
+                .unwrap();
             let original = window.clone();
             window.preferred_windows[0].start_minute = 240;
             window.preferred_windows[0].end_minute = 480;
             window.outside_window_cost_multiplier = 10.0;
             for (minute, accepted) in [(479, true), (480, false), (479, true)] {
-                let result = demand.prepare_queued_spawn(&chosen, ZoneType::Industrial,
-                    &allocator, &households, &graph, minute, &network, &mut logistics,
-                    &zoning, 100_000.0, &policy);
-                assert_eq!(result.is_ok(), accepted,
-                    "queued execution must reprice at a window boundary within the same execution hour");
+                let result = demand.prepare_queued_spawn(
+                    &chosen,
+                    ZoneType::Industrial,
+                    &allocator,
+                    &households,
+                    &graph,
+                    minute,
+                    &network,
+                    &mut logistics,
+                    &zoning,
+                    100_000.0,
+                    &policy,
+                );
+                assert_eq!(
+                    result.is_ok(),
+                    accepted,
+                    "queued execution must reprice at a window boundary within the same execution hour"
+                );
             }
-            *Arc::make_mut(&mut demand.runtime_tuning).operational_clock.freight_profiles.iter_mut()
-                .find(|profile| profile.id == "always_open").unwrap() = original;
+            *Arc::make_mut(&mut demand.runtime_tuning)
+                .operational_clock
+                .freight_profiles
+                .iter_mut()
+                .find(|profile| profile.id == "always_open")
+                .unwrap() = original;
             demand.invalidate_construction_execution();
         }
         let permit = demand
@@ -358,9 +516,14 @@ fn construction_shares_live_queued_and_placed_local_input_claims() {
                 "placed input claims survive execution epoch changes"
             );
             if now == 2 {
-                assert!(demand.construction_execution.reservations
-                    .project_operation(chosen.parcel_id, &zoning).is_some(),
-                    "placement must retain the proved project's owner until an external edit or hour change");
+                assert!(
+                    demand
+                        .construction_execution
+                        .reservations
+                        .project_operation(chosen.parcel_id, &zoning)
+                        .is_some(),
+                    "placement must retain the proved project's owner until an external edit or hour change"
+                );
             }
         }
         assert_eq!(allocator.buildings.len(), 3);
@@ -374,51 +537,111 @@ fn construction_shares_live_queued_and_placed_local_input_claims() {
 
 #[test]
 fn replacement_prices_revalidate_downstream_buyers_and_restore_failed_joint_proofs() {
-    use super::super::supply::{ProjectReservations, ProjectSupply, SiteSupply};
     use super::super::spawn_need::replacement_market_covers_operation;
+    use super::super::supply::{ProjectReservations, ProjectSupply, SiteSupply};
     use crate::simulation::economy::definitions::compile_test_catalog;
-    use crate::simulation::economy::logistics::{RecurringSupply, ShipmentSystem, collect_connected_border_nodes};
+    use crate::simulation::economy::logistics::{
+        RecurringSupply, ShipmentSystem, collect_connected_border_nodes,
+    };
     use crate::simulation::economy::operation::InputRequirement;
     use crate::simulation::network::TransitNetwork;
     let authored = include_str!("../../../../../../economy/profiles.toml");
-    let start = authored.find("[[profiles]]\nid = \"food_processor_basic\"").unwrap();
+    let start = authored
+        .find("[[profiles]]\nid = \"food_processor_basic\"")
+        .unwrap();
     let end = start + authored[start + 1..].find("\n[[profiles]]").unwrap() + 1;
     for (price, accepted, output, changed_inputs, extra_buyer, commitment) in [
-        (14.0, true, None, false, false, "live"), (30.0, false, None, false, false, "live"),
-        (14.0, true, Some("replacement_output"), false, false, "live"), (14.0, false, None, true, false, "live"),
-        (14.0, true, Some("household_supplies"), false, false, "live"), (14.0, true, None, false, true, "live"),
-        (14.0, true, None, false, false, "constructing"), (30.0, false, None, false, false, "constructing"),
-        (14.0, true, Some("replacement_output"), false, false, "constructing"),
-        (14.0, true, Some("household_supplies"), false, false, "constructing"),
+        (14.0, true, None, false, false, "live"),
+        (30.0, false, None, false, false, "live"),
+        (14.0, true, Some("replacement_output"), false, false, "live"),
+        (14.0, false, None, true, false, "live"),
+        (14.0, true, Some("household_supplies"), false, false, "live"),
+        (14.0, true, None, false, true, "live"),
+        (14.0, true, None, false, false, "constructing"),
+        (30.0, false, None, false, false, "constructing"),
+        (
+            14.0,
+            true,
+            Some("replacement_output"),
+            false,
+            false,
+            "constructing",
+        ),
+        (
+            14.0,
+            true,
+            Some("household_supplies"),
+            false,
+            false,
+            "constructing",
+        ),
         (14.0, true, None, false, true, "constructing"),
-        (14.0, true, None, false, false, "queued"), (30.0, false, None, false, false, "queued"),
-        (14.0, true, Some("replacement_output"), false, false, "queued"),
-        (14.0, true, Some("household_supplies"), false, false, "queued"),
-        (14.0, false, None, true, false, "queued")] {
+        (14.0, true, None, false, false, "queued"),
+        (30.0, false, None, false, false, "queued"),
+        (
+            14.0,
+            true,
+            Some("replacement_output"),
+            false,
+            false,
+            "queued",
+        ),
+        (
+            14.0,
+            true,
+            Some("household_supplies"),
+            false,
+            false,
+            "queued",
+        ),
+        (14.0, false, None, true, false, "queued"),
+    ] {
         let constructing = commitment == "constructing";
         let queued = commitment == "queued";
         let changed_recipe = output.is_some();
         let household_output = output == Some("household_supplies");
-        let mut recipe = authored[start..end].replace("food_processor_basic", "replacement_food")
-            .replace("unit_price_currency = 12.0", &format!("unit_price_currency = {price:.1}"));
-        if let Some(output) = output { recipe = recipe.replace("\"packaged_food\"", &format!("\"{output}\"")); }
+        let mut recipe = authored[start..end]
+            .replace("food_processor_basic", "replacement_food")
+            .replace(
+                "unit_price_currency = 12.0",
+                &format!("unit_price_currency = {price:.1}"),
+            );
+        if let Some(output) = output {
+            recipe = recipe.replace("\"packaged_food\"", &format!("\"{output}\""));
+        }
         if extra_buyer {
             // Twice the customers require twice the material throughput, at unchanged staffing.
             recipe = recipe.replace("units_per_day = 200.0", "units_per_day = 400.0");
         }
-        if changed_inputs { recipe = recipe.replace("\"grain\"", "\"steel\""); }
+        if changed_inputs {
+            recipe = recipe.replace("\"grain\"", "\"steel\"");
+        }
         let resource = "[[resources]]\nid = \"replacement_output\"\nquantity_unit = \"kg\"\nshipment_batch_kg = 50.0\nruntime_id = 10\nimport_unit_price_currency = 20.0\n";
         let feed = "[[resources]]\nid = \"replacement_feed\"\nquantity_unit = \"kg\"\nshipment_batch_kg = 50.0\nruntime_id = 11\nimport_unit_price_currency = 0.01\n";
-        let upstream = authored[start..end].replace("food_processor_basic", "dependent_grain")
-            .replace("\"grain\"", "\"replacement_feed\"").replace("\"packaged_food\"", "\"grain\"")
+        let upstream = authored[start..end]
+            .replace("food_processor_basic", "dependent_grain")
+            .replace("\"grain\"", "\"replacement_feed\"")
+            .replace("\"packaged_food\"", "\"grain\"")
             .replace("unit_price_currency = 12.0", "unit_price_currency = 4.8")
-            .replace("[[profiles.inputs]]\nresource = \"machinery\"\nunits_per_day = 2.0", "");
-        let catalog = compile_test_catalog(&format!("{authored}\n{resource}\n{feed}\n{recipe}\n{upstream}")).unwrap();
+            .replace(
+                "[[profiles.inputs]]\nresource = \"machinery\"\nunits_per_day = 2.0",
+                "",
+            );
+        let catalog = compile_test_catalog(&format!(
+            "{authored}\n{resource}\n{feed}\n{recipe}\n{upstream}"
+        ))
+        .unwrap();
         let mut tuning = (*load_runtime_economy_tuning().unwrap()).clone();
         // Future buyers must actually choose the incumbent's local inputs so withdrawal
         // exercises their dependency. Equal goods prices can favor the outside route.
-        tuning.owa_import_price_multiplier = if changed_inputs || constructing || queued { 1.1 } else { 1.0 };
-        if changed_inputs && !queued { tuning.owa_export_price_multiplier = 0.5; }
+        tuning.owa_import_price_multiplier = if changed_inputs || constructing || queued {
+            1.1
+        } else {
+            1.0
+        };
+        if changed_inputs && !queued {
+            tuning.owa_export_price_multiplier = 0.5;
+        }
         let policy = CityFiscalPolicy::from_runtime_tuning(&tuning);
         let mut graph = graph_with_connected_border();
         let mut network = TransitNetwork::new();
@@ -429,30 +652,65 @@ fn replacement_prices_revalidate_downstream_buyers_and_restore_failed_joint_proo
         let mut surface = RoadSurfaceSystem::new(512.0);
         surface.compile_dirty(&graph, &terrain);
         let mut allocator = BuildingAllocator::new();
-        let old = register_family_asset_with_economy_profile(&mut allocator, "joint_old", ZoneType::Industrial,
-            Some("joint_food"), 1, Some("food_processor_basic"));
-        let target = register_family_asset_with_economy_profile(&mut allocator, "joint_target", ZoneType::Industrial,
-            Some("joint_food"), 2, Some("replacement_food"));
-        let action = DemandSpawnAction { parcel_id: zoning.parcels()[0].id().raw(), asset_id: old };
-        let placed = allocator.execute_single_demand_spawn_action(ZoneType::Industrial, &action,
-            &mut zoning, &graph, &network.lane_system, &surface, &terrain, &catalog, &tuning);
+        let old = register_family_asset_with_economy_profile(
+            &mut allocator,
+            "joint_old",
+            ZoneType::Industrial,
+            Some("joint_food"),
+            1,
+            Some("food_processor_basic"),
+        );
+        let target = register_family_asset_with_economy_profile(
+            &mut allocator,
+            "joint_target",
+            ZoneType::Industrial,
+            Some("joint_food"),
+            2,
+            Some("replacement_food"),
+        );
+        let action = DemandSpawnAction {
+            parcel_id: zoning.parcels()[0].id().raw(),
+            asset_id: old,
+        };
+        let placed = allocator.execute_single_demand_spawn_action(
+            ZoneType::Industrial,
+            &action,
+            &mut zoning,
+            &graph,
+            &network.lane_system,
+            &surface,
+            &terrain,
+            &catalog,
+            &tuning,
+        );
         assert_eq!(placed.industrial.spawn_executed, 1);
         allocator.buildings[0].construction_remaining_hours = 0;
         allocator.buildings[0].worker_count = 10;
         allocator.buildings[0].operating_budget = 100_000.0;
-        let shop_asset = register_family_asset_with_economy_profile(&mut allocator, "joint_buyer", ZoneType::Commercial,
-            None, 1, Some("grocery_basic"));
+        let shop_asset = register_family_asset_with_economy_profile(
+            &mut allocator,
+            "joint_buyer",
+            ZoneType::Commercial,
+            None,
+            1,
+            Some("grocery_basic"),
+        );
         let home_asset = register_test_asset(&mut allocator, "joint_home", ZoneType::Residential);
-        for (index, zone, workers, asset) in [(1, ZoneType::Commercial, 15, shop_asset.clone()),
-            (2, ZoneType::Residential, 0, home_asset)] {
-            if index == 1 && queued { continue; }
+        for (index, zone, workers, asset) in [
+            (1, ZoneType::Commercial, 15, shop_asset.clone()),
+            (2, ZoneType::Residential, 0, home_asset),
+        ] {
+            if index == 1 && queued {
+                continue;
+            }
             let mut site = building(zone, 0.0, 0, workers, asset);
             site.center_x = 35.0 + index as f32 * 5.0;
             site.center_y = if index == 1 { -20.0 } else { 20.0 };
             site.frontage_t = site.center_x / 50.0;
             site.operating_budget = 100_000.0;
             if index == 1 {
-                site.economy_profile_runtime_id = catalog.profile_for_id("grocery_basic").unwrap().runtime_id;
+                site.economy_profile_runtime_id =
+                    catalog.profile_for_id("grocery_basic").unwrap().runtime_id;
                 if constructing {
                     site.worker_count = 0;
                     site.construction_remaining_hours = 12;
@@ -465,11 +723,24 @@ fn replacement_prices_revalidate_downstream_buyers_and_restore_failed_joint_proo
             // Before the queued grocery exists the incumbent needs export revenue. Its
             // upstream processor serves only local buyers in this variant, so changing the
             // incumbent's input still destroys that supplier's sole financed customer.
-            let zone = if queued { ZoneType::Commercial } else { ZoneType::Industrial };
-            let asset = register_family_asset_with_economy_profile(&mut allocator, "dependent_grain",
-                zone, None, 1, Some("dependent_grain"));
+            let zone = if queued {
+                ZoneType::Commercial
+            } else {
+                ZoneType::Industrial
+            };
+            let asset = register_family_asset_with_economy_profile(
+                &mut allocator,
+                "dependent_grain",
+                zone,
+                None,
+                1,
+                Some("dependent_grain"),
+            );
             let mut source = building(zone, 0.0, 0, 10, asset);
-            source.economy_profile_runtime_id = catalog.profile_for_id("dependent_grain").unwrap().runtime_id;
+            source.economy_profile_runtime_id = catalog
+                .profile_for_id("dependent_grain")
+                .unwrap()
+                .runtime_id;
             source.center_x = 5.0;
             source.center_y = 20.0;
             source.frontage_t = 0.1;
@@ -487,64 +758,154 @@ fn replacement_prices_revalidate_downstream_buyers_and_restore_failed_joint_proo
         allocator.rebuild_entrance_cache(&graph, &network.lane_system);
         let mut borders = Vec::new();
         collect_connected_border_nodes(&graph, &mut borders);
-        let mut family = housed_household(if queued { 1 } else { 2 }, if household_output || extra_buyer { 400 } else { 200 }, 100_000.0, 0.0);
+        let mut family = housed_household(
+            if queued { 1 } else { 2 },
+            if household_output || extra_buyer {
+                400
+            } else {
+                200
+            },
+            100_000.0,
+            0.0,
+        );
         family.employed_adults = if queued { 185 } else { 200 };
         family.gross_daily_wages = 100_000.0;
         let mut logistics = ShipmentSystem::new();
         let mut funding = crate::simulation::economy::hiring::JobFunding::default();
-        funding.refresh(&allocator, &[family.clone()], &mut logistics, &network, &graph, &catalog,
-            &tuning, &policy, &[], 0.0, 420);
-        assert_eq!(&funding.capacities[..2], &[10, if constructing || queued { 0 } else { 15 }]);
+        funding.refresh(
+            &allocator,
+            &[family.clone()],
+            &mut logistics,
+            &network,
+            &graph,
+            &catalog,
+            &tuning,
+            &policy,
+            &[],
+            0.0,
+            420,
+        );
+        assert_eq!(
+            &funding.capacities[..2],
+            &[10, if constructing || queued { 0 } else { 15 }]
+        );
         if changed_inputs {
             assert_eq!(funding.capacities[allocator.buildings.len() - 1], 10);
             let grain = catalog.resource_runtime_id_for_id("grain").unwrap();
-            assert_eq!(funding.business.sales(allocator.buildings.len() - 1, grain, 200.0).units, 200.0);
+            assert_eq!(
+                funding
+                    .business
+                    .sales(allocator.buildings.len() - 1, grain, 200.0)
+                    .units,
+                200.0
+            );
         }
         let food = catalog.resource_runtime_id_for_id("packaged_food").unwrap();
-        assert_eq!(funding.business.sales(0, food, 200.0).units, if constructing || queued { 0.0 } else { 200.0 });
+        assert_eq!(
+            funding.business.sales(0, food, 200.0).units,
+            if constructing || queued { 0.0 } else { 200.0 }
+        );
         let mut demand = DemandSystem::new();
         demand.runtime_catalog = std::sync::Arc::new(catalog.clone());
         demand.runtime_tuning = std::sync::Arc::new(tuning.clone());
         let queued_action = DemandSpawnAction {
-            parcel_id: zoning.parcels()[1].id().raw(), asset_id: shop_asset,
+            parcel_id: zoning.parcels()[1].id().raw(),
+            asset_id: shop_asset,
         };
         let buyer = if queued {
             let parcel = zoning.parcels()[1].id();
-            let zone = zoning.profiles.default_runtime_id_for_zone_type(ZoneType::Commercial).unwrap();
+            let zone = zoning
+                .profiles
+                .default_runtime_id_for_zone_type(ZoneType::Commercial)
+                .unwrap();
             zoning.parcels.set_zone_profile_runtime_id(parcel, zone);
-            demand.set_queued_construction_with_entrances(&allocator, &zoning, 420,
+            demand.set_queued_construction_with_entrances(
+                &allocator,
+                &zoning,
+                420,
                 [(421, ZoneType::Commercial, &queued_action)],
-                |action| allocator.demand_site_entrance(action.parcel_id, &action.asset_id,
-                    &zoning, &graph, &network.lane_system));
+                |action| {
+                    allocator.demand_site_entrance(
+                        action.parcel_id,
+                        &action.asset_id,
+                        &zoning,
+                        &graph,
+                        &network.lane_system,
+                    )
+                },
+            );
             assert!(demand.queued_construction[0].entrance.is_some());
             allocator.buildings.len() + zoning.parcels.storage_index(parcel).unwrap()
-        } else { 1 };
+        } else {
+            1
+        };
         let mut projected = RecurringSupply::default();
         projected.copy_reservations_from(&funding.input_supply, &allocator, &catalog, &graph);
         let mut reservations = ProjectReservations::default();
         reservations.reset(&funding, &allocator, &catalog, &tuning, &policy, 420);
         if constructing || queued {
             let market = OutputAbsorptionContext::empty(catalog.resource_count());
-            SiteSupply::new(&mut projected, &mut reservations, &allocator, &zoning,
-                &network, &graph, &mut logistics, &tuning, &borders, &catalog, 420, policy.household_vat_rate)
-                .reserve_projects(demand.queued_construction.iter(), &catalog, &market, &mut Default::default(),
-                    &policy, &funding.service_capacities, &funding.freight_capital);
+            SiteSupply::new(
+                &mut projected,
+                &mut reservations,
+                &allocator,
+                &zoning,
+                &network,
+                &graph,
+                &mut logistics,
+                &tuning,
+                &borders,
+                &catalog,
+                420,
+                policy.household_vat_rate,
+            )
+            .reserve_projects(
+                demand.queued_construction.iter(),
+                &catalog,
+                &market,
+                &mut Default::default(),
+                &policy,
+                &funding.service_capacities,
+                &funding.freight_capital,
+            );
             if queued {
                 assert_eq!(reservations.queued_workers, [(queued_action.parcel_id, 15)]);
-                assert!(reservations.operations[1].is_none(), "no unplaced buyer may appear as a live operation");
-            } else { assert_eq!(reservations.building_workers[1], 15); }
-            assert_eq!(reservations.business.sales(0, food, 200.0).units, 200.0,
-                "only replay of the financed future operation may publish its input purchases");
+                assert!(
+                    reservations.operations[1].is_none(),
+                    "no unplaced buyer may appear as a live operation"
+                );
+            } else {
+                assert_eq!(reservations.building_workers[1], 15);
+            }
+            assert_eq!(
+                reservations.business.sales(0, food, 200.0).units,
+                200.0,
+                "only replay of the financed future operation may publish its input purchases"
+            );
         }
         if changed_inputs {
             let operation = reservations.operations[allocator.buildings.len() - 1].unwrap();
             let supplier = catalog.profile_for_id("dependent_grain").unwrap();
-            let exported = crate::simulation::economy::operation::OperatingCosts::for_plan(supplier,
-                &catalog, operation.plan, operation.prices, |_, units| units);
-            let exports = if crate::simulation::economy::logistics::building_outputs_can_export_to_owa(
-                allocator.buildings.last().unwrap(), supplier) { tuning.owa_export_price_multiplier } else { 0.0 };
-            assert!(200.0 * f64::from(supplier.unit_price_currency * exports)
-                < exported.total(), "outside buyers cannot fund the abandoned supplier");
+            let exported = crate::simulation::economy::operation::OperatingCosts::for_plan(
+                supplier,
+                &catalog,
+                operation.plan,
+                operation.prices,
+                |_, units| units,
+            );
+            let exports =
+                if crate::simulation::economy::logistics::building_outputs_can_export_to_owa(
+                    allocator.buildings.last().unwrap(),
+                    supplier,
+                ) {
+                    tuning.owa_export_price_multiplier
+                } else {
+                    0.0
+                };
+            assert!(
+                200.0 * f64::from(supplier.unit_price_currency * exports) < exported.total(),
+                "outside buyers cannot fund the abandoned supplier"
+            );
         }
         let before = reservations.business.financing(buyer);
         let original = reservations.business.sales(0, food, 200.0);
@@ -552,28 +913,67 @@ fn replacement_prices_revalidate_downstream_buyers_and_restore_failed_joint_proo
         let imported = catalog.unit_price_for_resource(food).unwrap();
         let original_sources = |book: &RecurringSupply| {
             let mut sources = Vec::new();
-            assert!(book.visit_input_sources(buyer, InputRequirement { resource: food, daily_units: 200.0,
-                buffer_units: 600.0, replenishment_batch_units: Some(200.0) }, imported, Some(outside),
-                |source, units, goods, carrier| sources.push((source, units, goods, carrier))));
+            assert!(book.visit_input_sources(
+                buyer,
+                InputRequirement {
+                    resource: food,
+                    daily_units: 200.0,
+                    buffer_units: 600.0,
+                    replenishment_batch_units: Some(200.0)
+                },
+                imported,
+                Some(outside),
+                |source, units, goods, carrier| sources.push((source, units, goods, carrier))
+            ));
             sources
         };
         let inputs = original_sources(&projected);
-        let all_finance = |reservations: &ProjectReservations| reservations.operations.iter()
-            .enumerate().filter_map(|(owner, operation)| operation.map(|_|
-                (owner, reservations.business.financing(owner).map(f64::to_bits)))).collect::<Vec<_>>();
+        let all_finance = |reservations: &ProjectReservations| {
+            reservations
+                .operations
+                .iter()
+                .enumerate()
+                .filter_map(|(owner, operation)| {
+                    operation.map(|_| {
+                        (
+                            owner,
+                            reservations.business.financing(owner).map(f64::to_bits),
+                        )
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
         let all_inputs = |reservations: &ProjectReservations, book: &RecurringSupply| {
             let mut sources = Vec::new();
             for (owner, operation) in reservations.operations.iter().enumerate() {
-                let Some(operation) = operation else { continue; };
+                let Some(operation) = operation else {
+                    continue;
+                };
                 let profile = catalog.profile_by_runtime_id(operation.profile).unwrap();
                 crate::simulation::economy::operation::OperatingCosts::for_plan_with_input_quotes(
-                    profile, operation.plan, operation.prices, |_, _| 0.0, |input| {
-                        assert!(book.visit_input_sources(owner, input,
-                            catalog.unit_price_for_resource(input.resource).unwrap() * operation.prices.imports,
-                            Some(operation.prices.carrier_quote), |source, units, goods, carrier|
-                                sources.push((owner, input.resource, source, units.to_bits(), goods.to_bits(), carrier.to_bits()))));
+                    profile,
+                    operation.plan,
+                    operation.prices,
+                    |_, _| 0.0,
+                    |input| {
+                        assert!(book.visit_input_sources(
+                            owner,
+                            input,
+                            catalog.unit_price_for_resource(input.resource).unwrap()
+                                * operation.prices.imports,
+                            Some(operation.prices.carrier_quote),
+                            |source, units, goods, carrier| sources.push((
+                                owner,
+                                input.resource,
+                                source,
+                                units.to_bits(),
+                                goods.to_bits(),
+                                carrier.to_bits()
+                            ))
+                        ));
                         Default::default()
-                    });
+                    },
+                );
             }
             sources
         };
@@ -583,7 +983,9 @@ fn replacement_prices_revalidate_downstream_buyers_and_restore_failed_joint_proo
         let assert_rollback = |reservations: &ProjectReservations, book: &RecurringSupply| {
             assert_eq!(all_finance(reservations), financing_before);
             assert_eq!(all_inputs(reservations, book), sources_before);
-            reservations.customers.assert_same_accounts_for_test(&customers_before);
+            reservations
+                .customers
+                .assert_same_accounts_for_test(&customers_before);
         };
         let profile = catalog.profile_for_id("replacement_food").unwrap();
         let market = OutputAbsorptionContext::empty(catalog.resource_count());
@@ -601,45 +1003,110 @@ fn replacement_prices_revalidate_downstream_buyers_and_restore_failed_joint_proo
                     forced_capacity = Some(projected.receipt_storage().1);
                 }
             }
-            let mut supply = SiteSupply::new(&mut projected, &mut reservations, &allocator, &zoning,
-                &network, &graph, &mut logistics, &tuning, &borders, &catalog, 420, policy.household_vat_rate);
+            let mut supply = SiteSupply::new(
+                &mut projected,
+                &mut reservations,
+                &allocator,
+                &zoning,
+                &network,
+                &graph,
+                &mut logistics,
+                &tuning,
+                &borders,
+                &catalog,
+                420,
+                policy.household_vat_rate,
+            );
             let carrier = supply.begin_replacement(0, action.parcel_id, &target);
             let prices = supply.prices(&catalog, ZoneType::Industrial, 2, &policy, carrier);
             if changed_inputs {
-                let costs = crate::simulation::economy::operation::OperatingCosts::for_plan(profile, &catalog,
-                    crate::simulation::economy::operation::OperationPlan { workers: 10, activity: 1.0, area: 1.0 },
-                    prices, |_, _| 0.0);
-                assert!(200.0 * f64::from(price) > costs.total() && costs.working_capital < 100_000.0,
-                    "the replacement's own operating proof passes; its supplier loses viable sales");
+                let costs = crate::simulation::economy::operation::OperatingCosts::for_plan(
+                    profile,
+                    &catalog,
+                    crate::simulation::economy::operation::OperationPlan {
+                        workers: 10,
+                        activity: 1.0,
+                        area: 1.0,
+                    },
+                    prices,
+                    |_, _| 0.0,
+                );
+                assert!(
+                    200.0 * f64::from(price) > costs.total() && costs.working_capital < 100_000.0,
+                    "the replacement's own operating proof passes; its supplier loses viable sales"
+                );
             }
-            assert_eq!(replacement_market_covers_operation(profile, &catalog, market.market(), prices,
-                tuning.owa_export_price_multiplier, &allocator.buildings[0], 0.0, &mut supply), accepted,
-                "seller price {price} must preserve the {commitment} grocery");
-            if accepted && attempt >= 3 { supply.accept(); }
-            else { supply.reject(); }
+            assert_eq!(
+                replacement_market_covers_operation(
+                    profile,
+                    &catalog,
+                    market.market(),
+                    prices,
+                    tuning.owa_export_price_multiplier,
+                    &allocator.buildings[0],
+                    0.0,
+                    &mut supply
+                ),
+                accepted,
+                "seller price {price} must preserve the {commitment} grocery"
+            );
+            if accepted && attempt >= 3 {
+                supply.accept();
+            } else {
+                supply.reject();
+            }
             drop(supply);
             if let Some(capacity) = forced_capacity {
-                assert!(if household_output { reservations.customers.receipt_capacity_for_test() }
-                    else { projected.receipt_storage().1 } > capacity,
-                    "the complete runtime proof must grow and replay the exhausted arena");
+                assert!(
+                    if household_output {
+                        reservations.customers.receipt_capacity_for_test()
+                    } else {
+                        projected.receipt_storage().1
+                    } > capacity,
+                    "the complete runtime proof must grow and replay the exhausted arena"
+                );
             }
             if accepted && attempt >= 3 {
-                assert_eq!(reservations.business.sales(0, food, 200.0).revenue,
-                    if changed_recipe { 0.0 } else { 200.0 * f64::from(price) });
+                assert_eq!(
+                    reservations.business.sales(0, food, 200.0).revenue,
+                    if changed_recipe {
+                        0.0
+                    } else {
+                        200.0 * f64::from(price)
+                    }
+                );
                 assert!(reservations.business.financing(buyer)[0] > 0.0);
-                if !changed_recipe { assert!(reservations.business.financing(buyer)[0] < before[0]); }
+                if !changed_recipe {
+                    assert!(reservations.business.financing(buyer)[0] < before[0]);
+                }
                 let finance = reservations.business.financing(buyer).map(f64::to_bits);
-                if let Some(previous) = accepted_finance { assert_eq!(finance, previous); }
+                if let Some(previous) = accepted_finance {
+                    assert_eq!(finance, previous);
+                }
                 accepted_finance = Some(finance);
                 let current = original_sources(&projected);
                 assert_eq!(current.len(), 1);
-                assert_eq!((current[0].0, current[0].1, current[0].2),
-                    if changed_recipe { (None, 200.0, imported) } else { (Some(0), 200.0, price) });
+                assert_eq!(
+                    (current[0].0, current[0].1, current[0].2),
+                    if changed_recipe {
+                        (None, 200.0, imported)
+                    } else {
+                        (Some(0), 200.0, price)
+                    }
+                );
                 projected.visit_dependents(0, |_, _, _| panic!("old output was withdrawn"));
-                assert_eq!(allocator.buildings[0].economy_profile_runtime_id,
-                    catalog.profile_for_id("food_processor_basic").unwrap().runtime_id);
+                assert_eq!(
+                    allocator.buildings[0].economy_profile_runtime_id,
+                    catalog
+                        .profile_for_id("food_processor_basic")
+                        .unwrap()
+                        .runtime_id
+                );
             } else {
-                assert_eq!(reservations.business.financing(buyer).map(f64::to_bits), before.map(f64::to_bits));
+                assert_eq!(
+                    reservations.business.financing(buyer).map(f64::to_bits),
+                    before.map(f64::to_bits)
+                );
                 assert_eq!(reservations.business.sales(0, food, 200.0), original);
                 assert_eq!(original_sources(&projected), inputs);
                 assert_rollback(&reservations, &projected);
@@ -652,96 +1119,233 @@ fn replacement_prices_revalidate_downstream_buyers_and_restore_failed_joint_proo
         households.households.push(family);
         let mut agents = crate::simulation::economy::agents::AgentSystem::new();
         let mut plan = crate::simulation::economy::demand::DemandBuildingActionPlan::default();
-        plan.industrial.upgrades.push(crate::simulation::economy::demand::DemandLevelChangeAction {
-            building: crate::simulation::economy::demand::demand_building_action_key(&allocator.buildings[0]),
-            target_asset_id: target.clone(),
-        });
+        plan.industrial.upgrades.push(
+            crate::simulation::economy::demand::DemandLevelChangeAction {
+                building: crate::simulation::economy::demand::demand_building_action_key(
+                    &allocator.buildings[0],
+                ),
+                target_asset_id: target.clone(),
+            },
+        );
         network.road_surface.compile_dirty(&graph, &terrain);
         let mut blocked = terrain.clone();
-        for z in 0..blocked.height { for x in 0..blocked.width { blocked.set_height(x, z, 20.0); } }
-        let budgets: Vec<_> = allocator.buildings.iter().map(|building| building.operating_budget.to_bits()).collect();
+        for z in 0..blocked.height {
+            for x in 0..blocked.width {
+                blocked.set_height(x, z, 20.0);
+            }
+        }
+        let budgets: Vec<_> = allocator
+            .buildings
+            .iter()
+            .map(|building| building.operating_budget.to_bits())
+            .collect();
         for delay in [1_000_000.0, 0.0] {
-            for lane in &mut network.lane_system.lanes { lane.frontage_delay_penalty_s = delay; }
+            for lane in &mut network.lane_system.lanes {
+                lane.frontage_delay_penalty_s = delay;
+            }
             network.frontage_delay_revision += 1;
-            demand.execute_building_actions(&plan, &mut allocator, &mut zoning, &mut agents,
-                &mut households, &mut logistics, &mut 0.0, &graph, &network,
-                if delay > 0.0 { &terrain } else { &blocked }, 420, &policy);
-            assert_eq!(allocator.buildings[0].asset_id, action.asset_id,
-                "current freight prices reject the operation before a physically valid replacement");
-            assert_eq!(allocator.buildings.iter().map(|building| building.operating_budget.to_bits()).collect::<Vec<_>>(), budgets);
+            demand.execute_building_actions(
+                &plan,
+                &mut allocator,
+                &mut zoning,
+                &mut agents,
+                &mut households,
+                &mut logistics,
+                &mut 0.0,
+                &graph,
+                &network,
+                if delay > 0.0 { &terrain } else { &blocked },
+                420,
+                &policy,
+            );
+            assert_eq!(
+                allocator.buildings[0].asset_id, action.asset_id,
+                "current freight prices reject the operation before a physically valid replacement"
+            );
+            assert_eq!(
+                allocator
+                    .buildings
+                    .iter()
+                    .map(|building| building.operating_budget.to_bits())
+                    .collect::<Vec<_>>(),
+                budgets
+            );
             if delay == 0.0 {
                 let execution = &demand.construction_execution;
                 assert_rollback(&execution.reservations, &execution.funding.input_supply);
-                assert_eq!(execution.reservations.business.financing(buyer).map(f64::to_bits), before.map(f64::to_bits));
-                assert_eq!(original_sources(&execution.funding.input_supply), inputs,
-                    "restored prices must rebuild the same dependent commitments before placement");
+                assert_eq!(
+                    execution
+                        .reservations
+                        .business
+                        .financing(buyer)
+                        .map(f64::to_bits),
+                    before.map(f64::to_bits)
+                );
+                assert_eq!(
+                    original_sources(&execution.funding.input_supply),
+                    inputs,
+                    "restored prices must rebuild the same dependent commitments before placement"
+                );
             }
         }
         for _ in 0..3 {
-            demand.execute_building_actions(&plan, &mut allocator, &mut zoning, &mut agents,
-                &mut households, &mut logistics, &mut 0.0, &graph, &network, &blocked, 420, &policy);
+            demand.execute_building_actions(
+                &plan,
+                &mut allocator,
+                &mut zoning,
+                &mut agents,
+                &mut households,
+                &mut logistics,
+                &mut 0.0,
+                &graph,
+                &network,
+                &blocked,
+                420,
+                &policy,
+            );
             assert_eq!(allocator.buildings[0].asset_id, action.asset_id);
             let execution = &demand.construction_execution;
             assert_rollback(&execution.reservations, &execution.funding.input_supply);
-            assert_eq!(execution.reservations.business.financing(buyer).map(f64::to_bits), before.map(f64::to_bits));
+            assert_eq!(
+                execution
+                    .reservations
+                    .business
+                    .financing(buyer)
+                    .map(f64::to_bits),
+                before.map(f64::to_bits)
+            );
             assert_eq!(original_sources(&execution.funding.input_supply), inputs);
         }
-        demand.execute_building_actions(&plan, &mut allocator, &mut zoning, &mut agents,
-            &mut households, &mut logistics, &mut 0.0, &graph, &network, &terrain, 420, &policy);
-        assert_eq!(allocator.buildings[0].asset_id, if accepted { target } else { action.asset_id });
-        assert_eq!(demand.construction_execution.reservations.business.sales(0, food, 200.0).revenue,
-            if accepted { if changed_recipe { 0.0 } else { 200.0 * f64::from(price) } } else { original.revenue });
+        demand.execute_building_actions(
+            &plan,
+            &mut allocator,
+            &mut zoning,
+            &mut agents,
+            &mut households,
+            &mut logistics,
+            &mut 0.0,
+            &graph,
+            &network,
+            &terrain,
+            420,
+            &policy,
+        );
+        assert_eq!(
+            allocator.buildings[0].asset_id,
+            if accepted { target } else { action.asset_id }
+        );
+        assert_eq!(
+            demand
+                .construction_execution
+                .reservations
+                .business
+                .sales(0, food, 200.0)
+                .revenue,
+            if accepted {
+                if changed_recipe {
+                    0.0
+                } else {
+                    200.0 * f64::from(price)
+                }
+            } else {
+                original.revenue
+            }
+        );
         if queued {
-            assert_eq!(demand.construction_execution.reservations.queued_workers,
-                [(queued_action.parcel_id, 15)], "replacement must retain the supported queue workforce");
-            let permit = demand.prepare_queued_spawn(&queued_action, ZoneType::Commercial,
-                &allocator, &households, &graph, 421, &network, &mut logistics, &zoning,
-                0.0, &policy).expect("the preserved downstream commitment must remain executable");
+            assert_eq!(
+                demand.construction_execution.reservations.queued_workers,
+                [(queued_action.parcel_id, 15)],
+                "replacement must retain the supported queue workforce"
+            );
+            let permit = demand
+                .prepare_queued_spawn(
+                    &queued_action,
+                    ZoneType::Commercial,
+                    &allocator,
+                    &households,
+                    &graph,
+                    421,
+                    &network,
+                    &mut logistics,
+                    &zoning,
+                    0.0,
+                    &policy,
+                )
+                .expect("the preserved downstream commitment must remain executable");
             let count = allocator.buildings.len();
-            let placed = allocator.execute_single_demand_spawn_action(ZoneType::Commercial,
-                &queued_action, &mut zoning, &graph, &network.lane_system, &surface, &terrain,
-                &demand.runtime_catalog, &demand.runtime_tuning);
+            let placed = allocator.execute_single_demand_spawn_action(
+                ZoneType::Commercial,
+                &queued_action,
+                &mut zoning,
+                &graph,
+                &network.lane_system,
+                &surface,
+                &terrain,
+                &demand.runtime_catalog,
+                &demand.runtime_tuning,
+            );
             assert_eq!(placed.commercial.spawn_executed, 1);
             demand.record_queued_spawn_placement(permit, &queued_action, &allocator);
             assert_eq!(allocator.buildings.len(), count + 1);
             assert_eq!(allocator.buildings[count].worker_count, 0);
             assert!(allocator.buildings[count].is_under_construction());
-            assert!(demand.queued_construction.iter().all(|project| !project.active));
+            assert!(
+                demand
+                    .queued_construction
+                    .iter()
+                    .all(|project| !project.active)
+            );
         }
     }
 }
 
 #[test]
 fn cyclic_replacement_preserves_both_financing_proofs_and_exact_rejection() {
-    use super::super::supply::{ProjectReservations, ProjectSupply, SiteSupply};
     use super::super::spawn_need::replacement_market_covers_operation;
+    use super::super::supply::{ProjectReservations, ProjectSupply, SiteSupply};
     use crate::simulation::economy::definitions::compile_test_catalog;
-    use crate::simulation::economy::logistics::{RecurringSupply, ShipmentSystem, collect_connected_border_nodes};
+    use crate::simulation::economy::logistics::{
+        RecurringSupply, ShipmentSystem, collect_connected_border_nodes,
+    };
     use crate::simulation::economy::operation::OperatingCosts;
     use crate::simulation::network::TransitNetwork;
 
     let authored = include_str!("../../../../../../economy/profiles.toml");
-    let start = authored.find("[[profiles]]\nid = \"food_processor_basic\"").unwrap();
+    let start = authored
+        .find("[[profiles]]\nid = \"food_processor_basic\"")
+        .unwrap();
     let end = start + authored[start + 1..].find("\n[[profiles]]").unwrap() + 1;
-    let recipe = authored[start..end].replace("worker_capacity = 10", "worker_capacity = 1")
-        .replace("[[profiles.inputs]]\nresource = \"machinery\"\nunits_per_day = 2.0", "");
-    let a = recipe.replace("food_processor_basic", "cycle_a")
+    let recipe = authored[start..end]
+        .replace("worker_capacity = 10", "worker_capacity = 1")
+        .replace(
+            "[[profiles.inputs]]\nresource = \"machinery\"\nunits_per_day = 2.0",
+            "",
+        );
+    let a = recipe
+        .replace("food_processor_basic", "cycle_a")
         .replace("\"grain\"", "\"cycle_swap\"")
         .replace("\"packaged_food\"", "\"grain\"")
         .replace("\"cycle_swap\"", "\"packaged_food\"")
-        .replace("[[profiles.inputs]]\nresource = \"packaged_food\"\nunits_per_day = 200.0",
-            "[[profiles.inputs]]\nresource = \"packaged_food\"\nunits_per_day = 20.0");
+        .replace(
+            "[[profiles.inputs]]\nresource = \"packaged_food\"\nunits_per_day = 200.0",
+            "[[profiles.inputs]]\nresource = \"packaged_food\"\nunits_per_day = 20.0",
+        );
     let a = format!("{a}\n[[profiles.inputs]]\nresource = \"cycle_feed\"\nunits_per_day = 180.0\n");
-    let b = recipe.replace("food_processor_basic", "cycle_b")
+    let b = recipe
+        .replace("food_processor_basic", "cycle_b")
         .replace("unit_price_currency = 12.0", "unit_price_currency = 30.0");
     // Imported feed balances B's exports. Neither full recipe can finance imported cycle
     // inputs; the accepted live book must prove the two local purchases together.
     let feed = "[[resources]]\nid = \"cycle_feed\"\nquantity_unit = \"kg\"\nshipment_batch_kg = 10.0\nruntime_id = 10\nimport_unit_price_currency = 0.01\n";
     for reverse in [false, true] {
         for (price, accepted) in [(12.5, true), (14.0, false)] {
-            let target_recipe = a.replace("cycle_a", "cycle_a_target")
-                .replace("unit_price_currency = 12.0", &format!("unit_price_currency = {price:.1}"));
-            let catalog = compile_test_catalog(&format!("{authored}\n{feed}\n{a}\n{b}\n{target_recipe}")).unwrap();
+            let target_recipe = a.replace("cycle_a", "cycle_a_target").replace(
+                "unit_price_currency = 12.0",
+                &format!("unit_price_currency = {price:.1}"),
+            );
+            let catalog =
+                compile_test_catalog(&format!("{authored}\n{feed}\n{a}\n{b}\n{target_recipe}"))
+                    .unwrap();
             let mut tuning = (*load_runtime_economy_tuning().unwrap()).clone();
             tuning.owa_import_price_multiplier = 10.0;
             tuning.owa_export_price_multiplier = 1.0;
@@ -754,20 +1358,56 @@ fn cyclic_replacement_preserves_both_financing_proofs_and_exact_rejection() {
             let terrain = TerrainSystem::new(4, 4);
             network.road_surface.compile_dirty(&graph, &terrain);
             let mut allocator = BuildingAllocator::new();
-            let old = register_family_asset_with_economy_profile(&mut allocator, "cycle_old",
-                ZoneType::Industrial, Some("cycle_family"), 1, Some("cycle_a"));
-            let target = register_family_asset_with_economy_profile(&mut allocator, "cycle_target",
-                ZoneType::Industrial, Some("cycle_family"), 2, Some("cycle_a_target"));
-            let other = register_family_asset_with_economy_profile(&mut allocator, "cycle_other",
-                ZoneType::Industrial, None, 1, Some("cycle_b"));
+            let old = register_family_asset_with_economy_profile(
+                &mut allocator,
+                "cycle_old",
+                ZoneType::Industrial,
+                Some("cycle_family"),
+                1,
+                Some("cycle_a"),
+            );
+            let target = register_family_asset_with_economy_profile(
+                &mut allocator,
+                "cycle_target",
+                ZoneType::Industrial,
+                Some("cycle_family"),
+                2,
+                Some("cycle_a_target"),
+            );
+            let other = register_family_asset_with_economy_profile(
+                &mut allocator,
+                "cycle_other",
+                ZoneType::Industrial,
+                None,
+                1,
+                Some("cycle_b"),
+            );
             let owner = usize::from(reverse);
-            let actions: Vec<_> = zoning.parcels().iter().enumerate().map(|(index, parcel)|
-                DemandSpawnAction { parcel_id: parcel.id().raw(),
-                    asset_id: if index == owner { old.clone() } else { other.clone() } }).collect();
+            let actions: Vec<_> = zoning
+                .parcels()
+                .iter()
+                .enumerate()
+                .map(|(index, parcel)| DemandSpawnAction {
+                    parcel_id: parcel.id().raw(),
+                    asset_id: if index == owner {
+                        old.clone()
+                    } else {
+                        other.clone()
+                    },
+                })
+                .collect();
             for action in &actions {
-                let execution = allocator.execute_single_demand_spawn_action(ZoneType::Industrial,
-                    action, &mut zoning, &graph, &network.lane_system, &network.road_surface,
-                    &terrain, &catalog, &tuning);
+                let execution = allocator.execute_single_demand_spawn_action(
+                    ZoneType::Industrial,
+                    action,
+                    &mut zoning,
+                    &graph,
+                    &network.lane_system,
+                    &network.road_surface,
+                    &terrain,
+                    &catalog,
+                    &tuning,
+                );
                 assert_eq!(execution.industrial.spawn_executed, 1);
                 let building = allocator.buildings.last_mut().unwrap();
                 building.construction_remaining_hours = 0;
@@ -776,8 +1416,19 @@ fn cyclic_replacement_preserves_both_financing_proofs_and_exact_rejection() {
             }
             let mut logistics = ShipmentSystem::new();
             let mut funding = crate::simulation::economy::hiring::JobFunding::default();
-            funding.refresh(&allocator, &[], &mut logistics, &network, &graph, &catalog,
-                &tuning, &policy, &[], 0.0, 420);
+            funding.refresh(
+                &allocator,
+                &[],
+                &mut logistics,
+                &network,
+                &graph,
+                &catalog,
+                &tuning,
+                &policy,
+                &[],
+                0.0,
+                420,
+            );
             assert_eq!(funding.capacities, [1, 1]);
             let grain = catalog.resource_runtime_id_for_id("grain").unwrap();
             let food = catalog.resource_runtime_id_for_id("packaged_food").unwrap();
@@ -787,111 +1438,292 @@ fn cyclic_replacement_preserves_both_financing_proofs_and_exact_rejection() {
             book.copy_reservations_from(&funding.input_supply, &allocator, &catalog, &graph);
             let mut reservations = ProjectReservations::default();
             reservations.reset(&funding, &allocator, &catalog, &tuning, &policy, 420);
-            let operations = [reservations.operations[0].unwrap(), reservations.operations[1].unwrap()];
-            let finance = |reservations: &ProjectReservations|
-                [reservations.business.financing(0).map(f64::to_bits),
-                    reservations.business.financing(1).map(f64::to_bits)];
+            let operations = [
+                reservations.operations[0].unwrap(),
+                reservations.operations[1].unwrap(),
+            ];
+            let finance = |reservations: &ProjectReservations| {
+                [
+                    reservations.business.financing(0).map(f64::to_bits),
+                    reservations.business.financing(1).map(f64::to_bits),
+                ]
+            };
             let input_sources = |book: &RecurringSupply| {
                 let mut sources = Vec::new();
                 for (buyer, operation) in operations.iter().enumerate() {
                     let profile = catalog.profile_by_runtime_id(operation.profile).unwrap();
-                    OperatingCosts::for_plan_with_input_quotes(profile, operation.plan, operation.prices,
-                        |_, _| 0.0, |input| {
-                            assert!(book.visit_input_sources(buyer, input,
-                                catalog.unit_price_for_resource(input.resource).unwrap() * tuning.owa_import_price_multiplier,
-                                Some(operation.prices.carrier_quote), |source, units, goods, carrier|
-                                    sources.push((buyer, input.resource, source, units.to_bits(), goods.to_bits(), carrier.to_bits()))));
+                    OperatingCosts::for_plan_with_input_quotes(
+                        profile,
+                        operation.plan,
+                        operation.prices,
+                        |_, _| 0.0,
+                        |input| {
+                            assert!(book.visit_input_sources(
+                                buyer,
+                                input,
+                                catalog.unit_price_for_resource(input.resource).unwrap()
+                                    * tuning.owa_import_price_multiplier,
+                                Some(operation.prices.carrier_quote),
+                                |source, units, goods, carrier| sources.push((
+                                    buyer,
+                                    input.resource,
+                                    source,
+                                    units.to_bits(),
+                                    goods.to_bits(),
+                                    carrier.to_bits()
+                                ))
+                            ));
                             Default::default()
-                        });
+                        },
+                    );
                 }
                 sources
             };
             let before = finance(&reservations);
             let receipts = input_sources(&book);
-            assert!(receipts.iter().any(|row| row.0 == owner && row.2 == Some(1 - owner)));
-            assert!(receipts.iter().any(|row| row.0 == 1 - owner && row.2 == Some(owner)));
+            assert!(
+                receipts
+                    .iter()
+                    .any(|row| row.0 == owner && row.2 == Some(1 - owner))
+            );
+            assert!(
+                receipts
+                    .iter()
+                    .any(|row| row.0 == 1 - owner && row.2 == Some(owner))
+            );
             let mut borders = Vec::new();
             collect_connected_border_nodes(&graph, &mut borders);
             let market = OutputAbsorptionContext::empty(catalog.resource_count());
             let profile = catalog.profile_for_id("cycle_a_target").unwrap();
             let target_prices = OperationPrices {
-                property_tax: crate::simulation::economy::fiscal::daily_property_tax(ZoneType::Industrial, 2, &policy),
+                property_tax: crate::simulation::economy::fiscal::daily_property_tax(
+                    ZoneType::Industrial,
+                    2,
+                    &policy,
+                ),
                 ..operations[owner].prices
             };
-            let own_costs = OperatingCosts::for_plan_with_input_quotes(profile, operations[owner].plan,
-                target_prices, |_, _| 0.0, |input| book.owner_input_costs(owner, input,
-                    catalog.unit_price_for_resource(input.resource).unwrap() * tuning.owa_import_price_multiplier,
-                    Some(target_prices.carrier_quote)));
-            assert!(200.0 * price > own_costs.total() && own_costs.working_capital < 1_000_000.0,
-                "both candidate prices must finance the replacement itself");
+            let own_costs = OperatingCosts::for_plan_with_input_quotes(
+                profile,
+                operations[owner].plan,
+                target_prices,
+                |_, _| 0.0,
+                |input| {
+                    book.owner_input_costs(
+                        owner,
+                        input,
+                        catalog.unit_price_for_resource(input.resource).unwrap()
+                            * tuning.owa_import_price_multiplier,
+                        Some(target_prices.carrier_quote),
+                    )
+                },
+            );
+            assert!(
+                200.0 * price > own_costs.total() && own_costs.working_capital < 1_000_000.0,
+                "both candidate prices must finance the replacement itself"
+            );
             let buyer = 1 - owner;
             let buyer_profile = catalog.profile_for_id("cycle_b").unwrap();
-            let local_carrier = f32::from_bits(receipts.iter().find(|row|
-                row.0 == buyer && row.1 == grain && row.2 == Some(owner)).unwrap().5);
-            let buyer_costs = OperatingCosts::for_plan_with_input_quotes(buyer_profile, operations[buyer].plan,
-                operations[buyer].prices, |_, units| (units - 20.0).max(0.0),
-                |input| input.at_prices(price as f32, local_carrier));
+            let local_carrier = f32::from_bits(
+                receipts
+                    .iter()
+                    .find(|row| row.0 == buyer && row.1 == grain && row.2 == Some(owner))
+                    .unwrap()
+                    .5,
+            );
+            let buyer_costs = OperatingCosts::for_plan_with_input_quotes(
+                buyer_profile,
+                operations[buyer].plan,
+                operations[buyer].prices,
+                |_, units| (units - 20.0).max(0.0),
+                |input| input.at_prices(price as f32, local_carrier),
+            );
             let buyer_revenue = 20.0 * f64::from(buyer_profile.unit_price_currency)
-                + 180.0 * f64::from(catalog.unit_price_for_resource(food).unwrap() * tuning.owa_export_price_multiplier);
-            assert_eq!(buyer_revenue > buyer_costs.total(), accepted,
-                "the rejected price must fail the other recipe's recurring margin");
+                + 180.0
+                    * f64::from(
+                        catalog.unit_price_for_resource(food).unwrap()
+                            * tuning.owa_export_price_multiplier,
+                    );
+            assert_eq!(
+                buyer_revenue > buyer_costs.total(),
+                accepted,
+                "the rejected price must fail the other recipe's recurring margin"
+            );
             assert!(buyer_costs.working_capital < 1_000_000.0);
             for _ in 0..3 {
-                let mut supply = SiteSupply::new(&mut book, &mut reservations, &allocator, &zoning,
-                    &network, &graph, &mut logistics, &tuning, &borders, &catalog, 420, policy.household_vat_rate);
+                let mut supply = SiteSupply::new(
+                    &mut book,
+                    &mut reservations,
+                    &allocator,
+                    &zoning,
+                    &network,
+                    &graph,
+                    &mut logistics,
+                    &tuning,
+                    &borders,
+                    &catalog,
+                    420,
+                    policy.household_vat_rate,
+                );
                 let carrier = supply.begin_replacement(owner, actions[owner].parcel_id, &target);
                 let prices = supply.prices(&catalog, ZoneType::Industrial, 2, &policy, carrier);
-                assert_eq!(replacement_market_covers_operation(profile, &catalog, market.market(),
-                    prices, tuning.owa_export_price_multiplier, &allocator.buildings[owner], 0.0, &mut supply),
-                    accepted, "cycle price={price}, reverse={reverse}");
+                assert_eq!(
+                    replacement_market_covers_operation(
+                        profile,
+                        &catalog,
+                        market.market(),
+                        prices,
+                        tuning.owa_export_price_multiplier,
+                        &allocator.buildings[owner],
+                        0.0,
+                        &mut supply
+                    ),
+                    accepted,
+                    "cycle price={price}, reverse={reverse}"
+                );
                 supply.reject();
                 drop(supply);
                 assert_eq!(finance(&reservations), before);
                 assert_eq!(input_sources(&book), receipts);
-                assert_eq!(reservations.business.sales(owner, grain, 200.0).revenue, 2_400.0);
-                assert_eq!(reservations.business.sales(1 - owner, food, 200.0).revenue, 600.0);
+                assert_eq!(
+                    reservations.business.sales(owner, grain, 200.0).revenue,
+                    2_400.0
+                );
+                assert_eq!(
+                    reservations.business.sales(1 - owner, food, 200.0).revenue,
+                    600.0
+                );
             }
             let mut demand = DemandSystem::new();
             demand.runtime_catalog = std::sync::Arc::new(catalog);
             demand.runtime_tuning = std::sync::Arc::new(tuning);
             let mut plan = DemandBuildingActionPlan::default();
             plan.industrial.upgrades.push(DemandLevelChangeAction {
-                building: demand_building_action_key(&allocator.buildings[owner]), target_asset_id: target.clone(),
+                building: demand_building_action_key(&allocator.buildings[owner]),
+                target_asset_id: target.clone(),
             });
             let mut blocked = terrain.clone();
-            for z in 0..blocked.height { for x in 0..blocked.width { blocked.set_height(x, z, 20.0); } }
-            let cash: Vec<_> = allocator.buildings.iter().map(|building| building.operating_budget.to_bits()).collect();
+            for z in 0..blocked.height {
+                for x in 0..blocked.width {
+                    blocked.set_height(x, z, 20.0);
+                }
+            }
+            let cash: Vec<_> = allocator
+                .buildings
+                .iter()
+                .map(|building| building.operating_budget.to_bits())
+                .collect();
             let mut agents = crate::simulation::economy::agents::AgentSystem::new();
             let mut households = HouseholdSystem::new();
             // Persisted inputs as a save would hold them before either execution attempt.
             let mut cold = (allocator.clone(), zoning.clone(), logistics.clone());
             for ground in [&blocked, &terrain] {
-                demand.execute_building_actions(&plan, &mut allocator, &mut zoning, &mut agents,
-                    &mut households, &mut logistics, &mut 0.0, &graph, &network, ground, 420, &policy);
+                demand.execute_building_actions(
+                    &plan,
+                    &mut allocator,
+                    &mut zoning,
+                    &mut agents,
+                    &mut households,
+                    &mut logistics,
+                    &mut 0.0,
+                    &graph,
+                    &network,
+                    ground,
+                    420,
+                    &policy,
+                );
                 let placed = accepted && std::ptr::eq(ground, &terrain);
-                assert_eq!(allocator.buildings[owner].asset_id, if placed { &target } else { &old }.as_str());
-                assert_eq!(allocator.buildings.iter().map(|building| building.operating_budget.to_bits()).collect::<Vec<_>>(), cash);
-                assert_eq!(demand.construction_execution.reservations.business.sales(owner, grain, 200.0).revenue,
-                    if placed { 200.0 * price } else { 2_400.0 });
-                assert_eq!(demand.construction_execution.reservations.business.sales(1 - owner, food, 200.0).revenue, 600.0);
+                assert_eq!(
+                    allocator.buildings[owner].asset_id,
+                    if placed { &target } else { &old }.as_str()
+                );
+                assert_eq!(
+                    allocator
+                        .buildings
+                        .iter()
+                        .map(|building| building.operating_budget.to_bits())
+                        .collect::<Vec<_>>(),
+                    cash
+                );
+                assert_eq!(
+                    demand
+                        .construction_execution
+                        .reservations
+                        .business
+                        .sales(owner, grain, 200.0)
+                        .revenue,
+                    if placed { 200.0 * price } else { 2_400.0 }
+                );
+                assert_eq!(
+                    demand
+                        .construction_execution
+                        .reservations
+                        .business
+                        .sales(1 - owner, food, 200.0)
+                        .revenue,
+                    600.0
+                );
             }
             // Reload rebuilds every derived book cold. The rejected attempt restored the saved
             // state exactly, so a cold replay of the cyclic replacement must match bit for bit.
             let mut reloaded = DemandSystem::new();
             reloaded.runtime_catalog = demand.runtime_catalog.clone();
             reloaded.runtime_tuning = demand.runtime_tuning.clone();
-            reloaded.execute_building_actions(&plan, &mut cold.0, &mut cold.1,
-                &mut crate::simulation::economy::agents::AgentSystem::new(), &mut HouseholdSystem::new(),
-                &mut cold.2, &mut 0.0, &graph, &network, &terrain, 420, &policy);
-            let books = |demand: &DemandSystem, allocator: &BuildingAllocator| (
-                allocator.buildings.iter().map(|building| (building.asset_id.clone(),
-                    building.operating_budget.to_bits(), building.construction_remaining_hours)).collect::<Vec<_>>(),
-                [0, 1].map(|index| demand.construction_execution.reservations.business.financing(index).map(f64::to_bits)),
-                [demand.construction_execution.reservations.business.sales(owner, grain, 200.0),
-                    demand.construction_execution.reservations.business.sales(1 - owner, food, 200.0)]
-                    .map(|sales| (sales.units.to_bits(), sales.revenue.to_bits())));
-            assert_eq!(books(&reloaded, &cold.0), books(&demand, &allocator),
-                "cold cyclic replacement must match warm execution, price={price}, reverse={reverse}");
+            reloaded.execute_building_actions(
+                &plan,
+                &mut cold.0,
+                &mut cold.1,
+                &mut crate::simulation::economy::agents::AgentSystem::new(),
+                &mut HouseholdSystem::new(),
+                &mut cold.2,
+                &mut 0.0,
+                &graph,
+                &network,
+                &terrain,
+                420,
+                &policy,
+            );
+            let books = |demand: &DemandSystem, allocator: &BuildingAllocator| {
+                (
+                    allocator
+                        .buildings
+                        .iter()
+                        .map(|building| {
+                            (
+                                building.asset_id.clone(),
+                                building.operating_budget.to_bits(),
+                                building.construction_remaining_hours,
+                            )
+                        })
+                        .collect::<Vec<_>>(),
+                    [0, 1].map(|index| {
+                        demand
+                            .construction_execution
+                            .reservations
+                            .business
+                            .financing(index)
+                            .map(f64::to_bits)
+                    }),
+                    [
+                        demand
+                            .construction_execution
+                            .reservations
+                            .business
+                            .sales(owner, grain, 200.0),
+                        demand.construction_execution.reservations.business.sales(
+                            1 - owner,
+                            food,
+                            200.0,
+                        ),
+                    ]
+                    .map(|sales| (sales.units.to_bits(), sales.revenue.to_bits())),
+                )
+            };
+            assert_eq!(
+                books(&reloaded, &cold.0),
+                books(&demand, &allocator),
+                "cold cyclic replacement must match warm execution, price={price}, reverse={reverse}"
+            );
         }
     }
 }
@@ -998,7 +1830,8 @@ fn live_local_inputs_can_fund_only_their_incumbents_upgrade() {
         &tuning,
         &policy,
         &[],
-        100_000.0, 420,
+        100_000.0,
+        420,
     );
     assert_eq!(&funding.capacities[1..], &[10, 0]);
     let mut borders = Vec::new();
@@ -1018,7 +1851,10 @@ fn live_local_inputs_can_fund_only_their_incumbents_upgrade() {
             &graph,
             &mut logistics,
             &tuning,
-            &borders, &catalog, 420, policy.household_vat_rate,
+            &borders,
+            &catalog,
+            420,
+            policy.household_vat_rate,
         );
         let mut snapshot = vacant_admission_snapshot();
         snapshot.open_job_slots = 0;
@@ -1079,7 +1915,9 @@ fn live_local_inputs_can_fund_only_their_incumbents_upgrade() {
 fn constructing_areas_and_services_share_finite_inputs_with_actual_capital() {
     use super::super::supply::SiteSupply;
     use crate::simulation::economy::hiring::JobFunding;
-    use crate::simulation::economy::logistics::{RecurringSupply, ShipmentSystem, collect_connected_border_nodes};
+    use crate::simulation::economy::logistics::{
+        RecurringSupply, ShipmentSystem, collect_connected_border_nodes,
+    };
     use crate::simulation::economy::operation::InputRequirement;
     use crate::simulation::network::TransitNetwork;
 
@@ -1098,17 +1936,34 @@ fn constructing_areas_and_services_share_finite_inputs_with_actual_capital() {
         ("grain_farm_basic", 10.0),
         ("coal_mine_basic", 1.0),
         ("water_plant_basic", 1.0),
-    ].into_iter().enumerate() {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let asset = if index == 3 {
             register_test_utility_asset(&mut allocator, "pending_water", profile_id)
         } else {
             register_explicit_profile_asset(&mut allocator, profile_id, profile_id)
         };
         let profile = catalog.profile_for_id(profile_id).unwrap();
-        let mut site = building(if index == 0 { ZoneType::Industrial } else { ZoneType::None }, 0.0, 0, 0, asset);
+        let mut site = building(
+            if index == 0 {
+                ZoneType::Industrial
+            } else {
+                ZoneType::None
+            },
+            0.0,
+            0,
+            0,
+            asset,
+        );
         site.economy_profile_runtime_id = profile.runtime_id;
         site.work_area_scale = area;
-        site.worker_count = if index == 0 { profile.worker_capacity } else { 0 };
+        site.worker_count = if index == 0 {
+            profile.worker_capacity
+        } else {
+            0
+        };
         site.center_x = 10.0 + index as f32 * 10.0;
         site.center_y = if index == 0 { 20.0 } else { -20.0 };
         site.frontage_t = site.center_x / 50.0;
@@ -1122,13 +1977,22 @@ fn constructing_areas_and_services_share_finite_inputs_with_actual_capital() {
     let grain = catalog.resource_runtime_id_for_id("grain").unwrap();
     let coal = catalog.resource_runtime_id_for_id("coal").unwrap();
     let mut market = OutputAbsorptionContext::from_resource_amounts(
-        catalog.resource_count(), &[(grain, 200.0), (coal, 9600.0)], &[], 1, &[],
+        catalog.resource_count(),
+        &[(grain, 200.0), (coal, 9600.0)],
+        &[],
+        1,
+        &[],
     );
     market.set_export_expansion_available(true);
     let service_door = allocator.entrances[3].clone();
     let mut borders = Vec::new();
     collect_connected_border_nodes(&graph, &mut borders);
-    for (cash, paid_cargo, reachable) in [(100_000.0, 0.0, true), (0.0, 0.0, true), (0.0, 100_000.0, true), (100_000.0, 0.0, false)] {
+    for (cash, paid_cargo, reachable) in [
+        (100_000.0, 0.0, true),
+        (0.0, 0.0, true),
+        (0.0, 100_000.0, true),
+        (100_000.0, 0.0, false),
+    ] {
         allocator.buildings[1].operating_budget = cash;
         allocator.buildings[2].operating_budget = cash;
         allocator.buildings[3].operating_budget = 0.0;
@@ -1139,29 +2003,101 @@ fn constructing_areas_and_services_share_finite_inputs_with_actual_capital() {
         }
         let mut logistics = ShipmentSystem::new();
         let mut funding = JobFunding::default();
-        funding.refresh(&allocator, &[], &mut logistics, &network, &graph, &catalog, &tuning, &policy, &[], 100_000.0, 420);
-        assert_eq!(&funding.capacities[1..], &[0, 0, 0], "unfinished projects never advertise live jobs");
+        funding.refresh(
+            &allocator,
+            &[],
+            &mut logistics,
+            &network,
+            &graph,
+            &catalog,
+            &tuning,
+            &policy,
+            &[],
+            100_000.0,
+            420,
+        );
+        assert_eq!(
+            &funding.capacities[1..],
+            &[0, 0, 0],
+            "unfinished projects never advertise live jobs"
+        );
         assert_eq!(&funding.service_capacities[1..], &[0, 0, 3]);
         // Isolate project replay: a previously validated staffed source offers 40/day.
         let mut book = RecurringSupply::default();
-        book.reset(&allocator, &graph, &network, &catalog, &[1.0, 0.0, 0.0, 0.0]);
+        book.reset(
+            &allocator,
+            &graph,
+            &network,
+            &catalog,
+            &[1.0, 0.0, 0.0, 0.0],
+        );
         let mut reservations = super::super::supply::ProjectReservations::default();
-        reservations.business.reset(&allocator, &network, &graph, book.freight_components().unwrap(),
-            &catalog, 0, 0, |_| {});
+        reservations.business.reset(
+            &allocator,
+            &network,
+            &graph,
+            book.freight_components().unwrap(),
+            &catalog,
+            0,
+            0,
+            |_| {},
+        );
         logistics.prepare_site_carrier_quotes(&allocator, &network, &graph, &borders);
-        SiteSupply::new(&mut book, &mut reservations, &allocator, &zoning, &network, &graph, &mut logistics, &tuning, &borders, &catalog, 420, policy.household_vat_rate)
-            .reserve_projects(std::iter::empty(), &catalog, &market, &mut Default::default(), &policy,
-                &funding.service_capacities, &[0.0, paid_cargo, paid_cargo, 0.0]);
+        SiteSupply::new(
+            &mut book,
+            &mut reservations,
+            &allocator,
+            &zoning,
+            &network,
+            &graph,
+            &mut logistics,
+            &tuning,
+            &borders,
+            &catalog,
+            420,
+            policy.household_vat_rate,
+        )
+        .reserve_projects(
+            std::iter::empty(),
+            &catalog,
+            &market,
+            &mut Default::default(),
+            &policy,
+            &funding.service_capacities,
+            &[0.0, paid_cargo, paid_cargo, 0.0],
+        );
         // Ten hectares need 1 machinery/day; the one-hectare mine needs 4. The public
         // water plant needs 0.5 independently of private capital, if its door is reachable.
-        let residual = 40.0 - if f64::from(cash) + paid_cargo > 0.0 { 5.0 } else { 0.0 }
-            - if reachable { 0.5 } else { 0.0 };
+        let residual =
+            40.0 - if f64::from(cash) + paid_cargo > 0.0 {
+                5.0
+            } else {
+                0.0
+            } - if reachable { 0.5 } else { 0.0 };
         for (units, expected) in [(residual, true), (residual + 0.25, false)] {
-            let costs = logistics.quote_recurring_input(&mut book, InputRequirement {
-                resource: machinery, daily_units: units, buffer_units: 2.0 * units,
-                replenishment_batch_units: Some(40.0),
-            }, None, &service_door, None, &allocator, &catalog, &tuning, &network, &graph, 1.0);
-            assert_eq!(costs.goods.is_finite(), expected, "cash={cash} cargo={paid_cargo} reachable={reachable} residual={residual}");
+            let costs = logistics.quote_recurring_input(
+                &mut book,
+                InputRequirement {
+                    resource: machinery,
+                    daily_units: units,
+                    buffer_units: 2.0 * units,
+                    replenishment_batch_units: Some(40.0),
+                },
+                None,
+                &service_door,
+                None,
+                &allocator,
+                &catalog,
+                &tuning,
+                &network,
+                &graph,
+                1.0,
+            );
+            assert_eq!(
+                costs.goods.is_finite(),
+                expected,
+                "cash={cash} cargo={paid_cargo} reachable={reachable} residual={residual}"
+            );
             book.reject(&allocator, &graph);
         }
         assert_eq!(allocator.buildings[1].operating_budget, cash);
@@ -1215,7 +2151,11 @@ fn constructing_shops_replay_inputs_in_admission_order() {
         site.operating_budget = 100_000.0;
         allocator.buildings.push(site);
     }
-    let home_asset = register_test_asset(&mut allocator, "replay_customer_home", ZoneType::Residential);
+    let home_asset = register_test_asset(
+        &mut allocator,
+        "replay_customer_home",
+        ZoneType::Residential,
+    );
     let mut home = building(ZoneType::Residential, 0.0, 1, 0, home_asset);
     home.center_x = 10.0;
     home.center_y = 20.0;
@@ -1226,8 +2166,16 @@ fn constructing_shops_replay_inputs_in_admission_order() {
     family.employed_adults = 300;
     family.gross_daily_wages = 100_000.0;
     let mut reservations = super::super::supply::ProjectReservations::default();
-    reservations.customers.reset(&[family], &allocator, &catalog, &tuning, &policy,
-        0.0, &network, &graph);
+    reservations.customers.reset(
+        &[family],
+        &allocator,
+        &catalog,
+        &tuning,
+        &policy,
+        0.0,
+        &network,
+        &graph,
+    );
     let food = catalog.resource_runtime_id_for_id("packaged_food").unwrap();
     let supplies = catalog
         .resource_runtime_id_for_id("household_supplies")
@@ -1241,9 +2189,23 @@ fn constructing_shops_replay_inputs_in_admission_order() {
     );
     let mut book = RecurringSupply::default();
     // Isolate replay from upstream funding: two validated staffed suppliers offer 400/day.
-    book.reset(&allocator, &graph, &network, &catalog, &[1.0, 1.0, 0.0, 0.0]);
-    reservations.business.reset(&allocator, &network, &graph, book.freight_components().unwrap(),
-        &catalog, 0, 0, |_| {});
+    book.reset(
+        &allocator,
+        &graph,
+        &network,
+        &catalog,
+        &[1.0, 1.0, 0.0, 0.0],
+    );
+    reservations.business.reset(
+        &allocator,
+        &network,
+        &graph,
+        book.freight_components().unwrap(),
+        &catalog,
+        0,
+        0,
+        |_| {},
+    );
     let mut logistics = ShipmentSystem::new();
     let mut borders = Vec::new();
     collect_connected_border_nodes(&graph, &mut borders);
@@ -1257,12 +2219,33 @@ fn constructing_shops_replay_inputs_in_admission_order() {
         &graph,
         &mut logistics,
         &tuning,
-        &borders, &catalog, 420, policy.household_vat_rate,
+        &borders,
+        &catalog,
+        420,
+        policy.household_vat_rate,
     )
-    .reserve_projects(std::iter::empty(), &catalog, &market, &mut Default::default(), &policy, &[], &[]);
+    .reserve_projects(
+        std::iter::empty(),
+        &catalog,
+        &market,
+        &mut Default::default(),
+        &policy,
+        &[],
+        &[],
+    );
     assert_eq!(&reservations.building_workers[2..4], &[15, 8]);
-    let purchased: f64 = (0..2).map(|owner| reservations.business.sales(owner, food, f64::INFINITY).units).sum();
-    assert_eq!(purchased, 300.0, "constructing buyers publish their supported input quantities");
+    let purchased: f64 = (0..2)
+        .map(|owner| {
+            reservations
+                .business
+                .sales(owner, food, f64::INFINITY)
+                .units
+        })
+        .sum();
+    assert_eq!(
+        purchased, 300.0,
+        "constructing buyers publish their supported input quantities"
+    );
     // The first shop owns 200/day; the next owns the residual 100/day. Crediting only
     // each shop against the final 400-capacity market would incorrectly reserve 100+100.
     for (units, expected) in [(100.0, true), (101.0, false)] {
@@ -1281,7 +2264,8 @@ fn constructing_shops_replay_inputs_in_admission_order() {
             &catalog,
             &tuning,
             &network,
-            &graph, 1.0,
+            &graph,
+            1.0,
         );
         assert_eq!(costs.goods.is_finite(), expected);
         book.reject(&allocator, &graph);
@@ -1295,18 +2279,29 @@ fn constructing_shops_replay_inputs_in_admission_order() {
 
 #[test]
 fn business_projects_share_financed_customers_through_replay_and_rollback() {
-    use super::super::supply::{ProjectReservations, ProjectSupply, SiteSupply};
     use super::super::spawn_need::project_covers_operation;
+    use super::super::supply::{ProjectReservations, ProjectSupply, SiteSupply};
     use crate::simulation::economy::hiring::JobFunding;
-    use crate::simulation::economy::logistics::{RecurringSupply, ShipmentSystem, collect_connected_border_nodes};
+    use crate::simulation::economy::logistics::{
+        RecurringSupply, ShipmentSystem, collect_connected_border_nodes,
+    };
     use crate::simulation::network::TransitNetwork;
     let catalog = load_runtime_economy_catalog().unwrap();
     let mut tuning = (*load_runtime_economy_tuning().unwrap()).clone();
-    let receiving = tuning.operational_clock.freight_profiles.iter()
-        .find(|profile| profile.id == "early_morning_preferred").unwrap().clone();
+    let receiving = tuning
+        .operational_clock
+        .freight_profiles
+        .iter()
+        .find(|profile| profile.id == "early_morning_preferred")
+        .unwrap()
+        .clone();
     // Give the factory its own receiving boundary; the shipped recipe is always open.
-    let factory_freight = tuning.operational_clock.freight_profiles.iter_mut()
-        .find(|profile| profile.id == "always_open").unwrap();
+    let factory_freight = tuning
+        .operational_clock
+        .freight_profiles
+        .iter_mut()
+        .find(|profile| profile.id == "always_open")
+        .unwrap();
     factory_freight.preferred_windows = receiving.preferred_windows;
     factory_freight.outside_window_cost_multiplier = receiving.outside_window_cost_multiplier;
     let policy = CityFiscalPolicy::from_runtime_tuning(&tuning);
@@ -1316,12 +2311,25 @@ fn business_projects_share_financed_customers_through_replay_and_rollback() {
     network.rebuild_cch_and_check(&graph);
     let zoning = two_lots(&graph, ZoneType::Industrial);
     let mut allocator = BuildingAllocator::new();
-    let home_asset = register_test_asset(&mut allocator, "business_customer_home", ZoneType::Residential);
-    let shop_asset = register_test_asset(&mut allocator, "business_customer_shop", ZoneType::Commercial);
-    let factory_asset = register_test_asset(&mut allocator, "business_project", ZoneType::Industrial);
+    let home_asset = register_test_asset(
+        &mut allocator,
+        "business_customer_home",
+        ZoneType::Residential,
+    );
+    let shop_asset = register_test_asset(
+        &mut allocator,
+        "business_customer_shop",
+        ZoneType::Commercial,
+    );
+    let factory_asset =
+        register_test_asset(&mut allocator, "business_project", ZoneType::Industrial);
     for (index, (zone, asset, workers)) in [
-        (ZoneType::Residential, home_asset, 0), (ZoneType::Commercial, shop_asset, 15),
-    ].into_iter().enumerate() {
+        (ZoneType::Residential, home_asset, 0),
+        (ZoneType::Commercial, shop_asset, 15),
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let mut site = building(zone, 0.0, 0, workers, asset);
         site.center_x = 10.0 + index as f32 * 20.0;
         site.center_y = 20.0;
@@ -1339,96 +2347,252 @@ fn business_projects_share_financed_customers_through_replay_and_rollback() {
     let mut reservations = ProjectReservations::default();
     let mut borders = Vec::new();
     collect_connected_border_nodes(&graph, &mut borders);
-    let action = DemandSpawnAction { parcel_id: zoning.parcels()[0].id().raw(), asset_id: factory_asset.clone() };
+    let action = DemandSpawnAction {
+        parcel_id: zoning.parcels()[0].id().raw(),
+        asset_id: factory_asset.clone(),
+    };
     let food = catalog.resource_runtime_id_for_id("packaged_food").unwrap();
     // Deliberately wrong aggregate demand cannot create a customer or erase a real one.
-    let market = OutputAbsorptionContext::from_resource_amounts(catalog.resource_count(),
-        &[], &[(food, 100_000.0)], 0, &[]);
-    let mut profile = catalog.profile_for_id("food_processor_basic").unwrap().clone();
+    let market = OutputAbsorptionContext::from_resource_amounts(
+        catalog.resource_count(),
+        &[],
+        &[(food, 100_000.0)],
+        0,
+        &[],
+    );
+    let mut profile = catalog
+        .profile_for_id("food_processor_basic")
+        .unwrap()
+        .clone();
     profile.unit_price_currency = 14.0;
     let grain = catalog.resource_runtime_id_for_id("grain").unwrap();
     let mut supplier = catalog.profile_for_id("grain_farm_basic").unwrap().clone();
     supplier.inputs.clear();
     let supplier_parcel = zoning.parcels()[1].id().raw();
-    for (funded, minute, residents) in [(true, 420, 200), (true, 419, 200),
-        (true, 480, 200), (true, 420, 100), (false, 420, 200)] {
+    for (funded, minute, residents) in [
+        (true, 420, 200),
+        (true, 419, 200),
+        (true, 480, 200),
+        (true, 420, 100),
+        (false, 420, 200),
+    ] {
         family.member_count = residents;
         family.employed_adults = residents;
         allocator.buildings[1].operating_budget = if funded { 100_000.0 } else { 0.0 };
-        funding.refresh(&allocator, std::slice::from_ref(&family), &mut logistics, &network, &graph,
-            &catalog, &tuning, &policy, &[], 0.0, minute);
-        assert_eq!(funding.capacities[1], if funded { (15 * u32::from(residents)).div_ceil(200) } else { 0 });
+        funding.refresh(
+            &allocator,
+            std::slice::from_ref(&family),
+            &mut logistics,
+            &network,
+            &graph,
+            &catalog,
+            &tuning,
+            &policy,
+            &[],
+            0.0,
+            minute,
+        );
+        assert_eq!(
+            funding.capacities[1],
+            if funded {
+                (15 * u32::from(residents)).div_ceil(200)
+            } else {
+                0
+            }
+        );
         reservations.reset(&funding, &allocator, &catalog, &tuning, &policy, minute);
-        assert!(reservations.operations[allocator.buildings.len()..].iter().all(Option::is_none),
-            "accepted projects from the preceding pass must release their retained owner slots");
+        assert!(
+            reservations.operations[allocator.buildings.len()..]
+                .iter()
+                .all(Option::is_none),
+            "accepted projects from the preceding pass must release their retained owner slots"
+        );
         book.copy_reservations_from(&funding.input_supply, &allocator, &catalog, &graph);
         logistics.prepare_site_carrier_quotes(&allocator, &network, &graph, &borders);
-        let mut supply = SiteSupply::new(&mut book, &mut reservations, &allocator, &zoning,
-            &network, &graph, &mut logistics, &tuning, &borders, &catalog, minute, policy.household_vat_rate);
-        let before = supply.reservations().unwrap().business.financing(1).map(f64::to_bits);
+        let mut supply = SiteSupply::new(
+            &mut book,
+            &mut reservations,
+            &allocator,
+            &zoning,
+            &network,
+            &graph,
+            &mut logistics,
+            &tuning,
+            &borders,
+            &catalog,
+            minute,
+            policy.household_vat_rate,
+        );
+        let before = supply
+            .reservations()
+            .unwrap()
+            .business
+            .financing(1)
+            .map(f64::to_bits);
         for _ in 0..2 {
             let carrier = supply.begin(action.parcel_id, &action.asset_id);
             let prices = supply.prices(&catalog, ZoneType::Industrial, 1, &policy, carrier);
-            assert_eq!(project_covers_operation(&profile, &catalog, market.market(), prices, 0.0, &mut supply), funded);
+            assert_eq!(
+                project_covers_operation(
+                    &profile,
+                    &catalog,
+                    market.market(),
+                    prices,
+                    0.0,
+                    &mut supply
+                ),
+                funded
+            );
             if funded {
                 assert_eq!(supply.supported_workers(0), u32::from(residents) / 20);
                 let multiplier = crate::simulation::economy::logistics::freight_goods_multiplier(
-                    catalog.profile_for_id("grocery_basic").unwrap(), ZoneType::Commercial, &tuning, minute);
-                assert_eq!(supply.output_price(food), Some(f64::from(14.0 * multiplier) * f64::from(residents) / 200.0));
+                    catalog.profile_for_id("grocery_basic").unwrap(),
+                    ZoneType::Commercial,
+                    &tuning,
+                    minute,
+                );
+                assert_eq!(
+                    supply.output_price(food),
+                    Some(f64::from(14.0 * multiplier) * f64::from(residents) / 200.0)
+                );
             }
             supply.reject();
-            assert_eq!(supply.reservations().unwrap().business.financing(1).map(f64::to_bits), before);
+            assert_eq!(
+                supply
+                    .reservations()
+                    .unwrap()
+                    .business
+                    .financing(1)
+                    .map(f64::to_bits),
+                before
+            );
             supply.begin(supplier_parcel, &action.asset_id);
             let quote = supply.customers(&supplier, 100.0, prices, 0.0).unwrap();
-            assert_eq!(quote.revenue, 0.0, "a rejected project must not advertise future purchases");
+            assert_eq!(
+                quote.revenue, 0.0,
+                "a rejected project must not advertise future purchases"
+            );
             supply.reject();
         }
         if funded {
             let carrier = supply.begin(action.parcel_id, &action.asset_id);
             let prices = supply.prices(&catalog, ZoneType::Industrial, 1, &policy, carrier);
-            let planner_prices = OperationPrices { imports: tuning.owa_import_price_multiplier, ..prices };
-            assert!(project_covers_operation(&profile, &catalog, market.market(), planner_prices, 0.0, &mut supply));
+            let planner_prices = OperationPrices {
+                imports: tuning.owa_import_price_multiplier,
+                ..prices
+            };
+            assert!(project_covers_operation(
+                &profile,
+                &catalog,
+                market.market(),
+                planner_prices,
+                0.0,
+                &mut supply
+            ));
             supply.accept();
-            let operation = supply.reservations().unwrap().operations[allocator.buildings.len()].unwrap();
+            let operation =
+                supply.reservations().unwrap().operations[allocator.buildings.len()].unwrap();
             assert_eq!(operation.plan.workers, u32::from(residents) / 20);
-            assert_eq!(operation.prices.imports, prices.imports,
-                "retained outside prices include the site's current receiving-window charge");
-            let capital = f64::from(profile.zoned_startup_budget(&catalog, tuning.owa_import_price_multiplier));
+            assert_eq!(
+                operation.prices.imports, prices.imports,
+                "retained outside prices include the site's current receiving-window charge"
+            );
+            let capital = f64::from(
+                profile.zoned_startup_budget(&catalog, tuning.owa_import_price_multiplier),
+            );
             let receiving = crate::simulation::economy::logistics::freight_goods_multiplier(
-                &profile, ZoneType::Industrial, &tuning, minute);
-            let costs = crate::simulation::economy::operation::OperatingCosts::for_plan_with_input_quotes(
-                &profile, operation.plan, operation.prices, |_, _| 0.0, |input| input.at_prices(
-                    catalog.unit_price_for_resource(input.resource).unwrap()
-                        * tuning.owa_import_price_multiplier * receiving,
-                    operation.prices.carrier_quote));
-            assert_eq!(operation.headroom[1], capital - costs.working_capital,
-                "off-window quotes cannot enlarge the equity actually supplied by placement");
-            if minute == 480 { assert!(operation.prices.imports > planner_prices.imports); }
+                &profile,
+                ZoneType::Industrial,
+                &tuning,
+                minute,
+            );
+            let costs =
+                crate::simulation::economy::operation::OperatingCosts::for_plan_with_input_quotes(
+                    &profile,
+                    operation.plan,
+                    operation.prices,
+                    |_, _| 0.0,
+                    |input| {
+                        input.at_prices(
+                            catalog.unit_price_for_resource(input.resource).unwrap()
+                                * tuning.owa_import_price_multiplier
+                                * receiving,
+                            operation.prices.carrier_quote,
+                        )
+                    },
+                );
+            assert_eq!(
+                operation.headroom[1],
+                capital - costs.working_capital,
+                "off-window quotes cannot enlarge the equity actually supplied by placement"
+            );
+            if minute == 480 {
+                assert!(operation.prices.imports > planner_prices.imports);
+            }
             let mut grain_units = 0.0;
             crate::simulation::economy::operation::OperatingCosts::for_plan_with_input_quotes(
-                &profile, operation.plan, operation.prices, |_, _| 0.0, |input| {
-                    if input.resource == grain { grain_units = f64::from(input.daily_units); }
+                &profile,
+                operation.plan,
+                operation.prices,
+                |_, _| 0.0,
+                |input| {
+                    if input.resource == grain {
+                        grain_units = f64::from(input.daily_units);
+                    }
                     Default::default()
-                });
+                },
+            );
             assert_eq!(grain_units, f64::from(residents));
             let multiplier = crate::simulation::economy::logistics::freight_goods_multiplier(
-                &profile, ZoneType::Industrial, &tuning, minute);
-            let future_finance = supply.reservations().unwrap().business
-                .financing(allocator.buildings.len()).map(f64::to_bits);
+                &profile,
+                ZoneType::Industrial,
+                &tuning,
+                minute,
+            );
+            let future_finance = supply
+                .reservations()
+                .unwrap()
+                .business
+                .financing(allocator.buildings.len())
+                .map(f64::to_bits);
             let storage = supply.reservations().unwrap().business.account_storage();
             for _ in 0..16 {
                 supply.begin(supplier_parcel, &action.asset_id);
                 let quote = supply.customers(&supplier, 100.0, prices, 0.0).unwrap();
-                assert!((quote.revenue - grain_units * f64::from(supplier.unit_price_currency * multiplier)).abs() < 0.001,
-                    "accepted project purchases follow supported activity and the buyer's receiving price");
+                assert!(
+                    (quote.revenue
+                        - grain_units * f64::from(supplier.unit_price_currency * multiplier))
+                    .abs()
+                        < 0.001,
+                    "accepted project purchases follow supported activity and the buyer's receiving price"
+                );
                 supply.reject();
-                assert_eq!(supply.reservations().unwrap().business
-                    .financing(allocator.buildings.len()).map(f64::to_bits), future_finance);
-                assert_eq!(supply.reservations().unwrap().business.account_storage(), storage);
+                assert_eq!(
+                    supply
+                        .reservations()
+                        .unwrap()
+                        .business
+                        .financing(allocator.buildings.len())
+                        .map(f64::to_bits),
+                    future_finance
+                );
+                assert_eq!(
+                    supply.reservations().unwrap().business.account_storage(),
+                    storage
+                );
             }
             supply.begin(action.parcel_id, &action.asset_id);
-            assert!(!project_covers_operation(&profile, &catalog, market.market(), prices, 0.0, &mut supply),
-                "the next project cannot reuse the shop's purchases");
+            assert!(
+                !project_covers_operation(
+                    &profile,
+                    &catalog,
+                    market.market(),
+                    prices,
+                    0.0,
+                    &mut supply
+                ),
+                "the next project cannot reuse the shop's purchases"
+            );
             supply.reject();
         }
     }
@@ -1443,38 +2607,89 @@ fn business_projects_share_financed_customers_through_replay_and_rollback() {
     allocator.buildings.push(constructing);
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
     let mut demand = DemandSystem::new();
-    demand.set_queued_construction_with_entrances(&allocator, &zoning, 0,
+    demand.set_queued_construction_with_entrances(
+        &allocator,
+        &zoning,
+        0,
         [(1, ZoneType::Industrial, &action)],
-        |action| allocator.demand_site_entrance(action.parcel_id, &action.asset_id, &zoning, &graph, &network.lane_system));
+        |action| {
+            allocator.demand_site_entrance(
+                action.parcel_id,
+                &action.asset_id,
+                &zoning,
+                &graph,
+                &network.lane_system,
+            )
+        },
+    );
     logistics.prepare_site_carrier_quotes(&allocator, &network, &graph, &borders);
     // Disable exports so replay must carry the one shop's finite business account.
     let mut local_tuning = tuning.clone();
     local_tuning.owa_export_price_multiplier = 0.0;
     for (cash, constructing_workers, queued_workers) in [(100_000.0, 10, 0), (0.0, 0, 10)] {
         allocator.buildings[2].operating_budget = cash;
-        funding.refresh(&allocator, std::slice::from_ref(&family), &mut logistics, &network, &graph,
-            &catalog, &tuning, &policy, &[], 0.0, 420);
+        funding.refresh(
+            &allocator,
+            std::slice::from_ref(&family),
+            &mut logistics,
+            &network,
+            &graph,
+            &catalog,
+            &tuning,
+            &policy,
+            &[],
+            0.0,
+            420,
+        );
         reservations.reset(&funding, &allocator, &catalog, &tuning, &policy, 420);
         book.copy_reservations_from(&funding.input_supply, &allocator, &catalog, &graph);
-        let mut supply = SiteSupply::new(&mut book, &mut reservations, &allocator, &zoning,
-            &network, &graph, &mut logistics, &local_tuning, &borders, &catalog, 420, policy.household_vat_rate);
-        supply.reserve_projects(demand.queued_construction.iter(), &catalog, &market,
-            &mut Default::default(), &policy, &[], &[]);
-        assert_eq!(supply.reservations().unwrap().building_workers[2], constructing_workers);
-        assert_eq!(supply.reservations().unwrap().queued_workers, [(action.parcel_id, queued_workers)]);
+        let mut supply = SiteSupply::new(
+            &mut book,
+            &mut reservations,
+            &allocator,
+            &zoning,
+            &network,
+            &graph,
+            &mut logistics,
+            &local_tuning,
+            &borders,
+            &catalog,
+            420,
+            policy.household_vat_rate,
+        );
+        supply.reserve_projects(
+            demand.queued_construction.iter(),
+            &catalog,
+            &market,
+            &mut Default::default(),
+            &policy,
+            &[],
+            &[],
+        );
+        assert_eq!(
+            supply.reservations().unwrap().building_workers[2],
+            constructing_workers
+        );
+        assert_eq!(
+            supply.reservations().unwrap().queued_workers,
+            [(action.parcel_id, queued_workers)]
+        );
         supply.begin(supplier_parcel, &action.asset_id);
         let prices = supply.prices(&catalog, ZoneType::Industrial, 1, &policy, None);
         let quote = supply.customers(&supplier, 100.0, prices, 0.0).unwrap();
-        assert_eq!(quote.revenue, 200.0 * f64::from(supplier.unit_price_currency),
-            "only the financed constructing or queued buyer advertises its grain purchases");
+        assert_eq!(
+            quote.revenue,
+            200.0 * f64::from(supplier.unit_price_currency),
+            "only the financed constructing or queued buyer advertises its grain purchases"
+        );
         supply.reject();
     }
 }
 
 #[test]
 fn service_projects_share_live_customers_and_replacement_rollback() {
-    use super::super::supply::{ProjectReservations, ProjectSupply, SiteSupply};
     use super::super::spawn_need::replacement_market_covers_operation;
+    use super::super::supply::{ProjectReservations, ProjectSupply, SiteSupply};
     use crate::simulation::economy::hiring::JobFunding;
     use crate::simulation::economy::logistics::{ShipmentSystem, collect_connected_border_nodes};
     use crate::simulation::network::TransitNetwork;
@@ -1489,19 +2704,46 @@ fn service_projects_share_live_customers_and_replacement_rollback() {
     network.rebuild_cch_and_check(&graph);
     let zoning = two_lots(&graph, ZoneType::Commercial);
     let mut allocator = BuildingAllocator::new();
-    let home_asset = register_test_asset(&mut allocator, "service_customer_home", ZoneType::Residential);
-    let shop_asset = register_family_asset_with_economy_profile(&mut allocator,
-        "service_customer_shop", ZoneType::Commercial, None, 1, Some("personal_service_small"));
+    let home_asset = register_test_asset(
+        &mut allocator,
+        "service_customer_home",
+        ZoneType::Residential,
+    );
+    let shop_asset = register_family_asset_with_economy_profile(
+        &mut allocator,
+        "service_customer_shop",
+        ZoneType::Commercial,
+        None,
+        1,
+        Some("personal_service_small"),
+    );
     for index in 0..3 {
-        let mut site = building(if index == 0 { ZoneType::Residential } else { ZoneType::Commercial },
-            0.0, 0, if index == 1 { 4 } else { 0 },
-            if index == 0 { home_asset.clone() } else { shop_asset.clone() });
+        let mut site = building(
+            if index == 0 {
+                ZoneType::Residential
+            } else {
+                ZoneType::Commercial
+            },
+            0.0,
+            0,
+            if index == 1 { 4 } else { 0 },
+            if index == 0 {
+                home_asset.clone()
+            } else {
+                shop_asset.clone()
+            },
+        );
         site.center_x = 10.0 + index as f32 * 10.0;
         site.center_y = if index == 0 { 20.0 } else { -20.0 };
         site.frontage_t = site.center_x / 50.0;
         site.operating_budget = 100_000.0;
-        if index > 0 { site.economy_profile_runtime_id = profile.runtime_id; }
-        if index == 2 { site.construction_remaining_hours = 12; site.construction_total_hours = 12; }
+        if index > 0 {
+            site.economy_profile_runtime_id = profile.runtime_id;
+        }
+        if index == 2 {
+            site.construction_remaining_hours = 12;
+            site.construction_total_hours = 12;
+        }
         allocator.buildings.push(site);
     }
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
@@ -1511,117 +2753,285 @@ fn service_projects_share_live_customers_and_replacement_rollback() {
     family.gross_daily_wages = 100_000.0;
     let mut logistics = ShipmentSystem::new();
     let mut funding = JobFunding::default();
-    funding.refresh(&allocator, &[family], &mut logistics, &network, &graph,
-        &catalog, &tuning, &policy, &[], 0.0, 420);
+    funding.refresh(
+        &allocator,
+        &[family],
+        &mut logistics,
+        &network,
+        &graph,
+        &catalog,
+        &tuning,
+        &policy,
+        &[],
+        0.0,
+        420,
+    );
     assert_eq!(funding.capacities[1], 4);
     let mut reservations = ProjectReservations::default();
     reservations.reset(&funding, &allocator, &catalog, &tuning, &policy, 420);
-    let action = DemandSpawnAction { parcel_id: zoning.parcels()[0].id().raw(), asset_id: shop_asset.clone() };
+    let action = DemandSpawnAction {
+        parcel_id: zoning.parcels()[0].id().raw(),
+        asset_id: shop_asset.clone(),
+    };
     let mut demand = DemandSystem::new();
-    demand.set_queued_construction_with_entrances(&allocator, &zoning, 0,
+    demand.set_queued_construction_with_entrances(
+        &allocator,
+        &zoning,
+        0,
         [(1, ZoneType::Commercial, &action)],
-        |action| allocator.demand_site_entrance(action.parcel_id, &action.asset_id, &zoning, &graph, &network.lane_system));
+        |action| {
+            allocator.demand_site_entrance(
+                action.parcel_id,
+                &action.asset_id,
+                &zoning,
+                &graph,
+                &network.lane_system,
+            )
+        },
+    );
     let mut borders = Vec::new();
     collect_connected_border_nodes(&graph, &mut borders);
     logistics.prepare_site_carrier_quotes(&allocator, &network, &graph, &borders);
     let market = OutputAbsorptionContext::empty(catalog.resource_count());
-    let mut supply = SiteSupply::new(&mut funding.input_supply, &mut reservations,
-        &allocator, &zoning, &network, &graph, &mut logistics, &tuning, &borders,
-        &catalog, 420, policy.household_vat_rate);
-    supply.reserve_projects(demand.queued_construction.iter(), &catalog, &market,
-        &mut Default::default(), &policy, &[], &[]);
+    let mut supply = SiteSupply::new(
+        &mut funding.input_supply,
+        &mut reservations,
+        &allocator,
+        &zoning,
+        &network,
+        &graph,
+        &mut logistics,
+        &tuning,
+        &borders,
+        &catalog,
+        420,
+        policy.household_vat_rate,
+    );
+    supply.reserve_projects(
+        demand.queued_construction.iter(),
+        &catalog,
+        &market,
+        &mut Default::default(),
+        &policy,
+        &[],
+        &[],
+    );
     assert_eq!(supply.reservations().unwrap().building_workers[2], 1);
-    assert_eq!(supply.reservations().unwrap().queued_workers, [(action.parcel_id, 0)]);
+    assert_eq!(
+        supply.reservations().unwrap().queued_workers,
+        [(action.parcel_id, 0)]
+    );
     let operation_bits = |operation: crate::simulation::economy::operation::FundedOperation| {
-        (operation.profile, operation.plan.workers,
-            [operation.plan.activity, operation.plan.area, operation.prices.utilities[0],
-                operation.prices.utilities[1], operation.prices.utilities[2],
-                operation.prices.property_tax, operation.prices.imports,
-                operation.prices.carrier_quote, operation.prices.truck_payload].map(f32::to_bits),
-            operation.headroom.map(f64::to_bits))
+        (
+            operation.profile,
+            operation.plan.workers,
+            [
+                operation.plan.activity,
+                operation.plan.area,
+                operation.prices.utilities[0],
+                operation.prices.utilities[1],
+                operation.prices.utilities[2],
+                operation.prices.property_tax,
+                operation.prices.imports,
+                operation.prices.carrier_quote,
+                operation.prices.truck_payload,
+            ]
+            .map(f32::to_bits),
+            operation.headroom.map(f64::to_bits),
+        )
     };
     let live = supply.reservations().unwrap().operations[1].unwrap();
     let construction = supply.reservations().unwrap().operations[2].unwrap();
-    assert_eq!((live.profile, live.plan.workers, live.plan.activity), (profile.runtime_id, 4, 1.0));
-    assert_eq!((construction.profile, construction.plan.workers, construction.plan.activity),
-        (profile.runtime_id, 1, 0.25));
+    assert_eq!(
+        (live.profile, live.plan.workers, live.plan.activity),
+        (profile.runtime_id, 4, 1.0)
+    );
+    assert_eq!(
+        (
+            construction.profile,
+            construction.plan.workers,
+            construction.plan.activity
+        ),
+        (profile.runtime_id, 1, 0.25)
+    );
     assert!(construction.headroom[0] > 0.0 && construction.headroom[1] >= 0.0);
     let mut snapshot = vacant_admission_snapshot();
     snapshot.existing_unemployed_member_count = 2;
     snapshot.open_job_slots = 0;
     snapshot.connected_border_count = 0;
     let mut calendar = super::super::workforce::WorkforceReservations::default();
-    calendar.reset(&allocator, &catalog, &tuning, &snapshot,
-        &demand.queued_construction, 0, supply.reservations());
+    calendar.reset(
+        &allocator,
+        &catalog,
+        &tuning,
+        &snapshot,
+        &demand.queued_construction,
+        0,
+        supply.reservations(),
+    );
     calendar.reserve_existing();
     assert!(calendar.claim(12, 1));
-    assert!(!calendar.claim(12, 1), "construction reserved its one customer-supported worker");
+    assert!(
+        !calendar.claim(12, 1),
+        "construction reserved its one customer-supported worker"
+    );
     let prices = supply.prices(&catalog, ZoneType::Commercial, 1, &policy, None);
     for _ in 0..3 {
         supply.begin_replacement(1, action.parcel_id, &shop_asset);
-        assert!(!replacement_market_covers_operation(profile, &catalog, market.market(),
-            OperationPrices { property_tax: 1_000_000.0, ..prices }, 0.0,
-            &allocator.buildings[1], 0.0, &mut supply));
+        assert!(!replacement_market_covers_operation(
+            profile,
+            &catalog,
+            market.market(),
+            OperationPrices {
+                property_tax: 1_000_000.0,
+                ..prices
+            },
+            0.0,
+            &allocator.buildings[1],
+            0.0,
+            &mut supply
+        ));
         supply.reject();
-        assert_eq!(operation_bits(supply.reservations().unwrap().operations[1].unwrap()), operation_bits(live));
-        assert_eq!(operation_bits(supply.reservations().unwrap().operations[2].unwrap()), operation_bits(construction));
+        assert_eq!(
+            operation_bits(supply.reservations().unwrap().operations[1].unwrap()),
+            operation_bits(live)
+        );
+        assert_eq!(
+            operation_bits(supply.reservations().unwrap().operations[2].unwrap()),
+            operation_bits(construction)
+        );
         supply.begin(action.parcel_id, &shop_asset);
-        assert_eq!(supply.customers(profile, 1.0, prices, 0.0).unwrap(), Default::default(),
-            "failed replacement cannot free either live or constructing customers");
+        assert_eq!(
+            supply.customers(profile, 1.0, prices, 0.0).unwrap(),
+            Default::default(),
+            "failed replacement cannot free either live or constructing customers"
+        );
         supply.reject();
     }
     supply.begin_replacement(1, action.parcel_id, &shop_asset);
-    assert!(replacement_market_covers_operation(profile, &catalog, market.market(), prices,
-        0.0, &allocator.buildings[1], 0.0, &mut supply));
+    assert!(replacement_market_covers_operation(
+        profile,
+        &catalog,
+        market.market(),
+        prices,
+        0.0,
+        &allocator.buildings[1],
+        0.0,
+        &mut supply
+    ));
     assert_eq!(supply.supported_workers(0), 4);
     supply.accept();
     let replacement = supply.reservations().unwrap().operations[1].unwrap();
-    assert_eq!((replacement.profile, replacement.plan.workers, replacement.plan.activity),
-        (profile.runtime_id, 4, 1.0));
+    assert_eq!(
+        (
+            replacement.profile,
+            replacement.plan.workers,
+            replacement.plan.activity
+        ),
+        (profile.runtime_id, 4, 1.0)
+    );
     assert!(replacement.headroom[0] > 0.0 && replacement.headroom[1] >= 0.0);
-    assert_eq!(operation_bits(supply.reservations().unwrap().operations[2].unwrap()), operation_bits(construction));
+    assert_eq!(
+        operation_bits(supply.reservations().unwrap().operations[2].unwrap()),
+        operation_bits(construction)
+    );
     supply.begin(action.parcel_id, &shop_asset);
-    assert_eq!(supply.customers(profile, 1.0, prices, 0.0).unwrap(), Default::default());
+    assert_eq!(
+        supply.customers(profile, 1.0, prices, 0.0).unwrap(),
+        Default::default()
+    );
     supply.reject();
 }
 
 #[test]
 fn replacement_payroll_caps_retained_workers_at_target_slots() {
-    use super::super::supply::{ProjectCustomers, ProjectSupply};
     use super::super::spawn_need::replacement_market_covers_operation;
+    use super::super::supply::{ProjectCustomers, ProjectSupply};
     use crate::simulation::economy::definitions::{EconomyProfileRuntime, RuntimeEconomyCatalog};
-    use crate::simulation::economy::operation::{InputRequirement, InputSupplyCosts, OperationPlan};
-    struct Quote { plan: Option<OperationPlan> }
+    use crate::simulation::economy::operation::{
+        InputRequirement, InputSupplyCosts, OperationPlan,
+    };
+    struct Quote {
+        plan: Option<OperationPlan>,
+    }
     impl ProjectSupply for Quote {
-        fn customers(&mut self, profile: &EconomyProfileRuntime, _: f32,
-            _: OperationPrices, _: f32) -> Option<ProjectCustomers> {
-            Some(ProjectCustomers { activity: 0.25,
-                revenue: f64::from(profile.average_daily_wage()) * (f64::from(profile.worker_capacity) + 0.5),
-                export_freight: 0.0 })
+        fn customers(
+            &mut self,
+            profile: &EconomyProfileRuntime,
+            _: f32,
+            _: OperationPrices,
+            _: f32,
+        ) -> Option<ProjectCustomers> {
+            Some(ProjectCustomers {
+                activity: 0.25,
+                revenue: f64::from(profile.average_daily_wage())
+                    * (f64::from(profile.worker_capacity) + 0.5),
+                export_freight: 0.0,
+            })
         }
-        fn set_supported_plan(&mut self, plan: OperationPlan) { self.plan = Some(plan); }
-        fn begin(&mut self, _: u64, _: &str) -> Option<f32> { None }
-        fn quote(&mut self, _: InputRequirement, _: &RuntimeEconomyCatalog,
-            _: OperationPrices) -> InputSupplyCosts { panic!("input-free service") }
+        fn set_supported_plan(&mut self, plan: OperationPlan) {
+            self.plan = Some(plan);
+        }
+        fn begin(&mut self, _: u64, _: &str) -> Option<f32> {
+            None
+        }
+        fn quote(
+            &mut self,
+            _: InputRequirement,
+            _: &RuntimeEconomyCatalog,
+            _: OperationPrices,
+        ) -> InputSupplyCosts {
+            panic!("input-free service")
+        }
         fn accept(&mut self) {}
         fn reject(&mut self) {}
     }
     let catalog = load_runtime_economy_catalog().unwrap();
     let profile = catalog.profile_for_id("personal_service_small").unwrap();
     let market = OutputAbsorptionContext::empty(catalog.resource_count());
-    let prices = OperationPrices { utilities: [0.0; 3], property_tax: 0.0,
-        imports: 1.0, carrier_quote: f32::INFINITY, truck_payload: 1_000.0 };
+    let prices = OperationPrices {
+        utilities: [0.0; 3],
+        property_tax: 0.0,
+        imports: 1.0,
+        carrier_quote: f32::INFINITY,
+        truck_payload: 1_000.0,
+    };
     let mut incumbent = building(ZoneType::Commercial, 0.0, 0, 15, "test:larger_shop".into());
     incumbent.operating_budget = 100_000.0;
     assert!(incumbent.worker_count > profile.worker_capacity);
     let mut quote = Quote { plan: None };
-    assert!(replacement_market_covers_operation(profile, &catalog, market.market(), prices,
-        0.0, &incumbent, 0.0, &mut quote), "sales cover the target's retained payroll");
+    assert!(
+        replacement_market_covers_operation(
+            profile,
+            &catalog,
+            market.market(),
+            prices,
+            0.0,
+            &incumbent,
+            0.0,
+            &mut quote
+        ),
+        "sales cover the target's retained payroll"
+    );
     let plan = quote.plan.unwrap();
-    assert_eq!((plan.workers, plan.activity), (profile.worker_capacity, 0.25));
+    assert_eq!(
+        (plan.workers, plan.activity),
+        (profile.worker_capacity, 0.25)
+    );
     incumbent.operating_budget = 0.0;
-    assert!(!replacement_market_covers_operation(profile, &catalog, market.market(), prices,
-        0.0, &incumbent, 0.0, &mut quote), "positive recurring margin still requires working capital");
+    assert!(
+        !replacement_market_covers_operation(
+            profile,
+            &catalog,
+            market.market(),
+            prices,
+            0.0,
+            &incumbent,
+            0.0,
+            &mut quote
+        ),
+        "positive recurring margin still requires working capital"
+    );
 }
 
 #[test]
@@ -2164,7 +3574,8 @@ fn upgrades_share_ready_workers_and_preserve_incumbent_job_reservations() {
                 );
                 // Inputs below are already paid. Keep cash for one operating cycle, not an
                 // additional arbitrary four-day reserve on top of the funded stock.
-                factory.operating_budget = (costs.payroll + costs.overhead + costs.freight + 1.0) as f32;
+                factory.operating_budget =
+                    (costs.payroll + costs.overhead + costs.freight + 1.0) as f32;
             }
             factory.parcel_id = index;
             factory.cell_x = index as usize * 2;
@@ -2526,7 +3937,8 @@ fn business_downgrades_require_recovery_and_share_workers_and_customers() {
                     },
                     |_, units| units,
                 );
-                factory.operating_budget = (costs.payroll + costs.overhead + costs.freight + 1.0) as f32;
+                factory.operating_budget =
+                    (costs.payroll + costs.overhead + costs.freight + 1.0) as f32;
                 for input in &previous.inputs {
                     factory.set_inventory_units(
                         input.resource_runtime_id,
@@ -2883,7 +4295,8 @@ fn benchmark_active_level_change_planning() {
         })
         .sum();
     let policy = CityFiscalPolicy {
-        industrial_property_tax_per_building_per_day: ((f64::from(sales) - costs.total()) / 2.0) as f32,
+        industrial_property_tax_per_building_per_day: ((f64::from(sales) - costs.total()) / 2.0)
+            as f32,
         property_tax_level_multiplier: 3.0,
         ..Default::default()
     };
@@ -3059,7 +4472,9 @@ fn prepared_demand_entrances_match_fresh_geometry_across_input_changes() {
                 allocator.registry.register("test", manifest, String::new());
             }
             4 => {
-                allocator.buildings.push(building(ZoneType::Industrial, 0.0, 0, 1, asset.clone()));
+                allocator
+                    .buildings
+                    .push(building(ZoneType::Industrial, 0.0, 0, 1, asset.clone()));
                 allocator.buildings[0].center_x = 31.0;
                 allocator.buildings[0].center_y = 25.0;
                 assert!(zoning.occupy_parcel(lots[0], 0));
@@ -3074,26 +4489,67 @@ fn prepared_demand_entrances_match_fresh_geometry_across_input_changes() {
             }
             _ => {}
         }
-        let fresh = allocator.demand_site_entrance_reusing(parcel, &asset, &zoning, &graph,
-            &network.lane_system, network.cch_graph.build_generation, None).unwrap();
-        let reused = allocator.demand_site_entrance_reusing(parcel, &asset, &zoning, &graph,
-            &network.lane_system, network.cch_graph.build_generation,
-            previous.as_ref().map(|(key, entrance)| (*key, entrance))).unwrap();
+        let fresh = allocator
+            .demand_site_entrance_reusing(
+                parcel,
+                &asset,
+                &zoning,
+                &graph,
+                &network.lane_system,
+                network.cch_graph.build_generation,
+                None,
+            )
+            .unwrap();
+        let reused = allocator
+            .demand_site_entrance_reusing(
+                parcel,
+                &asset,
+                &zoning,
+                &graph,
+                &network.lane_system,
+                network.cch_graph.build_generation,
+                previous.as_ref().map(|(key, entrance)| (*key, entrance)),
+            )
+            .unwrap();
         assert_eq!(fresh.0, reused.0);
-        assert_eq!(BuildingEntranceKey::new(&fresh.1), BuildingEntranceKey::new(&reused.1), "phase {phase}");
+        assert_eq!(
+            BuildingEntranceKey::new(&fresh.1),
+            BuildingEntranceKey::new(&reused.1),
+            "phase {phase}"
+        );
         if let Some((old_key, _)) = &previous {
             assert_eq!(*old_key == fresh.0, matches!(phase, 1 | 9), "phase {phase}");
         }
         // A marked value proves that matching keys actually take the reuse branch.
         let mut marked = fresh.1.clone();
         marked.entrance_s_m = -1234.0;
-        let hit = allocator.demand_site_entrance_reusing(parcel, &asset, &zoning, &graph,
-            &network.lane_system, network.cch_graph.build_generation, Some((fresh.0, &marked))).unwrap();
+        let hit = allocator
+            .demand_site_entrance_reusing(
+                parcel,
+                &asset,
+                &zoning,
+                &graph,
+                &network.lane_system,
+                network.cch_graph.build_generation,
+                Some((fresh.0, &marked)),
+            )
+            .unwrap();
         assert_eq!(hit.1.entrance_s_m, -1234.0);
         previous = Some(fresh);
     }
-    assert!(allocator.demand_site_entrance_reusing(u64::MAX, &asset, &zoning, &graph,
-        &network.lane_system, network.cch_graph.build_generation, previous.as_ref().map(|(key, entrance)| (*key, entrance))).is_none());
+    assert!(
+        allocator
+            .demand_site_entrance_reusing(
+                u64::MAX,
+                &asset,
+                &zoning,
+                &graph,
+                &network.lane_system,
+                network.cch_graph.build_generation,
+                previous.as_ref().map(|(key, entrance)| (*key, entrance))
+            )
+            .is_none()
+    );
 }
 
 #[test]

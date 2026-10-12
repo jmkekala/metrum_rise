@@ -96,41 +96,113 @@ fn personal_service_demand_schedules_visible_barber_visit() {
         );
         for invalid_entrance in [false, true] {
             let entrance = allocator.entrances[0].clone();
-            if invalid_entrance { allocator.entrances[0] = Default::default(); }
-            let cached = households.job_funding.customers.household_walking_access(0, 0, &allocator, &network);
+            if invalid_entrance {
+                allocator.entrances[0] = Default::default();
+            }
+            let cached = households
+                .job_funding
+                .customers
+                .household_walking_access(0, 0, &allocator, &network);
             assert_eq!(cached.is_some(), !invalidate && !invalid_entrance);
             if let Some(cached) = cached {
-                let walking = households.job_funding.customers.walking_proofs(&network).unwrap();
-                assert_eq!(cached, crate::simulation::economy::agents::tick::BuildingWalkingAccess::at_entrance(
-                    &allocator.entrances[0], &network, &graph, walking));
+                let walking = households
+                    .job_funding
+                    .customers
+                    .walking_proofs(&network)
+                    .unwrap();
+                assert_eq!(
+                    cached,
+                    crate::simulation::economy::agents::tick::BuildingWalkingAccess::at_entrance(
+                        &allocator.entrances[0],
+                        &network,
+                        &graph,
+                        walking
+                    )
+                );
             }
-            assert!(households.job_funding.customers.household_walking_access(0, 2, &allocator, &network).is_none());
-            assert!(households.job_funding.customers.household_walking_access(1, 0, &allocator, &network).is_none());
+            assert!(
+                households
+                    .job_funding
+                    .customers
+                    .household_walking_access(0, 2, &allocator, &network)
+                    .is_none()
+            );
+            assert!(
+                households
+                    .job_funding
+                    .customers
+                    .household_walking_access(1, 0, &allocator, &network)
+                    .is_none()
+            );
             agents.planned_target_building[visitor] = usize::MAX;
             agents.planned_activity[visitor] = ACTIVITY_HOME;
             households.run_visible_service_visits_for_test(
-                &mut agents, &allocator, &network, &graph, 0);
-            assert_eq!(agents.planned_target_building[visitor],
-                if invalid_entrance { usize::MAX } else { 1 });
-            assert_eq!(agents.planned_activity[visitor],
-                if invalid_entrance { ACTIVITY_HOME } else { ACTIVITY_SHOPPING });
+                &mut agents,
+                &allocator,
+                &network,
+                &graph,
+                0,
+            );
+            assert_eq!(
+                agents.planned_target_building[visitor],
+                if invalid_entrance { usize::MAX } else { 1 }
+            );
+            assert_eq!(
+                agents.planned_activity[visitor],
+                if invalid_entrance {
+                    ACTIVITY_HOME
+                } else {
+                    ACTIVITY_SHOPPING
+                }
+            );
             allocator.entrances[0] = entrance;
         }
     }
-    households.job_funding.customers.refresh(&households.households, &allocator, &catalog,
-        &tuning, &policy, 1_000_000.0, &network, &graph);
-    assert!(households.job_funding.customers.walking_proofs(&network).is_some());
+    households.job_funding.customers.refresh(
+        &households.households,
+        &allocator,
+        &catalog,
+        &tuning,
+        &policy,
+        1_000_000.0,
+        &network,
+        &graph,
+    );
+    assert!(
+        households
+            .job_funding
+            .customers
+            .walking_proofs(&network)
+            .is_some()
+    );
     // Terrain authoring may rebuild the same lane count without rebuilding CCH.
     let mut copied = crate::simulation::economy::customers::ConsumerMarket::default();
     copied.copy_reservations_from(&households.job_funding.customers);
     let count = network.lane_system.lanes.len();
     network.lane_system.rebuild(&mut graph);
     assert_eq!(network.lane_system.lanes.len(), count);
-    assert!(households.job_funding.customers.walking_proofs(&network).is_none());
-    households.job_funding.customers.refresh(&households.households, &allocator, &catalog,
-        &tuning, &policy, 1_000_000.0, &network, &graph);
+    assert!(
+        households
+            .job_funding
+            .customers
+            .walking_proofs(&network)
+            .is_none()
+    );
+    households.job_funding.customers.refresh(
+        &households.households,
+        &allocator,
+        &catalog,
+        &tuning,
+        &policy,
+        1_000_000.0,
+        &network,
+        &graph,
+    );
     copied.copy_reservations_from(&households.job_funding.customers);
-    assert!(copied.walking_proofs(&network).is_some(), "construction forks follow the lane revision");
+    assert!(
+        copied.walking_proofs(&network).is_some(),
+        "construction forks follow the lane revision"
+    );
 }
 
 #[test]
@@ -286,43 +358,92 @@ fn benchmark_retained_household_walking_access() {
     let policy = crate::simulation::economy::fiscal::CityFiscalPolicy::from_runtime_tuning(&tuning);
     let (graph, network) = simple_work_graph();
     let mut allocator = BuildingAllocator::new();
-    let asset = register_test_asset(&mut allocator, "test", "retained_walk", ZoneClass::Residential);
+    let asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "retained_walk",
+        ZoneClass::Residential,
+    );
     for x in [0.0, 120.0] {
-        allocator.buildings.push(make_building(x, ZoneType::Residential, &asset, 0.0));
+        allocator
+            .buildings
+            .push(make_building(x, ZoneType::Residential, &asset, 0.0));
     }
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
     let household = make_household(0, 2, 10.0, 10.0);
     for count in [1_024, 65_536] {
-        let households: Vec<_> = (0..count).map(|index| {
-            let mut household = household.clone();
-            household.home_building_id = index % 2;
-            household
-        }).collect();
+        let households: Vec<_> = (0..count)
+            .map(|index| {
+                let mut household = household.clone();
+                household.home_building_id = index % 2;
+                household
+            })
+            .collect();
         let mut market = ConsumerMarket::default();
-        market.refresh(&households, &allocator, &catalog, &tuning, &policy, 1_000_000.0, &network, &graph);
+        market.refresh(
+            &households,
+            &allocator,
+            &catalog,
+            &tuning,
+            &policy,
+            1_000_000.0,
+            &network,
+            &graph,
+        );
         let walking = market.walking_proofs(&network).unwrap();
-        let expected = std::array::from_fn::<_, 2, _>(|home|
-            BuildingWalkingAccess::at_entrance(&allocator.entrances[home], &network, &graph, walking));
+        let expected = std::array::from_fn::<_, 2, _>(|home| {
+            BuildingWalkingAccess::at_entrance(
+                &allocator.entrances[home],
+                &network,
+                &graph,
+                walking,
+            )
+        });
         for (index, household) in households.iter().enumerate() {
-            assert_eq!(market.household_walking_access(index, household.home_building_id, &allocator, &network),
-                Some(expected[household.home_building_id]));
+            assert_eq!(
+                market.household_walking_access(
+                    index,
+                    household.home_building_id,
+                    &allocator,
+                    &network
+                ),
+                Some(expected[household.home_building_id])
+            );
         }
         for pair in 0..11 {
-            for retained in if pair % 2 == 0 { [false, true] } else { [true, false] } {
+            for retained in if pair % 2 == 0 {
+                [false, true]
+            } else {
+                [true, false]
+            } {
                 let start = Instant::now();
                 for _ in 0..4 {
                     for (index, household) in households.iter().enumerate() {
                         let home = black_box(household.home_building_id);
                         let proof = if retained {
-                            market.household_walking_access(black_box(index), home, &allocator, &network).unwrap()
+                            market
+                                .household_walking_access(
+                                    black_box(index),
+                                    home,
+                                    &allocator,
+                                    &network,
+                                )
+                                .unwrap()
                         } else {
-                            BuildingWalkingAccess::at_entrance(&allocator.entrances[home], &network, &graph, walking)
+                            BuildingWalkingAccess::at_entrance(
+                                &allocator.entrances[home],
+                                &network,
+                                &graph,
+                                walking,
+                            )
                         };
                         black_box(proof);
                     }
                 }
                 let query_ns = start.elapsed().as_secs_f64() * 1e9 / (4 * count) as f64;
-                eprintln!("HOME_WALK {{\"households\":{count},\"pair\":{pair},\"retained\":{retained},\"query_ns\":{query_ns}}}");
+                eprintln!(
+                    "HOME_WALK {{\"households\":{count},\"pair\":{pair},\"retained\":{retained},\"query_ns\":{query_ns}}}"
+                );
             }
         }
     }

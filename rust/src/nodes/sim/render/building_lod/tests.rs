@@ -230,7 +230,10 @@ fn level_change_rise_eases_out_and_finishes() {
     use std::time::Duration;
     assert_eq!(level_change_rise_progress(Duration::ZERO), 0.0);
     let half = level_change_rise_progress(Duration::from_millis(1250));
-    assert!((half - 0.75).abs() < 1e-6, "ease-out is past halfway at half time: {half}");
+    assert!(
+        (half - 0.75).abs() < 1e-6,
+        "ease-out is past halfway at half time: {half}"
+    );
     assert_eq!(level_change_rise_progress(Duration::from_millis(2500)), 1.0);
     assert_eq!(level_change_rise_progress(Duration::from_secs(60)), 1.0);
 }

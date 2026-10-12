@@ -92,7 +92,11 @@ pub(in crate::simulation::economy::agents::tick) fn plan_network_replan(
         return None;
     }
     TripQueryScratch::with_routes(|scratch| {
-        let route_start = if incoming_edge_valid { RouteStart::Edge(incoming_edge) } else { RouteStart::Node };
+        let route_start = if incoming_edge_valid {
+            RouteStart::Edge(incoming_edge)
+        } else {
+            RouteStart::Node
+        };
         let mut best: Option<(f32, u8, usize, f32, u32)> = None;
         for destination_rank in NODE_RANKS {
             let planned_detach_node = if destination_rank == 0 {
@@ -185,22 +189,48 @@ pub(in crate::simulation::economy::agents::tick) fn plan_network_replan(
                 continue;
             };
             let network_time_s = if start_node == planned_detach_node {
-                if mode == MODE_CAR || scratch.has_connectors(&[start_node], start_node, route_start,
-                    planned_detach_lane_id, transit_network, graph) {
+                if mode == MODE_CAR
+                    || scratch.has_connectors(
+                        &[start_node],
+                        start_node,
+                        route_start,
+                        planned_detach_lane_id,
+                        transit_network,
+                        graph,
+                    )
+                {
                     0.0
                 } else {
-                    record_replan_candidate_diagnostic(&mut candidate_diagnostics, destination_rank,
-                        planned_detach_node, planned_detach_lane_id, "zero_hop_connector_missing");
+                    record_replan_candidate_diagnostic(
+                        &mut candidate_diagnostics,
+                        destination_rank,
+                        planned_detach_node,
+                        planned_detach_lane_id,
+                        "zero_hop_connector_missing",
+                    );
                     continue;
                 }
             } else {
                 pathfind_count.fetch_add(1, Ordering::Relaxed);
-                match scratch.network_path(mode, start_node, planned_detach_node, route_start,
-                    planned_detach_lane_id, transit_network, graph, |_| ()) {
+                match scratch.network_path(
+                    mode,
+                    start_node,
+                    planned_detach_node,
+                    route_start,
+                    planned_detach_lane_id,
+                    transit_network,
+                    graph,
+                    |_| (),
+                ) {
                     Ok((seconds, ())) => seconds,
                     Err(reason) => {
-                        record_replan_candidate_diagnostic(&mut candidate_diagnostics, destination_rank,
-                            planned_detach_node, planned_detach_lane_id, reason);
+                        record_replan_candidate_diagnostic(
+                            &mut candidate_diagnostics,
+                            destination_rank,
+                            planned_detach_node,
+                            planned_detach_lane_id,
+                            reason,
+                        );
                         continue;
                     }
                 }
@@ -236,13 +266,7 @@ pub(in crate::simulation::economy::agents::tick) fn plan_network_replan(
             }
         }
 
-        let Some((
-            _,
-            _,
-            planned_detach_lane_id,
-            planned_detach_lane_d,
-            planned_detach_node,
-        )) = best
+        let Some((_, _, planned_detach_lane_id, planned_detach_lane_d, planned_detach_node)) = best
         else {
             emit_network_replan_diagnostics(
                 debug_context,
@@ -418,9 +442,19 @@ pub(in crate::simulation::economy::agents::tick) fn plan_border_network_replan(
             };
         pathfind_count.fetch_add(1, Ordering::Relaxed);
         TripQueryScratch::with_routes(|scratch| {
-            scratch.network_path(MODE_CAR, start_node, border_node,
-                RouteStart::Edge(search_incoming_edge), usize::MAX, transit_network, graph,
-                <[u32]>::to_vec).ok().map(|(_, path)| path)
+            scratch
+                .network_path(
+                    MODE_CAR,
+                    start_node,
+                    border_node,
+                    RouteStart::Edge(search_incoming_edge),
+                    usize::MAX,
+                    transit_network,
+                    graph,
+                    <[u32]>::to_vec,
+                )
+                .ok()
+                .map(|(_, path)| path)
         })?
     };
 

@@ -149,7 +149,10 @@ fn vegetation_repaint_restores_generated_tree_and_prunes_tombstone() {
     assert_eq!(core.vegetation_edits.len(), 1);
     // Painting the species that was cleared reproduces the identical plant, so the edit
     // collapses back to nothing rather than authoring a copy of what the generator already has.
-    assert_eq!(paint_at(&mut core, pos, 0.01, i64::from(p.species), 0, usize::MAX), 1);
+    assert_eq!(
+        paint_at(&mut core, pos, 0.01, i64::from(p.species), 0, usize::MAX),
+        1
+    );
     assert_eq!(core.vegetation_edits.len(), 0);
     assert_eq!(scatter(&core, true), before);
 }
@@ -164,7 +167,10 @@ fn vegetation_repaint_with_another_species_does_not_regrow_the_cleared_plant() {
     // must leave a rock standing there and no tree at all.
     let painted = SPECIES_ROCK as u8;
     assert_ne!(p.species, painted);
-    assert_eq!(paint_at(&mut core, pos, 0.01, i64::from(painted), 0, usize::MAX), 1);
+    assert_eq!(
+        paint_at(&mut core, pos, 0.01, i64::from(painted), 0, usize::MAX),
+        1
+    );
     let standing: Vec<_> = scatter(&core, true)
         .chunks_exact(6)
         .filter(|r| r[0] == p.x + 255.0 && r[2] == p.z + 255.0)
@@ -172,7 +178,10 @@ fn vegetation_repaint_with_another_species_does_not_regrow_the_cleared_plant() {
         .collect();
     assert_eq!(standing, vec![painted]);
     // The brush is idempotent: a second pass must not stack a second rock on the same cell.
-    assert_eq!(paint_at(&mut core, pos, 0.01, i64::from(painted), 0, usize::MAX), 0);
+    assert_eq!(
+        paint_at(&mut core, pos, 0.01, i64::from(painted), 0, usize::MAX),
+        0
+    );
 }
 
 #[test]
@@ -350,11 +359,17 @@ fn vegetation_invalid_inputs_store_nothing_and_empty_removal_is_sparse() {
     // One below the preset table and one past its end, so neither names a preset.
     for option in [-1, brush::PRESETS.len() as i64] {
         assert!(!add_at(&mut core, Vector2::ZERO, option));
-        assert_eq!(paint_at(&mut core, Vector2::ZERO, 8.0, option, 0, usize::MAX), 0);
+        assert_eq!(
+            paint_at(&mut core, Vector2::ZERO, 8.0, option, 0, usize::MAX),
+            0
+        );
     }
     for radius in [-1.0, f32::NAN, f32::INFINITY, 1025.0] {
         assert_eq!(remove_at(&mut core, Vector2::ZERO, radius, 0), 0);
-        assert_eq!(paint_at(&mut core, Vector2::ZERO, radius, 0, 0, usize::MAX), 0);
+        assert_eq!(
+            paint_at(&mut core, Vector2::ZERO, radius, 0, 0, usize::MAX),
+            0
+        );
     }
     let p = first_candidate(&core, false);
     assert_eq!(remove_at(&mut core, Vector2::new(p.x, p.z), 0.0, 0), 0);
@@ -365,7 +380,10 @@ fn vegetation_invalid_inputs_store_nothing_and_empty_removal_is_sparse() {
         .replace_baseline_depth_from_dense(&depth)
         .unwrap();
     assert!(!add_at(&mut core, Vector2::ZERO, 0));
-    assert_eq!(paint_at(&mut core, Vector2::ZERO, 32.0, 0, 0, usize::MAX), 0);
+    assert_eq!(
+        paint_at(&mut core, Vector2::ZERO, 32.0, 0, 0, usize::MAX),
+        0
+    );
     assert_eq!(core.vegetation_edits.len(), 0);
 }
 
@@ -666,10 +684,20 @@ fn vegetation_brush_class_benchmark() {
                 })
             });
             paint_at(&mut core, Vector2::ZERO, 64.0, option, 0, usize::MAX);
-            paint_at(&mut core, Vector2::new(8.0, 0.0), 64.0, option, 0, usize::MAX);
+            paint_at(
+                &mut core,
+                Vector2::new(8.0, 0.0),
+                64.0,
+                option,
+                0,
+                usize::MAX,
+            );
             group.bench_function(format!("overlap_repeat_{option}_{background}"), |b| {
                 b.iter(|| {
-                    assert_eq!(paint_at(&mut core, Vector2::ZERO, 64.0, option, 0, usize::MAX), 0)
+                    assert_eq!(
+                        paint_at(&mut core, Vector2::ZERO, 64.0, option, 0, usize::MAX),
+                        0
+                    )
                 })
             });
         }
@@ -744,7 +772,10 @@ fn vegetation_brush_spacing_repeat_and_cross_class_coexistence() {
         core.vegetation.config.enabled = false;
         for option in order {
             assert!(paint_at(&mut core, Vector2::ZERO, 32.0, option, 17, usize::MAX) > 0);
-            assert_eq!(paint_at(&mut core, Vector2::ZERO, 32.0, option, 17, usize::MAX), 0);
+            assert_eq!(
+                paint_at(&mut core, Vector2::ZERO, 32.0, option, 17, usize::MAX),
+                0
+            );
         }
         let plants = authored(&core);
         assert_spacing(&plants);
@@ -891,7 +922,10 @@ fn vegetation_restore_cannot_violate_new_spacing() {
     let pos = Vector2::new(plant.x, plant.z);
     remove_at(&mut core, pos, 0.01, 0);
     assert!(add_at(&mut core, pos + Vector2::new(1.0, 0.0), 4));
-    assert_eq!(paint_at(&mut core, pos, 0.01, plant.species as i64, 0, usize::MAX), 0);
+    assert_eq!(
+        paint_at(&mut core, pos, 0.01, plant.species as i64, 0, usize::MAX),
+        0
+    );
 }
 
 #[test]
@@ -1112,7 +1146,10 @@ fn held_stamps_thicken_a_stand_step_by_step_to_the_single_stamp_stand() {
     assert!(total / limit > 20);
     assert_eq!(total, planted_full);
     assert_eq!(authored(&held), authored(&full));
-    assert_eq!(paint_at(&mut held, Vector2::ZERO, 64.0, MIXED_FOREST, 3, limit), 0);
+    assert_eq!(
+        paint_at(&mut held, Vector2::ZERO, 64.0, MIXED_FOREST, 3, limit),
+        0
+    );
     assert!(held.undo_action_internal());
     assert!(authored(&held).is_empty());
 }
@@ -1124,7 +1161,16 @@ fn a_dwarfing_preset_moves_every_plant_into_its_own_scale_band() {
         .into_iter()
         .map(|p| (p.0, p.1, p.2.to_bits()))
         .collect();
-    assert!(paint_at(&mut core, Vector2::ZERO, 64.0, NORTHERN_DWARF, 0, usize::MAX) > 0);
+    assert!(
+        paint_at(
+            &mut core,
+            Vector2::ZERO,
+            64.0,
+            NORTHERN_DWARF,
+            0,
+            usize::MAX
+        ) > 0
+    );
     let dwarfed: Vec<_> = planted(&core)
         .into_iter()
         .filter(|p| !untouched.contains(&(p.0, p.1, p.2.to_bits())))
@@ -1163,7 +1209,14 @@ fn painting_a_named_tree_over_a_cleared_one_authors_it_instead_of_regrowing_the_
     // The generator chose this cell's species itself, so an unpinned brush of that same
     // species is the same edit and collapses back to no stored edit at all.
     assert_eq!(
-        paint_at(&mut core, pos, 0.01, i64::from(standing.species), 0, usize::MAX),
+        paint_at(
+            &mut core,
+            pos,
+            0.01,
+            i64::from(standing.species),
+            0,
+            usize::MAX
+        ),
         1
     );
     assert_eq!(core.vegetation_edits.len(), 0);
@@ -1196,7 +1249,10 @@ fn a_hedge_line_lays_facing_modules_once_and_only_along_a_line() {
     // Redrawing the row stacks nothing, and neither a brush nor a tree preset lays a line.
     assert_eq!(line_at(&mut core, from, to, 17, 2), 0);
     assert_eq!(line_at(&mut core, from, to, 4, 3), 0);
-    assert_eq!(paint_at(&mut core, Vector2::new(0.0, -20.0), 8.0, 17, 4, usize::MAX), 0);
+    assert_eq!(
+        paint_at(&mut core, Vector2::new(0.0, -20.0), 8.0, 17, 4, usize::MAX),
+        0
+    );
 }
 
 #[test]
@@ -1212,12 +1268,22 @@ fn a_hedge_row_ends_flush_and_joins_the_hedge_it_is_drawn_onto() {
     let mut before = Vec::new();
     let mut row = |core: &SimCore| -> Vec<(f32, f32)> {
         let after = centres(core);
-        let added = after.iter().filter(|p| !before.contains(*p)).copied().collect();
+        let added = after
+            .iter()
+            .filter(|p| !before.contains(*p))
+            .copied()
+            .collect();
         before = after;
         added
     };
     let lay = |core: &mut SimCore, from: (f32, f32), to: (f32, f32), stroke: i64| {
-        line_at(core, Vector2::new(from.0, from.1), Vector2::new(to.0, to.1), 17, stroke)
+        line_at(
+            core,
+            Vector2::new(from.0, from.1),
+            Vector2::new(to.0, to.1),
+            17,
+            stroke,
+        )
     };
     // 9.5 m lays ten modules whose outer faces sit exactly on the drawn ends.
     assert_eq!(lay(&mut core, (0.0, 0.0), (9.5, 0.0), 1), 10);
@@ -1226,7 +1292,10 @@ fn a_hedge_row_ends_flush_and_joins_the_hedge_it_is_drawn_onto() {
     assert!(a.iter().any(|&(x, _)| (x - 9.0).abs() < 1e-4));
     // A corner drawn 0.5 m off the row's end moves onto it and runs on by half the low hedge's
     // 0.6 m width, so its first module's back face is flush with the first row's outer side.
-    assert_eq!(hedge_end_at(&core, Vector2::new(9.8, 0.4)), Vector2::new(9.5, 0.0));
+    assert_eq!(
+        hedge_end_at(&core, Vector2::new(9.8, 0.4)),
+        Vector2::new(9.5, 0.0)
+    );
     assert_eq!(lay(&mut core, (9.8, 0.4), (9.5, 6.0), 2), 7);
     let b = row(&core);
     assert!(b.iter().all(|&(x, _)| (x - 9.5).abs() < 1e-4), "{b:?}");
@@ -1234,7 +1303,10 @@ fn a_hedge_row_ends_flush_and_joins_the_hedge_it_is_drawn_onto() {
     assert!((z_min - (-0.3 + 0.5)).abs() < 1e-4, "{b:?}");
     // The buried corner is no longer an end: an end drawn beside the row's inner faces lands on
     // its side, not on the nearest face, and a T-junction runs on into the row it meets.
-    assert_eq!(hedge_end_at(&core, Vector2::new(3.4, 0.5)), Vector2::new(3.4, 0.0));
+    assert_eq!(
+        hedge_end_at(&core, Vector2::new(3.4, 0.5)),
+        Vector2::new(3.4, 0.0)
+    );
     assert_eq!(lay(&mut core, (3.4, 5.0), (3.4, 0.5), 3), 6);
     let c = row(&core);
     let z_min = c.iter().map(|p| p.1).fold(f32::INFINITY, f32::min);
@@ -1248,17 +1320,44 @@ fn hedge_rows_merge_into_runs_that_stop_at_their_ends_and_at_sixteen_metres() {
     let mut core = core();
     core.vegetation.config.enabled = false;
     // A 20 m row and a crossing 5 m row; the crossing row is its own run.
-    assert_eq!(line_at(&mut core, Vector2::new(0.0, 0.0), Vector2::new(20.0, 0.0), 17, 1), 20);
-    assert_eq!(line_at(&mut core, Vector2::new(30.0, 2.0), Vector2::new(30.0, 7.0), 18, 2), 5);
+    assert_eq!(
+        line_at(
+            &mut core,
+            Vector2::new(0.0, 0.0),
+            Vector2::new(20.0, 0.0),
+            17,
+            1
+        ),
+        20
+    );
+    assert_eq!(
+        line_at(
+            &mut core,
+            Vector2::new(30.0, 2.0),
+            Vector2::new(30.0, 7.0),
+            18,
+            2
+        ),
+        5
+    );
     let runs = hedge_runs::hedge_runs(&core, Vector2::new(-64.0, -64.0), 128.0);
     let mut runs: Vec<_> = runs.chunks_exact(7).map(|r| r.to_vec()).collect();
     runs.sort_by(|a, b| a[0].total_cmp(&b[0]));
     // The long row splits at 16 m and the two pieces cover exactly the drawn 20 m.
     assert_eq!(runs.len(), 3, "{runs:?}");
-    assert!((runs[0][4] - 16.0).abs() < 1e-4 && (runs[0][0] - 8.0).abs() < 1e-4, "{runs:?}");
-    assert!((runs[1][4] - 4.0).abs() < 1e-4 && (runs[1][0] - 18.0).abs() < 1e-4, "{runs:?}");
+    assert!(
+        (runs[0][4] - 16.0).abs() < 1e-4 && (runs[0][0] - 8.0).abs() < 1e-4,
+        "{runs:?}"
+    );
+    assert!(
+        (runs[1][4] - 4.0).abs() < 1e-4 && (runs[1][0] - 18.0).abs() < 1e-4,
+        "{runs:?}"
+    );
     assert_eq!((runs[0][6], runs[2][6]), (0.0, 1.0));
-    assert!((runs[2][4] - 5.0).abs() < 1e-4 && (runs[2][2] - 4.5).abs() < 1e-4, "{runs:?}");
+    assert!(
+        (runs[2][4] - 5.0).abs() < 1e-4 && (runs[2][2] - 4.5).abs() < 1e-4,
+        "{runs:?}"
+    );
     // A patch only draws the modules whose centres it contains.
     let left = hedge_runs::hedge_runs(&core, Vector2::new(-64.0, -64.0), 74.0);
     assert_eq!(left.chunks_exact(7).map(|r| r[4]).sum::<f32>(), 10.0);
@@ -1277,7 +1376,12 @@ fn hedge_modules(core: &SimCore) -> Vec<Plant> {
 // A yard event lining the square lot from `min` to `max` on all four sides.
 fn square_yard(key: (u64, u32), min: Vector2, max: Vector2) -> YardEvent {
     use crate::simulation::buildings::allocator::yard::YardHedgeRowWorld;
-    let corners = [min, Vector2::new(max.x, min.y), max, Vector2::new(min.x, max.y)];
+    let corners = [
+        min,
+        Vector2::new(max.x, min.y),
+        max,
+        Vector2::new(min.x, max.y),
+    ];
     YardEvent::Placed {
         key,
         hedge: Some(crate::assets::asset::YardHedgeKind::Medium),
@@ -1299,8 +1403,16 @@ fn a_yard_hedge_shares_its_neighbours_line_and_leaves_with_its_building_unless_e
     let mut core = core();
     core.vegetation.config.enabled = false;
     // Two 20 m yards one metre apart: the second shares the first's hedge on the line between.
-    core.allocator.pending_yards.push(square_yard((1, 0), Vector2::new(0.0, 0.0), Vector2::new(20.0, 20.0)));
-    core.allocator.pending_yards.push(square_yard((2, 0), Vector2::new(21.0, 0.0), Vector2::new(41.0, 20.0)));
+    core.allocator.pending_yards.push(square_yard(
+        (1, 0),
+        Vector2::new(0.0, 0.0),
+        Vector2::new(20.0, 20.0),
+    ));
+    core.allocator.pending_yards.push(square_yard(
+        (2, 0),
+        Vector2::new(21.0, 0.0),
+        Vector2::new(41.0, 20.0),
+    ));
     publish_yards(&mut core);
     let both = hedge_modules(&core);
     let first = core.vegetation_edits.take_yard_hedge((1, 0)).unwrap();
@@ -1309,18 +1421,33 @@ fn a_yard_hedge_shares_its_neighbours_line_and_leaves_with_its_building_unless_e
     // Its own side on that line was the first yard's hedge, so it laid none there; its front and
     // back rows ran on to the first yard's corners instead, joining the two yards' hedges.
     let on_shared_line = |plant: &Plant| plant.yaw.sin().abs() > 0.9 && plant.x < 21.6;
-    assert!(!second.iter().any(|(_, plant)| on_shared_line(plant)), "{second:?}");
-    assert!(second.iter().any(|(_, plant)| plant.yaw.sin().abs() < 0.1 && plant.x < 21.0));
-    assert!(second.len() < first.len() - 15, "{} {}", first.len(), second.len());
-    core.vegetation_edits.record_yard_hedge((1, 0), first.clone());
-    core.vegetation_edits.record_yard_hedge((2, 0), second.clone());
+    assert!(
+        !second.iter().any(|(_, plant)| on_shared_line(plant)),
+        "{second:?}"
+    );
+    assert!(
+        second
+            .iter()
+            .any(|(_, plant)| plant.yaw.sin().abs() < 0.1 && plant.x < 21.0)
+    );
+    assert!(
+        second.len() < first.len() - 15,
+        "{} {}",
+        first.len(),
+        second.len()
+    );
+    core.vegetation_edits
+        .record_yard_hedge((1, 0), first.clone());
+    core.vegetation_edits
+        .record_yard_hedge((2, 0), second.clone());
     // The first yard goes whole; the second keeps every module it laid.
     core.allocator.pending_yards.push(Event::Removed((1, 0)));
     publish_yards(&mut core);
     assert_eq!(hedge_modules(&core).len(), second.len());
     // A yard whose hedge the player cut keeps the rest when its building goes, and forgets it.
     let (cell, cut) = second[3];
-    core.vegetation_edits.remove_added(cell, |plant| (*plant == cut).then_some(0));
+    core.vegetation_edits
+        .remove_added(cell, |plant| (*plant == cut).then_some(0));
     core.allocator.pending_yards.push(Event::Removed((2, 0)));
     publish_yards(&mut core);
     assert_eq!(hedge_modules(&core).len(), second.len() - 1);
@@ -1350,13 +1477,19 @@ fn a_yard_row_stays_on_its_line_where_a_neighbours_corner_juts_past_it() {
     });
     publish_yards(&mut core);
     let all = hedge_modules(&core);
-    let row: Vec<_> = all.iter().filter(|plant| plant.yaw.sin().abs() < 0.5).collect();
+    let row: Vec<_> = all
+        .iter()
+        .filter(|plant| plant.yaw.sin().abs() < 0.5)
+        .collect();
     assert_eq!(all.len() - before, row.len());
     // The row joins where its line crosses the side hedge, not at that hedge's tip off the line,
     // so it lies straight on its line and runs on across the side hedge to close the corner.
     let on_line = |plant: &&Plant| (plant.z - 29.25).abs() < 1e-4 && plant.yaw.sin() == 0.0;
     assert!(row.iter().all(on_line), "{row:?}");
-    let first = row.iter().map(|plant| plant.x).fold(f32::INFINITY, f32::min);
+    let first = row
+        .iter()
+        .map(|plant| plant.x)
+        .fold(f32::INFINITY, f32::min);
     assert!((first - (20.0 - 0.4 + 0.5)).abs() < 1e-4, "{row:?}");
 }
 
@@ -1366,7 +1499,12 @@ fn an_authored_plant_takes_a_yards_lawn_but_not_its_walls_or_paving() {
     let mut core = core();
     core.vegetation.config.enabled = false;
     let square = |a: f32, b: f32| {
-        vec![Vector2::new(a, a), Vector2::new(a, b), Vector2::new(b, b), Vector2::new(b, a)]
+        vec![
+            Vector2::new(a, a),
+            Vector2::new(a, b),
+            Vector2::new(b, b),
+            Vector2::new(b, a),
+        ]
     };
     let house = square(2.0, 10.0);
     core.allocator.building_sites.push(BuildingSiteClient {
@@ -1376,11 +1514,13 @@ fn an_authored_plant_takes_a_yards_lawn_but_not_its_walls_or_paving() {
         footprint_world: square(0.0, 20.0),
         lot_footprint_world: [Vector2::ZERO; 4],
         support_height_m: 0.0,
-        surfaces: vec![crate::simulation::buildings::allocator::BuildingSiteSurfaceClient {
-            material: crate::assets::SiteSurfaceMaterial::Asphalt,
-            name: String::new(),
-            vertices_world: square(12.0, 14.0),
-        }],
+        surfaces: vec![
+            crate::simulation::buildings::allocator::BuildingSiteSurfaceClient {
+                material: crate::assets::SiteSurfaceMaterial::Asphalt,
+                name: String::new(),
+                vertices_world: square(12.0, 14.0),
+            },
+        ],
     });
     let shrub = |x: f32, z: f32| Plant {
         x,
@@ -1390,9 +1530,23 @@ fn an_authored_plant_takes_a_yards_lawn_but_not_its_walls_or_paving() {
         species: SPECIES_BUSH as u8,
         variant: brush::LANDSCAPE_FIRST_VARIANT + 1,
     };
-    assert!(placement::authored_clear(&core, &shrub(15.0, 15.0)), "the lawn takes a shrub");
-    assert!(!placement::authored_clear(&core, &shrub(6.0, 6.0)), "the house does not");
-    assert!(!placement::authored_clear(&core, &shrub(13.0, 13.0)), "nor its paving");
+    assert!(
+        placement::authored_clear(&core, &shrub(15.0, 15.0)),
+        "the lawn takes a shrub"
+    );
+    assert!(
+        !placement::authored_clear(&core, &shrub(6.0, 6.0)),
+        "the house does not"
+    );
+    assert!(
+        !placement::authored_clear(&core, &shrub(13.0, 13.0)),
+        "nor its paving"
+    );
     // Wild vegetation still keeps off the whole flat support.
-    assert!(!placement_clear(&core, 15.0, 15.0, VegetationLayer::Understory));
+    assert!(!placement_clear(
+        &core,
+        15.0,
+        15.0,
+        VegetationLayer::Understory
+    ));
 }

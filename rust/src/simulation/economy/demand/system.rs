@@ -13,8 +13,8 @@ use super::diagnostics::{
 use super::snapshot::{
     DailyDemandSnapshot, ResidentialOccupantScratch, ResidentialOccupantSnapshot,
 };
-use super::types::DEMAND_HOURLY_CADENCE_FRACTION;
 use super::supply::SiteSupply;
+use super::types::DEMAND_HOURLY_CADENCE_FRACTION;
 use crate::simulation::buildings::allocator::{BuildingAllocator, BuildingSiteEnvironment};
 use crate::simulation::economy::definitions::{
     RuntimeEconomyCatalog, RuntimeEconomyTuning, load_runtime_economy_catalog,
@@ -60,20 +60,29 @@ pub struct DemandSystem {
 /// Checks after every test-build planning pass that the live books return bit for bit.
 /// Long populated-city measurements switch it off; it costs a full fingerprint per pass.
 #[cfg(test)]
-pub(crate) static VERIFY_LIVE_PASSES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+pub(crate) static VERIFY_LIVE_PASSES: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
 
 // Exchanges the live economic books with the planner's in O(1); a second call returns both.
-fn exchange_live_books(funding: &mut crate::simulation::economy::hiring::JobFunding,
-    reservations: &mut super::supply::ProjectReservations, live: &mut crate::simulation::economy::hiring::JobFunding) {
+fn exchange_live_books(
+    funding: &mut crate::simulation::economy::hiring::JobFunding,
+    reservations: &mut super::supply::ProjectReservations,
+    live: &mut crate::simulation::economy::hiring::JobFunding,
+) {
     std::mem::swap(&mut funding.input_supply, &mut live.input_supply);
     std::mem::swap(&mut reservations.customers, &mut live.customers);
     std::mem::swap(&mut reservations.business, &mut live.business);
 }
 
 #[cfg(test)]
-fn live_fingerprint(funding: &crate::simulation::economy::hiring::JobFunding) -> [Vec<(&'static str, u64)>; 3] {
-    [funding.customers.live_fingerprint_for_test(), funding.business.live_fingerprint_for_test(),
-        funding.input_supply.live_fingerprint_for_test()]
+fn live_fingerprint(
+    funding: &crate::simulation::economy::hiring::JobFunding,
+) -> [Vec<(&'static str, u64)>; 3] {
+    [
+        funding.customers.live_fingerprint_for_test(),
+        funding.business.live_fingerprint_for_test(),
+        funding.input_supply.live_fingerprint_for_test(),
+    ]
 }
 
 impl DemandSystem {
@@ -181,7 +190,8 @@ impl DemandSystem {
             BuildingSiteEnvironment {
                 road_surface: &road_surface,
                 terrain: &terrain,
-            }, 420,
+            },
+            420,
         );
     }
 
@@ -202,7 +212,9 @@ impl DemandSystem {
         environment: BuildingSiteEnvironment<'_>,
         minute_of_day: u16,
     ) {
-        let mut phase = crate::debug::Channel::EconomyPhases.enabled().then(std::time::Instant::now);
+        let mut phase = crate::debug::Channel::EconomyPhases
+            .enabled()
+            .then(std::time::Instant::now);
         let mut times = [0.0; 7];
         let mut lap = |slot: usize| {
             if let Some(previous) = phase {
@@ -212,7 +224,8 @@ impl DemandSystem {
         };
         crate::debug::work::add(crate::debug::work::Work::PlanningPasses, 1);
         self.invalidate_construction_execution();
-        self.construction_execution.discard_project_proof_for_reset();
+        self.construction_execution
+            .discard_project_proof_for_reset();
         self.building_actions = DemandBuildingActionPlan::default();
         let catalog = Arc::clone(&self.runtime_catalog);
         let economy_tuning = Arc::clone(&self.runtime_tuning);
@@ -223,16 +236,26 @@ impl DemandSystem {
         lap(0);
         let mut funding = std::mem::take(&mut self.construction_execution.funding);
         let mut reservations = std::mem::take(&mut self.construction_execution.reservations);
-        let reuse_funding = live_households.job_funding.has_current_input_supply(allocator, network, &borders,
-            crate::simulation::economy::logistics::freight_price_phase(&economy_tuning, minute_of_day));
+        let reuse_funding = live_households.job_funding.has_current_input_supply(
+            allocator,
+            network,
+            &borders,
+            crate::simulation::economy::logistics::freight_price_phase(
+                &economy_tuning,
+                minute_of_day,
+            ),
+        );
         #[cfg(test)]
-        let before = (reuse_funding && VERIFY_LIVE_PASSES.load(std::sync::atomic::Ordering::Relaxed))
-            .then(|| live_fingerprint(&live_households.job_funding));
+        let before = (reuse_funding
+            && VERIFY_LIVE_PASSES.load(std::sync::atomic::Ordering::Relaxed))
+        .then(|| live_fingerprint(&live_households.job_funding));
         if reuse_funding {
             // Lend the live books to the planner; the execution books wait in their place.
             let live = &mut live_households.job_funding;
             exchange_live_books(&mut funding, &mut reservations, live);
-            funding.service_capacities.clone_from(&live.service_capacities);
+            funding
+                .service_capacities
+                .clone_from(&live.service_capacities);
             funding.freight_capital.clone_from(&live.freight_capital);
         }
         let households = &*live_households;
@@ -240,20 +263,56 @@ impl DemandSystem {
             // Placement/removal or frontage prices can change after the employment pass.
             // Rebuild once after such edits before reusing its funded sources.
             crate::debug::work::add(crate::debug::work::Work::PlannerCensuses, 1);
-            funding.refresh_with_service_capacity(allocator, &households.households, logistics, network, graph,
-                &catalog, &economy_tuning, fiscal_policy, treasury_balance,
-                |index, physical, _| households.job_funding.service_capacities.get(index).copied().unwrap_or(0).min(physical), minute_of_day);
+            funding.refresh_with_service_capacity(
+                allocator,
+                &households.households,
+                logistics,
+                network,
+                graph,
+                &catalog,
+                &economy_tuning,
+                fiscal_policy,
+                treasury_balance,
+                |index, physical, _| {
+                    households
+                        .job_funding
+                        .service_capacities
+                        .get(index)
+                        .copied()
+                        .unwrap_or(0)
+                        .min(physical)
+                },
+                minute_of_day,
+            );
         }
         lap(1);
         // Move only the mutable reservation book; the planner reads the matching
         // funding columns without copying them or borrowing the whole owner mutably.
         let mut inputs = std::mem::take(&mut funding.input_supply);
-        let funded_jobs = if reuse_funding { &households.job_funding } else { &funding };
-        if reuse_funding {
-            reservations.begin_live_pass(funded_jobs, &mut inputs, allocator, &catalog, &economy_tuning,
-                fiscal_policy, minute_of_day);
+        let funded_jobs = if reuse_funding {
+            &households.job_funding
         } else {
-            reservations.reset(funded_jobs, allocator, &catalog, &economy_tuning, fiscal_policy, minute_of_day);
+            &funding
+        };
+        if reuse_funding {
+            reservations.begin_live_pass(
+                funded_jobs,
+                &mut inputs,
+                allocator,
+                &catalog,
+                &economy_tuning,
+                fiscal_policy,
+                minute_of_day,
+            );
+        } else {
+            reservations.reset(
+                funded_jobs,
+                allocator,
+                &catalog,
+                &economy_tuning,
+                fiscal_policy,
+                minute_of_day,
+            );
         }
         lap(2);
         let mut snapshot = DailyDemandSnapshot::from_runtime_with_funding(
@@ -292,11 +351,32 @@ impl DemandSystem {
         admission_diagnostics.launched_households = 0;
         self.last_admission_diagnostics = admission_diagnostics;
         lap(3);
-        let mut supply = SiteSupply::new(&mut inputs, &mut reservations, allocator, zoning, network, graph,
-            logistics, &economy_tuning, &borders, &catalog, minute_of_day, fiscal_policy.household_vat_rate);
+        let mut supply = SiteSupply::new(
+            &mut inputs,
+            &mut reservations,
+            allocator,
+            zoning,
+            network,
+            graph,
+            logistics,
+            &economy_tuning,
+            &borders,
+            &catalog,
+            minute_of_day,
+            fiscal_policy.household_vat_rate,
+        );
         lap(4);
-        supply.reserve_projects(self.queued_supply_order.iter().map(|&index| &self.queued_construction[index]),
-            &catalog, &snapshot.output_absorption, &mut self.construction_execution.replay_market, fiscal_policy, &funding.service_capacities, &funding.freight_capital);
+        supply.reserve_projects(
+            self.queued_supply_order
+                .iter()
+                .map(|&index| &self.queued_construction[index]),
+            &catalog,
+            &snapshot.output_absorption,
+            &mut self.construction_execution.replay_market,
+            fiscal_policy,
+            &funding.service_capacities,
+            &funding.freight_capital,
+        );
         lap(5);
         self.plan_private_building_actions(
             allocator,
@@ -316,16 +396,33 @@ impl DemandSystem {
         if reuse_funding {
             reservations.end_live_pass(&mut inputs, allocator, graph);
         }
-        crate::debug_log!("economy_phases", "demand_preparation_detail reuse_funding={} carrier_ms={:.3} funding_ms={:.3} reservations_ms={:.3} snapshots_ms={:.3} site_preparation_ms={:.3} queued_ms={:.3} planning_ms={:.3}",
-            reuse_funding, times[0], times[1], times[2], times[3], times[4], times[5], times[6]);
+        crate::debug_log!(
+            "economy_phases",
+            "demand_preparation_detail reuse_funding={} carrier_ms={:.3} funding_ms={:.3} reservations_ms={:.3} snapshots_ms={:.3} site_preparation_ms={:.3} queued_ms={:.3} planning_ms={:.3}",
+            reuse_funding,
+            times[0],
+            times[1],
+            times[2],
+            times[3],
+            times[4],
+            times[5],
+            times[6]
+        );
         funding.input_supply = inputs;
         if reuse_funding {
-            exchange_live_books(&mut funding, &mut reservations, &mut live_households.job_funding);
+            exchange_live_books(
+                &mut funding,
+                &mut reservations,
+                &mut live_households.job_funding,
+            );
         }
         #[cfg(test)]
         if let Some(before) = before {
-            assert_eq!(live_fingerprint(&live_households.job_funding), before,
-                "a planning pass must return the live books exactly");
+            assert_eq!(
+                live_fingerprint(&live_households.job_funding),
+                before,
+                "a planning pass must return the live books exactly"
+            );
         }
         self.construction_execution.reservations = reservations;
         self.construction_execution.funding = funding;

@@ -424,7 +424,9 @@ fn derived_surface_products_match_stored_forms() {
     // Arbitrary small quads from a fixed linear congruential sequence.
     let mut state = 0x2545_f491_4f6c_dd1d_u64;
     let mut next = || {
-        state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1);
         ((state >> 33) as f64 / f64::from(u32::MAX >> 1)) * 2.0 - 1.0
     };
     for _ in 0..20_000 {
@@ -457,7 +459,15 @@ fn derived_surface_products_match_stored_forms() {
         vec![ground(16.0, -48.0), ground(16.0, -4.0)],
     ] {
         network.bulk_load = true;
-        network.add_road(&mut graph, stroke, 1, 1, EdgeClass::Standard, &mut zoning, &mut allocator);
+        network.add_road(
+            &mut graph,
+            stroke,
+            1,
+            1,
+            EdgeClass::Standard,
+            &mut zoning,
+            &mut allocator,
+        );
         network.bulk_load = false;
     }
     network.finalize_road_geometry(&mut graph);
@@ -489,7 +499,11 @@ fn derived_surface_products_match_stored_forms() {
             |point| piece.sample_visible_height(point),
         );
         assert_indexed_polygon_clearance_matches_scan(piece);
-        for region in piece.span_owned_regions.iter().chain(piece.span_earthwork_support_regions.iter()) {
+        for region in piece
+            .span_owned_regions
+            .iter()
+            .chain(piece.span_earthwork_support_regions.iter())
+        {
             assert_quad_matches_strip_polygon(region.corners(&piece.sections));
             regions += 1;
         }
@@ -502,9 +516,21 @@ fn derived_surface_products_match_stored_forms() {
         for polygons in [&mut road, &mut curb, &mut sidewalk] {
             RoadSurfaceSystem::sort_visual_polygons(polygons);
         }
-        assert_eq!(piece.road_surface_polygons().cloned().collect::<Vec<_>>(), road);
-        assert_eq!(piece.curb_surface_polygons().cloned().collect::<Vec<_>>(), curb);
-        assert_eq!(piece.sidewalk_surface_polygons().cloned().collect::<Vec<_>>(), sidewalk);
+        assert_eq!(
+            piece.road_surface_polygons().cloned().collect::<Vec<_>>(),
+            road
+        );
+        assert_eq!(
+            piece.curb_surface_polygons().cloned().collect::<Vec<_>>(),
+            curb
+        );
+        assert_eq!(
+            piece
+                .sidewalk_surface_polygons()
+                .cloned()
+                .collect::<Vec<_>>(),
+            sidewalk
+        );
         // The region-id grid samples exactly like a scan over the same top triangles.
         let triangles: Vec<_> = [(road, true), (curb, false), (sidewalk, false)]
             .iter()
@@ -524,7 +550,10 @@ fn derived_surface_products_match_stored_forms() {
         junctions += usize::from(piece.kind == RoadSurfaceVisualNodePieceKind::JunctionN);
         nodes += 1;
     }
-    assert!(junctions >= 1 && nodes >= 4, "{junctions} junctions of {nodes} nodes checked");
+    assert!(
+        junctions >= 1 && nodes >= 4,
+        "{junctions} junctions of {nodes} nodes checked"
+    );
     assert!(regions > 100, "only {regions} compiled regions checked");
     assert!(samples > 10_000, "only {samples} surface samples checked");
 }
@@ -533,32 +562,60 @@ fn assert_indexed_polygon_clearance_matches_scan(piece: &RoadSurfaceVisualSpanPi
     use crate::simulation::agriculture::PolygonFootprint;
     // Test containment, multi-cell rectangles and sub-f32 offsets at every compiled corner.
     // The oracle enumerates all polygons and retains the same exact even-odd area overlay.
-    let polygons: Vec<_> = piece.surface_polygons().map(|quad| {
-        PolygonFootprint::from_precise_points(quad.points().iter().map(|p| [p.x, p.z]))
-    }).collect();
+    let polygons: Vec<_> = piece
+        .surface_polygons()
+        .map(|quad| PolygonFootprint::from_precise_points(quad.points().iter().map(|p| [p.x, p.z])))
+        .collect();
     for quad in piece.surface_polygons() {
         for corner in quad.points() {
-            for (offset, size) in [(-0.000001, 0.1), (0.0, 1.0), (0.000001, 10.0), (-40.0, 80.0)] {
+            for (offset, size) in [
+                (-0.000001, 0.1),
+                (0.0, 1.0),
+                (0.000001, 10.0),
+                (-40.0, 80.0),
+            ] {
                 let (x, z) = (corner.x + offset, corner.z + offset);
                 let footprint = PolygonFootprint::from_precise_points(
-                    [[x, z], [x + size, z], [x + size, z + size], [x, z + size]].into_iter());
-                let bounds = [f64::from(footprint.min.x) - 1.0, f64::from(footprint.min.y) - 1.0,
-                    f64::from(footprint.max.x) + 1.0, f64::from(footprint.max.y) + 1.0];
-                let indexed = piece.any_surface_polygon_in_bounds(bounds, |corners| {
-                    let envelope = PolygonFootprint::from_precise_points(corners.iter().map(|p| [p.x, p.z]));
-                    footprint.min.x < envelope.max.x && footprint.max.x > envelope.min.x
-                        && footprint.min.y < envelope.max.y && footprint.max.y > envelope.min.y
-                }, |quad| {
-                    let points = quad.points();
-                    let vertices: [[f64; 2]; 4] = std::array::from_fn(|i| {
-                        let p = points[i.min(points.len() - 1)]; [p.x, p.z]
-                    });
-                    footprint.overlaps_precise_points(&vertices[..points.len()])
-                });
-                assert_eq!(indexed, polygons.iter().any(|polygon| footprint.overlaps(polygon)),
-                    "edge={} bounds={bounds:?}", piece.edge_idx);
+                    [[x, z], [x + size, z], [x + size, z + size], [x, z + size]].into_iter(),
+                );
+                let bounds = [
+                    f64::from(footprint.min.x) - 1.0,
+                    f64::from(footprint.min.y) - 1.0,
+                    f64::from(footprint.max.x) + 1.0,
+                    f64::from(footprint.max.y) + 1.0,
+                ];
+                let indexed = piece.any_surface_polygon_in_bounds(
+                    bounds,
+                    |corners| {
+                        let envelope = PolygonFootprint::from_precise_points(
+                            corners.iter().map(|p| [p.x, p.z]),
+                        );
+                        footprint.min.x < envelope.max.x
+                            && footprint.max.x > envelope.min.x
+                            && footprint.min.y < envelope.max.y
+                            && footprint.max.y > envelope.min.y
+                    },
+                    |quad| {
+                        let points = quad.points();
+                        let vertices: [[f64; 2]; 4] = std::array::from_fn(|i| {
+                            let p = points[i.min(points.len() - 1)];
+                            [p.x, p.z]
+                        });
+                        footprint.overlaps_precise_points(&vertices[..points.len()])
+                    },
+                );
+                assert_eq!(
+                    indexed,
+                    polygons.iter().any(|polygon| footprint.overlaps(polygon)),
+                    "edge={} bounds={bounds:?}",
+                    piece.edge_idx
+                );
             }
         }
     }
-    assert!(!piece.any_surface_polygon_in_bounds([1e12, 1e12, 1e12 + 1.0, 1e12 + 1.0], |_| true, |_| true));
+    assert!(!piece.any_surface_polygon_in_bounds(
+        [1e12, 1e12, 1e12 + 1.0, 1e12 + 1.0],
+        |_| true,
+        |_| true
+    ));
 }

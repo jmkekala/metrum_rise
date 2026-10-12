@@ -241,11 +241,7 @@ pub(super) fn validate_reservations(
         || roads
             .compiled_visual_node_pieces
             .par_iter()
-            .any(|(_, piece)| {
-                piece
-                    .surface_polygons()
-                    .any(overlaps)
-            })
+            .any(|(_, piece)| piece.surface_polygons().any(overlaps))
     {
         return Err(SaveLoadError::custom(
             "saved road overlaps reserved zoning cells",

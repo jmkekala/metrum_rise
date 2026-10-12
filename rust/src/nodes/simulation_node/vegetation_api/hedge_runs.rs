@@ -37,7 +37,11 @@ struct RunModule {
 pub(crate) fn hedge_runs(core: &SimCore, origin: Vector2, span: f32) -> Vec<f32> {
     let (cell_m, _) = grid(core, VegetationLayer::Canopy);
     let first = cell_at(origin, VegetationLayer::Canopy, cell_m);
-    let last = cell_at(origin + Vector2::splat(span), VegetationLayer::Canopy, cell_m);
+    let last = cell_at(
+        origin + Vector2::splat(span),
+        VegetationLayer::Canopy,
+        cell_m,
+    );
     let height = |p: Vector2| authored_ground_height(core, p);
     let mut modules = Vec::new();
     if !core.vegetation_edits.any_in_cell_range(
@@ -79,7 +83,13 @@ pub(crate) fn hedge_runs(core: &SimCore, origin: Vector2, span: f32) -> Vec<f32>
     }
     // Rows sort together: same hedge, same yaw, then across the row before along it. Rounding
     // the offset across the row to the tolerance keeps one row's modules adjacent in the order.
-    let row_key = |m: &RunModule| (m.hedge, m.yaw.to_bits(), (m.across / ROW_TOLERANCE_M).round() as i64);
+    let row_key = |m: &RunModule| {
+        (
+            m.hedge,
+            m.yaw.to_bits(),
+            (m.across / ROW_TOLERANCE_M).round() as i64,
+        )
+    };
     modules.sort_by(|a, b| {
         row_key(a)
             .cmp(&row_key(b))

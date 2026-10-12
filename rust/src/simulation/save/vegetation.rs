@@ -39,7 +39,10 @@ pub(super) fn save(tx: &Transaction<'_>, edits: &VegetationEdits) -> SaveLoadRes
     }
     // Yard records in key order, each in the order its yard laid or planted it.
     for (table, records) in [
-        ("yard_hedge_modules", edits.yard_hedges().collect::<Vec<_>>()),
+        (
+            "yard_hedge_modules",
+            edits.yard_hedges().collect::<Vec<_>>(),
+        ),
         ("yard_planting_plants", edits.yard_planting().collect()),
     ] {
         let mut yard = tx.prepare(&format!(

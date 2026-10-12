@@ -76,7 +76,9 @@ impl CellStore {
         if !bounds.is_valid() {
             return CellGeneration::default();
         }
-        let mut phase = crate::debug::Channel::EconomyPhases.enabled().then(std::time::Instant::now);
+        let mut phase = crate::debug::Channel::EconomyPhases
+            .enabled()
+            .then(std::time::Instant::now);
         let mut times = [0.0; 6];
         let mut lap = |slot: usize| {
             if let Some(start) = phase {
@@ -136,23 +138,31 @@ impl CellStore {
         // frontage/priority metadata. Quote its immutable footprint once, retaining every
         // candidate and its original publication ordering below. This local sorted key list
         // costs O(C log C) time/O(C) scratch, within generation's existing sorting bound.
-        let mut footprints: Vec<_> = candidates.par_iter()
-            .map(|candidate| (candidate.frame, candidate.x, candidate.y)).collect();
+        let mut footprints: Vec<_> = candidates
+            .par_iter()
+            .map(|candidate| (candidate.frame, candidate.x, candidate.y))
+            .collect();
         footprints.par_sort_unstable();
         footprints.dedup();
-        let legal: Vec<_> = footprints.par_iter().map(|&(frame, x, y)| {
-            let corners = frame.corners(x, y);
-            corners.iter().all(|point| {
-                point.x.abs() <= f64::from(config.width_m) * 0.5
-                    && point.y.abs() <= f64::from(config.height_m) * 0.5
-            }) && !overlaps_road_corridors_bounded(
-                graph,
-                &corners,
-                Some((corridor_neighborhood, corridor_pad)),
-            ) && !blocked(&corners)
-        }).collect();
-        candidates.retain(|candidate| legal[footprints.binary_search(
-            &(candidate.frame, candidate.x, candidate.y)).unwrap()]);
+        let legal: Vec<_> = footprints
+            .par_iter()
+            .map(|&(frame, x, y)| {
+                let corners = frame.corners(x, y);
+                corners.iter().all(|point| {
+                    point.x.abs() <= f64::from(config.width_m) * 0.5
+                        && point.y.abs() <= f64::from(config.height_m) * 0.5
+                }) && !overlaps_road_corridors_bounded(
+                    graph,
+                    &corners,
+                    Some((corridor_neighborhood, corridor_pad)),
+                ) && !blocked(&corners)
+            })
+            .collect();
+        candidates.retain(|candidate| {
+            legal[footprints
+                .binary_search(&(candidate.frame, candidate.x, candidate.y))
+                .unwrap()]
+        });
         lap(1);
 
         // Reuse the cell block spatial structure as a temporary candidate index. It is local
@@ -216,17 +226,25 @@ impl CellStore {
                 // overlap a candidate wholly inside them. Reuse the reservation mask.
                 let reserved_only = candidate_bounds.min.cmpge(bounds.min).all()
                     && candidate_bounds.max.cmple(bounds.max).all();
-                self.visit_other_frame_footprints_in_bounds(candidate_bounds, frame,
-                    reserved_only, check_existing);
+                self.visit_other_frame_footprints_in_bounds(
+                    candidate_bounds,
+                    frame,
+                    reserved_only,
+                    check_existing,
+                );
                 if competing_frames && valid {
                     let priority = priorities[&key].0;
-                    raw.visit_other_frame_footprints_in_bounds(candidate_bounds, frame, false,
+                    raw.visit_other_frame_footprints_in_bounds(
+                        candidate_bounds,
+                        frame,
+                        false,
                         |other, other_corners| {
                             if valid && priorities[&other].0 < priority {
                                 comparisons += 1;
                                 valid = !interiors_overlap(&corners, &other_corners);
                             }
-                        });
+                        },
+                    );
                 }
                 (key, valid, comparisons)
             })
@@ -300,9 +318,21 @@ impl CellStore {
             self.publish_curve_source(source);
         }
         lap(5);
-        crate::debug_log!("economy_phases", "cell_generation_detail roads={} footprints={} candidates={} comparisons={} accepted={} prepare_ms={:.3} clearance_ms={:.3} indexing_ms={:.3} conflicts_ms={:.3} support_ms={:.3} publish_ms={:.3}",
-            roads.len(), footprints.len(), priorities.len(), comparisons, output.len(),
-            times[0], times[1], times[2], times[3], times[4], times[5]);
+        crate::debug_log!(
+            "economy_phases",
+            "cell_generation_detail roads={} footprints={} candidates={} comparisons={} accepted={} prepare_ms={:.3} clearance_ms={:.3} indexing_ms={:.3} conflicts_ms={:.3} support_ms={:.3} publish_ms={:.3}",
+            roads.len(),
+            footprints.len(),
+            priorities.len(),
+            comparisons,
+            output.len(),
+            times[0],
+            times[1],
+            times[2],
+            times[3],
+            times[4],
+            times[5]
+        );
         CellGeneration {
             roads: roads.len(),
             candidates: priorities.len(),

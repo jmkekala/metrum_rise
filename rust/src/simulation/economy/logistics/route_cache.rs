@@ -2,11 +2,13 @@
 
 //! Revision-scoped network costs; live frontage delay is evaluated at quotation time.
 
+use rayon::prelude::*;
 use std::collections::{BTreeMap, HashMap};
 use std::hash::BuildHasher;
-use rayon::prelude::*;
 
-use crate::simulation::buildings::allocator::{BuildingAllocator, BuildingEntrance, BuildingEntranceKey, FreightEntranceAccess};
+use crate::simulation::buildings::allocator::{
+    BuildingAllocator, BuildingEntrance, BuildingEntranceKey, FreightEntranceAccess,
+};
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::TransitFlags;
@@ -85,35 +87,74 @@ struct BuildingAccess {
 }
 
 impl BuildingAccess {
-    fn refresh(previous: Option<Self>, generation: u64, entrance: &BuildingEntrance,
-        network: &TransitNetwork, graph: &RegionGraph) -> Self {
+    fn refresh(
+        previous: Option<Self>,
+        generation: u64,
+        entrance: &BuildingEntrance,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> Self {
         let key = BuildingEntranceKey::new(entrance);
-        let speeds = [entrance.car_lane_fwd, entrance.car_lane_bkw].map(|lane|
-            network.lane_system.lanes.get(lane).and_then(|lane| graph.get_edge(lane.edge_id))
-                .map(|edge| edge.speed_limit.to_bits()));
-        if let Some(previous) = previous && previous.entrance == key
-            && previous.lanes == network.lane_system.revision() && previous.speeds == speeds {
-            return Self { checked: generation, ..previous };
+        let speeds = [entrance.car_lane_fwd, entrance.car_lane_bkw].map(|lane| {
+            network
+                .lane_system
+                .lanes
+                .get(lane)
+                .and_then(|lane| graph.get_edge(lane.edge_id))
+                .map(|edge| edge.speed_limit.to_bits())
+        });
+        if let Some(previous) = previous
+            && previous.entrance == key
+            && previous.lanes == network.lane_system.revision()
+            && previous.speeds == speeds
+        {
+            return Self {
+                checked: generation,
+                ..previous
+            };
         }
-        Self { checked: generation, geometry: generation, lanes: network.lane_system.revision(), speeds, entrance: key,
-            access: FreightEntranceAccess::new(entrance, network, graph) }
+        Self {
+            checked: generation,
+            geometry: generation,
+            lanes: network.lane_system.revision(),
+            speeds,
+            entrance: key,
+            access: FreightEntranceAccess::new(entrance, network, graph),
+        }
     }
 }
 
-fn frontage_prices(key: (usize, usize), allocator: &BuildingAllocator,
-    network: &TransitNetwork) -> Option<[u32; 4]> {
+fn frontage_prices(
+    key: (usize, usize),
+    allocator: &BuildingAllocator,
+    network: &TransitNetwork,
+) -> Option<[u32; 4]> {
     let from = allocator.entrances.get(key.0)?;
     let to = allocator.entrances.get(key.1)?;
     // Entrance generation fixes lane identities/presence, geometry and free-flow inputs.
     // Include both possible lanes at both doors, even when one loses the current minimum.
-    Some([from.car_lane_fwd, from.car_lane_bkw, to.car_lane_fwd, to.car_lane_bkw]
-        .map(|lane| network.lane_system.lanes.get(lane)
-            .map_or(0, |lane| lane.frontage_delay_penalty_s.to_bits())))
+    Some(
+        [
+            from.car_lane_fwd,
+            from.car_lane_bkw,
+            to.car_lane_fwd,
+            to.car_lane_bkw,
+        ]
+        .map(|lane| {
+            network
+                .lane_system
+                .lanes
+                .get(lane)
+                .map_or(0, |lane| lane.frontage_delay_penalty_s.to_bits())
+        }),
+    )
 }
 
 fn retained_quote<T: Copy>(entries: &mut [Option<T>; 2], matches: impl Fn(T) -> bool) -> Option<T> {
     for slot in 0..2 {
-        if let Some(entry) = entries[slot] && matches(entry) {
+        if let Some(entry) = entries[slot]
+            && matches(entry)
+        {
             entries.swap(0, slot);
             return Some(entry);
         }
@@ -130,25 +171,56 @@ impl FreightRouteCache {
 
     /// Fills requested geometry in the existing cache before a parallel quote batch.
     /// O(buildings) tag checks; only changed requested entrances project their lane geometry.
-    pub(super) fn prepare_access_for(&mut self, allocator: &BuildingAllocator,
-        network: &TransitNetwork, graph: &RegionGraph, wanted: impl Fn(usize) -> bool + Sync) {
+    pub(super) fn prepare_access_for(
+        &mut self,
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+        wanted: impl Fn(usize) -> bool + Sync,
+    ) {
         let generation = self.building_generation;
-        self.access.par_iter_mut().enumerate().for_each(|(index, slot)| {
-            if slot.as_ref().is_some_and(|cached| cached.checked == generation) || !wanted(index) { return; }
-            if let Some(entrance) = allocator.entrances.get(index) {
-                *slot = Some(BuildingAccess::refresh(*slot, generation, entrance, network, graph));
-            }
-        });
+        self.access
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(index, slot)| {
+                if slot
+                    .as_ref()
+                    .is_some_and(|cached| cached.checked == generation)
+                    || !wanted(index)
+                {
+                    return;
+                }
+                if let Some(entrance) = allocator.entrances.get(index) {
+                    *slot = Some(BuildingAccess::refresh(
+                        *slot, generation, entrance, network, graph,
+                    ));
+                }
+            });
     }
 
-    fn building_access(&mut self, index: usize, allocator: &BuildingAllocator,
-        network: &TransitNetwork, graph: &RegionGraph) -> Option<FreightEntranceAccess> {
-        if index >= allocator.buildings.len() { return None; }
+    fn building_access(
+        &mut self,
+        index: usize,
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> Option<FreightEntranceAccess> {
+        if index >= allocator.buildings.len() {
+            return None;
+        }
         if let Some(Some(access)) = self.access.get(index)
-            && access.checked == self.building_generation { return Some(access.access); }
+            && access.checked == self.building_generation
+        {
+            return Some(access.access);
+        }
         let previous = self.access.get(index).copied().flatten();
-        let access = BuildingAccess::refresh(previous, self.building_generation,
-            allocator.entrances.get(index)?, network, graph);
+        let access = BuildingAccess::refresh(
+            previous,
+            self.building_generation,
+            allocator.entrances.get(index)?,
+            network,
+            graph,
+        );
         // Before the next batch reserve, newly appended doors use the same exact fallback
         // without allocating. A retained slot is filled at most once per entrance revision.
         if let Some(slot) = self.access.get_mut(index) {
@@ -164,16 +236,25 @@ impl FreightRouteCache {
             .then_some([from.geometry, to.geometry])
     }
 
-    fn site_access(&mut self, entrance: &BuildingEntrance, network: &TransitNetwork,
-        graph: &RegionGraph) -> FreightEntranceAccess {
+    fn site_access(
+        &mut self,
+        entrance: &BuildingEntrance,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> FreightEntranceAccess {
         if self.site_lane_revision != network.lane_system.revision() {
             self.site_access = [None; 2];
             self.site_lane_revision = network.lane_system.revision();
         }
         let key = BuildingEntranceKey::new(entrance);
-        if let Some(index) = self.site_access.iter().position(|entry|
-            entry.as_ref().is_some_and(|(cached, _)| *cached == key)) {
-            if index != 0 { self.site_access.swap(0, index); }
+        if let Some(index) = self
+            .site_access
+            .iter()
+            .position(|entry| entry.as_ref().is_some_and(|(cached, _)| *cached == key))
+        {
+            if index != 0 {
+                self.site_access.swap(0, index);
+            }
             return self.site_access[0].as_ref().unwrap().1;
         }
         let access = FreightEntranceAccess::new(entrance, network, graph);
@@ -185,10 +266,28 @@ impl FreightRouteCache {
     /// Retained entry counts and capacities for bounded quotation storage regressions.
     #[cfg(test)]
     pub(super) fn storage(&self) -> [(usize, usize); 3] {
-        [(self.node_to_node.iter().flatten().filter(|entry| entry.is_some()).count(), self.node_to_node.len() * 2),
-            (self.building_to_building.iter().flatten().filter(|entry| entry.is_some()).count(),
-                self.building_to_building.len() * 2),
-            (self.border_to_building.len(), self.border_to_building.capacity())]
+        [
+            (
+                self.node_to_node
+                    .iter()
+                    .flatten()
+                    .filter(|entry| entry.is_some())
+                    .count(),
+                self.node_to_node.len() * 2,
+            ),
+            (
+                self.building_to_building
+                    .iter()
+                    .flatten()
+                    .filter(|entry| entry.is_some())
+                    .count(),
+                self.building_to_building.len() * 2,
+            ),
+            (
+                self.border_to_building.len(),
+                self.border_to_building.capacity(),
+            ),
+        ]
     }
 
     /// Prepares the existing border sweeps for parallel, allocation-free building quotes.
@@ -217,24 +316,37 @@ impl FreightRouteCache {
             self.building_to_building.fill([None; 2]);
         }
         if self.border_to_building.capacity() < complete {
-            self.border_to_building.reserve(complete.saturating_sub(self.border_to_building.len()));
+            self.border_to_building
+                .reserve(complete.saturating_sub(self.border_to_building.len()));
         }
         for &border in borders {
             self.border_costs
                 .entry(border)
                 .or_insert_with(|| sweep_border(border, transit_network, graph));
         }
-        if self.minimum_borders != borders || self.minimum_border_costs.len() != graph.node_count() {
+        if self.minimum_borders != borders || self.minimum_border_costs.len() != graph.node_count()
+        {
             self.minimum_borders.clear();
             self.minimum_borders.extend_from_slice(borders);
-            self.minimum_border_costs.resize(graph.node_count(), f32::MAX);
-            self.minimum_border_costs.par_iter_mut().enumerate().for_each(|(node, cost)| {
-                *cost = borders.iter().filter_map(|border| {
-                    // The original entrance quote treats a source equal to its arrival as zero.
-                    if *border == node as u32 { Some(0.0) }
-                    else { self.border_costs.get(border)?.cost_to(node as u32) }
-                }).min_by(f32::total_cmp).unwrap_or(f32::MAX);
-            });
+            self.minimum_border_costs
+                .resize(graph.node_count(), f32::MAX);
+            self.minimum_border_costs
+                .par_iter_mut()
+                .enumerate()
+                .for_each(|(node, cost)| {
+                    *cost = borders
+                        .iter()
+                        .filter_map(|border| {
+                            // The original entrance quote treats a source equal to its arrival as zero.
+                            if *border == node as u32 {
+                                Some(0.0)
+                            } else {
+                                self.border_costs.get(border)?.cost_to(node as u32)
+                            }
+                        })
+                        .min_by(f32::total_cmp)
+                        .unwrap_or(f32::MAX);
+                });
         }
     }
 
@@ -247,21 +359,41 @@ impl FreightRouteCache {
         graph: &RegionGraph,
     ) -> Option<f32> {
         if let Some(Some(access)) = self.access.get(destination)
-            && access.checked == self.building_generation {
+            && access.checked == self.building_generation
+        {
             return self.minimum_border_eta_from_access(&access.access, transit_network, graph);
         }
-        self.prepared_minimum_border_eta(allocator.entrances.get(destination)?, transit_network, graph)
+        self.prepared_minimum_border_eta(
+            allocator.entrances.get(destination)?,
+            transit_network,
+            graph,
+        )
     }
 
-    fn prepared_minimum_border_eta(&self, entrance: &BuildingEntrance,
-        network: &TransitNetwork, graph: &RegionGraph) -> Option<f32> {
-        self.minimum_border_eta_from_access(&FreightEntranceAccess::new(entrance, network, graph), network, graph)
+    fn prepared_minimum_border_eta(
+        &self,
+        entrance: &BuildingEntrance,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> Option<f32> {
+        self.minimum_border_eta_from_access(
+            &FreightEntranceAccess::new(entrance, network, graph),
+            network,
+            graph,
+        )
     }
 
-    fn minimum_border_eta_from_access(&self, access: &FreightEntranceAccess,
-        network: &TransitNetwork, graph: &RegionGraph) -> Option<f32> {
+    fn minimum_border_eta_from_access(
+        &self,
+        access: &FreightEntranceAccess,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> Option<f32> {
         access.eta_from_network(network, graph, |node| {
-            self.minimum_border_costs.get(node as usize).copied().filter(|&cost| cost < f32::MAX)
+            self.minimum_border_costs
+                .get(node as usize)
+                .copied()
+                .filter(|&cost| cost < f32::MAX)
         })
     }
 
@@ -325,17 +457,24 @@ impl FreightRouteCache {
     ) -> Option<f32> {
         let source = self.building_access(source_idx, allocator, network, graph)?;
         let destination = self.site_access(destination, network, graph);
-        source.eta_to(
-            &destination, network, graph,
-            |from, to| self.node_cost(from, to, network, graph),
-        )
+        source.eta_to(&destination, network, graph, |from, to| {
+            self.node_cost(from, to, network, graph)
+        })
     }
 
     /// Quotes a proposed source to an existing buyer using the buyer's prepared geometry.
-    pub(super) fn from_site(&mut self, source: &BuildingEntrance, destination_idx: usize,
-        allocator: &BuildingAllocator, network: &TransitNetwork, graph: &RegionGraph) -> Option<f32> {
+    pub(super) fn from_site(
+        &mut self,
+        source: &BuildingEntrance,
+        destination_idx: usize,
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> Option<f32> {
         self.site_access(source, network, graph).eta_to(
-            &self.building_access(destination_idx, allocator, network, graph)?, network, graph,
+            &self.building_access(destination_idx, allocator, network, graph)?,
+            network,
+            graph,
             |from, to| self.node_cost(from, to, network, graph),
         )
     }
@@ -351,25 +490,45 @@ impl FreightRouteCache {
     ) -> Option<f32> {
         let source = self.site_access(source, network, graph);
         let destination = self.site_access(destination, network, graph);
-        source.eta_to(
-            &destination, network, graph,
-            |from, to| self.node_cost(from, to, network, graph),
-        )
+        source.eta_to(&destination, network, graph, |from, to| {
+            self.node_cost(from, to, network, graph)
+        })
     }
 
     /// Lower bound over a superset of legal entrance endpoints. Same-edge direct frontage
     /// bypasses the network, so it receives zero. Missing/stale proofs cannot prune a quote.
-    pub(super) fn minimum_entrance_network_cost(&self, source: &BuildingEntrance,
-        destination: &BuildingEntrance, network: &TransitNetwork, graph: &RegionGraph) -> Option<f32> {
+    pub(super) fn minimum_entrance_network_cost(
+        &self,
+        source: &BuildingEntrance,
+        destination: &BuildingEntrance,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> Option<f32> {
         // Negative local delays could cancel a network leg. Ordinary traffic is nonnegative,
         // but arbitrary edited/test inputs must fall back to the unconstrained zero-price check.
-        if [source.car_lane_fwd, source.car_lane_bkw, destination.car_lane_fwd, destination.car_lane_bkw]
-            .into_iter().any(|lane| network.lane_system.lanes.get(lane)
-                .is_some_and(|lane| !(lane.frontage_delay_penalty_s >= 0.0))) { return None; }
+        if [
+            source.car_lane_fwd,
+            source.car_lane_bkw,
+            destination.car_lane_fwd,
+            destination.car_lane_bkw,
+        ]
+        .into_iter()
+        .any(|lane| {
+            network
+                .lane_system
+                .lanes
+                .get(lane)
+                .is_some_and(|lane| !(lane.frontage_delay_penalty_s >= 0.0))
+        }) {
+            return None;
+        }
         let from = graph.get_edge(source.edge_idx)?;
         let to = graph.get_edge(destination.edge_idx)?;
-        self.cost_bounds.cost(from.start_node, from.start_node, &network.cch_graph)?;
-        if source.edge_idx == destination.edge_idx { return Some(0.0); }
+        self.cost_bounds
+            .cost(from.start_node, from.start_node, &network.cch_graph)?;
+        if source.edge_idx == destination.edge_idx {
+            return Some(0.0);
+        }
         let mut minimum = f32::INFINITY;
         for from in [from.start_node, from.end_node] {
             for to in [to.start_node, to.end_node] {
@@ -379,26 +538,44 @@ impl FreightRouteCache {
         Some(minimum)
     }
 
-    fn node_cost(&mut self, from: u32, to: u32, network: &TransitNetwork, graph: &RegionGraph) -> Option<f32> {
+    fn node_cost(
+        &mut self,
+        from: u32,
+        to: u32,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> Option<f32> {
         #[cfg(test)]
-        { self.node_cache_counts[0] += 1; }
+        {
+            self.node_cache_counts[0] += 1;
+        }
         let key = (from, to);
-        let bucket = (!self.node_to_node.is_empty()).then(|| {
-            self.node_hash.hash_one(key) as usize & (self.node_to_node.len() - 1)
-        });
+        let bucket = (!self.node_to_node.is_empty())
+            .then(|| self.node_hash.hash_one(key) as usize & (self.node_to_node.len() - 1));
         if let Some(index) = bucket {
             let entries = &mut self.node_to_node[index];
             if let Some(entry) = retained_quote(entries, |entry| entry.key == key) {
                 #[cfg(test)]
-                { self.node_cache_counts[1] += 1; }
+                {
+                    self.node_cache_counts[1] += 1;
+                }
                 return entry.cost;
             }
         }
-        let cost = network.cch_graph.find_cost(from, to, usize::MAX, graph, TransitFlags::CAR, &mut self.query);
+        let cost = network.cch_graph.find_cost(
+            from,
+            to,
+            usize::MAX,
+            graph,
+            TransitFlags::CAR,
+            &mut self.query,
+        );
         if let Some(index) = bucket {
             let entries = &mut self.node_to_node[index];
             #[cfg(test)]
-            if entries[1].is_some() { self.node_cache_counts[2] += 1; }
+            if entries[1].is_some() {
+                self.node_cache_counts[2] += 1;
+            }
             entries[1] = entries[0];
             entries[0] = Some(NodeCost { key, cost });
         }
@@ -414,14 +591,18 @@ impl FreightRouteCache {
         graph: &RegionGraph,
     ) -> Option<f32> {
         #[cfg(test)]
-        { self.building_cache_counts[0] += 1; }
+        {
+            self.building_cache_counts[0] += 1;
+        }
         let key = (source_idx, destination_idx);
         let revision = transit_network.frontage_delay_revision;
-        let bucket = (!self.building_to_building.is_empty()).then(|| {
-            self.node_hash.hash_one(key) as usize & (self.building_to_building.len() - 1)
+        let bucket = (!self.building_to_building.is_empty())
+            .then(|| self.node_hash.hash_one(key) as usize & (self.building_to_building.len() - 1));
+        let cached = bucket.and_then(|index| {
+            retained_quote(&mut self.building_to_building[index], |entry| {
+                entry.key == key
+            })
         });
-        let cached = bucket.and_then(|index| retained_quote(
-            &mut self.building_to_building[index], |entry| entry.key == key));
         let mut prices = None;
         if let (Some(index), Some(entry)) = (bucket, cached) {
             let geometry_matches = entry.generation == self.building_generation || {
@@ -439,30 +620,48 @@ impl FreightRouteCache {
                 // revision tag when all four actual price bits survived publication.
                 if entry.revision != revision || entry.generation != self.building_generation {
                     self.building_to_building[index][0] = Some(BuildingCost {
-                        generation: self.building_generation, revision, ..entry });
+                        generation: self.building_generation,
+                        revision,
+                        ..entry
+                    });
                 }
                 #[cfg(test)]
-                { self.building_cache_counts[1] += 1; }
+                {
+                    self.building_cache_counts[1] += 1;
+                }
                 return entry.cost;
             }
             #[cfg(test)]
-            { self.building_cache_counts[3] += 1; }
+            {
+                self.building_cache_counts[3] += 1;
+            }
         }
         let source = self.building_access(source_idx, allocator, transit_network, graph)?;
-        let destination = self.building_access(destination_idx, allocator, transit_network, graph)?;
-        let eta = source.eta_to(&destination, transit_network, graph,
-            |from, to| self.node_cost(from, to, transit_network, graph));
+        let destination =
+            self.building_access(destination_idx, allocator, transit_network, graph)?;
+        let eta = source.eta_to(&destination, transit_network, graph, |from, to| {
+            self.node_cost(from, to, transit_network, graph)
+        });
         if let Some(index) = bucket
-            && let Some(prices) = prices.or_else(|| frontage_prices(key, allocator, transit_network)) {
+            && let Some(prices) =
+                prices.or_else(|| frontage_prices(key, allocator, transit_network))
+        {
             let geometry = self.geometry(key);
             let entries = &mut self.building_to_building[index];
             if cached.is_none() {
                 #[cfg(test)]
-                if entries[1].is_some() { self.building_cache_counts[2] += 1; }
+                if entries[1].is_some() {
+                    self.building_cache_counts[2] += 1;
+                }
                 entries[1] = entries[0];
             }
             entries[0] = Some(BuildingCost {
-                key, generation: self.building_generation, geometry, revision, prices, cost: eta,
+                key,
+                generation: self.building_generation,
+                geometry,
+                revision,
+                prices,
+                cost: eta,
             });
         }
         eta
@@ -496,7 +695,8 @@ impl FreightRouteCache {
         if let Some(entry) = self.border_to_building.get_mut(&key) {
             *entry = (self.building_generation, revision, eta);
         } else if self.border_to_building.len() < self.border_to_building.capacity() {
-            self.border_to_building.insert(key, (self.building_generation, revision, eta));
+            self.border_to_building
+                .insert(key, (self.building_generation, revision, eta));
         }
         eta
     }
@@ -508,8 +708,7 @@ mod tests {
 
     #[test]
     fn colliding_node_quotes_keep_exact_bits_and_replace_old_demand_without_growth() {
-        let (mut graph, mut network, edge, _, _) =
-            super::super::tests::simple_graph_with_border();
+        let (mut graph, mut network, edge, _, _) = super::super::tests::simple_graph_with_border();
         let mut cache = FreightRouteCache::default();
         // Every pair collides: exercise replacement rather than a lucky hash distribution.
         cache.node_to_node.resize(1, [None; 2]);
@@ -524,12 +723,20 @@ mod tests {
                 for a in 0..graph.node_count() as u32 {
                     for b in 0..graph.node_count() as u32 {
                         let (a, b) = if reverse { (b, a) } else { (a, b) };
-                        let expected = network.cch_graph.find_cost(a, b, usize::MAX,
-                            &graph, TransitFlags::CAR, &mut scratch).map(f32::to_bits);
+                        let expected = network
+                            .cch_graph
+                            .find_cost(a, b, usize::MAX, &graph, TransitFlags::CAR, &mut scratch)
+                            .map(f32::to_bits);
                         unreachable |= a != b && expected.is_none();
-                        assert_eq!(cache.node_cost(a, b, &network, &graph).map(f32::to_bits), expected);
+                        assert_eq!(
+                            cache.node_cost(a, b, &network, &graph).map(f32::to_bits),
+                            expected
+                        );
                         let hits = cache.node_cache_counts[1];
-                        assert_eq!(cache.node_cost(a, b, &network, &graph).map(f32::to_bits), expected);
+                        assert_eq!(
+                            cache.node_cost(a, b, &network, &graph).map(f32::to_bits),
+                            expected
+                        );
                         assert_eq!(cache.node_cache_counts[1], hits + 1);
                         assert_eq!(cache.node_to_node.capacity(), capacity);
                     }
@@ -537,6 +744,9 @@ mod tests {
             }
         }
         assert!(cache.node_cache_counts[2] > 0);
-        assert!(unreachable, "cached None results must also exercise the immediate-hit check");
+        assert!(
+            unreachable,
+            "cached None results must also exercise the immediate-hit check"
+        );
     }
 }

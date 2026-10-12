@@ -5,7 +5,9 @@
 use super::*;
 use crate::simulation::economy::agents::MODE_WALK;
 use crate::simulation::network::lanes::{LaneSystem, LaneType};
-use crate::simulation::save::schema::{CONTINUATION_SAVE_VERSION, LIVE_FRONTAGE_DELAY_SAVE_VERSION};
+use crate::simulation::save::schema::{
+    CONTINUATION_SAVE_VERSION, LIVE_FRONTAGE_DELAY_SAVE_VERSION,
+};
 
 #[cfg(test)]
 mod tests;
@@ -171,7 +173,10 @@ pub(in crate::simulation::save) fn restore_lane_references(
             let old = i64_to_usize(row.get(0)?)?;
             let price: f32 = row.get(1)?;
             let live: f32 = row.get(2)?;
-            if [price, live].iter().any(|delay| !delay.is_finite() || *delay < 0.0) {
+            if [price, live]
+                .iter()
+                .any(|delay| !delay.is_finite() || *delay < 0.0)
+            {
                 return Err(SaveLoadError::custom("invalid saved frontage delay"));
             }
             let lane = &mut network.lane_system.lanes[remap[&old]];

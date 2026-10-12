@@ -43,7 +43,11 @@ fn influence(plant: &Plant, pos: Vector2, radius: f32) -> f32 {
 /// Uses species clearance while keeping the authored canopy owner cell.
 pub(super) fn authored_clear(core: &SimCore, plant: &Plant) -> bool {
     let class = PlantClass::of(plant.species, plant.variant);
-    if class == PlantClass::Tree && core.allocator.in_yard_planting(Vector2::new(plant.x, plant.z)) {
+    if class == PlantClass::Tree
+        && core
+            .allocator
+            .in_yard_planting(Vector2::new(plant.x, plant.z))
+    {
         // An asset's planting area is lawn its author meant for trees, so a yard tree there
         // needs only its trunk's room off walls, paving and roads, not a wild tree's.
         return clear_site(core, plant.x, plant.z, YARD_TREE_CLEAR_RADIUS_M, 3.0, true);
@@ -199,15 +203,25 @@ pub(crate) fn publish_yards(core: &mut SimCore) {
     let layout = PatchLayout::new(core);
     for event in events {
         match event {
-            YardEvent::Placed { key, hedge, rows, planting } => {
-                if let Some(preset) = hedge.and_then(|hedge| preset(HEDGE_LOW_PRESET + hedge.index() as i64)) {
+            YardEvent::Placed {
+                key,
+                hedge,
+                rows,
+                planting,
+            } => {
+                if let Some(preset) =
+                    hedge.and_then(|hedge| preset(HEDGE_LOW_PRESET + hedge.index() as i64))
+                {
                     let mut laid = Vec::new();
                     // Row by row, so each row sees the ones before it and the corners join.
                     for row in rows {
                         let join = [row.join_from, row.join_to];
-                        for (cell, plant) in plan_row(core, preset, row.from, row.to, join, Some(YARD_SHARE_M)) {
+                        for (cell, plant) in
+                            plan_row(core, preset, row.from, row.to, join, Some(YARD_SHARE_M))
+                        {
                             core.vegetation_edits.add(cell, plant);
-                            core.vegetation_edits.bump_patch(layout.key(plant.x, plant.z));
+                            core.vegetation_edits
+                                .bump_patch(layout.key(plant.x, plant.z));
                             laid.push((cell, plant));
                         }
                     }
@@ -216,7 +230,9 @@ pub(crate) fn publish_yards(core: &mut SimCore) {
                 // After the hedge, so plants keep their room off it.
                 let mut planted = Vec::new();
                 for (index, area) in planting.iter().enumerate() {
-                    planted.extend(super::yard_planting::plant_area(core, key, index, area, &layout));
+                    planted.extend(super::yard_planting::plant_area(
+                        core, key, index, area, &layout,
+                    ));
                 }
                 core.vegetation_edits.record_yard_planting(key, planted);
             }
@@ -576,14 +592,7 @@ pub(super) fn paint_at(
                 plant,
                 restore: None,
                 // A non-negative float orders like its bit pattern.
-                order: (
-                    1,
-                    rank.to_bits(),
-                    class as u8,
-                    z,
-                    x,
-                    attempt,
-                ),
+                order: (1, rank.to_bits(), class as u8, z, x, attempt),
             })
         })
         .collect();

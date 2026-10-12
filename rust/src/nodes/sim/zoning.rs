@@ -209,7 +209,9 @@ impl SimCore {
         let cell_m = self.config.zone_cell_m;
         let blocked = |corners: &[DVec2; 4]| cell_site_blocked(allocator, roads, cell_m, corners);
         for bounds in regions {
-            let phase = crate::debug::Channel::EconomyPhases.enabled().then(std::time::Instant::now);
+            let phase = crate::debug::Channel::EconomyPhases
+                .enabled()
+                .then(std::time::Instant::now);
             // Regenerate transient source-frontage links after load and local road changes.
             // Growth can depend on a front row just outside the changed paint's chunk.
             self.zoning.generate_cells(
@@ -224,9 +226,16 @@ impl SimCore {
                     .derive_cell_lots(&self.region_graph, bounds, &sizes, |corners, _| {
                         blocked(corners)
                     });
-            crate::debug_log!("economy_phases", "cell_lot_detail generation_ms={:.3} derivation_ms={:.3} candidates={} created={} retired={} reattached={}",
-                generation_ms, phase.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0),
-                report.candidates, report.created.len(), report.retired.len(), report.reattached.len());
+            crate::debug_log!(
+                "economy_phases",
+                "cell_lot_detail generation_ms={:.3} derivation_ms={:.3} candidates={} created={} retired={} reattached={}",
+                generation_ms,
+                phase.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0),
+                report.candidates,
+                report.created.len(),
+                report.retired.len(),
+                report.reattached.len()
+            );
             result.candidates += report.candidates;
             result.created.extend(report.created);
             result.retired.extend(report.retired);

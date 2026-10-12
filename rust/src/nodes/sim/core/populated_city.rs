@@ -276,7 +276,9 @@ pub(super) fn street_grid(side_m: f32) -> (SimCore, Vec<f32>, f32) {
     let trunks = ((residents / RESIDENTS_PER_BORDER).round() as usize).clamp(1, rows);
     // Trunk k runs from the west edge when k is even and to the east edge when it is odd; a
     // single trunk is the middle row from the west.
-    let trunk_rows: Vec<usize> = (0..trunks).map(|k| (2 * k + 1) * rows / (2 * trunks)).collect();
+    let trunk_rows: Vec<usize> = (0..trunks)
+        .map(|k| (2 * k + 1) * rows / (2 * trunks))
+        .collect();
     let edge_x = core.heightmap.half_world_extents().0 - 1.0;
     // The bulk road path of the in-game benchmark city: lanes are rebuilt once at the end.
     core.transit_network.bulk_load = true;

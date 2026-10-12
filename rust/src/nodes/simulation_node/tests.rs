@@ -323,9 +323,8 @@ fn vegetation_legacy_output_fingerprint() {
             (core.vegetation.understory_cell_m, 64, false),
         ] {
             let origin = Vector2::new(-255.0, -255.0);
-            let mut records = super::vegetation_api::scatter_layer(
-                &core, origin, 510.0, cell_m, salt, canopy,
-            );
+            let mut records =
+                super::vegetation_api::scatter_layer(&core, origin, 510.0, cell_m, salt, canopy);
             // The fingerprints predate world-space packing; relative to the patch they are
             // bit-identical, because this is the subtraction the packing used to do.
             for record in records.chunks_exact_mut(6) {

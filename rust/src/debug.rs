@@ -19,7 +19,8 @@
 //! - `METRUM_HANG_WATCHDOG_MS=10000` — override the crash-diagnostics hang timeout; `0` disables it
 //! - `METRUM_HANG_ABORT=1` — abort after writing the first hang dump
 //!
-//! Other `METRUM_DEBUG_*` variables select startup-only modes; see [`startup_modes`].
+//! Other `METRUM_DEBUG_*` variables select startup-only modes ([`startup_modes`]) or the
+//! starting value of a runtime-switchable visual mode ([`visual`]).
 //! Use [`debug_log!`](crate::debug_log!) and [`traffic_log!`](crate::traffic_log!)
 //! throughout the codebase. A disabled call is one relaxed atomic load and never allocates.
 
@@ -28,6 +29,7 @@ pub(crate) mod work;
 
 pub mod channel;
 pub mod log;
+pub mod visual;
 
 use std::sync::OnceLock;
 
@@ -39,28 +41,10 @@ pub(crate) use crash::{
 };
 pub use log::{Source, emit};
 
-/// Value of one startup-only debug mode.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum StartupValue {
-    /// A switch read from a boolean variable or filter entry.
-    Flag(bool),
-    /// A trimmed, lowercased mode name; empty when unset.
-    Text(String),
-}
-
-impl std::fmt::Display for StartupValue {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            StartupValue::Flag(on) => f.write_str(if *on { "on" } else { "off" }),
-            StartupValue::Text(text) => f.write_str(text),
-        }
-    }
-}
-
 struct Startup {
     debug_session: bool,
     debug_mask: u32,
-    modes: Vec<(&'static str, StartupValue)>,
+    modes: Vec<(&'static str, bool)>,
 }
 
 static STARTUP: OnceLock<Startup> = OnceLock::new();
@@ -70,8 +54,8 @@ fn env(name: &str) -> Option<String> {
 }
 
 /// Derives the startup-only modes from the environment. These are read by renderers once at
-/// load and are not switchable at runtime.
-fn startup_modes_from(env: impl Fn(&str) -> Option<String>) -> Vec<(&'static str, StartupValue)> {
+/// load and are not switchable at runtime; visual modes live in [`visual`].
+fn startup_modes_from(env: impl Fn(&str) -> Option<String>) -> Vec<(&'static str, bool)> {
     let flag = |name: &str| channel::env_flag(env(name).as_deref());
     let text = |name: &str| env(name).unwrap_or_default().trim().to_ascii_lowercase();
     let raw_filter = text("METRUM_DEBUG_FILTER");
@@ -84,69 +68,35 @@ fn startup_modes_from(env: impl Fn(&str) -> Option<String>) -> Vec<(&'static str
     vec![
         (
             "road_geometry_dump",
-            StartupValue::Flag(flag("METRUM_DEBUG_ROAD_GEOMETRY_DUMP")),
+            flag("METRUM_DEBUG_ROAD_GEOMETRY_DUMP"),
         ),
         (
             "road_surface",
-            StartupValue::Flag(overlay(
-                "METRUM_DEBUG_SURFACE",
-                &["road-surface", "surface-debug"],
-            )),
+            overlay("METRUM_DEBUG_SURFACE", &["road-surface", "surface-debug"]),
         ),
         (
             "road_probe",
-            StartupValue::Flag(overlay("METRUM_DEBUG_ROAD_PROBE", &["road-probe"])),
+            overlay("METRUM_DEBUG_ROAD_PROBE", &["road-probe"]),
         ),
         (
             "terrain_verbose",
-            StartupValue::Flag(
-                flag("METRUM_DEBUG_TERRAIN_VERBOSE") || listed(&["terrain-verbose"]),
-            ),
-        ),
-        (
-            "terrain_force_full_world",
-            StartupValue::Flag(
-                flag("METRUM_DEBUG_TERRAIN_FORCE_FULL_WORLD")
-                    || listed(&["terrain-full", "terrain-full-lod1"]),
-            ),
-        ),
-        (
-            "terrain_force_lod1",
-            StartupValue::Flag(
-                flag("METRUM_DEBUG_TERRAIN_FORCE_LOD1")
-                    || listed(&["terrain-lod1", "terrain-full-lod1"]),
-            ),
-        ),
-        (
-            "terrain_visual",
-            StartupValue::Text(text("METRUM_DEBUG_TERRAIN_VISUAL")),
-        ),
-        (
-            "terrain_grass",
-            StartupValue::Text(text("METRUM_DEBUG_TERRAIN_GRASS")),
-        ),
-        (
-            "building_sites_visual",
-            StartupValue::Text(text("METRUM_DEBUG_BUILDING_SITES_VISUAL")),
+            flag("METRUM_DEBUG_TERRAIN_VERBOSE") || listed(&["terrain-verbose"]),
         ),
         (
             "building_sites_dump",
-            StartupValue::Flag(matches!(dump.as_str(), "1" | "true" | "yes" | "full")),
-        ),
-        (
-            "pedestrian_vat",
-            StartupValue::Text(text("METRUM_DEBUG_PEDESTRIAN_VAT")),
+            matches!(dump.as_str(), "1" | "true" | "yes" | "full"),
         ),
     ]
 }
 
-/// Reads the `METRUM_DEBUG*` environment, sets the startup channel mask and captures the
-/// startup-only modes. Call once from the GDExtension init hook; repeated calls re-apply the
-/// environment's channel mask.
+/// Reads the `METRUM_DEBUG*` environment, sets the startup channel mask and visual modes and
+/// captures the startup-only modes. Call once from the GDExtension init hook; repeated calls
+/// re-apply the environment's channel mask and visual modes.
 pub fn init() {
     log::start_clock();
     let channels = channel::startup_channels(env);
     set_mask(channels.mask);
+    visual::init(env);
     let debug_session = channel::env_flag(env("METRUM_DEBUG").as_deref());
     STARTUP.get_or_init(|| Startup {
         debug_session,
@@ -192,17 +142,14 @@ pub fn enable_debug_channels() {
     set_mask(mask() | debug_mask);
 }
 
-/// Startup-only debug modes in a fixed order, as `(name, value)`. Empty before [`init`].
-pub fn startup_modes() -> &'static [(&'static str, StartupValue)] {
+/// Startup-only debug switches in a fixed order, as `(name, on)`. Empty before [`init`].
+pub fn startup_modes() -> &'static [(&'static str, bool)] {
     STARTUP.get().map_or(&[], |startup| &startup.modes)
 }
 
-/// Returns one startup-only debug mode by name.
-pub fn startup_mode(name: &str) -> Option<&'static StartupValue> {
-    startup_modes()
-        .iter()
-        .find(|(mode, _)| *mode == name)
-        .map(|(_, value)| value)
+/// Returns one startup-only debug switch by name; unknown names are off.
+pub fn startup_mode(name: &str) -> bool {
+    startup_modes().iter().any(|&(mode, on)| mode == name && on)
 }
 
 /// Logs a debug line on a channel when that channel is on.
@@ -259,9 +206,8 @@ mod tests {
     #[test]
     fn startup_modes_follow_variables_and_filter_entries() {
         let vars = [
-            ("METRUM_DEBUG_FILTER", "road,terrain-full-lod1,road-probe"),
+            ("METRUM_DEBUG_FILTER", "road,terrain-verbose,road-probe"),
             ("METRUM_DEBUG_SURFACE", "0"),
-            ("METRUM_DEBUG_TERRAIN_VISUAL", " Water-Depth "),
             ("METRUM_DEBUG_BUILDING_SITES_DUMP", "full"),
         ];
         let modes = startup_modes_from(|name| {
@@ -269,23 +215,11 @@ mod tests {
                 .find(|(key, _)| *key == name)
                 .map(|(_, value)| value.to_string())
         });
-        let get = |name: &str| {
-            modes
-                .iter()
-                .find(|(mode, _)| *mode == name)
-                .unwrap()
-                .1
-                .clone()
-        };
-        assert_eq!(get("road_surface"), StartupValue::Flag(false));
-        assert_eq!(get("road_probe"), StartupValue::Flag(true));
-        assert_eq!(get("terrain_force_full_world"), StartupValue::Flag(true));
-        assert_eq!(get("terrain_force_lod1"), StartupValue::Flag(true));
-        assert_eq!(get("terrain_verbose"), StartupValue::Flag(false));
-        assert_eq!(
-            get("terrain_visual"),
-            StartupValue::Text("water-depth".into())
-        );
-        assert_eq!(get("building_sites_dump"), StartupValue::Flag(true));
+        let get = |name: &str| modes.iter().find(|(mode, _)| *mode == name).unwrap().1;
+        assert!(!get("road_surface"));
+        assert!(get("road_probe"));
+        assert!(get("terrain_verbose"));
+        assert!(!get("road_geometry_dump"));
+        assert!(get("building_sites_dump"));
     }
 }

@@ -74,10 +74,7 @@ pub(in crate::simulation::network::surface::tests) fn measure_max_footprint_over
 pub(in crate::simulation::network::surface::tests) fn assert_earthwork_faces_stay_outside_top_footprint(
     piece: &RoadSurfaceVisualNodePiece,
 ) {
-    let top_contours = overlay_contours_from_top_polygons(
-        piece
-            .surface_polygons()
-    );
+    let top_contours = overlay_contours_from_top_polygons(piece.surface_polygons());
     let top_shapes = RoadSurfaceSystem::overlay_union_contours(&top_contours)
         .expect("node top overlay union should succeed");
     for face in &piece.render_earthwork_faces {

@@ -24,9 +24,9 @@ mod water_preview;
 
 pub(crate) use budget::CityServicePolicy;
 pub use budget::CityTreasury;
+pub use populated_city::{EconomyHourTimes, PopulatedCity, PopulatedCityBuildTimes};
 pub(crate) use road_edit_plan::RoadEditPlan;
 pub(crate) use road_terrain_plan::RoadTerrainPlan;
-pub use populated_city::{EconomyHourTimes, PopulatedCity, PopulatedCityBuildTimes};
 pub use scenario::{
     GrowthBusinessCashFlow, GrowthBusinessOutcome, GrowthDayRecord, GrowthReport, GrowthScenario,
 };

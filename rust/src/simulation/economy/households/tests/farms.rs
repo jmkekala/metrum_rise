@@ -253,7 +253,8 @@ fn farm_family_works_on_site_and_larger_fields_hire_commuters() {
         &[],
         &mut ShipmentSystem::new(),
         &policy,
-        100_000.0, 420,
+        100_000.0,
+        420,
     );
     assert_eq!(allocator.buildings[0].worker_count, 2);
     assert_eq!(agents.work_building[1], 0);
@@ -290,7 +291,8 @@ fn farm_family_works_on_site_and_larger_fields_hire_commuters() {
         &[],
         &mut ShipmentSystem::new(),
         &policy,
-        100_000.0, 420,
+        100_000.0,
+        420,
     );
     assert_eq!(agents.work_building[commuter], 0);
     assert_eq!(allocator.buildings[0].worker_count, 3);

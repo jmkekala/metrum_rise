@@ -79,8 +79,14 @@ fn site_radius_tracks_replacement_removal_and_cross_chunk_height_queries() {
             .map(site_radius_m)
             .fold(0.0, f32::max);
         assert_eq!(allocator.max_site_radius_m.to_bits(), expected.to_bits());
-        assert_eq!(allocator.max_site_radius_count, allocator.building_sites.iter()
-            .filter(|site| site_radius_m(site) == expected).count());
+        assert_eq!(
+            allocator.max_site_radius_count,
+            allocator
+                .building_sites
+                .iter()
+                .filter(|site| site_radius_m(site) == expected)
+                .count()
+        );
     };
     assert_radius(&allocator);
     assert_eq!(
@@ -126,10 +132,20 @@ fn tied_site_radii_survive_shrinking_growing_and_swap_removal() {
     use crate::simulation::zoning::ZoneType;
     let mut allocator = BuildingAllocator::new();
     let check = |allocator: &BuildingAllocator| {
-        let expected = allocator.building_sites.iter().map(site_radius_m).fold(0.0, f32::max);
+        let expected = allocator
+            .building_sites
+            .iter()
+            .map(site_radius_m)
+            .fold(0.0, f32::max);
         assert_eq!(allocator.max_site_radius_m.to_bits(), expected.to_bits());
-        assert_eq!(allocator.max_site_radius_count, allocator.building_sites.iter()
-            .filter(|site| site_radius_m(site) == expected).count());
+        assert_eq!(
+            allocator.max_site_radius_count,
+            allocator
+                .building_sites
+                .iter()
+                .filter(|site| site_radius_m(site) == expected)
+                .count()
+        );
     };
     for index in 0..4 {
         let mut building = indexed_test_building(String::new(), ZoneType::Residential, 0);
@@ -176,20 +192,28 @@ fn benchmark_tied_site_radius_removal() {
         let sites = allocator.building_sites.clone();
         let maximum = allocator.max_site_radius_m;
         for pair in 0..9 {
-            for counted in if pair % 2 == 0 { [false, true] } else { [true, false] } {
+            for counted in if pair % 2 == 0 {
+                [false, true]
+            } else {
+                [true, false]
+            } {
                 allocator.building_sites.clone_from(&sites);
                 allocator.recompute_max_site_radius_m();
                 let start = Instant::now();
                 for _ in 0..32 {
                     allocator.remove_building_site_client(black_box(0));
-                    if !counted { allocator.recompute_max_site_radius_m(); }
+                    if !counted {
+                        allocator.recompute_max_site_radius_m();
+                    }
                     black_box(allocator.max_site_radius_m);
                 }
                 let removal_ns = start.elapsed().as_secs_f64() * 1e9 / 32.0;
                 assert_eq!(allocator.max_site_radius_m.to_bits(), maximum.to_bits());
                 assert_eq!(allocator.max_site_radius_count, count - 32);
                 assert_eq!(allocator.building_sites.len(), count - 32);
-                eprintln!("TIED_RADIUS {{\"sites\":{count},\"pair\":{pair},\"counted\":{counted},\"removal_ns\":{removal_ns}}}");
+                eprintln!(
+                    "TIED_RADIUS {{\"sites\":{count},\"pair\":{pair},\"counted\":{counted},\"removal_ns\":{removal_ns}}}"
+                );
             }
         }
     }
