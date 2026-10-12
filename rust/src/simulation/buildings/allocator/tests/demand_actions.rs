@@ -215,7 +215,7 @@ fn test_demand_building_spawn_plan_executes_from_hourly_budget() {
         100_000.0, 420,
     );
     for _ in 0..24 {
-        demand.run_hourly_pass(&allocator, &households, &graph, &zoning, 1_000.0);
+        demand.run_hourly_pass(&allocator, &mut households, &graph, &zoning, 1_000.0);
         if !demand.building_actions.residential.spawns.is_empty() {
             break;
         }

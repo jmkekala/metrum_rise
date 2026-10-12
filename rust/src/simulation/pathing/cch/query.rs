@@ -213,6 +213,7 @@ impl CchGraph {
         mask: u8,
         scratch: &mut CchQueryScratch,
     ) -> Option<(f32, u32)> {
+        crate::debug::work::add(crate::debug::work::Work::CchPointSearches, 1);
         if self.parent.is_empty() {
             return None;
         }

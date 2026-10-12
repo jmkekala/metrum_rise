@@ -40,6 +40,8 @@ pub struct ZoningSystem {
     pub config: WorldConfig,
     overlay_revision: u64,
     overlay_occupancy_revision: u64,
+    // Parcel storage indices changed at each occupancy revision, for incremental tables.
+    occupancy_changes: crate::simulation::core::change_log::IndexChangeLog,
 }
 
 /// Operation-local parcel records removed by one road bulldoze.
@@ -69,6 +71,7 @@ impl ZoningSystem {
             config: *config,
             overlay_revision: 0,
             overlay_occupancy_revision: 0,
+            occupancy_changes: Default::default(),
         }
     }
 
@@ -199,7 +202,30 @@ impl ZoningSystem {
         self.overlay_revision = self.overlay_revision.wrapping_add(1);
     }
 
-    pub(crate) fn bump_overlay_occupancy_revision(&mut self) {
+    // Occupancy changes whose parcels are unknown; incremental consumers rebuild.
+    fn bump_overlay_occupancy_revision(&mut self) {
         self.overlay_occupancy_revision = self.overlay_occupancy_revision.wrapping_add(1);
+        self.occupancy_changes.clear(self.overlay_occupancy_revision);
+    }
+
+    // One parcel's occupancy changed; its current storage row is logged.
+    fn record_parcel_occupancy_change(&mut self, parcel_id: u64) {
+        self.overlay_occupancy_revision = self.overlay_occupancy_revision.wrapping_add(1);
+        match self.parcels.storage_index(super::ParcelId::from_raw(parcel_id)) {
+            Some(index) => self.occupancy_changes.record(self.overlay_occupancy_revision, [index]),
+            None => self.occupancy_changes.clear(self.overlay_occupancy_revision),
+        }
+    }
+
+    /// Writes parcel storage rows whose occupancy changed since `since` into `out`, sorted.
+    /// Returns false when a change in between could not name its rows. Storage rows are
+    /// valid only while [`Self::parcel_layout_revision`] is unchanged.
+    pub(crate) fn occupancy_changes_since(&self, since: u64, out: &mut Vec<usize>) -> bool {
+        self.occupancy_changes.changes_since(since, self.overlay_occupancy_revision, out)
+    }
+
+    /// Revision of parcel storage order, geometry and zone profiles; occupancy excluded.
+    pub(crate) fn parcel_layout_revision(&self) -> u64 {
+        self.parcels.layout_revision()
     }
 }

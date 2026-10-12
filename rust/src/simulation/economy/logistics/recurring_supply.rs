@@ -178,6 +178,7 @@ impl RecurringSupply {
     /// Forks accepted live reservations once for a construction pass. Unchanged geometry
     /// retains its index allocation; warm copying costs O(buildings + output ports + accepted
     /// input flows), never a city-sized copy per project.
+    #[cfg(test)]
     pub(crate) fn copy_reservations_from(
         &mut self,
         source: &Self,
@@ -247,6 +248,9 @@ impl RecurringSupply {
                 }
             }
         }
+        crate::debug::work::add(crate::debug::work::Work::ReservationRowsCopied, (self.committed.len()
+            + 2 * self.owner_receipts.len() + self.source_receipts.len() + self.remaining.len()
+            + self.production.len() + self.active.len()) as u64);
     }
 
     /// Whether any funded staffed source has a positive remaining production rate.
@@ -1251,7 +1255,13 @@ impl RecurringSupply {
         }
         self.nearest_incumbents[resource as usize] = best.map(|(source, _, _)| source);
         #[cfg(test)]
-        for (total, count) in self.search_counts.iter_mut().zip(counts) { *total += count; }
+        {
+            for (total, count) in self.search_counts.iter_mut().zip(counts) { *total += count; }
+            use crate::debug::work::{add, Work};
+            add(Work::SupplierSearches, counts[0]);
+            add(Work::SupplierCandidates, counts[1]);
+            add(Work::SupplierRoutes, counts[2]);
+        }
         best
     }
 }

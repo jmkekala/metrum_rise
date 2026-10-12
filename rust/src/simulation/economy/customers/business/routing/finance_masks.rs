@@ -63,7 +63,7 @@ impl BusinessMarket {
         for (slot, &mask) in self.account_masks.iter().enumerate() {
             self.port_masks[self.account_ports[slot]] |= mask;
         }
-        self.indices.par_iter_mut().for_each(|index| {
+        self.indices.all_mut().for_each(|index| {
             index.reset_query_masks(|port| self.port_masks[port]);
         });
         self.dirty_buyers.clear();
@@ -103,9 +103,9 @@ impl BusinessMarket {
                 let port = self.account_ports[slot];
                 let access = self.port_access[port];
                 let resource = self.identities[port].1;
+                let index = self.indices.port_mut(resource, port);
                 for &component in access.components.as_slice() {
-                    self.indices[resource as usize].set_query_mask(
-                        ReachableBucketEntry::new(component, access.chunk, port), self.port_masks[port]);
+                    index.set_query_mask(ReachableBucketEntry::new(component, access.chunk, port), self.port_masks[port]);
                 }
                 slot = self.budgets.accounts[slot].next_buyer;
             }

@@ -3,7 +3,7 @@
 //! Prepared recipe/door variants for supply changes inside construction transactions.
 
 use super::*;
-use crate::simulation::economy::accessibility::ReachableBucketIndex;
+use crate::simulation::economy::accessibility::{BuildingModeComponents, ReachableBucketIndex};
 use std::ops::Range;
 use crate::simulation::buildings::allocator::DemandSiteEntranceKey;
 
@@ -16,12 +16,29 @@ pub(crate) struct ProjectedSupplySource {
     profile: u16,
     entrance: BuildingEntrance,
     entrance_key: Option<DemandSiteEntranceKey>,
+    // Door chunk and car components; valid while the network topology is unchanged.
+    access: Option<((i32, i32), BuildingModeComponents)>,
 }
 
 impl ProjectedSupplySource {
     /// Records a specific replacement candidate during pass preparation, before quotations.
     pub(crate) fn new(owner: usize, asset: &str, profile: u16, entrance: BuildingEntrance) -> Self {
-        Self { owner, asset: asset.to_owned(), profile, entrance, entrance_key: None }
+        Self { owner, asset: asset.to_owned(), profile, entrance, entrance_key: None, access: None }
+    }
+
+    /// Live building owner; rows sort by owner, then [`Self::key`].
+    pub(crate) fn owner(&self) -> usize {
+        self.owner
+    }
+
+    /// Variant asset, unique within one owner.
+    pub(crate) fn key(&self) -> &str {
+        &self.asset
+    }
+
+    /// Renumbers a retained row whose owner namespace shifted; geometry stays valid.
+    pub(crate) fn set_owner(&mut self, owner: usize) {
+        self.owner = owner;
     }
 
     /// Records exact geometry inputs for reuse after unrelated live-layout changes.
@@ -43,7 +60,12 @@ impl ProjectedSupplySource {
 /// Geometry retained between construction passes; all quantities belong to the main book.
 #[derive(Clone, Debug, Default)]
 pub(super) struct ProjectedSources {
-    revision: Option<(Option<GeometryRevision>, [u64; 3])>,
+    // Caller revision of `sources`; retained across live forks for incremental updates.
+    key: Option<Vec<u64>>,
+    // Live geometry and first projected slot of the derived offsets and index below.
+    layout: Option<(Option<GeometryRevision>, usize)>,
+    // Network topology of every source's cached access.
+    access_topology: Option<u32>,
     sources: Vec<ProjectedSupplySource>,
     offsets: Vec<usize>,
     owners: Vec<Range<usize>>,
@@ -53,16 +75,18 @@ pub(super) struct ProjectedSources {
 
 impl RecurringSupply {
     /// Prepares only caller-selected recipe/door variants, reusing the existing supplier
-    /// buckets. Geometry rebuild is O(projected ports log ports + owners); warm work is
-    /// O(projected ports). No candidate allocates or scans unrelated owners when quoting.
-    /// Caller revisions cover zoning/asset changes to proposed doors and recipes. Neither
-    /// frontage prices nor financing rebuilds geometry. Call before prepare_owners.
+    /// buckets. A changed caller revision passes the previous rows and their revision to
+    /// `factory`, which may regenerate only changed owners; rows must come back sorted by
+    /// owner and asset. Layout work is O(projected ports log ports + owners) plus access
+    /// for new rows; warm work is O(projected ports). Caller revisions cover zoning/asset
+    /// changes to proposed doors and recipes. Neither frontage prices nor financing
+    /// rebuilds geometry. Call before prepare_owners.
     pub(crate) fn prepare_projected_sources(
         &mut self,
         catalog: &RuntimeEconomyCatalog,
         graph: &RegionGraph,
-        caller_revision: [u64; 3],
-        factory: impl FnOnce(&[ProjectedSupplySource]) -> Vec<ProjectedSupplySource>,
+        caller_revision: &[u64],
+        factory: impl FnOnce(Vec<ProjectedSupplySource>, Option<&[u64]>) -> Vec<ProjectedSupplySource>,
     ) {
         debug_assert!(!self.revalidation.is_active() && self.staged.is_empty());
         debug_assert!(!self.projected.enabled && self.released.is_empty(), "prepare once after a live fork");
@@ -70,10 +94,31 @@ impl RecurringSupply {
         let base = self.offsets.len() - 1;
         let first_slot = self.offsets[base];
         let projected = &mut self.projected;
-        let revision = Some((geometry_revision(self.revision), caller_revision));
-        if projected.revision != revision || projected.offsets.first() != Some(&first_slot) {
-            projected.sources = factory(&projected.sources);
-            projected.sources.sort_unstable_by(|a, b| a.owner.cmp(&b.owner).then(a.asset.cmp(&b.asset)));
+        let layout = (geometry_revision(self.revision), first_slot);
+        let rows_current = projected.key.as_deref() == Some(caller_revision);
+        if !rows_current || projected.layout != Some(layout) {
+            let timing = crate::debug::category_enabled("economy_phases").then(std::time::Instant::now);
+            if !rows_current {
+                let previous = std::mem::take(&mut projected.sources);
+                projected.sources = factory(previous, projected.key.as_deref());
+                projected.key = Some(caller_revision.to_vec());
+                crate::debug::work::add(crate::debug::work::Work::SupplierSourceRebuilds, 1);
+                // Linear for the already-ordered rows the planner returns.
+                projected.sources.sort_unstable_by(|a, b| a.owner.cmp(&b.owner).then(a.asset.cmp(&b.asset)));
+                debug_assert!(projected.sources.windows(2).all(|pair|
+                    (pair[0].owner, &pair[0].asset) != (pair[1].owner, &pair[1].asset)));
+            }
+            let factory_ms = timing.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0);
+            // Components follow the network topology; door chunks follow the retained entrance.
+            let topology = layout.0.map(|revision| revision.2);
+            if projected.access_topology != topology {
+                projected.sources.iter_mut().for_each(|source| source.access = None);
+                projected.access_topology = topology;
+            }
+            projected.sources.par_iter_mut().filter(|source| source.access.is_none()).for_each(|source| {
+                source.access = Some((chunk_for_point(source.entrance.door_pos.x, source.entrance.door_pos.y),
+                    components.entrance_components(&source.entrance, graph, TransitFlags::CAR)));
+            });
             projected.offsets.clear();
             projected.offsets.reserve(projected.sources.len() + 1);
             projected.offsets.push(first_slot);
@@ -89,9 +134,8 @@ impl RecurringSupply {
                 range.end = index + 1;
             }
             let entries = projected.sources.par_iter().enumerate().flat_map_iter(|(index, source)| {
-                let access = components.entrance_components(&source.entrance, graph, TransitFlags::CAR);
+                let (chunk, access) = source.access.unwrap();
                 let (values, count) = access.raw_parts();
-                let chunk = chunk_for_point(source.entrance.door_pos.x, source.entrance.door_pos.y);
                 let outputs = catalog.profile_by_runtime_id(source.profile).map_or(&[][..], |p| p.outputs.as_slice());
                 outputs.iter().flat_map(move |output| {
                     (0..count).map(move |component| (output.resource_runtime_id,
@@ -100,7 +144,11 @@ impl RecurringSupply {
             }).collect();
             projected.index = SupplierCandidateIndex::from_entries(entries);
             projected.index.enable_reservations();
-            projected.revision = revision;
+            projected.layout = Some(layout);
+            if let Some(start) = timing {
+                crate::debug_log!("economy_phases", "supplier_sources_detail sources={} rows_changed={} factory_ms={:.3} layout_ms={:.3}",
+                    projected.sources.len(), !rows_current, factory_ms, start.elapsed().as_secs_f64() * 1000.0 - factory_ms);
+            }
         }
         projected.index.disable_all();
         projected.enabled = true;

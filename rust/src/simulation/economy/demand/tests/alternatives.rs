@@ -215,7 +215,7 @@ fn construction_shares_live_queued_and_placed_local_input_claims() {
         surface.compile_dirty(&graph, &terrain);
         demand.run_hourly_pass_with_policy(
             &allocator,
-            &households,
+            &mut households,
             &graph,
             &zoning,
             100_000.0,
@@ -233,18 +233,18 @@ fn construction_shares_live_queued_and_placed_local_input_claims() {
                 "{commitment} operation already owns the farm's 200 daily grain units"
             );
             if commitment == "queued" {
-                let purchases = demand.construction_execution.reservations.business
-                    .sales(0, farm_profile.outputs[0].resource_runtime_id, f64::INFINITY);
-                assert_eq!(purchases.units, 200.0);
-                assert_eq!(purchases.revenue, 200.0 * f64::from(farm_profile.unit_price_currency),
-                    "queued input demand retains the actual local seller price, not the import tariff");
                 for _ in 0..3 {
                     assert!(demand.prepare_queued_spawn(&actions[0], ZoneType::Industrial,
                         &allocator, &households, &graph, 1, &network, &mut logistics,
                         &zoning, 100_000.0, &policy).is_ok(),
                         "a queued operation retains its financed claims without reserving twice");
-                    assert_eq!(demand.construction_execution.reservations.business
-                        .sales(0, farm_profile.outputs[0].resource_runtime_id, f64::INFINITY).units, 200.0);
+                    // The planning pass returns the live books; the execution epoch replays
+                    // the same queue into its own books.
+                    let purchases = demand.construction_execution.reservations.business
+                        .sales(0, farm_profile.outputs[0].resource_runtime_id, f64::INFINITY);
+                    assert_eq!(purchases.units, 200.0);
+                    assert_eq!(purchases.revenue, 200.0 * f64::from(farm_profile.unit_price_currency),
+                        "queued input demand retains the actual local seller price, not the import tariff");
                     assert!(demand.prepare_queued_spawn(&actions[1], ZoneType::Industrial,
                         &allocator, &households, &graph, 1, &network, &mut logistics,
                         &zoning, 100_000.0, &policy).is_err(),

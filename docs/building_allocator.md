@@ -119,6 +119,10 @@ world-grid footprint tests run.
 - `vacancy_index` and `vacancy_pos`: O(1) resident-vacancy tracking
 - `building_chunks`: coarse 512 m spatial index of building centers
 - `entrances`: derived per-building entrance/access cache
+- `building_changes`: building rows changed at each `building_ref_revision` step. Placement,
+  removal (both swapped rows) and level changes name their rows; every other revision bump
+  clears the log, so incremental readers rebuild (`building_changes_since`). The log holds at
+  most 65,536 entries; a reader further behind rebuilds once.
 
 `entrances` is allocator-owned derived data, but its detailed semantics belong to
 [`entrance_and_exit.md`](entrance_and_exit.md).

@@ -23,6 +23,8 @@ mod workforce;
 
 #[cfg(test)]
 pub(crate) use actions::demand_building_action_key;
+#[cfg(test)]
+pub(crate) use system::VERIFY_LIVE_PASSES;
 pub(crate) use actions::{
     DemandBuildingActionKey, DemandBuildingActionPlan, DemandLevelChangeAction, DemandSpawnAction,
     DemandSpawnCandidate, DemandSpawnCandidatesByUse, SpawnSiteAvailability, private_zone_index,

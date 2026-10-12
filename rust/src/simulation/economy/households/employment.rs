@@ -190,6 +190,7 @@ impl HouseholdSystem {
         let load_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
         refresh_commercial_activity_floor(&catalog, allocator, self.job_funding.activities());
+        crate::debug::work::add(crate::debug::work::Work::LiveCensuses, 1);
         self.job_funding.refresh(
             allocator,
             &self.households,
@@ -1368,6 +1369,7 @@ fn build_home_job_options_for_key(
     new_route_entries: &mut [WorkplaceRouteCacheEntry; JOB_ROUTE_SCAN_CANDIDATES],
     new_route_entry_count: &mut usize,
 ) -> HomeJobOptions {
+    crate::debug::work::add(crate::debug::work::Work::JobSearchKeys, 1);
     let Some(home) = allocator.buildings.get(key.home_idx) else {
         return empty_home_job_options();
     };

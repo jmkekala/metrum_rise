@@ -51,6 +51,7 @@ pub(crate) struct ConsumerMarket {
     frontage_sensitive: bool,
     visited: Vec<u64>,
     visit: u64,
+    pass: PassWalking,
     #[cfg(test)]
     refresh_counts: [u64; 7],
     #[cfg(test)]
@@ -603,6 +604,67 @@ impl ConsumerMarket {
         self.sync_staged(true);
         self.budgets.reject();
     }
+
+    /// Live-book state a later census, household or pass reads, for exact pass-rollback
+    /// checks; scan scratch and the planner's lent proofs are excluded.
+    #[cfg(test)]
+    pub(crate) fn live_fingerprint_for_test(&self) -> Vec<(&'static str, u64)> {
+        let b = &self.budgets;
+        crate::debug_fingerprint!("categories" => b.categories, "previous_categories" => b.previous_categories,
+            "category_by_resource" => b.category_by_resource, "households" => b.households, "funds" => b.funds,
+            "staged_slots" => b.staged_slots, "committed" => b.committed, "owners" => b.owners,
+            "free_receipt" => b.free_receipt, "affordable_residents" => b.affordable_residents.to_bits(),
+            "access" => self.access, "access_entrances" => self.access_entrances, "indices" => self.indices,
+            "components" => self.components, "walking" => self.walking, "walking_revision" => self.walking_revision,
+            "revision" => self.revision, "frontage_revision" => self.frontage_revision,
+            "frontage_sensitive" => self.frontage_sensitive)
+    }
+
+    /// Opens a planning pass directly on this live market. The planner gets its own walking
+    /// proofs and route scratch, as a forked book had; [`Self::end_pass`] restores the live
+    /// book bit for bit. O(1) unless the walking revision changed, which copies those proofs.
+    pub(crate) fn begin_pass(&mut self) {
+        self.budgets.begin_pass();
+        let pass = &mut self.pass;
+        if pass.revision != self.walking_revision {
+            pass.walking.clone_from(&self.walking);
+            pass.walking.prepare_query();
+            pass.query.clone_from(&self.query);
+            pass.revision = self.walking_revision;
+        }
+        std::mem::swap(&mut self.walking, &mut pass.walking);
+        std::mem::swap(&mut self.query, &mut pass.query);
+        pass.frontage_sensitive = self.frontage_sensitive;
+        pass.open = true;
+    }
+
+    /// Rejects any open quote or proof, then restores every account, owner head and receipt
+    /// the pass changed, with exactly their bucket eligibility, and the live walking proofs.
+    /// Temporary project owners and appended receipts are truncated. O(touched rows).
+    pub(crate) fn end_pass(&mut self) {
+        self.reject_revalidation();
+        let count = self.budgets.categories.len();
+        let access = &self.access;
+        let indices = &mut self.indices;
+        self.budgets.visit_pass_funds(|slot, funds| sync_account(indices, access, count, slot, funds));
+        self.budgets.end_pass();
+        let pass = &mut self.pass;
+        if std::mem::take(&mut pass.open) {
+            std::mem::swap(&mut self.walking, &mut pass.walking);
+            std::mem::swap(&mut self.query, &mut pass.query);
+            self.frontage_sensitive = pass.frontage_sensitive;
+        }
+    }
+}
+
+/// The planner's walking proofs and route scratch, lent to a live market for one pass.
+#[derive(Clone, Debug, Default)]
+struct PassWalking {
+    walking: PedestrianReachability,
+    query: crate::simulation::pathing::cch::CchQueryScratch,
+    revision: Option<(u32, u64, u64)>,
+    frontage_sensitive: bool,
+    open: bool,
 }
 
 fn sync_account(indices: &mut [[ReachableBucketIndex; 2]], access: &[Access],

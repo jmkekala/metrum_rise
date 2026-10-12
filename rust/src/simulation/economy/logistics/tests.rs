@@ -1076,7 +1076,7 @@ fn projected_supplier_uses_its_recipe_door_and_price_and_restores_all_commitment
             live.accept_for(1);
         }
         book.copy_reservations_from(&live, &allocator, &catalog, &graph);
-        book.prepare_projected_sources(&catalog, &graph, [0; 3], |_| {
+        book.prepare_projected_sources(&catalog, &graph, &[0; 3], |_, _| {
             assert_eq!(pass, 0, "warm passes must retain their prepared variant geometry");
             vec![
                 ProjectedSupplySource::new(0, "cheap", replacement.runtime_id, proposed_door.clone()),
@@ -1157,7 +1157,7 @@ fn projected_supplier_uses_its_recipe_door_and_price_and_restores_all_commitment
     book.copy_reservations_from(&live, &allocator, &catalog, &graph);
     assert!(book.receipt_storage().1 >= retained_capacity.0);
     assert!(book.revalidation_storage().into_iter().zip(retained_capacity.1).all(|(after, before)| after >= before));
-    book.prepare_projected_sources(&catalog, &graph, [1; 3], |previous| {
+    book.prepare_projected_sources(&catalog, &graph, &[1; 3], |previous, _| {
         assert_eq!(previous.len(), 3, "a changed live layout retains only geometry as factory input");
         Vec::new()
     });
@@ -1729,7 +1729,7 @@ fn prepared_business_sites_use_candidate_recipes_doors_and_restore_live_accounts
     assert!(live.accept_for(2));
     let mut market = BusinessMarket::default();
     market.copy_reservations_from(&live);
-    market.prepare_sites([17, 0, 0], &catalog, &components, &graph, |_| vec![
+    market.prepare_sites(&[17, 0, 0], &catalog, &components, &graph, |_, _| vec![
         PreparedBusinessSite::new(1, "west", target.runtime_id, allocator.entrances[0].clone()),
         PreparedBusinessSite::new(1, "east", target.runtime_id, allocator.entrances[1].clone()),
         PreparedBusinessSite::new(3, "new-project", target.runtime_id, allocator.entrances[1].clone()),
@@ -1739,7 +1739,7 @@ fn prepared_business_sites_use_candidate_recipes_doors_and_restore_live_accounts
     for round in 0..16 {
         market.copy_reservations_from(&live);
         network.cch_graph.metric_revision += 1;
-        market.prepare_sites([17, 0, 0], &catalog, &components, &graph, |_| panic!("warm geometry must survive a live fork"));
+        market.prepare_sites(&[17, 0, 0], &catalog, &components, &graph, |_, _| panic!("warm geometry must survive a live fork"));
         market.prepare_owners(4, 4);
         market.reserve_accounts(8);
         let original = market.financing(1).map(f64::to_bits);
@@ -1795,10 +1795,8 @@ fn prepared_business_sites_use_candidate_recipes_doors_and_restore_live_accounts
     });
     market.copy_reservations_from(&live);
     assert!(market.account_storage().1.into_iter().zip(retained_capacity).all(|(after, before)| after >= before));
-    market.prepare_sites([17, 0, 0], &catalog, &components, &graph, |previous| {
-        assert_eq!(previous.len(), 3, "a changed live layout retains geometry for exact revalidation");
-        previous.to_vec()
-    });
+    // An unchanged caller revision re-derives the changed live layout from retained rows.
+    market.prepare_sites(&[17, 0, 0], &catalog, &components, &graph, |_, _| panic!("rows survive a live layout change"));
     assert_eq!(market.financing(1), live.financing(1));
     assert_eq!(quote(&mut market, &mut logistics, &network, grain),
         quote(&mut live, &mut logistics, &network, grain));

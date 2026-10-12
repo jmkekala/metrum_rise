@@ -229,6 +229,7 @@ impl DemandSystem {
             // epoch rebuilds inputs from live state; its old source IDs may no longer exist.
             execution.discard_project_proof_for_reset();
             collect_connected_border_nodes(graph, &mut execution.borders);
+            crate::debug::work::add(crate::debug::work::Work::ExecutionCensuses, 1);
             execution.funding.refresh_with_service_capacity(
                 allocator,
                 &households.households,

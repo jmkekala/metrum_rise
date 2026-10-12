@@ -546,9 +546,22 @@ impl ReachableBucketIndex {
         components: BuildingModeComponents,
         origin_x: f32,
         origin_y: f32,
+        visitor: impl FnMut(ReachableBucketScanEvent) -> bool,
+    ) {
+        Self::scan_nearest_over(&[self], components, origin_x, origin_y, visitor);
+    }
+
+    // Disjoint indices whose item ids ascend from one index to the next scan exactly as one
+    // merged index: each chunk/component visits its buckets in index order, and early stop
+    // counts every index's available entries.
+    fn scan_nearest_over(
+        indices: &[&Self],
+        components: BuildingModeComponents,
+        origin_x: f32,
+        origin_y: f32,
         mut visitor: impl FnMut(ReachableBucketScanEvent) -> bool,
     ) {
-        self.scan_rings(components, origin_x, origin_y, |step, remaining| match step {
+        Self::scan_rings_over(indices, components, origin_x, origin_y, |step, remaining| match step {
             RingStep::Bucket(items) => items.visit(|item_idx| {
                 *remaining -= 1;
                 visitor(ReachableBucketScanEvent::Item { item_idx }) && *remaining > 0
@@ -560,24 +573,34 @@ impl ReachableBucketIndex {
 
     /// Preserves nearest-scan item order while skipping subtrees with no requested class.
     /// `None` or unprepared masks use the ordinary scan; filtering never changes membership.
+    #[cfg(test)]
     pub(crate) fn scan_nearest_masked(&self, components: BuildingModeComponents,
         origin_x: f32, origin_y: f32, mask: Option<u64>,
         visitor: impl FnMut(ReachableBucketScanEvent) -> bool) {
-        let Some(mask) = mask else {
-            return self.scan_nearest(components, origin_x, origin_y, visitor);
-        };
-        if !components.as_slice().iter().any(|component| self.by_component.get(component)
-            .is_some_and(|&index| self.components[index].query_counts.is_empty()
-                || self.components[index].query_mask & mask != 0)) {
-            return;
-        }
-        self.scan_masked_buckets(components, origin_x, origin_y, mask, visitor);
+        Self::scan_nearest_masked_over(&[self], components, origin_x, origin_y, mask, visitor);
     }
 
-    fn scan_masked_buckets(&self, components: BuildingModeComponents,
+    /// [`Self::scan_nearest_masked`] over disjoint indices whose item ids ascend from one
+    /// index to the next, in the exact event order of one index holding every entry.
+    pub(crate) fn scan_nearest_masked_over(indices: &[&Self], components: BuildingModeComponents,
+        origin_x: f32, origin_y: f32, mask: Option<u64>,
+        visitor: impl FnMut(ReachableBucketScanEvent) -> bool) {
+        let Some(mask) = mask else {
+            return Self::scan_nearest_over(indices, components, origin_x, origin_y, visitor);
+        };
+        if !indices.iter().any(|index| components.as_slice().iter().any(|component|
+            index.by_component.get(component).is_some_and(|&group|
+                index.components[group].query_counts.is_empty()
+                    || index.components[group].query_mask & mask != 0))) {
+            return;
+        }
+        Self::scan_masked_buckets(indices, components, origin_x, origin_y, mask, visitor);
+    }
+
+    fn scan_masked_buckets(indices: &[&Self], components: BuildingModeComponents,
         origin_x: f32, origin_y: f32, mask: u64,
         mut visitor: impl FnMut(ReachableBucketScanEvent) -> bool) {
-        self.scan_rings(components, origin_x, origin_y, |step, remaining| match step {
+        Self::scan_rings_over(indices, components, origin_x, origin_y, |step, remaining| match step {
             RingStep::Bucket(items) if !items.query_masks.is_empty() =>
                 items.visit_masked(1, mask, remaining, &mut visitor),
             RingStep::Bucket(items) => items.visit(|item_idx| {
@@ -618,10 +641,28 @@ impl ReachableBucketIndex {
         components: BuildingModeComponents,
         origin_x: f32,
         origin_y: f32,
+        step: impl FnMut(RingStep<'_>, &mut usize) -> bool,
+    ) {
+        Self::scan_rings_over(&[self], components, origin_x, origin_y, step);
+    }
+
+    // Ring traversal over disjoint indices. Ring chunk order is fixed geometry clipped to
+    // the union envelope, so chunks holding available entries keep their relative order.
+    fn scan_rings_over(
+        indices: &[&Self],
+        components: BuildingModeComponents,
+        origin_x: f32,
+        origin_y: f32,
         mut step: impl FnMut(RingStep<'_>, &mut usize) -> bool,
     ) {
         let origin_chunk = chunk_for_point(origin_x, origin_y);
-        let Some(extent) = self.scan_extent(components, origin_chunk) else {
+        let Some(extent) = indices.iter().filter_map(|index| index.scan_extent(components, origin_chunk))
+            .reduce(|a, b| ScanExtent {
+                max_ring: a.max_ring.max(b.max_ring),
+                available: a.available + b.available,
+                min_chunk: (a.min_chunk.0.min(b.min_chunk.0), a.min_chunk.1.min(b.min_chunk.1)),
+                max_chunk: (a.max_chunk.0.max(b.max_chunk.0), a.max_chunk.1.max(b.max_chunk.1)),
+            }) else {
             return;
         };
         let max_ring = extent.max_ring;
@@ -636,15 +677,17 @@ impl ReachableBucketIndex {
                     return;
                 }
                 for &component in components.as_slice() {
-                    let Some(&component) = self.by_component.get(&component) else {
-                        continue;
-                    };
-                    let Some(&bucket) = self.components[component].by_chunk.get(&chunk) else {
-                        continue;
-                    };
-                    if !step(RingStep::Bucket(&self.buckets[bucket]), &mut remaining) {
-                        should_continue = false;
-                        return;
+                    for index in indices {
+                        let Some(&group) = index.by_component.get(&component) else {
+                            continue;
+                        };
+                        let Some(&bucket) = index.components[group].by_chunk.get(&chunk) else {
+                            continue;
+                        };
+                        if !step(RingStep::Bucket(&index.buckets[bucket]), &mut remaining) {
+                            should_continue = false;
+                            return;
+                        }
                     }
                 }
             });
@@ -1098,7 +1141,7 @@ mod reservation_tests {
                             black_box(&index).scan_nearest_masked(components, 0.0, 0.0,
                                 Some(black_box(1)), visitor);
                         } else {
-                            black_box(&index).scan_masked_buckets(components, 0.0, 0.0,
+                            ReachableBucketIndex::scan_masked_buckets(&[black_box(&index)], components, 0.0, 0.0,
                                 black_box(1), visitor);
                         }
                     }
@@ -1141,6 +1184,56 @@ mod reservation_tests {
                         actual.len() < stop
                     });
                     assert_eq!(actual, expected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn split_indices_scan_exactly_as_one_merged_index() {
+        // Low ids form the first index and high ids the second, as live and proposed ports do.
+        let entries: Vec<_> = (0..300).flat_map(|item| [0, 1].map(|component|
+            ReachableBucketEntry::new(component, ((item * 37 % 11) as i32 - 5, (item * 13 % 7) as i32 - 3), item)))
+            .filter(|entry| entry.item_idx % 3 != 0 || entry.component == 0).collect();
+        for split in [0, 1, 150, 299, 300] {
+            let build = |filter: &dyn Fn(usize) -> bool| {
+                let mut index = ReachableBucketIndex::from_entries(entries.iter()
+                    .filter(|entry| filter(entry.item_idx)).copied().collect());
+                index.enable_reservations();
+                index
+            };
+            let mut merged = build(&|_| true);
+            let mut low = build(&|item| item < split);
+            let mut high = build(&|item| item >= split);
+            let mut components = BuildingModeComponents::default();
+            components.push(0); components.push(1);
+            for round in 0..4 {
+                let available = |item: usize| (item * 7 + round) % 5 != 0;
+                let mask = |item: usize| 1u64 << ((item + round) % 9);
+                for index in [&mut merged, &mut low, &mut high] {
+                    index.reset_available(available);
+                    index.reset_query_masks(mask);
+                }
+                for (x, y) in [(14.0, 250.0), (-900.0, -60.0), (3000.0, 1000.0)] {
+                    for query in [None, Some(0), Some(1), Some(3), Some(256), Some(u64::MAX)] {
+                        for stop in [1, 7, usize::MAX] {
+                            let collect = |indices: &[&ReachableBucketIndex]| {
+                                let mut events = Vec::new();
+                                ReachableBucketIndex::scan_nearest_masked_over(indices, components, x, y, query,
+                                    |event| {
+                                        events.push(match event {
+                                            ReachableBucketScanEvent::Item { item_idx } => (Some(item_idx), 0),
+                                            ReachableBucketScanEvent::RingComplete { next_min_distance_sq } =>
+                                                (None, next_min_distance_sq.to_bits()),
+                                        });
+                                        events.iter().filter(|event| event.0.is_some()).count() < stop
+                                    });
+                                events
+                            };
+                            assert_eq!(collect(&[&low, &high]), collect(&[&merged]),
+                                "split {split}, round {round}, origin ({x}, {y}), mask {query:?}, stop {stop}");
+                        }
+                    }
                 }
             }
         }

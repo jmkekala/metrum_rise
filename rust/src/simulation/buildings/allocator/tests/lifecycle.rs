@@ -793,7 +793,7 @@ fn test_hourly_startup_admission_avoids_zero_rounding() {
 
     let mut demand = DemandSystem::new();
     for _ in 0..4 {
-        demand.run_hourly_pass(&allocator, &households, &graph, &zoning, 1_000.0);
+        demand.run_hourly_pass(&allocator, &mut households, &graph, &zoning, 1_000.0);
         if demand.households_to_admit_today > 0 {
             break;
         }

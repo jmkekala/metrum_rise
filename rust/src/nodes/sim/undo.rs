@@ -816,7 +816,7 @@ impl SimCore {
         self.allocator.dirty = true;
         self.allocator.dirty_index = false;
         self.allocator.entrances_dirty = true;
-        self.allocator.building_ref_revision = self.allocator.building_ref_revision.wrapping_add(1);
+        self.allocator.bump_building_ref_revision();
         self.allocator.entrance_ref_revision = self.allocator.entrance_ref_revision.wrapping_add(1);
         self.rebuild_building_entrances_internal();
         if let Some(bounds) = undo.dirty_bounds {

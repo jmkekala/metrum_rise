@@ -90,6 +90,9 @@ impl BusinessBudgets {
         self.staged_finance.clear();
         self.staged_finance.reserve(self.finance.len());
         self.finance_staged.clone_from(&source.finance_staged);
+        crate::debug::work::add(crate::debug::work::Work::ReservationRowsCopied, (self.accounts.len()
+            + 2 * self.buyer_accounts.len() + 2 * self.finance.len() + self.committed.len()
+            + self.owners.len() + self.staged_slots.len()) as u64);
     }
 
     /// Prepares sparse storage before visiting input ports. `input_ports` includes all live

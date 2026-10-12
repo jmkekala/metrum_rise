@@ -154,6 +154,7 @@ impl CchBuckets {
         incoming: usize,
         source: &mut CchBucketSource,
     ) {
+        crate::debug::work::add(crate::debug::work::Work::CchBucketSources, 1);
         source.prepare(self, cch);
         source.start = start;
         source.meetings.fill(Meeting::default());

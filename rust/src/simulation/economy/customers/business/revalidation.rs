@@ -38,6 +38,29 @@ struct Checkpoint {
     free_receipt: usize,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct PassCheckpoint {
+    accounts: usize,
+    receipts: usize,
+    free_receipt: usize,
+    buyers: usize,
+    owners: usize,
+}
+
+/// First-touch snapshots of a whole planning pass over a live book. Proposal proofs nest
+/// inside it; rows appended by the pass, including temporary project buyers and owners,
+/// are truncated rather than saved.
+#[derive(Clone, Debug, Default)]
+struct Pass {
+    checkpoint: Option<PassCheckpoint>,
+    generation: u64,
+    accounts: Rows<Account>,
+    buyers: Rows<[usize; 2]>,
+    finance: Rows<[f64; 2]>,
+    owners: Rows<usize>,
+    receipts: Rows<Receipt>,
+}
+
 /// An outer financing proof may accept several inner seller quotes before it can publish
 /// any of them. First-touch rows preserve the original numeric bits and receipt ownership.
 #[derive(Clone, Debug, Default)]
@@ -49,6 +72,7 @@ pub(super) struct Revalidation {
     finance: Rows<[f64; 2]>,
     owners: Rows<usize>,
     receipts: Rows<Receipt>,
+    pass: Pass,
 }
 
 impl Revalidation {
@@ -147,13 +171,22 @@ impl BusinessBudgets {
         if let Some(checkpoint) = journal.checkpoint && slot < checkpoint.accounts {
             journal.accounts.record(slot, self.accounts[slot], journal.generation);
         }
+        let pass = &mut journal.pass;
+        if let Some(checkpoint) = pass.checkpoint && slot < checkpoint.accounts {
+            pass.accounts.record(slot, self.accounts[slot], pass.generation);
+        }
     }
 
     /// Saves the original input-chain endpoints before appending a replacement's tranches.
     pub(super) fn journal_buyer(&mut self, buyer: usize) {
         let journal = &mut self.revalidation;
+        let ends = [self.buyer_accounts[buyer], self.buyer_tails[buyer]];
         if journal.is_active() {
-            journal.buyers.record(buyer, [self.buyer_accounts[buyer], self.buyer_tails[buyer]], journal.generation);
+            journal.buyers.record(buyer, ends, journal.generation);
+        }
+        let pass = &mut journal.pass;
+        if let Some(checkpoint) = pass.checkpoint && buyer < checkpoint.buyers {
+            pass.buyers.record(buyer, ends, pass.generation);
         }
     }
 
@@ -161,12 +194,20 @@ impl BusinessBudgets {
     pub(super) fn journal_finance(&mut self, buyer: usize) {
         let journal = &mut self.revalidation;
         if journal.is_active() { journal.finance.record(buyer, self.finance[buyer], journal.generation); }
+        let pass = &mut journal.pass;
+        if let Some(checkpoint) = pass.checkpoint && buyer < checkpoint.buyers {
+            pass.finance.record(buyer, self.finance[buyer], pass.generation);
+        }
     }
 
     /// Saves the seller's receipt head before inner retirement, seeding or extension.
     pub(super) fn journal_owner(&mut self, owner: usize) {
         let journal = &mut self.revalidation;
         if journal.is_active() { journal.owners.record(owner, self.owners[owner], journal.generation); }
+        let pass = &mut journal.pass;
+        if let Some(checkpoint) = pass.checkpoint && owner < checkpoint.owners {
+            pass.owners.record(owner, self.owners[owner], pass.generation);
+        }
     }
 
     /// Saves old arena cells before recycling/link edits; new cells are discarded by truncation.
@@ -175,6 +216,87 @@ impl BusinessBudgets {
         if let Some(checkpoint) = journal.checkpoint && index < checkpoint.receipts {
             journal.receipts.record(index, self.committed[index], journal.generation);
         }
+        let pass = &mut journal.pass;
+        if let Some(checkpoint) = pass.checkpoint && index < checkpoint.receipts {
+            pass.receipts.record(index, self.committed[index], pass.generation);
+        }
+    }
+
+    /// Opens a planning pass over this live book in O(1) amortized: snapshot storage
+    /// follows the live row counts and is retained across passes.
+    pub(super) fn begin_pass(&mut self) {
+        debug_assert!(self.staged.is_empty() && !self.revalidation.is_active());
+        let pass = &mut self.revalidation.pass;
+        assert!(pass.checkpoint.is_none(), "planning passes do not nest");
+        pass.generation = pass.generation.wrapping_add(1);
+        if pass.generation == 0 {
+            for seen in [&mut pass.accounts.seen, &mut pass.buyers.seen, &mut pass.finance.seen,
+                &mut pass.owners.seen, &mut pass.receipts.seen] { seen.fill(0); }
+            pass.generation = 1;
+        }
+        let checkpoint = PassCheckpoint { accounts: self.accounts.len(), receipts: self.committed.len(),
+            free_receipt: self.free_receipt, buyers: self.finance.len(), owners: self.owners.len() };
+        pass.accounts.prepare(checkpoint.accounts);
+        pass.buyers.prepare(checkpoint.buyers);
+        pass.finance.prepare(checkpoint.buyers);
+        pass.owners.prepare(checkpoint.owners);
+        pass.receipts.prepare(checkpoint.receipts);
+        pass.checkpoint = Some(checkpoint);
+    }
+
+    /// Visits each pass-touched account with its pre-pass value; appended accounts read as
+    /// empty, so the router can restore exactly the bucket entries the pass changed.
+    pub(super) fn visit_pass_accounts(&self, mut visit: impl FnMut(usize, Account)) {
+        let pass = &self.revalidation.pass;
+        let Some(checkpoint) = pass.checkpoint else { return; };
+        for &(slot, account) in &pass.accounts.saved { visit(slot, account); }
+        for slot in checkpoint.accounts..self.accounts.len() {
+            visit(slot, Account { units: 0.0, ..self.accounts[slot] });
+        }
+    }
+
+    /// Buyers whose financing, account chain or tranches the pass changed.
+    pub(super) fn visit_pass_buyers(&self, mut visit: impl FnMut(usize)) {
+        let pass = &self.revalidation.pass;
+        for &(buyer, _) in &pass.finance.saved { visit(buyer); }
+        for &(buyer, _) in &pass.buyers.saved { visit(buyer); }
+        for &(_, account) in &pass.accounts.saved { visit(account.buyer); }
+    }
+
+    /// Whether the pass saved this pre-pass account; unsaved pre-pass rows are unchanged.
+    pub(super) fn pass_saved_account(&self, slot: usize) -> bool {
+        let pass = &self.revalidation.pass;
+        pass.checkpoint.is_some_and(|checkpoint| slot < checkpoint.accounts)
+            && pass.accounts.seen[slot] == pass.generation
+    }
+
+    /// Pre-pass row counts of accounts and buyers, if a pass is open.
+    pub(super) fn pass_extent(&self) -> Option<(usize, usize)> {
+        self.revalidation.pass.checkpoint.map(|checkpoint| (checkpoint.accounts, checkpoint.buyers))
+    }
+
+    /// Restores every pre-pass row the pass changed and truncates rows it appended.
+    /// O(touched rows); proposal proofs must already be closed.
+    pub(super) fn end_pass(&mut self) {
+        debug_assert!(self.staged.is_empty() && !self.revalidation.is_active());
+        let pass = &mut self.revalidation.pass;
+        let Some(checkpoint) = pass.checkpoint.take() else { return; };
+        pass.accounts.restore(&mut self.accounts);
+        for (buyer, [head, tail]) in pass.buyers.saved.drain(..) {
+            self.buyer_accounts[buyer] = head;
+            self.buyer_tails[buyer] = tail;
+        }
+        pass.finance.restore(&mut self.finance);
+        pass.owners.restore(&mut self.owners);
+        pass.receipts.restore(&mut self.committed);
+        self.accounts.truncate(checkpoint.accounts);
+        self.staged_slots.truncate(checkpoint.accounts);
+        self.committed.truncate(checkpoint.receipts);
+        self.free_receipt = checkpoint.free_receipt;
+        for rows in [&mut self.buyer_accounts, &mut self.buyer_tails] { rows.truncate(checkpoint.buyers); }
+        self.finance.truncate(checkpoint.buyers);
+        self.finance_staged.truncate(checkpoint.buyers);
+        self.owners.truncate(checkpoint.owners);
     }
 }
 

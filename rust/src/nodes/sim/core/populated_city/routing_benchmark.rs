@@ -612,3 +612,48 @@ fn profile_populated_boundaries(midnight: bool) {
         "customer_refreshes_retained_budget_network_home_geometry_price_all_intervening_frames":customer_counts}));
     eprintln!("boundary final {:?}", city.record());
 }
+
+#[test]
+#[ignore = "release populated work-count attribution; compares 10k/100k growth"]
+fn benchmark_populated_work_counts() {
+    use crate::debug::work::{WORK_COUNT, WORK_NAMES, snapshot};
+
+    let residents = std::env::var("METRUM_CCH_BENCH_RESIDENTS")
+        .map(|value| value.parse().unwrap()).unwrap_or(10_000);
+    // One demand-hour day plus the benchmark's ten settlement days.
+    let days = std::env::var("METRUM_ECON_WORK_DAYS")
+        .map(|value| value.parse().unwrap()).unwrap_or(11);
+    // Each live planning pass is checked against a full book fingerprint unless skipped.
+    if std::env::var_os("METRUM_SKIP_PASS_VERIFY").is_some() {
+        crate::simulation::economy::demand::VERIFY_LIVE_PASSES.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+    let mut city = PopulatedCity::build(residents);
+    // METRUM_DEBUG_FILTER=economy_phases adds aggregate phase timings after the build.
+    crate::debug::init();
+    let scale = |city: &PopulatedCity| serde_json::json!({
+        "buildings":city.core.allocator.buildings.len(),
+        "parcels":city.core.zoning.parcels().len(),
+        "households":city.core.households.households.len()});
+    let initial = scale(&city);
+    let mut totals = [0u64; WORK_COUNT];
+    for day in 0..days {
+        let before = snapshot();
+        let mut hourly_ms = 0.0;
+        let daily_ms = loop {
+            let hour = city.advance_hour();
+            hourly_ms += hour.hourly.as_secs_f64() * 1000.0;
+            if let Some(daily) = hour.daily { break daily.as_secs_f64() * 1000.0; }
+        };
+        let after = snapshot();
+        let counts: serde_json::Map<_, _> = WORK_NAMES.iter().zip(before.iter().zip(after))
+            .map(|(name, (before, after))| (name.to_string(), (after - before).into())).collect();
+        for (total, (before, after)) in totals.iter_mut().zip(before.iter().zip(after)) { *total += after - before; }
+        eprintln!("WORK_DAY {}", serde_json::json!({"residents":residents,"day":day,
+            "hourly_ms":hourly_ms,"daily_ms":daily_ms,"counts":counts}));
+    }
+    let totals: serde_json::Map<_, _> = WORK_NAMES.iter().zip(totals)
+        .map(|(name, total)| (name.to_string(), total.into())).collect();
+    eprintln!("WORK_TOTAL {}", serde_json::json!({"residents":residents,"days":days,
+        "initial":initial,"final":scale(&city),"counts":totals}));
+    eprintln!("work final {:?}", city.record());
+}

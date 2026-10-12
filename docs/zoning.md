@@ -330,6 +330,12 @@ The building allocator consumes parcels as private-building candidate authority.
 - Placement claims a parcel through `ZoningSystem::occupy_parcel`.
 - Removal or allocator remap clears/remaps parcel occupancy through zoning helpers.
 - Buildings save their claimed parcel id.
+- Each single-parcel occupancy change also logs that parcel's storage row against the occupancy
+  revision (`occupancy_changes_since`). Clearing all occupancy, or a change whose parcel has left
+  storage, clears the log, so readers rebuild. `parcel_layout_revision` covers storage order,
+  geometry and zone profiles, never occupancy; storage rows stay valid while it is unchanged.
+  Demand's prepared site rows use both to update only changed parcels
+  ([`economy.md`](economy.md#econ-13-work-counts-and-live-book-planning-2026-10-12)).
 
 Zoning owns parcel legality and occupancy bookkeeping. The allocator owns asset selection,
 building lifecycle, entrance cache, building-site support height selection, and zone-family demand

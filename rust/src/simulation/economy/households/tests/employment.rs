@@ -1050,7 +1050,7 @@ fn live_hiring_and_admission_keep_jobs_after_paid_stock_and_payroll() {
         let terrain = crate::simulation::terrain::TerrainSystem::new(4, 4);
         let mut surface = crate::simulation::network::surface::RoadSurfaceSystem::new(512.0);
         surface.compile_dirty(&graph, &terrain);
-        demand.run_hourly_pass_with_policy(allocator, &households, &graph, &zoning,
+        demand.run_hourly_pass_with_policy(allocator, &mut households, &graph, &zoning,
             100_000.0, &policy, &network, logistics,
             crate::simulation::buildings::allocator::BuildingSiteEnvironment {
                 road_surface: &surface, terrain: &terrain,

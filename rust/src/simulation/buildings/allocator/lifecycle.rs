@@ -1185,7 +1185,7 @@ impl BuildingAllocator {
             .record((building.parcel_id, building.build_generation));
         self.record_building_site_change(building_idx, old_site_bounds);
         self.record_building_site_change(building_idx, self.site_world_bounds(building_idx));
-        self.bump_building_ref_revision();
+        self.record_building_changes([building_idx]);
         self.dirty = true;
         self.dirty_index = true;
         self.entrances_dirty = true;
@@ -1247,7 +1247,7 @@ impl BuildingAllocator {
         self.queue_yard_removal(building_idx);
         self.buildings.swap_remove(building_idx);
         self.remove_building_site_client(building_idx);
-        self.bump_building_ref_revision();
+        self.record_building_changes([building_idx, last_idx]);
         self.dirty = true;
         self.dirty_index = true;
         self.entrances_dirty = true;

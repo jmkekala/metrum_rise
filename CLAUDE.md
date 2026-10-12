@@ -120,6 +120,7 @@ These are the stable, high-level sharp edges worth remembering. Keep detailed su
 - Use high-level mutators for live simulation systems. Avoid direct external mutation of the road graph, agent SoA storage, building occupancy bookkeeping, or other indexed state unless you are intentionally working inside that subsystem.
 - Treat topology edits as multi-system changes. When roads, lanes, buildings, or indices are remapped, the dependent adjacency, caches, and cross-system references must stay in sync in the same change.
 - Treat `AgentSystem` and `BuildingAllocator` as tightly coupled indexed stores. Swap-remove and remap behavior means IDs are not casually stable; prefer lifecycle helpers over open-coded field mutation.
+- The hourly demand pass plans directly on the live customer, business and input books and rolls them back through per-book pass journals. Every new mutation of those books must call the existing `journal_*` hooks; test builds fingerprint the live books after each pass.
 - Keep benchmarks and isolated tests away from full gameplay constructors unless you are explicitly measuring that end-to-end path. Setup helpers can trigger zoning work, cache rebuilds, path planning, or other expensive side effects that hide the cost you meant to measure.
 - When touching routing or entrance/exit behavior, update both the authoritative state and the derived caches/plans that consume it. If a value is derived, make the rebuild path explicit rather than relying on accidental later repair.
 

@@ -20,6 +20,7 @@
 //! no-ops when the respective flag is off, with only an atomic bool check overhead.
 
 mod crash;
+pub(crate) mod work;
 
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};

@@ -303,7 +303,7 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
 - **Starting treasury**: new games begin with 500,000, increased from 100,000. See
   [money source](economy.md#money-source); earlier balance runs retain their original starting capital.
 
-- **Electricity accounting (`ECON-14`, implemented)**: profile-authored building demand,
+- **Electricity accounting (implemented)**: profile-authored building demand,
   kWh meters, demand-limited coal generation and unpaid household bills are implemented.
   The [consumption table and 1/2/3-worker ledger](economy.md#utility-service-layer)
   target an affordable 170-resident starter plant. Fresh validation passes 362 economy tests,
@@ -316,7 +316,7 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   Pre-73 saves retain cash and convert generation, but lack the new meters for their first partial day;
   see [validation and limitations](archive/economy_history_2026-10-10.md#electricity-validation-econ-14).
 
-- **Healthy city growth (`ECON-11`–`ECON-12` and `DEM-02` done; `ECON-13`–`ECON-14` in progress)**:
+- **Healthy city growth (`ECON-11`–`ECON-12` and `DEM-02` done; `ECON-13` in progress)**:
   The original saved-town replay stayed at seven residents through day 32 despite empty homes
   and high industrial pressure. Independent entry now removes the global startup-cash recovery
   dependency; the same save grows from 7 to 85 residents, with 69 employed, over 30 days.
@@ -695,7 +695,7 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   - Healthy-growth acceptance covers household affordability, business survival beyond startup
     funds, recurring fiscal balance and growth where opportunity exists. Numerical ranges and
     the first added activities are still design work. See the
-    [plan and evidence](economy.md#growth-redesign-econ-11econ-14-dem-02).
+    [plan and evidence](economy.md#growth-redesign-econ-11econ-12-dem-02).
 - **Road preview display performance (`ROAD-30`–`ROAD-35`, `ROAD-37`–`ROAD-40` and `ROAD-42` done;
   `ROAD-36`, `ROAD-41` and `ROAD-43` parked)**: prioritize **Road and terrain**. With input-to-display baselines captured, tackle native buffer validation, rendering
   resource reuse, retained geometry locality, packed payload deltas, worker scheduling and
@@ -955,6 +955,19 @@ reopening requires a current reproduction, not an assumption that the old geomet
   5-second loop as zero. The replacement charges it correctly and also preserves required
   return detours. All five independent growth reports remain byte-identical.
 
+- `ECON-13` (2026-10-12): test-only work counters (`debug::work`,
+  `benchmark_populated_work_counts`) show the 100k scaling gap is algorithmic: proposed site rows
+  grow 67×, execution-epoch censuses 6.4× and market copies 12.8× for a 10.2× city. Proposed
+  site rows now update only the buildings and parcels named by new allocator and zoning change
+  logs, behind a separate exact proposed-site index. The hourly pass plans on the live economic
+  books inside per-book pass journals and restores them exactly instead of copying them. All
+  library tests, five growth reports and populated records match; test builds fingerprint the
+  live books after every pass. 10k: 8.17 ms/hour, 8.31 ms/day (from 8.72/8.79, p = 0.0286);
+  100k: 111.38/174.93 ms (from 115.46/181.52). `ECON-13-B` is rewritten as per-phase work-count scaling (≤1.2× the
+  household ratio) plus a fixed 100k budget (400 ms/hour, 100 ms/day). The old same-build ratio rose
+  whenever linear work got faster. B still fails on execution epochs, staffing and search fan-out. See the
+  [record](economy.md#econ-13-work-counts-and-live-book-planning-2026-10-12).
+
 - `ECON-13` (2026-10-11): economy prices read a per-lane frontage delay published once per
   operational hour (`TransitNetwork::publish_frontage_prices`); agent trips keep the per-second
   live delay; save format 85 stores both. The funding census pins operations that cannot profit
@@ -1000,7 +1013,7 @@ reopening requires a current reproduction, not an assumption that the old geomet
   daily trace identifies 32–34 ms of proposed-site preparation. Exact entrance reuse passes
   2,337 library tests and all reports: 10k 9.24/9.91 ms and one 100k 121.72/200.62 ms
   (13.18×/20.25×), preserving records without a clear overall gain. Tied-radius maintenance
-  and household walking-proof reuse are queued for validation. The unsuccessful recurring-
+  and household walking-proof reuse are committed as `5a268e64`. The unsuccessful recurring-
   supplier bound trial was removed.
   A diagnostic initialization stack overflow was
   fixed by allocating the fixed crash-recording ring once on the heap.

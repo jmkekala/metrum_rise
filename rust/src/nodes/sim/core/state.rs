@@ -859,7 +859,7 @@ impl SimCore {
         let prepare_ms = timing.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0) - cells_ms;
         self.demand.run_hourly_pass_with_policy(
             &self.allocator,
-            &self.households,
+            &mut self.households,
             &self.region_graph,
             &self.zoning,
             self.treasury.balance,

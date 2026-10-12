@@ -110,6 +110,7 @@ impl BuildingAllocator {
         environment: BuildingSiteEnvironment<'_>,
         asset_candidates_by_profile: &BTreeMap<u16, SpawnProfileAssetCandidates>,
     ) -> DemandSpawnCandidatesByUse {
+        crate::debug::work::add(crate::debug::work::Work::SpawnParcelsScanned, zoning.parcels().len() as u64);
         self.prune_site_feasibility(zoning);
         let candidates = zoning
             .parcels()
@@ -1853,7 +1854,7 @@ impl BuildingAllocator {
         self.queue_yard(building_idx, zone_cell_m);
         // Site publication belongs to placement, not to demand/service/industry callers.
         self.record_building_site_change(building_idx, self.site_world_bounds(building_idx));
-        self.bump_building_ref_revision();
+        self.record_building_changes([building_idx]);
         self.dirty = true;
         self.dirty_index = true;
         self.entrances_dirty = true;

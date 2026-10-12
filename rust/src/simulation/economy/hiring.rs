@@ -455,6 +455,7 @@ impl JobFunding {
         };
         self.pricing_phase = freight_price_phase(tuning, minute_of_day);
         let count = allocator.buildings.len();
+        crate::debug::work::add(crate::debug::work::Work::CensusBuildings, count as u64);
         self.capacities.resize(count, 0);
         self.activities.resize(count, 0.0);
         self.headroom.resize(count, [0.0; 2]);
@@ -1196,6 +1197,7 @@ fn funded_private_operation(
     if desired == 0 {
         return (0, 0.0);
     }
+    crate::debug::work::add(crate::debug::work::Work::StaffingOperations, 1);
     let imported_capital = working_capital_assets(
         building,
         profile,
@@ -1225,6 +1227,7 @@ fn funded_private_operation(
     // keeps a local plan's released receipts provisional until replacement is accepted.
     let retained = supply.as_ref().map_or((0, 0.0), |context| context.retained);
     for workers in (retained.0.max(1)..=desired).rev() {
+        crate::debug::work::add(crate::debug::work::Work::StaffingTrials, 1);
         #[cfg(test)]
         if trace.enabled {
             trace.counts[1] += 1;

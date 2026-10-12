@@ -25,6 +25,7 @@ use crate::simulation::zoning::{ParcelId, ZoningSystem};
 
 mod buyers;
 mod replacements;
+mod site_rows;
 mod storage;
 use replacements::{OperationSite, ReplacementProof};
 use storage::StorageRequirement;
@@ -150,12 +151,42 @@ impl ProjectReservations {
         Some((operation.plan.workers, operation.headroom.map(f64::to_bits), sources))
     }
 
-    /// Forks both customer books from the same completed live financing proof.
+    /// Forks both customer books from the same completed financing proof.
     pub(super) fn reset(&mut self, funding: &crate::simulation::economy::hiring::JobFunding,
         allocator: &BuildingAllocator, catalog: &RuntimeEconomyCatalog, tuning: &RuntimeEconomyTuning,
         fiscal: &CityFiscalPolicy, minute: u16) {
         self.customers.copy_reservations_from(&funding.customers);
         self.business.copy_reservations_from(&funding.business);
+        self.prepare_pass_rows(funding, allocator, catalog, tuning, fiscal, minute);
+    }
+
+    /// Opens a planning pass on live customer books already moved into this owner, without
+    /// copying them. The caller must close it with [`Self::end_live_pass`] before returning
+    /// the books. Opening is O(1) amortized beyond the per-pass operation rows.
+    pub(super) fn begin_live_pass(&mut self, funding: &crate::simulation::economy::hiring::JobFunding,
+        inputs: &mut RecurringSupply, allocator: &BuildingAllocator, catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning, fiscal: &CityFiscalPolicy, minute: u16) {
+        self.customers.begin_pass();
+        self.business.begin_pass();
+        inputs.begin_pass();
+        self.prepare_pass_rows(funding, allocator, catalog, tuning, fiscal, minute);
+    }
+
+    /// Restores the live books exactly as [`Self::begin_live_pass`] found them, in
+    /// O(rows the pass touched). Temporary project rows are truncated.
+    pub(super) fn end_live_pass(&mut self, inputs: &mut RecurringSupply, allocator: &BuildingAllocator,
+        graph: &RegionGraph) {
+        self.reject(inputs, allocator, graph);
+        self.business.end_pass();
+        self.customers.end_pass();
+        inputs.end_pass(allocator, graph);
+        self.prepared = false;
+    }
+
+    // Per-pass owner rows; neither book is copied here.
+    fn prepare_pass_rows(&mut self, funding: &crate::simulation::economy::hiring::JobFunding,
+        allocator: &BuildingAllocator, catalog: &RuntimeEconomyCatalog, tuning: &RuntimeEconomyTuning,
+        fiscal: &CityFiscalPolicy, minute: u16) {
         self.prepared = false;
         self.staged_owner = None;
         self.staged_operation = None;
@@ -270,61 +301,100 @@ impl<'a> SiteSupply<'a> {
             // A pass can replay a queue and select at most one new project per parcel.
             // Existing construction and replacements retain their live building owner.
             let owners = allocator.buildings.len() + 2 * zoning.parcels().len();
+            crate::debug::work::add(crate::debug::work::Work::OwnerSlotsPrepared, owners as u64);
             let outputs = catalog.all_profiles().iter().map(|profile| profile.outputs.len()).max().unwrap_or(0);
             let inputs = catalog.all_profiles().iter().map(|profile| profile.inputs.len()).max().unwrap_or(0);
-            book.prepare_projected_sources(catalog, graph, [zoning.overlay_revision(),
-                zoning.overlay_occupancy_revision(), allocator.registry.revision()], |previous| {
-                allocator.buildings.par_iter().enumerate().flat_map_iter(|(owner, building)| {
-                    [Some(building.asset_id.as_str()), allocator.downgrade_target(building), allocator.upgrade_target(building)]
-                        .into_iter().flatten().filter_map(move |asset| {
-                            let profile = candidate_economy_profile(allocator, catalog, asset)?;
-                            if !crate::simulation::economy::logistics::building_outputs_can_supply_local_inputs(building, profile) {
-                                return None;
-                            }
-                            let (key, entrance) = allocator.demand_site_entrance_reusing(building.parcel_id, asset,
-                                zoning, graph, &network.lane_system, network.cch_graph.build_generation,
-                                ProjectedSupplySource::retained_entrance(previous, owner, asset))?;
-                            Some(ProjectedSupplySource::new(owner, asset, profile.runtime_id, entrance).with_entrance_key(key))
-                        })
-                }).collect()
+            let key = site_rows::site_rows_key(allocator, zoning, network);
+            let mut changes = site_rows::SiteRowChanges::default();
+            let base = allocator.buildings.len();
+            let parcel_count = zoning.parcels().len();
+            let entrance = |parcel: u64, asset: &str,
+                previous: Option<(crate::simulation::buildings::allocator::DemandSiteEntranceKey, &BuildingEntrance)>|
+                allocator.demand_site_entrance_reusing(parcel,
+                asset, zoning, graph, &network.lane_system, network.cch_graph.build_generation, previous);
+            // Variants a live building could become, in this building's own recipe order.
+            let variants = |building: usize| [Some(allocator.buildings[building].asset_id.as_str()),
+                allocator.downgrade_target(&allocator.buildings[building]),
+                allocator.upgrade_target(&allocator.buildings[building])].into_iter().flatten();
+            let suppliers = |owner: usize, previous: &[ProjectedSupplySource], out: &mut Vec<ProjectedSupplySource>| {
+                let building = &allocator.buildings[owner];
+                out.extend(variants(owner).filter_map(|asset| {
+                    let profile = candidate_economy_profile(allocator, catalog, asset)?;
+                    if !crate::simulation::economy::logistics::building_outputs_can_supply_local_inputs(building, profile) {
+                        return None;
+                    }
+                    let (key, entrance) = entrance(building.parcel_id, asset,
+                        ProjectedSupplySource::retained_entrance(previous, owner, asset))?;
+                    Some(ProjectedSupplySource::new(owner, asset, profile.runtime_id, entrance).with_entrance_key(key))
+                }));
+            };
+            book.prepare_projected_sources(catalog, graph, &key, |previous, previous_key| {
+                let incremental = changes.collect(previous_key, &key, allocator, zoning);
+                let rows = if incremental {
+                    changes.merge(previous, base, parcel_count, ProjectedSupplySource::owner,
+                        ProjectedSupplySource::set_owner, ProjectedSupplySource::key,
+                        |owner, held| collect_rows(|out| if owner < base { suppliers(owner, held, out) }))
+                } else {
+                    let mut rows = par_collect_rows(base, |owner, out| suppliers(owner, &previous, out));
+                    rows.sort_unstable_by(|a, b| a.owner().cmp(&b.owner()).then(a.key().cmp(b.key())));
+                    rows
+                };
+                crate::debug::work::add(crate::debug::work::Work::SupplierSourcesBuilt,
+                    if incremental { changes.changed_owners() } else { rows.len() } as u64);
+                rows
             });
             let suppliers_ms = lap();
             book.prepare_customer_deliveries(reservations.business.receipt_count());
             book.prepare_owners(owners, owners * inputs);
             let supply_storage_ms = lap();
             if let Some(components) = book.freight_components() {
-                reservations.business.prepare_sites([zoning.overlay_revision(),
-                    zoning.overlay_occupancy_revision(), allocator.registry.revision()],
-                    catalog, components, graph, |previous| {
-                        let assets = allocator.collect_spawn_asset_candidates_by_profile(zoning, catalog);
-                        let mut sites: Vec<_> = zoning.parcels().par_iter().enumerate().flat_map_iter(|(index, parcel)| {
-                            assets.get(&parcel.zone_profile_runtime_id()).into_iter()
-                                .flat_map(move |assets| assets.fitting_assets(parcel, zoning))
-                                .filter_map(move |asset| {
-                                    if !parcel.is_available() { return None; }
-                                    let profile = candidate_economy_profile(allocator, catalog, asset)?;
-                                    if profile.inputs.is_empty() { return None; }
-                                    let owner = allocator.buildings.len() + index;
-                                    let (key, entrance) = allocator.demand_site_entrance_reusing(parcel.id().raw(), asset,
-                                        zoning, graph, &network.lane_system, network.cch_graph.build_generation,
-                                        PreparedBusinessSite::retained_entrance(previous, owner, asset))?;
-                                    Some(PreparedBusinessSite::new(owner,
-                                        asset, profile.runtime_id, entrance).with_entrance_key(key))
-                                })
-                        }).collect();
-                        sites.par_extend(allocator.buildings.par_iter().enumerate().flat_map_iter(|(owner, building)| {
-                            [Some(building.asset_id.as_str()), allocator.downgrade_target(building),
-                                allocator.upgrade_target(building)].into_iter().flatten().filter_map(move |asset| {
-                                let profile = candidate_economy_profile(allocator, catalog, asset)?;
-                                if profile.inputs.is_empty() { return None; }
-                                let (key, entrance) = allocator.demand_site_entrance_reusing(building.parcel_id, asset,
-                                    zoning, graph, &network.lane_system, network.cch_graph.build_generation,
-                                    PreparedBusinessSite::retained_entrance(previous, owner, asset))?;
-                                Some(PreparedBusinessSite::new(owner, asset, profile.runtime_id, entrance).with_entrance_key(key))
-                            })
+                let assets = std::sync::OnceLock::new();
+                // Previous rows are looked up under `old_owner`, their numbering when prepared.
+                let parcel_buyers = |index: usize, previous: &[PreparedBusinessSite], old_owner: usize,
+                    out: &mut Vec<PreparedBusinessSite>| {
+                    let parcel = &zoning.parcels()[index];
+                    if !parcel.is_available() { return; }
+                    let assets = assets.get_or_init(|| allocator.collect_spawn_asset_candidates_by_profile(zoning, catalog));
+                    out.extend(assets.get(&parcel.zone_profile_runtime_id()).into_iter()
+                        .flat_map(|assets| assets.fitting_assets(parcel, zoning))
+                        .filter_map(|asset| {
+                            let profile = candidate_economy_profile(allocator, catalog, asset)?;
+                            if profile.inputs.is_empty() { return None; }
+                            let (key, entrance) = entrance(parcel.id().raw(), asset,
+                                PreparedBusinessSite::retained_entrance(previous, old_owner, asset))?;
+                            Some(PreparedBusinessSite::new(base + index,
+                                asset, profile.runtime_id, entrance).with_entrance_key(key))
                         }));
-                        sites
-                    });
+                };
+                let building_buyers = |owner: usize, previous: &[PreparedBusinessSite], out: &mut Vec<PreparedBusinessSite>| {
+                    let building = &allocator.buildings[owner];
+                    out.extend(variants(owner).filter_map(|asset| {
+                        let profile = candidate_economy_profile(allocator, catalog, asset)?;
+                        if profile.inputs.is_empty() { return None; }
+                        let (key, entrance) = entrance(building.parcel_id, asset,
+                            PreparedBusinessSite::retained_entrance(previous, owner, asset))?;
+                        Some(PreparedBusinessSite::new(owner, asset, profile.runtime_id, entrance).with_entrance_key(key))
+                    }));
+                };
+                reservations.business.prepare_sites(&key, catalog, components, graph, |previous, previous_key| {
+                    let incremental = changes.collect(previous_key, &key, allocator, zoning);
+                    let rows = if incremental {
+                        let old_base = previous_key.map_or(base, |key| key[7] as usize);
+                        changes.merge(previous, base, parcel_count, PreparedBusinessSite::owner,
+                            PreparedBusinessSite::set_owner, PreparedBusinessSite::key, |owner, held|
+                                collect_rows(|out| if owner < base { building_buyers(owner, held, out) }
+                                    else { parcel_buyers(owner - base, held, old_base + owner - base, out) }))
+                    } else {
+                        let mut rows = par_collect_rows(parcel_count,
+                            |index, out| parcel_buyers(index, &previous, base + index, out));
+                        rows.append(&mut par_collect_rows(base, |owner, out| building_buyers(owner, &previous, out)));
+                        rows.sort_unstable_by(|a, b| a.owner().cmp(&b.owner()).then(a.key().cmp(b.key())));
+                        rows
+                    };
+                    crate::debug::work::add(crate::debug::work::Work::BuyerSitesBuilt,
+                        if incremental { changes.changed_owners() } else { rows.len() } as u64);
+                    rows
+                });
             }
             let buyers_ms = lap();
             reservations.business.prepare_owners(owners, owners * outputs);
@@ -849,6 +919,20 @@ impl<F: FnMut(u64, &str) -> Option<f32>> ProjectSupply for F {
     }
     fn accept(&mut self) {}
     fn reject(&mut self) {}
+}
+
+// One changed owner's rows; cold incremental path only.
+fn collect_rows<T>(fill: impl FnOnce(&mut Vec<T>)) -> Vec<T> {
+    let mut rows = Vec::new();
+    fill(&mut rows);
+    rows
+}
+
+// Full rebuild over `owners`, one buffer per Rayon split rather than per owner.
+fn par_collect_rows<T: Send>(owners: usize, fill: impl Fn(usize, &mut Vec<T>) + Sync) -> Vec<T> {
+    (0..owners).into_par_iter()
+        .fold(Vec::new, |mut rows, owner| { fill(owner, &mut rows); rows })
+        .reduce(Vec::new, |mut rows, mut more| { rows.append(&mut more); rows })
 }
 
 #[cfg(test)]

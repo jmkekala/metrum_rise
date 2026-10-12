@@ -23,7 +23,7 @@ flows after starter savings and owner startup capital are spent.
 Economy data is authored in `economy/profiles.toml` and checked with Rust balance tests and
 headless scenarios. There is no in-game or developer economy editor.
 
-## Growth redesign (`ECON-11`–`ECON-14`, `DEM-02`)
+## Growth redesign (`ECON-11`–`ECON-12`, `DEM-02`)
 
 Status, 2026-10-10. The healthy-growth redesign agreed on 2026-10-05 is largely implemented:
 
@@ -39,8 +39,7 @@ Status, 2026-10-10. The healthy-growth redesign agreed on 2026-10-05 is largely 
   policy.
 
 `DEM-02` closed on 2026-10-11 ([`demand.md`](demand.md#exit-criteria)). What remains is tracked by
-runnable exit criteria: performance and scaling under [`ECON-13`](#econ-13-exit-criteria), and
-economic health beyond the starter towns under [`ECON-14`](#econ-14-exit-criteria).
+runnable exit criteria: performance and scaling under [`ECON-13`](#econ-13-exit-criteria).
 Healthy-growth acceptance is defined [below](#healthy-growth-acceptance).
 
 ## Core principles
@@ -785,16 +784,31 @@ preceding operational hour and are separate from unprofiled acceptance measureme
 part of this acceptance.
 
 1. **10k budget (`ECON-13-A`).** The recipe above measures at most **40 ms** per mean hour and
-   **10 ms** per mean day, with identical `GrowthDayRecord`s across runs. The historical
-   build below passed; the routing replacement currently fails the daily bound (14.33 ms).
-2. **Linear 100k scaling (`ECON-13-B`).** On one build, `-- /100k` measures a mean operational
-   hour at most 10× and a mean daily settlement at most 10× the same build's `/10k` values,
-  with identical records across two runs. Routing work is tracked in
-  [`NET-02`–`NET-05`](entrance_and_exit.md#cch-routing-performance-track-net-02net-05);
-  that work alone does not close this scaling criterion. An older, economically inert fixture met the hour
-   (3.1×) but not the day (15×). **FAIL** on the latest frozen routing build: hour 20.37×,
-   day 84.18× in one complete pair. The earlier live-economy fixture measured 26× / 411× at
-   `01888e88`; that historical result is retained below.
+   **10 ms** per mean day, with identical `GrowthDayRecord`s across runs. **PASS** on the
+   [2026-10-12 build](#econ-13-work-counts-and-live-book-planning-2026-10-12): 8.17 / 8.31 ms.
+2. **100k scaling (`ECON-13-B`).** Both parts must pass on the same build as A.
+   - **B1, work scaling.** `benchmark_populated_work_counts` runs one 10k and one 100k city for
+     11 days ([work counts](#econ-13-work-counts-and-live-book-planning-2026-10-12)). Each bounded
+     total may grow at most 1.2× the final household ratio (10.2× for the current fixture, so
+     12.2×). The bounded totals are census building rows, reservation rows copied, owner slots
+     prepared, proposed site rows generated, spawn parcels scanned, staffing trials, supplier
+     searches, supplier route quotes, household job-search keys, and CCH searches (point
+     searches plus bucket sources, which replace point searches). Counts are deterministic and
+     need one run per tier; cache effects cannot pass or fail them. Pass, census and rebuild
+     event counts are reported but not bounded.
+   - **B2, 100k time budget.** The recipe's `/100k` run must take at most 10× A's fixed budget:
+     **400 ms** per mean hour and **100 ms** per mean day, with identical records across two
+     runs. Faster 10k runs never tighten it.
+
+   The earlier bound compared 100k with the same build's measured 10k time. Any speedup of
+   linear work lowered 10k proportionally more, so that ratio rose even when both cities got
+   faster (2026-10-12: 10k −6%, 100k −3.5%, ratio up). It could not show progress and was replaced.
+
+   **Status on the 2026-10-12 build: FAIL.** B2: hour 111 ms passes, day 175 ms fails. B1 fails in
+   three groups. Execution-epoch censuses: census rows 13.3×, rows copied 65×, owner slots 13.4×.
+   Staffing search: trials 20×. Supplier and job search fan-out: searches 15.9×, routes 19.7×,
+   job-search keys 36×. Within the bound: CCH searches 10.5×, spawn scans 10.3×, proposed site
+   rows 11.2×.
 3. **Bounded census cascades (`ECON-13-C`).** A profitability-failing dependency chain resolves
    in a number of funding censuses that does not grow with chain length. The existing
    `benchmark_combined_financing_cascades` cycle case must need at most **3 censuses** at chain
@@ -1301,8 +1315,101 @@ Shopping stores retain compact directed groups/node IDs instead of full trip end
 trips keep the original route fallback. No new spatial or household index is introduced.
 Asset level lookup reuses its already-borrowed manifest instead of hashing the same ID twice.
 The test-only phase trace now counts staffing trials and rejection causes; free-input cost
-probes are diagnostic only and do not reject operations. Compilation, regressions and
-matched measurements for this combined candidate remain pending.
+probes are diagnostic only and do not reject operations. This candidate is commit `5a268e64`
+(2,339 library tests; the debug `cargo test` and Godot bridge stages pass after a corrected
+price-mask test). It is the baseline below and was not measured separately.
+
+#### `ECON-13` work counts and live-book planning (2026-10-12)
+
+**Work counts.** Test builds count work with `debug::work` (compiled out elsewhere). The ignored
+driver `benchmark_populated_work_counts` runs one demand-hour day plus ten settlement days
+(`METRUM_ECON_WORK_DAYS`, default 11) after the fixture build and prints per-day and total counts
+(`METRUM_CCH_BENCH_RESIDENTS` selects the tier). On `5a268e64` the 100k city is 10.2–10.3× the
+10k city, but its daily work grows faster:
+
+| Work over 11 days | 10k | 100k | Ratio |
+|---|---:|---:|---:|
+| Planning passes / live censuses | 255 / 266 | 256 / 267 | 1.0× |
+| Execution-epoch censuses | 15 | 96 | 6.4× |
+| Census building rows | 2.08M | 27.6M | 13.3× |
+| Reservation rows copied | 33.2M | 425.7M | 12.8× |
+| Site-table rebuilds | 30 | 197 | 6.6× |
+| Proposed rows generated (buyer / supplier) | 36k / 36k | 2.42M / 2.41M | 67× |
+| Supplier searches / route quotes | 0.43M / 4.28M | 6.89M / 84.2M | 16× / 20× |
+| Household job-search keys | 8.5k | 308k | 36× |
+| Staffing trials | 0.71M | 14.1M | 20× |
+| CCH point searches | 1.39M | 14.3M | 10.3× |
+
+The gap is therefore algorithmic, not only cache effects. From day 7 the 100k city places or
+removes a building every hour, so each hour also pays an execution-epoch census, a market
+copy and two full site-table rebuilds. A diagnostic phase trace (`economy_phases`, profiled
+timings) attributes the largest superlinear time to the live census: staffing 23.6× and
+household claims 57.8×; site preparation grows 50–71×.
+
+**Changes, all exact.**
+- *Changed-owner site rows.* Proposed supplier and buyer rows are regenerated only for the
+  buildings named by the allocator's building log and the parcels named by zoning's occupancy
+  log (see [`building_allocator.md`](building_allocator.md#allocator-owned-indices-and-caches)
+  and [`zoning.md`](zoning.md#6-allocator-interaction)). Other rows move unchanged; parcel owners
+  shift with the building count; owner/key order is preserved. Registry, overlay, parcel-layout,
+  lane and CCH changes still rebuild all rows. Rows cache their door chunk and components.
+- *Separate proposed-site index.* Business site ports keep their own bucket index after the
+  live ports. A two-index ring scan reproduces the merged event order exactly, so preparing
+  sites no longer re-indexes every live buyer port.
+- *Live-book planning.* With a current employment census, the hourly pass plans on the live
+  customer, business and input books inside one first-touch pass journal per book and restores
+  them when it closes (see [`demand.md`](demand.md#construction-queue-and-execution)). Finance
+  masks are a conservative pruning cache: rollback may leave them wider, never narrower, and
+  claims still test availability and exact affordability.
+
+**Verification.** 2,344 library tests pass. Test builds compare full fingerprints of all three
+live books after every live planning pass, including the 10k populated city's 255 passes.
+All five growth reports are byte-identical to `5a268e64`. The 10k and 100k work drivers end
+with the same final records as before (day 14: 5,330 / 54,388 households). Counts after the
+change:
+
+| Work over 11 days | 10k | 100k |
+|---|---:|---:|
+| Reservation rows copied | 1.53M | 100.0M (execution epochs) |
+| Proposed rows generated (buyer / supplier) | 1,349 / 1,347 | 15,153 / 15,143 |
+
+Census rows, staffing trials, supplier searches and planning passes are unchanged. Cache-hit
+counters moved slightly (CCH point searches +0.2%), because planning and execution no longer
+share one forked walking cache and search hint.
+
+Site-row updates walk rows rather than every owner, and preparing sites resets only the
+proposed-site ports: no account maps to them between proposals. Two clean 100k phase traces
+(`economy_phases`, so absolute values include logging) over days 7–10, when a building changes
+every hour:
+
+| Per simulated day | `5a268e64` | This build |
+|---|---:|---:|
+| Site preparation in planning passes | 275.5 ms | 106.2 ms (−61%) |
+| All site preparation, including execution epochs | 556.6 ms | 222.6 ms (−60%) |
+| Reservation reset (market copy) | 124.4 ms | 22.3 ms (−82%) |
+
+The rest of site preparation, about 0.6 ms of row updates and 1.1–1.5 ms of layout per rebuild,
+rebuilds the proposed-site and projected-source indices whenever live ports are renumbered.
+Removing it needs an incremental bucket index with stable reservation positions.
+
+**Matched timings** (`5a268e64` vs the working tree; `RAYON_NUM_THREADS=8`,
+`taskset -c 0,2,4,6,8,10,12,14`; `$BENCH_BINARY --bench --noplot /10k` and `/100k`; binary
+SHA-256 `16f927d2c4be7294cdad76732f62ccd0c83b06ada03b76b274a5e188ce186a45` and
+`a4376e23f42b634eb64e6db80f1f8638b49084ec045f3c5c2740d33b1a214d6c`):
+
+| Tier | HEAD hour / day | Working tree hour / day |
+|---|---:|---:|
+| 10k, four alternating runs each | 8.719 / 8.792 ms | **8.171 / 8.311 ms** |
+| 100k, two alternating runs each | 115.46 / 181.52 ms | **111.38 / 174.93 ms** |
+
+At 10k every working-tree run is faster than every HEAD run on both measures (two-sided exact
+permutation p = 0.0286); the hour falls 6.3% and the day 5.5%. All runs of both tiers end with
+identical day-15 records. At 100k both working-tree runs are faster than both HEAD runs (hour −3.5%, day −3.6%);
+two runs per side establish no significance. `ECON-13-A` passes on this build; C/D were not rerun. `ECON-13-B` still
+fails under its replacement work-count and time-budget form (see the exit criteria).
+Execution-epoch censuses and copies, the live census's staffing search, and supplier/job searches
+remain superlinear.
+Logs: `$ARTIFACTS/econ13-live-books/`.
 
 ##### Status 2026-10-11 (one working-tree build on `01888e88`)
 
@@ -1414,36 +1521,6 @@ Population alone is insufficient. Scenarios must expose:
 Run beyond startup windows, include recovery after a supply interruption, and test more than one
 zoning/service mix. Passing by raising the starting treasury, or by repeatedly replacing insolvent
 businesses, is not acceptance. Mature stability is valid when capacity is satisfied.
-
-#### `ECON-14` exit criteria
-
-`ECON-14` is done when all three checks pass on one build. Each is a test in
-`rust/tests/growth_scenario.rs` or a non-ignored library scenario. A failure caused by design is
-recorded here with evidence rather than tuned away. Already covered elsewhere: a second
-zoning/service mix (`DEM-02-A`, `producer_town`), recovery after a business failure
-(`bankrupt_grocery_is_cleared_and_replaced_without_rezoning`) and scarce-labor expansion
-(`many_new_industrial_lots_respect_scarce_labor_and_earn_their_owner_capital`).
-
-1. **Finite-resource closure (`ECON-14-A`).** The starter town with the `producer_balance_matrix`
-   20 ha coal mine runs two years. Within 60 days of the mine's last sale, its former workers are
-   re-employed or have left through the household exit policy. Over the last 90 days of year two
-   there are no empty-household days, no unpaid household transfers and a positive recurring city
-   balance. Last measured: 40 unemployed adults and 182 empty-household days in year two.
-2. **Oversized producer warning (`ECON-14-B`).** A producer the town cannot staff or fund is
-   flagged before the player pays for it. Losing money without rescue is intended:
-   `hundred_hectare_start_distinguishes_mechanized_farm_from_labor_intensive_mine` pins that a
-   100 ha mine in the starter town spends its owner's capital while the 100 ha farm trades
-   sustainably. The check: the placement preview for that 100 ha mine reports the limiting
-   reason (labor, operating income or working capital) from the same operation check that
-   private entry uses, and the 100 ha farm's preview reports none. Whether the preview warns or
-   refuses is a design decision.
-3. **Pension-funded households (`ECON-14-C`).** A scenario whose arrivals include pension-funded
-   elder households runs one year. Pension and child-support transfers stay fully paid, elder
-   households have no empty-household days over the last 90 days, and the recurring city balance
-   stays positive. It covers the open pensioner-affordability question.
-
-Additional funded economic activities and the broader demand redesign move to later tracks; they
-are not part of `ECON-14`.
 
 ## Retired mechanisms
 

@@ -51,8 +51,9 @@ pub(crate) struct BusinessMarket {
     port_changed: Vec<u64>,
     port_generation: u64,
     port_checkpoint: Option<usize>,
+    pass_ports: PassPorts,
     port_available: Vec<usize>,
-    indices: Vec<ReachableBucketIndex>,
+    indices: PortIndices,
     revision: Option<(u64, u64, u32)>,
     visited: Vec<u64>,
     visit: u64,
@@ -91,7 +92,7 @@ impl BusinessMarket {
     pub(crate) fn copy_reservations_from(&mut self, source: &Self) {
         if self.revision != source.revision || self.access != source.access
             || self.identities.get(..source.identities.len()) != Some(source.identities.as_slice())
-            || self.indices.len() != source.indices.len() {
+            || self.indices.live.len() != source.indices.live.len() {
             // Refresh layout once, retaining account/journal capacity for the common
             // financial copy below. Prepared variants keep geometry, never old eligibility.
             self.access.clone_from(&source.access);
@@ -99,9 +100,12 @@ impl BusinessMarket {
             self.port_access.clone_from(&source.port_access);
             self.port_sites.clone_from(&source.port_sites);
             self.buyer_ports.clone_from(&source.buyer_ports);
-            self.indices.clone_from(&source.indices);
+            self.indices.live.clone_from(&source.indices.live);
+            self.indices.live_ports = source.indices.live_ports;
+            // Proposed ports follow the live ports; prepare_sites renumbers and re-indexes them.
+            self.indices.sites.clear();
             self.revision = source.revision;
-            self.sites.revision = None;
+            self.sites.layout = None;
             #[cfg(test)]
             {
                 self.index_builds = source.index_builds;
@@ -333,13 +337,13 @@ impl BusinessMarket {
                     };
                 });
         }
-        if changed || self.indices.len() != resources {
+        if changed || self.indices.live.len() != resources {
             self.profiles.clear();
             self.profiles.extend(allocator.buildings.iter().map(|building| building.economy_profile_runtime_id));
             self.identities.clear();
             self.port_access.clear();
             self.port_sites.clear();
-            self.sites = Default::default();
+            self.sites.invalidate_layout();
             self.buyer_ports.resize(allocator.buildings.len(), 0..0);
             // Prefix ranges depend on the previous buyer; catalogue input order is stable.
             for (buyer, building) in allocator.buildings.iter().enumerate() {
@@ -351,7 +355,9 @@ impl BusinessMarket {
             }
             self.port_access.extend(self.identities.iter().map(|&(buyer, _)| self.access[buyer]));
             self.port_sites.resize(self.identities.len(), None);
-            self.rebuild_indices(resources);
+            self.indices.live_ports = self.identities.len();
+            self.indices.sites.clear();
+            self.rebuild_indices(resources, false);
         }
         self.reset_accounts();
         self.revision = Some(revision);
@@ -381,7 +387,7 @@ impl BusinessMarket {
     pub(crate) fn prepare_possible_buyers(&mut self,
         possible: impl Fn(usize, u16) -> Option<f64> + Sync) {
         let identities = &self.identities;
-        self.indices.par_iter_mut().for_each(|index| index.reset_member_counts(|port| {
+        self.indices.live.par_iter_mut().for_each(|index| index.reset_member_counts(|port| {
             let (owner, resource) = identities[port];
             possible(owner, resource)
         }));
@@ -394,14 +400,14 @@ impl BusinessMarket {
         let Some(port) = self.buyer_ports[buyer].clone()
             .find(|&port| self.identities[port].1 == resource) else { return; };
         for &component in self.port_access[port].components.as_slice() {
-            if self.indices[resource as usize].remove_counted_member(component) { empty(component); }
+            if self.indices.live[resource as usize].remove_counted_member(component) { empty(component); }
         }
     }
 
     /// Conservative customer presence in either seller entrance component, in O(log components).
     /// Positive counts cannot establish directed reachability, purchases or financing.
     pub(crate) fn has_possible_buyers(&self, seller: usize, resource: u16) -> bool {
-        self.indices[resource as usize].has_counted_members(self.access[seller].components)
+        self.indices.live[resource as usize].has_counted_members(self.access[seller].components)
     }
 
     /// Marks a counted input's unit totals stale, visiting each newly marked component.
@@ -411,7 +417,7 @@ impl BusinessMarket {
         let Some(port) = self.buyer_ports[buyer].clone()
             .find(|&port| self.identities[port].1 == resource) else { return; };
         for &component in self.port_access[port].components.as_slice() {
-            if self.indices[resource as usize].mark_member_units(component) { marked(component); }
+            if self.indices.live[resource as usize].mark_member_units(component) { marked(component); }
         }
     }
 
@@ -420,14 +426,14 @@ impl BusinessMarket {
     pub(crate) fn recount_possible_input(&mut self, resource: u16, component: u32,
         units: impl Fn(usize) -> Option<f64>) {
         let identities = &self.identities;
-        self.indices[resource as usize].recount_member_units(component,
+        self.indices.live[resource as usize].recount_member_units(component,
             |port| units(identities[port].0));
     }
 
     /// Counted buyers and an upper bound on their purchases in either seller entrance
     /// component, in O(log components). A buyer reachable through both may count twice.
     pub(crate) fn possible_demand(&self, seller: usize, resource: u16) -> (usize, f64) {
-        self.indices[resource as usize].counted_units(self.access[seller].components)
+        self.indices.live[resource as usize].counted_units(self.access[seller].components)
     }
 
     /// Account count and retained arena/mapping capacities for replacement scaling checks.
@@ -459,7 +465,7 @@ impl BusinessMarket {
             self.account_available[slot] = available;
             self.port_available[port] += usize::from(available);
         }
-        self.indices.par_iter_mut().for_each(|index| {
+        self.indices.all_mut().for_each(|index| {
             index.reset_available(|port| self.port_available[port] > 0)
         });
         self.visited.resize(self.identities.len(), 0);
@@ -505,19 +511,23 @@ impl BusinessMarket {
         let mut sales = BusinessSales::default();
         let mask = if joint { None } else { self.finance_query_mask(resource, price) };
         if mask.is_some() { self.refresh_finance_masks(); }
-        let Some(index) = self.indices.get(resource as usize) else {
+        let Some(live) = self.indices.live.get(resource as usize) else {
             return sales;
         };
-        if requested <= 0.0 || !index.has_available() {
+        let site = self.indices.sites.get(resource as usize);
+        if requested <= 0.0 || !(live.has_available() || site.is_some_and(ReachableBucketIndex::has_available)) {
             return sales;
         }
+        let both = [live, site.unwrap_or(live)];
+        let indices = &both[..1 + usize::from(site.is_some())];
         self.visit = self.visit.wrapping_add(1);
         if self.visit == 0 {
             self.visited.par_iter_mut().for_each(|visit| *visit = 0);
             self.visit = 1;
         }
         let reached = components.entrance_components(entrance, graph, TransitFlags::CAR);
-        index.scan_nearest_masked(reached, entrance.door_pos.x, entrance.door_pos.y, mask, |event| {
+        ReachableBucketIndex::scan_nearest_masked_over(indices, reached, entrance.door_pos.x,
+            entrance.door_pos.y, mask, |event| {
             let ReachableBucketScanEvent::Item { item_idx: port } = event else {
                 return true;
             };
@@ -761,9 +771,119 @@ impl BusinessMarket {
         self.sync_staged(true);
         self.budgets.reject();
     }
+
+    /// Live-book state a later census or pass reads, for exact pass-rollback checks. Finance
+    /// masks are a conservative pruning cache: claims also test availability and exact
+    /// affordability, so a wider mask only adds rejected visits. The check requires the
+    /// refreshed live masks to contain every exact bit, then fingerprints the exact masks.
+    /// Proposed-site rows and scan scratch are planner-owned and excluded.
+    #[cfg(test)]
+    pub(crate) fn live_fingerprint_for_test(&self) -> Vec<(&'static str, u64)> {
+        let mut market = self.clone();
+        market.refresh_finance_masks();
+        let cached = market.port_masks.clone();
+        market.reset_finance_masks();
+        assert!(cached.iter().zip(&market.port_masks).all(|(cached, exact)| cached & exact == *exact),
+            "finance masks may be wider than exact, never narrower");
+        let live = market.indices.live_ports;
+        let b = &market.budgets;
+        crate::debug_fingerprint!("accounts" => b.accounts, "buyer_accounts" => b.buyer_accounts,
+            "buyer_tails" => b.buyer_tails, "finance" => b.finance, "committed" => b.committed,
+            "owners" => b.owners, "free_receipt" => b.free_receipt, "staged_slots" => b.staged_slots,
+            "finance_staged" => b.finance_staged, "access" => market.access, "profiles" => market.profiles,
+            "identities" => market.identities[..live], "port_access" => market.port_access[..live],
+            "buyer_ports" => market.buyer_ports, "account_ports" => market.account_ports,
+            "account_available" => market.account_available, "port_available" => market.port_available[..live],
+            "port_masks" => market.port_masks[..live], "indices" => market.indices.live,
+            "revision" => market.revision)
+    }
+
+    /// Opens a planning pass directly on this live market. Proposals nest ordinary proofs
+    /// inside it; [`Self::end_pass`] restores the live book bit for bit. O(1) amortized.
+    pub(crate) fn begin_pass(&mut self) {
+        self.budgets.begin_pass();
+        let pass = &mut self.pass_ports;
+        pass.generation = pass.generation.wrapping_add(1);
+        if pass.generation == 0 {
+            pass.seen.fill(0);
+            pass.generation = 1;
+        }
+        pass.seen.resize(self.account_ports.len(), 0);
+        pass.checkpoint = Some(self.account_ports.len());
+    }
+
+    /// Rejects any open quote or proof, then restores every account, buyer, owner, receipt
+    /// and port mapping the pass changed, with exactly their bucket eligibility. Appended
+    /// project rows are truncated; proposed-site geometry stays prepared. O(touched rows).
+    pub(crate) fn end_pass(&mut self) {
+        self.reject_revalidation();
+        self.reject();
+        let Some((accounts, buyers)) = self.budgets.pass_extent() else { return; };
+        let dirty = &mut self.dirty_buyers;
+        let flags = &mut self.buyer_dirty;
+        self.budgets.visit_pass_buyers(|buyer| if buyer < buyers { finance_masks::mark_dirty(dirty, flags, buyer) });
+        let access = &self.port_access;
+        let indices = &mut self.indices;
+        let ports = &mut self.account_ports;
+        let available = &mut self.account_available;
+        let counts = &mut self.port_available;
+        // Re-pointed tranches leave their pass port before returning to the original one.
+        for &(slot, port) in &self.pass_ports.saved {
+            let resource = self.budgets.accounts[slot].resource;
+            sync_account(indices, access[ports[slot]], ports, available, counts, slot, resource, false);
+            ports[slot] = port;
+            if !self.budgets.pass_saved_account(slot) {
+                let account = self.budgets.accounts[slot];
+                sync_account(indices, access[port], ports, available, counts, slot, account.resource,
+                    account.units > 0.0);
+            }
+        }
+        self.budgets.visit_pass_accounts(|slot, account| {
+            sync_account(indices, access[ports[slot]], ports, available, counts, slot, account.resource,
+                account.units > 0.0);
+        });
+        self.budgets.end_pass();
+        self.account_ports.truncate(accounts);
+        self.account_available.truncate(accounts);
+        self.account_masks.truncate(accounts);
+        self.pass_ports.saved.clear();
+        self.pass_ports.checkpoint = None;
+        self.dirty_buyers.retain(|&buyer| buyer < buyers);
+        self.buyer_dirty.truncate(buyers);
+    }
 }
 
-fn sync_account(indices: &mut [ReachableBucketIndex], access: Access,
+/// First-touch account-to-port mappings changed by a planning pass.
+#[derive(Clone, Debug, Default)]
+struct PassPorts {
+    checkpoint: Option<usize>,
+    generation: u64,
+    seen: Vec<u64>,
+    saved: Vec<(usize, usize)>,
+}
+
+/// Live buyer ports and proposed-site ports keep separate bucket indices. Site ports are
+/// numbered after every live port, so scanning live then site buckets reproduces the order
+/// of one merged index; site preparation never rebuilds the live index.
+#[derive(Clone, Debug, Default)]
+struct PortIndices {
+    live: Vec<ReachableBucketIndex>,
+    sites: Vec<ReachableBucketIndex>,
+    // First proposed-site port.
+    live_ports: usize,
+}
+
+impl PortIndices {
+    fn port_mut(&mut self, resource: u16, port: usize) -> &mut ReachableBucketIndex {
+        if port < self.live_ports { &mut self.live[resource as usize] } else { &mut self.sites[resource as usize] }
+    }
+
+    fn all_mut(&mut self) -> impl ParallelIterator<Item = &mut ReachableBucketIndex> {
+        self.live.par_iter_mut().chain(self.sites.par_iter_mut())
+    }
+}
+
+fn sync_account(indices: &mut PortIndices, access: Access,
     ports: &[usize], accounts: &mut [bool], counts: &mut [usize],
     slot: usize, resource: u16, available: bool) {
     if accounts[slot] == available { return; }
@@ -773,8 +893,8 @@ fn sync_account(indices: &mut [ReachableBucketIndex], access: Access,
     if available { counts[port] += 1; } else { counts[port] -= 1; }
     let available = counts[port] > 0;
     if previous == available { return; }
+    let index = indices.port_mut(resource, port);
     for &component in access.components.as_slice() {
-        indices[resource as usize].set_available(
-            ReachableBucketEntry::new(component, access.chunk, port), available);
+        index.set_available(ReachableBucketEntry::new(component, access.chunk, port), available);
     }
 }

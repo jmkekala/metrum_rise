@@ -30,6 +30,8 @@ pub struct ParcelStore {
     authored_count: usize,
     chunk_revisions: HashMap<(i32, i32), u64>,
     overlay_revision: u64,
+    // Storage order, geometry and zone profiles; occupancy and cell-lot tags excluded.
+    layout_revision: u64,
     next_id: u64,
 }
 
@@ -44,6 +46,7 @@ impl Default for ParcelStore {
             authored_count: 0,
             chunk_revisions: HashMap::new(),
             overlay_revision: 0,
+            layout_revision: 0,
             next_id: 1,
         }
     }
@@ -62,6 +65,16 @@ impl ParcelStore {
             min,
             max,
         );
+    }
+
+    /// Revision of storage order, geometry and zone profiles. Storage indices, and tables
+    /// derived from those parcel fields, stay valid while it is unchanged.
+    pub(crate) fn layout_revision(&self) -> u64 {
+        self.layout_revision
+    }
+
+    fn bump_layout_revision(&mut self) {
+        self.layout_revision = self.layout_revision.wrapping_add(1);
     }
 
     /// Returns dense storage; callers use parcel ids when order must survive local removal.
@@ -110,6 +123,7 @@ impl ParcelStore {
         self.authored_count = 0;
         self.chunk_revisions.clear();
         self.overlay_revision = self.overlay_revision.wrapping_add(1);
+        self.bump_layout_revision();
         self.next_id = 1;
     }
 
@@ -142,6 +156,7 @@ impl ParcelStore {
     ) {
         let parcel = ZoningParcel::new(id, geometry, zone_profile_runtime_id);
         let index = self.parcels.len();
+        self.bump_layout_revision();
         self.parcels.push(parcel);
         self.id_to_index.insert(id, index);
         self.index_parcel(index);
@@ -151,6 +166,7 @@ impl ParcelStore {
     /// Removes one known stable id, updating only its chunks and the moved storage slot.
     pub(crate) fn remove_local(&mut self, id: ParcelId) -> Option<ZoningParcel> {
         let index = self.id_to_index.remove(&id)?;
+        self.bump_layout_revision();
         let removed = self.parcels.swap_remove(index);
         self.authored_count -= usize::from(removed.cell_lot().is_none());
         let edge_slot = self.edge_slots.swap_remove(index);
@@ -181,6 +197,7 @@ impl ParcelStore {
         }
         self.next_id = self.next_id.max(id.raw().saturating_add(1)).max(1);
         let index = self.parcels.len();
+        self.bump_layout_revision();
         self.parcels.push(parcel);
         self.id_to_index.insert(id, index);
         self.index_parcel(index);
@@ -210,6 +227,7 @@ impl ParcelStore {
         });
         let removed = before - self.parcels.len();
         if removed > 0 {
+            self.bump_layout_revision();
             self.rebuild_indices();
         }
         removed
@@ -484,6 +502,7 @@ impl ParcelStore {
         parcel.set_zone_profile_runtime_id(runtime_id);
         let bounds = (parcel.aabb_min(), parcel.aabb_max());
         self.mark_overlay_bounds(bounds.0, bounds.1);
+        self.bump_layout_revision();
         true
     }
 
@@ -596,6 +615,7 @@ impl ParcelStore {
         }
         self.mark_overlay_bounds(old_min, old_max);
         self.mark_overlay_bounds(geometry.aabb_min, geometry.aabb_max);
+        self.bump_layout_revision();
         true
     }
 

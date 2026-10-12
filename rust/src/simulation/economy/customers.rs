@@ -261,6 +261,8 @@ impl ConsumerBudgets {
         self.free_receipt = source.free_receipt;
         self.releasing_owner = None;
         self.affordable_residents = source.affordable_residents;
+        crate::debug::work::add(crate::debug::work::Work::ReservationRowsCopied, (self.households.len()
+            + self.funds.len() + self.staged_slots.len() + self.committed.len() + self.owners.len()) as u64);
     }
 
     fn stage(&mut self, slot: usize) -> usize {

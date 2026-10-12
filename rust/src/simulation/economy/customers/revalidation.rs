@@ -15,6 +15,22 @@ pub(super) struct Revalidation {
     funds: Vec<(usize, Funds)>,
     owners: Vec<(usize, usize)>,
     receipts: Vec<(usize, Receipt)>,
+    pass: Pass,
+}
+
+/// First-touch snapshots of a whole planning pass over the live book. Proposal proofs nest
+/// inside it; temporary project owners and appended receipt cells are truncated instead.
+#[derive(Clone, Debug, Default)]
+struct Pass {
+    // Receipt count, free head and owner count before the pass.
+    checkpoint: Option<(usize, usize, usize)>,
+    generation: u64,
+    funds_seen: Vec<u64>,
+    owner_seen: Vec<u64>,
+    receipt_seen: Vec<u64>,
+    funds: Vec<(usize, Funds)>,
+    owners: Vec<(usize, usize)>,
+    receipts: Vec<(usize, Receipt)>,
 }
 
 impl Revalidation {
@@ -89,6 +105,11 @@ impl ConsumerBudgets {
     /// Retains the account's original quantity and spending before its first outer change.
     pub(super) fn journal_funds(&mut self, slot: usize) {
         let journal = &mut self.revalidation;
+        let pass = &mut journal.pass;
+        if pass.checkpoint.is_some() && pass.funds_seen[slot] != pass.generation {
+            pass.funds_seen[slot] = pass.generation;
+            pass.funds.push((slot, self.funds[slot]));
+        }
         if !journal.is_active() || journal.funds_seen[slot] == journal.generation { return; }
         journal.funds_seen[slot] = journal.generation;
         journal.funds.push((slot, self.funds[slot]));
@@ -97,6 +118,12 @@ impl ConsumerBudgets {
     /// Retains the original owner-chain head before committing any replacement receipts.
     pub(super) fn journal_owner(&mut self, owner: usize) {
         let journal = &mut self.revalidation;
+        let pass = &mut journal.pass;
+        if let Some((_, _, owners)) = pass.checkpoint && owner < owners
+            && pass.owner_seen[owner] != pass.generation {
+            pass.owner_seen[owner] = pass.generation;
+            pass.owners.push((owner, self.owners[owner]));
+        }
         if !journal.is_active() || journal.owner_seen[owner] == journal.generation { return; }
         journal.owner_seen[owner] = journal.generation;
         journal.owners.push((owner, self.owners[owner]));
@@ -105,10 +132,53 @@ impl ConsumerBudgets {
     /// Retains an original arena cell before recycling or changing its link.
     pub(super) fn journal_receipt(&mut self, index: usize) {
         let journal = &mut self.revalidation;
+        let pass = &mut journal.pass;
+        if let Some((len, _, _)) = pass.checkpoint && index < len && pass.receipt_seen[index] != pass.generation {
+            pass.receipt_seen[index] = pass.generation;
+            pass.receipts.push((index, self.committed[index]));
+        }
         let Some((len, _)) = journal.checkpoint else { return; };
         if index >= len || journal.receipt_seen[index] == journal.generation { return; }
         journal.receipt_seen[index] = journal.generation;
         journal.receipts.push((index, self.committed[index]));
+    }
+
+    /// Opens a planning pass over the live book in O(1) amortized; snapshot storage follows
+    /// the live row counts and is retained across passes.
+    pub(super) fn begin_pass(&mut self) {
+        debug_assert!(self.staged.is_empty() && !self.revalidation.is_active());
+        let pass = &mut self.revalidation.pass;
+        assert!(pass.checkpoint.is_none(), "planning passes do not nest");
+        pass.generation = pass.generation.wrapping_add(1);
+        if pass.generation == 0 {
+            pass.funds_seen.fill(0);
+            pass.owner_seen.fill(0);
+            pass.receipt_seen.fill(0);
+            pass.generation = 1;
+        }
+        pass.funds_seen.resize(self.funds.len(), 0);
+        pass.owner_seen.resize(self.owners.len(), 0);
+        pass.receipt_seen.resize(self.committed.len(), 0);
+        pass.checkpoint = Some((self.committed.len(), self.free_receipt, self.owners.len()));
+    }
+
+    /// Visits each pass-touched account with its pre-pass quantity and spending.
+    pub(super) fn visit_pass_funds(&self, mut visit: impl FnMut(usize, Funds)) {
+        for &(slot, funds) in &self.revalidation.pass.funds { visit(slot, funds); }
+    }
+
+    /// Restores every pre-pass account, owner head and receipt cell the pass changed and
+    /// truncates temporary owners and appended cells. O(touched rows).
+    pub(super) fn end_pass(&mut self) {
+        debug_assert!(self.staged.is_empty() && !self.revalidation.is_active());
+        let pass = &mut self.revalidation.pass;
+        let Some((len, free, owners)) = pass.checkpoint.take() else { return; };
+        for (slot, funds) in pass.funds.drain(..) { self.funds[slot] = funds; }
+        for (owner, first) in pass.owners.drain(..) { self.owners[owner] = first; }
+        for (index, receipt) in pass.receipts.drain(..) { self.committed[index] = receipt; }
+        self.committed.truncate(len);
+        self.free_receipt = free;
+        self.owners.truncate(owners);
     }
 }
 

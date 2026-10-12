@@ -21,7 +21,7 @@ impl ZoningSystem {
             .parcels
             .set_occupied_building(ParcelId::from_raw(parcel_id), building_idx);
         if changed {
-            self.bump_overlay_occupancy_revision();
+            self.record_parcel_occupancy_change(parcel_id);
         }
         changed
     }
@@ -33,7 +33,7 @@ impl ZoningSystem {
             .clear_occupied_building(ParcelId::from_raw(parcel_id));
         if changed {
             self.release_invalid_empty_cell_lot(ParcelId::from_raw(parcel_id));
-            self.bump_overlay_occupancy_revision();
+            self.record_parcel_occupancy_change(parcel_id);
         }
         changed
     }
@@ -53,7 +53,7 @@ impl ZoningSystem {
             .parcels
             .set_occupied_building(ParcelId::from_raw(parcel_id), building_idx);
         if changed {
-            self.bump_overlay_occupancy_revision();
+            self.record_parcel_occupancy_change(parcel_id);
         }
         changed
     }
@@ -65,7 +65,7 @@ impl ZoningSystem {
             .parcels
             .remap_occupied_building(ParcelId::from_raw(parcel_id), old_idx, new_idx)
         {
-            self.bump_overlay_occupancy_revision();
+            self.record_parcel_occupancy_change(parcel_id);
         }
     }
 

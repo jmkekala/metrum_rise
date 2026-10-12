@@ -62,8 +62,8 @@ costs.
    - over the last 90 days: no empty-household days, no unpaid household transfers and a
      positive recurring city balance.
 
-   The mine is sized within what the `ECON-14` producer matrix found to stay supplied for a year.
-   Mine depletion and contraction stay with `ECON-14`.
+   The mine is sized within what the `producer_balance_matrix` found to stay supplied for a year.
+   Mine depletion and contraction are outside `DEM-02`.
 2. **10k time budget (`DEM-02-B`).** The [`ECON-13` recipe](economy.md#econ-13-economy-tick-baseline)
    (`cargo bench --bench economy_tick_benchmark -- /10k`, `RAYON_NUM_THREADS=8`, pinned CPUs,
    unprofiled release) measures at most **40 ms** per mean hour and **10 ms** per mean day. The
@@ -178,7 +178,8 @@ later viable proposal is not hidden.
 
 - **Hourly demand pass:** runs after each completed operational hour at minutes other than 0
   (`SimCore::execute_hourly_demand_pass`). It plans projects, admits households, executes level
-  changes and clearances, and queues new construction.
+  changes and clearances, and queues new construction. Its proposals are provisional: the live
+  economic books it plans on are restored before it returns.
 - **Daily pass:** runs at minute 0, after the daily economy settlement. It plans household
   departures from the settled snapshot; removals execute at once. The minute-0 hourly demand pass
   then runs, so each day has 24 hourly slices without reading pre-settlement state.
@@ -371,10 +372,21 @@ claim only unemployed adults and already-ready homes.
 Accepted new construction is appended to a minute queue (one start per minute). Queued projects
 keep their claims and their prepared door.
 
-Prepared supplier/buyer variants retain their entrance geometry across live-book forks only
-when exact door coordinates, frontage edge/side, lane revision and CCH generation match.
-Owner remaps and changed asset anchors must pass those same checks. This reuse does not retain
-old financing, change candidate order or move job-lock expiry.
+Prepared supplier/buyer variants are rows owned by a live building or an available parcel.
+Between passes only the owners named by the allocator's building log and zoning's occupancy log
+are regenerated; other rows move unchanged, and parcel rows are renumbered when the building
+count changes. Registry, zoning-overlay, parcel-layout, lane and CCH changes regenerate every row.
+Regenerated rows still reuse entrance geometry only when exact door coordinates, frontage
+edge/side, lane revision and CCH generation match. Rows keep the full rebuild's owner/key order,
+so candidate order, financing and job-lock expiry are unchanged.
+
+The hourly pass plans directly on the live customer, business and input books when the
+employment census is current (the usual case). It opens one first-touch transaction per book,
+nests each proposal's ordinary proof inside it, and restores every changed row, link, port
+mapping and bucket entry when it closes. Temporary project owners and appended rows are
+truncated. The planner borrows its own walking proofs, as its former copy of the books had.
+A stale census still plans on a separate census and copy. Test builds compare full book
+fingerprints after every such pass.
 
 Before placing a project and spending its owner equity, the minute executor revalidates:
 - placed housing and unemployed adults;
