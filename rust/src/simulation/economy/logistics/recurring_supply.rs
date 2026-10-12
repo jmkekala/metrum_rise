@@ -96,6 +96,8 @@ pub(crate) struct RecurringSupply {
     offers: Vec<Offer>,
     input_offers: Vec<InputOffers>,
     nearest_incumbents: Vec<Option<usize>>,
+    #[cfg(test)]
+    search_counts: [u64; 6],
     // Placed source doors, packed for the straight-line prune of every scanned candidate.
     doors: Vec<Option<godot::prelude::Vector2>>,
     index: SupplierCandidateIndex,
@@ -104,6 +106,11 @@ pub(crate) struct RecurringSupply {
 }
 
 impl RecurringSupply {
+    /// Diagnostic totals: nearest searches, candidate visits, route quotes, region/ring
+    /// checks, retained-offer hits and staffing retries. Production carries no counters.
+    #[cfg(test)]
+    pub(crate) fn search_counts_for_test(&self) -> [u64; 6] { self.search_counts }
+
     /// Prepares temporary project owners outside input quotation loops.
     pub(crate) fn prepare_owners(&mut self, owners: usize, input_ports: usize) {
         if self.owner_receipts.len() < owners {
@@ -182,16 +189,25 @@ impl RecurringSupply {
         debug_assert!(!self.revalidation.is_active() && !source.revalidation.is_active());
         debug_assert!(!source.projected_enabled(), "construction forks the live supply census");
         if geometry_revision(self.revision) != geometry_revision(source.revision) {
-            *self = source.clone();
-            // Vec cloning preserves contents, not spare capacity. Prepare the empty quote
-            // journals here so the first proposal does not allocate inside its port loop.
-            self.staged.reserve(self.remaining.len());
-            self.released.reserve(self.remaining.len());
-            self.offers.reserve(self.remaining.len());
-            self.committed.reserve(self.receipt_capacity.saturating_sub(self.committed.len()));
+            // Layout changes need fresh membership, not a second financial copy or loss
+            // of the larger project arenas prepared by the preceding construction pass.
+            self.offsets.clone_from(&source.offsets);
+            self.active.clone_from(&source.active);
+            self.doors.clone_from(&source.doors);
+            self.index.clone_from(&source.index);
+            self.components.clone_from(&source.components);
+            self.nearest_incumbents.clone_from(&source.nearest_incumbents);
+            self.receipt_capacity = self.receipt_capacity.max(source.receipt_capacity);
+            self.staged.reserve(source.remaining.len());
+            self.released.reserve(source.remaining.len());
+            self.offers.reserve(source.remaining.len());
             self.prices.reserve(catalog.resource_count());
             self.input_offers.reserve(catalog.resource_count());
-            return;
+            #[cfg(test)]
+            {
+                self.discard_receipt_estimate = source.discard_receipt_estimate;
+                self.search_counts = source.search_counts;
+            }
         }
         self.revision = source.revision;
         self.max_speed = source.max_speed;
@@ -587,6 +603,8 @@ impl RecurringSupply {
     /// No other operation may mutate this book between retries. Each cached list advances
     /// in O(1) per offer; clearing a retry costs O(claims * log bucket size + input ports).
     pub(crate) fn retry(&mut self, allocator: &BuildingAllocator, graph: &RegionGraph) {
+        #[cfg(test)]
+        { self.search_counts[5] += 1; }
         while let Some(claim) = self.staged.pop() {
             self.restore(claim, allocator, graph);
         }
@@ -1088,6 +1106,8 @@ impl RecurringSupply {
             let offer = self.offers[self.input_offers[list].next];
             self.input_offers[list].next = offer.next;
             if self.remaining[offer.slot] > 0.0 {
+                #[cfg(test)]
+                { self.search_counts[4] += 1; }
                 return Some((offer.source, offer.slot, offer.seconds));
             }
         }
@@ -1134,6 +1154,8 @@ impl RecurringSupply {
             self.components
                 .as_ref()?
                 .entrance_components(entrance, graph, TransitFlags::CAR);
+        #[cfg(test)]
+        let mut counts = [1, 0, 0, 0];
         // Reprice the preceding buyer's supplier as an initial upper bound. Every
         // candidate that can beat it is still checked, so this changes search cost,
         // never route eligibility or deterministic route/price/index ordering.
@@ -1147,6 +1169,8 @@ impl RecurringSupply {
                     || Some(self.source_owner(source)) == excluded {
                     return None;
                 }
+                #[cfg(test)]
+                { counts[2] += 1; }
                 let seconds = self.source_route(source, buyer, entrance, allocator, network, graph, routes)?;
                 Some((source, slot, seconds))
             });
@@ -1158,6 +1182,8 @@ impl RecurringSupply {
                 entrance.door_pos.y,
                 |event| match event {
                     BoundedScanEvent::Item { item_idx: source } => {
+                        #[cfg(test)]
+                        { counts[1] += 1; }
                         if Some(self.source_owner(source)) == buyer
                             || Some(self.source_owner(source)) == excluded
                             || best.is_some_and(|best| best.0 == source)
@@ -1188,6 +1214,8 @@ impl RecurringSupply {
                         if self.remaining[slot] <= 0.0 {
                             return true;
                         }
+                        #[cfg(test)]
+                        { counts[2] += 1; }
                         let seconds = self.source_route(source, buyer, entrance, allocator, network, graph, routes);
                         if let Some(seconds) = seconds {
                             // Equal routes have the same carrier fee. Only read prices on
@@ -1211,14 +1239,19 @@ impl RecurringSupply {
                     }
                     // Every member of a rejected region fails the item prune above.
                     BoundedScanEvent::Region { min_distance_sq: next_min_distance_sq }
-                    | BoundedScanEvent::RingComplete { next_min_distance_sq } =>
+                    | BoundedScanEvent::RingComplete { next_min_distance_sq } => {
+                        #[cfg(test)]
+                        { counts[3] += 1; }
                         best.is_none_or(|(_, _, seconds)| {
                             lower_bound_travel_seconds(next_min_distance_sq, self.max_speed) <= seconds
-                        }),
+                        })
+                    },
                 },
             );
         }
         self.nearest_incumbents[resource as usize] = best.map(|(source, _, _)| source);
+        #[cfg(test)]
+        for (total, count) in self.search_counts.iter_mut().zip(counts) { *total += count; }
         best
     }
 }

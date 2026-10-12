@@ -250,6 +250,9 @@ fn overlaps_parcels(
     parcels: &crate::simulation::zoning::ParcelStore,
     corners: &[DVec2; 4],
 ) -> bool {
+    if !parcels.has_authored_parcels() {
+        return false;
+    }
     let bounds = CellBounds::from_points(*corners);
     // Outward conversion keeps chunk-boundary candidates when Godot's f32 representation
     // rounds a micrometre-normalized cell vertex toward the query interior.

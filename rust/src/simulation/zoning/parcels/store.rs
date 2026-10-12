@@ -12,6 +12,7 @@ use super::geometry::{
 };
 use super::types::{ParcelGeometry, ParcelId, ZoningParcel};
 use crate::simulation::agriculture::PolygonFootprint;
+use crate::simulation::zoning::cells::CellLot;
 use godot::prelude::{Vector2, Vector3};
 use std::collections::{HashMap, HashSet};
 
@@ -24,6 +25,9 @@ pub struct ParcelStore {
     edge_index: HashMap<usize, Vec<ParcelId>>,
     // Parallel to dense parcels: each record's slot in its edge's unordered membership list.
     edge_slots: Vec<usize>,
+    // Cell lots do not exclude generated cells; avoid querying their dense chunks when
+    // no authored parcel exists. Updated with insertion, classification and removal.
+    authored_count: usize,
     chunk_revisions: HashMap<(i32, i32), u64>,
     overlay_revision: u64,
     next_id: u64,
@@ -37,6 +41,7 @@ impl Default for ParcelStore {
             chunk_index: HashMap::new(),
             edge_index: HashMap::new(),
             edge_slots: Vec::new(),
+            authored_count: 0,
             chunk_revisions: HashMap::new(),
             overlay_revision: 0,
             next_id: 1,
@@ -81,6 +86,20 @@ impl ParcelStore {
         self.parcels.get_mut(index)
     }
 
+    /// Whether any non-cell parcel can exclude generated cells, in O(1).
+    pub(crate) fn has_authored_parcels(&self) -> bool {
+        self.authored_count != 0
+    }
+
+    /// Installs cell ownership while keeping the authored-parcel summary exact.
+    pub(crate) fn set_cell_lot(&mut self, id: ParcelId, lot: CellLot) {
+        if let Some(&index) = self.id_to_index.get(&id) {
+            let parcel = &mut self.parcels[index];
+            self.authored_count -= usize::from(parcel.cell_lot().is_none());
+            parcel.set_cell_lot(lot);
+        }
+    }
+
     /// Removes all parcels and resets id allocation.
     pub fn clear(&mut self) {
         self.parcels.clear();
@@ -88,6 +107,7 @@ impl ParcelStore {
         self.chunk_index.clear();
         self.edge_index.clear();
         self.edge_slots.clear();
+        self.authored_count = 0;
         self.chunk_revisions.clear();
         self.overlay_revision = self.overlay_revision.wrapping_add(1);
         self.next_id = 1;
@@ -132,6 +152,7 @@ impl ParcelStore {
     pub(crate) fn remove_local(&mut self, id: ParcelId) -> Option<ZoningParcel> {
         let index = self.id_to_index.remove(&id)?;
         let removed = self.parcels.swap_remove(index);
+        self.authored_count -= usize::from(removed.cell_lot().is_none());
         let edge_slot = self.edge_slots.swap_remove(index);
         if let Some(moved) = self.parcels.get(index) {
             self.id_to_index.insert(moved.id(), index);
@@ -580,6 +601,7 @@ impl ParcelStore {
 
     fn index_parcel(&mut self, index: usize) {
         let parcel = &self.parcels[index];
+        self.authored_count += usize::from(parcel.cell_lot().is_none());
         let ids = self.edge_index.entry(parcel.edge_idx()).or_default();
         self.edge_slots.push(ids.len());
         ids.push(parcel.id());
@@ -626,6 +648,7 @@ impl ParcelStore {
         self.chunk_index.clear();
         self.edge_index.clear();
         self.edge_slots.clear();
+        self.authored_count = 0;
         for (idx, parcel) in self.parcels.iter().enumerate() {
             self.id_to_index.insert(parcel.id(), idx);
         }

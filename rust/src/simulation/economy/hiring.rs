@@ -103,6 +103,31 @@ struct InputFunding<'a> {
     goods_multiplier: f32,
 }
 
+// Diagnostic counters are absent from gameplay builds. Aggregate once per operation,
+// including Rayon import ceilings; detailed tracing alone enables the extra lower-cost quote.
+#[cfg(test)]
+static FUNDING_SEARCH_COUNTS: [std::sync::atomic::AtomicU64; 14] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 14];
+
+#[cfg(test)]
+struct FundingSearchTrace {
+    enabled: bool,
+    local: bool,
+    // Operations, trial plans, capital rejects, profit rejects, free-input profit rejects,
+    // accepted plans, missing entrance. Counters are cumulative for phase-trace subtraction.
+    counts: [u64; 7],
+}
+
+#[cfg(test)]
+impl Drop for FundingSearchTrace {
+    fn drop(&mut self) {
+        if !self.enabled { return; }
+        for (total, count) in FUNDING_SEARCH_COUNTS[usize::from(self.local) * 7..].iter().zip(self.counts) {
+            total.fetch_add(count, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
 impl InputFunding<'_> {
     fn costs(
         &mut self,
@@ -418,9 +443,10 @@ impl JobFunding {
         service_capacity: impl Fn(usize, u32, &EconomyProfileRuntime) -> u32 + Sync,
         minute_of_day: u16,
     ) {
-        let timing = crate::debug::category_enabled("economy");
+        let timing_category = if crate::debug::category_enabled("economy_phases") { "economy_phases" } else { "economy" };
+        let timing = crate::debug::category_enabled(timing_category);
         let mut phase = timing.then(std::time::Instant::now);
-        let mut times = [0.0; 7];
+        let mut times = [0.0; 11];
         let mut lap = |slot: usize| {
             if let Some(previous) = phase {
                 times[slot] += previous.elapsed().as_secs_f64() * 1000.0;
@@ -835,37 +861,52 @@ impl JobFunding {
                 }
             }
         }
+        lap(6);
         self.household_quotes.finish_pass(&mut self.customers, &household_census);
         for index in 0..count {
             self.input_supply.publish_funded_activity(index, self.offered_activity[index],
                 self.activities[index], allocator, catalog, graph);
         }
         self.reserve_household_production(allocator, catalog, graph, false);
+        lap(7);
         // Withdrawn provisional suppliers can still own input receipts until the next
         // quotation. Those invalid purchases hide customers from alternative suppliers;
         // using them to lower permanent worker ceilings can strand a fully financed chain.
         // Requote physical claims first, then derive ceilings from a consistent input book.
-        if (!self.input_supply.has_overclaims()
+        let repaired = !self.input_supply.has_overclaims()
             || self.repair_provisional_inputs(allocator, logistics, network, graph,
-                catalog, tuning, fiscal, minute_of_day))
-            && !self.validate_business_customers(allocator, logistics, network, graph,
-                catalog, tuning, fiscal, minute_of_day, inputs) {
+                catalog, tuning, fiscal, minute_of_day);
+        lap(8);
+        let settled = repaired && !self.validate_business_customers(allocator, logistics, network, graph,
+                catalog, tuning, fiscal, minute_of_day, inputs);
+        lap(9);
+        if settled {
             self.publish_business_deliveries(allocator, catalog, graph);
+            lap(7);
             break;
         }
         self.propagate_impossible_customers(allocator, network, graph, catalog, tuning);
         self.offered_activity.clone_from(&self.activities);
         // Attribute failed local proofs to this pass before the next import pass starts.
-        lap(6);
+        lap(10);
         }
-        lap(6);
-        if timing { log_funding_times(count, minute_of_day, &times); }
+        lap(10);
+        if timing { log_funding_times(timing_category, count, minute_of_day, &times); }
+        #[cfg(test)]
+        if timing {
+            crate::debug_log!(timing_category, "funding_census_detail passes={} propagation_rounds={}",
+                self.closure_passes, self.propagation_rounds);
+            let searches = FUNDING_SEARCH_COUNTS.each_ref().map(|count|
+                count.load(std::sync::atomic::Ordering::Relaxed));
+            crate::debug_log!(timing_category, "funding_search_detail counts={:?}", searches);
+        }
     }
 }
 
-fn log_funding_times(buildings: usize, minute: u16, times: &[f64; 7]) {
-    crate::debug_log!("economy", "funding_detail buildings={} minute={} routes_ms={:.3} market_ms={:.3} customers_ms={:.3} import_funding_ms={:.3} household_claims_ms={:.3} sources_ms={:.3} local_funding_ms={:.3}",
-        buildings, minute, times[0], times[1], times[2], times[3], times[4], times[5], times[6]);
+fn log_funding_times(category: &str, buildings: usize, minute: u16, times: &[f64; 11]) {
+    crate::debug_log!(category, "funding_detail buildings={} minute={} routes_ms={:.3} market_ms={:.3} customers_ms={:.3} import_funding_ms={:.3} household_claims_ms={:.3} sources_ms={:.3} local_funding_ms={:.3} staffing_ms={:.3} publish_ms={:.3} repair_ms={:.3} business_ms={:.3} propagate_ms={:.3}",
+        buildings, minute, times[0], times[1], times[2], times[3], times[4], times[5],
+        times[6..].iter().sum::<f64>(), times[6], times[7], times[8], times[9], times[10]);
 }
 
 #[cfg(test)]
@@ -1134,6 +1175,11 @@ fn funded_private_operation(
     ceiling: u32,
     activity_ceiling: f32,
 ) -> (u32, f32) {
+    #[cfg(test)]
+    let mut trace = FundingSearchTrace {
+        enabled: crate::debug::category_enabled("economy_phases"),
+        local: supply.is_some(), counts: [1, 0, 0, 0, 0, 0, 0],
+    };
     if supply.is_none() { *headroom = [0.0; 2]; }
     let area = output_area_scale_for_building(building, profile);
     let sales = ProvisionalSales { profile, catalog, area, market, household: consumer_units, export_multiplier };
@@ -1179,6 +1225,15 @@ fn funded_private_operation(
     // keeps a local plan's released receipts provisional until replacement is accepted.
     let retained = supply.as_ref().map_or((0, 0.0), |context| context.retained);
     for workers in (retained.0.max(1)..=desired).rev() {
+        #[cfg(test)]
+        if trace.enabled {
+            trace.counts[1] += 1;
+            let activity = market_activity.min(workers as f32 / physical.max(1) as f32);
+            let free_inputs = OperatingCosts::for_plan_with_input_quotes(profile,
+                OperationPlan { workers, activity, area }, prices,
+                |resource, units| sales.export_units(resource, units), |_| Default::default());
+            trace.counts[4] += u64::from(sales.revenue(activity) <= free_inputs.total());
+        }
         let costs = if let Some(context) = supply.as_mut() {
             let Some(costs) = context.costs(
                 profile,
@@ -1191,6 +1246,8 @@ fn funded_private_operation(
                 prices,
                 |resource, units| sales.export_units(resource, units),
             ) else {
+                #[cfg(test)]
+                if trace.enabled { trace.counts[6] += 1; }
                 break;
             };
             costs
@@ -1209,11 +1266,15 @@ fn funded_private_operation(
             imported_capital
         };
         if f64::from(costs.working_capital) > capital {
+            #[cfg(test)]
+            if trace.enabled { trace.counts[2] += 1; }
             continue;
         }
         let activity = market_activity.min(workers as f32 / physical.max(1) as f32);
         let revenue = sales.revenue(activity);
         if revenue > costs.total() {
+            #[cfg(test)]
+            if trace.enabled { trace.counts[5] += 1; }
             *headroom = [f64::from(revenue) - f64::from(costs.total()),
                 capital - f64::from(costs.working_capital)];
             if let Some(context) = supply.as_mut() {
@@ -1221,6 +1282,8 @@ fn funded_private_operation(
             }
             return (workers, activity);
         }
+        #[cfg(test)]
+        if trace.enabled { trace.counts[3] += 1; }
     }
     if let Some(context) = supply.as_mut() {
         context.supply.reject(context.allocator, context.graph);

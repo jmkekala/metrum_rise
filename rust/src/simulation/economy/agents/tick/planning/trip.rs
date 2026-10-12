@@ -289,7 +289,8 @@ pub(crate) fn estimate_building_origin_trip_seconds(
     }
 }
 
-/// Every walking and driving end of one building entrance, by node rank.
+/// Prepared ends of one building entrance, by mode and node rank. Ordinary constructors
+/// include walking and driving; walking-proof constructors leave driving slots empty.
 ///
 /// Built once per building and reused for each trip estimate to or from it.
 #[derive(Clone, Copy, Debug, Default)]
@@ -319,6 +320,16 @@ impl BuildingTripEnds {
         Self::new(building, false, allocator, transit_network, graph)
     }
 
+    /// Walking departure/arrival geometry for feasibility proofs, without projecting car
+    /// lanes. General routing must still use the ordinary all-mode ends on a failed proof.
+    pub(crate) fn walking_pair(building: usize, allocator: &BuildingAllocator,
+        network: &TransitNetwork, graph: &RegionGraph) -> [Self; 2] {
+        if building >= allocator.buildings.len() || building >= allocator.entrances.len() {
+            return Default::default();
+        }
+        Self::walking_pair_at_entrance(&allocator.entrances[building], network, graph)
+    }
+
     fn new(
         building: usize,
         origin: bool,
@@ -341,11 +352,27 @@ impl BuildingTripEnds {
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
     ) -> Self {
+        Self::at_entrance_for_modes(entrance, origin, transit_network, graph, &[MODE_WALK, MODE_CAR])
+    }
+
+    /// Pedestrian departure/arrival ends of an actual or proposed door, sharing projection.
+    /// Car fallback must prepare the complete ends through [`Self::at_entrance`].
+    pub(crate) fn walking_pair_at_entrance(entrance: &BuildingEntrance,
+        network: &TransitNetwork, graph: &RegionGraph) -> [Self; 2] {
+        TripEnd::pair(MODE_WALK, entrance, network, graph).map(|walk| {
+            let mut ends = Self::default();
+            ends.ends[usize::from(MODE_WALK)] = walk;
+            ends
+        })
+    }
+
+    fn at_entrance_for_modes(entrance: &BuildingEntrance, origin: bool,
+        transit_network: &TransitNetwork, graph: &RegionGraph, modes: &[u8]) -> Self {
         let mut ends = Self::default();
         if entrance.edge_idx >= graph.edge_count() || graph.edge(entrance.edge_idx).deleted {
             return ends;
         }
-        for mode in [MODE_WALK, MODE_CAR] {
+        for &mode in modes {
             for rank in NODE_RANKS {
                 ends.ends[usize::from(mode)][usize::from(rank)] =
                     TripEnd::new(mode, rank, entrance, origin, transit_network, graph);
@@ -398,6 +425,11 @@ impl BuildingTripEnds {
             }
         }
         false
+    }
+
+    /// Validated attachment nodes for both ranks of one travel mode, used by batch queries.
+    pub(crate) fn network_nodes(&self, mode: u8) -> [Option<u32>; 2] {
+        NODE_RANKS.map(|rank| self.get(mode, rank).map(|end| end.network_node()))
     }
 
     fn present(&self) -> impl Iterator<Item = &TripEnd> {

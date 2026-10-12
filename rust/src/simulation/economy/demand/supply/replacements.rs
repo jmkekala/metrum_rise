@@ -85,8 +85,7 @@ impl ProjectReservations {
     pub(super) fn reset_sites(&mut self, funding: &crate::simulation::economy::hiring::JobFunding,
         allocator: &BuildingAllocator, catalog: &RuntimeEconomyCatalog, tuning: &RuntimeEconomyTuning,
         minute: u16) {
-        self.sites.resize(allocator.buildings.len(), None);
-        self.sites.par_iter_mut().enumerate().for_each(|(owner, site)| {
+        self.sites[..allocator.buildings.len()].par_iter_mut().enumerate().for_each(|(owner, site)| {
             let building = &allocator.buildings[owner];
             *site = catalog.profile_by_runtime_id(building.economy_profile_runtime_id).map(|profile|
                 OperationSite { entrance: allocator.entrances.get(owner).cloned(), buyer: Some(owner),

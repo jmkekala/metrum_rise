@@ -339,6 +339,7 @@ fn queued_asymmetric_houses_publish_graded_terrain() {
                 }
             }
             for minute in 1..=6 {
+                let cells_before = core.zoning.cell_external_revision();
                 if explicit {
                     let pending = core.pending_demand_spawns.pop_front().unwrap();
                     let parcel = core
@@ -354,12 +355,16 @@ fn queued_asymmetric_houses_publish_graded_terrain() {
                         .unwrap();
                 } else {
                     assert_eq!(core.execute_pending_demand_spawns_for_minute(1, minute), 1);
+                    assert_eq!(core.zoning.cell_external_revision(), cells_before,
+                        "placing a building inside its reserved parcel cannot change cell exclusions");
                 }
                 assert_eq!(core.allocator.buildings.len(), usize::from(minute));
                 assert!(
                     core.allocator.take_pending_site_dirty_bounds().is_none(),
                     "all modes must consume the shared site-change outbox"
                 );
+                assert!(core.allocator.pop_pending_cell_site_dirty_bounds().is_none(),
+                    "explicit cell-exclusion events must publish with their site changes");
                 let keys: Vec<_> = core
                     .heightmap
                     .dirty_render_patches()

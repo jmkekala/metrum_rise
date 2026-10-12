@@ -192,6 +192,26 @@ impl TripEnd {
         })
     }
 
+    /// Departure/arrival ranks for one door and mode, projecting each lane only once.
+    /// Local geometry is direction-independent; node validity and frontage prices are not.
+    pub(super) fn pair(mode: u8, entrance: &BuildingEntrance,
+        network: &TransitNetwork, graph: &RegionGraph) -> [[Option<Self>; 2]; 2] {
+        let origins = NODE_RANKS.map(|rank| Self::new(mode, rank, entrance, true, network, graph));
+        let destinations = NODE_RANKS.map(|rank| {
+            let Some(origin) = origins[usize::from(1 - rank)] else {
+                return Self::new(mode, rank, entrance, false, network, graph);
+            };
+            let edge = graph.edge(entrance.edge_idx);
+            let node = if rank == 0 { edge.start_node } else { edge.end_node };
+            if lane_origin_node(origin.lane_id, network, graph) != Some(node) { return None; }
+            let pos = graph.node(node).pos;
+            Some(Self { node, node_x: pos.x, node_z: pos.z,
+                frontage_time_s: frontage_time_s(mode, origin.lane_id, origin.lane_d,
+                    false, network, graph), ..origin })
+        });
+        [origins, destinations]
+    }
+
     /// Exact time an origin end spends before a network trip leaves its node; `None` when no
     /// network trip can leave from it.
     pub(super) fn network_departure_s(&self) -> Option<f32> {
@@ -213,6 +233,9 @@ impl TripEnd {
             reachability.cyclic_group(self.lane_id)
         } else { usize::MAX }
     }
+
+    /// Graph node used by this validated trip attachment.
+    pub(super) fn network_node(&self) -> u32 { self.node }
 
     /// Network node this end attaches to or detaches from.
     pub(super) fn node_pos(&self) -> (f32, f32) {
@@ -411,6 +434,7 @@ fn finish_candidate(
     })
 }
 
+#[cfg(test)]
 fn evaluate_planned_trip_candidate(
     mode: u8,
     origin_rank: u8,
@@ -792,14 +816,28 @@ pub(super) fn best_trip_candidate_for_mode(
     graph: &RegionGraph,
     pathfind_count: &AtomicU32,
 ) -> Option<PlannedTripCandidate> {
+    for entrance in [origin_entrance, destination_entrance] {
+        if entrance.edge_idx >= graph.edge_count() || graph.edge(entrance.edge_idx).deleted {
+            return None;
+        }
+    }
+    // These four lane ends are immutable throughout the four rank combinations. Keep
+    // the original candidate order and arithmetic while avoiding repeated projection.
+    let origins = NODE_RANKS.map(|rank|
+        TripEnd::new(mode, rank, origin_entrance, true, transit_network, graph));
+    let destinations = NODE_RANKS.map(|rank|
+        TripEnd::new(mode, rank, destination_entrance, false, transit_network, graph));
     let mut best: Option<PlannedTripCandidate> = None;
     for (origin_rank, destination_rank) in NODE_RANK_PAIRS {
-        if let Some(candidate) = evaluate_planned_trip_candidate(
+        let (Some(origin), Some(destination)) =
+            (&origins[usize::from(origin_rank)], &destinations[usize::from(destination_rank)])
+            else { continue; };
+        if let Some(candidate) = combine_trip_ends(
             mode,
             origin_rank,
             destination_rank,
-            origin_entrance,
-            destination_entrance,
+            origin,
+            destination,
             transit_network,
             graph,
             pathfind_count,

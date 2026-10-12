@@ -1,1026 +1,176 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Customizable Contraction Hierarchy (CCH) pathfinding.
-//!
-//! Provides fast queries and lower-triangle metric customization for dynamic traffic.
+//! Turn-aware customizable contraction hierarchy with allocation-free elimination-tree queries.
 
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::TransitFlags;
 use crate::traffic_log;
 use rayon::prelude::*;
 use std::cell::RefCell;
+#[cfg(test)]
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+#[cfg(test)]
+use std::collections::{BinaryHeap, HashMap};
 
+mod bounds;
+mod layout;
+mod order;
+mod query;
 mod sweep;
-
+mod topology;
+use layout::{NodeSlices, VehicleTurns};
+pub(crate) use bounds::CchCarCostBounds;
+pub(crate) use query::buckets::{CchBucketSource, CchBuckets};
+#[cfg(test)]
+pub(crate) use query::restricted::{
+    RESTRICTED_BATCH_LANES, RestrictedBatchScratch, RestrictedScratch, RestrictedTargets,
+};
+pub(crate) use query::{CchPathScratch, CchQueryScratch};
 pub use sweep::CchCostsFrom;
 
 thread_local! {
-    // Owned paths still allocate their published node vector. Search and reconstruction
-    // storage are prepared only once per graph revision on the calling/Rayon thread.
     static OWNED_PATH_SCRATCH: RefCell<CchPathScratch> = RefCell::default();
 }
 
-type SearchKey = (u32, usize);
-type SearchRecord = (f32, f32, Option<usize>, SearchKey);
-// Every non-root label names one endpoint of an original road. Use those existing IDs
-// directly; the one extra slot preserves arbitrary incoming context at the query origin.
-#[derive(Clone, Debug, Default)]
-struct SearchData {
-    epoch: u64,
-    origin: SearchKey,
-    records: Vec<(u64, SearchRecord)>,
-}
-
-impl SearchData {
-    fn clear(&mut self, origin: SearchKey) {
-        self.origin = origin;
-        self.epoch = self.epoch.wrapping_add(1);
-        if self.epoch == 0 {
-            self.records.fill(Default::default());
-            self.epoch = 1;
-        }
-        *self.records.last_mut().unwrap() =
-            (self.epoch, (0.0, 0.0, None, (u32::MAX, usize::MAX)));
-    }
-
-    fn index(&self, key: &SearchKey, graph: &RegionGraph) -> Option<usize> {
-        if *key == self.origin { return Some(self.records.len() - 1); }
-        let edge = graph.get_edge(key.1)?;
-        if key.0 == edge.start_node { Some(2 * key.1) }
-        else if key.0 == edge.end_node { Some(2 * key.1 + 1) }
-        else { None }
-    }
-
-    fn get(&self, key: &SearchKey, graph: &RegionGraph) -> Option<&SearchRecord> {
-        let (epoch, record) = &self.records[self.index(key, graph)?];
-        (*epoch == self.epoch).then_some(record)
-    }
-
-    fn empty_like(&self) -> Self {
-        let mut records = Vec::with_capacity(self.records.capacity());
-        records.resize(self.records.len(), Default::default());
-        Self { records, ..Self::default() }
-    }
-}
-
-/// Reusable storage for cost-only CCH searches, shared by sequential market queries.
-/// Dense labels retain two incident-edge slots per road and one query-origin slot per direction.
-#[derive(Debug, Default)]
-pub(crate) struct CchQueryScratch {
-    revision: Option<(u32, usize, usize)>,
-    fwd_heap: BinaryHeap<CchState>,
-    bwd_heap: BinaryHeap<CchState>,
-    fwd_data: SearchData,
-    bwd_data: SearchData,
-}
-
-impl Clone for CchQueryScratch {
-    fn clone(&self) -> Self {
-        // Search results are scratch, not market state. A fork needs only its prepared
-        // capacity; cloning stale labels and dropping empty heap capacity wastes both.
-        Self {
-            revision: self.revision,
-            fwd_heap: BinaryHeap::with_capacity(self.fwd_heap.capacity()),
-            bwd_heap: BinaryHeap::with_capacity(self.bwd_heap.capacity()),
-            fwd_data: self.fwd_data.empty_like(),
-            bwd_data: self.bwd_data.empty_like(),
-        }
-    }
-}
-
-impl CchQueryScratch {
-    /// Reserves graph-bounded search storage outside repeated quotation work.
-    /// With nonnegative arc costs each state is expanded once; at most one heap insertion
-    /// occurs per outgoing arc per incident-edge state. Cold sizing walks O(roads + nodes + arcs);
-    /// heap storage is bounded by the sum of `(degree(node) + 1) * upward_arcs(node)`.
-    pub(crate) fn prepare(&mut self, cch: &CchGraph, graph: &RegionGraph) {
-        let revision = (cch.build_generation, graph.node_count(), graph.edge_count());
-        if self.revision == Some(revision) { return; }
-        self.fwd_heap.clear();
-        self.bwd_heap.clear();
-        let labels = 2 * graph.edge_count() + 1;
-        self.fwd_data.records.resize(labels, Default::default());
-        self.bwd_data.records.resize(labels, Default::default());
-        for (heap, arcs) in [(&mut self.fwd_heap, &cch.fwd_up), (&mut self.bwd_heap, &cch.bwd_up)] {
-            let relaxations = arcs.iter().enumerate().map(|(node, arcs)|
-                (graph.node_adjacency(node as u32).len() + 1) * arcs.len()).sum::<usize>() + 1;
-            heap.reserve(relaxations);
-        }
-        self.revision = Some(revision);
-    }
-}
-
-/// Reusable path materialization for forecasts that inspect connectivity but retain no path.
-#[derive(Debug, Default)]
-pub(crate) struct CchPathScratch {
-    query: CchQueryScratch,
-    edges: Vec<usize>,
-    shortcuts: Vec<usize>,
-    nodes: Vec<u32>,
-}
-
-impl CchPathScratch {
-    /// Borrows the most recently reconstructed path until the next query uses this scratch.
-    pub(crate) fn nodes(&self) -> &[u32] { &self.nodes }
-
-    /// Lends the search half to cost-only quotes; it leaves the last path untouched.
-    pub(crate) fn query(&mut self) -> &mut CchQueryScratch { &mut self.query }
-
-    /// Prepares search and reconstruction storage once per graph layout.
-    pub(crate) fn prepare(&mut self, cch: &CchGraph, graph: &RegionGraph) {
-        self.query.prepare(cch, graph);
-        // Positive-cost shortest paths never repeat an incident-edge state. The two
-        // upward chains and shortcut expansion stack are bounded by these same states.
-        let bound = 2 * graph.edge_count() + 2 * graph.node_count() + 1;
-        for values in [&mut self.edges, &mut self.shortcuts] {
-            if values.capacity() < bound { values.reserve(bound - values.len()); }
-        }
-        if self.nodes.capacity() < bound + 1 {
-            self.nodes.reserve(bound + 1 - self.nodes.len());
-        }
-    }
-}
-
-/// A shortcut edge in the contracted graph.
-///
-/// Each shortcut is either a *direct* shortcut (wrapping a single base edge) or a *compound*
-/// shortcut (combining two child shortcuts via a middle node). Storing only the child indices
-/// keeps each shortcut at O(1) memory regardless of path length.
+/// An undirected filled edge; each metric stores its two directions separately.
 #[derive(Clone, Debug)]
 pub struct CchShortcut {
-    /// The start node of this shortcut.
-    pub start_node: u32,
-    /// The target node of this shortcut.
-    pub target_node: u32,
-    /// The current traversal cost (seconds). Updated during customization.
-    pub cost: f32,
-    /// The physical distance (metres).
-    pub dist: f32,
-    /// Index of the base edge in `RegionGraph::edges` for *direct* shortcuts.
-    /// `usize::MAX` for compound shortcuts.
-    pub base_edge: usize,
-    /// Index into `CchGraph::shortcuts` of the left (incoming) child shortcut.
-    /// `usize::MAX` for direct shortcuts.
-    pub mid_l: usize,
-    /// Index into `CchGraph::shortcuts` of the right (outgoing) child shortcut.
-    /// `usize::MAX` for direct shortcuts.
-    pub mid_r: usize,
-    /// The first concrete edge of the shortcut (for turn restrictions).
-    pub first_edge: usize,
-    /// The last concrete edge of the shortcut (for turn restrictions).
-    pub last_edge: usize,
-    /// Bitmask of permitted transit modes.
-    pub allowed_types: u8,
+    /// Lower-ranked arrival state.
+    pub low: u32,
+    /// Higher-ranked arrival state.
+    pub high: u32,
 }
 
-/// A pre-computed contraction hierarchy used for routing.
+#[derive(Clone, Copy)]
+struct Departure {
+    target: u32,
+    edge: usize,
+    flags: u8,
+}
+struct BaseArc {
+    arc: usize,
+    edge: usize,
+    flags: u8,
+    vehicle_turn: bool,
+}
+#[derive(Clone, Copy)]
+struct Witness {
+    left: usize,
+    right: usize,
+    edge: usize,
+}
+impl Default for Witness {
+    fn default() -> Self {
+        Self {
+            left: usize::MAX,
+            right: usize::MAX,
+            edge: usize::MAX,
+        }
+    }
+}
+struct Metric {
+    mask: u8,
+    costs: Vec<f32>,
+    distances: Vec<f32>,
+    witnesses: Vec<Witness>,
+}
+
+/// A hierarchy over road nodes and explicit arrival states at restricted junctions.
+/// Unrestricted arrivals are equivalent: their future legal transitions are identical.
+/// Splitting only restricted nodes is an exact quotient of the directed-edge graph.
 pub struct CchGraph {
-    /// All shortcuts formed during contraction.
+    /// Metric-independent filled edges, in deterministic construction order.
     pub shortcuts: Vec<CchShortcut>,
-    /// Outgoing upward shortcuts for forward search: u -> v where Original u -> v and rank(u) < rank(v).
-    /// Stores indices into `shortcuts`.
-    pub fwd_up: Vec<Vec<usize>>,
-    /// Incoming shortcuts u -> v with rank(u) > rank(v), indexed by v.
-    /// Backward search follows these from v upward to u; entries index `shortcuts`.
-    pub bwd_up: Vec<Vec<usize>>,
-    /// Monotonically incremented each time the graph is rebuilt; used to reset per-build debug counters.
+    /// Changes on every rebuild, invalidating worker-local and shared route caches.
     pub build_generation: u32,
-    /// Revision of customized base costs within this topology, for derived cost caches.
+    /// Changes after customization, invalidating cached network costs.
     pub(crate) metric_revision: u64,
-    // One arc per endpoint/boundary-edge/mode state, with all lower-triangle alternatives.
-    // Retaining choices avoids both exponential path expansion and first-seen-path pruning.
-    shortcut_alternatives: Vec<Vec<(usize, usize)>>,
-    customization_order: Vec<usize>,
-    // Nodes by increasing contraction rank; the one-to-all sweep walks it top down.
+    up: NodeSlices<(u32, usize)>,
+    parent: Vec<u32>,
+    states: NodeSlices<u32>,
+    departures: NodeSlices<Departure>,
+    turns: VehicleTurns,
+    base_arcs: Vec<BaseArc>,
+    base_metric: Vec<(f32, f32)>,
+    triangles: Vec<[usize; 3]>,
+    profiles: Vec<Metric>,
+    profile_for_mask: [u8; 256],
     node_order: Vec<u32>,
 }
 
 impl CchGraph {
-    /// Returns an empty `CchGraph`.
-    pub fn new(n_nodes: usize) -> Self {
+    /// Creates an unbuilt hierarchy with no routes between distinct nodes.
+    pub fn new(nodes: usize) -> Self {
         Self {
             shortcuts: Vec::new(),
-            fwd_up: vec![Vec::new(); n_nodes],
-            bwd_up: vec![Vec::new(); n_nodes],
             build_generation: 0,
             metric_revision: 0,
-            shortcut_alternatives: Vec::new(),
-            customization_order: Vec::new(),
+            up: NodeSlices::empty(0),
+            parent: Vec::new(),
+            states: NodeSlices::empty(nodes),
+            departures: NodeSlices::empty(nodes),
+            turns: VehicleTurns::empty(nodes),
+            base_arcs: Vec::new(),
+            base_metric: Vec::new(),
+            triangles: Vec::new(),
+            profiles: Vec::new(),
+            profile_for_mask: [0; 256],
             node_order: Vec::new(),
         }
     }
 
-    /// Builds a new CCH from the provided road network.
-    pub fn build(graph: &RegionGraph) -> Self {
-        // Fetch and increment the global build generation so per-build debug counters reset.
-        use std::sync::atomic::{AtomicU32, Ordering};
-        static BUILD_GEN: AtomicU32 = AtomicU32::new(0);
-        let generation = BUILD_GEN.fetch_add(1, Ordering::Relaxed);
-
-        let n = graph.node_count();
-        if n == 0 {
-            let mut cch = Self::new(0);
-            cch.build_generation = generation;
-            return cch;
-        }
-
-        let mut cch = Self::new(n);
-        cch.build_generation = generation;
-        {
-            let (node_order, node_rank) = Self::compute_node_order(graph);
-            cch.contract(graph, &node_order, &node_rank);
-            cch.node_order = node_order;
-        }
-        // Topology is fixed until the next build. Return construction growth capacity rather
-        // than retaining it for the lifetime of the world; customization only updates entries.
-        cch.shortcuts.shrink_to_fit();
-        cch.shortcut_alternatives.shrink_to_fit();
-        cch.customization_order.shrink_to_fit();
-        cch.fwd_up
-            .iter_mut()
-            .chain(cch.bwd_up.iter_mut())
-            .for_each(Vec::shrink_to_fit);
-        cch.shortcut_alternatives
-            .iter_mut()
-            .for_each(Vec::shrink_to_fit);
-        cch.customize(graph);
-
-        cch
-    }
-
-    // Return original node IDs in contraction order and the inverse rank lookup.
-    fn compute_node_order(graph: &RegionGraph) -> (Vec<u32>, Vec<u32>) {
-        let n = graph.node_count();
-        let mut node_order = Vec::with_capacity(n);
-        let mut node_rank = vec![u32::MAX; n];
-        let mut adj = vec![HashSet::new(); n];
-        for edge in graph.edges().iter().filter(|edge| !edge.deleted) {
-            if edge.start_node != edge.end_node {
-                adj[edge.start_node as usize].insert(edge.end_node);
-                adj[edge.end_node as usize].insert(edge.start_node);
-            }
-        }
-
-        // A node's exact fill score is choose(degree, 2) - neighbour triangles - degree.
-        // Count triangles once, then update only when a fill edge is actually inserted.
-        // Sequential elimination is dependent; independent initial counts use Rayon.
-        let mut triangles: Vec<u64> = adj
-            .par_iter()
-            .map(|neighbors| {
-                neighbors
-                    .iter()
-                    .map(|&v| {
-                        neighbors
-                            .iter()
-                            .filter(|&&w| v < w && adj[v as usize].contains(&w))
-                            .count() as u64
-                    })
-                    .sum()
-            })
-            .collect();
-        let mut priorities: Vec<i64> = adj
-            .iter()
-            .zip(&triangles)
-            .map(|(neighbors, &triangles)| fill_importance(neighbors.len(), triangles))
-            .collect();
-        let mut heap: BinaryHeap<_> = priorities
-            .iter()
-            .enumerate()
-            .map(|(node, &importance)| NodePriority {
-                node: node as u32,
-                importance,
-            })
-            .collect();
-        let mut neighbors = Vec::new();
-        let mut changed = Vec::new();
-        let mut marked = vec![false; n];
-
-        while let Some(NodePriority { node, importance }) = heap.pop() {
-            let u = node as usize;
-            // Priorities can increase OR decrease. Both directions leave obsolete heap entries.
-            if node_rank[u] != u32::MAX || importance != priorities[u] {
-                continue;
-            }
-            node_rank[u] = node_order.len() as u32;
-            node_order.push(node);
-            neighbors.clear();
-            neighbors.extend(adj[u].iter().copied());
-            neighbors.sort_unstable();
-
-            // O(d² + sum(min(deg(v), deg(w))) over newly inserted fill edges), instead of
-            // recounting every neighbour's O(deg²) score after every contraction.
-            // Scratch buffers are reused; adjacency storage grows only for new fill edges.
-            for (i, &v) in neighbors.iter().enumerate() {
-                mark_order_score_changed(v, &mut marked, &mut changed);
-                for &w in &neighbors[i + 1..] {
-                    if adj[v as usize].contains(&w) {
-                        continue;
-                    }
-                    let mut common_count = 0;
-                    for &common in adj[v as usize].intersection(&adj[w as usize]) {
-                        triangles[common as usize] += 1;
-                        common_count += 1;
-                        mark_order_score_changed(common, &mut marked, &mut changed);
-                    }
-                    triangles[v as usize] += common_count;
-                    triangles[w as usize] += common_count;
-                    adj[v as usize].insert(w);
-                    adj[w as usize].insert(v);
-                }
-            }
-
-            // The surviving neighbours now form a clique. Removing u deletes exactly d-1
-            // triangles at each neighbour, including triangles introduced by the fill above.
-            for &v in &neighbors {
-                adj[v as usize].remove(&node);
-                triangles[v as usize] -= neighbors.len().saturating_sub(1) as u64;
-            }
-            adj[u].clear();
-            for v in changed.drain(..) {
-                let v_index = v as usize;
-                marked[v_index] = false;
-                if node_rank[v_index] != u32::MAX {
-                    continue;
-                }
-                let real_p = fill_importance(adj[v_index].len(), triangles[v_index]);
-                if priorities[v_index] != real_p {
-                    priorities[v_index] = real_p;
-                    heap.push(NodePriority {
-                        node: v,
-                        importance: real_p,
-                    });
-                }
-            }
-        }
-        (node_order, node_rank)
-    }
-
-    fn contract(&mut self, graph: &RegionGraph, node_order: &[u32], node_rank: &[u32]) {
-        let n = graph.node_count();
-        let mut shortcuts_by_start = vec![Vec::new(); n];
-        let mut shortcuts_by_end = vec![Vec::new(); n];
-        // Debug: log nodes that have user vehicle connections (whitelist mode).
-        if crate::debug::is_traffic_enabled() {
-            for i in 0..n {
-                let node = graph.node(i as u32);
-                let vehicle_conns: Vec<_> = node
-                    .lane_connections
-                    .iter()
-                    .filter(|((_, lane_idx), _)| *lane_idx != 100 && *lane_idx != -100)
-                    .map(|((e, l), targets)| format!("(edge={e},lane={l})->{targets:?}"))
-                    .collect();
-                if !vehicle_conns.is_empty() {
-                    eprintln!(
-                        "[CCH_BUILD] node={i} has user vehicle connections: {}",
-                        vehicle_conns.join(", ")
-                    );
-                }
-            }
-        }
-
-        for (edge_idx, edge) in graph.edges().iter().enumerate() {
-            if edge.deleted {
-                continue;
-            }
-
-            for (start, end, is_fwd) in [
-                (edge.start_node, edge.end_node, true),
-                (edge.end_node, edge.start_node, false),
-            ] {
-                let allowed_types = edge.traversal_flags(is_fwd);
-                if allowed_types != 0 {
-                    let idx = self.add_direct_shortcut(start, end, edge_idx, edge, allowed_types);
-                    shortcuts_by_start[start as usize].push(idx);
-                    shortcuts_by_end[end as usize].push(idx);
-                }
-            }
-        }
-
-        // When a direction is walking-only, keeping both FOOT and CAR|FOOT compound
-        // states partitions pedestrian alternatives by irrelevant vehicle reachability.
-        // Use disjoint mode sets so all pedestrian alternatives for one boundary share an arc.
-        // Fully shared networks retain the single combined hierarchy.
-        let separate_foot = self
-            .shortcuts
-            .iter()
-            .any(|shortcut| shortcut.allowed_types == TransitFlags::FOOT);
-
-        let turn_restricted: Vec<bool> = (0..n)
-            .into_par_iter()
-            .map(|node| Self::node_has_vehicle_whitelist(graph.node(node as u32)))
-            .collect();
-        let mut compound_arcs: HashMap<(u32, u32, usize, usize, u8), usize> = HashMap::new();
-        let mut neighbors_in = Vec::new();
-        let mut neighbors_out = Vec::new();
-        for (rank, &u) in node_order.iter().enumerate() {
-            let u_rank = rank as u32;
-
-            neighbors_in.clear();
-            neighbors_out.clear();
-
-            // Use per-node index instead of scanning all shortcuts — O(degree) not O(S).
-            for &idx in &shortcuts_by_end[u as usize] {
-                let s = &self.shortcuts[idx];
-                if node_rank[s.start_node as usize] > u_rank {
-                    neighbors_in.push(idx);
-                }
-            }
-            for &idx in &shortcuts_by_start[u as usize] {
-                let s = &self.shortcuts[idx];
-                if node_rank[s.target_node as usize] > u_rank {
-                    neighbors_out.push(idx);
-                }
-            }
-
-            // These arcs have u as their lower-ranked endpoint. Their children have strictly
-            // lower endpoints, even if an alternative was appended after the parent arc.
-            self.customization_order.extend_from_slice(&neighbors_in);
-            self.customization_order.extend_from_slice(&neighbors_out);
-            if crate::debug::is_traffic_enabled()
-                && (!neighbors_in.is_empty() || !neighbors_out.is_empty())
-            {
-                let ni: Vec<_> = neighbors_in
-                    .iter()
-                    .map(|&i| {
-                        let s = &self.shortcuts[i];
-                        format!("{}→{}(e{})", s.start_node, s.target_node, s.last_edge)
-                    })
-                    .collect();
-                let no: Vec<_> = neighbors_out
-                    .iter()
-                    .map(|&i| {
-                        let s = &self.shortcuts[i];
-                        format!("{}→{}(e{})", s.start_node, s.target_node, s.first_edge)
-                    })
-                    .collect();
-                eprintln!(
-                    "[CCH_CONTRACT] contracting node={u} rank={u_rank} neighbors_in=[{}] neighbors_out=[{}]",
-                    ni.join(","),
-                    no.join(",")
-                );
-            }
-
-            for &idx_in in &neighbors_in {
-                let (s_in_start, s_in_last, s_in_first, s_in_mask) = {
-                    let s = &self.shortcuts[idx_in];
-                    (s.start_node, s.last_edge, s.first_edge, s.allowed_types)
-                };
-
-                for &idx_out in &neighbors_out {
-                    let (s_out_target, s_out_first, s_out_last, s_out_mask) = {
-                        let s = &self.shortcuts[idx_out];
-                        (s.target_node, s.first_edge, s.last_edge, s.allowed_types)
-                    };
-
-                    if s_in_start == s_out_target {
-                        traffic_log!(
-                            "[CCH_CONTRACT] node={u} skip U-turn {s_in_start}↔{s_out_target} (in_edge={s_in_last} out_edge={s_out_first})"
-                        );
-                        continue;
-                    }
-
-                    let mut mask = s_in_mask & s_out_mask;
-                    if mask != TransitFlags::FOOT
-                        && turn_restricted[u as usize]
-                        && !Self::vehicle_turn_allowed(graph.node(u), s_in_last, s_out_first)
-                    {
-                        traffic_log!(
-                            "[CCH_BUILD] vehicle turn blocked: {s_in_start}→{u}→{s_out_target} (in_edge={s_in_last}, out_edge={s_out_first})"
-                        );
-                        // A vehicle whitelist does not govern sidewalk connectivity. Preserve
-                        // pedestrian-only alternatives; the trip planner validates their lanes.
-                        mask &= TransitFlags::FOOT;
-                    }
-                    if mask == 0 {
-                        continue;
-                    }
-
-                    traffic_log!(
-                        "[CCH_CONTRACT] node={u} create shortcut {s_in_start}→{s_out_target} (in_edge={s_in_last} out_edge={s_out_first})"
-                    );
-                    let masks = if separate_foot {
-                        [mask & !TransitFlags::FOOT, mask & TransitFlags::FOOT]
-                    } else {
-                        [mask, 0]
-                    };
-                    for mask in masks.into_iter().filter(|&mask| mask != 0) {
-                        // Only vehicle-capable arcs need boundary identity at restricted endpoints.
-                        // Pedestrian-only alternatives can merge there as well as at open nodes.
-                        let first_key =
-                            if mask != TransitFlags::FOOT && turn_restricted[s_in_start as usize] {
-                                s_in_first
-                            } else {
-                                usize::MAX
-                            };
-                        let last_key = if mask != TransitFlags::FOOT
-                            && turn_restricted[s_out_target as usize]
-                        {
-                            s_out_last
-                        } else {
-                            usize::MAX
-                        };
-                        let key = (s_in_start, s_out_target, first_key, last_key, mask);
-                        if let Some(&idx) = compound_arcs.get(&key) {
-                            self.shortcut_alternatives[idx].push((idx_in, idx_out));
-                            continue;
-                        }
-                        let idx = self.add_compound_shortcut(
-                            s_in_start,
-                            s_out_target,
-                            idx_in,
-                            idx_out,
-                            s_in_first,
-                            s_out_last,
-                            mask,
-                        );
-                        shortcuts_by_start[s_in_start as usize].push(idx);
-                        shortcuts_by_end[s_out_target as usize].push(idx);
-                        compound_arcs.insert(key, idx);
-                    }
-                }
-            }
-        }
-
-        // Publish only the directional indices used by live queries.
-        for (idx, s) in self.shortcuts.iter().enumerate() {
-            let u = s.start_node;
-            let v = s.target_node;
-            if node_rank[u as usize] < node_rank[v as usize] {
-                self.fwd_up[u as usize].push(idx);
-            } else {
-                self.bwd_up[v as usize].push(idx);
-            }
-        }
-    }
-
-    fn add_direct_shortcut(
-        &mut self,
-        start: u32,
-        end: u32,
-        edge_idx: usize,
-        edge: &crate::simulation::network::graph::Edge,
-        allowed_types: u8,
-    ) -> usize {
-        let idx = self.shortcuts.len();
-        self.shortcuts.push(CchShortcut {
-            start_node: start,
-            target_node: end,
-            cost: 0.0, // Updated in customize
-            dist: edge.physical_length,
-            base_edge: edge_idx,
-            mid_l: usize::MAX,
-            mid_r: usize::MAX,
-            first_edge: edge_idx,
-            last_edge: edge_idx,
-            allowed_types,
-        });
-        self.shortcut_alternatives.push(Vec::new());
-        idx
-    }
-
-    fn add_compound_shortcut(
-        &mut self,
-        start: u32,
-        end: u32,
-        l_idx: usize,
-        r_idx: usize,
-        first: usize,
-        last: usize,
-        mask: u8,
-    ) -> usize {
-        let idx = self.shortcuts.len();
-        self.shortcuts.push(CchShortcut {
-            start_node: start,
-            target_node: end,
-            cost: 0.0,
-            dist: 0.0,
-            base_edge: usize::MAX,
-            mid_l: l_idx,
-            mid_r: r_idx,
-            first_edge: first,
-            last_edge: last,
-            allowed_types: mask,
-        });
-        self.shortcut_alternatives.push(vec![(l_idx, r_idx)]);
-        idx
-    }
-
-    // Drain reverse-ordered shortcuts into traversal-ordered base edges. Both halves of a
-    // query reuse these buffers; unpacking a compound shortcut needs no temporary result Vec.
-    fn unpack_shortcuts(&self, stack: &mut Vec<usize>, base_edges: &mut Vec<usize>) {
-        while let Some(i) = stack.pop() {
-            let s = &self.shortcuts[i];
-            if s.mid_l == usize::MAX {
-                // Direct shortcut — emit the base edge.
-                base_edges.push(s.base_edge);
-            } else {
-                // Compound shortcut — push right then left so left is processed first.
-                stack.push(s.mid_r);
-                stack.push(s.mid_l);
-            }
-        }
-    }
-
-    /// Re-evaluates retained alternatives for current free-flow edge costs.
-    ///
-    /// O(base edges + shortcuts + alternatives), allocation-free. Alternatives are evaluated in
-    /// increasing lower-endpoint rank, so every child is finalized before its parent.
+    /// Recomputes directed metrics in O(profiles × (base transitions + lower triangles)).
+    /// Independent profiles run with Rayon. Customization allocates no per-arc storage.
     pub fn customize(&mut self, graph: &RegionGraph) {
         self.metric_revision = self.metric_revision.wrapping_add(1);
-        for &idx in &self.customization_order {
-            if self.shortcuts[idx].base_edge != usize::MAX {
-                let edge = graph.edge(self.shortcuts[idx].base_edge);
-                // Live congestion belongs to frontage estimates. Sampling it here would
-                // change all network quotes merely because a save rebuilds the hierarchy.
-                self.shortcuts[idx].cost = edge.base_cost;
-                self.shortcuts[idx].dist = edge.physical_length;
-            } else {
-                let mut best = (f32::INFINITY, usize::MAX, usize::MAX);
-                for &(left, right) in &self.shortcut_alternatives[idx] {
-                    let cost = self.shortcuts[left].cost + self.shortcuts[right].cost;
-                    if cost < best.0 {
-                        best = (cost, left, right);
-                    }
-                }
-                let (_, left, right) = best;
-                self.shortcuts[idx].cost = best.0;
-                if left != usize::MAX {
-                    self.shortcuts[idx].dist =
-                        self.shortcuts[left].dist + self.shortcuts[right].dist;
-                    self.shortcuts[idx].mid_l = left;
-                    self.shortcuts[idx].mid_r = right;
-                    self.shortcuts[idx].first_edge = self.shortcuts[left].first_edge;
-                    self.shortcuts[idx].last_edge = self.shortcuts[right].last_edge;
-                }
-            }
-        }
-    }
-
-    /// Finds a path from `start` to `end` using bidirectional upward search.
-    ///
-    /// Meeting checks use incident base edges from the matching graph revision: O(node degree)
-    /// direct label lookups per expanded state, without scanning unrelated search states.
-    pub fn find_path(
-        &self,
-        start: u32,
-        end: u32,
-        start_edge: usize,
-        graph: &RegionGraph,
-        allowed_mask: u8,
-    ) -> Option<(f32, f32, Vec<u32>)> {
-        OWNED_PATH_SCRATCH.with_borrow_mut(|scratch| {
-            self.find_path_in(start, end, start_edge, graph, allowed_mask, scratch)
-                .map(|(cost, distance, nodes)| (cost, distance, nodes.to_vec()))
-        })
-    }
-
-    /// Finds the ordinary exact path in caller-owned storage. A prepared caller performs
-    /// no search or reconstruction allocations, and can inspect the slice until its next query.
-    pub(crate) fn find_path_in<'s>(
-        &self,
-        start: u32,
-        end: u32,
-        start_edge: usize,
-        graph: &RegionGraph,
-        allowed_mask: u8,
-        scratch: &'s mut CchPathScratch,
-    ) -> Option<(f32, f32, &'s [u32])> {
-        // B31: Prevent panic if pathfinding is called with new nodes before CCH rebuild
-        if start as usize >= self.fwd_up.len() || end as usize >= self.fwd_up.len() {
-            return None;
-        }
-
-        scratch.edges.clear();
-        scratch.shortcuts.clear();
-        scratch.nodes.clear();
-        if start == end {
-            scratch.nodes.push(start);
-            return Some((0.0, 0.0, &scratch.nodes));
-        }
-
-        scratch.prepare(self, graph);
-        let (min_total_cost, meeting_node, meeting_f_edge, meeting_b_edge) =
-            self.search(start, end, start_edge, graph, allowed_mask, &mut scratch.query)?;
-        let fwd_data = &scratch.query.fwd_data;
-        let bwd_data = &scratch.query.bwd_data;
-
-        let full_edges = &mut scratch.edges;
-
-        // Forward part: MEETING -> START (reconstruct backwards)
-        let mut curr_key = (meeting_node, meeting_f_edge);
-        let shortcut_stack = &mut scratch.shortcuts;
-        while let Some(&(_, _, s_opt, prev_key)) = fwd_data.get(&curr_key, graph) {
-            if let Some(s_idx) = s_opt {
-                shortcut_stack.push(s_idx);
-                curr_key = prev_key;
-            } else {
-                break;
-            }
-        }
-        self.unpack_shortcuts(shortcut_stack, full_edges);
-
-        // Backward part: MEETING -> TARGET
-        let mut curr_key = (meeting_node, meeting_b_edge);
-        while let Some(&(_, _, s_opt, next_key)) = bwd_data.get(&curr_key, graph) {
-            if let Some(s_idx) = s_opt {
-                shortcut_stack.push(s_idx);
-                curr_key = next_key;
-            } else {
-                break;
-            }
-        }
-
-        shortcut_stack.reverse();
-        self.unpack_shortcuts(shortcut_stack, full_edges);
-
-        if full_edges.is_empty() {
-            return None;
-        }
-
-        let nodes = &mut scratch.nodes;
-        nodes.push(start);
-        let mut curr_n = start;
-        for &e_idx in full_edges.iter() {
-            let edge = graph.edge(e_idx);
-            curr_n = if edge.start_node == curr_n {
-                edge.end_node
-            } else {
-                edge.start_node
-            };
-            nodes.push(curr_n);
-        }
-
-        let f_dist = fwd_data.get(&(meeting_node, meeting_f_edge), graph).unwrap().1;
-        let b_dist = bwd_data.get(&(meeting_node, meeting_b_edge), graph).unwrap().1;
-
-        // Debug: log the first 20 paths per CCH build generation.
-        // build_generation increments each time CchGraph::build() is called, so this
-        // counter resets after every CCH rebuild (e.g., after lane connection changes).
-        if crate::debug::is_traffic_enabled() {
-            use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-            static LAST_GEN: AtomicU32 = AtomicU32::new(u32::MAX);
-            static PATH_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
-            let prev_gen = LAST_GEN.swap(self.build_generation, Ordering::Relaxed);
-            if prev_gen != self.build_generation {
-                PATH_LOG_COUNT.store(0, Ordering::Relaxed);
-                eprintln!(
-                    "[CCH_QUERY] --- new CCH generation {} ---",
-                    self.build_generation
-                );
-            }
-            let count = PATH_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
-            if count < 20 {
-                eprintln!(
-                    "[CCH_QUERY] find_path {start}→{end}: nodes={nodes:?} edges={full_edges:?}"
-                );
-            }
-            if count == 20 {
-                eprintln!("[CCH_QUERY] (further path logs suppressed for this generation)");
-            }
-        }
-
-        Some((min_total_cost, f_dist + b_dist, nodes))
-    }
-
-    /// Quotes the exact bidirectional query cost without materializing a node path.
-    /// Scratch is prepared once per topology; repeated searches allocate no search storage.
-    pub(crate) fn find_cost(
-        &self,
-        start: u32,
-        end: u32,
-        start_edge: usize,
-        graph: &RegionGraph,
-        allowed_mask: u8,
-        scratch: &mut CchQueryScratch,
-    ) -> Option<f32> {
-        if start as usize >= self.fwd_up.len() || end as usize >= self.fwd_up.len() {
-            return None;
-        }
-        if start == end { return Some(0.0); }
-        self.search(start, end, start_edge, graph, allowed_mask, scratch)
-            .map(|(cost, _, _, _)| cost)
-    }
-
-    fn search(
-        &self,
-        start: u32,
-        end: u32,
-        start_edge: usize,
-        graph: &RegionGraph,
-        allowed_mask: u8,
-        scratch: &mut CchQueryScratch,
-    ) -> Option<(f32, u32, usize, usize)> {
-        scratch.prepare(self, graph);
-        let CchQueryScratch { fwd_heap, bwd_heap, fwd_data, bwd_data, .. } = scratch;
-        fwd_heap.clear();
-        bwd_heap.clear();
-        fwd_data.clear((start, start_edge));
-        bwd_data.clear((end, usize::MAX));
-        fwd_heap.push(CchState {
-            cost: 0.0,
-            node: start,
-            incoming_edge: start_edge,
-        });
-
-        bwd_heap.push(CchState {
-            cost: 0.0,
-            node: end,
-            incoming_edge: usize::MAX,
-        });
-        let mut min_total_cost = f32::MAX;
-        let mut meeting_node = u32::MAX;
-        let mut meeting_f_edge = usize::MAX;
-        let mut meeting_b_edge = usize::MAX;
-
-        while !fwd_heap.is_empty() || !bwd_heap.is_empty() {
-            // Forward expansion
-            if let Some(state) = fwd_heap.pop() {
-                if state.cost >= min_total_cost {
-                    fwd_heap.clear();
-                }
-                let (cost, node, l_edge) = (state.cost, state.node, state.incoming_edge);
-                if cost < min_total_cost
-                    && let Some(&(best_cost, best_dist, _, _)) = fwd_data.get(&(node, l_edge), graph)
+        self.base_metric
+            .par_iter_mut()
+            .zip(graph.edges().par_iter())
+            .for_each(|(metric, edge)| *metric = (edge.base_cost, edge.physical_length));
+        self.profiles.par_iter_mut().for_each(|metric| {
+            metric.costs.fill(f32::INFINITY);
+            metric.distances.fill(0.0);
+            metric.witnesses.fill(Witness::default());
+            for base in &self.base_arcs {
+                if base.flags & metric.mask == 0
+                    || (!base.vehicle_turn && metric.mask != TransitFlags::FOOT)
                 {
-                    if cost > best_cost {
-                        continue;
-                    }
-
-                    // Shortcut boundary edges are incident to this node. The destination's
-                    // initial state is the only backward state without a concrete edge.
-                    for b_out_edge in graph
-                        .node_adjacency(node)
-                        .iter()
-                        .copied()
-                        .chain((node == end).then_some(usize::MAX))
-                    {
-                        if let Some(&(b_cost, _, _, _)) = bwd_data.get(&(node, b_out_edge), graph) {
-                            let allowed =
-                                self.is_turn_allowed(node, l_edge, b_out_edge, graph, allowed_mask);
-                            if !allowed {
-                                traffic_log!(
-                                    "[CCH_REJECT] fwd meeting blocked at node={node} in_edge={l_edge} out_edge={b_out_edge} (query {start}→{end})"
-                                );
-                            } else if cost + b_cost < min_total_cost
-                                || (meeting_node != u32::MAX
-                                    && cost + b_cost == min_total_cost
-                                    && (node, l_edge, b_out_edge)
-                                        < (meeting_node, meeting_f_edge, meeting_b_edge))
-                            {
-                                traffic_log!(
-                                    "[DEBUG:CCH_ACCEPT] fwd meeting at node={node} in_edge={l_edge} out_edge={b_out_edge} (query {start}→{end})"
-                                );
-                                min_total_cost = cost + b_cost;
-                                meeting_node = node;
-                                meeting_f_edge = l_edge;
-                                meeting_b_edge = b_out_edge;
-                            }
-                        }
-                    }
-
-                    // Upward expansion
-                    for &s_idx in &self.fwd_up[node as usize] {
-                        let shortcut = &self.shortcuts[s_idx];
-                        if (shortcut.allowed_types & allowed_mask) == 0 {
-                            continue;
-                        }
-
-                        if self.is_turn_allowed(
-                            node,
-                            l_edge,
-                            shortcut.first_edge,
-                            graph,
-                            allowed_mask,
-                        ) {
-                            let next_cost = cost + shortcut.cost;
-                            let state_key = (shortcut.target_node, shortcut.last_edge);
-                            if relax_search_state(
-                                fwd_data,
-                                graph,
-                                state_key,
-                                (
-                                    next_cost,
-                                    best_dist + shortcut.dist,
-                                    Some(s_idx),
-                                    (node, l_edge),
-                                ),
-                            ) {
-                                fwd_heap.push(CchState {
-                                    cost: next_cost,
-                                    node: shortcut.target_node,
-                                    incoming_edge: shortcut.last_edge,
-                                });
-                            }
-                        }
+                    continue;
+                }
+                let edge = graph.edge(base.edge);
+                if edge.base_cost < metric.costs[base.arc] {
+                    metric.costs[base.arc] = edge.base_cost;
+                    metric.distances[base.arc] = edge.physical_length;
+                    metric.witnesses[base.arc].edge = base.edge;
+                }
+            }
+            // For u < v < w, update v→w via v→u→w, and w→v via w→u→v.
+            // Children have lower low-endpoint ranks and cannot change after this step.
+            for &[uv, uw, vw] in &self.triangles {
+                for (target, left, right) in [
+                    (vw * 2, uv * 2 + 1, uw * 2),
+                    (vw * 2 + 1, uw * 2 + 1, uv * 2),
+                ] {
+                    let cost = metric.costs[left] + metric.costs[right];
+                    if cost < metric.costs[target] {
+                        metric.costs[target] = cost;
+                        metric.distances[target] = metric.distances[left] + metric.distances[right];
+                        metric.witnesses[target] = Witness {
+                            left,
+                            right,
+                            edge: usize::MAX,
+                        };
                     }
                 }
             }
-
-            // Backward expansion
-            if let Some(state) = bwd_heap.pop() {
-                if state.cost >= min_total_cost {
-                    bwd_heap.clear();
-                }
-                let (cost, node, outgoing_edge) = (state.cost, state.node, state.incoming_edge);
-                if cost < min_total_cost
-                    && let Some(&(best_cost, best_dist, _, _)) =
-                        bwd_data.get(&(node, outgoing_edge), graph)
-                {
-                    if cost > best_cost {
-                        continue;
-                    }
-
-                    // Include the supplied origin edge explicitly, even if it is a sentinel
-                    // or no longer present in adjacency. A repeated incident edge is harmless.
-                    for f_in_edge in graph
-                        .node_adjacency(node)
-                        .iter()
-                        .copied()
-                        .chain((node == start).then_some(start_edge))
-                    {
-                        if let Some(&(f_cost, _, _, _)) = fwd_data.get(&(node, f_in_edge), graph)
-                            && self.is_turn_allowed(
-                                node,
-                                f_in_edge,
-                                outgoing_edge,
-                                graph,
-                                allowed_mask,
-                            )
-                        {
-                            if cost + f_cost < min_total_cost
-                                || (meeting_node != u32::MAX
-                                    && cost + f_cost == min_total_cost
-                                    && (node, f_in_edge, outgoing_edge)
-                                        < (meeting_node, meeting_f_edge, meeting_b_edge))
-                            {
-                                min_total_cost = cost + f_cost;
-                                meeting_node = node;
-                                meeting_f_edge = f_in_edge;
-                                meeting_b_edge = outgoing_edge;
-                            }
-                        }
-                    }
-
-                    // Upward expansion (backwards)
-                    for &s_idx in &self.bwd_up[node as usize] {
-                        let shortcut = &self.shortcuts[s_idx];
-                        if (shortcut.allowed_types & allowed_mask) == 0 {
-                            continue;
-                        }
-
-                        if self.is_turn_allowed(
-                            node,
-                            shortcut.last_edge,
-                            outgoing_edge,
-                            graph,
-                            allowed_mask,
-                        ) {
-                            let next_cost = cost + shortcut.cost;
-                            let state_key = (shortcut.start_node, shortcut.first_edge);
-                            if relax_search_state(
-                                bwd_data,
-                                graph,
-                                state_key,
-                                (
-                                    next_cost,
-                                    best_dist + shortcut.dist,
-                                    Some(s_idx),
-                                    (node, outgoing_edge),
-                                ),
-                            ) {
-                                bwd_heap.push(CchState {
-                                    cost: next_cost,
-                                    node: shortcut.start_node,
-                                    incoming_edge: shortcut.first_edge,
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if meeting_node == u32::MAX {
-            return None;
-        }
-
-        Some((min_total_cost, meeting_node, meeting_f_edge, meeting_b_edge))
+        });
     }
 
-    fn is_turn_allowed(
-        &self,
-        node: u32,
-        in_edge: usize,
-        out_edge: usize,
-        graph: &RegionGraph,
-        allowed_mask: u8,
-    ) -> bool {
-        if allowed_mask == TransitFlags::FOOT || in_edge == usize::MAX || out_edge == usize::MAX {
-            return true;
-        }
-        Self::vehicle_turn_allowed(graph.node(node), in_edge, out_edge)
+    fn is_turn_allowed(&self, node: u32, incoming: usize, outgoing: usize, mask: u8) -> bool {
+        mask == TransitFlags::FOOT
+            || incoming == usize::MAX
+            || outgoing == usize::MAX
+            || self.turns.permits(node, incoming, outgoing)
     }
 
     /// Returns whether a vehicle turn from `in_edge` to `out_edge` at `node_data` is
@@ -1096,57 +246,7 @@ impl CchGraph {
     }
 }
 
-fn fill_importance(degree: usize, triangles: u64) -> i64 {
-    let degree = degree as u64;
-    (degree * degree.saturating_sub(1) / 2 - triangles) as i64 - degree as i64
-}
-
-fn mark_order_score_changed(node: u32, marked: &mut [bool], changed: &mut Vec<u32>) {
-    if !marked[node as usize] {
-        marked[node as usize] = true;
-        changed.push(node);
-    }
-}
-
-#[derive(Copy, Clone, PartialEq)]
-struct NodePriority {
-    node: u32,
-    importance: i64,
-}
-
-impl Eq for NodePriority {}
-
-impl Ord for NodePriority {
-    fn cmp(&self, other: &Self) -> Ordering {
-        other
-            .importance
-            .cmp(&self.importance)
-            .then_with(|| other.node.cmp(&self.node))
-    }
-}
-
-impl PartialOrd for NodePriority {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-// Both query directions retain the first equal-cost predecessor using direct road-end slots.
-fn relax_search_state(states: &mut SearchData, graph: &RegionGraph,
-    key: SearchKey, candidate: SearchRecord) -> bool {
-    if candidate.0 >= f32::MAX || candidate.0.is_nan() {
-        return false;
-    }
-    let slot = states.index(&key, graph).expect("shortcut boundaries must be incident to their endpoint");
-    let previous = &mut states.records[slot];
-    if previous.0 != states.epoch || candidate.0 < previous.1.0 {
-        *previous = (states.epoch, candidate);
-        true
-    } else {
-        false
-    }
-}
-
+#[cfg(test)]
 #[derive(Copy, Clone, Debug)]
 struct CchState {
     cost: f32,
@@ -1154,8 +254,10 @@ struct CchState {
     incoming_edge: usize,
 }
 
+#[cfg(test)]
 impl Eq for CchState {}
 
+#[cfg(test)]
 impl PartialEq for CchState {
     fn eq(&self, other: &Self) -> bool {
         self.cost.to_bits() == other.cost.to_bits()
@@ -1164,6 +266,7 @@ impl PartialEq for CchState {
     }
 }
 
+#[cfg(test)]
 impl Ord for CchState {
     fn cmp(&self, other: &Self) -> Ordering {
         other
@@ -1174,6 +277,7 @@ impl Ord for CchState {
     }
 }
 
+#[cfg(test)]
 impl PartialOrd for CchState {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
@@ -1182,6 +286,8 @@ impl PartialOrd for CchState {
 
 #[cfg(test)]
 mod ordering_tests;
+#[cfg(test)]
+mod state_tests;
 
 #[cfg(test)]
 mod tests {

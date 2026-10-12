@@ -390,6 +390,14 @@ impl JobFunding {
         inputs: usize,
     ) -> bool {
         let Some(components) = self.input_supply.freight_components() else { return true; };
+        let mut phase = crate::debug::category_enabled("economy_phases").then(std::time::Instant::now);
+        let mut times = [0.0; 3];
+        let mut lap = |slot: usize| {
+            if let Some(start) = phase {
+                times[slot] += start.elapsed().as_secs_f64() * 1000.0;
+                phase = Some(std::time::Instant::now());
+            }
+        };
         let input_slots = self.input_supply.input_tranche_capacity(inputs);
         let supplies = &self.input_supply;
         let capacities = &self.capacities;
@@ -450,6 +458,7 @@ impl JobFunding {
                     }
                 });
 
+            lap(0);
             let mut storage = None;
             for (index, building) in allocator.buildings.iter().enumerate() {
                 if self.capacities[index] == 0 || !live(building) { continue; }
@@ -478,6 +487,7 @@ impl JobFunding {
                 }
             }
 
+            lap(1);
             let Some(required) = storage else { break; };
             self.business.reserve_receipts(required);
         }
@@ -563,6 +573,9 @@ impl JobFunding {
                 *ceiling < previous || *activity_ceiling < self.activities[index]
             }).reduce(|| false, |a, b| a | b);
         self.business.publish_financing(&self.headroom);
+        lap(2);
+        crate::debug_log!("economy_phases", "business_funding_detail buildings={} minute={} accounts_ms={:.3} claims_ms={:.3} proof_ms={:.3}",
+            allocator.buildings.len(), minute, times[0], times[1], times[2]);
         reduced
     }
 

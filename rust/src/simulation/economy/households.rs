@@ -5,6 +5,7 @@
 mod admission;
 mod benefits;
 mod building_economy;
+mod candidate_visits;
 mod data;
 mod electricity;
 mod employment;

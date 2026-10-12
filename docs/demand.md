@@ -371,6 +371,11 @@ claim only unemployed adults and already-ready homes.
 Accepted new construction is appended to a minute queue (one start per minute). Queued projects
 keep their claims and their prepared door.
 
+Prepared supplier/buyer variants retain their entrance geometry across live-book forks only
+when exact door coordinates, frontage edge/side, lane revision and CCH generation match.
+Owner remaps and changed asset anchors must pass those same checks. This reuse does not retain
+old financing, change candidate order or move job-lock expiry.
+
 Before placing a project and spending its owner equity, the minute executor revalidates:
 - placed housing and unemployed adults;
 - customers;

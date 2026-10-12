@@ -105,7 +105,7 @@ impl ZoningParcel {
         self.cell_lot
     }
 
-    pub(crate) fn set_cell_lot(&mut self, lot: CellLot) {
+    pub(super) fn set_cell_lot(&mut self, lot: CellLot) {
         self.cell_lot = Some(lot);
     }
 

@@ -11,6 +11,31 @@ fn exit_policy() -> super::super::HouseholdExitPolicy {
 }
 
 #[test]
+fn household_building_remaps_preserve_simultaneous_home_and_store_moves() {
+    use std::collections::HashMap;
+    for mapping in [HashMap::new(), HashMap::from([(3, 5)]), HashMap::from([(3, 5), (5, 3)])] {
+        let mut households = HouseholdSystem::new();
+        for home in [3, 5, 9, usize::MAX] {
+            for store in [3, 5, 9, usize::MAX] {
+                let mut family = make_household(home, 1, 1.0, 1.0);
+                family.budget = 37.0;
+                family.reserved_store_building_id = store;
+                households.households.push(family);
+            }
+        }
+        let expected: Vec<_> = households.households.iter().map(|family| {
+            [family.home_building_id, family.reserved_store_building_id]
+                .map(|id| mapping.get(&id).copied().unwrap_or(id))
+        }).collect();
+        households.remap_building_indices(&mapping);
+        for (family, expected) in households.households.iter().zip(expected) {
+            assert_eq!([family.home_building_id, family.reserved_store_building_id], expected);
+            assert_eq!(family.budget, 37.0);
+        }
+    }
+}
+
+#[test]
 fn hourly_rehousing_claims_affordable_homes_without_advancing_daily_failures() {
     let mut allocator = BuildingAllocator::new();
     let asset =

@@ -194,7 +194,8 @@ fn household_cross_census_reuse_matches_fresh_claims_after_each_input_changes() 
     let mut replayed = 0;
     for change in ["unchanged", "income", "cash", "members", "unhoused", "empty",
         "home", "car", "adults", "price", "quantity", "basket", "vat", "tax", "treasury",
-        "frontage", "topology", "door", "removed_family", "new_family", "clear"] {
+        "frontage", "frontage_revision", "entrance_revision", "seller_position", "home_position", "home_local_position",
+        "unrelated_building", "topology", "door", "removed_family", "new_family", "clear"] {
         let mut tuning = (*load_runtime_economy_tuning().unwrap()).clone();
         tuning.owa_export_price_multiplier = 0.0;
         let mut policy = CityFiscalPolicy::from_runtime_tuning(&tuning);
@@ -211,6 +212,9 @@ fn household_cross_census_reuse_matches_fresh_claims_after_each_input_changes() 
         }
         cached.assert_same_funding(&ordinary);
         replayed += cached.funding.household_cross_census_replays();
+        let mut fork = cached.funding.customers.clone();
+        fork.prepare_project_owners(1_024, 1_024);
+        let retained_capacity = fork.receipt_capacity_for_test();
         for market in [&mut cached, &mut ordinary] {
             match change {
                 "income" => market.families[0].gross_daily_wages = 0.0,
@@ -232,6 +236,25 @@ fn household_cross_census_reuse_matches_fresh_claims_after_each_input_changes() 
                 "frontage" => {
                     for lane in &mut market.network.lane_system.lanes { lane.frontage_delay_penalty_s = 1_000_000.0; }
                     market.network.frontage_delay_revision += 1;
+                }
+                "frontage_revision" => market.network.frontage_delay_revision += 1,
+                "entrance_revision" => market.allocator.bump_entrance_ref_revision(),
+                "seller_position" => {
+                    market.allocator.entrances[HOMES + 2].door_pos.x += 512.0;
+                    market.allocator.bump_entrance_ref_revision();
+                }
+                "home_position" | "home_local_position" => {
+                    let distance = if change == "home_position" { 512.0 } else { 0.25 };
+                    market.allocator.buildings[0].center_x += distance;
+                    market.allocator.entrances[0].door_pos.x += distance;
+                    market.allocator.bump_entrance_ref_revision();
+                }
+                "unrelated_building" => {
+                    // An unoccupied home adds no recipe output or family budget. Existing
+                    // seller entrances and every household's indexed membership stay exact.
+                    market.allocator.buildings.push(market.allocator.buildings[0].clone());
+                    market.allocator.rebuild_zone_index();
+                    market.allocator.rebuild_entrance_cache(&market.graph, &market.network.lane_system);
                 }
                 "topology" => {
                     market.graph.edge_mut(0).allowed_types = TransitFlags::CAR;
@@ -257,13 +280,63 @@ fn household_cross_census_reuse_matches_fresh_claims_after_each_input_changes() 
             "treasury" => treasury = 10_000.0,
             _ => {}
         }
-        for _ in 0..2 {
+        for round in 0..3 {
+            let resamples_before = cached.funding.customers.access_resamples_for_test();
+            // The oracle rebuilds membership too; shared index reuse cannot conceal a stale
+            // reservation position after a home, component, or entrance change.
+            ordinary.funding.customers.clear();
             for market in [&mut cached, &mut ordinary] {
+                // A prefix can have changed after the prior census. Preserve dependencies
+                // of rejected quotes too when traffic publishes another revision.
+                if round == 2 { market.network.frontage_delay_revision += 1; }
                 market.funding.refresh(&market.allocator, &market.families, &mut market.logistics,
                     &market.network, &market.graph, &market.catalog, &tuning, &policy, &[], treasury, 420);
             }
             cached.assert_same_funding(&ordinary);
+            // Forking after each changed input must match an independent deep copy,
+            // including candidate order, exact balances, accepted receipts and rollback.
+            fork.copy_reservations_from(&cached.funding.customers);
+            assert!(fork.receipt_capacity_for_test() >= retained_capacity);
+            let mut fresh = cached.funding.customers.clone();
+            for book in [&mut fork, &mut fresh] { book.prepare_project_owners(1_024, 1_024); }
+            fork.assert_same_accounts_for_test(&fresh);
+            let seller = HOMES + 2;
+            let profile = cached.catalog.profile_by_runtime_id(
+                cached.allocator.buildings[seller].economy_profile_runtime_id).unwrap();
+            for requested in [1.0, 40.0, 10_000.0] {
+                for book in [&mut fork, &mut fresh] {
+                    book.begin_revalidation();
+                    book.release_owner(seller);
+                }
+                for output in &profile.outputs {
+                    let quote = |book: &mut crate::simulation::economy::customers::ConsumerMarket| {
+                        book.claim_reachable(&cached.allocator.entrances[seller], output.resource_runtime_id,
+                            requested, profile.unit_price_currency * (1.0 + policy.household_vat_rate),
+                            &cached.allocator, &cached.network, &cached.graph)
+                    };
+                    assert_eq!(quote(&mut fork).to_bits(), quote(&mut fresh).to_bits(),
+                        "fork quote differs: {change}, round={round}");
+                }
+                for book in [&mut fork, &mut fresh] { book.accept_for(seller); }
+                fork.assert_same_accounts_for_test(&fresh);
+                for book in [&mut fork, &mut fresh] { book.reject_revalidation(); }
+                fork.assert_same_accounts_for_test(&fresh);
+            }
+            if matches!(change, "entrance_revision" | "seller_position" | "unrelated_building"
+                | "home_position" | "home_local_position" | "car") {
+                let expected = u64::from(round == 0 && matches!(change, "home_position" | "home_local_position"));
+                assert_eq!(cached.funding.customers.access_resamples_for_test() - resamples_before, expected,
+                    "only changed household geometry needs reconstruction: {change}, round={round}");
+            }
             assert_eq!(ordinary.funding.household_cross_census_replays(), 0);
+            if matches!(change, "frontage_revision" | "entrance_revision" | "unrelated_building" | "home_local_position") {
+                assert!(cached.funding.household_cross_census_replays() > 0,
+                    "unchanged walking-proven claims survive unrelated revisions: {change}");
+            }
+            if round == 0 && change == "seller_position" {
+                assert!(cached.funding.household_quote_replay_counts().1 > 0,
+                    "a changed seller entrance must reconstruct its claim prefix");
+            }
         }
     }
     assert!(replayed > 0, "unchanged censuses must actually exercise retained claims");

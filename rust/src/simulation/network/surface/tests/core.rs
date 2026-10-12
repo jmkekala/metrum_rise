@@ -6,6 +6,31 @@ use super::*;
 use std::sync::Arc;
 
 #[test]
+fn surface_grid_rectangle_query_retains_precise_boundary_candidates() {
+    use super::super::{RoadVec3, SurfaceTriangleGrid};
+    assert_eq!(SurfaceTriangleGrid::default().items_in_bounds([0.0; 4]).count(), 0);
+    for origin in [-1_000_000.0, -512.0, 0.0, 8192.0, 1_000_000.0] {
+        let triangles: Vec<_> = (0..32).map(|i| {
+            let x = origin + f64::from(i) * 4.0;
+            [RoadVec3::new(x, 0.0, origin), RoadVec3::new(x + 3.9, 0.0, origin),
+                RoadVec3::new(x, 0.0, origin + 3.9)]
+        }).collect();
+        let grid = SurfaceTriangleGrid::from_triangles(triangles.iter().copied(), |i| i as u32);
+        for (id, triangle) in triangles.iter().enumerate() {
+            for point in triangle {
+                for offset in [-0.000001, 0.0, 0.000001] {
+                    let bounds = [point.x + offset - 0.001, point.z + offset - 0.001,
+                        point.x + offset + 0.001, point.z + offset + 0.001];
+                    assert!(grid.items_in_bounds(bounds).any(|item| item == id as u32));
+                }
+            }
+        }
+        assert_eq!(grid.items_in_bounds([origin + 2.0, origin, origin + 1.0, origin]).count(), 0);
+        assert_eq!(grid.items_in_bounds([origin, origin + 100.0, origin + 2.0, origin + 102.0]).count(), 0);
+    }
+}
+
+#[test]
 fn overlay_numeric_area_budget_accepts_logged_sub_visual_cdt_residual() {
     let small_four_edge_region = vec![vec![[0.0, 0.0], [0.02, 0.0], [0.02, 0.02], [0.0, 0.02]]];
     let budget_m2 =

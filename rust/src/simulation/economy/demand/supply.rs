@@ -106,6 +106,9 @@ pub(super) struct ProjectReservations {
     pub(super) queued_workers: Vec<(u64, u32)>,
     /// Accepted live/project plans indexed by the same owner as the reservation books.
     pub(super) operations: Vec<Option<FundedOperation>>,
+    // Only accepted project slots need clearing between passes; unused slots stay empty.
+    project_owners: Vec<usize>,
+    live_owners: usize,
     // Per-proposal output values; prepared for the catalog's largest output recipe.
     output_prices: Vec<(u16, f64)>,
     owner_base: usize,
@@ -157,14 +160,30 @@ impl ProjectReservations {
         self.staged_owner = None;
         self.staged_operation = None;
         self.staged_committed = false;
-        self.operations.resize(allocator.buildings.len(), None);
+        self.reset_owner_slots(allocator.buildings.len());
         let utilities = local_utility_service_costs(catalog).map(|p| p * tuning.owa_import_price_multiplier);
-        self.operations.par_iter_mut().enumerate().for_each(|(index, operation)| {
+        self.operations[..allocator.buildings.len()].par_iter_mut().enumerate().for_each(|(index, operation)| {
             let building = &allocator.buildings[index];
             *operation = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
                 .and_then(|profile| funding.funded_operation(index, building, profile, utilities, tuning, fiscal, minute));
         });
         self.reset_sites(funding, allocator, catalog, tuning, minute);
+    }
+
+    // Retain initialized backing rows. The old live suffix and accepted projects are
+    // the only rows that can become stale, even when the owner namespace shifts.
+    fn reset_owner_slots(&mut self, live: usize) {
+        for owner in self.project_owners.drain(..) {
+            self.operations[owner] = None;
+            self.sites[owner] = None;
+        }
+        if live < self.live_owners {
+            self.operations[live..self.live_owners].par_iter_mut().for_each(|row| *row = None);
+            self.sites[live..self.live_owners].par_iter_mut().for_each(|row| *row = None);
+        }
+        if self.operations.len() < live { self.operations.resize(live, None); }
+        if self.sites.len() < live { self.sites.resize(live, None); }
+        self.live_owners = live;
     }
 
     /// Commits the exact staged owner after placement or a planning acceptance succeeds.
@@ -176,6 +195,9 @@ impl ProjectReservations {
         self.business.accept_revalidation();
         self.customers.accept_revalidation();
         self.accept_replacement_finance();
+        if owner >= self.owner_base && self.operations[owner].is_none() {
+            self.project_owners.push(owner);
+        }
         self.operations[owner] = self.staged_operation.take();
         self.sites[owner] = self.staged_site.take();
         self.staged_committed = false;
@@ -239,13 +261,19 @@ impl<'a> SiteSupply<'a> {
         vat: f32,
     ) -> Self {
         if !reservations.prepared {
+            let mut phase = crate::debug::category_enabled("economy_phases").then(std::time::Instant::now);
+            let mut lap = || phase.as_mut().map_or(0.0, |previous| {
+                let elapsed = previous.elapsed().as_secs_f64() * 1_000.0;
+                *previous = std::time::Instant::now();
+                elapsed
+            });
             // A pass can replay a queue and select at most one new project per parcel.
             // Existing construction and replacements retain their live building owner.
             let owners = allocator.buildings.len() + 2 * zoning.parcels().len();
             let outputs = catalog.all_profiles().iter().map(|profile| profile.outputs.len()).max().unwrap_or(0);
             let inputs = catalog.all_profiles().iter().map(|profile| profile.inputs.len()).max().unwrap_or(0);
             book.prepare_projected_sources(catalog, graph, [zoning.overlay_revision(),
-                zoning.overlay_occupancy_revision(), allocator.registry.revision()], || {
+                zoning.overlay_occupancy_revision(), allocator.registry.revision()], |previous| {
                 allocator.buildings.par_iter().enumerate().flat_map_iter(|(owner, building)| {
                     [Some(building.asset_id.as_str()), allocator.downgrade_target(building), allocator.upgrade_target(building)]
                         .into_iter().flatten().filter_map(move |asset| {
@@ -253,18 +281,21 @@ impl<'a> SiteSupply<'a> {
                             if !crate::simulation::economy::logistics::building_outputs_can_supply_local_inputs(building, profile) {
                                 return None;
                             }
-                            let entrance = allocator.demand_site_entrance(building.parcel_id, asset,
-                                zoning, graph, &network.lane_system)?;
-                            Some(ProjectedSupplySource::new(owner, asset, profile.runtime_id, entrance))
+                            let (key, entrance) = allocator.demand_site_entrance_reusing(building.parcel_id, asset,
+                                zoning, graph, &network.lane_system, network.cch_graph.build_generation,
+                                ProjectedSupplySource::retained_entrance(previous, owner, asset))?;
+                            Some(ProjectedSupplySource::new(owner, asset, profile.runtime_id, entrance).with_entrance_key(key))
                         })
                 }).collect()
             });
+            let suppliers_ms = lap();
             book.prepare_customer_deliveries(reservations.business.receipt_count());
             book.prepare_owners(owners, owners * inputs);
+            let supply_storage_ms = lap();
             if let Some(components) = book.freight_components() {
                 reservations.business.prepare_sites([zoning.overlay_revision(),
                     zoning.overlay_occupancy_revision(), allocator.registry.revision()],
-                    catalog, components, graph, || {
+                    catalog, components, graph, |previous| {
                         let assets = allocator.collect_spawn_asset_candidates_by_profile(zoning, catalog);
                         let mut sites: Vec<_> = zoning.parcels().par_iter().enumerate().flat_map_iter(|(index, parcel)| {
                             assets.get(&parcel.zone_profile_runtime_id()).into_iter()
@@ -273,10 +304,12 @@ impl<'a> SiteSupply<'a> {
                                     if !parcel.is_available() { return None; }
                                     let profile = candidate_economy_profile(allocator, catalog, asset)?;
                                     if profile.inputs.is_empty() { return None; }
-                                    let entrance = allocator.demand_site_entrance(parcel.id().raw(), asset,
-                                        zoning, graph, &network.lane_system)?;
-                                    Some(PreparedBusinessSite::new(allocator.buildings.len() + index,
-                                        asset, profile.runtime_id, entrance))
+                                    let owner = allocator.buildings.len() + index;
+                                    let (key, entrance) = allocator.demand_site_entrance_reusing(parcel.id().raw(), asset,
+                                        zoning, graph, &network.lane_system, network.cch_graph.build_generation,
+                                        PreparedBusinessSite::retained_entrance(previous, owner, asset))?;
+                                    Some(PreparedBusinessSite::new(owner,
+                                        asset, profile.runtime_id, entrance).with_entrance_key(key))
                                 })
                         }).collect();
                         sites.par_extend(allocator.buildings.par_iter().enumerate().flat_map_iter(|(owner, building)| {
@@ -284,23 +317,29 @@ impl<'a> SiteSupply<'a> {
                                 allocator.upgrade_target(building)].into_iter().flatten().filter_map(move |asset| {
                                 let profile = candidate_economy_profile(allocator, catalog, asset)?;
                                 if profile.inputs.is_empty() { return None; }
-                                let entrance = allocator.demand_site_entrance(building.parcel_id, asset,
-                                    zoning, graph, &network.lane_system)?;
-                                Some(PreparedBusinessSite::new(owner, asset, profile.runtime_id, entrance))
+                                let (key, entrance) = allocator.demand_site_entrance_reusing(building.parcel_id, asset,
+                                    zoning, graph, &network.lane_system, network.cch_graph.build_generation,
+                                    PreparedBusinessSite::retained_entrance(previous, owner, asset))?;
+                                Some(PreparedBusinessSite::new(owner, asset, profile.runtime_id, entrance).with_entrance_key(key))
                             })
                         }));
                         sites
                     });
             }
+            let buyers_ms = lap();
             reservations.business.prepare_owners(owners, owners * outputs);
             reservations.business.prepare_project_inputs(book.project_input_tranche_capacity(owners * inputs));
             reservations.customers.prepare_project_owners(owners, owners * outputs);
             reservations.output_prices.reserve(outputs);
-            reservations.operations.resize(owners, None);
-            reservations.sites.resize(owners, None);
+            if reservations.operations.len() < owners { reservations.operations.resize(owners, None); }
+            if reservations.sites.len() < owners { reservations.sites.resize(owners, None); }
+            reservations.project_owners.reserve(owners - allocator.buildings.len());
             reservations.replacement_proof.prepare(owners);
             reservations.owner_base = allocator.buildings.len();
             reservations.prepared = true;
+            let owner_storage_ms = lap();
+            crate::debug_log!("economy_phases", "site_preparation_detail suppliers_ms={:.3} supply_storage_ms={:.3} buyers_ms={:.3} owner_storage_ms={:.3}",
+                suppliers_ms, supply_storage_ms, buyers_ms, owner_storage_ms);
         }
         Self {
             book,
@@ -810,4 +849,83 @@ impl<F: FnMut(u64, &str) -> Option<f32>> ProjectSupply for F {
     }
     fn accept(&mut self) {}
     fn reject(&mut self) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn populate(book: &mut ProjectReservations, owner: usize) {
+        book.operations[owner] = Some(FundedOperation {
+            profile: 1, plan: OperationPlan { workers: owner as u32, activity: 0.5, area: 1.0 },
+            prices: OperationPrices { utilities: [1.0; 3], property_tax: 2.0, imports: 1.0,
+                carrier_quote: 3.0, truck_payload: 1_000.0 }, headroom: [4.0, 5.0],
+        });
+        book.sites[owner] = Some(OperationSite { entrance: None, buyer: Some(owner),
+            buyer_site: None, source: Some(owner), goods_multiplier: 1.0, exports: 1.0,
+            future: owner >= book.live_owners, public: false });
+        if owner >= book.live_owners { book.project_owners.push(owner); }
+    }
+
+    #[test]
+    fn project_slots_reset_across_live_owner_growth_and_shrink() {
+        let mut book = ProjectReservations::default();
+        book.operations.resize(24, None);
+        book.sites.resize(24, None);
+        for live in [4, 2, 8, 0, 6, 6] {
+            let previous_live = book.live_owners;
+            book.reset_owner_slots(live);
+            assert_eq!(book.operations.len(), 24);
+            assert_eq!(book.sites.len(), 24);
+            for owner in 0..24 {
+                let retained = owner < live.min(previous_live);
+                assert_eq!(book.operations[owner].is_some(), retained, "operation {owner}, live {live}");
+                assert_eq!(book.sites[owner].is_some(), retained, "site {owner}, live {live}");
+                if retained {
+                    assert_eq!(book.operations[owner].unwrap().plan.workers, owner as u32);
+                    assert_eq!(book.sites[owner].as_ref().unwrap().source, Some(owner));
+                }
+            }
+            assert!(book.project_owners.is_empty());
+            for owner in 0..live { populate(&mut book, owner); }
+            for owner in [live, live + 3, 23] { populate(&mut book, owner); }
+        }
+    }
+
+    #[test]
+    #[ignore = "isolated project-slot reset performance comparison"]
+    fn benchmark_project_slot_reset() {
+        use std::{hint::black_box, time::Instant};
+        const LIVE: usize = 4_096;
+        const REPEATS: usize = 16;
+        for projects in [1_024, 16_384, 131_072] {
+            for pair in 0..9 {
+                for sparse in if pair % 2 == 0 { [false, true] } else { [true, false] } {
+                    let mut book = ProjectReservations::default();
+                    book.reset_owner_slots(LIVE);
+                    book.operations.resize(LIVE + projects, None);
+                    book.sites.resize(LIVE + projects, None);
+                    book.project_owners.reserve(projects);
+                    let start = Instant::now();
+                    for _ in 0..REPEATS {
+                        for offset in 0..8 { populate(&mut book, LIVE + offset); }
+                        if sparse {
+                            book.reset_owner_slots(LIVE);
+                        } else {
+                            book.operations.truncate(LIVE);
+                            book.sites.truncate(LIVE);
+                            book.project_owners.clear();
+                            book.operations.resize(LIVE + projects, None);
+                            book.sites.resize(LIVE + projects, None);
+                        }
+                        black_box(&book);
+                    }
+                    let reset_ns = start.elapsed().as_nanos() as f64 / REPEATS as f64;
+                    assert!(book.operations.iter().all(Option::is_none));
+                    assert!(book.sites.iter().all(Option::is_none));
+                    eprintln!("PROJECT_SLOTS {{\"projects\":{projects},\"pair\":{pair},\"sparse\":{sparse},\"reset_ns\":{reset_ns}}}");
+                }
+            }
+        }
+    }
 }

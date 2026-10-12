@@ -10,6 +10,9 @@
 //! at maximum speed, so agents move and the trips the economy starts finish as in the game. See
 //! `docs/economy.md#econ-13-economy-tick-baseline`.
 
+#[cfg(test)]
+mod routing_benchmark;
+
 use std::time::{Duration, Instant};
 
 use glam::DVec2;

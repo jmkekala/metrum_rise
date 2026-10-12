@@ -296,12 +296,26 @@ impl BusinessBudgets {
         self.claim_priced(slot, requested, seller_price, carrier_quote, false)
     }
 
-    /// Whether this account could take any units from a seller at `seller_price` with free
-    /// freight. Claims only shrink as the carrier quote grows, so `false` proves that no route
-    /// quote can make the claim positive. Pure; O(1).
-    pub(crate) fn claimable_without_carrier(&self, slot: usize, requested: f64,
-        seller_price: f32, require_finance: bool) -> bool {
-        self.priced_claim(slot, requested, seller_price, 0.0, require_finance).is_some()
+    /// Whether a seller can claim any units at a proven lower bound on its carrier price.
+    /// Claims only shrink as the carrier quote grows, so `false` excludes every actual route.
+    /// Pure; O(1), including the same physical-quantity rounding as an ordinary claim.
+    pub(crate) fn claimable_at_carrier_lower_bound(&self, slot: usize, requested: f64,
+        seller_price: f32, minimum_carrier: f32, require_finance: bool) -> bool {
+        self.priced_claim(slot, requested, seller_price, minimum_carrier, require_finance).is_some()
+    }
+
+    /// Conservative existence test for any request at this exact goods price and free freight.
+    /// Omits physical f32 rounding and strict-budget corrections: a smaller unrounded f64
+    /// request may succeed when a larger financing-limited request rounds to zero.
+    pub(super) fn potentially_claimable(&self, slot: usize, seller_price: f32) -> bool {
+        let account = self.accounts[slot];
+        let finance = self.finance[account.buyer];
+        if !(finance[0] > 0.0 && finance[1] >= 0.0) { return false; }
+        let Some((mut units, margin, capital, _)) =
+            self.priced_claim(slot, account.units, seller_price, 0.0, false) else { return false; };
+        if margin > 0.0 && finance[0].is_finite() { units = units.min(finance[0] / margin); }
+        if capital > 0.0 && finance[1].is_finite() { units = units.min(finance[1] / capital); }
+        units > 0.0 && account.units - units != account.units
     }
 
     // Units, margin delta, capital delta and unit goods price of a claim, without staging it.
@@ -596,6 +610,68 @@ mod tests {
             1.0,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn carrier_lower_bound_never_excludes_a_fundable_actual_quote() {
+        let mut book = BusinessBudgets::default();
+        book.reset(1, 1, 1, 1);
+        let slot = input(1, 1_000.0, &mut book);
+        for finance in [[0.0, 0.0], [f64::MIN_POSITIVE, 0.0], [0.01, 0.01],
+            [100.0, 120.0], [f64::INFINITY, f64::INFINITY]] {
+            book.set_finance(0, finance);
+            for requested in [f64::MIN_POSITIVE, 0.001, 1.0, 100.0] {
+                for goods in [0.0, 9.0, 10.0, 10.000_001, 12.0] {
+                    for lower in [0.0_f32, 4.0, 49.999_996, 50.0, 50.000_004, 100.0] {
+                        for actual in [lower, lower.next_up(), lower + 1.0, lower + 10_000.0] {
+                            for require_finance in [false, true] {
+                                if book.priced_claim(slot, requested, goods, actual, require_finance).is_some() {
+                                    assert!(book.claimable_at_carrier_lower_bound(slot, requested,
+                                        goods, lower, require_finance));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(book.staged.is_empty());
+    }
+
+    #[test]
+    fn price_eligibility_never_excludes_smaller_or_physical_boundary_requests() {
+        let mut book = BusinessBudgets::default();
+        book.reset(1, 1, 1, 1);
+        let slot = input(1, 1_000.0, &mut book);
+        for remaining in [1e-100, 1e-45, 0.001, 100.0, 1e30] {
+            book.accounts[slot].units = remaining;
+            for exposure in [-10.0, 0.0, 0.1, 4.0] {
+                book.accounts[slot].stock_exposure = exposure;
+                for headroom in [[0.0, 0.0], [1e-110, 1e-110], [1e-100, 1e-100],
+                    [f64::MIN_POSITIVE, 0.0], [0.01, 0.01], [100.0, 120.0],
+                    [f64::INFINITY, f64::INFINITY]] {
+                    book.set_finance(0, headroom);
+                    for price in [0.0, 9.0, 10.0, 10.000_001, 12.0] {
+                        for request in [f64::MIN_POSITIVE, remaining * 0.001, remaining * 0.5, remaining] {
+                            for carrier in [0.0, 0.01, 50.0, 100.0] {
+                                if book.priced_claim(slot, request, price, carrier, true).is_some() {
+                                    assert!(book.potentially_claimable(slot, price),
+                                        "{remaining} {exposure} {headroom:?} {price} {request} {carrier}");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        book.accounts[slot].units = 1e-100;
+        book.accounts[slot].goods = 0.0;
+        book.accounts[slot].carrier = 0.0;
+        book.accounts[slot].stock_exposure = 1.0;
+        book.set_finance(0, [5e-101, 5e-101]);
+        assert!(!book.claimable_at_carrier_lower_bound(slot, 1e-100, 1.0, 0.0, true));
+        assert!(book.claimable_at_carrier_lower_bound(slot, 1e-101, 1.0, 0.0, true));
+        assert!(book.potentially_claimable(slot, 1.0));
     }
 
     #[test]

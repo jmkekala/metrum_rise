@@ -4,6 +4,7 @@
 
 use super::*;
 use std::ops::Range;
+use crate::simulation::buildings::allocator::DemandSiteEntranceKey;
 
 /// One caller-selected buyer recipe and actual door, prepared before candidate proofs.
 #[derive(Clone, Debug)]
@@ -12,19 +13,35 @@ pub(crate) struct PreparedBusinessSite {
     key: String,
     profile: u16,
     pub(super) entrance: BuildingEntrance,
+    entrance_key: Option<DemandSiteEntranceKey>,
 }
 
 impl PreparedBusinessSite {
     /// Associates a candidate's stable commitment owner with its recipe and proposed door.
     pub(crate) fn new(owner: usize, key: &str, profile: u16, entrance: BuildingEntrance) -> Self {
-        Self { owner, key: key.to_owned(), profile, entrance }
+        Self { owner, key: key.to_owned(), profile, entrance, entrance_key: None }
+    }
+
+    /// Records exact geometry inputs for reuse after unrelated live-layout changes.
+    pub(crate) fn with_entrance_key(mut self, key: DemandSiteEntranceKey) -> Self {
+        self.entrance_key = Some(key);
+        self
+    }
+
+    /// Searches the previous sorted sites without allocating or scanning other owners.
+    pub(crate) fn retained_entrance<'a>(sites: &'a [Self], owner: usize, key: &str)
+        -> Option<(DemandSiteEntranceKey, &'a BuildingEntrance)> {
+        let index = sites.binary_search_by(|site|
+            site.owner.cmp(&owner).then(site.key.as_str().cmp(key))).ok()?;
+        let site = &sites[index];
+        Some((site.entrance_key?, &site.entrance))
     }
 }
 
 /// Cold geometry belongs to selected sites; funding and tranche changes retain it.
 #[derive(Clone, Debug, Default)]
 pub(super) struct PreparedSites {
-    revision: Option<(Option<(u64, u64, u32)>, [u64; 3])>,
+    pub(super) revision: Option<(Option<(u64, u64, u32)>, [u64; 3])>,
     pub(super) entries: Vec<PreparedBusinessSite>,
     pub(super) ports: Vec<Range<usize>>,
 }
@@ -36,7 +53,7 @@ impl BusinessMarket {
     /// Finance never creates spatial membership or rebuilds buckets inside a proposal.
     pub(crate) fn prepare_sites(&mut self, caller_revision: [u64; 3],
         catalog: &RuntimeEconomyCatalog, components: &ModeComponentIndex, graph: &RegionGraph,
-        factory: impl FnOnce() -> Vec<PreparedBusinessSite>) {
+        factory: impl FnOnce(&[PreparedBusinessSite]) -> Vec<PreparedBusinessSite>) {
         debug_assert!(!self.budgets.revalidation.is_active() && self.budgets.staged.is_empty());
         let revision = (self.revision, caller_revision);
         if self.sites.revision == Some(revision) { return; }
@@ -44,7 +61,7 @@ impl BusinessMarket {
         self.identities.truncate(live_ports);
         self.port_access.truncate(live_ports);
         self.port_sites.truncate(live_ports);
-        self.sites.entries = factory();
+        self.sites.entries = factory(&self.sites.entries);
         self.sites.entries.sort_unstable_by(|a, b| a.owner.cmp(&b.owner).then(a.key.cmp(&b.key)));
         assert!(self.sites.entries.windows(2).all(|pair|
             pair[0].owner != pair[1].owner || pair[0].key != pair[1].key), "prepared buyer keys must be unique");

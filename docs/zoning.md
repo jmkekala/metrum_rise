@@ -860,6 +860,9 @@ candidate into the resulting gap. It evaluates five extra rows outside publicati
 their conflict ring, independently of chunk residency. External exclusion edits invalidate the
 same bounded dependency halo. Painted/claimed cells and
 cells outside the edit's publication region remain pinned; duplicate cells in one frame merge.
+Distinct addresses on the same canonical lattice have disjoint interiors, so both raw-candidate
+and retained-cell checks skip same-frame conflict tests. Cross-frame tests still use the exact
+integer predicate; triangle/quad vertices are converted once into stack storage per comparison.
 No whole-city candidate index or full frame-registry clone is required for a local generation.
 
 ### Non-overlap and coexistence
@@ -1160,9 +1163,38 @@ The ordinary demand allocator then handles asset choice, site/terrain feasibilit
 occupancy and redevelopment. Asset footprints are cached until explicit catalog invalidation.
 With no queued work, preparation is an allocation-free constant-time check.
 
+Building-site publication separates terrain dirtiness from generated-cell exclusions. Only
+explicit sites contribute exclusion envelopes, kept separately until they enter the existing
+512 m dirty-chunk set. Ordinary parcel buildings do not exclude cells, so placing or resizing
+them does not regenerate the rectangle spanning unrelated sites. Clearing a cell-lot occupant
+still queues its local frontage revalidation through the parcel lifecycle, including erased
+paint and roads lost during occupied grace. Field removals retain their full-polygon invalidation.
+
+The parcel store maintains an authored-parcel count alongside its existing indices. When that
+count is zero, generated-cell exclusion skips parcel lookup in O(1): cell-derived lots never
+exclude generated cells. Mixed cities retain the existing chunk-local exact overlap query.
+Insertion, load, cell classification, local removal, undo restoration, bulk index rebuild and
+clear maintain this derived count; it is not saved independently.
+
+The allocator likewise counts explicit non-parcel sites in its existing building index. A clean
+zero count skips the per-cell building candidate collection and its temporary storage. Stale
+indices retain the ordinary exact lookup; unfinished explicit sites still count.
+
+Cell generation derives the maximum corridor half-width from the roads already returned by its
+neighborhood query. It narrows a per-cell R-tree query only when that cell's entire original
+128 m query is contained in the known neighborhood. The narrowed f32 envelope rounds outward
+and is intersected with the original envelope. Thus every potentially intersecting corridor
+remains a candidate; the original exact polygon test and the boundary fallback stay intact.
+This adds O(local roads) parallel preparation and constant work per cell, with no new index.
+
+
 The runtime reuses compiled-road query chunks, field clearance and the allocator's explicit-site
 index. Compiled road polygons retain their double-precision boundaries through polygon overlap;
-their former float conversion could incorrectly remove rotated frontage cells. Road contact uses
+their former float conversion could incorrectly remove rotated frontage cells. Span polygons are
+selected through the existing owner-local triangle grid before the same exact polygon overlay;
+this adds no spatial index or retained geometry. Traversal costs O(touched grid cells + their
+entries), with allocation-free broad-phase storage, rather than scanning every section of each
+nearby road for every candidate cell. Road contact uses
 the foundation's bounded coordinate/basis rounding allowance, while cell ownership keeps exact
 full-footprint intersection rules. Field and explicit-site reservations do not receive that road
 contact allowance.

@@ -5,6 +5,7 @@
 use super::*;
 use crate::simulation::economy::accessibility::ReachableBucketIndex;
 use std::ops::Range;
+use crate::simulation::buildings::allocator::DemandSiteEntranceKey;
 
 /// A proposed supplier retains its actual recipe and door independently of the live building.
 /// Preparation owns this data; source handles never masquerade as allocator building indices.
@@ -14,12 +15,28 @@ pub(crate) struct ProjectedSupplySource {
     asset: String,
     profile: u16,
     entrance: BuildingEntrance,
+    entrance_key: Option<DemandSiteEntranceKey>,
 }
 
 impl ProjectedSupplySource {
     /// Records a specific replacement candidate during pass preparation, before quotations.
     pub(crate) fn new(owner: usize, asset: &str, profile: u16, entrance: BuildingEntrance) -> Self {
-        Self { owner, asset: asset.to_owned(), profile, entrance }
+        Self { owner, asset: asset.to_owned(), profile, entrance, entrance_key: None }
+    }
+
+    /// Records exact geometry inputs for reuse after unrelated live-layout changes.
+    pub(crate) fn with_entrance_key(mut self, key: DemandSiteEntranceKey) -> Self {
+        self.entrance_key = Some(key);
+        self
+    }
+
+    /// Searches the previous sorted variants without allocating or scanning other owners.
+    pub(crate) fn retained_entrance<'a>(sources: &'a [Self], owner: usize, asset: &str)
+        -> Option<(DemandSiteEntranceKey, &'a BuildingEntrance)> {
+        let index = sources.binary_search_by(|source|
+            source.owner.cmp(&owner).then(source.asset.as_str().cmp(asset))).ok()?;
+        let source = &sources[index];
+        Some((source.entrance_key?, &source.entrance))
     }
 }
 
@@ -45,7 +62,7 @@ impl RecurringSupply {
         catalog: &RuntimeEconomyCatalog,
         graph: &RegionGraph,
         caller_revision: [u64; 3],
-        factory: impl FnOnce() -> Vec<ProjectedSupplySource>,
+        factory: impl FnOnce(&[ProjectedSupplySource]) -> Vec<ProjectedSupplySource>,
     ) {
         debug_assert!(!self.revalidation.is_active() && self.staged.is_empty());
         debug_assert!(!self.projected.enabled && self.released.is_empty(), "prepare once after a live fork");
@@ -55,7 +72,7 @@ impl RecurringSupply {
         let projected = &mut self.projected;
         let revision = Some((geometry_revision(self.revision), caller_revision));
         if projected.revision != revision || projected.offsets.first() != Some(&first_slot) {
-            projected.sources = factory();
+            projected.sources = factory(&projected.sources);
             projected.sources.sort_unstable_by(|a, b| a.owner.cmp(&b.owner).then(a.asset.cmp(&b.asset)));
             projected.offsets.clear();
             projected.offsets.reserve(projected.sources.len() + 1);

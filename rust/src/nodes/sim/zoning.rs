@@ -209,6 +209,7 @@ impl SimCore {
         let cell_m = self.config.zone_cell_m;
         let blocked = |corners: &[DVec2; 4]| cell_site_blocked(allocator, roads, cell_m, corners);
         for bounds in regions {
+            let phase = crate::debug::category_enabled("economy_phases").then(std::time::Instant::now);
             // Regenerate transient source-frontage links after load and local road changes.
             // Growth can depend on a front row just outside the changed paint's chunk.
             self.zoning.generate_cells(
@@ -216,11 +217,16 @@ impl SimCore {
                 bounds.expanded(f64::from(MAX_PARCEL_FRONTAGE_M)),
                 &blocked,
             );
+            let generation_ms = phase.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0);
+            let phase = phase.map(|_| std::time::Instant::now());
             let report =
                 self.zoning
                     .derive_cell_lots(&self.region_graph, bounds, &sizes, |corners, _| {
                         blocked(corners)
                     });
+            crate::debug_log!("economy_phases", "cell_lot_detail generation_ms={:.3} derivation_ms={:.3} candidates={} created={} retired={} reattached={}",
+                generation_ms, phase.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0),
+                report.candidates, report.created.len(), report.retired.len(), report.reattached.len());
             result.candidates += report.candidates;
             result.created.extend(report.created);
             result.retired.extend(report.retired);
@@ -247,20 +253,17 @@ fn cell_site_blocked(
 ) -> bool {
     // Keep the same canonical corners used by reciprocal placement and save validation.
     // Narrowing to f32 here can hide small intersections at large world coordinates.
-    if !allocator.field_clearance.is_empty() || !allocator.building_sites.is_empty() {
-        let footprint = PolygonFootprint::from_precise_points(corners.iter().map(|p| [p.x, p.y]));
+    if !allocator.field_clearance.is_empty() || allocator.has_explicit_cell_sites() {
+        let points = corners.map(|p| [p.x, p.y]);
+        let footprint = PolygonFootprint::from_precise_slice(&points);
         if allocator.field_clearance.overlaps(&footprint, None)
             || allocator.cell_footprint_overlaps_explicit_site(&footprint, cell_m)
         {
             return true;
         }
     }
-    PolygonFootprint::from_precise_points(
-        road_contact_interior(corners)
-            .into_iter()
-            .map(|p| [p.x, p.y]),
-    )
-    .overlaps_roads(roads)
+    let points = road_contact_interior(corners).map(|p| [p.x, p.y]);
+    PolygonFootprint::from_precise_slice(&points).overlaps_roads(roads)
 }
 
 #[cfg(test)]

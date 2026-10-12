@@ -14,6 +14,7 @@ use crate::simulation::network::{TransitNetwork, graph::RegionGraph, types::Tran
 use rayon::prelude::*;
 
 mod sites;
+mod finance_masks;
 pub(crate) use sites::PreparedBusinessSite;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -57,19 +58,61 @@ pub(crate) struct BusinessMarket {
     visit: u64,
     #[cfg(test)]
     index_builds: u64,
+    #[cfg(test)]
+    quote_counts: [u64; 3],
+    #[cfg(test)]
+    rejection_causes: [u64; 5],
+    price_classes: Vec<Vec<u32>>,
+    account_masks: Vec<u64>,
+    port_masks: Vec<u64>,
+    dirty_buyers: Vec<usize>,
+    buyer_dirty: Vec<bool>,
+    #[cfg(test)]
+    disable_finance_masks: bool,
 }
 
 impl BusinessMarket {
+    /// Lifetime affordability prechecks, rejected routes, and rejects that free freight
+    /// would not prove. Diagnostics only; production does not repeat the free-price check.
+    #[cfg(test)]
+    pub(crate) fn quote_counts_for_test(&self) -> [u64; 3] { self.quote_counts }
+
+    /// Examined rejected account rows, quantity-rounding loss, invalid financing, remaining
+    /// free-freight failures, and carrier-only failures. Rows can exceed rejected ports.
+    #[cfg(test)]
+    pub(crate) fn rejection_causes_for_test(&self) -> [u64; 5] { self.rejection_causes }
+
+    /// Uses the original complete candidate scan as an independent transactional oracle.
+    #[cfg(test)]
+    pub(crate) fn disable_finance_masks_for_test(&mut self) { self.disable_finance_masks = true; }
+
     /// Forks the jointly financed live book once per project pass. Warm cost follows account
     /// tranches and receipts; the existing resource buckets retain their prepared storage.
     pub(crate) fn copy_reservations_from(&mut self, source: &Self) {
         if self.revision != source.revision || self.access != source.access
             || self.identities.get(..source.identities.len()) != Some(source.identities.as_slice())
             || self.indices.len() != source.indices.len() {
-            *self = source.clone();
+            // Refresh layout once, retaining account/journal capacity for the common
+            // financial copy below. Prepared variants keep geometry, never old eligibility.
+            self.access.clone_from(&source.access);
+            self.identities.clone_from(&source.identities);
+            self.port_access.clone_from(&source.port_access);
+            self.port_sites.clone_from(&source.port_sites);
+            self.buyer_ports.clone_from(&source.buyer_ports);
+            self.indices.clone_from(&source.indices);
+            self.revision = source.revision;
+            self.sites.revision = None;
+            #[cfg(test)]
+            {
+                self.index_builds = source.index_builds;
+                self.quote_counts = source.quote_counts;
+                self.rejection_causes = source.rejection_causes;
+                self.disable_finance_masks = source.disable_finance_masks;
+            }
         }
         self.budgets.copy_reservations_from(&source.budgets);
         self.profiles.clone_from(&source.profiles);
+        self.price_classes.clone_from(&source.price_classes);
         self.reset_accounts();
     }
 
@@ -86,6 +129,7 @@ impl BusinessMarket {
         let receipts = 2 * (self.budgets.accounts.len() + output_ports);
         self.budgets.committed.reserve(receipts.saturating_sub(self.budgets.committed.len()));
         self.reserve_accounts(self.budgets.accounts.capacity());
+        self.prepare_finance_mask_storage();
     }
 
     /// Prepares finance-account mappings between complete proofs, retaining recipe geometry.
@@ -94,6 +138,7 @@ impl BusinessMarket {
         let capacity = self.budgets.accounts.capacity();
         self.account_ports.reserve(capacity.saturating_sub(self.account_ports.len()));
         self.account_available.reserve(capacity.saturating_sub(self.account_available.len()));
+        self.account_masks.reserve(capacity.saturating_sub(self.account_masks.len()));
         self.previous_ports.resize(capacity, usize::MAX);
         self.port_changed.resize(capacity, 0);
     }
@@ -125,6 +170,9 @@ impl BusinessMarket {
     /// Restores accepted inner quotes and only the affected customer bucket entries.
     pub(crate) fn reject_revalidation(&mut self) {
         self.reject();
+        let dirty = &mut self.dirty_buyers;
+        let flags = &mut self.buyer_dirty;
+        self.budgets.visit_revalidation_buyers(|buyer| finance_masks::mark_dirty(dirty, flags, buyer));
         let access = &self.port_access;
         let indices = &mut self.indices;
         let ports = &mut self.account_ports;
@@ -183,6 +231,7 @@ impl BusinessMarket {
     /// Updates one revalidated operation inside the same enclosing transaction.
     pub(crate) fn set_financing(&mut self, buyer: usize, headroom: [f64; 2]) {
         self.budgets.set_finance(buyer, headroom);
+        self.mark_finance_dirty(buyer);
     }
 
     /// Visits a seller's current customers, following only its live receipt chain.
@@ -217,6 +266,7 @@ impl BusinessMarket {
         self.budgets.finance.par_iter_mut().zip(headroom).for_each(|(finance, &actual)| {
             *finance = actual;
         });
+        for buyer in 0..self.budgets.finance.len() { self.mark_finance_dirty(buyer); }
     }
 
     /// Prepares an exact storage request between complete matching attempts, never inside
@@ -253,6 +303,7 @@ impl BusinessMarket {
             output_ports,
         );
         seed(&mut self.budgets);
+        self.prepare_price_classes(catalog);
         debug_assert!(self.budgets.staged.is_empty());
         let revision = (
             allocator.building_ref_revision(),
@@ -412,6 +463,7 @@ impl BusinessMarket {
             index.reset_available(|port| self.port_available[port] > 0)
         });
         self.visited.resize(self.identities.len(), 0);
+        self.reset_finance_masks();
     }
 
     /// Reserves actual source-to-buyer deliveries in stable chunk/account order.
@@ -451,6 +503,8 @@ impl BusinessMarket {
         allocator: &BuildingAllocator, logistics: &mut ShipmentSystem, network: &TransitNetwork,
         graph: &RegionGraph, tuning: &RuntimeEconomyTuning, joint: bool) -> BusinessSales {
         let mut sales = BusinessSales::default();
+        let mask = if joint { None } else { self.finance_query_mask(resource, price) };
+        if mask.is_some() { self.refresh_finance_masks(); }
         let Some(index) = self.indices.get(resource as usize) else {
             return sales;
         };
@@ -463,7 +517,7 @@ impl BusinessMarket {
             self.visit = 1;
         }
         let reached = components.entrance_components(entrance, graph, TransitFlags::CAR);
-        index.scan_nearest(reached, entrance.door_pos.x, entrance.door_pos.y, |event| {
+        index.scan_nearest_masked(reached, entrance.door_pos.x, entrance.door_pos.y, mask, |event| {
             let ReachableBucketScanEvent::Item { item_idx: port } = event else {
                 return true;
             };
@@ -482,17 +536,46 @@ impl BusinessMarket {
             let Some(destination) = destination else {
                 return true;
             };
-            // A buyer whose accounts cannot take any units even with free freight needs no
-            // route quote: no actual quote can raise its claim (`ECON-21`). O(buyer accounts).
+            // A buyer unable to take any units at a proven lower carrier price needs no
+            // route quote: every actual route costs at least as much. O(buyer accounts).
+            let minimum_carrier = logistics.customer_carrier_lower_bound(
+                entrance, destination, network, graph, tuning);
+            #[cfg(test)]
+            { self.quote_counts[0] += 1; }
             let mut slot = self.budgets.buyer_accounts[buyer];
             let mut claimable = false;
             while slot != usize::MAX && !claimable {
                 let account = self.budgets.accounts[slot];
                 claimable = self.account_ports[slot] == port && account.units > 0.0
-                    && self.budgets.claimable_without_carrier(slot, requested - sales.units, price, !joint);
+                    && self.budgets.claimable_at_carrier_lower_bound(
+                        slot, requested - sales.units, price, minimum_carrier, !joint);
                 slot = account.next_buyer;
             }
             if !claimable {
+                #[cfg(test)]
+                {
+                    self.quote_counts[1] += 1;
+                    let mut slot = self.budgets.buyer_accounts[buyer];
+                    while slot != usize::MAX {
+                        let account = self.budgets.accounts[slot];
+                        if self.account_ports[slot] == port && account.units > 0.0 {
+                            let remaining = requested - sales.units;
+                            let free = self.budgets.claimable_at_carrier_lower_bound(slot,
+                                remaining, price, 0.0, !joint);
+                            let finance = self.budgets.finance[buyer];
+                            let cause = if account.units - remaining == account.units { 1 }
+                                else if !joint && !(finance[0] > 0.0 && finance[1] >= 0.0) { 2 }
+                                else if !free { 3 } else { 4 };
+                            self.rejection_causes[0] += 1;
+                            self.rejection_causes[cause] += 1;
+                            if free {
+                                self.quote_counts[2] += 1;
+                                break;
+                            }
+                        }
+                        slot = account.next_buyer;
+                    }
+                }
                 return true;
             }
             if let Some(carrier) =
@@ -519,6 +602,9 @@ impl BusinessMarket {
     }
 
     fn sync_staged(&mut self, previous: bool) {
+        for &(buyer, _) in &self.budgets.staged_finance {
+            finance_masks::mark_dirty(&mut self.dirty_buyers, &mut self.buyer_dirty, buyer);
+        }
         for change in &self.budgets.staged {
             let account = self.budgets.accounts[change.account];
             let access = self.port_access[self.account_ports[change.account]];
@@ -544,6 +630,7 @@ impl BusinessMarket {
     /// cannot remain advertised as demand while a replacement recipe is being evaluated.
     pub(crate) fn withdraw_buyer(&mut self, buyer: usize,
         affected: impl FnMut(usize, u16, f64, f64)) {
+        self.mark_finance_dirty(buyer);
         let mut slot = self.budgets.buyer_accounts[buyer];
         while slot != usize::MAX {
             let account = self.budgets.accounts[slot];

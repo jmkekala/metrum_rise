@@ -11,6 +11,7 @@ use crate::simulation::network::lanes::{LaneSystem, LaneType};
 use crate::simulation::network::types::{TransitFlags, TransitType, VehicleFrontageAccess};
 use crate::simulation::pathing::cch::CchCostsFrom;
 use godot::prelude::Vector2;
+use rayon::prelude::*;
 
 const INVALID_LANE_ID: usize = usize::MAX;
 
@@ -20,6 +21,44 @@ const ENTRANCE_FOOT_FWD_VALID: u8 = 0x04;
 const ENTRANCE_FOOT_BKW_VALID: u8 = 0x08;
 const ENTRANCE_CAR_FWD_VALID: u8 = 0x10;
 const ENTRANCE_CAR_BKW_VALID: u8 = 0x20;
+
+/// Exact proposed-door inputs; network generations cover frontage geometry and lane IDs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DemandSiteEntranceKey {
+    door: Option<[u32; 2]>,
+    edge: usize,
+    side: i8,
+    topology: u32,
+    lanes: u64,
+}
+
+/// Exact entrance inputs for derived geometry/proofs, including every floating-point bit.
+/// Unrelated allocator revisions may retain work only when this key is unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct BuildingEntranceKey {
+    edge: usize,
+    side: i8,
+    frontage: VehicleFrontageAccess,
+    geometry: [u32; 5],
+    lanes: [usize; 4],
+    flags: u8,
+}
+
+impl BuildingEntranceKey {
+    /// Captures the complete current door, lane and access configuration without allocation.
+    pub(crate) fn new(entrance: &BuildingEntrance) -> Self {
+        Self {
+            edge: entrance.edge_idx,
+            side: entrance.side,
+            frontage: entrance.vehicle_frontage_access,
+            geometry: [entrance.entrance_s_m, entrance.door_pos.x, entrance.door_pos.y,
+                entrance.curb_pos.x, entrance.curb_pos.y].map(f32::to_bits),
+            lanes: [entrance.foot_lane_fwd, entrance.foot_lane_bkw,
+                entrance.car_lane_fwd, entrance.car_lane_bkw],
+            flags: entrance.flags,
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 struct FreightCarCandidate {
@@ -90,6 +129,17 @@ impl FreightEntranceAccess {
         }
         best.map(|candidate| candidate.total_time_s)
     }
+
+    /// Prices arrivals from a prepared network-cost table, preserving border ETA arithmetic.
+    /// The table includes zero at each allowed source, and unreachable nodes return `None`.
+    pub(crate) fn eta_from_network(&self, network: &TransitNetwork, graph: &RegionGraph,
+        mut cost_to: impl FnMut(u32) -> Option<f32>) -> Option<f32> {
+        self.arrival.iter().flatten().filter_map(|end| {
+            let frontage = frontage_time_s(end.lane_id, end.lane_d, false, network, graph)?;
+            let seconds = cost_to(end.node)? + frontage + end.local_time_s;
+            seconds.is_finite().then_some(seconds)
+        }).min_by(f32::total_cmp)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -104,16 +154,9 @@ impl BuildingAllocator {
     pub(crate) fn rebuild_entrance_cache(&mut self, graph: &RegionGraph, lanes: &LaneSystem) {
         let traffic_debug = crate::debug::is_traffic_enabled();
         let old_entrances = traffic_debug.then(|| self.entrances.clone());
-        self.entrances.clear();
-        self.entrances.reserve(self.buildings.len());
-        for building in &self.buildings {
-            self.entrances.push(Self::derive_building_entrance(
-                building,
-                graph,
-                lanes,
-                &self.registry,
-            ));
-        }
+        self.buildings.par_iter().map(|building| {
+            Self::derive_building_entrance(building, graph, lanes, &self.registry)
+        }).collect_into_vec(&mut self.entrances);
         self.entrances_dirty = false;
         self.bump_entrance_ref_revision();
         if let Some(old_entrances) = old_entrances.as_deref() {
@@ -128,13 +171,9 @@ impl BuildingAllocator {
         lanes: &LaneSystem,
         registry: &crate::assets::AssetRegistry,
     ) {
-        self.entrances.clear();
-        self.entrances.reserve(self.buildings.len());
-        for building in &self.buildings {
-            self.entrances.push(Self::derive_building_entrance(
-                building, graph, lanes, registry,
-            ));
-        }
+        self.buildings.par_iter().map(|building| {
+            Self::derive_building_entrance(building, graph, lanes, registry)
+        }).collect_into_vec(&mut self.entrances);
         self.entrances_dirty = false;
         self.bump_entrance_ref_revision();
     }
@@ -175,10 +214,9 @@ impl BuildingAllocator {
             building.facing_dir,
             building.edge_idx,
             building.side,
-            &building.asset_id,
+            registry.get(&building.asset_id),
             graph,
             lanes,
-            registry,
         )
     }
 
@@ -192,8 +230,25 @@ impl BuildingAllocator {
         graph: &RegionGraph,
         lanes: &LaneSystem,
     ) -> Option<BuildingEntrance> {
+        self.demand_site_entrance_reusing(parcel_id, asset_id, zoning, graph, lanes, 0, None)
+            .map(|(_, entrance)| entrance)
+    }
+
+    /// Reuses a prepared entrance only when its complete geometry inputs still match.
+    /// Lookup and key construction allocate nothing; a miss projects onto frontage geometry.
+    pub(crate) fn demand_site_entrance_reusing(
+        &self,
+        parcel_id: u64,
+        asset_id: &str,
+        zoning: &crate::simulation::zoning::ZoningSystem,
+        graph: &RegionGraph,
+        lanes: &LaneSystem,
+        topology: u32,
+        previous: Option<(DemandSiteEntranceKey, &BuildingEntrance)>,
+    ) -> Option<(DemandSiteEntranceKey, BuildingEntrance)> {
         let parcel = zoning.parcel_by_raw_id(parcel_id)?;
-        let authored = self.registry.get(asset_id)?.manifest.building.as_ref()?;
+        let asset = self.registry.get(asset_id)?;
+        let authored = asset.manifest.building.as_ref()?;
         let (center, facing) = if let Some(index) = parcel.occupied_building() {
             let building = self.buildings.get(index)?;
             (
@@ -207,16 +262,16 @@ impl BuildingAllocator {
                 -parcel.normal(),
             )
         };
-        Some(Self::derive_site_entrance(
-            center,
-            facing,
-            parcel.edge_idx(),
-            parcel.side(),
-            asset_id,
-            graph,
-            lanes,
-            &self.registry,
-        ))
+        let door = Self::site_door_position(center, facing, Some(asset));
+        let key = DemandSiteEntranceKey {
+            door: door.map(|door| [door.x.to_bits(), door.y.to_bits()]),
+            edge: parcel.edge_idx(), side: parcel.side(), topology, lanes: lanes.revision(),
+        };
+        let entrance = match previous {
+            Some((old, entrance)) if old == key => entrance.clone(),
+            _ => Self::derive_door_entrance(door, key.edge, key.side, graph, lanes),
+        };
+        Some((key, entrance))
     }
 
     fn derive_site_entrance(
@@ -224,25 +279,31 @@ impl BuildingAllocator {
         facing: Vector2,
         edge_idx: usize,
         side: i8,
-        asset_id: &str,
+        asset_entry: Option<&crate::assets::registry::AssetEntry>,
         graph: &RegionGraph,
         lanes: &LaneSystem,
-        registry: &crate::assets::AssetRegistry,
     ) -> BuildingEntrance {
+        Self::derive_door_entrance(Self::site_door_position(center, facing, asset_entry),
+            edge_idx, side, graph, lanes)
+    }
+
+    fn site_door_position(center: Vector2, facing: Vector2,
+        asset_entry: Option<&crate::assets::registry::AssetEntry>) -> Option<Vector2> {
+        let asset = asset_entry?;
+        let anchor = main_entrance_anchor(asset.manifest.anchors.as_slice())?;
+        let (basis_x, basis_z) = building_local_xz_basis(facing, asset.manifest.building_frontage_forward());
+        Some(center + basis_x * anchor.position[0] + basis_z * anchor.position[2])
+    }
+
+    fn derive_door_entrance(door: Option<Vector2>, edge_idx: usize, side: i8,
+        graph: &RegionGraph, lanes: &LaneSystem) -> BuildingEntrance {
         let mut entrance = BuildingEntrance {
             edge_idx,
             side,
             ..BuildingEntrance::default()
         };
-        let Some(asset_entry) = registry.get(asset_id) else {
-            return entrance;
-        };
-        let Some(anchor) = main_entrance_anchor(asset_entry.manifest.anchors.as_slice()) else {
-            return entrance;
-        };
-        let (basis_x, basis_z) =
-            building_local_xz_basis(facing, asset_entry.manifest.building_frontage_forward());
-        entrance.door_pos = center + basis_x * anchor.position[0] + basis_z * anchor.position[2];
+        let Some(door) = door else { return entrance; };
+        entrance.door_pos = door;
         entrance.curb_pos = entrance.door_pos;
         let Some(edge) = graph.get_edge(edge_idx) else {
             return entrance;
@@ -289,6 +350,7 @@ impl BuildingAllocator {
 
     /// Quotes directed freight between real or proposed doors using the dispatch geometry.
     /// Node costs are caller-cached; no temporary building or index mutation is required.
+    #[cfg(test)]
     pub(crate) fn freight_car_eta_between_entrances(
         origin_entrance: &BuildingEntrance,
         destination_entrance: &BuildingEntrance,

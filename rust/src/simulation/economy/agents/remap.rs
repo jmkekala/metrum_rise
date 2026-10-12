@@ -37,15 +37,27 @@ impl AgentSystem {
         if mapping.is_empty() {
             return;
         }
-        for i in 0..self.agents.len() {
-            remap_usize(&mut self.agents.home_building[i], mapping);
-            remap_usize(&mut self.agents.work_building[i], mapping);
-            remap_usize(&mut self.agents.current_building[i], mapping);
-            remap_usize(&mut self.agents.target_building[i], mapping);
-            remap_usize(&mut self.agents.planned_target_building[i], mapping);
-            remap_usize(&mut self.agents.next_departure_origin_building[i], mapping);
-            remap_usize(&mut self.agents.next_departure_target_building[i], mapping);
-            remap_usize(&mut self.agents.cached_schedule_work_building[i], mapping);
+        for column in [
+            &mut self.agents.home_building,
+            &mut self.agents.work_building,
+            &mut self.agents.current_building,
+            &mut self.agents.target_building,
+            &mut self.agents.planned_target_building,
+            &mut self.agents.next_departure_origin_building,
+            &mut self.agents.next_departure_target_building,
+            &mut self.agents.cached_schedule_work_building,
+        ] {
+            // A swap removal moves exactly one ID. Compare it directly instead of hashing
+            // eight mostly unchanged references per agent. Columns are independent and
+            // retain simultaneous-map semantics, including cycles in larger remaps.
+            if mapping.len() == 1 {
+                let (&old, &new) = mapping.iter().next().unwrap();
+                column.par_iter_mut().for_each(|value| {
+                    if *value == old { *value = new; }
+                });
+            } else {
+                column.par_iter_mut().for_each(|value| remap_usize(value, mapping));
+            }
         }
     }
 
@@ -872,6 +884,75 @@ mod tests {
         assert_eq!(sys.agents.next_departure_origin_building[idx], 8);
         assert_eq!(sys.agents.next_departure_target_building[idx], 9);
         assert_eq!(sys.agents.cached_schedule_work_building[idx], 9);
+    }
+
+    fn building_columns(system: &AgentSystem) -> [&[usize]; 8] {
+        [&system.agents.home_building, &system.agents.work_building,
+            &system.agents.current_building, &system.agents.target_building,
+            &system.agents.planned_target_building, &system.agents.next_departure_origin_building,
+            &system.agents.next_departure_target_building, &system.agents.cached_schedule_work_building]
+    }
+
+    #[test]
+    fn building_remaps_match_simultaneous_map_for_single_moves_and_cycles() {
+        for mapping in [HashMap::new(), HashMap::from([(3, 5)]),
+            HashMap::from([(3, 5), (5, 3)]), HashMap::from([(usize::MAX, 3)]),
+            HashMap::from([(3, 3), (5, usize::MAX)])] {
+            let mut sys = AgentSystem::new();
+            for home in [3, 5, 9, usize::MAX] {
+                let i = sys.spawn_housed_agent(home, 0.0, 0.0);
+                sys.agents.work_building[i] = 5;
+                sys.agents.target_building[i] = 3;
+                sys.agents.planned_target_building[i] = home;
+                sys.agents.next_departure_origin_building[i] = home;
+                sys.agents.next_departure_target_building[i] = 5;
+                sys.agents.cached_schedule_work_building[i] = 9;
+            }
+            let expected = building_columns(&sys).map(|column| column.iter()
+                .map(|value| mapping.get(value).copied().unwrap_or(*value)).collect::<Vec<_>>());
+            sys.remap_building_indices(&mapping);
+            for (actual, expected) in building_columns(&sys).into_iter().zip(expected) {
+                assert_eq!(actual, expected);
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "release swap-removal remap comparison; agent setup excluded"]
+    fn benchmark_single_building_remap() {
+        use std::{hint::black_box, time::Instant};
+        for count in [10_000, 100_000] {
+            let mut sys = AgentSystem::new();
+            for i in 0..count {
+                let agent = sys.spawn_housed_agent(i % 1024, 0.0, 0.0);
+                sys.agents.work_building[agent] = (i + 1) % 1024;
+                sys.agents.target_building[agent] = (i + 2) % 1024;
+            }
+            let mut ordinary = building_columns(&sys).map(<[usize]>::to_vec);
+            let mut before = Vec::new();
+            let mut after = Vec::new();
+            for repeat in 0..44 {
+                let mapping = if repeat % 2 == 0 { HashMap::from([(1023, 1022)]) }
+                    else { HashMap::from([(1022, 1023)]) };
+                for candidate in if repeat % 2 == 0 { [false, true] } else { [true, false] } {
+                    let start = Instant::now();
+                    if candidate {
+                        sys.remap_building_indices(black_box(&mapping));
+                        after.push(start.elapsed().as_secs_f64() * 1e6);
+                    } else {
+                        for i in 0..count {
+                            for column in &mut ordinary { remap_usize(&mut column[i], black_box(&mapping)); }
+                        }
+                        before.push(start.elapsed().as_secs_f64() * 1e6);
+                    }
+                }
+                for (actual, expected) in building_columns(&sys).into_iter().zip(&ordinary) {
+                    assert_eq!(actual, expected);
+                }
+            }
+            eprintln!("BUILDING_REMAP_BENCH {}", serde_json::json!({"agents":count,
+                "ordinary_us":before,"parallel_single_us":after,"references_equal":true}));
+        }
     }
 
     #[test]

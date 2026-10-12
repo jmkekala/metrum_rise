@@ -180,6 +180,14 @@ impl DemandSystem {
         environment: BuildingSiteEnvironment<'_>,
         minute_of_day: u16,
     ) {
+        let mut phase = crate::debug::category_enabled("economy_phases").then(std::time::Instant::now);
+        let mut times = [0.0; 7];
+        let mut lap = |slot: usize| {
+            if let Some(previous) = phase {
+                times[slot] = previous.elapsed().as_secs_f64() * 1_000.0;
+                phase = Some(std::time::Instant::now());
+            }
+        };
         self.invalidate_construction_execution();
         self.construction_execution.discard_project_proof_for_reset();
         self.building_actions = DemandBuildingActionPlan::default();
@@ -189,6 +197,7 @@ impl DemandSystem {
         let mut borders = std::mem::take(&mut self.freight_border_nodes);
         collect_connected_border_nodes(graph, &mut borders);
         logistics.prepare_site_carrier_quotes(allocator, network, graph, &borders);
+        lap(0);
         let mut funding = std::mem::take(&mut self.construction_execution.funding);
         let reuse_funding = households.job_funding.has_current_input_supply(allocator, network, &borders,
             crate::simulation::economy::logistics::freight_price_phase(&economy_tuning, minute_of_day));
@@ -203,12 +212,14 @@ impl DemandSystem {
                 &catalog, &economy_tuning, fiscal_policy, treasury_balance,
                 |index, physical, _| households.job_funding.service_capacities.get(index).copied().unwrap_or(0).min(physical), minute_of_day);
         }
+        lap(1);
         // Move only the mutable reservation book; the planner reads the matching
         // funding columns without copying them or borrowing the whole owner mutably.
         let mut inputs = std::mem::take(&mut funding.input_supply);
         let mut reservations = std::mem::take(&mut self.construction_execution.reservations);
         let funded_jobs = if reuse_funding { &households.job_funding } else { &funding };
         reservations.reset(funded_jobs, allocator, &catalog, &economy_tuning, fiscal_policy, minute_of_day);
+        lap(2);
         let mut snapshot = DailyDemandSnapshot::from_runtime_with_funding(
             allocator,
             households,
@@ -244,10 +255,13 @@ impl DemandSystem {
         admission_diagnostics.planned_households = self.households_to_admit_today;
         admission_diagnostics.launched_households = 0;
         self.last_admission_diagnostics = admission_diagnostics;
+        lap(3);
         let mut supply = SiteSupply::new(&mut inputs, &mut reservations, allocator, zoning, network, graph,
             logistics, &economy_tuning, &borders, &catalog, minute_of_day, fiscal_policy.household_vat_rate);
+        lap(4);
         supply.reserve_projects(self.queued_supply_order.iter().map(|&index| &self.queued_construction[index]),
             &catalog, &snapshot.output_absorption, &mut self.construction_execution.replay_market, fiscal_policy, &funding.service_capacities, &funding.freight_capital);
+        lap(5);
         self.plan_private_building_actions(
             allocator,
             graph,
@@ -262,6 +276,9 @@ impl DemandSystem {
             environment,
             supply,
         );
+        lap(6);
+        crate::debug_log!("economy_phases", "demand_preparation_detail reuse_funding={} carrier_ms={:.3} funding_ms={:.3} reservations_ms={:.3} snapshots_ms={:.3} site_preparation_ms={:.3} queued_ms={:.3} planning_ms={:.3}",
+            reuse_funding, times[0], times[1], times[2], times[3], times[4], times[5], times[6]);
         funding.input_supply = inputs;
         self.construction_execution.reservations = reservations;
         self.construction_execution.funding = funding;

@@ -182,6 +182,29 @@ impl RoadSurfaceVisualSpanPiece {
         )
     }
 
+    /// Tests complete top polygons selected by the existing triangle grid's XZ bounds.
+    /// Broad-phase traversal is allocation-free and proportional to local grid entries;
+    /// `keep` rejects conservative corner bounds before quad reconstruction. The caller
+    /// retains its exact polygon predicate, including shared-edge semantics.
+    pub(crate) fn any_surface_polygon_in_bounds(
+        &self,
+        bounds: [f64; 4],
+        mut keep: impl FnMut(&[RoadVec3; 4]) -> bool,
+        mut test: impl FnMut(SpanQuad) -> bool,
+    ) -> bool {
+        let mut previous = u32::MAX;
+        self.surface_query.items_in_bounds(bounds).any(|item| {
+            let region = item >> 1;
+            // The two triangles of one polygon are consecutive within each grid cell.
+            // Repeated polygons across cells are harmless; no per-query set is needed.
+            if region == previous { return false; }
+            previous = region;
+            let corners = self.span_owned_regions[region as usize].corners(&self.sections);
+            keep(&corners) && test(SpanQuad::from_corners(corners)
+                .expect("span regions are only resolved for valid strip quads"))
+        })
+    }
+
     /// Top quads, asphalt then curb then sidewalk, whose four region corners pass `keep`.
     ///
     /// A quad's points are a subset of its corners, so a bounds test that rejects the corners

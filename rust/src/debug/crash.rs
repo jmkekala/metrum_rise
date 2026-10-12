@@ -36,9 +36,10 @@ struct CrashEvent {
     summary: CrashSimSnapshot,
 }
 
-#[derive(Clone, Copy)]
 struct CrashRecorder {
-    events: [Option<CrashEvent>; CRASH_RECORDER_CAPACITY],
+    // Initialize directly on the heap: constructing/moving the fixed array made even
+    // disabled initialization reserve more than a default test/Rayon thread's stack.
+    events: Box<[Option<CrashEvent>]>,
     next: usize,
     len: usize,
     sequence: u64,
@@ -52,7 +53,7 @@ struct WatchdogState {
 impl CrashRecorder {
     fn new() -> Self {
         Self {
-            events: [None; CRASH_RECORDER_CAPACITY],
+            events: vec![None; CRASH_RECORDER_CAPACITY].into_boxed_slice(),
             next: 0,
             len: 0,
             sequence: 0,
@@ -628,4 +629,17 @@ fn write_crash_summary(out: &mut impl Write, summary: CrashSimSnapshot) -> std::
         summary.water_dirty,
         summary.network_dirty,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn flight_recorder_initialization_has_bounded_stack_storage() {
+        assert!(std::mem::size_of::<CrashRecorder>() <= 64);
+        let recorder = CrashRecorder::new();
+        assert_eq!(recorder.events.len(), CRASH_RECORDER_CAPACITY);
+        assert!(recorder.events.iter().all(Option::is_none));
+    }
 }

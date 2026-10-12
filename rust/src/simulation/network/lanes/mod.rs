@@ -115,6 +115,7 @@ pub struct LaneSystem {
     pub node_lanes: HashMap<usize, Vec<usize>>,
     // Crossings by connector lane id. Few lanes cross a street, so they are kept out of `Lane`.
     crosswalks: HashMap<usize, LaneCrosswalk>,
+    revision: u64,
 }
 
 impl LaneSystem {
@@ -125,16 +126,22 @@ impl LaneSystem {
             edge_lanes: HashMap::new(),
             node_lanes: HashMap::new(),
             crosswalks: HashMap::new(),
+            revision: 0,
         }
     }
 
     /// Clears all lanes and structural mappings.
     pub fn clear(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
         self.lanes.clear();
         self.edge_lanes.clear();
         self.node_lanes.clear();
         self.crosswalks.clear();
     }
+
+    /// Changes whenever physical lane IDs or connector topology are rebuilt, even when
+    /// terrain authoring leaves the CCH hierarchy unchanged. Building edits do not change it.
+    pub(crate) fn revision(&self) -> u64 { self.revision }
 
     /// Street crossing walked by connector `lane_id`, when the connector is a single crosswalk.
     pub fn crosswalk(&self, lane_id: usize) -> Option<LaneCrosswalk> {

@@ -7,6 +7,45 @@ use crate::simulation::network::types::TransitFlags;
 use crate::simulation::network::{TransitNetwork, graph::RegionGraph, lanes::LaneType};
 use rayon::prelude::*;
 
+/// Compact positive walking proof at one door, scoped to its pedestrian network generation.
+/// Unproven trips, including equal-node attachments, still need the ordinary route query.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct BuildingWalkingAccess {
+    origins: [usize; 2],
+    destinations: [usize; 2],
+    nodes: [u32; 2],
+}
+
+impl Default for BuildingWalkingAccess {
+    fn default() -> Self {
+        Self { origins: [usize::MAX; 2], destinations: [usize::MAX; 2], nodes: [u32::MAX; 2] }
+    }
+}
+
+impl BuildingWalkingAccess {
+    /// Wraps already validated node-ranked groups from an existing access census.
+    pub(crate) fn from_groups(origins: [usize; 2], destinations: [usize; 2], nodes: [u32; 2]) -> Self {
+        Self { origins, destinations, nodes }
+    }
+
+    /// Uses exactly the ordinary planner's pedestrian geometry and finite-frontage checks.
+    pub(crate) fn at_entrance(entrance: &crate::simulation::buildings::allocator::BuildingEntrance,
+        network: &TransitNetwork, graph: &RegionGraph, walking: &PedestrianReachability) -> Self {
+        let [origin, destination] = super::trip::BuildingTripEnds::walking_pair_at_entrance(entrance, network, graph);
+        let nodes = graph.get_edge(entrance.edge_idx)
+            .map_or([u32::MAX; 2], |edge| [edge.start_node, edge.end_node]);
+        Self::from_groups(origin.walking_groups(walking), destination.walking_groups(walking), nodes)
+    }
+
+    /// Proves one directed trip without accepting a cycle in place of a zero-hop connector.
+    pub(crate) fn proves_to(self, destination: Self) -> bool {
+        self.origins.into_iter().enumerate().any(|(from, group)| {
+            group != usize::MAX && destination.destinations.into_iter().enumerate().any(|(to, target)|
+                group == target && self.nodes[from] != destination.nodes[to])
+        })
+    }
+}
+
 /// Cached strongly connected pedestrian lane groups. A shared cyclic group proves a
 /// legal directed connector path; other pairs still require the ordinary trip query.
 #[derive(Clone, Debug, Default)]

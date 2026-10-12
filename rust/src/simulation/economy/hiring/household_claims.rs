@@ -4,9 +4,10 @@
 
 use super::*;
 use super::super::customers::ConsumerMarket;
+use crate::simulation::buildings::allocator::BuildingEntranceKey;
 
 /// Inputs remain immutable for all closure attempts in one census. Cross-census reuse first
-/// compares household accounts/access, then every quoted seller's price and output request.
+/// compares household accounts/access, then every seller's entrance, price and output request.
 pub(super) struct Census<'a> {
     allocator: &'a BuildingAllocator,
     catalog: &'a RuntimeEconomyCatalog,
@@ -43,6 +44,7 @@ struct Quote {
     ports: usize,
     accepted: bool,
     gross_price: u32,
+    entrance: Option<BuildingEntranceKey>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -128,6 +130,7 @@ impl HouseholdQuotes {
         let profile = census.catalog.profile_by_runtime_id(building.economy_profile_runtime_id).unwrap();
         let area = output_area_scale_for_building(building, profile);
         let gross_price = (profile.unit_price_currency * (1.0 + census.fiscal.household_vat_rate)).to_bits();
+        let entrance = census.allocator.entrances.get(owner).map(BuildingEntranceKey::new);
         let requests = || profile.outputs.iter().map(|output| OutputRequest {
             resource: output.resource_runtime_id,
             units: (profile.net_output_units_per_day(output) * area).to_bits(),
@@ -135,6 +138,7 @@ impl HouseholdQuotes {
         if self.replaying && !self.quotes.get(self.cursor).is_some_and(|quote| {
             quote.owner == owner && (!self.previous_census || (quote.ports == units.len()
                 && quote.gross_price == gross_price
+                && quote.entrance == entrance
                 && requests().eq(self.requests[quote.first..quote.first + quote.ports].iter().copied())))
         }) {
             self.rebuild_prefix(customers, census);
@@ -151,7 +155,8 @@ impl HouseholdQuotes {
                 && self.units.len() + units.len() <= self.units.capacity()
                 && self.requests.len() + units.len() <= self.requests.capacity(),
                 "household quote replay requires census preparation");
-            self.quotes.push(Quote { owner, first: self.units.len(), ports: units.len(), accepted: false, gross_price });
+            self.quotes.push(Quote { owner, first: self.units.len(), ports: units.len(),
+                accepted: false, gross_price, entrance });
             self.units.extend_from_slice(units);
             self.requests.extend(requests());
         }

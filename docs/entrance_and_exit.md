@@ -1304,12 +1304,35 @@ additionally reflects boundary-edge states: its CCH bound is the sum over nodes 
 `(road degree + 1) * upward arc count`, rather than just the number of arcs. Subsequent
 queries reuse that storage, including the exact directed connector fallback; actual agent plans
 still own their returned path. Commute quotations additionally retain exact network-leg results
-in direct slots bounded by O(roads + nodes) per worker. Keys include mode, both nodes and both
-lanes; a collision or miss runs the ordinary exact query. Topology/CCH metric revisions clear
+in direct slots bounded by O(roads + nodes) per worker. Keys include mode and both nodes.
+Pedestrian fallback retains both lane constraints. Car legs, and walking legs covered by the
+complete-turn proof below, use the CCH's canonical incoming-edge context and no arrival-lane
+constraint: pure CCH costs do not depend on the arrival lane, unrestricted origins ignore the
+incoming edge, and FOOT queries ignore vehicle turns. Restricted vehicle origins retain the
+exact incoming edge. Source bucket queries share that same context. A collision or miss runs
+the ordinary exact query. Topology, CCH metric and physical-lane revisions clear
 these results, while door-local and frontage costs remain priced separately. Repeated job scans
 retain visited labels per worker instead of allocating them per Rayon task. Prepared-storage
 regressions compare paths/costs across metric changes and broken pedestrian connectors, test
 cached failures and changed door/frontage terms, and check that query buffers do not grow.
+Positive shopping and household-customer walking proofs prepare only pedestrian entrance
+ends, sharing each projection across departure and arrival while pricing each direction's
+frontage separately. Full candidate searches likewise prepare their four distinct ends once,
+retaining the original rank-comparison order. A failed proof lazily prepares the ordinary walking/driving ends and retains its exact
+fallback. This avoids car-lane projection when proving a walking trip; it does not remove car
+choices from ordinary trip planning. Directed connectivity is scoped to the CCH/lane revision,
+while callers validate their current building entrances separately.
+Cost forecasts also prepare an ordered, compact copy of pedestrian connector targets per
+worker and topology revision, in O(roads + lanes + connections) time/storage. An exhaustive
+positive proof skips witness traversal only when every physical incoming foot lane connects
+to every outgoing foot lane at its junction, and every live road edge has both pedestrian
+directions. This covers the node-pair representative used for parallel edges too. Distinct-target
+counts prevent duplicate connectors from concealing a missing turn. The proof preserves a
+nonempty lane frontier by induction along any CCH node path and reaches the exact destination
+lane at its final junction. Otherwise forecasts retain the complete connector check and
+fallback. Stored routes still materialize and validate their witness. The routing oracle checks
+exact cost bits across complete, incomplete and rebuilt lane graphs; economy measurements are
+in the [ECON-13 follow-up](economy.md#routing-follow-up-2026-10-11).
 Full trip selection now uses the same prepared exact quotations. Only the winning building
 trip reconstructs an owned route; border and network-replan candidates retain their winning
 path in worker scratch and copy it once after selection. Pedestrian fallback predecessors,
@@ -1532,9 +1555,371 @@ If a flow field stores `nearest_building`, equal-cost source competition must us
 
 `nearest_building[node]` must always be the building id from the winning tuple above. No hash-map iteration order, insertion order, or floating-point epsilon comparison may affect this result.
 
+##### CCH routing performance track (`NET-02`–`NET-05`)
+
+The routing follow-up to `ECON-13-B` proceeds in order: exact hot-path layout and turn-cache
+improvements (`NET-02`), nested dissection and a turn-aware elimination-tree query (`NET-03`),
+bucket many-to-many commute queries (`NET-04`), then restricted CPU sweeps (`NET-05`).
+`NET-02` must preserve cost bits, distance bits, paths, economic records and growth reports.
+Its baseline is `03c1cf45`, which contains the earlier hourly frontage-price/profit-proof work.
+The hierarchy change can alter f32 summation and equal-cost path choices. The user approved
+`NET-03` and the confirmed `NET-06` fix after the `NET-02` measurements, then deferred 1M runs
+for this pass. Bucket joins must use compatible turn states and preserve the complete
+frontage/entrance and 24-option ranking contracts.
+The existing one-to-all sweep is the base for RPHAST; its float summation difference from point
+queries must remain explicit. GPU work, funding-census changes and job-lock scheduling are
+outside this routing implementation. The [roadmap](roadmap.md) owns each stage's exit criteria.
+
+`NET-02` compiles the exact vehicle whitelist into sorted unique `(incoming edge, outgoing edge)`
+pairs at hierarchy construction. An empty vehicle entry still activates whitelist mode; only
+source lane IDs ±100 are ignored, preserving the existing target-lane semantics. Sentinel query
+edges and FOOT-only queries retain their bypass. Open-node checks are O(1), restricted checks
+O(log T) for T permitted edge pairs, and both allocate nothing. Turn tables retain O(nodes + T)
+storage; independent node compilation uses Rayon. Live lane edits already rebuild the hierarchy,
+so the table and shortcuts share the same topology revision. Metric customization leaves both
+unchanged; the standalone path validator continues checking the authoritative graph.
+
+Upward adjacency uses node offsets into flat shortcut-ID arrays. Construction scatters in the
+former insertion order, in O(nodes + shortcuts); queries borrow a node's slice in O(1). Costs
+occupy a separate f32 array indexed by the same shortcut IDs. Customization order, addition
+order, selected boundaries, heap ordering, meeting ties and predecessor updates are unchanged.
+The ordinary prepared-query storage bound still applies; no query allocation is introduced.
+
+The ignored `benchmark_populated_cch_queries` builds the existing economy fixture outside query
+timing, then measures 4,096 seeded CAR/FOOT queries with and without path materialization. Set
+`METRUM_CCH_BENCH_RESIDENTS=10000|100000` and `METRUM_CCH_QUERY_REPORT` for exact cost/distance-bit,
+node-path and initial city-record comparisons. The existing build/storage benchmark preserves
+its topology/metric fingerprint across the layout change.
+
+Fresh matched query measurements (2026-10-11), `03c1cf45` versus the `NET-02` working tree
+(source fingerprint `0f14270494525f3dc6117e266d451ab7ea103d9c50ed7b33a667f68ad5c4dfdb`):
+release, i9-12900K, `RAYON_NUM_THREADS=8`, `taskset -c 0,2,4,6,8,10,12,14`, no concurrent
+builds/tests/benchmarks. The baseline adds only the identical populated-query measurement harness.
+Both builds use Rust 1.98.1 and Cargo from the repository root with
+`--manifest-path rust/Cargo.toml`: `cargo test --release --lib --test growth_scenario --no-run`,
+`cargo bench --bench economy_tick_benchmark --no-run` and `cargo build --release`, with that
+manifest option on each command. `CARGO_TARGET_DIR` and `TMPDIR` point to local build storage.
+This root invocation uses the default target CPU, not the nested Cargo configuration's
+`x86-64-v2` override; the two measured builds have identical compiler settings.
+Two pairs per tier run baseline/candidate then candidate/baseline. Each run averages eleven
+passes over the same 4,096 queries; the table averages those two run means. City setup and report
+generation are outside query timing. Run command:
+
+```bash
+METRUM_CCH_BENCH_RESIDENTS=10000 METRUM_CCH_QUERY_REPORT="$ARTIFACTS/net02/queries.txt" \
+  RAYON_NUM_THREADS=8 taskset -c 0,2,4,6,8,10,12,14 \
+  "$TEST_BINARY" --ignored --nocapture benchmark_populated_cch_queries
+```
+
+Repeat with `100000` and separate outputs for each build/run. Logs, exact reports and raw samples
+are retained under `$ARTIFACTS/net02`.
+
+| Fixture | Query | Baseline µs | NET-02 µs | Time reduction |
+|---|---|---:|---:|---:|
+| 10k: 247 nodes, 446 edges | Cost only | 31.29 | 19.49 | 37.7% |
+| 10k | Reconstructed path | 31.40 | 19.72 | 37.2% |
+| 100k: 2,220 nodes, 4,283 edges | Cost only | 192.24 | 124.29 | 35.3% |
+| 100k | Reconstructed path | 191.01 | 124.80 | 34.7% |
+
+All four reports within each tier are byte-identical, including every cost/distance bit, node
+path and initial city record. The existing `benchmark_cch_build_storage`, run with
+`METRUM_CCH_BENCH_GRAPH=car|mixed|restricted|one_way`, also preserves every topology/metric
+fingerprint at sides 8/16/32. At side 32 its retained-storage accounting changes from
+5,076,752 → 4,969,936 bytes (car/mixed), 6,810,816 → 6,694,952 (restricted) and
+9,036,144 → 8,868,832 (one-way). This accounting excludes allocator metadata and the pre-existing
+node-order buffer on both builds. These isolated query gains do not establish `ECON-13-B`;
+the full 100k economy hour/day benchmark has not been rerun for this stage.
+
+The same builds also complete four alternating 10k economy pairs with the standard recipe:
+`RAYON_NUM_THREADS=8 taskset -c 0,2,4,6,8,10,12,14 "$BENCH_BINARY" --bench --noplot /10k`.
+Mean operational hour: **35.50 → 25.13 ms (29.2% lower)**; mean daily settlement:
+**9.22 → 9.01 ms (2.2% lower)**. The two-sided exact permutation test over the four run means
+per build gives **p = 0.0286** for each phase (70 assignments). Hourly run means are
+35.547/35.251/35.409/35.795 ms versus 25.164/25.114/24.946/25.288 ms; daily run means are
+9.289/9.137/9.151/9.304 ms versus 8.958/9.049/9.029/9.019 ms. Every run ends with the same
+day-15 record: 5,341 households, 10,668 residents, 7,134 employed, 13,777 jobs and 7,395 buildings.
+`NET-02` meets its exact-result and measured-performance exit criteria; `ECON-13-A` passes on
+this build. `ECON-13-B` remains open, and the earlier C/D measurements remain historical evidence
+for their own build rather than freshly rerun acceptance here.
+
+Fresh correctness validation (2026-10-11): `cargo test --release --lib`'s executable passes
+2,298 tests (112 ignored); all four `growth_scenario` tests pass. The ordinary routing filter
+passes 27 tests. Against a freshly compiled `03c1cf45` baseline, all five growth reports
+(`METRUM_GROWTH_REPORT`, `METRUM_GROWTH_LONG_REPORT`, `METRUM_PRODUCER_TOWN_REPORT`,
+`METRUM_GROWTH_RECOVERY_REPORT`, `METRUM_GROWTH_EXPANSION_REPORT`) compare byte-identically.
+`cargo build --release` and the economy benchmark build produce no warnings. `cargo doc --no-deps`
+reports zero missing-doc warnings and the existing unresolved `VegetationGenerator` link.
+`./run.sh --test` was not run: the handover reports existing terrain-fixture and unrelated
+benchmark-compilation blockers, which were not revalidated here. No real Godot profile was used.
+
+**`NET-06`: confirmed pre-existing positive-cost self-loop bug.** An independent isolated probe
+uses three nodes and three bidirectional CAR edges: `e0: 0→2` costs 1 s, `e1: 2→2` costs 5 s,
+and `e2: 2→1` costs 1 s. Node 2 whitelists only `e0→e1` and `e1→e2`. The only legal route from
+0 to 1 is `[0, 2, 2, 1]`, costing **7 s**. Both an extracted `03c1cf45` CCH and the frozen
+`NET-02` library return that path but report **2 s**. The probe's independent expected-cost assertion
+fails on both; its source/output are under `$ARTIFACTS/net02/loop_probe.rs` and
+`$ARTIFACTS/net02/loop-probe.log`. This is correctness evidence, not a timing measurement.
+Contraction excludes equal-rank endpoints from `customization_order`, so direct self-loops
+retain their initial zero cost, while backward queries can still traverse them. The existing
+loop test compares point queries with the sweep, which shares the same wrong metric.
+Fixing this changes route costs and belongs with the explicitly approved semantic work after
+`NET-02`; it must gain an independent regression before the fix. The ordinary suite's passing
+status does not establish correctness for this newly exposed case.
+
+Historical `NET-03` design checkpoint (approved 2026-10-11; implemented below): the
+[turn-aware CCH paper, sections 3–4](https://drops.dagstuhl.de/entities/document/10.4230/OASIcs.ATMOS.2020.9)
+distinguishes expanded edge-state graphs, on which standard CCH applies, from compact turn-table
+graphs, for which its elimination-tree query is not applicable. The current node hierarchy with
+boundary-edge labels must therefore not be treated as textbook node-only CCH. The proposed next
+stage is deterministic nested dissection, followed by a proved turn-state query model (explicit
+directed-edge states if the compact representation cannot support that proof), then allocation-free
+elimination-tree queries. Preserve source-edge context, directed FOOT traversal, mode filtering,
+unpacking and all derived quote invalidations. Keep f32 seconds; any changed addition order and
+equal-cost paths require explainable growth-report differences. Validate against independent
+edge-state Dijkstra, resolve `NET-06`, cover restricted detours and loops, and measure preprocessing memory as
+well as queries at 10k/100k before acceptance. The user approved this stage and `NET-06` on
+2026-10-11, then deferred all 1M runs for this pass; 1M acceptance remains unverified.
+
+`NET-03` implementation and correctness argument (validated 2026-10-11):
+
+- The road-node order is deterministic nested dissection. For each median x/z partition,
+  collect the endpoints covering every crossing edge and choose the smaller separator;
+  coordinate/ID ties and the x-before-z comparison are stable. Recurse into the disconnected
+  halves before the separator, lifting each node to its arrival states. Each surviving half
+  contains at most half the vertices rounded up. Coordinates select only an ordering; they
+  never approximate route costs or discard roads. Independent large halves use Rayon.
+- Restricted junctions have one state per incident incoming edge. Unrestricted junctions
+  have one state: all incoming edges permit exactly the same exits there. Thus merging those
+  arrivals is an exact quotient of the edge-state automaton. A transition traverses one
+  directed road and pays its base cost. A required self-loop changes arrival state and pays
+  its full cost; a nonnegative same-state loop cannot improve any route. A restricted query
+  origin seeds only departures permitted by its supplied incoming edge. Targets accept every
+  arrival state; a zero-hop query remains zero.
+- Fill every higher-neighbor clique in this graph and customize both directed costs using
+  every lower triangle. Parent is the lowest higher neighbor, computed before metric filtering.
+  Higher-neighbor clique induction puts every higher neighbor on the ancestor chain. Therefore
+  an ascending pass over the union of seed ancestor chains settles the complete upward DAG.
+  Lower-triangle elimination converts a shortest route into an up/down route, so the minimum
+  forward/backward meeting recovers the shortest cost in exact arithmetic. Concrete witnesses
+  unpack to permitted original roads. No node-only elimination-tree assumption is applied to
+  the old compact turn-table hierarchy.
+- Metric profiles share storage only when every directed road-type decision and the turn
+  bypass agree. FOOT-only queries bypass vehicle rules. Other masks require permitted turns;
+  each traversed road must intersect the mask. Costs stay f32. Strict improvement, ascending
+  state/arc order and lowest-state meeting ties are deterministic. Independent f64 Dijkstra
+  tests use relative tolerance `2e-5` (absolute `2e-5` below one second); integer fixtures match
+  exactly. This is a tested numeric contract, not a claim that floating-point sums are associative.
+- With N road nodes, E roads, S arrival states, A filled edges, T lower triangles and P distinct
+  profiles, ordering costs O((N log N + E) log N), fill visits O(T) higher-neighbor pairs plus
+  ordered-set maintenance, and customization costs O(E + P(A + T + base transitions)).
+  For H visited ancestors and A_H outgoing arcs, a prepared point query costs
+  O(source degree + target states + H log H + A_H), with no heap or query allocation.
+  Worker labels occupy O(S). The one-to-all sweep costs O(S + A) after its upward phase;
+  its outward f32 summation may differ from a point query. Source/target parallel work uses Rayon.
+
+Fresh release validation on the frozen `NET-03` build: 32 active routing tests and all 2,303
+library tests pass (112 library tests ignored); all four growth integration tests pass. All five
+growth/recovery/expansion reports are byte-identical to `NET-02`. Release and benchmark builds
+produce no warnings; rustdoc has zero missing-doc warnings and only the existing unresolved
+`VegetationGenerator` link. The independent positive-loop regression fails with 2 s before the
+change and passes at 7 s after it, including recustomization to other positive loop costs.
+The required return-detour regression also agrees with independent Dijkstra.
+
+Matched, unprofiled `NET-02` → `NET-03` results (same compiler/worker/affinity settings and commands
+as above; no concurrent compilation/tests). Baseline source fingerprint is the `NET-02` identity
+above; `NET-03` is `a74f85b09b46370bcb8a29bb9e66a964bafed6320717f027d0ffa5eb4124c7e7`.
+Source diff/new files, binaries, raw logs, query reports and analysis are under
+`$ARTIFACTS/net03/{baseline,candidate}` and `$ARTIFACTS/net03/summary.json`.
+
+| Workload | NET-02 | NET-03 | Comparison |
+| --- | ---: | ---: | --- |
+| 10k cost query, µs | 19.40 | 0.677 | 28.6× faster |
+| 10k path query, µs | 19.62 | 0.871 | 22.5× faster |
+| 100k cost query, µs | 127.09 | 5.368 | 23.7× faster |
+| 100k path query, µs | 126.64 | 6.158 | 20.6× faster |
+| 10k operational hour, ms | 24.99 | 11.14 | 55.4% lower |
+| 10k daily settlement, ms | 9.09 | 14.15 | **55.6% higher; fails ECON-13-A's 10 ms daily bound** |
+
+Queries use two matched pairs per tier, with reversed build order for the second pair and
+11 samples of 4,096 queries per process. Both repeat reports are identical within each build.
+Economy uses four alternating pairs and the ordinary 23-hour/10-day Criterion recipe;
+exact two-sided permutation p = 0.0286 for both hour and day run means. These economy timings
+compare the same configured fixture, **not identical evolved simulation states**. The daily
+regression is retained as an open performance finding; faster routing alone does not accept
+ECON-13. In the first candidate run its last sampled settlement costs 66.76 ms; the other nine
+range from 5.89 to 14.82 ms. Phase diagnostics and the subsequent bucket stage must resolve this.
+
+Query changes are limited to route choices and f32 sums on the sampled populated graphs:
+all 4,096 queries at each tier preserve reachability and physical distance. At 10k, 2,018 cost
+bit patterns and 3,081 node paths differ; at 100k, 1,952 costs and 3,776 paths differ. Maximum
+cost deltas are 5 ULP / 0.00003815 s and 4 ULP / 0.00024414 s, respectively. The largest relative
+delta is 3.42e-7, below the independent-oracle tolerance. A concrete rounding boundary is the
+FOOT query 35→5 with incoming edge 416: 108.00000762939453 s becomes 108 s, changing the integer
+ceiling. Changed path ties also distribute physical traffic differently. These are the approved
+mechanisms by which the populated city can evolve differently; economic logic and balancing
+parameters were not changed. The separate five growth reports do not differ.
+
+The 10k populated day-3 record changes from 10,612 residents / 7,225 employed to 10,594 / 7,224.
+At day 15 it changes from 5,341 households, 10,668 residents, 7,134 employed and 13,777 jobs to
+5,330 households, 10,647 residents, 7,134 employed and 13,803 jobs. Buildings remain 7,395;
+both have zero open jobs, unhoused households and departures. The 100k day-3 record changes
+from 104,716 residents / 71,644 employed to 104,563 / 71,484, with identical road/building counts.
+All records repeat exactly within their build. `NET-04` must preserve the new hierarchy's records.
+
+Preprocessing/storage tradeoff, side-32 synthetic fixtures (1,024 nodes; 21 builds per process):
+
+| Graph | Retained bytes NET-02 / NET-03 | Build median ms NET-02 / NET-03 |
+| --- | ---: | ---: |
+| CAR | 4,969,936 / 6,610,304 | 13.72 / 8.04 |
+| Mixed modes | 4,969,936 / 6,610,304 | 13.73 / 7.98 |
+| Restricted | 6,694,952 / 7,585,608 | 17.02 / 7.98 |
+| One-way | 8,868,832 / 7,574,208 | 24.14 / 8.20 |
+
+Retained capacity rises 33% on open grids and 13% on the restricted grid, and falls 15% on the
+one-way grid. The replacement retains a filled-edge topology, lower triangles and per-profile
+witnesses. Counts exclude allocator metadata and are not peak RSS; the new count also includes
+the small road-node order array omitted by the old benchmark. The table is one matched process
+pair per case, not a significance claim about construction. The 1M tier remains unmeasured by
+user instruction.
+
+`NET-04` implementation (correctness and workload measurements complete):
+
+- Each distinct open-workplace attachment node runs the same backward ancestor search as a
+  point query. Per-state buckets retain its finite cost and a backward path witness. A source
+  runs one forward ancestor search, then joins matching state buckets in ascending state order.
+  Strict improvement preserves the point query's lowest-state meeting tie, exact f32 operands
+  and reconstructed node path. Invalid and zero-hop cases keep their ordinary query semantics.
+- `SharedNetworkQuotes` owns target tables per walking/driving mode, alongside its existing
+  exact leg cache. Topology, customized costs or lane rebuilds invalidate both; a changed
+  open-workplace set rebuilds tables while retaining valid pair quotes. The shared leg cache
+  now uses two exact entries per fixed bucket, bounded by O(lanes), with O(1) lookup/replacement
+  and no query allocation. It survives midnight; complete door-to-door quotes still expire daily
+  to preserve their original frontage-pricing cadence. Lane epochs cover terrain-driven rebuilds
+  even when lane count and CCH generation are unchanged. Worker scratch caches
+  the two source attachment ranks per mode. A prepared source query allocates nothing and costs
+  O(H log H + A_H + visited bucket entries + targets); retained tables cost O(sum of target
+  ancestor labels), and each worker costs O(states + targets) per source slot.
+- Full frontage arithmetic, entrance combinations, the exact 24-option ranking, current-job
+  fallback and rounded commute seconds remain unchanged. Pedestrian forecasts use the exhaustive
+  turn-completeness proof above when available; otherwise they materialize the identical witness
+  and retain the existing directed lane-connector check/fallback. The
+  optimization replaces network searches; it does not relax pedestrian feasibility.
+- Fresh frozen-build validation: all 2,304 library tests and four growth integration tests pass.
+  All five growth reports are byte-identical to `NET-03`. Seeded mixed-mode/whitelist tests
+  compare bucket costs and paths exactly with point queries; the targeted 43-workplace test
+  compares every estimate and all 24 ranked options for walking/car-owning homes. It includes
+  rounded costs, capped commute penalties and wage/capacity/ID ties. Prepared scratch capacities
+  do not grow. Targeted entrance tests cover connector fallback and metric/lane invalidation.
+
+The frozen measurement build has source fingerprint
+`7a2098c94cc69dc99bc5593582c40fdeeb1efc85ff3486d333c756df24caf9f5`;
+its source, binaries, raw logs and reports are retained under `$ARTIFACTS/net04/candidate`.
+Matched timings compare it with the frozen `NET-03` build, using the compiler/worker/affinity
+settings above. Four alternating 10k pairs and one complete 100k pair run the ordinary
+`"$BENCH_BINARY" --bench --noplot /10k` or `/100k` recipe; setup is excluded from tick timings.
+Raw Criterion samples, logs and analysis are under `$ARTIFACTS/net04`.
+
+| Tick | NET-03 mean ms | NET-04 mean ms | Evidence |
+| --- | ---: | ---: | --- |
+| 10k hour | 10.858 | 10.789 | Four run means per build; p = 0.429 |
+| 10k day | 14.368 | 14.333 | Four run means per build; p = 0.914 |
+| 100k hour | 214.444 | 219.810 | One pair; descriptive, no significance claim |
+| 100k day | 1,286.162 | 1,206.616 | One pair; 6.2% lower, all ten days lower |
+
+The 100k daily samples cover days 6–15, including initial job-lock expiry. NET-03 / NET-04
+milliseconds by day are 355/276, 186/168, 230/210, 445/319, 528/439, 728/647, 480/475,
+2,494/2,441, 3,869/3,728 and 3,545/3,365. The large days 13–15 remain expensive.
+Both builds finish with exactly the same 100k record: 54,388 households, 108,669 residents,
+69,963 employed, 138,091 jobs, 76,039 buildings, treasury 1,000,000,017,473,930.5,
+3,239 vacant homes, reserve 5,439, two unhoused households, zero open jobs and zero departures.
+All eight 10k final records also match exactly. These comparisons establish no 10k timing
+change and a descriptive late-day improvement, not an overall hourly speedup from batching.
+
+`ECON-13` remains unaccepted: A's daily mean exceeds 10 ms, and B's same-build ratios are
+20.37× for hours and 84.18× for days. B has one current pair, not the two repeated accepted
+runs required to close it. C/D were rerun on this same frozen production revision:
+`benchmark_combined_financing_cascades` retains two censuses at lengths 4/16/64, cold and warm;
+`benchmark_queued_project_validation` measures 0.946 / 1.012 ms for 1,024 warm checks at
+16,384 / 131,072 background buildings (1.07×). Cold first checks are 1.425 / 14.202 ms;
+checks after publication are 1.505 / 14.272 ms. Logs are under `$ARTIFACTS/net05/econ13-c.log`
+and `$ARTIFACTS/net05/econ13-d.log`; those two tests use the frozen `NET-04` test executable.
+
+Diagnostic logging uses `economy_phase` and `economy_workplace` separately
+from unprofiled acceptance runs. The 10k day-15 spike is in midnight demand work
+(62.03 ms): dirty cell-lot regeneration takes 55.97 ms, planning 5.97 ms and execution
+0.05 ms; household settlement takes 5.33 ms. Temporary phase timers were removed after
+measurement; their patch and logs are retained under `$ARTIFACTS/net05-block`.
+
+`NET-05` prototype (test-only; measured production no-go): collect every target arrival
+state's elimination-tree ancestors, then run the ordinary upward source search followed by a
+descending pass restricted to that closure. Every higher filled neighbor is an ancestor, so
+every dependency of a retained descending label is also retained. Descending rank order and
+the existing higher-neighbor order therefore reproduce the full PHAST arithmetic at requested
+targets; omitted labels cannot feed a retained label. The independent Dijkstra regression also
+checks restricted source-edge contexts, while the full-sweep comparison requires identical bits.
+The closure is topology-dependent, so customization does not require rebuilding it.
+
+Prepared restricted queries cost O(H log H + A_H + closure arcs + target arrival states), with
+O(states + targets) reusable worker scratch and O(closure + targets) retained target storage.
+Closure construction additionally uses O(states) temporary marks. The ignored
+`benchmark_populated_cch_batches` compares buckets, restricted sweeps and the existing full
+PHAST API using actual populated-city borders, open-workplace nodes and dense funded-workplace
+nodes. It samples at most 512 distinct home attachment/context pairs across the whole city.
+Preparation, worker reservation and repeated queries are reported separately; source batches
+use Rayon. Cost-bit and rounded-second differences against bucket queries are explicit outputs.
+Freight already caches full border sweeps per routing revision: repeated O(buildings × borders)
+frontage quotations are outside these network-query measurements and cannot be credited as
+RPHAST savings. Proposed building doors also consume the full cached tables.
+
+The prototype also processes eight sources per block, storing eight contiguous f32 labels per
+state. Each arc broadcasts its cost across those lanes; Rayon distributes independent blocks.
+It preserves scalar restricted-sweep bits, including incoming-edge contexts, without unsafe
+code or explicit SIMD dependencies. Both variants match full PHAST bits and the independent
+turn-aware Dijkstra tolerance; prepared scratch capacities remain fixed.
+
+Fresh measurements use the same release/worker/affinity settings as above, two independent
+processes per tier, eleven samples of eight repetitions per process. The table reports the
+mean of the two process means in microseconds for each complete source/target batch; setup
+is excluded and measured separately. Source fingerprint:
+`162f1096bd39043f293c5e672fed9788ebcae6cdc5621337ffea7fabd20d8ff1`.
+Source snapshots, binaries, logs and analysis are under `$ARTIFACTS/net05-block`.
+Command: `METRUM_CCH_BENCH_RESIDENTS=100000 RAYON_NUM_THREADS=8 taskset -c
+0,2,4,6,8,10,12,14 "$TEST_BINARY" --ignored --nocapture benchmark_populated_cch_batches`
+(use `10000` for 10k). Optional post-measurement diagnostic hours are excluded from timings.
+
+| Tier / workload | Sources / targets | Buckets µs | Scalar RPHAST µs | Eight-source RPHAST µs | Existing point/full µs |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 10k freight | 1 / 246 | 0.69 | 4.31 | 5.08 | Full: 4.54 |
+| 10k open jobs | 271 / 4 | 25.30 | 38.02 | 23.62 | Point: 105.28 |
+| 10k dense jobs | 271 / 63 | 67.04 | 153.45 | 45.03 | — |
+| 100k freight | 10 / 2,210 | 125.32 | 195.26 | 130.64 | Full: 220.26 |
+| 100k open jobs | 480 / 77 | 345.94 | 1,141.07 | 356.41 | Point: 21,097.08 |
+| 100k dense jobs | 480 / 407 | 1,072.95 | 4,761.84 | 918.67 | — |
+
+NET-04's open-job matrix reduces 36,960 point searches to 480 forward plus 77 target
+searches (66× fewer), taking 61× less query time at 100k. Runtime pair-cache hits reduce
+how often that full saving applies; the full economy measurements above remain decisive.
+
+RPHAST is not adopted in production. Although blocking improves dense throughput, PHAST's
+f32 grouping differs from the point/bucket contract: at 100k, 88 open-job and 286 dense-job
+pairs change rounded seconds (maximum cost delta 0.0003052 s). This violates exact commute
+ranking. Freight's closure contains 2,210 of 2,220 states, and target discovery plus closure
+construction costs 12.30 + 0.99 ms, compared with 0.220 ms for the existing cached full sweep.
+Its warm query saving does not repay preparation or preserve proposed-door coverage. Keep
+the scalar/block implementations and comparison harness test-only; GPU and 1M remain deferred.
+
+After removing the temporary phase timers, the routing build freshly passes all 2,304 library
+and four growth integration tests (113 library diagnostics ignored). Its source fingerprint is
+`92c59a1562167df4069c3e94d51e7cb456e23e53f273c0634a5421033d3c0c95`;
+source snapshots, executables and the test log are under `$ARTIFACTS/routing-final`.
+This validates the routing cleanup; subsequent ECON-13 fixes require their own checks.
+
 ##### Flow-field and CCH precedence
 
 In this redesign, CCH is the authoritative router. Flow fields are an optional fast path only.
+The current `NET-03` implementation and validation status are described above. The following
+`AUDIT-01` construction/query descriptions and measurements record the preceding hierarchy;
+they are historical evidence, not validation of the replacement.
 
 CCH construction maintains exact neighbour-triangle counts for minimum-fill ordering, rejects
 stale heap scores in both directions, and updates every affected score only after completing a

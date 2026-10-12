@@ -4,7 +4,7 @@
 
 use super::*;
 use std::hash::BuildHasher;
-use crate::simulation::pathing::cch::CchPathScratch;
+use crate::simulation::pathing::cch::{CchPathScratch, CchBucketSource, CchBuckets};
 
 thread_local! {
     // Derived route scratch is private to each Rayon/caller thread, never simulation state.
@@ -17,23 +17,163 @@ pub(crate) struct TripQueryScratch {
     cch: CchPathScratch,
     possible: Vec<usize>,
     next: Vec<usize>,
+    connectors: ConnectorTargets,
     heap: BinaryHeap<PedestrianSearchState>,
     best: Vec<(u64, f32)>,
     previous: Vec<usize>,
     path: Vec<u32>,
     retained_path: Vec<u32>,
     last_path_is_walking: bool,
-    route_revision: Option<(u32, usize)>,
+    route_revision: Option<(u32, usize, u64)>,
     epoch: u64,
-    revision: Option<(u32, usize)>,
+    revision: Option<(u32, usize, u64)>,
     network_quotes: Vec<Option<NetworkQuote>>,
-    quote_revision: Option<(u32, u64, usize)>,
+    quote_revision: Option<NetworkQuoteRevision>,
+    batch_revision: [Option<u64>; 2],
+    batch_sources: [[BatchSource; 2]; 2],
+}
+
+// Compact copies of the existing directed connector targets, scoped to this worker's
+// topology revision. Original connection order and duplicates are preserved. Preparation
+// costs O(lanes + connections), as the existing scratch reserve does; queries allocate nothing.
+#[derive(Default)]
+struct ConnectorTargets {
+    offsets: Vec<usize>,
+    targets: Vec<ConnectorTarget>,
+    outgoing_counts: Vec<usize>,
+    seen: Vec<usize>,
+    complete: bool,
+}
+
+struct ConnectorTarget {
+    lane: usize,
+    edge: usize,
+    node: u32,
+}
+
+impl ConnectorTargets {
+    fn prepare(&mut self, network: &TransitNetwork, graph: &RegionGraph, links: usize) {
+        let lanes = &network.lane_system.lanes;
+        self.offsets.clear();
+        self.offsets.reserve(lanes.len() + 1);
+        self.targets.clear();
+        self.targets.reserve(links);
+        // Offsets form an ordered prefix over the connector lists; only preparation visits
+        // all lanes. Forecasts subsequently read one contiguous local list per path step.
+        for lane in lanes {
+            self.offsets.push(self.targets.len());
+            for &connector in &lane.next_lanes {
+                let Some(connector) = lanes.get(connector) else { continue; };
+                if connector.edge_id != usize::MAX || connector.lane_type != LaneType::Foot { continue; }
+                let Some(&target) = connector.next_lanes.first() else { continue; };
+                let Some(value) = lanes.get(target) else { continue; };
+                if value.lane_type != LaneType::Foot { continue; }
+                let Some(node) = lane_origin_node(target, network, graph) else { continue; };
+                self.targets.push(ConnectorTarget { lane: target, edge: value.edge_id, node });
+            }
+        }
+        self.offsets.push(self.targets.len());
+        self.complete = self.prove_complete(network, graph);
+    }
+
+    fn prove_complete(&mut self, network: &TransitNetwork, graph: &RegionGraph) -> bool {
+        let lanes = &network.lane_system.lanes;
+        self.outgoing_counts.resize(graph.node_count(), 0);
+        self.outgoing_counts.fill(0);
+        self.seen.resize(lanes.len(), usize::MAX);
+        self.seen.fill(usize::MAX);
+        for (id, lane) in lanes.iter().enumerate() {
+            if lane.lane_type == LaneType::Foot
+                && let Some(node) = lane_origin_node(id, network, graph) {
+                self.outgoing_counts[node as usize] += 1;
+            }
+        }
+        // Every possible node-pair representative, including parallel edges, must have
+        // foot lanes in both directions. This deliberately also checks car-only edges:
+        // get_edge_between_nodes can select them while checking a different parallel edge.
+        for (edge, value) in graph.edges().iter().enumerate().filter(|(_, edge)| !edge.deleted) {
+            for node in [value.start_node, value.end_node] {
+                if outgoing_lanes(node, edge, network, graph).next().is_none() { return false; }
+            }
+        }
+        // Count distinct targets at the correct junction. Equality proves that every
+        // incoming physical foot lane reaches EVERY outgoing physical foot lane there.
+        // Duplicate connections cannot conceal a missing turn. O(lanes + connections).
+        for (id, lane) in lanes.iter().enumerate() {
+            if lane.lane_type != LaneType::Foot { continue; }
+            let Some(node) = lane_terminal_node(id, network, graph) else { continue; };
+            let mut count = 0;
+            for target in &self.targets[self.offsets[id]..self.offsets[id + 1]] {
+                if target.node == node && self.seen[target.lane] != id {
+                    self.seen[target.lane] = id;
+                    count += 1;
+                }
+            }
+            if count != self.outgoing_counts[node as usize] { return false; }
+        }
+        true
+    }
+
+    fn proves_path(&self, origin: &TripEnd, destination: &TripEnd,
+        network: &TransitNetwork, graph: &RegionGraph) -> bool {
+        // By induction along ANY selected road-node path, complete junctions preserve a
+        // nonempty lane frontier, and the final junction reaches this exact arrival lane.
+        // Only cost forecasts use this proof; stored routes still materialize their witness.
+        self.complete
+            && [origin.lane_id, destination.lane_id].into_iter().all(|lane|
+                network.lane_system.lanes.get(lane).is_some_and(|lane| lane.lane_type == LaneType::Foot))
+            && lane_terminal_node(origin.lane_id, network, graph) == Some(origin.node)
+            && lane_origin_node(destination.lane_id, network, graph) == Some(destination.node)
+    }
+
+    fn collect(&self, lane: usize, node: u32, edge: usize, out: &mut Vec<usize>) {
+        // Forecast origins and every retained target have already validated their lane ID.
+        out.extend(self.targets[self.offsets[lane]..self.offsets[lane + 1]].iter()
+            .filter(|target| target.edge == edge && target.node == node).map(|target| target.lane));
+    }
+
+    fn follow(&self, path: &[u32], graph: &RegionGraph,
+        possible: &mut Vec<usize>, next: &mut Vec<usize>) -> bool {
+        follow_connector_path_with(path, graph, possible, next,
+            |lane, node, edge, out| self.collect(lane, node, edge, out))
+    }
+}
+
+#[derive(Default)]
+struct BatchSource {
+    key: Option<(u64, u32, usize)>,
+    source: CchBucketSource,
+    frontier_key: Option<(u64, u32, usize, u64)>,
+    frontier_epoch: u64,
+    frontiers: Vec<WalkingFrontier>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct WalkingFrontier {
+    epoch: u64,
+    lanes: [usize; 2],
+    count: usize,
+}
+
+impl BatchSource {
+    fn prepare_frontiers(&mut self, targets: &CchBuckets, origin: &TripEnd, lane_revision: u64) {
+        let key = (targets.id, origin.node, origin.lane_id, lane_revision);
+        if self.frontier_key == Some(key) { return; }
+        self.frontier_key = Some(key);
+        self.frontier_epoch = self.frontier_epoch.wrapping_add(1);
+        if self.frontier_epoch == 0 {
+            self.frontiers.fill(WalkingFrontier::default());
+            self.frontier_epoch = 1;
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct NetworkQuoteKey {
     mode: u8,
-    from_lane: usize,
+    // Exact lane constraints for pedestrian fallback; otherwise the canonical CCH
+    // incoming edge and MAX arrival constraint. Door-local terms stay outside this key.
+    from_context: usize,
     to_lane: usize,
     from_node: u32,
     to_node: u32,
@@ -45,24 +185,36 @@ struct NetworkQuote {
     seconds: Option<f32>,
 }
 
-type NetworkQuoteRevision = (u32, u64, usize);
+type NetworkQuoteRevision = (u32, u64, usize, u64);
 
 fn network_quote_revision(network: &TransitNetwork) -> NetworkQuoteRevision {
     (network.cch_graph.build_generation, network.cch_graph.metric_revision,
-        network.lane_system.lanes.len())
+        network.lane_system.lanes.len(), network.lane_system.revision())
 }
+
+#[derive(Default)]
+struct SharedQuoteSlots {
+    // Exact key checks make collisions replacement decisions, never approximate answers.
+    buckets: Vec<[Option<NetworkQuote>; 2]>,
+    len: usize,
+}
+
+// Preserve the original global bucket hash and replacement policy, partitioning only
+// synchronization. A query locks one stripe; independent worker keys need no global lock.
+const QUOTE_STRIPES: usize = 32;
 
 /// Network-leg quotes shared by every worker of a parallel search, across passes.
 ///
 /// A leg's seconds are a pure function of its key under one CCH/lane revision, so whichever
 /// worker prices a leg first cannot change a result; the worker-local slots miss whenever Rayon
 /// places a repeated pair on another thread. Lookups take a read lock and only misses write.
-/// The owner bounds growth with [`Self::clear`]; [`Self::sync`] empties stale revisions.
+/// Fixed buckets bound storage by lane count; [`Self::sync`] empties stale revisions.
 #[derive(Default)]
 pub(crate) struct SharedNetworkQuotes {
     revision: Option<NetworkQuoteRevision>,
-    quotes: std::sync::RwLock<
-        std::collections::HashMap<NetworkQuoteKey, Option<f32>, foldhash::fast::FixedState>>,
+    targets: [Option<CchBuckets>; 2],
+    quotes: [std::sync::RwLock<SharedQuoteSlots>; QUOTE_STRIPES],
+    bucket_mask: usize,
 }
 
 impl SharedNetworkQuotes {
@@ -71,27 +223,74 @@ impl SharedNetworkQuotes {
         let revision = network_quote_revision(network);
         if self.revision != Some(revision) {
             self.clear();
+            // Fewer than four slots per lane, independent of the number of homes/jobs.
+            // Allocation occurs only during network preparation, before parallel queries.
+            let buckets = network.lane_system.lanes.len().max(1).next_power_of_two();
+            self.bucket_mask = buckets - 1;
+            for (stripe, quotes) in self.quotes.iter_mut().enumerate() {
+                let count = (buckets + QUOTE_STRIPES - 1 - stripe) / QUOTE_STRIPES;
+                let quotes = quotes.get_mut().unwrap();
+                if quotes.buckets.len() != count { quotes.buckets = vec![[None; 2]; count]; }
+            }
             self.revision = Some(revision);
         }
     }
 
-    /// Drops every retained leg together with its storage.
+    /// Invalidates retained legs and targets, preserving fixed quote storage for the next metric.
     pub(crate) fn clear(&mut self) {
-        *self.quotes.get_mut().unwrap() = Default::default();
+        for quotes in &mut self.quotes {
+            let quotes = quotes.get_mut().unwrap();
+            quotes.buckets.fill([None; 2]);
+            quotes.len = 0;
+        }
+        self.targets = Default::default();
+    }
+
+    /// Prepares open workplace attachment nodes once per distinct target set and metric.
+    /// Existing exact leg quotes remain valid when only workplace availability changes.
+    /// Returns the number of backward target searches for routing-work instrumentation.
+    pub(crate) fn prepare_targets(&mut self, mut nodes: [Vec<u32>; 2], network: &TransitNetwork) -> usize {
+        self.sync(network);
+        let mut searches = 0;
+        for (mode, nodes) in nodes.iter_mut().enumerate() {
+            nodes.sort_unstable(); nodes.dedup();
+            if self.targets[mode].as_ref().is_some_and(|targets|
+                targets.is_current(&network.cch_graph) && targets.targets() == nodes.as_slice()) { continue; }
+            searches += nodes.len();
+            self.targets[mode] = Some(CchBuckets::build(&network.cch_graph, nodes, transit_flags_for_mode(mode as u8)));
+        }
+        searches
     }
 
     /// Retained leg count.
-    pub(crate) fn len(&self) -> usize { self.quotes.read().unwrap().len() }
+    pub(crate) fn len(&self) -> usize {
+        self.quotes.iter().map(|quotes| quotes.read().unwrap().len).sum()
+    }
+
+    fn bucket(&self, key: &NetworkQuoteKey) -> (usize, usize) {
+        let bucket = foldhash::fast::FixedState::default().hash_one(key) as usize & self.bucket_mask;
+        (bucket % QUOTE_STRIPES, bucket / QUOTE_STRIPES)
+    }
 
     // `None` means not retained; a quote from another revision is never answered.
     fn get(&self, key: &NetworkQuoteKey, revision: NetworkQuoteRevision) -> Option<Option<f32>> {
         if self.revision != Some(revision) { return None; }
-        self.quotes.read().unwrap().get(key).copied()
+        let (stripe, bucket) = self.bucket(key);
+        let quotes = self.quotes[stripe].read().unwrap();
+        quotes.buckets[bucket].iter().flatten().find(|quote| quote.key == *key)
+            .map(|quote| quote.seconds)
     }
 
     fn insert(&self, key: NetworkQuoteKey, seconds: Option<f32>, revision: NetworkQuoteRevision) {
         if self.revision == Some(revision) {
-            self.quotes.write().unwrap().insert(key, seconds);
+            let (stripe, bucket) = self.bucket(&key);
+            let mut quotes = self.quotes[stripe].write().unwrap();
+            let entries = &mut quotes.buckets[bucket];
+            if entries.iter().flatten().any(|quote| quote.key == key) { return; }
+            let added = entries[1].is_none();
+            entries[1] = entries[0];
+            entries[0] = Some(NetworkQuote { key, seconds });
+            quotes.len += usize::from(added);
         }
     }
 }
@@ -125,8 +324,7 @@ impl TripQueryScratch {
         })
     }
 
-    /// Reserves lane/connector scratch and degree-weighted CCH arc storage at a topology
-    /// boundary; the CCH heap bound is documented by `CchQueryScratch::prepare`.
+    /// Reserves lane/connector scratch and CCH ancestor labels at a topology boundary.
     pub(crate) fn prepare(&mut self, network: &TransitNetwork, graph: &RegionGraph) {
         self.cch.prepare(&network.cch_graph, graph);
         let lanes = &network.lane_system.lanes;
@@ -139,7 +337,7 @@ impl TripQueryScratch {
             self.network_quotes.fill(None);
             self.quote_revision = Some(quote_revision);
         }
-        let revision = (network.cch_graph.build_generation, lanes.len());
+        let revision = (network.cch_graph.build_generation, lanes.len(), network.lane_system.revision());
         if self.revision == Some(revision) {
             return;
         }
@@ -151,6 +349,7 @@ impl TripQueryScratch {
             .map(|lane| lane.next_lanes.len())
             .sum::<usize>()
             + lanes.len() + 1;
+        self.connectors.prepare(network, graph, links);
         self.heap.clear();
         self.heap.reserve(links);
         for values in [&mut self.possible, &mut self.next] {
@@ -189,8 +388,7 @@ impl TripQueryScratch {
     ) -> Option<PlannedTripCandidate> {
         // The caller has already priced shared frontages/nodes without a search.
         debug_assert!(origin.node != destination.node);
-        let key = NetworkQuoteKey { mode, from_lane: origin.lane_id, to_lane: destination.lane_id,
-            from_node: origin.node, to_node: destination.node };
+        let key = self.quote_key(mode, origin, destination, network, graph);
         let slot = foldhash::fast::FixedState::default().hash_one(key) as usize
             & (self.network_quotes.len() - 1);
         let seconds = if let Some(quote) = self.network_quotes[slot].filter(|quote| quote.key == key) {
@@ -200,8 +398,8 @@ impl TripQueryScratch {
             let seconds = match shared.and_then(|shared| shared.get(&key, revision)) {
                 Some(seconds) => seconds,
                 None => {
-                    let seconds = self.network_seconds(mode, origin, destination, network, graph,
-                        pathfind_count);
+                    let seconds = self.network_seconds(mode, origin_rank, origin, destination, network, graph,
+                        pathfind_count, shared);
                     if let Some(shared) = shared { shared.insert(key, seconds, revision); }
                     seconds
                 }
@@ -221,6 +419,16 @@ impl TripQueryScratch {
                 + destination.frontage_time_s?
                 + destination.local_time_s,
         )
+    }
+
+    fn quote_key(&self, mode: u8, origin: &TripEnd, destination: &TripEnd,
+        network: &TransitNetwork, graph: &RegionGraph) -> NetworkQuoteKey {
+        let unconstrained = mode == MODE_CAR || self.connectors.proves_path(origin, destination, network, graph);
+        let (from_context, to_lane) = if unconstrained {
+            let edge = network.lane_system.lanes.get(origin.lane_id).map_or(usize::MAX, |lane| lane.edge_id);
+            (network.cch_graph.source_context(origin.node, edge, transit_flags_for_mode(mode)), usize::MAX)
+        } else { (origin.lane_id, destination.lane_id) };
+        NetworkQuoteKey { mode, from_context, to_lane, from_node: origin.node, to_node: destination.node }
     }
 
     /// Prices a CCH leg in prepared storage without retaining an owned route.
@@ -378,27 +586,91 @@ impl TripQueryScratch {
         None
     }
 
-    fn network_seconds(&mut self, mode: u8, origin: &TripEnd, destination: &TripEnd,
-        network: &TransitNetwork, graph: &RegionGraph, pathfind_count: &AtomicU32) -> Option<f32> {
-        pathfind_count.fetch_add(1, Ordering::Relaxed);
+    fn prepare_batch(&mut self, shared: &SharedNetworkQuotes, network: &TransitNetwork) {
+        for mode in 0..2 {
+            let id = shared.targets[mode].as_ref().map(|targets| targets.id);
+            if self.batch_revision[mode] == id { continue; }
+            for source in &mut self.batch_sources[mode] {
+                source.key = None;
+                source.frontier_key = None;
+                if let Some(targets) = &shared.targets[mode] {
+                    source.source.prepare(targets, &network.cch_graph);
+                    if mode != usize::from(MODE_CAR) {
+                        source.frontiers.resize(targets.targets().len(), WalkingFrontier::default());
+                    }
+                }
+            }
+            self.batch_revision[mode] = id;
+        }
+    }
+
+    fn network_seconds(&mut self, mode: u8, origin_rank: u8, origin: &TripEnd, destination: &TripEnd,
+        network: &TransitNetwork, graph: &RegionGraph, pathfind_count: &AtomicU32,
+        shared: Option<&SharedNetworkQuotes>) -> Option<f32> {
         let edge = network.lane_system.lanes.get(origin.lane_id)?.edge_id;
         let flags = transit_flags_for_mode(mode);
-        if mode == MODE_CAR {
-            // Same bidirectional search as the path query; only walks inspect the route.
+        let batch = shared.and_then(|shared| {
+            let targets = shared.targets[usize::from(mode)].as_ref()?;
+            if !targets.is_current(&network.cch_graph) { return None; }
+            Some((shared, targets, targets.target_index(destination.node)?))
+        });
+        if let Some((shared, targets, target)) = batch {
+            // Each worker owns two origins per mode, matching the existing entrance ranks.
+            // Prepare on a target revision, then reuse labels/results for every workplace.
+            self.prepare_batch(shared, network);
+            let source = &mut self.batch_sources[usize::from(mode)][usize::from(origin_rank)];
+            let key = (targets.id, origin.node, network.cch_graph.source_context(origin.node, edge, flags));
+            if source.key != Some(key) {
+                targets.query_source(&network.cch_graph, origin.node, edge, &mut source.source);
+                source.key = Some(key);
+                pathfind_count.fetch_add(1, Ordering::Relaxed);
+            }
+            if mode == MODE_CAR || self.connectors.proves_path(origin, destination, network, graph) {
+                return targets.cost(target, &source.source);
+            }
+            source.prepare_frontiers(targets, origin, network.lane_system.revision());
+            let cached = source.frontiers[target];
+            let (seconds, connected) = if cached.epoch == source.frontier_epoch {
+                (targets.cost(target, &source.source)?,
+                    frontier_reaches(&cached.lanes[..cached.count], destination.lane_id, network))
+            } else {
+                let (seconds, path) = targets.path_in(target, &network.cch_graph, graph,
+                    &source.source, &mut self.cch)?;
+                // combine() only asks for distinct nodes. The selected CCH path is independent
+                // of the destination lane; only its final connector depends on that lane.
+                debug_assert!(path.len() >= 2);
+                self.possible.clear();
+                self.possible.push(origin.lane_id);
+                if !self.connectors.follow(path, graph, &mut self.possible, &mut self.next) {
+                    self.possible.clear();
+                }
+                let connected = frontier_reaches(&self.possible, destination.lane_id, network);
+                // Ordinary sidewalks arrive on at most two lanes. Larger frontiers still use
+                // the complete result, but are recomputed rather than truncated or allocated.
+                if self.possible.len() <= cached.lanes.len() {
+                    let mut entry = WalkingFrontier { epoch: source.frontier_epoch,
+                        count: self.possible.len(), ..Default::default() };
+                    entry.lanes[..entry.count].copy_from_slice(&self.possible);
+                    source.frontiers[target] = entry;
+                }
+                (seconds, connected)
+            };
+            return if connected { Some(seconds) }
+                else { self.walking_cost(origin, destination, network, graph) };
+        }
+        pathfind_count.fetch_add(1, Ordering::Relaxed);
+        if mode == MODE_CAR || self.connectors.proves_path(origin, destination, network, graph) {
             return network.cch_graph.find_cost(origin.node, destination.node, edge, graph,
                 flags, self.cch.query());
         }
         let (mut seconds, _, path) = network.cch_graph.find_path_in(
-            origin.node,
-            destination.node,
-            edge,
-            graph,
-            flags,
-            &mut self.cch,
+            origin.node, destination.node, edge, graph, flags, &mut self.cch,
         )?;
-        if !path_has_connectors(path, origin.lane_id, destination.lane_id, network, graph,
-            &mut self.possible, &mut self.next)
-        {
+        debug_assert!(path.len() >= 2, "network_seconds only prices distinct nodes");
+        self.possible.clear();
+        self.possible.push(origin.lane_id);
+        if !(self.connectors.follow(path, graph, &mut self.possible, &mut self.next)
+            && frontier_reaches(&self.possible, destination.lane_id, network)) {
             seconds = self.walking_cost(origin, destination, network, graph)?;
         }
         Some(seconds)
@@ -498,13 +770,32 @@ fn path_has_connectors_from(mut path: &[u32], from: u32, start: RouteStart, deta
         RouteStart::Lane(lane) if path.len() < 2 => return connector_to_lane_exists(lane, detach, network),
         _ => seed_incoming_lanes(possible, from, start, network, graph),
     }
+    follow_connector_path(path, network, graph, possible, next)
+        && frontier_reaches(possible, detach, network)
+}
+
+fn frontier_reaches(possible: &[usize], detach: usize, network: &TransitNetwork) -> bool {
+    possible.iter().any(|&lane| lane == detach || connector_to_lane_exists(lane, detach, network))
+}
+
+fn follow_connector_path(path: &[u32], network: &TransitNetwork, graph: &RegionGraph,
+    possible: &mut Vec<usize>, next: &mut Vec<usize>) -> bool {
+    // Stored paths also support immediate raw connectivity checks after an isolated edit.
+    // Only revision-scoped cost forecasts use the compact prepared lists above.
+    follow_connector_path_with(path, graph, possible, next, |lane, node, edge, out|
+        collect_connector_targets_to_edge(lane, node, edge, network, graph, out))
+}
+
+fn follow_connector_path_with(path: &[u32], graph: &RegionGraph,
+    possible: &mut Vec<usize>, next: &mut Vec<usize>,
+    mut collect: impl FnMut(usize, u32, usize, &mut Vec<usize>)) -> bool {
     for pair in path.windows(2) {
         let Some(edge) = graph.get_edge_between_nodes(pair[0], pair[1]) else {
             return false;
         };
         next.clear();
         for &lane in possible.iter() {
-            collect_connector_targets_to_edge(lane, pair[0], edge, network, graph, next);
+            collect(lane, pair[0], edge, next);
         }
         if next.is_empty() {
             return false;
@@ -513,13 +804,140 @@ fn path_has_connectors_from(mut path: &[u32], from: u32, start: RouteStart, deta
         next.dedup();
         std::mem::swap(possible, next);
     }
-    possible
-        .iter()
-        .any(|&lane| lane == detach || connector_to_lane_exists(lane, detach, network))
+    true
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::RwLock;
+
+    struct SingleLockQuotes(RwLock<super::SharedQuoteSlots>);
+    impl SingleLockQuotes {
+        fn new(buckets: usize) -> Self {
+            Self(RwLock::new(super::SharedQuoteSlots { buckets: vec![[None; 2]; buckets], len: 0 }))
+        }
+        fn get(&self, key: &super::NetworkQuoteKey) -> Option<Option<f32>> {
+            use std::hash::BuildHasher;
+            let quotes = self.0.read().unwrap();
+            let bucket = foldhash::fast::FixedState::default().hash_one(key) as usize & (quotes.buckets.len() - 1);
+            quotes.buckets[bucket].iter().flatten().find(|quote| quote.key == *key).map(|quote| quote.seconds)
+        }
+        fn insert(&self, key: super::NetworkQuoteKey, seconds: Option<f32>) {
+            use std::hash::BuildHasher;
+            let mut quotes = self.0.write().unwrap();
+            let bucket = foldhash::fast::FixedState::default().hash_one(key) as usize & (quotes.buckets.len() - 1);
+            let entries = &mut quotes.buckets[bucket];
+            if entries.iter().flatten().any(|quote| quote.key == key) { return; }
+            let added = entries[1].is_none();
+            entries[1] = entries[0];
+            entries[0] = Some(super::NetworkQuote { key, seconds });
+            quotes.len += usize::from(added);
+        }
+    }
+
+    fn cache_key(index: usize) -> super::NetworkQuoteKey {
+        super::NetworkQuoteKey { mode: (index % 2) as u8,
+            from_context: if index % 3 == 0 { usize::MAX } else { index % 23 },
+            to_lane: usize::MAX, from_node: (index / 32) as u32, to_node: (index % 32) as u32 }
+    }
+
+    fn cache_value(key: &super::NetworkQuoteKey) -> Option<f32> {
+        (key.from_node % 7 != 0).then_some((key.from_node * 32 + key.to_node) as f32 / 7.0)
+    }
+
+    #[test]
+    fn striped_quotes_preserve_global_collisions_capacity_and_revision_guards() {
+        use super::*;
+        use rayon::prelude::*;
+        let mut network = TransitNetwork::new();
+        let mut shared = SharedNetworkQuotes::default();
+        for lanes in [0, 1, 17, 129, 1] {
+            network.lane_system.lanes.resize_with(lanes, Default::default);
+            network.cch_graph.metric_revision += 1;
+            let revision = network_quote_revision(&network);
+            assert!(shared.get(&cache_key(0), revision).is_none());
+            shared.sync(&network);
+            assert_eq!(shared.len(), 0);
+            let count = lanes.max(1).next_power_of_two();
+            assert_eq!(shared.quotes.iter().map(|quotes| quotes.read().unwrap().buckets.len()).sum::<usize>(), count);
+            let capacities = shared.quotes.each_mut().map(|quotes| quotes.get_mut().unwrap().buckets.capacity());
+            let ordinary = SingleLockQuotes::new(count);
+            for index in 0..4096 {
+                let key = cache_key(index);
+                assert_eq!(shared.get(&key, revision), ordinary.get(&key));
+                shared.insert(key, cache_value(&key), revision);
+                ordinary.insert(key, cache_value(&key));
+                for previous in [0, index / 2, index.saturating_sub(1), index] {
+                    let key = cache_key(previous);
+                    assert_eq!(shared.get(&key, revision), ordinary.get(&key));
+                }
+            }
+            assert_eq!(shared.len(), ordinary.0.read().unwrap().len);
+            let old_revision = (revision.0, revision.1.wrapping_sub(1), revision.2, revision.3);
+            shared.insert(cache_key(0), Some(999.0), old_revision);
+            assert!(shared.get(&cache_key(0), old_revision).is_none());
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+            pool.install(|| (0..16_384).into_par_iter().for_each(|index| {
+                let key = cache_key(index % 4096);
+                if let Some(value) = shared.get(&key, revision) { assert_eq!(value, cache_value(&key)); }
+                shared.insert(key, cache_value(&key), revision);
+            }));
+            assert!(shared.len() <= 2 * count);
+            assert_eq!(shared.quotes.each_mut().map(|quotes| quotes.get_mut().unwrap().buckets.capacity()), capacities);
+            shared.clear();
+            assert_eq!(shared.len(), 0);
+            for index in 0..4096 { assert!(shared.get(&cache_key(index), revision).is_none()); }
+        }
+    }
+
+    #[test]
+    #[ignore = "manual paired release timing of shared quote lock contention"]
+    fn benchmark_striped_network_quotes() {
+        use super::*;
+        use rayon::prelude::*;
+        use std::{hint::black_box, time::Instant};
+        let mut network = TransitNetwork::new();
+        network.lane_system.lanes.resize_with(32_768, Default::default);
+        let revision = network_quote_revision(&network);
+        let mut shared = SharedNetworkQuotes::default();
+        shared.sync(&network);
+        let mut ordinary = SingleLockQuotes::new(shared.bucket_mask + 1);
+        let keys: Vec<_> = (0..32_768).map(cache_key).collect();
+        let checksum = |value: Option<f32>| value.map_or(1, |value| u64::from(value.to_bits()) + 2);
+        let expected = keys.iter().map(|key| checksum(cache_value(key))).sum::<u64>() * 4;
+        for workers in [1, 8] {
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(workers).build().unwrap();
+            for warm in [false, true] {
+                for pair in 0..11 {
+                    for striped in if pair % 2 == 0 { [false, true] } else { [true, false] } {
+                        shared.clear();
+                        let slots = ordinary.0.get_mut().unwrap(); slots.buckets.fill([None; 2]); slots.len = 0;
+                        if warm {
+                            for &key in &keys {
+                                shared.insert(key, cache_value(&key), revision);
+                                ordinary.insert(key, cache_value(&key));
+                            }
+                        }
+                        let begin = Instant::now();
+                        let actual = pool.install(|| (0..4).map(|_| keys.par_iter().map(|&key| {
+                            let cached = if striped { shared.get(&key, revision) } else { ordinary.get(&key) };
+                            let value = cached.unwrap_or_else(|| {
+                                let value = cache_value(&key);
+                                if striped { shared.insert(key, value, revision); } else { ordinary.insert(key, value); }
+                                value
+                            });
+                            checksum(black_box(value))
+                        }).sum::<u64>()).sum::<u64>());
+                        let query_ns = begin.elapsed().as_secs_f64() * 1e9 / (keys.len() * 4) as f64;
+                        assert_eq!(actual, expected);
+                        eprintln!("STRIPED_QUOTES {}", serde_json::json!({"workers":workers,
+                            "warm":warm,"pair":pair,"striped":striped,"query_ns":query_ns}));
+                    }
+                }
+            }
+        }
+    }
+
     use super::*;
     use crate::simulation::network::types::NodeType;
     use crate::simulation::pathing::cch::CchGraph;
@@ -556,10 +974,30 @@ mod tests {
         assert_eq!([scratch.previous.capacity(), scratch.path.capacity(), scratch.retained_path.capacity()], [0; 3],
             "cost forecasts must not allocate full-route buffers");
         scratch.prepare_routes(&network, &graph);
+        assert!(scratch.connectors.complete);
+        // Replacing a required connector with a duplicate preserves the list's length,
+        // but must withdraw the all-paths proof. Restore the exact original topology.
+        let changed_lane = network.lane_system.lanes.iter().position(|lane|
+            lane.edge_id != usize::MAX && lane.lane_type == LaneType::Foot
+                && lane.next_lanes.len() >= 2).unwrap();
+        let original = network.lane_system.lanes[changed_lane].next_lanes.clone();
+        let mut duplicate = original.to_vec();
+        duplicate[0] = duplicate[1];
+        network.lane_system.lanes[changed_lane].next_lanes = duplicate.into();
+        let links = network.lane_system.lanes.iter().map(|lane| lane.next_lanes.len()).sum();
+        scratch.connectors.prepare(&network, &graph, links);
+        assert!(!scratch.connectors.complete);
+        network.lane_system.lanes[changed_lane].next_lanes = original;
+        scratch.connectors.prepare(&network, &graph, links);
+        assert!(scratch.connectors.complete);
         let capacities = |scratch: &TripQueryScratch| {
             [
                 scratch.possible.capacity(),
                 scratch.next.capacity(),
+                scratch.connectors.offsets.capacity(),
+                scratch.connectors.targets.capacity(),
+                scratch.connectors.outgoing_counts.capacity(),
+                scratch.connectors.seen.capacity(),
                 scratch.heap.capacity(),
                 scratch.best.capacity(),
                 scratch.network_quotes.capacity(),
@@ -579,11 +1017,15 @@ mod tests {
             .map(|(index, _)| index)
             .collect();
         let mut fallback_count = 0;
+        let mut equivalent_leg_hits = 0;
         // A second worker shares legs only through `shared`, never its own slots.
         let mut other = TripQueryScratch::default();
         let mut shared = SharedNetworkQuotes::default();
+        let mut bucketed = SharedNetworkQuotes::default();
+        let mut batched = TripQueryScratch::default();
+        let batch_counter = AtomicU32::new(0);
         let mut last_key = None;
-        for change in 0..4 {
+        for change in 0..5 {
             if change == 1 {
                 graph.edge_mut(1).base_cost += 17.0;
                 network.cch_graph.customize(&graph);
@@ -595,14 +1037,50 @@ mod tests {
             } else if change == 3 {
                 for edge in 0..graph.edge_count() { graph.edge_mut(edge).base_cost = f32::INFINITY; }
                 network.cch_graph.customize(&graph);
+            } else if change == 4 {
+                // Terrain synchronization can rebuild lanes without changing the CCH
+                // generation or lane count. The lane revision still expires every proof.
+                let previous = network_quote_revision(&network);
+                network.lane_system.rebuild(&mut graph);
+                let next = network_quote_revision(&network);
+                assert_eq!((previous.0, previous.1, previous.2), (next.0, next.1, next.2));
+                assert_ne!(previous.3, next.3);
             }
             scratch.prepare(&network, &graph);
             other.prepare(&network, &graph);
+            assert_eq!(scratch.connectors.complete, matches!(change, 0 | 1 | 4));
+            let mut expected_targets = Vec::new();
+            let mut cached_targets = Vec::new();
+            for lane in 0..network.lane_system.lanes.len() {
+                for node in 0..graph.node_count() as u32 {
+                    for edge in 0..graph.edge_count() {
+                        expected_targets.clear();
+                        cached_targets.clear();
+                        collect_connector_targets_to_edge(lane, node, edge, &network, &graph,
+                            &mut expected_targets);
+                        scratch.connectors.collect(lane, node, edge, &mut cached_targets);
+                        assert_eq!(cached_targets, expected_targets,
+                            "change={change} lane={lane} node={node} edge={edge}");
+                    }
+                }
+            }
             let revision = network_quote_revision(&network);
             assert!(last_key.is_none_or(|key| shared.get(&key, revision).is_none()),
                 "legs priced on an older revision must never answer");
             shared.sync(&network);
             assert_eq!(shared.len(), 0, "every edit here changes the revision");
+            // Deliberately collide every leg, including unreachable ones; the bucketed
+            // owner below separately exercises the ordinary network-sized reserve.
+            shared.bucket_mask = 0;
+            for (stripe, quotes) in shared.quotes.iter_mut().enumerate() {
+                quotes.get_mut().unwrap().buckets.truncate(usize::from(stripe == 0));
+            }
+            let shared_capacity = shared.quotes.each_mut().map(|quotes| quotes.get_mut().unwrap().buckets.capacity());
+            bucketed.prepare_targets(std::array::from_fn(|_| (0..graph.node_count() as u32).collect()), &network);
+            batched.prepare(&network, &graph);
+            batched.prepare_batch(&bucketed, &network);
+            let batch_capacities = batched.batch_sources.each_ref().map(|mode| mode.each_ref().map(|source| (source.source.capacities(), source.frontiers.capacity())));
+
             for &attach in &lanes {
                 for &detach in &lanes {
                     let lane_type = network.lane_system.lanes[attach].lane_type;
@@ -658,6 +1136,10 @@ mod tests {
                         &counter,
                     );
                     let expected = expected_candidate.as_ref().map(|candidate| candidate.total_cost_s);
+                    assert_eq!(batched.combine(mode, 0, 0, &origin, &destination, &network, &graph,
+                        &batch_counter, Some(&bucketed)).map(|candidate| candidate.total_cost_s), expected);
+                    assert_eq!(batched.batch_sources.each_ref().map(|mode| mode.each_ref().map(|source| (source.source.capacities(), source.frontiers.capacity()))), batch_capacities);
+
                     let route = scratch.network_path(mode, origin.node, destination.node,
                         RouteStart::Lane(attach), detach, &network, &graph, <[u32]>::to_vec)
                         .ok().map(|(_, path)| path);
@@ -681,15 +1163,22 @@ mod tests {
                         &counter, None).map(|candidate| candidate.total_cost_s), expected);
                     assert_eq!(counter.load(Ordering::Relaxed), searches,
                         "an identical lane leg must reuse both successful and failed proofs");
+                    let key = other.quote_key(mode, &origin, &destination, &network, &graph);
+                    let shared_missing = shared.get(&key, revision).is_none();
+                    equivalent_leg_hits += usize::from(!shared_missing);
                     for _ in 0..2 {
+                        // Midnight and unchanged-target passes must retain pure network
+                        // legs even when the worker's own scratch has no matching quote.
+                        shared.sync(&network);
                         other.network_quotes.fill(None);
                         assert_eq!(other.combine(mode, 0, 0, &origin, &destination, &network, &graph,
                             &counter, Some(&shared)).map(|candidate| candidate.total_cost_s), expected);
                     }
-                    assert_eq!(counter.load(Ordering::Relaxed), searches + 1,
+                    assert_eq!(counter.load(Ordering::Relaxed), searches + u32::from(shared_missing),
                         "a shared leg is searched once, then answered for another worker");
-                    last_key = Some(NetworkQuoteKey { mode, from_lane: attach, to_lane: detach,
-                        from_node: origin.node, to_node: destination.node });
+                    assert!(shared.len() <= 2);
+                    assert_eq!(shared.quotes.each_mut().map(|quotes| quotes.get_mut().unwrap().buckets.capacity()), shared_capacity);
+                    last_key = Some(key);
                     // Different doors and live frontage charges share only the network leg.
                     let mut moved_origin = origin;
                     moved_origin.local_time_s = 9.0;
@@ -703,6 +1192,9 @@ mod tests {
                     let searches = counter.load(Ordering::Relaxed);
                     assert_eq!(scratch.combine(mode, 0, 0, &moved_origin, &moved_destination,
                         &network, &graph, &counter, None).map(|candidate| candidate.total_cost_s), moved_expected);
+                    other.network_quotes.fill(None);
+                    assert_eq!(other.combine(mode, 0, 0, &moved_origin, &moved_destination,
+                        &network, &graph, &counter, Some(&shared)).map(|candidate| candidate.total_cost_s), moved_expected);
                     assert_eq!(counter.load(Ordering::Relaxed), searches);
                     assert_eq!(capacities(&scratch), prepared);
                 }
@@ -712,10 +1204,86 @@ mod tests {
             fallback_count > 0,
             "fixture must exercise the directed lane fallback"
         );
+        assert!(equivalent_leg_hits > 0, "distinct lane pairs must share their proved network-only key");
     }
 
     type RouteCase = (u8, [TripEnd; 2], [TripEnd; 2]);
     type RouteResult = (u32, u8, u8, usize, usize, Vec<u32>, u8);
+
+    #[test]
+    fn shared_entrance_geometry_matches_independent_direction_and_rank_construction() {
+        use godot::prelude::Vector2;
+        let (graph, mut network, _) = route_cases(4);
+        let mut entrances = Vec::new();
+        for edge in 0..graph.edge_count() {
+            for side in [-1, 1] {
+                for position in [0.0, 37.25, 100.0] {
+                    let lane = |kind, forward| network.lane_system.edge_lanes[&edge].iter().copied()
+                        .find(|&id| {
+                            let lane = &network.lane_system.lanes[id];
+                            lane.lane_type == kind && lane.is_fwd == forward
+                                && (kind != LaneType::Foot || lane.lane_idx.signum() == side)
+                        }).unwrap();
+                    let door = Vector2::new(graph.edge(edge).start_node as f32 * 100.0 + position,
+                        side as f32 * 16.0);
+                    entrances.push(BuildingEntrance { edge_idx: edge, side, entrance_s_m: position,
+                        door_pos: door, curb_pos: Vector2::new(door.x, side as f32 * 5.0),
+                        foot_lane_fwd: lane(LaneType::Foot, true), foot_lane_bkw: lane(LaneType::Foot, false),
+                        car_lane_fwd: lane(LaneType::Vehicle, true), car_lane_bkw: lane(LaneType::Vehicle, false),
+                        ..Default::default() });
+                }
+            }
+        }
+        entrances.push(BuildingEntrance::default());
+        let mut missing = entrances[0].clone();
+        missing.foot_lane_bkw = usize::MAX;
+        missing.car_lane_fwd = usize::MAX;
+        entrances.push(missing);
+        let mut mismatched = entrances[0].clone();
+        // A foreign lane can validate one endpoint but fail the opposite endpoint.
+        mismatched.foot_lane_fwd = entrances[6].foot_lane_bkw;
+        mismatched.foot_lane_bkw = entrances[6].foot_lane_fwd;
+        entrances.push(mismatched);
+        let mut one_side = entrances[0].clone();
+        one_side.vehicle_frontage_access = crate::simulation::network::types::VehicleFrontageAccess::SameSideOnly;
+        entrances.push(one_side);
+        let end_key = |end: Option<TripEnd>| end.map(|end| (end.edge_idx, end.node,
+            end.node_x.to_bits(), end.node_z.to_bits(), end.lane_id, end.lane_d.to_bits(),
+            end.local_time_s.to_bits(), end.frontage_time_s.map(f32::to_bits)));
+        let candidate_key = |candidate: Option<PlannedTripCandidate>| candidate.map(|candidate|
+            (candidate.total_cost_s.to_bits(), candidate.mode_choice_cost_s.to_bits(), candidate.mode,
+                candidate.origin_rank, candidate.destination_rank, candidate.planned_attach_node,
+                candidate.planned_detach_node, candidate.planned_attach_lane_id,
+                candidate.planned_detach_lane_id, candidate.planned_attach_lane_d.to_bits(),
+                candidate.planned_detach_lane_d.to_bits()));
+        let counter = AtomicU32::new(0);
+        for price in [0.0, 17.25, f32::INFINITY] {
+            for lane in &mut network.lane_system.lanes { lane.live_frontage_delay_s = price; }
+            for mode in [0, MODE_CAR] {
+                for entrance in &entrances {
+                    let pair = TripEnd::pair(mode, entrance, &network, &graph);
+                    for (direction, origin) in [true, false].into_iter().enumerate() {
+                        for rank in NODE_RANKS {
+                            assert_eq!(end_key(pair[direction][usize::from(rank)]),
+                                end_key(TripEnd::new(mode, rank, entrance, origin, &network, &graph)));
+                        }
+                    }
+                    for destination in &entrances {
+                        let mut expected = None;
+                        for (from, to) in NODE_RANK_PAIRS {
+                            if let Some(candidate) = evaluate_planned_trip_candidate(mode, from, to,
+                                entrance, destination, &network, &graph, &counter)
+                                && expected.as_ref().is_none_or(|best| candidate_better(&candidate, best)) {
+                                expected = Some(candidate);
+                            }
+                        }
+                        assert_eq!(candidate_key(best_trip_candidate_for_mode(mode, entrance,
+                            destination, &network, &graph, &counter)), candidate_key(expected));
+                    }
+                }
+            }
+        }
+    }
 
     fn route_cases(edges: usize) -> (RegionGraph, TransitNetwork, Vec<RouteCase>) {
         let mut graph = RegionGraph::new();

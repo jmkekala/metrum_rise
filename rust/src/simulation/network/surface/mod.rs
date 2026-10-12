@@ -463,6 +463,29 @@ impl SurfaceTriangleGrid {
         }
     }
 
+    /// Visits ids in cells touching an XZ rectangle, without allocating query storage.
+    /// An id may occur in several cells. Cost follows touched cells and their entries.
+    pub(crate) fn items_in_bounds(&self, bounds: [f64; 4]) -> impl Iterator<Item = u32> + '_ {
+        let intersects = self.width > 0 && self.height > 0
+            && bounds[0] <= bounds[2] && bounds[1] <= bounds[3]
+            && bounds[0] <= self.bounds_xz[2] && bounds[1] <= self.bounds_xz[3]
+            && bounds[2] >= self.bounds_xz[0] && bounds[3] >= self.bounds_xz[1];
+        let cell = |value: f64, origin: f64, count: usize| {
+            (((value - origin) / self.cell_size_m).floor() as isize)
+                .clamp(0, count.saturating_sub(1) as isize) as usize
+        };
+        let x0 = cell(bounds[0], self.bounds_xz[0], self.width);
+        let x1 = cell(bounds[2], self.bounds_xz[0], self.width);
+        let z0 = cell(bounds[1], self.bounds_xz[1], self.height);
+        let z1 = cell(bounds[3], self.bounds_xz[1], self.height);
+        (z0..=z1).take(if intersects { z1 - z0 + 1 } else { 0 })
+            .flat_map(move |z| (x0..=x1).flat_map(move |x| {
+                let cell = z * self.width + x;
+                self.cell_items[self.cell_offsets[cell] as usize..self.cell_offsets[cell + 1] as usize]
+                    .iter().copied()
+            }))
+    }
+
     /// Triangle ids listed in the cell containing `point`; empty outside the grid.
     pub(crate) fn cell_items(&self, point: RoadVec2) -> &[u32] {
         if self.width == 0

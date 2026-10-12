@@ -79,6 +79,8 @@ fn site_radius_tracks_replacement_removal_and_cross_chunk_height_queries() {
             .map(site_radius_m)
             .fold(0.0, f32::max);
         assert_eq!(allocator.max_site_radius_m.to_bits(), expected.to_bits());
+        assert_eq!(allocator.max_site_radius_count, allocator.building_sites.iter()
+            .filter(|site| site_radius_m(site) == expected).count());
     };
     assert_radius(&allocator);
     assert_eq!(
@@ -117,6 +119,80 @@ fn site_radius_tracks_replacement_removal_and_cross_chunk_height_queries() {
         assert_radius(&allocator);
     }
     assert_eq!(allocator.max_site_radius_m, 0.0);
+}
+
+#[test]
+fn tied_site_radii_survive_shrinking_growing_and_swap_removal() {
+    use crate::simulation::zoning::ZoneType;
+    let mut allocator = BuildingAllocator::new();
+    let check = |allocator: &BuildingAllocator| {
+        let expected = allocator.building_sites.iter().map(site_radius_m).fold(0.0, f32::max);
+        assert_eq!(allocator.max_site_radius_m.to_bits(), expected.to_bits());
+        assert_eq!(allocator.max_site_radius_count, allocator.building_sites.iter()
+            .filter(|site| site_radius_m(site) == expected).count());
+    };
+    for index in 0..4 {
+        let mut building = indexed_test_building(String::new(), ZoneType::Residential, 0);
+        building.center_x = index as f32 * 128.0;
+        building.width_cells = 4;
+        building.depth_cells = 4;
+        allocator.buildings.push(building);
+        allocator.push_building_site_client(index, 10.0);
+        check(&allocator);
+        assert_eq!(allocator.max_site_radius_count, index + 1);
+    }
+    for (index, width) in [(0, 2), (1, 2), (2, 6), (3, 6), (2, 2), (3, 2)] {
+        allocator.buildings[index].width_cells = width;
+        allocator.buildings[index].depth_cells = width;
+        allocator.rebuild_building_site_client(index, 10.0);
+        check(&allocator);
+    }
+    while !allocator.building_sites.is_empty() {
+        allocator.remove_building_site_client(0);
+        allocator.buildings.swap_remove(0);
+        check(&allocator);
+    }
+    allocator.recompute_max_site_radius_m();
+    check(&allocator);
+}
+
+#[test]
+#[ignore = "manual matched release timing of tied-maximum site removals"]
+fn benchmark_tied_site_radius_removal() {
+    use crate::simulation::zoning::ZoneType;
+    use std::hint::black_box;
+    use std::time::Instant;
+    for count in [1_024, 16_384, 131_072] {
+        let mut allocator = BuildingAllocator::new();
+        for index in 0..count {
+            let mut building = indexed_test_building(String::new(), ZoneType::Residential, 0);
+            building.center_x = (index % 512) as f32 * 32.0;
+            building.center_y = (index / 512) as f32 * 32.0;
+            building.width_cells = 2;
+            building.depth_cells = 2;
+            allocator.buildings.push(building);
+        }
+        allocator.rebuild_building_site_clients(10.0);
+        let sites = allocator.building_sites.clone();
+        let maximum = allocator.max_site_radius_m;
+        for pair in 0..9 {
+            for counted in if pair % 2 == 0 { [false, true] } else { [true, false] } {
+                allocator.building_sites.clone_from(&sites);
+                allocator.recompute_max_site_radius_m();
+                let start = Instant::now();
+                for _ in 0..32 {
+                    allocator.remove_building_site_client(black_box(0));
+                    if !counted { allocator.recompute_max_site_radius_m(); }
+                    black_box(allocator.max_site_radius_m);
+                }
+                let removal_ns = start.elapsed().as_secs_f64() * 1e9 / 32.0;
+                assert_eq!(allocator.max_site_radius_m.to_bits(), maximum.to_bits());
+                assert_eq!(allocator.max_site_radius_count, count - 32);
+                assert_eq!(allocator.building_sites.len(), count - 32);
+                eprintln!("TIED_RADIUS {{\"sites\":{count},\"pair\":{pair},\"counted\":{counted},\"removal_ns\":{removal_ns}}}");
+            }
+        }
+    }
 }
 
 #[test]

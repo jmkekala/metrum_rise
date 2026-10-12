@@ -764,8 +764,70 @@ fn make_building(
     }
 }
 
-fn simple_graph_with_border() -> (RegionGraph, TransitNetwork, usize, usize, u32) {
+/// Minimal connected freight graph shared with cache replacement regressions.
+pub(super) fn simple_graph_with_border() -> (RegionGraph, TransitNetwork, usize, usize, u32) {
     graph_with_border_to(100.0)
+}
+
+#[test]
+fn prepared_border_minima_preserve_each_border_quote_bits() {
+    let (mut graph, mut network, first, second, border) = simple_graph_with_border();
+    let mut allocator = BuildingAllocator::new();
+    let asset = register_test_asset(&mut allocator, "test", "border_minimum", ZoneClass::Commercial);
+    for (x, edge) in [(-50.0, first), (50.0, second)] {
+        allocator.buildings.push(make_building(&allocator, x, ZoneType::Commercial, edge,
+            &asset, 0.0, 100_000.0));
+    }
+    let mut cache = super::route_cache::FreightRouteCache::default();
+    for one_way in [false, true] {
+        if one_way {
+            graph.edge_mut(first).bkw_lanes = 0;
+            graph.edge_mut(second).bkw_lanes = 0;
+        }
+        network.lane_system.rebuild(&mut graph);
+        network.cch_graph = crate::simulation::pathing::cch::CchGraph::build(&graph);
+        allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+        for metric in [0.137, 5.0, 23.333334] {
+            graph.edge_mut(first).base_cost = metric;
+            network.cch_graph.customize(&graph);
+            cache.clear();
+            for borders in [vec![], vec![border], vec![2], vec![0, 2], vec![2, 0], vec![1, 1]] {
+                cache.clear_buildings();
+                cache.prepare_border_costs(&borders, allocator.buildings.len(), &network, &graph);
+                let costs = network.cch_graph.costs_from_each(&borders, &graph, TransitFlags::CAR);
+                for prepared in [false, true] {
+                    if prepared {
+                        cache.prepare_buildings(allocator.buildings.len());
+                        cache.prepare_access_for(&allocator, &network, &graph, |_| true);
+                    }
+                for penalty in [0.0, 0.00001, 31.7] {
+                    for (i, lane) in network.lane_system.lanes.iter_mut().enumerate() {
+                        lane.live_frontage_delay_s = penalty * (i + 1) as f32;
+                    }
+                    network.publish_frontage_prices();
+                    for (index, entrance) in allocator.entrances.iter().enumerate() {
+                        let expected = borders.iter().zip(&costs).filter_map(|(&border, costs)| {
+                            BuildingAllocator::freight_car_eta_to_entrance(border, entrance,
+                                costs, &network, &graph)
+                        }).min_by(f32::total_cmp).map(f32::to_bits);
+                        assert_eq!(cache.minimum_border_eta(index, &allocator, &network, &graph)
+                            .map(f32::to_bits), expected);
+                        assert_eq!(cache.minimum_site_border_eta(&borders, entrance, &network, &graph)
+                            .map(f32::to_bits), expected);
+                    }
+                }
+                }
+                // A proposed-door caller can select a previously prepared subset of borders.
+                if borders.len() > 1 {
+                    let subset = &borders[..1];
+                    let entrance = &allocator.entrances[1];
+                    assert_eq!(cache.minimum_site_border_eta(subset, entrance, &network, &graph)
+                        .map(f32::to_bits), BuildingAllocator::freight_car_eta_to_entrance(
+                            subset[0], entrance, &costs[0], &network, &graph).map(f32::to_bits));
+                }
+            }
+        }
+    }
 }
 
 #[test]
@@ -1014,7 +1076,7 @@ fn projected_supplier_uses_its_recipe_door_and_price_and_restores_all_commitment
             live.accept_for(1);
         }
         book.copy_reservations_from(&live, &allocator, &catalog, &graph);
-        book.prepare_projected_sources(&catalog, &graph, [0; 3], || {
+        book.prepare_projected_sources(&catalog, &graph, [0; 3], |_| {
             assert_eq!(pass, 0, "warm passes must retain their prepared variant geometry");
             vec![
                 ProjectedSupplySource::new(0, "cheap", replacement.runtime_id, proposed_door.clone()),
@@ -1088,8 +1150,17 @@ fn projected_supplier_uses_its_recipe_door_and_price_and_restores_all_commitment
     }
     // The previous grain quote retains a projected supplier as its search bound. A
     // subsequent asset/layout rebuild removes that handle while retaining the live fork.
+    book.prepare_owners(16_384, 16_384);
+    let retained_capacity = (book.receipt_storage().1, book.revalidation_storage());
+    network.rebuild_cch_and_check(&graph);
+    live.reset(&allocator, &graph, &network, &catalog, &[1.0, 0.0, 0.0]);
     book.copy_reservations_from(&live, &allocator, &catalog, &graph);
-    book.prepare_projected_sources(&catalog, &graph, [1; 3], Vec::new);
+    assert!(book.receipt_storage().1 >= retained_capacity.0);
+    assert!(book.revalidation_storage().into_iter().zip(retained_capacity.1).all(|(after, before)| after >= before));
+    book.prepare_projected_sources(&catalog, &graph, [1; 3], |previous| {
+        assert_eq!(previous.len(), 3, "a changed live layout retains only geometry as factory input");
+        Vec::new()
+    });
     assert!(quote(&mut book, &mut logistics, 2, grain, 1.0, &network).goods.is_infinite());
     book.reject(&allocator, &graph);
 }
@@ -1658,7 +1729,7 @@ fn prepared_business_sites_use_candidate_recipes_doors_and_restore_live_accounts
     assert!(live.accept_for(2));
     let mut market = BusinessMarket::default();
     market.copy_reservations_from(&live);
-    market.prepare_sites([17, 0, 0], &catalog, &components, &graph, || vec![
+    market.prepare_sites([17, 0, 0], &catalog, &components, &graph, |_| vec![
         PreparedBusinessSite::new(1, "west", target.runtime_id, allocator.entrances[0].clone()),
         PreparedBusinessSite::new(1, "east", target.runtime_id, allocator.entrances[1].clone()),
         PreparedBusinessSite::new(3, "new-project", target.runtime_id, allocator.entrances[1].clone()),
@@ -1668,7 +1739,7 @@ fn prepared_business_sites_use_candidate_recipes_doors_and_restore_live_accounts
     for round in 0..16 {
         market.copy_reservations_from(&live);
         network.cch_graph.metric_revision += 1;
-        market.prepare_sites([17, 0, 0], &catalog, &components, &graph, || panic!("warm geometry must survive a live fork"));
+        market.prepare_sites([17, 0, 0], &catalog, &components, &graph, |_| panic!("warm geometry must survive a live fork"));
         market.prepare_owners(4, 4);
         market.reserve_accounts(8);
         let original = market.financing(1).map(f64::to_bits);
@@ -1713,6 +1784,125 @@ fn prepared_business_sites_use_candidate_recipes_doors_and_restore_live_accounts
             assert_eq!(quote(&mut market, &mut logistics, &network, coal), 0.0);
         }
         assert_eq!(market.prepared_layout(), layout);
+    }
+    market.prepare_owners(16_384, 16_384);
+    market.reserve_accounts(16_384);
+    let retained_capacity = market.account_storage().1;
+    network.rebuild_cch_and_check(&graph);
+    live.reset(&allocator, &network, &graph, &components, &catalog, 2, 2, |book| {
+        book.set_finance(1, [100.0, 10_000.0]);
+        for _ in 0..2 { book.push_input(1, input, 10.0, carrier, 0.0, 50.0, 1.0).unwrap(); }
+    });
+    market.copy_reservations_from(&live);
+    assert!(market.account_storage().1.into_iter().zip(retained_capacity).all(|(after, before)| after >= before));
+    market.prepare_sites([17, 0, 0], &catalog, &components, &graph, |previous| {
+        assert_eq!(previous.len(), 3, "a changed live layout retains geometry for exact revalidation");
+        previous.to_vec()
+    });
+    assert_eq!(market.financing(1), live.financing(1));
+    assert_eq!(quote(&mut market, &mut logistics, &network, grain),
+        quote(&mut live, &mut logistics, &network, grain));
+    assert_eq!(market.prepared_layout().0, layout.0);
+}
+
+#[test]
+fn business_price_masks_match_unfiltered_claims_and_financial_rollbacks() {
+    use crate::simulation::economy::accessibility::ModeComponentIndex;
+    use crate::simulation::economy::customers::business::BusinessMarket;
+    use crate::simulation::economy::operation::InputRequirement;
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let tuning = load_runtime_economy_tuning().unwrap();
+    let grain = catalog.resource_runtime_id_for_id("grain").unwrap();
+    let buyer_profile = catalog.profile_for_id("food_processor_basic").unwrap();
+    let price = catalog.all_profiles().iter().find(|profile|
+        profile.outputs.iter().any(|output| output.resource_runtime_id == grain))
+        .unwrap().unit_price_currency;
+    let (graph, network, west, east, border) = simple_graph_with_border();
+    let mut allocator = BuildingAllocator::new();
+    let asset = register_test_asset(&mut allocator, "test", "masked_buyers", ZoneClass::Industrial);
+    for (x, edge) in [(-50.0, west), (10.0, east), (30.0, east), (50.0, east)] {
+        let mut building = make_building(&allocator, x, ZoneType::Industrial, edge, &asset, 1_000.0, 100_000.0);
+        building.economy_profile_runtime_id = buyer_profile.runtime_id;
+        allocator.buildings.push(building);
+    }
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    let components = ModeComponentIndex::build(&graph, TransitFlags::CAR);
+    let mut logistics = ShipmentSystem::new();
+    logistics.prepare_site_carrier_quotes(&allocator, &network, &graph, &[border]);
+    let input = InputRequirement { resource: grain, daily_units: 100.0, buffer_units: 400.0,
+        replenishment_batch_units: Some(50.0) };
+    let mut filtered = BusinessMarket::default();
+    filtered.reset(&allocator, &network, &graph, &components, &catalog, 6, 6, |book| {
+        for buyer in 1..4 {
+            book.set_finance(buyer, if buyer == 2 { [10_000.0; 2] } else { [0.0; 2] });
+            for inventory in [0.0, 1_000.0] {
+                book.push_input(buyer, input, price, 50.0, inventory, 50.0, 1.0).unwrap();
+            }
+        }
+    });
+    filtered.prepare_owners(4, 12);
+    filtered.reserve_accounts(12);
+    let mut reference = filtered.clone();
+    reference.disable_finance_masks_for_test();
+    let check = |a: &BusinessMarket, b: &BusinessMarket| {
+        for buyer in 0..4 { assert_eq!(a.financing(buyer).map(f64::to_bits), b.financing(buyer).map(f64::to_bits)); }
+        let receipts = |market: &BusinessMarket| {
+            let mut rows = Vec::new();
+            market.visit_additional_sales(|s, b, r, u, q| rows.push((s, b, r, u.to_bits(), q.map(f32::to_bits))));
+            rows
+        };
+        assert_eq!(receipts(a), receipts(b));
+    };
+    let mut quote = |a: &mut BusinessMarket, b: &mut BusinessMarket, price, joint| {
+        let mut run = |market: &mut BusinessMarket| {
+            if joint {
+                market.claim_reachable_joint(&allocator.entrances[0], 0, grain, 150.0, price,
+                    &components, &allocator, &mut logistics, &network, &graph, &tuning)
+            } else {
+                market.claim_reachable(&allocator.entrances[0], Some(0), grain, 150.0, price,
+                    &components, &allocator, &mut logistics, &network, &graph, &tuning)
+            }
+        };
+        let actual = run(a); let expected = run(b);
+        assert_eq!((actual.units.to_bits(), actual.revenue.to_bits()),
+            (expected.units.to_bits(), expected.revenue.to_bits()));
+        check(a, b);
+    };
+    quote(&mut filtered, &mut reference, price, false);
+    assert!(filtered.quote_counts_for_test()[0] < reference.quote_counts_for_test()[0]);
+    filtered.reject(); reference.reject();
+    for round in 0..8 {
+        for market in [&mut filtered, &mut reference] {
+            // Retire the previous round's committed purchases; commits require an unowned seller.
+            market.release_owner(0);
+            assert!(market.accept_for(0));
+            market.begin_revalidation();
+            market.set_financing(1, [1_000.0; 2]);
+            market.set_financing(2, [0.0; 2]);
+        }
+        quote(&mut filtered, &mut reference, price, false);
+        for market in [&mut filtered, &mut reference] { assert!(market.accept_for(0)); }
+        for market in [&mut filtered, &mut reference] {
+            market.withdraw_buyer(1, |_, _, _, _| {});
+            market.replace_buyer_inputs(3, [20_000.0; 2], 1, |book| {
+                book.push_input(3, input, price, 50.0, 1_000.0, 80.0, 1.0).unwrap();
+            }, |_, _, _, _| {}).unwrap();
+        }
+        quote(&mut filtered, &mut reference, price, false);
+        filtered.reject(); reference.reject();
+        quote(&mut filtered, &mut reference, price.next_up(), false);
+        filtered.reject(); reference.reject();
+        quote(&mut filtered, &mut reference, price, true);
+        for market in [&mut filtered, &mut reference] {
+            if round % 2 == 0 { market.commit_joint_for(0).unwrap(); }
+            market.reject_revalidation();
+        }
+        check(&filtered, &reference);
+        quote(&mut filtered, &mut reference, price, false);
+        for market in [&mut filtered, &mut reference] { assert!(market.accept_for(0)); market.release_owner(0); }
+        quote(&mut filtered, &mut reference, price, false);
+        filtered.reject(); reference.reject();
+        check(&filtered, &reference);
     }
 }
 
@@ -1913,7 +2103,7 @@ fn claims_unfundable_with_free_freight_stay_unfundable_at_any_carrier_quote() {
             book.reset(1, 1, 1, 1);
             book.set_finance(0, finance);
             book.push_input(0, input, 8.0, 40.0, 0.0, 100.0, 1.0).unwrap();
-            let claimable = book.claimable_without_carrier(0, 100.0, price, true);
+            let claimable = book.claimable_at_carrier_lower_bound(0, 100.0, price, 0.0, true);
             let mut free = book.clone();
             assert_eq!(claimable, free.claim_opportunity(0, 100.0, price, 0.0) > 0.0);
             for carrier in [0.0, 10.0, 40.0, 400.0] {
@@ -2000,7 +2190,19 @@ fn prepared_freight_quotes_stay_exact_after_cache_saturation_and_invalidation() 
                     let expected = allocator.freight_car_eta_between_buildings(source, destination,
                         &network, &graph, |from, to| network.cch_graph.find_cost(from, to,
                             usize::MAX, &graph, TransitFlags::CAR, &mut scratch));
-                    assert_eq!(cache.between_buildings(source, destination, &allocator, &network, &graph), expected);
+                    if let Some(seconds) = expected {
+                        let bound = cache.minimum_entrance_network_cost(&allocator.entrances[source],
+                            &allocator.entrances[destination], &network, &graph).unwrap();
+                        assert!(bound <= seconds, "{source} -> {destination}: {bound} > {seconds}");
+                    }
+                    assert_eq!(cache.between_buildings(source, destination, &allocator, &network, &graph)
+                        .map(f32::to_bits), expected.map(f32::to_bits));
+                    let hits = cache.building_cache_counts[1];
+                    let node_requests = cache.node_cache_counts[0];
+                    assert_eq!(cache.between_buildings(source, destination, &allocator, &network, &graph)
+                        .map(f32::to_bits), expected.map(f32::to_bits));
+                    assert_eq!(cache.building_cache_counts[1], hits + 1);
+                    assert_eq!(cache.node_cache_counts[0], node_requests);
                     assert_eq!(cache.storage().map(|(_, capacity)| capacity), capacities);
                 }
             }
@@ -2009,6 +2211,53 @@ fn prepared_freight_quotes_stay_exact_after_cache_saturation_and_invalidation() 
     let storage = cache.storage();
     assert_eq!(storage[1].0, storage[1].1);
     assert_eq!(storage[2].0, storage[2].1);
+}
+
+#[test]
+fn complete_freight_quotes_survive_unrelated_building_edits_but_recheck_doors_and_lanes() {
+    use super::route_cache::FreightRouteCache;
+    let (mut graph, mut network, west, east, border) = simple_graph_with_border();
+    let mut allocator = BuildingAllocator::new();
+    let asset = register_test_asset(&mut allocator, "test", "quote_dependencies", ZoneClass::Industrial);
+    for (x, edge) in [(-80.0, west), (40.0, east), (20.0, east)] {
+        allocator.buildings.push(make_building(&allocator, x, ZoneType::Industrial, edge,
+            &asset, 0.0, 1_000.0));
+    }
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    let mut cache = FreightRouteCache::default();
+    cache.prepare_border_costs(&[border], 3, &network, &graph);
+    cache.prepare_buildings(3);
+    let original = cache.between_buildings(0, 1, &allocator, &network, &graph).unwrap();
+    for prepared in [false, true] {
+        allocator.entrances[2].door_pos.x += 1.0;
+        cache.clear_buildings();
+        if prepared { cache.prepare_access_for(&allocator, &network, &graph, |_| true); }
+        let hits = cache.building_cache_counts[1];
+        let nodes = cache.node_cache_counts[0];
+        assert_eq!(cache.between_buildings(0, 1, &allocator, &network, &graph).unwrap().to_bits(), original.to_bits());
+        assert_eq!(cache.building_cache_counts[1], hits + 1);
+        assert_eq!(cache.node_cache_counts[0], nodes);
+    }
+    for change in 0..5 {
+        match change {
+            0 => { allocator.entrances[0].door_pos.x += 10.0; },
+            1 => { network.lane_system.rebuild(&mut graph); },
+            2 => {
+                graph.edge_mut(west).base_cost *= 1.75;
+                network.cch_graph.customize(&graph);
+                cache.clear();
+            },
+            3 => { graph.edge_mut(west).speed_limit *= 0.5; },
+            _ => { allocator.entrances.swap(0, 1); },
+        }
+        cache.clear_buildings();
+        let hits = cache.building_cache_counts[1];
+        let actual = cache.between_buildings(0, 1, &allocator, &network, &graph);
+        let mut fresh = FreightRouteCache::default();
+        fresh.prepare_border_costs(&[border], 3, &network, &graph);
+        assert_eq!(actual.map(f32::to_bits), fresh.between_buildings(0, 1, &allocator, &network, &graph).map(f32::to_bits));
+        assert_eq!(cache.building_cache_counts[1], hits, "changed dependency {change} reused a quote");
+    }
 }
 
 #[test]
@@ -2060,6 +2309,10 @@ fn prepared_freight_access_follows_door_and_building_index_changes() {
                     let value = warm.between_buildings(source, destination, &allocator, &network, &graph);
                     assert_eq!(value.map(f32::to_bits), expected.between_buildings(
                         source, destination, &allocator, &network, &graph).map(f32::to_bits));
+                    let hits = warm.building_cache_counts[1];
+                    assert_eq!(warm.between_buildings(source, destination, &allocator, &network, &graph)
+                        .map(f32::to_bits), value.map(f32::to_bits));
+                    assert_eq!(warm.building_cache_counts[1], hits + 1);
                     assert_eq!(warm.to_site(source, &allocator.entrances[destination], &allocator,
                         &network, &graph).map(f32::to_bits), value.map(f32::to_bits));
                     if !prepared { values.push(value.map(f32::to_bits)); }
@@ -2073,7 +2326,7 @@ fn prepared_freight_access_follows_door_and_building_index_changes() {
 
 #[test]
 fn customer_route_cache_does_not_alias_replacement_doors_to_live_owners() {
-    let (graph, mut network, west, east, border) = simple_graph_with_border();
+    let (mut graph, mut network, west, east, border) = simple_graph_with_border();
     let mut allocator = BuildingAllocator::new();
     let asset = register_test_asset(&mut allocator, "test", "customer_access", ZoneClass::Industrial);
     for (x, edge) in [(-80.0, west), (40.0, east)] {
@@ -2090,14 +2343,19 @@ fn customer_route_cache_does_not_alias_replacement_doors_to_live_owners() {
     let tuning = load_runtime_economy_tuning().unwrap();
     let mut logistics = ShipmentSystem::new();
     logistics.prepare_site_carrier_quotes(&allocator, &network, &graph, &[border]);
+    let mut oracle = crate::simulation::pathing::cch::CchQueryScratch::default();
+    oracle.prepare(&network.cch_graph, &graph);
     for delay in [0.0, 40.0, 0.0] {
         for lane in &mut network.lane_system.lanes { lane.frontage_delay_penalty_s = delay; }
         network.frontage_delay_revision += 1;
         let mut quotes = Vec::new();
         for from in [&allocator.entrances[0], &moved_source] {
             for to in [&allocator.entrances[1], &moved_destination] {
-                let expected = logistics.customer_carrier_quote(from, to, None, None,
-                    &allocator, &network, &graph, &tuning);
+                let expected = BuildingAllocator::freight_car_eta_between_entrances(from, to,
+                    &network, &graph, |from, to| network.cch_graph.find_cost(from, to,
+                        usize::MAX, &graph, TransitFlags::CAR, &mut oracle))
+                    .map(|seconds| super::timing::freight_cost(seconds,
+                        tuning.operational_clock.seconds_per_day, &tuning.logistics));
                 for source in [None, Some(0)] {
                     for destination in [None, Some(1)] {
                         assert_eq!(logistics.customer_carrier_quote(from, to, source, destination,
@@ -2110,6 +2368,22 @@ fn customer_route_cache_does_not_alias_replacement_doors_to_live_owners() {
         assert_ne!(quotes[0], quotes[1]);
         assert_ne!(quotes[0], quotes[2]);
     }
+    let before = logistics.customer_carrier_quote(&moved_source, &moved_destination,
+        None, None, &allocator, &network, &graph, &tuning).unwrap();
+    // A fresh lane epoch with unchanged door keys must discard proposal projections.
+    // Translate the isolated fixture's physical lanes to make stale local distances visible.
+    network.lane_system.rebuild(&mut graph);
+    for lane in &mut network.lane_system.lanes {
+        for point in &mut lane.geometry { point.z += 100.0; }
+    }
+    let expected = BuildingAllocator::freight_car_eta_between_entrances(&moved_source,
+        &moved_destination, &network, &graph, |from, to| network.cch_graph.find_cost(from, to,
+            usize::MAX, &graph, TransitFlags::CAR, &mut oracle))
+        .map(|seconds| super::timing::freight_cost(seconds,
+            tuning.operational_clock.seconds_per_day, &tuning.logistics)).unwrap();
+    assert_ne!(before.to_bits(), expected.to_bits());
+    assert_eq!(logistics.customer_carrier_quote(&moved_source, &moved_destination,
+        None, None, &allocator, &network, &graph, &tuning).unwrap().to_bits(), expected.to_bits());
 }
 
 #[test]
@@ -2146,6 +2420,23 @@ fn warm_freight_quotes_follow_live_frontage_and_metric_edits() {
     };
     let mut warm = FreightRouteCache::default();
     let before = quote(&mut warm, &network, &graph);
+    let used = [&allocator.entrances[0], &allocator.entrances[1]]
+        .map(|entrance| [entrance.car_lane_fwd, entrance.car_lane_bkw]);
+    let mut edited = 0;
+    for (lane_id, lane) in network.lane_system.lanes.iter_mut().enumerate() {
+        if !used.iter().flatten().any(|&used| used == lane_id) {
+            lane.frontage_delay_penalty_s = 137.0;
+            edited += 1;
+        }
+    }
+    assert!(edited > 0);
+    network.frontage_delay_revision += 1;
+    let requests = warm.node_cache_counts[0];
+    let hits = warm.building_cache_counts[1];
+    assert_eq!(before, quote(&mut warm, &network, &graph));
+    assert_eq!(warm.node_cache_counts[0], requests,
+        "unrelated lane-price edits must retain the complete freight quote");
+    assert_eq!(warm.building_cache_counts[1], hits + 1);
     for lane in &mut network.lane_system.lanes {
         lane.frontage_delay_penalty_s = 20.0;
     }
@@ -2159,6 +2450,18 @@ fn warm_freight_quotes_follow_live_frontage_and_metric_edits() {
     }
     network.frontage_delay_revision += 1;
     assert_eq!(before, quote(&mut warm, &network, &graph));
+
+    for lane_id in used.into_iter().flatten().filter(|&lane| lane != usize::MAX) {
+        for price in [100_000.0, 0.0] {
+            network.lane_system.lanes[lane_id].frontage_delay_penalty_s = price;
+            network.frontage_delay_revision += 1;
+            let actual = quote(&mut warm, &network, &graph);
+            let expected = quote(&mut FreightRouteCache::default(), &network, &graph);
+            assert_eq!((actual.0.to_bits(), actual.1.to_bits()),
+                (expected.0.to_bits(), expected.1.to_bits()),
+                "every candidate lane must invalidate pricing, including a previously losing one");
+        }
+    }
 
     let mut logistics = ShipmentSystem::new();
     logistics.refresh_freight_route_cache(&allocator, &network);

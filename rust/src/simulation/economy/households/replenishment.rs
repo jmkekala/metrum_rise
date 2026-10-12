@@ -3,6 +3,7 @@
 //! Household stock consumption, shopper-carried store trips, and replenishment state.
 
 use super::data::{DailyHouseholdLedger, Household, HouseholdSystem};
+use super::candidate_visits::CandidateVisits;
 use super::metrics::{
     OPERATIONAL_HOURS_PER_DAY, economy_profile_for_building, household_demand_profile,
     household_supply_resource_runtime_id, household_supply_unit_price, stable_hash64, stock_days,
@@ -14,7 +15,7 @@ use crate::simulation::economy::accessibility::{
     chunk_for_point,
 };
 use crate::simulation::economy::agents::tick::{
-    BuildingTripEnds, PedestrianReachability, building_origin_trip_is_feasible,
+    BuildingWalkingAccess, PedestrianReachability, building_origin_trip_is_feasible,
     estimate_building_origin_trip_seconds,
 };
 use crate::simulation::economy::agents::{
@@ -67,6 +68,7 @@ struct ReplenishmentDiagnostics {
     rejected_not_output: u32,
     rejected_unaffordable: u32,
     rejected_unreachable: u32,
+    rejected_outside_shortlist: u32,
     rejected_zero_desired: u32,
     rejected_zero_amount: u32,
     reserved_amount: f32,
@@ -92,6 +94,7 @@ impl ReplenishmentDiagnostics {
         self.rejected_not_output += other.rejected_not_output;
         self.rejected_unaffordable += other.rejected_unaffordable;
         self.rejected_unreachable += other.rejected_unreachable;
+        self.rejected_outside_shortlist += other.rejected_outside_shortlist;
         self.rejected_zero_desired += other.rejected_zero_desired;
         self.rejected_zero_amount += other.rejected_zero_amount;
         self.reserved_amount += other.reserved_amount;
@@ -127,33 +130,34 @@ struct StoreSupplyEntry {
     chunk: (i32, i32),
     foot_components: BuildingModeComponents,
     car_components: BuildingModeComponents,
-    // Trip origin and destination ends, prepared once per hour when walking proofs exist.
-    ends: Option<[BuildingTripEnds; 2]>,
+    // Compact directed walking proofs, prepared once per hour when connectivity is current.
+    walking_access: Option<BuildingWalkingAccess>,
 }
 
-// A cached cyclic pedestrian component proves both walking legs in O(1); the ordinary
-// planner, which always allows walking, then succeeds too. False means only unproven.
-fn proven_shopping_walk(
+/// A cached cyclic pedestrian component proves both walking legs in O(1); the ordinary
+/// planner, which always allows walking, then succeeds too. False means only unproven.
+pub(super) fn proven_shopping_walk(
     walking: Option<&PedestrianReachability>,
-    home: Option<&[BuildingTripEnds; 2]>,
-    store: Option<&[BuildingTripEnds; 2]>,
+    home: Option<&BuildingWalkingAccess>,
+    store: Option<&BuildingWalkingAccess>,
 ) -> bool {
-    let (Some(walking), Some(home), Some(store)) = (walking, home, store) else {
+    let (Some(_), Some(home), Some(store)) = (walking, home, store) else {
         return false;
     };
-    home[0].has_proven_walk_to(&store[1], walking) && store[0].has_proven_walk_to(&home[1], walking)
+    home.proves_to(*store) && store.proves_to(*home)
 }
 
-fn trip_ends(
+/// Prepares compact walking proofs; the ordinary fallback still prepares complete trip ends.
+pub(super) fn prepare_walking_access(
     building: usize,
     allocator: &BuildingAllocator,
     network: &TransitNetwork,
     graph: &RegionGraph,
-) -> [BuildingTripEnds; 2] {
-    [
-        BuildingTripEnds::origin(building, allocator, network, graph),
-        BuildingTripEnds::destination(building, allocator, network, graph),
-    ]
+    walking: &PedestrianReachability,
+) -> BuildingWalkingAccess {
+    if building >= allocator.buildings.len() { return BuildingWalkingAccess::default(); }
+    allocator.entrances.get(building).map_or_else(BuildingWalkingAccess::default, |entrance|
+        BuildingWalkingAccess::at_entrance(entrance, network, graph, walking))
 }
 
 // One household's shopping round-trip test, shared by its candidate scans.
@@ -161,7 +165,7 @@ struct ShoppingRoutes<'a> {
     home_idx: usize,
     has_car: bool,
     walking: Option<&'a PedestrianReachability>,
-    home: Option<[BuildingTripEnds; 2]>,
+    home: Option<BuildingWalkingAccess>,
     allocator: &'a BuildingAllocator,
     transit_network: &'a TransitNetwork,
     graph: &'a RegionGraph,
@@ -172,7 +176,7 @@ impl ShoppingRoutes<'_> {
     // Exact: the same answer as `shopping_route_is_feasible`, without a path search
     // when the walking proof holds. O(1) then; otherwise two ordinary trip plans.
     fn feasible(&self, store: &StoreSupplyEntry) -> bool {
-        proven_shopping_walk(self.walking, self.home.as_ref(), store.ends.as_ref())
+        proven_shopping_walk(self.walking, self.home.as_ref(), store.walking_access.as_ref())
             || shopping_route_is_feasible(
                 self.home_idx,
                 store.building_idx,
@@ -232,7 +236,7 @@ impl StoreSupplyIndex {
                     chunk: chunk_for_point(store.center_x, store.center_y),
                     foot_components,
                     car_components,
-                    ends: walking.map(|_| trip_ends(idx, allocator, network, graph)),
+                    walking_access: walking.map(|walking| prepare_walking_access(idx, allocator, network, graph, walking)),
                 })
             })
             .collect();
@@ -274,61 +278,69 @@ impl StoreSupplyIndex {
         foot_components: &ModeComponentIndex,
         car_components: &ModeComponentIndex,
         walking: Option<&PedestrianReachability>,
+        home_access: Option<BuildingWalkingAccess>,
         pathfind_count: &std::sync::atomic::AtomicU32,
         search_cursor: u32,
         candidates: &mut Vec<usize>,
-        seen_candidates: &mut Vec<usize>,
         diagnostics: &mut ReplenishmentDiagnostics,
     ) {
         candidates.clear();
-        seen_candidates.clear();
         if home_idx >= allocator.buildings.len() {
             return;
         }
+        let mut shortlist = ShoppingShortlist::<GROCERY_SEARCH_CANDIDATES>::default();
         let routes = ShoppingRoutes {
             home_idx,
             has_car,
             walking,
-            home: walking.map(|_| trip_ends(home_idx, allocator, transit_network, graph)),
+            home: home_access.or_else(|| walking.map(|walking| prepare_walking_access(home_idx, allocator, transit_network, graph, walking))),
             allocator,
             transit_network,
             graph,
             pathfind_count,
         };
         if search_cursor > 0
-            && self.fill_cursor_window_candidates(&routes, search_cursor, candidates, diagnostics)
+            && self.fill_cursor_window_candidates(&routes, search_cursor, &mut shortlist, diagnostics)
         {
+            shortlist.write_to(candidates);
             return;
         }
 
-        let home = &allocator.buildings[home_idx];
-        let home_foot_components =
-            foot_components.building_components(allocator, graph, home_idx, TransitFlags::FOOT);
-        self.scan_candidate_bucket(
-            &self.foot_buckets,
-            home_foot_components,
-            home.center_x,
-            home.center_y,
-            &routes,
-            candidates,
-            seen_candidates,
-            diagnostics,
-        );
-
-        if has_car {
-            let home_car_components =
-                car_components.building_components(allocator, graph, home_idx, TransitFlags::CAR);
+        CandidateVisits::with(|visits| {
+            visits.begin_query(self.entries.len());
+            let mut inspected = 0;
+            let home = &allocator.buildings[home_idx];
+            let home_foot_components =
+                foot_components.building_components(allocator, graph, home_idx, TransitFlags::FOOT);
             self.scan_candidate_bucket(
-                &self.car_buckets,
-                home_car_components,
+                &self.foot_buckets,
+                home_foot_components,
                 home.center_x,
                 home.center_y,
                 &routes,
-                candidates,
-                seen_candidates,
+                &mut shortlist,
+                visits,
+                &mut inspected,
                 diagnostics,
             );
-        }
+
+            if has_car {
+                let home_car_components =
+                    car_components.building_components(allocator, graph, home_idx, TransitFlags::CAR);
+                self.scan_candidate_bucket(
+                    &self.car_buckets,
+                    home_car_components,
+                    home.center_x,
+                    home.center_y,
+                    &routes,
+                    &mut shortlist,
+                    visits,
+                    &mut inspected,
+                    diagnostics,
+                );
+            }
+        });
+        shortlist.write_to(candidates);
     }
 
     fn scan_candidate_bucket(
@@ -338,33 +350,34 @@ impl StoreSupplyIndex {
         origin_x: f32,
         origin_y: f32,
         routes: &ShoppingRoutes,
-        candidates: &mut Vec<usize>,
-        seen_candidates: &mut Vec<usize>,
+        candidates: &mut ShoppingShortlist<GROCERY_SEARCH_CANDIDATES>,
+        visits: &mut CandidateVisits,
+        inspected: &mut usize,
         diagnostics: &mut ReplenishmentDiagnostics,
     ) {
         let allocator = routes.allocator;
         buckets.scan_nearest(components, origin_x, origin_y, |event| match event {
             ReachableBucketScanEvent::Item { item_idx } => {
                 if let Some(entry) = self.entries.get(item_idx) {
-                    if seen_candidates.contains(&entry.building_idx) {
+                    if visits.contains(item_idx) {
                         return true;
                     }
-                    if seen_candidates.len() == GROCERY_ROUTE_SCAN_CANDIDATES {
+                    if *inspected == GROCERY_ROUTE_SCAN_CANDIDATES {
                         return false;
                     }
-                    seen_candidates.push(entry.building_idx);
+                    visits.mark_seen(item_idx);
+                    *inspected += 1;
+                    let distance = squared_building_distance(origin_x, origin_y,
+                        &allocator.buildings[entry.building_idx]);
+                    let Some(position) = candidates.insertion(entry.building_idx, distance) else {
+                        diagnostics.rejected_outside_shortlist += 1;
+                        return true;
+                    };
                     if !routes.feasible(entry) {
                         diagnostics.rejected_unreachable += 1;
                         return true;
                     }
-                    insert_shopping_candidate(
-                        candidates,
-                        GROCERY_SEARCH_CANDIDATES,
-                        entry.building_idx,
-                        origin_x,
-                        origin_y,
-                        allocator,
-                    );
+                    candidates.insert(position, entry.building_idx, distance);
                 }
                 true
             }
@@ -374,13 +387,7 @@ impl StoreSupplyIndex {
                 if candidates.len() < GROCERY_SEARCH_CANDIDATES {
                     return true;
                 }
-                let worst = candidates
-                    .last()
-                    .map(|&idx| {
-                        squared_building_distance(origin_x, origin_y, &allocator.buildings[idx])
-                    })
-                    .unwrap_or(f32::MAX);
-                next_min_distance_sq <= worst
+                next_min_distance_sq <= candidates.worst_distance()
             }
         });
     }
@@ -389,7 +396,7 @@ impl StoreSupplyIndex {
         &self,
         routes: &ShoppingRoutes,
         search_cursor: u32,
-        candidates: &mut Vec<usize>,
+        candidates: &mut ShoppingShortlist<GROCERY_SEARCH_CANDIDATES>,
         diagnostics: &mut ReplenishmentDiagnostics,
     ) -> bool {
         let (allocator, home_idx) = (routes.allocator, routes.home_idx);
@@ -404,24 +411,83 @@ impl StoreSupplyIndex {
             if !routes.has_car && entry.foot_components.as_slice().is_empty() {
                 continue;
             }
+            let distance = squared_building_distance(allocator.buildings[home_idx].center_x,
+                allocator.buildings[home_idx].center_y, &allocator.buildings[entry.building_idx]);
+            let Some(position) = candidates.insertion(entry.building_idx, distance) else {
+                diagnostics.rejected_outside_shortlist += 1;
+                continue;
+            };
             if !routes.feasible(entry) {
                 diagnostics.rejected_unreachable += 1;
                 continue;
             }
-            insert_shopping_candidate(
-                candidates,
-                GROCERY_SEARCH_CANDIDATES,
-                entry.building_idx,
-                allocator.buildings[home_idx].center_x,
-                allocator.buildings[home_idx].center_y,
-                allocator,
-            );
+            candidates.insert(position, entry.building_idx, distance);
         }
         inspected > 0
     }
 }
 
+/// Bounded exact distance/ID ordering with distances retained beside candidate IDs.
+/// All query storage is on the stack; each insertion costs O(log N) comparisons and O(N)
+/// small entry moves, without rereading previously considered building records.
+pub(super) struct ShoppingShortlist<const N: usize> {
+    entries: [(usize, f32); N],
+    len: usize,
+}
+
+impl<const N: usize> Default for ShoppingShortlist<N> {
+    fn default() -> Self { Self { entries: [(usize::MAX, 0.0); N], len: 0 } }
+}
+
+impl<const N: usize> ShoppingShortlist<N> {
+    /// Number of retained candidates, including unfilled shortlists.
+    pub(super) fn len(&self) -> usize { self.len }
+
+    /// Existing ring termination uses the exact squared distance of the worst candidate.
+    pub(super) fn worst_distance(&self) -> f32 {
+        self.entries[..self.len].last().map_or(f32::MAX, |entry| entry.1)
+    }
+
+    /// Finds a unique candidate's insertion position before its route proof. The position
+    /// stays valid until the next insertion; rejected route proofs do not mutate the list.
+    pub(super) fn insertion(&self, candidate: usize, distance: f32) -> Option<usize> {
+        if N == 0 { return None; }
+        let compare = |entry: &(usize, f32)| entry.1.total_cmp(&distance)
+            .then_with(|| entry.0.cmp(&candidate));
+        if self.len == N && !compare(&self.entries[N - 1]).is_gt() { return None; }
+        self.entries[..self.len].binary_search_by(compare).err()
+    }
+
+    /// Publishes one route-feasible candidate at its previously proved insertion position.
+    pub(super) fn insert(&mut self, position: usize, candidate: usize, distance: f32) {
+        self.len = (self.len + 1).min(N);
+        self.entries.copy_within(position..self.len - 1, position + 1);
+        self.entries[position] = (candidate, distance);
+    }
+
+    /// Copies the final IDs to the caller's retained, preallocated plan buffer.
+    pub(super) fn write_to(&self, candidates: &mut Vec<usize>) {
+        candidates.clear();
+        candidates.extend(self.entries[..self.len].iter().map(|entry| entry.0));
+    }
+}
+
+/// Test oracle: whether even a reachable candidate can enter the distance/ID shortlist.
+/// Callers still count and mark inspected entries before this exact rejection, preserving
+/// their mode order, scan limits and subsequent ring termination.
+#[cfg(test)]
+pub(super) fn shopping_candidate_can_enter(candidates: &[usize], limit: usize,
+    candidate: usize, origin_x: f32, origin_y: f32, allocator: &BuildingAllocator) -> bool {
+    if limit == 0 || candidate >= allocator.buildings.len() { return false; }
+    if candidates.len() < limit { return true; }
+    let worst = *candidates.last().unwrap();
+    squared_building_distance(origin_x, origin_y, &allocator.buildings[candidate])
+        .total_cmp(&squared_building_distance(origin_x, origin_y, &allocator.buildings[worst]))
+        .then_with(|| candidate.cmp(&worst)).is_lt()
+}
+
 /// Keeps the nearest unique shopping destinations, breaking distance ties by building ID.
+#[cfg(test)]
 pub(super) fn insert_shopping_candidate(
     candidates: &mut Vec<usize>,
     candidate_limit: usize,
@@ -430,32 +496,29 @@ pub(super) fn insert_shopping_candidate(
     origin_y: f32,
     allocator: &BuildingAllocator,
 ) {
-    if candidate >= allocator.buildings.len() {
-        return;
-    }
-    if candidates.contains(&candidate) {
+    if candidate_limit == 0 || candidate >= allocator.buildings.len() {
         return;
     }
     let candidate_distance =
         squared_building_distance(origin_x, origin_y, &allocator.buildings[candidate]);
-    let mut insert_at = 0usize;
-    while insert_at < candidates.len() {
-        let existing = candidates[insert_at];
+    let compare = |existing: &usize| {
         let existing_distance =
-            squared_building_distance(origin_x, origin_y, &allocator.buildings[existing]);
-        if candidate_distance
-            .total_cmp(&existing_distance)
-            .then_with(|| candidate.cmp(&existing))
-            .is_lt()
-        {
-            break;
-        }
-        insert_at += 1;
+            squared_building_distance(origin_x, origin_y, &allocator.buildings[*existing]);
+        existing_distance
+            .total_cmp(&candidate_distance)
+            .then_with(|| existing.cmp(&candidate))
+    };
+    // Most scanned stores cannot enter a full shortlist. One exact comparison rejects
+    // them; retained insertions need O(log K) distance reads and at most O(K) ID moves.
+    if candidates.len() == candidate_limit
+        && candidates.last().is_some_and(|last| !compare(last).is_gt())
+    {
+        return;
     }
+    let Err(insert_at) = candidates.binary_search_by(compare) else {
+        return;
+    };
     if candidates.len() == candidate_limit {
-        if insert_at == candidates.len() {
-            return;
-        }
         // Drop the worst entry first so a full scratch buffer never needs to grow.
         candidates.pop();
     }
@@ -758,10 +821,7 @@ impl HouseholdSystem {
         let car_components = ModeComponentIndex::build(graph, TransitFlags::CAR);
         let shopper_candidates = self.collect_eligible_shopper_candidates(agents);
         // Proofs prepared by the hourly funding census; `None` after a topology change.
-        let walking = self
-            .job_funding
-            .customers
-            .walking_proofs(allocator, transit_network);
+        let walking = self.job_funding.customers.walking_proofs(transit_network);
         let store_index = StoreSupplyIndex::build(
             allocator,
             catalog,
@@ -784,10 +844,9 @@ impl HouseholdSystem {
                         Vec::new(),
                         ReplenishmentDiagnostics::default(),
                         Vec::with_capacity(GROCERY_SEARCH_CANDIDATES),
-                        Vec::with_capacity(GROCERY_ROUTE_SCAN_CANDIDATES),
                     )
                 },
-                |(mut plans, mut diagnostics, mut candidates, mut seen_candidates),
+                |(mut plans, mut diagnostics, mut candidates),
                  (hid, household)| {
                     if let Some(plan) = plan_household_replenishment(
                         hid,
@@ -796,6 +855,7 @@ impl HouseholdSystem {
                         agents,
                         allocator,
                         &store_index,
+                        &self.job_funding.customers,
                         transit_network,
                         graph,
                         &foot_components,
@@ -807,15 +867,14 @@ impl HouseholdSystem {
                         target_days,
                         trigger_days,
                         &mut candidates,
-                        &mut seen_candidates,
                         &mut diagnostics,
                     ) {
                         plans.push(plan);
                     }
-                    (plans, diagnostics, candidates, seen_candidates)
+                    (plans, diagnostics, candidates)
                 },
             )
-            .map(|(plans, diagnostics, _, _)| (plans, diagnostics))
+            .map(|(plans, diagnostics, _)| (plans, diagnostics))
             .reduce(
                 || (Vec::new(), ReplenishmentDiagnostics::default()),
                 |mut left, right| {
@@ -859,7 +918,7 @@ impl HouseholdSystem {
                  urgent_cooldown_skips={} candidates={} no_store_candidates={} \
                  no_shopper={} \
                  rejected_empty={} rejected_invalid_store={} rejected_missing_profile={} \
-                 rejected_not_output={} rejected_unaffordable={} rejected_unreachable={} rejected_zero_desired={} \
+                 rejected_not_output={} rejected_unaffordable={} rejected_unreachable={} rejected_outside_shortlist={} rejected_zero_desired={} \
                  rejected_zero_amount={} reserved_amount={:.1} reserved_cost={:.1}",
                 absolute_hour,
                 diagnostics.attempts,
@@ -875,6 +934,7 @@ impl HouseholdSystem {
                 diagnostics.rejected_not_output,
                 diagnostics.rejected_unaffordable,
                 diagnostics.rejected_unreachable,
+                diagnostics.rejected_outside_shortlist,
                 diagnostics.rejected_zero_desired,
                 diagnostics.rejected_zero_amount,
                 diagnostics.reserved_amount,
@@ -1213,6 +1273,7 @@ fn plan_household_replenishment(
     agents: &AgentSystem,
     allocator: &BuildingAllocator,
     store_index: &StoreSupplyIndex,
+    customers: &crate::simulation::economy::customers::ConsumerMarket,
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
     foot_components: &ModeComponentIndex,
@@ -1224,7 +1285,6 @@ fn plan_household_replenishment(
     target_days: f32,
     trigger_days: f32,
     candidates: &mut Vec<usize>,
-    seen_candidates: &mut Vec<usize>,
     diagnostics: &mut ReplenishmentDiagnostics,
 ) -> Option<ReplenishmentCandidatePlan> {
     let check_offset_matches = absolute_hour % check_interval
@@ -1272,10 +1332,10 @@ fn plan_household_replenishment(
         foot_components,
         car_components,
         walking,
+        customers.household_walking_access(hid, household.home_building_id, allocator, transit_network),
         &agents.pathfind_count,
         household.replenishment_search_cursor,
         candidates,
-        seen_candidates,
         diagnostics,
     );
     diagnostics.attempts += 1;

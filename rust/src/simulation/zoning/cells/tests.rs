@@ -95,6 +95,41 @@ fn canonical_overlap_detects_sub_millimetre_intrusion_and_containment() {
 }
 
 #[test]
+fn small_integer_contours_match_repeated_conversion_at_grid_contacts() {
+    // Padding a contour with repeated vertices leaves its exact area and separating
+    // axes unchanged, but selects the original on-demand conversion path (>4 points).
+    for origin in [DVec2::ZERO, DVec2::splat(-512.0), DVec2::splat(1_000_000.0)] {
+        for axis in [DVec2::X, DVec2::new(0.8, 0.6), DVec2::new(1.0, 1.0)] {
+            let frame = GridFrame::new(origin, axis, 10.0).unwrap();
+            let a = frame.corners(0, 0);
+            for offset in [-10.0, -0.000001, -0.00000049, 0.0, 0.00000049, 0.000001, 10.0] {
+                let b = frame.corners(1, 0).map(|point| point + axis.normalize() * offset);
+                for count in [3, 4] {
+                    let mut padded_a = a.to_vec();
+                    let mut padded_b = b[..count].to_vec();
+                    padded_a.resize(5, a[3]);
+                    padded_b.resize(5, b[count - 1]);
+                    let expected = interiors_overlap(&padded_a, &padded_b);
+                    assert_eq!(interiors_overlap(&a, &b[..count]), expected);
+                    assert_eq!(interiors_overlap(&b[..count], &a), expected);
+                    let mut reversed = b[..count].to_vec();
+                    reversed.reverse();
+                    assert_eq!(interiors_overlap(&a, &reversed), expected);
+                }
+            }
+        }
+    }
+    let square = [DVec2::ZERO, DVec2::X, DVec2::ONE, DVec2::Y];
+    for invalid in [f64::NAN, f64::INFINITY, 1e10] {
+        let mut bad = square;
+        bad[0].x = invalid;
+        assert!(!interiors_overlap(&square, &bad));
+    }
+    assert!(!interiors_overlap(&square, &[DVec2::ZERO; 3]));
+    assert!(!interiors_overlap(&square, &square[..2]));
+}
+
+#[test]
 fn negative_coordinates_and_chunk_boundaries_pick_once() {
     let (mut store, grid) = rectangular_cells(1, 1);
     for (x, y) in [(-1, -1), (-52, -52), (51, 51), (52, 51)] {
@@ -130,6 +165,47 @@ fn negative_coordinates_and_chunk_boundaries_pick_once() {
         y: -52
     }));
     assert_eq!(store.pick(DVec2::splat(-515.0)), None);
+}
+
+#[test]
+fn other_frame_queries_match_filtered_spatial_order_and_footprints() {
+    let mut store = CellStore::default();
+    let frames = [GridFrame::new(DVec2::ZERO, DVec2::X, 10.0).unwrap(),
+        GridFrame::new(DVec2::new(0.0, 1.0), DVec2::X, 10.0).unwrap(),
+        GridFrame::new(DVec2::new(-3.2, 6.7), DVec2::new(0.8, 0.6), 10.0).unwrap()];
+    for frame in frames {
+        let grid = store.register_frame(frame);
+        for x in [-52, -1, 0, 7, 8, 51, 52] {
+            for y in [-52, -1, 0, 7, 8, 51, 52] {
+                let key = CellKey { grid, x, y };
+                store.insert(key);
+                if (x + y) % 3 == 0 { store.set_profile(key, 1); }
+            }
+        }
+    }
+    let absent = GridFrame::new(DVec2::new(0.5, 0.5), DVec2::X, 10.0).unwrap();
+    for excluded in frames.into_iter().chain([absent]) {
+        for centre in [DVec2::ZERO, DVec2::splat(512.0), DVec2::splat(-512.0),
+            DVec2::new(-80.0, 70.0)] {
+            for radius in [0.0, 0.000001, 10.0, 90.0, 1100.0] {
+                let bounds = CellBounds { min: centre - DVec2::splat(radius),
+                    max: centre + DVec2::splat(radius) };
+                for reserved_only in [false, true] {
+                    let mut expected = Vec::new();
+                    let mut visit = |key: CellKey| {
+                        let frame = store.frame(key.grid).unwrap();
+                        if frame != excluded { expected.push((key, frame.corners(key.x, key.y))); }
+                    };
+                    if reserved_only { store.visit_reserved_in_bounds(bounds, &mut visit); }
+                    else { store.visit_in_bounds(bounds, &mut visit); }
+                    let mut actual = Vec::new();
+                    store.visit_other_frame_footprints_in_bounds(bounds, excluded, reserved_only,
+                        |key, corners| actual.push((key, corners)));
+                    assert_eq!(actual, expected);
+                }
+            }
+        }
+    }
 }
 
 #[test]

@@ -246,11 +246,28 @@ pub(crate) fn interiors_overlap(a: &[DVec2], b: &[DVec2]) -> bool {
     if a.len() < 3 || b.len() < 3 || !a.iter().chain(b).copied().all(valid_point) {
         return false;
     }
+    // Repeated lattice and corridor quads need each rounded integer only once. The
+    // generic path below retains allocation-free support for larger authored contours.
+    if a.len() <= 4 && b.len() <= 4 {
+        let convert = |points: &[DVec2]| {
+            let mut result = [[0; 2]; 4];
+            for (target, &point) in result.iter_mut().zip(points) {
+                *target = integer_point(point);
+            }
+            result
+        };
+        let (left, right) = (convert(a), convert(b));
+        return mapped_interiors_overlap(&left[..a.len()], &right[..b.len()], |point| point);
+    }
+    mapped_interiors_overlap(a, b, integer_point)
+}
+
+fn mapped_interiors_overlap<T: Copy>(a: &[T], b: &[T], convert: impl Fn(T) -> [i64; 2]) -> bool {
     for polygon in [a, b] {
         let area: i128 = (0..polygon.len())
             .map(|index| {
-                let p = integer_point(polygon[index]);
-                let q = integer_point(polygon[(index + 1) % polygon.len()]);
+                let p = convert(polygon[index]);
+                let q = convert(polygon[(index + 1) % polygon.len()]);
                 i128::from(p[0]) * i128::from(q[1]) - i128::from(p[1]) * i128::from(q[0])
             })
             .sum();
@@ -260,8 +277,8 @@ pub(crate) fn interiors_overlap(a: &[DVec2], b: &[DVec2]) -> bool {
     }
     for polygon in [a, b] {
         for index in 0..polygon.len() {
-            let p = integer_point(polygon[index]);
-            let q = integer_point(polygon[(index + 1) % polygon.len()]);
+            let p = convert(polygon[index]);
+            let q = convert(polygon[(index + 1) % polygon.len()]);
             let axis = [
                 i128::from(p[1]) - i128::from(q[1]),
                 i128::from(q[0]) - i128::from(p[0]),
@@ -269,11 +286,11 @@ pub(crate) fn interiors_overlap(a: &[DVec2], b: &[DVec2]) -> bool {
             if axis == [0, 0] {
                 continue;
             }
-            let project = |vertices: &[DVec2]| {
+            let project = |vertices: &[T]| {
                 vertices
                     .iter()
                     .fold((i128::MAX, i128::MIN), |(min, max), &point| {
-                        let point = integer_point(point);
+                        let point = convert(point);
                         let value = i128::from(point[0]) * axis[0] + i128::from(point[1]) * axis[1];
                         (min.min(value), max.max(value))
                     })

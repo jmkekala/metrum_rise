@@ -6,6 +6,53 @@ use super::support::*;
 use super::*;
 
 #[test]
+#[ignore = "matched workplace cache publication/lookup timing; excludes setup"]
+fn benchmark_workplace_route_cache_hashing() {
+    use std::{collections::HashMap, hash::BuildHasher, hint::black_box, time::Instant};
+    use super::super::employment::WorkplaceRouteCache;
+    type Entry = ((usize, usize, bool), Option<u16>);
+    fn sample<S: BuildHasher>(cache: &mut HashMap<(usize, usize, bool), Option<u16>, S>,
+        entries: &[Entry]) -> (f64, f64, u64) {
+        cache.clear();
+        let begin = Instant::now();
+        for &(key, value) in entries { cache.insert(black_box(key), value); }
+        let insert_ns = begin.elapsed().as_nanos() as f64 / entries.len() as f64;
+        let begin = Instant::now();
+        let mut checksum = 0;
+        for _ in 0..8 {
+            for &(key, _) in entries {
+                let value = cache.get(black_box(&key)).unwrap();
+                checksum += value.map_or(1, |value| u64::from(value) + 2);
+            }
+        }
+        let lookup_ns = begin.elapsed().as_nanos() as f64 / (entries.len() * 8) as f64;
+        for &(key, expected) in entries { assert_eq!(cache.get(&key), Some(&expected)); }
+        (insert_ns, lookup_ns, black_box(checksum))
+    }
+    for homes in [1000, 10_000] {
+        let entries: Vec<_> = (0..homes).flat_map(|home| (0..16).map(move |work| {
+            let value = (home + work) % 7 != 0;
+            ((home, work * 491, home % 2 == 0), value.then_some(((home * 5 + work) % 65536) as u16))
+        })).collect();
+        let mut ordinary = HashMap::with_capacity(entries.len());
+        let mut fast = WorkplaceRouteCache::default(); fast.reserve(entries.len());
+        let ordinary_capacity = ordinary.capacity(); let fast_capacity = fast.capacity();
+        let expected: u64 = entries.iter().map(|&(_, value)|
+            value.map_or(1, |value| u64::from(value) + 2)).sum::<u64>() * 8;
+        for pair in 0..11 {
+            for fixed in if pair % 2 == 0 { [false, true] } else { [true, false] } {
+                let (insert_ns, lookup_ns, checksum) = if fixed { sample(&mut fast, &entries) }
+                    else { sample(&mut ordinary, &entries) };
+                assert_eq!(checksum, expected);
+                assert_eq!(ordinary.capacity(), ordinary_capacity);
+                assert_eq!(fast.capacity(), fast_capacity);
+                println!("WORKPLACE_HASH {{\"entries\":{},\"fixed\":{fixed},\"pair\":{pair},\"insert_ns\":{insert_ns},\"lookup_ns\":{lookup_ns}}}", entries.len());
+            }
+        }
+    }
+}
+
+#[test]
 fn failed_expansion_retains_the_input_backing_of_a_local_funded_operation() {
     use crate::simulation::economy::definitions::compile_test_catalog;
     use crate::simulation::economy::operation::{OperatingCosts, working_capital_assets_at_prices};
@@ -2251,11 +2298,26 @@ fn routed_consumer_claims_require_the_return_trip_and_the_households_mode() {
     customers.reset(&families, &allocator, &catalog, &tuning, &policy, 0.0, &network, &graph);
     assert_eq!(customers.claim_reachable(&allocator.entrances[1], resource, 1.0, 25.0,
         &allocator, &network, &graph), 0.0, "car-only frontage cannot serve a family without a car");
+    let builds = customers.index_builds_for_test();
     families[0].shopping_has_car = true;
     customers.reset(&families, &allocator, &catalog, &tuning, &policy, 0.0, &network, &graph);
     assert_eq!(customers.claim_reachable(&allocator.entrances[1], resource, 1.0, 25.0,
         &allocator, &network, &graph), 1.0);
     customers.reject();
+    assert_eq!(customers.index_builds_for_test(), builds);
+    for has_car in [false, true, false, true] {
+        families[0].shopping_has_car = has_car;
+        customers.reset(&families, &allocator, &catalog, &tuning, &policy, 0.0, &network, &graph);
+        let mut fork = ConsumerMarket::default();
+        fork.copy_reservations_from(&customers);
+        for market in [&mut customers, &mut fork] {
+            assert_eq!(market.claim_reachable(&allocator.entrances[1], resource, 1.0, 25.0,
+                &allocator, &network, &graph), f64::from(u8::from(has_car)));
+            market.reject();
+        }
+        assert_eq!(customers.index_builds_for_test(), builds,
+            "a changed car flag must not rebuild immutable component membership");
+    }
     // A proposed forward-only door is reachable outward along the shared frontage,
     // but cannot return to the home's forward-only door through the dead-end road.
     graph.edge_mut(0).bkw_lanes = 0;
@@ -2279,7 +2341,7 @@ fn routed_consumer_claims_require_the_return_trip_and_the_households_mode() {
 #[test]
 fn walking_component_proofs_follow_directed_lane_connectors() {
     use crate::simulation::economy::agents::tick::{
-        BuildingTripEnds, PedestrianReachability, building_origin_trip_is_feasible,
+        BuildingTripEnds, BuildingWalkingAccess, PedestrianReachability, building_origin_trip_is_feasible,
     };
     use crate::simulation::network::lanes::LaneType;
     let (mut graph, mut network) = simple_work_graph();
@@ -2306,6 +2368,19 @@ fn walking_component_proofs_follow_directed_lane_connectors() {
             if from == to { continue; }
             let origin = BuildingTripEnds::origin(from, &allocator, &network, &graph);
             let destination = BuildingTripEnds::destination(to, &allocator, &network, &graph);
+            let [walking_origin, _] = BuildingTripEnds::walking_pair(from, &allocator, &network, &graph);
+            let [_, walking_destination] = BuildingTripEnds::walking_pair(to, &allocator, &network, &graph);
+            assert_eq!(walking_origin.walking_groups(&reachability), origin.walking_groups(&reachability));
+            assert_eq!(walking_destination.walking_groups(&reachability), destination.walking_groups(&reachability));
+            assert_eq!(walking_origin.has_proven_walk_to(&walking_destination, &reachability),
+                origin.has_proven_walk_to(&destination, &reachability));
+            let compact_origin = BuildingWalkingAccess::at_entrance(&allocator.entrances[from], &network, &graph, &reachability);
+            let compact_destination = BuildingWalkingAccess::at_entrance(&allocator.entrances[to], &network, &graph, &reachability);
+            assert_eq!(compact_origin.proves_to(compact_destination),
+                origin.has_proven_walk_to(&destination, &reachability));
+            assert_eq!(walking_origin.can_reach(&walking_destination, false, &network, &graph,
+                &mut reachability, &mut query), origin.can_reach(&destination, false, &network, &graph,
+                &mut reachability, &mut query));
             for has_car in [false, true] {
                 assert_eq!(origin.can_reach(&destination, has_car, &network, &graph,
                     &mut reachability, &mut query),
@@ -2326,6 +2401,8 @@ fn walking_component_proofs_follow_directed_lane_connectors() {
     let destination = BuildingTripEnds::destination(3, &allocator, &network, &graph);
     assert!(!origin.has_proven_walk_to(&destination, &reachability),
         "shared-node ends retain the ordinary direct-connector check");
+    assert!(!BuildingWalkingAccess::at_entrance(&allocator.entrances[0], &network, &graph, &reachability)
+        .proves_to(BuildingWalkingAccess::at_entrance(&allocator.entrances[3], &network, &graph, &reachability)));
     assert!(building_origin_trip_is_feasible(0, 3, 0, false,
         &allocator, &network, &graph, &queries));
     for lane in &mut network.lane_system.lanes {

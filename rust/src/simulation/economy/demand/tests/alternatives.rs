@@ -1359,6 +1359,8 @@ fn business_projects_share_financed_customers_through_replay_and_rollback() {
             &catalog, &tuning, &policy, &[], 0.0, minute);
         assert_eq!(funding.capacities[1], if funded { (15 * u32::from(residents)).div_ceil(200) } else { 0 });
         reservations.reset(&funding, &allocator, &catalog, &tuning, &policy, minute);
+        assert!(reservations.operations[allocator.buildings.len()..].iter().all(Option::is_none),
+            "accepted projects from the preceding pass must release their retained owner slots");
         book.copy_reservations_from(&funding.input_supply, &allocator, &catalog, &graph);
         logistics.prepare_site_carrier_quotes(&allocator, &network, &graph, &borders);
         let mut supply = SiteSupply::new(&mut book, &mut reservations, &allocator, &zoning,
@@ -3031,6 +3033,67 @@ fn an_unreachable_factory_does_not_block_other_sites() {
             .spawn_rejected_viability,
         1
     );
+}
+
+#[test]
+fn prepared_demand_entrances_match_fresh_geometry_across_input_changes() {
+    use crate::simulation::buildings::allocator::BuildingEntranceKey;
+    use crate::simulation::network::TransitNetwork;
+
+    let mut allocator = BuildingAllocator::new();
+    let asset = register_test_asset(&mut allocator, "retained_door", ZoneType::Industrial);
+    let mut graph = graph_with_connected_border();
+    let mut zoning = two_lots(&graph, ZoneType::Industrial);
+    let mut network = TransitNetwork::new();
+    network.lane_system.rebuild(&mut graph);
+    network.rebuild_cch_and_check(&graph);
+    let lots: Vec<_> = zoning.parcels().iter().map(|p| p.id().raw()).collect();
+    let mut previous = None;
+    for phase in 0..10 {
+        let mut parcel = lots[0];
+        match phase {
+            2 => parcel = lots[1],
+            3 => {
+                let mut manifest = allocator.registry.get(&asset).unwrap().manifest.clone();
+                manifest.anchors[0].position[0] += 3.0;
+                allocator.registry.register("test", manifest, String::new());
+            }
+            4 => {
+                allocator.buildings.push(building(ZoneType::Industrial, 0.0, 0, 1, asset.clone()));
+                allocator.buildings[0].center_x = 31.0;
+                allocator.buildings[0].center_y = 25.0;
+                assert!(zoning.occupy_parcel(lots[0], 0));
+            }
+            5 => allocator.buildings[0].facing_dir = Vector2::new(1.0, 0.0),
+            6 => network.lane_system.rebuild(&mut graph),
+            7 => network.rebuild_cch_and_check(&graph),
+            8 => {
+                let mut manifest = allocator.registry.get(&asset).unwrap().manifest.clone();
+                manifest.anchors.clear();
+                allocator.registry.register("test", manifest, String::new());
+            }
+            _ => {}
+        }
+        let fresh = allocator.demand_site_entrance_reusing(parcel, &asset, &zoning, &graph,
+            &network.lane_system, network.cch_graph.build_generation, None).unwrap();
+        let reused = allocator.demand_site_entrance_reusing(parcel, &asset, &zoning, &graph,
+            &network.lane_system, network.cch_graph.build_generation,
+            previous.as_ref().map(|(key, entrance)| (*key, entrance))).unwrap();
+        assert_eq!(fresh.0, reused.0);
+        assert_eq!(BuildingEntranceKey::new(&fresh.1), BuildingEntranceKey::new(&reused.1), "phase {phase}");
+        if let Some((old_key, _)) = &previous {
+            assert_eq!(*old_key == fresh.0, matches!(phase, 1 | 9), "phase {phase}");
+        }
+        // A marked value proves that matching keys actually take the reuse branch.
+        let mut marked = fresh.1.clone();
+        marked.entrance_s_m = -1234.0;
+        let hit = allocator.demand_site_entrance_reusing(parcel, &asset, &zoning, &graph,
+            &network.lane_system, network.cch_graph.build_generation, Some((fresh.0, &marked))).unwrap();
+        assert_eq!(hit.1.entrance_s_m, -1234.0);
+        previous = Some(fresh);
+    }
+    assert!(allocator.demand_site_entrance_reusing(u64::MAX, &asset, &zoning, &graph,
+        &network.lane_system, network.cch_graph.build_generation, previous.as_ref().map(|(key, entrance)| (*key, entrance))).is_none());
 }
 
 #[test]

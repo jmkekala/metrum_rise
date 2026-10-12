@@ -102,7 +102,8 @@ Daily settlement, in fixed order:
 5. Utility bills, then distress liquidation of negative private budgets.
 6. Business profit tax.
 7. Housing affordability, relocation and eviction.
-8. Daily workplace pass (the commute caches are dropped first).
+8. Daily workplace pass (complete commute quotes are dropped first; bounded network-only legs
+   remain valid until their CCH or lane revision changes).
 
 Demand never reads half-updated economy state. Buildings or households changed by a demand pass
 take effect in the next operational hour.
@@ -615,6 +616,12 @@ freight.
   the nearest qualifying supplier, so an empty search ends at once (`ECON-15`).
 - **Routing:** freight routes use the exact car-access abstraction of the entrance cache, with
   direct same-lane frontage travel when the exact points are in forward order.
+- **Border quote preparation:** retain the existing per-border network tables for dispatch,
+  and derive their exact per-node minimum once per routing revision or border-set change.
+  This additional preparation costs O(nodes × borders), with O(nodes + borders) storage;
+  subsequent building quote refreshes cost O(buildings), evaluating live frontage delay once
+  per arrival end. The minimum uses the original table's f32 values and the original order of
+  frontage/local additions, so fees remain bit-identical. It does not select a dispatch border.
 - **Retries:** failures enter a cooldown (1 hour) and escalate to a visible terminal state after
   3 attempts. Terminal states never block recovery after cooldown, budget, supplier or road
   changes.
@@ -755,9 +762,22 @@ deferred.
   `01888e88`, four alternating runs): 34.95 → 34.93 ms hourly (p = 0.94) and 8.90 → 8.98 ms
   daily (p = 0.26), with identical day-15 records. See the
   [exit-criteria status](#status-2026-10-11-one-working-tree-build-on-01888e88).
+- **`NET-02` exact CCH layout/turn-cache optimization** (2026-10-11, working tree against
+  `03c1cf45`, four alternating runs): **35.50 → 25.13 ms hourly** and **9.22 → 9.01 ms daily**
+  (two-sided exact permutation p = 0.0286 each). All eight day-15 records and the five growth
+  reports are byte-identical. The 10k budget passes. Matched isolated queries improve 35–38%
+  at 10k/100k; the full 100k economy run was not repeated, so this does not close `ECON-13-B`.
+  Commands, build identity and query results are in the
+  [routing acceptance record](entrance_and_exit.md#cch-routing-performance-track-net-02net-05).
 
 A populated timing fixture does not demonstrate organic growth or solvency. Earlier fixtures and
 timings are in the [archive](archive/economy_history_2026-10-10.md#econ-13-economy-tick-baseline).
+
+For diagnosis, `METRUM_DEBUG=1 METRUM_DEBUG_FILTER=economy_phases` emits aggregate hourly,
+settlement, funding, workplace, logistics and demand phase timings without per-family logs.
+The ignored `benchmark_populated_midnight_boundaries` driver enables logging only for selected
+boundary frames; `METRUM_ECON_BENCH_REPEATS=12` covers days 4–15. Such traces include the
+preceding operational hour and are separate from unprofiled acceptance measurements.
 
 #### `ECON-13` exit criteria
 
@@ -765,15 +785,16 @@ timings are in the [archive](archive/economy_history_2026-10-10.md#econ-13-econo
 part of this acceptance.
 
 1. **10k budget (`ECON-13-A`).** The recipe above measures at most **40 ms** per mean hour and
-   **10 ms** per mean day, with identical `GrowthDayRecord`s across runs. **PASS** (see status
-   below): 34.93 / 8.98 ms.
+   **10 ms** per mean day, with identical `GrowthDayRecord`s across runs. The historical
+   build below passed; the routing replacement currently fails the daily bound (14.33 ms).
 2. **Linear 100k scaling (`ECON-13-B`).** On one build, `-- /100k` measures a mean operational
    hour at most 10× and a mean daily settlement at most 10× the same build's `/10k` values,
-   with identical records across two runs. An older, economically inert fixture met the hour
-   (3.1×) but not the day (15×). **BLOCKED** (see status below): on the live-economy fixture the
-   hour is 26× and the day 411×, identically at `01888e88`. Most of the excess comes from job
-   search across a sparse open-job supply and from funding-census spikes. Fixing them needs the
-   decisions named in the status.
+  with identical records across two runs. Routing work is tracked in
+  [`NET-02`–`NET-05`](entrance_and_exit.md#cch-routing-performance-track-net-02net-05);
+  that work alone does not close this scaling criterion. An older, economically inert fixture met the hour
+   (3.1×) but not the day (15×). **FAIL** on the latest frozen routing build: hour 20.37×,
+   day 84.18× in one complete pair. The earlier live-economy fixture measured 26× / 411× at
+   `01888e88`; that historical result is retained below.
 3. **Bounded census cascades (`ECON-13-C`).** A profitability-failing dependency chain resolves
    in a number of funding censuses that does not grow with chain length. The existing
    `benchmark_combined_financing_cascades` cycle case must need at most **3 censuses** at chain
@@ -784,9 +805,513 @@ part of this acceptance.
    at most 1.2× as much at 131,072 background buildings as at 16,384. Before the fix, every
    revision invalidated the queued execution epoch and paid a full census (12.5–13 ms at
    131,072). One-time census cost is reported separately from the repeated check. **PASS**
-   (see status below): 1.02×.
+   (latest frozen routing build): 1.07×; the earlier build below measured 1.02×.
+
+##### Routing follow-up 2026-10-11
+
+The frozen `NET-04` production revision measures **10.789 ms/hour and 14.333 ms/day at 10k**
+(four alternating pairs against `NET-03`), and **219.810 ms/hour and 1,206.616 ms/day at 100k**
+(one complete pair). Its 100k daily mean is 6.2% lower than `NET-03`; every sampled day 6–15 is
+lower. The hourly difference, 214.444 → 219.810 ms, has no significance claim from one pair.
+Both tiers' final records match `NET-03` exactly, as do all five growth reports. `ECON-13-A/B`
+remain unaccepted. C/D were freshly rerun on that same frozen revision: two censuses at every
+required chain length, and 1.07× warm queued checks. Commands, identities, raw results and the
+approved hierarchy's earlier record changes are in the
+[routing measurements](entrance_and_exit.md#cch-routing-performance-track-net-02net-05).
+
+Dedicated phase diagnostics locate the 10k day-15 regression: a building is removed at day 14,
+minute 1,380, and the next midnight's `prepare_cell_lots_internal` spends **55.97 ms** regenerating
+dirty cell lots. Building-index and road-surface preparation are negligible in that sample.
+The complete demand phase is 62.03 ms, against 5.33 ms for household settlement; its planner
+costs 5.97 ms and execution 0.05 ms. This cold work must not be excluded from the daily budget.
+At 100k, two fresh post-build diagnostic hours spend **61.96 / 145.02 ms** preparing workplace
+funding, but only **1.15 / 0.55 ms** building job options. Local funding takes 20.06 / 73.22 ms,
+household claims 13.06 / 42.80 ms and border quotes about 17.2 ms in those two hours. These are
+diagnostic timings, not acceptance samples or attribution of every later-day spike. Logs are
+under `$ARTIFACTS/net05/` and `$ARTIFACTS/net05-block/`. Funding and job-lock behavior have not
+been changed by the routing pass. On 2026-10-11 the user authorized continued exact funding
+and lot/site performance fixes through ECON-13 acceptance, preserving economic decisions and
+job-lock timing. The 1M tier remains deferred.
+
+A subsequent full 100k diagnostic confirms that late daily spikes are predominantly cell-lot
+preparation: **2,096.972 / 3,454.189 / 3,014.826 ms** on days 13–15. Household settlement takes
+226.975 / 207.032 / 257.689 ms in those samples. This run is profiled and has verbose economic
+logging enabled; these are attribution measurements, not acceptance timings.
+
+The first exact economy candidate separates explicit-site cell invalidation from terrain
+publication, uses the existing road-surface triangle grid for conservative clearance lookup,
+and prepares the minimum of the existing per-border freight cost tables. Two matched 10k pairs
+measure **14.290 → 13.342 ms/day** and **10.814 → 10.926 ms/hour**, with identical final records;
+this candidate still fails A. Its isolated 100k freight check covers 76,109 buildings and ten
+borders: roughly **17 → 1.8 ms** per complete quote refresh, including a frontage-price revision,
+with every fee's bits identical. Individual dispatch tables and their f32 accumulation remain
+unchanged. Targeted correctness and populated local-road planning checks pass. Artifacts are
+under `$ARTIFACTS/econ13-exact/lots/`; further cell-generation work remains under validation.
+Candidate source fingerprint (Rust diff plus named untracked Rust sources):
+`f0982c81e3d465527d578c19089d3bc24d28172bf8978341ccbabdd536bc481b`.
+The comparison uses the frozen NET-04 baseline, root-invoked release builds with default CPU
+settings, Rust 1.98.1, eight Rayon workers and CPU affinity `0,2,4,6,8,10,12,14`. Commands:
+
+```bash
+RAYON_NUM_THREADS=8 taskset -c 0,2,4,6,8,10,12,14 "$BENCH_BINARY" --bench --noplot /10k
+RAYON_NUM_THREADS=8 taskset -c 0,2,4,6,8,10,12,14 "$TEST_BINARY" --ignored --nocapture populated_cell_road_plan_scaling
+METRUM_CCH_BENCH_RESIDENTS=100000 RAYON_NUM_THREADS=8 taskset -c 0,2,4,6,8,10,12,14 "$TEST_BINARY" --ignored --nocapture benchmark_populated_border_quotes
+```
+
+The freight microbenchmark alternates original/candidate order for 11 samples of four refreshes.
+100k arithmetic means are **17.279 → 1.839 ms** before and **16.794 → 1.841 ms** after a frontage
+revision; cold preparation costs 5.614 ms separately. At 10k's single border, means are
+0.193 → 0.192 and 0.180 → 0.184 ms: no improvement is claimed there. Surface, agriculture,
+cell zoning/save, logistics, allocator, field and terrain-publication targeted suites pass.
+
+Adding an exact maintained authored-parcel count skips the existing exclusion lookup when
+every parcel is cell-derived. Its frozen source fingerprint is
+`01eda2377602df090fb28865271f5a9317b052efec4c961343d21dd2dbd43bbd`.
+Two fresh 10k runs average **10.937 ms/hour and 12.081 ms/day**, with identical final records;
+zoning and cell-zoning save tests pass. One complete 100k run now measures **198.695 ms/hour
+and 362.638 ms/day**, with the final record identical to NET-04: 54,388 households, 108,669
+residents, 69,963 employed, 138,091 jobs, 76,039 buildings and treasury
+1,000,000,017,473,930.5; vacancy 3,239, reserve 5,439, unhoused 2, open jobs/departures zero.
+Against the earlier complete NET-04 run, the daily mean is 69.9% lower; this single 100k
+comparison is descriptive, not a significance claim or the required repeat acceptance.
+Same-build scaling remains **18.17× hourly / 30.02× daily**. A/B are still open. Artifacts,
+including the pending focused cell-generation/funding attribution, are under
+`$ARTIFACTS/econ13-exact/`. The 100k command adds `--bench --noplot /100k` to the same pinned
+benchmark invocation above. Its setup takes 108.1 s; the complete process takes 766.7 s.
+
+| Day | NET-04 daily ms | Exact lot/border candidate daily ms |
+| --- | ---: | ---: |
+| 6 | 275.66 | 275.50 |
+| 7 | 167.77 | 171.54 |
+| 8 | 210.23 | 213.75 |
+| 9 | 318.68 | 321.18 |
+| 10 | 439.26 | 427.53 |
+| 11 | 646.82 | 631.40 |
+| 12 | 474.97 | 365.94 |
+| 13 | 2,440.64 | 412.10 |
+| 14 | 3,727.63 | 379.71 |
+| 15 | 3,364.50 | 427.73 |
+
+The next cell candidate adds the exact explicit-site summary, conservative local-width corridor
+queries, and early quad-bound rejection. Its fingerprint is
+`16740738f7adbcdfbf539cbfe6dbe155396304c3323a0cfb2d1568e686f1fe9b`.
+Matched, unprofiled repeated neighborhood preparation falls **41.007 → 26.166 ms** (44 samples
+per build, city setup excluded), with unchanged lots and saved paint. Two complete 10k runs
+average **11.167 ms/hour and 11.133 ms/day**, preserving the same final record. The surface,
+agriculture, zoning/save, allocator and terrain suites pass, including a full-query oracle for
+the narrowed corridor search; populated local-road planning still produces identical local
+products. This remains an intermediate candidate: A is not yet accepted and its 100k tier has
+not been run. Artifacts are under `$ARTIFACTS/econ13-exact/local/`; the focused command is:
+
+```bash
+RAYON_NUM_THREADS=8 taskset -c 0,2,4,6,8,10,12,14 "$TEST_BINARY" --ignored --nocapture benchmark_populated_cell_preparation
+```
+
+The subsequent funding candidate (`9ae28f42ee2133033c60af56169b3a47de6a52da65fd3f155ef3f3127097d1e4`)
+fills the existing freight entrance cache before parallel border quotations and retains unchanged
+household claims across frontage-price revisions when every attempted trip used an exact walking
+proof. Any ordinary trip fallback conservatively keeps price sensitivity through prefix resets,
+including rejected quotes. Budget, seller-request, acceptance and layout checks still apply.
+Targeted logistics, hiring, household and demand tests pass, including repeated full-replay
+comparisons after frontage revisions. A matched unprofiled fixed-state 100k refresh (44 samples,
+fixture excluded) improves **38.735 → 22.665 ms**. This is a microbenchmark: two complete 10k
+runs average **10.564 ms/hour and 10.884 ms/day**, with unchanged final records; A/B remain open.
+Artifacts are under `$ARTIFACTS/econ13-exact/funding/`.
+
+```bash
+METRUM_CCH_BENCH_RESIDENTS=100000 RAYON_NUM_THREADS=8 taskset -c 0,2,4,6,8,10,12,14 "$TEST_BINARY" --ignored --nocapture benchmark_populated_funding_preparation
+```
+
+The shopping candidate (`f1f5f55e1eeeb7040f66db539b71fddcb253677f6aebb7ba02cf2e3f1e0e6b8b`)
+rejects destinations below a full shortlist with one comparison, then uses binary search for
+insertion under the original distance/building-ID order. Service visits reuse grocery shopping's
+exact walking proof, with the ordinary route fallback. Household, zoning and trip-planning tests
+pass. Two unprofiled 10k runs average **10.338 ms/hour and 10.498 ms/day**, with unchanged final
+records. One complete 100k run averages **185.227 ms/hour and 336.480 ms/day** and preserves the
+same final record as NET-04. A/B still fail at **17.92× / 32.05×**; this is one 100k run, not
+repeat acceptance or a significance claim. Artifacts are under `$ARTIFACTS/econ13-exact/shopping/`.
+
+Focused 100k boundary-frame profiles exclude city setup and intervening frames. The hour sample
+still spends substantial CPU in CCH sweeps and shopping candidate insertion. Its freight counters
+cover all intervening frames: 9,434,370 requests, 9,293,562 retained hits and 136,618 misses after
+the old cache filled. This differs from the fixed-state refresh's all-hit workload. The three
+midnight samples include the immediately preceding operational hour in sampled CPU attribution;
+their reported settlement times exclude it. These profiles are diagnosis, not acceptance timing.
+
+The cache candidate (`6f70cc889f139471204b087960a85457e963d03aa27f8d25c75cda2617d1bc50`)
+retains walking connectivity by CCH/lane revision while refreshing each caller's building
+entrances. A maintained lane revision also invalidates proofs after terrain-driven lane rebuilds
+that preserve lane count. Freight node costs use two exact entries per fixed hash bucket:
+worst-case O(1) lookup/replacement, O(roads) retained storage, and no query allocation. Collisions
+always run the original query. Complete freight quotes still honor changing frontage prices.
+Fresh verification passes 2,312 library tests and four growth tests; all five growth reports are
+byte-identical. Two unprofiled 10k runs average **10.294 ms/hour and 10.440 ms/day**; A still fails.
+The fixed 100k hour diagnostic preserves its final record and reduces replacement-related misses
+from 136,618 to 11,589 among 9,434,370 requests. These counters cover intervening frames too.
+One complete unprofiled 100k run preserves the NET-04 final record and measures **165.039 ms/hour
+and 342.112 ms/day**, or **16.03× / 32.77×** the same build's 10k means. A/B remain open;
+one run does not establish a daily improvement or repeat acceptance. A tested polygon-separation
+precheck failed its matched cell benchmark (25.634 → 25.948 ms) and is removed from the following candidate; only stack
+storage for short temporary contours is retained. Artifacts: `$ARTIFACTS/econ13-exact/cache/`.
+
+The commute-retention candidate (`e2b2465ba78207fa7864f8b98fcf4645bae58889795054dfd25426471ba22225`)
+passes 2,311 library tests, all four growth tests, and all five report comparisons. Two unprofiled
+10k runs average **10.175 ms/hour and 10.399 ms/day**, with identical final records. The 100k
+boundary diagnostic stopped before collecting samples: its newly enabled debug initializer calls
+`debug::crash::init`, whose compiled entry reserves `0x270060` bytes (about 2.44 MiB) on the stack
+even when crash diagnostics are disabled. The following candidate moves the fixed 4,096-event recorder to one
+heap allocation at initialization, keeping event recording allocation-free. This is an
+instrumentation failure, not a completed 100k measurement; the next candidate must rerun it.
+Artifacts: `$ARTIFACTS/econ13-exact/commute/`.
+
+The geometry candidate (`f440db1a4f58bf8bdb4df3626b6d5ea9f010b41971e478a5ffc4c71b20549952`)
+skips conflict tests between distinct addresses on one canonical lattice and converts triangle/
+quad vertices to canonical integers once per overlap comparison. The matched 44-sample local
+cell benchmark improves **25.772 → 23.482 ms**, with unchanged products. Fresh verification passes
+2,314 library tests, all four growth tests, and all five byte-identical reports. Two unprofiled
+10k runs average **10.307 ms/hour and 10.222 ms/day**; one complete 100k run averages
+**160.971 ms/hour and 328.184 ms/day**, with unchanged final records. A/B still fail at
+**15.62× / 32.11×**. These are candidate measurements, not completed repeat acceptance.
+The diagnostic initializer now reserves 272 bytes in its compiled stack frame; the 100k hour
+and three-midnight diagnostics complete and preserve their previous final records.
+
+The boundary-only hourly trace attributes about 69.5 ms to funding preparation (8.0 ms consumer
+preparation, 26.7 ms household claims, 30.6 ms local financing), 37.4 ms to household operations
+and 30.7 ms to logistics; workplace option construction is 0.9 ms. Logged phase times are not
+acceptance timing. The three-midnight CPU sample still spends 19.1% checking selected pedestrian
+paths; it includes the preceding operational hour, with setup/intervening frames excluded.
+Artifacts: `$ARTIFACTS/econ13-exact/geometry/`.
+
+The footprint/frontier candidate
+(`e213b2497c8331b6c248ff9a72a9d9ad5b7f4a91e46a3b4a9341f541684b42d5`)
+checks each distinct cell square once per generation batch and retains exact pedestrian path
+arrival lanes within an existing workplace bucket query. Wider arrival frontiers keep the
+ordinary path check. The matched local cell benchmark improves **23.449 → 19.931 ms**;
+2,314 library tests, four growth tests and all five byte-identical reports pass. Two full 10k
+runs average **10.273 ms/hour and 10.319 ms/day**; one full 100k run measures
+**162.376 ms/hour and 326.976 ms/day**, preserving both final records. These full-run results do
+not establish an improvement over the preceding candidate, and A/B remain open. The three-day
+100k diagnostic records 11,667,864 complete freight quote requests: 2,696,513 valid hits,
+3,554,132 absent keys that the full cache cannot retain, and 5,417,219 stale retained keys.
+Those counters include intervening frames. Bounded replacement for complete quotes and faster
+traversal of fully available customer-tree ranges are under validation; neither changes budget
+or job-lock timing. Artifacts: `$ARTIFACTS/econ13-exact/frontier/`.
+
+The bounded complete-quote/customer-tree candidate
+(`2e01ff26add864f8aa090f2d535daa428a1497c070f720d317cd69df999ac8f4`)
+passes 2,315 library tests, four growth tests and all five report comparisons. Two unprofiled
+10k runs average **10.415 ms/hour and 10.347 ms/day**; one 100k run measures
+**161.424 ms/hour and 328.339 ms/day**, with unchanged final records. There is no demonstrated
+full-run improvement over the preceding candidate; A/B remain open. Three-day diagnostic node
+requests fall **23,462,812 → 21,856,491**, while complete-quote hits are
+**2,696,513 → 2,615,296**: replacement changes which pairs survive and is not itself acceptance.
+The next candidate checks actual seller entrances, customer membership and freight frontage
+price bits before discarding retained work. Artifacts: `$ARTIFACTS/econ13-exact/retention/`.
+
+The dependency/geometry candidate
+(`93a224471e1c923413ea22e712180d50c7cc701fd0637238931a9610b7674752`)
+compares actual household membership and seller entrances before rebuilding customer indices,
+checks the four relevant freight frontage-price bits, and prepares only pedestrian geometry
+for positive walking proofs. Ordinary fallback still prepares both travel modes. Fresh checks
+pass 2,315 library tests, four growth tests and all five byte-identical reports. Two unprofiled
+10k runs average **10.250 ms/hour and 10.251 ms/day**; one 100k run measures
+**158.926 ms/hour and 331.151 ms/day**, with unchanged final records. A/B remain open at
+**15.51× / 32.30×**; these measurements do not establish a full-run improvement. The hourly
+boundary diagnostic has 25 customer refreshes, all with changed budgets and none retaining
+claims; 24 also change home access. Those counters include intervening frames. Further reuse
+must respect those actual changes. Artifacts: `$ARTIFACTS/econ13-exact/membership/`.
+
+A separate 12-midnight CPU profile of the preceding retention build excludes setup and
+intervening frames, but includes each midnight's preceding operational hour. At 100k,
+connector-target collection accounts for 13.0% of sampled CPU, CCH upward sweeps 8.9%, entrance
+projection 6.5%, and polyline sampling 3.5%. Call chains are incomplete; these are leaf samples,
+not reliable phase attribution or acceptance timings. Both diagnostic final records match
+NET-04. The resulting connector candidate is measured below.
+Artifacts: `$ARTIFACTS/econ13-exact/late-profile/`.
+
+The connector candidate
+(`e297c511dba25de797de950c378c5812c906f008ec28485e3cd089423581ec2a`)
+prepares compact, ordered connector targets per worker and lane revision. An exhaustive positive
+proof permits cost-only CCH queries when every physical incoming foot lane reaches every
+outgoing foot lane at its junction, and every live road edge has both pedestrian directions.
+Any missing connection withdraws the shortcut; duplicate connections do not count twice.
+Stored routes retain their witness and connector validation. Preparation/storage are
+O(roads + lanes + connections); warm forecasts allocate nothing. Fresh verification passes
+2,315 library tests, four growth tests and all five byte-identical reports, including the
+independent allocating-route oracle across changed metrics, broken connectors and lane rebuilds.
+Two unprofiled 10k runs average **9.557 ms/hour and 10.337 ms/day**. One 100k run measures
+**146.819 ms/hour and 312.696 ms/day** with unchanged final records. A/B remain open at
+**15.36× / 30.25×**; these are candidate timings, not completed repeat acceptance or a
+significance claim. Equivalent CCH query keys and shared entrance projection are being tested
+next. Artifacts: `$ARTIFACTS/econ13-exact/connectors/`.
+
+The equivalent-query/entrance candidate
+(`bf622a6e75c4980e1b2a74f378addc5a223642d3ff2134759f762c2f774581f6`)
+normalizes only network-query inputs proved irrelevant by CCH semantics and the complete-turn
+proof. Restricted vehicle origins and unproved pedestrian lane constraints remain distinct.
+Entrance projection is shared across walking departure/arrival and repeated candidate ranks;
+frontage arithmetic and candidate comparison order stay unchanged. Fresh checks pass 2,316
+library tests, four growth tests and all five byte-identical reports. Two unprofiled 10k runs
+average **9.216 ms/hour and 10.447 ms/day**; one 100k run measures
+**134.949 ms/hour and 287.727 ms/day**, preserving both final records. A/B remain open at
+**14.64× / 27.54×**. The two 10k daily means are 10.146 and 10.748 ms; do not infer a daily
+improvement at that tier. A separate phase-only 12-midnight trace locates 72–219 ms in local
+funding on days 8–15, and 79–109 ms in demand execution on days 10–15. Day 11 spends
+341 ms in settlement (318 ms workplace work, including 269 ms funding preparation),
+19 ms in cell preparation, 50 ms in demand planning and 109 ms in demand execution.
+These logged timings diagnose this build; they are not acceptance measurements.
+Artifacts: `$ARTIFACTS/econ13-exact/query-context/`.
+
+The entrance-input/allocation candidate
+(`d91639b02db3be9892b8b0a063ffb9e942f66bf0ae5e74032ec61d53b6ebd7ea`)
+compares exact home entrance keys before repeating unchanged geometry, and clears the complete
+daily commute quote map at the same instant while retaining its allocation. Fresh checks pass
+2,316 library tests, four growth tests and all five identical reports. Two unprofiled 10k runs
+average **10.026 ms/hour and 10.528 ms/day**; one 100k run measures
+**143.993 ms/hour and 305.381 ms/day**. Every setup and final record matches NET-04.
+This candidate demonstrates no overall improvement; A/B still fail at **14.36× / 29.01×**.
+The next candidate separates car availability from walking geometry, parallelizes ordered
+entrance rebuilding and replaces single-ID agent-remap hashing with parallel comparisons.
+Artifacts: `$ARTIFACTS/econ13-exact/access-inputs/`.
+
+The agent-remap/entrance candidate
+(`e0f7b3926905a4beb7d6c2df87be1e2f7b6d05d5a59c97a03751469130708799`)
+replaces eight hash lookups per agent with parallel comparisons for a single building remap,
+preserving simultaneous-map semantics for larger remaps. Ordered entrance rebuilding uses
+Rayon and retains its output allocation; car-only changes reuse walking geometry. Fresh checks
+pass 2,317 library tests, four growth tests and all five identical reports. The isolated single-ID
+remap averages **5.115 → 0.222 ms at 100k agents** across 44 alternating matched samples,
+with setup excluded and every reference compared. Two unprofiled 10k city runs average
+**9.591 ms/hour and 10.101 ms/day**; one 100k run measures **140.869 ms/hour and
+264.652 ms/day**, with all setup/final records unchanged. A/B remain open at
+**14.69× / 26.20×**; the 10k daily means are 10.130 and 10.072 ms. These candidate runs
+do not constitute repeat acceptance. A separate profiled 12-midnight trace locates
+35–151 ms in staffing preparation and 36–70 ms in business funding validation on late days;
+input-claim repair stays below 0.6 ms. Demand execution is 21–32 ms on days 10–15.
+Logged/profiled phase timings are diagnostic only. Next under validation: household remap
+comparisons, physical car-access membership retained across ownership changes, and rigorous
+metric-derived freight lower bounds for rejecting unaffordable quotes before route searches.
+Artifacts: `$ARTIFACTS/econ13-exact/remap/`; commands and worker settings follow the recipe above.
+
+The physical-car-membership/freight-potential candidate
+(`8ca2d65ea362bd84adf81757b60eb7a0c2d6f0d92631184edd6215f145662411`)
+keeps physical customer component membership while car ownership changes only reservation
+eligibility. Single-ID household remaps use parallel comparisons with unchanged ledger and
+funding timing. Ring-distance bounds evaluate four exact minimizers in O(1), checked bitwise
+against the original perimeter scan. Freight affordability uses integer coordinate potentials:
+each road cost dominates its integer displacement times a power-of-two unit, with sums capped
+at 2^24 units so monotone f32 additions preserve the bound under any CCH addition tree.
+Preparation/storage are O(nodes + edges)/O(nodes) per metric; each entrance query is O(1),
+allocation-free. Same-edge direct frontage receives zero network cost. Invalid or stale proofs
+fall back to the original zero-carrier precheck. Only offers unable to claim any quantity at
+the proven lower price skip routing; actual quotations and claim order are unchanged.
+Fresh verification passes **2,322 library tests**, four growth tests and all five byte-identical
+reports, including randomized CCH bounds and financial monotonicity checks. Two unprofiled
+10k runs average **9.384 ms/hour and 10.345 ms/day**; one 100k run measures
+**143.022 ms/hour and 252.148 ms/day**, preserving every setup/final record. A/B remain open
+at **15.24× / 24.38×**. This is a candidate measurement, not repeat acceptance or a significance
+claim; the 10k daily result is not improved. Next under validation: freight door-dependency
+retention across unrelated building changes. Artifacts: `$ARTIFACTS/econ13-exact/potentials/`.
+
+The freight-door dependency candidate
+(`72a7a3de00b5f62db5613003703217cac4846a4e692c3e805683e1b9b3e713b2`)
+retains projected access and complete freight quotations across unrelated building edits only
+when both exact entrance keys, lane geometry revisions, attached-edge speed bits and all
+frontage-price bits still agree. Invalidation remains O(1); lazy validation touches only the
+two endpoints. Fresh verification passes 2,323 library tests, four growth tests and all five
+reports. Two 10k runs average **9.690 ms/hour / 9.985 ms/day** (individual daily means
+10.076 and 9.895 ms); one 100k run measures **141.835 / 266.759 ms**. Records are unchanged;
+14.64× / 26.72× scaling still fails B, and A has no repeat acceptance. A separate daily-only
+profile counts 2,130,532 business-port prechecks, of which 2,128,322 reject; freight potentials
+prove 50,118 rejections beyond the free-freight check. Profiling is diagnostic, not acceptance.
+Artifacts: `$ARTIFACTS/econ13-exact/door-retention/`.
+
+The proposed-door and household-visit candidate
+(`a1b52ffac2075348eb3c5d31d169b850459b1401a51d7f8e2823084d4c26394f`)
+reuses two exact proposed-door projections until the lane geometry revision changes. Shopping
+and service scans share the existing employment worker-local epoch labels, preserving both
+mode order and candidate limits while replacing O(candidates²) duplicate checks with
+O(candidates) warm work and no query allocation. A targeted oracle covers moved doors and
+lane rebuilds; fresh verification passes 2,324 library tests, four growth tests and all five
+identical reports. The 44-pair isolated duplicate-check benchmark averages **19.842 → 0.458 µs**
+for 384 distinct plus 384 repeated candidates, excluding setup (`$TEST_BINARY --ignored --nocapture
+benchmark_bounded_candidate_visits`). Two unprofiled 10k runs average **9.459 ms/hour /
+10.018 ms/day**; one 100k run measures **136.344 / 256.697 ms**, with unchanged setup/final
+records. A/B remain open at **14.41× / 25.62×**; these runs do not establish significance or
+repeat acceptance. A separate 10k phase trace locates the day-15 spike in site generation
+(16.122 ms) and demand planning (5.827 ms), versus 5.149 ms settlement. Next under validation:
+exact-price affordability masks in the existing business customer trees, with joint-financing
+queries unfiltered and rollback restoring eligibility. Artifacts:
+`$ARTIFACTS/econ13-exact/site-access/`; commands and worker settings follow the recipe above.
+
+The exact-price eligibility trial
+(`0e847284b4decd359e092c26b688aaab8a836ef82de97108be1b0e13663fc1e0`)
+OR-reduces up to 64 exact authored price classes through existing customer reservation trees.
+Unknown prices and joint-financing queries retain the ordinary scan. A conservative free-freight
+quantity bound avoids pruning tiny valid f64 requests when a larger financing-limited request
+would round to zero in f32. Initial preparation is O(accounts × classes + indexed ports);
+warm updates touch changed buyers' tranches and O(log bucket size) ancestor paths, with no
+query allocation. Rollback marks changed buyers for refresh from restored budgets. Fresh
+checks pass **2,327 library tests**, four growth tests and all five identical reports, including
+filtered/unfiltered transaction comparisons and quantity-boundary cases. Two 10k runs average
+**9.358 ms/hour / 10.051 ms/day**; one 100k run measures **138.147 / 255.012 ms** and preserves
+all records. A/B remain open at **14.76× / 25.37×**. This does not establish an overall gain;
+the trial remains under performance review. A separate 12-midnight 100k trace reduces
+business-port prechecks **2,130,532 → 52,328** (97.5%), with the same 2,210 route quotes.
+The remaining 50,118 rejections require the carrier bound. Business funding still costs
+33–62 ms on late days; leaf filtering alone does not eliminate empty chunk-ring traversal.
+Artifacts:
+`$ARTIFACTS/econ13-exact/finance-masks/`; the same release recipe and worker settings apply.
+
+The borrowed-footprint/shopping candidate removes canonical cell-corner copies and skips
+route checks only when a candidate cannot enter the already-full distance/ID shortlist.
+The shortlist oracle compares every prefix, including ties and nonfinite coordinates, while
+preserving scan limits and visited membership. Fresh checks pass **2,329 library tests**,
+four growth tests and all five reports. Four alternating isolated cell-preparation pairs
+(44 samples each) average **18.933 → 19.160 ms**: no speedup is established. Two 10k runs
+average **9.480 ms/hour / 10.097 ms/day**, with identical records; A remains open. The separate
+day-15 trace measures 16.322 ms cell generation, 5.901 ms demand planning and 4.835 ms
+settlement. These are candidate measurements, not final acceptance. The test/growth source
+is `4ded65443f4639609138ce5a8450d67e7702f9f8454867e4a56d91347dbb79c0`;
+the benchmark source `42b24fffc48e0e0e6f7947174dca5b83a8517ee55572855b5f558566bf94f94a`
+additionally contains diagnostic-only business phase timing. The next candidate must unify
+those builds. Component-wide eligibility counts are queued to avoid empty class searches
+before walking any chunk rings. Artifacts: `$ARTIFACTS/econ13-exact/borrowed-footprints/`.
+
+The component-price guard
+(`114c9a0b3bdb689e526bbd7a25c7e67d94a1a76dce8fd6c874f6fcc754eeb5df`)
+counts each eligibility bit in existing resource components. Empty-class queries now stop
+after component lookup, before chunk-ring traversal; updates touch at most 64 class counts
+and the existing bucket ancestors. Quantity depletion may leave stale-positive masks, never
+false exclusions. Fresh verification passes **2,330 library tests**, four growth tests and
+all five reports. Eleven alternating isolated pairs at 16²/64²/128² occupied chunks measure
+**9.368 / 299.205 / 1,379.138 µs → 4.619 / 4.767 / 5.284 ns** per empty query
+(`$TEST_BINARY --ignored --nocapture benchmark_empty_price_class_queries`); these synthetic
+results establish empty-query locality, not a whole-city gain. Two 10k means are
+**9.283 ms/hour / 10.030 ms/day**. One complete 100k run measures
+**135.219 ms/hour / 215.708 ms/day**, preserving all records. The daily mean is 15.4% lower
+than the preceding finance-mask candidate's one-run result; this is descriptive, not a
+significance claim or repeat acceptance. A/B remain open at **14.57× / 21.51×**.
+A separate 12-midnight trace preserves the exact prior candidate/route counts and final
+record; all 50,118 remaining business-account rejections require the carrier bound. Day-15
+business funding falls **44.957 → 5.232 ms**, with 1.6–2.0 ms account preparation and
+0.3–0.6 ms matching per pass. The remaining day-11 staffing spike is **145.729 ms** across
+three censuses; day-15 staffing costs 34.775 ms. Day-15 site preparation, demand planning
+and execution cost 27.164 / 49.887 / 20.364 ms. These diagnostic phase comparisons explain
+the affected work; they are separate from acceptance timings. Artifacts:
+`$ARTIFACTS/econ13-exact/component-masks/`.
+
+The local-candidate build
+(`6393cfe5483d6fb87cdb9878477711f6b3f45fa5bdec0149ef544024617cd2a7`)
+changes cell conflict queries to exclude the same canonical frame before
+deriving footprints and reuse the spatial query's exact corners. Shopping/service shortlists
+retain their squared distances in bounded stack storage, preserving distance/ID ordering,
+scan limits and ring termination. Existing chunk-ring scans also clip coordinates to the
+requested components' existing envelope, preserving every item and ring-completion event.
+Fresh verification passes **2,334 library tests**, four growth tests and all five reports,
+including targeted prefix/order oracles. Eleven alternating shortlist pairs average
+**3.808 → 1.957 µs** for 8 retained/128 scanned candidates and **17.200 → 8.716 µs** for
+24/384 (`$TEST_BINARY --ignored --nocapture benchmark_cached_shopping_distances`). Four
+alternating cell-preparation pairs, 44 samples each, average **19.460 → 15.224 ms**, with
+identical products. Local generation stays at **121.600 / 122.452 / 121.425 µs** as distant
+roads/cells increase from 0/0 to 1,000/16,384 and 10,000/131,072; setup is excluded
+(`$TEST_BINARY --ignored --nocapture benchmark_cell_zoning_locality`). Two 10k runs average
+**9.235 ms/hour / 9.673 ms/day**; both daily means (9.743 and 9.603 ms) meet A's budget and
+all records are identical. One complete 100k run measures **129.426 ms/hour / 205.531 ms/day**,
+with identical records; B still fails at **14.01× / 21.25×**. A has no final one-build repeat
+acceptance yet. A separate 10k phase trace puts day-15 cell preparation at 13.177 ms, demand
+planning at 5.761 ms and settlement at 5.136 ms (25.233 ms total). The separate 23-hour 100k
+profile records 350,552 nearest-supplier searches, 4,818,263 candidates and 4,174,801 route
+quotes, identifying remaining routing work; profiled timings are not acceptance measurements.
+Artifacts: `$ARTIFACTS/econ13-exact/local-candidates/`.
+
+The workplace-cache build
+(`59be0c07e68ee248aad8bb165e917f1fe7e2b8d8f822139919c896c8a141b935`)
+uses the existing fixed fast hasher. This cache has no iteration-based consumers; its
+complete-route price expiry is unchanged. Fresh checks pass **2,334 library tests**, four
+growth tests and all five reports. Eleven alternating microbenchmark pairs at 160,000 entries
+reduce insertion **17.356 → 8.519 ns** and lookup **18.044 → 5.015 ns** per key; all values,
+including cached unreachable routes, match (`$TEST_BINARY --ignored --nocapture
+benchmark_workplace_route_cache_hashing`). Two 10k runs average **9.298 ms/hour / 9.664 ms/day**;
+one 100k run measures **128.997 / 203.781 ms**. All records match. This establishes the cache's
+isolated gain, not a significant whole-city improvement; B still fails at **13.87× / 21.09×**.
+A separate 12-midnight trace also preserves the final record and previous business/freight
+request counts. It records 5,339,313 nearest-supplier searches and 64,692,162 route quotes
+across all intervening frames. Day-11 staffing remains 135.095 ms across three censuses;
+day-15 staffing is 33.700 ms, with cell preparation / planning / execution at
+22.366 / 53.507 / 19.607 ms. These are diagnostic attributions, not acceptance timings.
+Artifacts: `$ARTIFACTS/econ13-exact/route-hash/`.
+
+The endpoint-sweep candidate
+(`4d83a31a4fa252b00ca7d1c160c7f608d384ac7c3cd84dac98e43bd1acf65897`)
+retains each CCH endpoint sweep in its existing scratch until its complete input key changes,
+keeping exact label/witness order with O(1) additional storage. It also extends the integer
+network bound to the L1 displacement and applies the bound before recurring-supplier route
+quotes. Preparation remains O(nodes + edges), storage O(nodes), and each candidate bound O(1);
+strict rejection preserves route/price/index ties. Fresh checks pass **2,337 library tests**,
+four growth tests and all five reports. Exact oracles cover cached/fresh CCH costs and witnesses,
+metric/clone/epoch invalidation, subnormal bounds, and supplier receipts through retries and
+depletion. Eleven alternating sweep pairs average **1,409 → 1,072 ns/query** for two queries
+per source and **1,179 → 749 ns** for 16; ungrouped queries average **1,409 → 1,413 ns**
+(`$TEST_BINARY --ignored --nocapture benchmark_cch_endpoint_sweeps`). Two alternating populated
+10k random-query pairs preserve every report byte, with cost-only **0.667 → 0.675 µs** and
+path-producing **0.847 → 0.851 µs**; this establishes no random-query gain. Two whole-city 10k
+runs average **9.509 ms/hour / 9.794 ms/day**; one 100k run measures **129.291 / 208.337 ms**,
+preserving records (13.60× / 21.27×). This establishes no overall gain. The L1 extension and
+recurring-supplier bound were removed before the next build; endpoint sweep reuse remains.
+A separate daily-only profile and phase trace attribute day-15 planning to **33.668 ms site
+preparation**, **10.751 ms reservation copying**, **2.603 ms snapshots**, **1.936 ms funding
+fork**, **0.897 ms queue replay**, and **4.984 ms actual planning**. Day-12 site preparation
+is 32.397 ms. These diagnostic timings identify repeated proposed-door preparation; they are
+not acceptance measurements. Artifacts: `$ARTIFACTS/econ13-exact/endpoint-sweeps/`.
+
+The striped-cache build
+(`614e43ae9be26e6761d64a30c29e4212d6074c9881331f603bf40686ac7322d4`)
+partitions shared commute-cache synchronization into 32 stripes, preserving the original global
+bucket hash, capacity, replacement policy and revision guards. It adds O(1) lock storage; each
+query accesses one bounded bucket without allocation. Fresh checks pass **2,336 library tests**,
+four growth tests and all five reports. Eleven alternating contention pairs at eight workers
+reduce cold access **162.834 → 17.325 ns/query** and warm access **124.880 → 15.172 ns**.
+Single-worker cold/warm access changes **21.813 → 23.465 / 19.850 → 21.526 ns**
+(`$TEST_BINARY --ignored --nocapture benchmark_striped_network_quotes`). Two 10k runs average
+**9.259 ms/hour / 9.619 ms/day**; one 100k run measures **122.964 / 201.521 ms**, preserving
+all records. B remains open at **13.28× / 20.95×**; final matched acceptance repeats remain
+pending. Artifacts: `$ARTIFACTS/econ13-exact/striped-quotes/`.
+
+The retained-site build
+(`5cedbdf04a627c19ae491d37ad4b4b0fd09537e4a41661243edabd421ea9413a`)
+keeps proposed entrances across live-market forks. Existing prepared owner/asset records carry
+exact door bits, frontage edge/side, CCH generation and lane revision; a factory reuses geometry
+only when those inputs match. Financial books and candidate indices refresh normally. Cold
+preparation stays O(variants log variants + ports log ports), with no per-quote allocation or
+new spatial index. Fresh checks pass **2,337 library tests**, four growth tests and all five
+reports, including changed poses/assets, lane/network rebuilds and retained-book replacement.
+Two 10k runs average **9.238 ms/hour / 9.909 ms/day** (individual daily means 9.633 and 10.185 ms).
+One 100k run measures **121.719 / 200.622 ms**, preserving records at **13.18× / 20.25×**.
+These results establish no clear whole-city gain; A/B acceptance remains pending. A separate
+12-midnight trace preserves every final record and prior business/freight request count. Site
+preparation remains **28.716–33.421 ms** on days 10–15; day-15 reservation copying is 9.236 ms
+and actual planning 5.451 ms. Reusing entrance geometry has not removed the preparation cliff.
+Artifacts: `$ARTIFACTS/econ13-exact/retained-sites/`.
+
+Next validation counts sites sharing the exact maximum radius, so removing or shrinking one
+of several maxima does not reduce the whole city. It also reuses the household census's walking
+proofs after checking household/home identity, exact entrance bits and network revisions.
+Shopping stores retain compact directed groups/node IDs instead of full trip ends; unproven
+trips keep the original route fallback. No new spatial or household index is introduced.
+Asset level lookup reuses its already-borrowed manifest instead of hashing the same ID twice.
+The test-only phase trace now counts staffing trials and rejection causes; free-input cost
+probes are diagnostic only and do not reject operations. Compilation, regressions and
+matched measurements for this combined candidate remain pending.
 
 ##### Status 2026-10-11 (one working-tree build on `01888e88`)
+
+This section records the earlier build. The later approved `NET-03` hierarchy changes route
+ties and f32 sums, and therefore the populated city's evolution. Its 10k hour improves to
+11.14 ms but the day costs 14.15 ms: `ECON-13-A` is no longer accepted. `NET-04` preserves that
+new city's exact records; its completed measurements and remaining blockers are above. See the
+[routing measurements](entrance_and_exit.md#cch-routing-performance-track-net-02net-05).
+The C/D results below are historical; the routing follow-up records their fresh reruns.
 
 All runs use one release build of the working tree, `RAYON_NUM_THREADS=8` and
 `taskset -c 0,2,4,6,8,10,12,14`, on an otherwise idle machine. Logs are under

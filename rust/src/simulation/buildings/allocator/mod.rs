@@ -21,7 +21,7 @@ mod tests;
 #[cfg(test)]
 pub(crate) use tests::support::indexed_test_building;
 
-pub(crate) use entrance::{FreightEntranceAccess, building_local_xz_basis};
+pub(crate) use entrance::{BuildingEntranceKey, DemandSiteEntranceKey, FreightEntranceAccess, building_local_xz_basis};
 pub(crate) use lifecycle::DemandBuildingActionExecution;
 pub(crate) use placement::BuildingSiteEnvironment;
 pub(crate) use placement::ExplicitServicePlacementPreview;
@@ -350,8 +350,12 @@ pub struct BuildingAllocator {
     pub(crate) level_changes: LevelChangeLog,
     /// Maximum half-diagonal of placed lots in zoning cells, rebuilt with [`Self::building_chunks`].
     pub(crate) max_lot_radius_cells: f32,
+    /// Explicit non-parcel sites in the existing building index; invalid when `dirty_index`.
+    pub(crate) explicit_cell_site_count: usize,
     /// Maximum support-footprint distance from its indexed lot center, in world metres.
     pub(crate) max_site_radius_m: f32,
+    /// Number of site records attaining the exact current maximum radius.
+    pub(crate) max_site_radius_count: usize,
     /// Recalculates inverted indices if true.
     pub dirty_index: bool,
     /// Per-family dirty flags in residential, commercial, industrial order (`BASELINE_PRIVATE_ZONES`).
@@ -370,6 +374,9 @@ pub struct BuildingAllocator {
     pub(crate) building_sites: Vec<BuildingSiteClient>,
     /// Shared terrain-change outbox for placement, redevelopment, and removal in every mode.
     pub(crate) building_site_dirty_bounds: Option<(f32, f32, f32, f32)>,
+    /// Separate explicit-site exclusion edits; ordinary parcel buildings do not block cells.
+    /// Keeping envelopes separate avoids treating untouched land between sites as edited.
+    pub(crate) cell_site_dirty_bounds: Vec<(f32, f32, f32, f32)>,
     // Geometry-only feasibility, independent of demand and dropped on allocator snapshots.
     site_feasibility: placement::SiteFeasibilityCache,
     /// Registry of all loaded pack assets.
@@ -683,7 +690,9 @@ impl BuildingAllocator {
             pending_yards: Vec::new(),
             level_changes: LevelChangeLog::default(),
             max_lot_radius_cells: 0.0,
+            explicit_cell_site_count: 0,
             max_site_radius_m: 0.0,
+            max_site_radius_count: 0,
             dirty_index: true,
             dirty_zones: [false; 3],
             entrances_dirty: false,
@@ -693,6 +702,7 @@ impl BuildingAllocator {
             entrances: Vec::new(),
             building_sites: Vec::new(),
             building_site_dirty_bounds: None,
+            cell_site_dirty_bounds: Vec::new(),
             site_feasibility: Default::default(),
             registry: AssetRegistry::new(),
         }
@@ -847,8 +857,11 @@ impl BuildingAllocator {
         self.building_chunk_bounds = None;
         self.max_building_support_m = f32::NEG_INFINITY;
         self.max_lot_radius_cells = 0.0;
+        self.explicit_cell_site_count = 0;
         self.max_site_radius_m = 0.0;
+        self.max_site_radius_count = 0;
         self.building_site_dirty_bounds = None;
+        self.cell_site_dirty_bounds.clear();
         self.dirty = false;
         self.dirty_index = false;
         self.entrances.clear();

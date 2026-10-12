@@ -114,6 +114,13 @@ impl BusinessBudgets {
         }
     }
 
+    /// Visits buyers whose account chain or shared financing will be restored by rollback.
+    pub(super) fn visit_revalidation_buyers(&self, mut visit: impl FnMut(usize)) {
+        for &(buyer, _) in &self.revalidation.finance.saved { visit(buyer); }
+        for &(buyer, _) in &self.revalidation.buyers.saved { visit(buyer); }
+        self.visit_revalidation_accounts(|_, account| visit(account.buyer));
+    }
+
     /// Restores accepted inner substitutions and the pending quote without arithmetic reversal.
     /// O(touched accounts + buyers + owners + receipts), with no city scan or new allocation.
     pub(super) fn reject_revalidation(&mut self) {

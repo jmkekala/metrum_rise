@@ -6,6 +6,41 @@ use super::support::*;
 use super::*;
 
 #[test]
+fn explicit_cell_site_summary_tracks_append_rebuild_and_clear() {
+    let mut allocator = BuildingAllocator::new();
+    allocator.buildings.push(indexed_test_building(
+        String::new(),
+        ZoneType::Residential,
+        0,
+    ));
+    allocator.rebuild_building_site_clients(10.0);
+    allocator.rebuild_zone_index();
+    assert!(!allocator.has_explicit_cell_sites());
+    let mut explicit = indexed_test_building(String::new(), ZoneType::None, 0);
+    explicit.construction_remaining_hours = 8;
+    allocator.buildings.push(explicit);
+    allocator.rebuild_building_site_clients(10.0);
+    assert!(allocator.index_appended_building(1));
+    assert_eq!(allocator.explicit_cell_site_count, 1);
+    assert!(allocator.has_explicit_cell_sites());
+    allocator.buildings[1].parcel_id = 7;
+    allocator.dirty_index = true;
+    assert!(
+        allocator.has_explicit_cell_sites(),
+        "stale metadata must not exclude a candidate"
+    );
+    allocator.rebuild_zone_index();
+    assert!(!allocator.has_explicit_cell_sites());
+    allocator.buildings[1].parcel_id = 0;
+    allocator.dirty_index = true;
+    allocator.rebuild_zone_index();
+    assert!(allocator.has_explicit_cell_sites());
+    allocator.clear();
+    assert_eq!(allocator.explicit_cell_site_count, 0);
+    assert!(!allocator.has_explicit_cell_sites());
+}
+
+#[test]
 fn nearest_building_pick_preserves_radius_ties_and_index_refresh() {
     for boundary in [-512.0, 0.0, 512.0] {
         let mut allocator = BuildingAllocator::new();

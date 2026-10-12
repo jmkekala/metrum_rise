@@ -217,6 +217,11 @@ installs the site, bumps the building revision, invalidates derived indices/entr
 terrain bounds in the allocator's shared pending-site outbox. Demand accounting no longer carries
 a separate terrain-dirtiness result. Placement, level changes and removal own their invalidation;
 the simulation consumes it through `publish_pending_building_site_changes()`.
+Explicit sites additionally publish separate local cell-exclusion bounds. The terrain union is
+not a zoning invalidation envelope: ordinary parcel buildings cannot change cell exclusions,
+and clearing their occupancy already queues the parcel's local frontage checks. Field removal
+continues to invalidate its saved polygon before swap-remapping. Both site outboxes are derived,
+cleared with the allocator, and consumed by the same publication boundary.
 Live site bounds and detached terrain-snapshot bounds use the same footprint/material union.
 Fresh asset selection has one feasibility/ranking loop; commercial resource priorities filter that
 loop rather than maintaining a separate placement implementation. Level upgrades and downgrades
@@ -427,12 +432,13 @@ survivors, and rejects a stale asset key on an otherwise removable parcel.
 
 The site query margin remains the exact largest site radius measured from its indexed lot centre.
 Appending a site updates the maximum directly. Replacing a site examines its old/new radii and
-reduces all sites only if a previous maximum shrinks. Removal shares one swap-order helper and
-reduces only when the removed site matched the maximum. Tied maxima remain correct. Bulk rebuild
-and undo still reconstruct the exact maximum; no new index or approximate upper bound is added.
+counts the sites sharing the exact maximum. A shrink or swap-removal reduces all sites only
+when the last owner of the old maximum disappears and no replacement reaches it. Bulk rebuild
+and undo reconstruct both the exact maximum and its count; no new index or approximate upper
+bound is added. This tied-maximum follow-up is undergoing ECON-13 validation.
 
 Ordinary radius maintenance is O(V) for the changed site's V support/paving vertices. A shrinking
-or removed maximum and a full rebuild remain O(total site vertices), now using Rayon with a minimum
+or removed last maximum and a full rebuild remain O(total site vertices), using Rayon with a minimum
 split length of 4,096 sites. Radius calculation takes the maximum squared distance before one
 square root. Mismatched site-store lengths go directly to the existing full rebuild, avoiding a
 client that would immediately be discarded. The unused quad-bounds wrapper and a copied test

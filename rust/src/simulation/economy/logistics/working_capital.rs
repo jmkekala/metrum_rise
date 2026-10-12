@@ -9,6 +9,36 @@ use crate::simulation::network::{TransitNetwork, graph::RegionGraph};
 use rayon::prelude::*;
 
 impl ShipmentSystem {
+    /// A proven lower carrier price for rejecting unaffordable business offers before routing.
+    /// Prepared CCH integer potentials preserve f32 rounding; unavailable proofs return zero.
+    /// O(1), without allocation or a route search. Prepare with the existing site quote batch.
+    pub(crate) fn customer_carrier_lower_bound(&self, source: &BuildingEntrance,
+        destination: &BuildingEntrance, network: &TransitNetwork, graph: &RegionGraph,
+        tuning: &RuntimeEconomyTuning) -> f32 {
+        if !(tuning.operational_clock.seconds_per_day.is_finite()
+            && tuning.operational_clock.seconds_per_day > 0.0
+            && tuning.logistics.dispatch_fee_currency.is_finite()
+            && tuning.logistics.dispatch_fee_currency >= 0.0
+            && tuning.logistics.vehicle_hour_cost_currency.is_finite()
+            && tuning.logistics.vehicle_hour_cost_currency >= 0.0) { return 0.0; }
+        self.freight_route_cache.minimum_entrance_network_cost(source, destination, network, graph)
+            .filter(|seconds| seconds.is_finite())
+            .map_or(0.0, |seconds| super::timing::freight_cost(seconds,
+                tuning.operational_clock.seconds_per_day, &tuning.logistics))
+    }
+
+    /// Diagnostic request/hit/replacement-miss counts; absent from production builds.
+    #[cfg(test)]
+    pub(crate) fn node_cache_counts_for_test(&self) -> [u64; 3] {
+        self.freight_route_cache.node_cache_counts
+    }
+
+    /// Building quote requests, valid hits, replacement misses, and stale retained keys.
+    #[cfg(test)]
+    pub(crate) fn building_cache_counts_for_test(&self) -> [u64; 4] {
+        self.freight_route_cache.building_cache_counts
+    }
+
     /// Prices a live or proposed seller's directed delivery to a business customer.
     /// Call `prepare_site_carrier_quotes` once before a batch. Each query reuses bounded
     /// network search storage and applies live frontage delays, without temporary IDs.
@@ -109,7 +139,7 @@ impl ShipmentSystem {
     }
 
     /// Prices a proposed door using the same physical route and fee as live dispatch.
-    /// O(K log K), allocation-free, for K connected borders; unreachable routes return `None`.
+    /// O(K) to check the prepared border set, then constant-time entrance pricing; no allocation.
     pub(crate) fn site_carrier_quote(
         &self,
         entrance: &BuildingEntrance,
@@ -130,7 +160,8 @@ impl ShipmentSystem {
     }
 
     /// Quotes the reachable outside route used by actual freight dispatch, using its cached
-    /// border sweeps. Warm work is O(B*K), parallel across buildings; K is connected borders.
+    /// border sweeps. Their exact minima cost O(N*K) once per routing/border revision for N
+    /// road nodes and K borders. Warm work is O(B), parallel across buildings.
     /// The caller reuses quote storage. No per-building path search or allocation is added.
     pub(crate) fn write_border_carrier_quotes(
         &mut self,
@@ -146,6 +177,10 @@ impl ShipmentSystem {
         self.freight_route_cache.prepare_buildings(allocator.buildings.len());
         self.freight_route_cache
             .prepare_border_costs(borders, allocator.buildings.len(), network, graph);
+        self.freight_route_cache.prepare_access_for(allocator, network, graph, |index| {
+            catalog.profile_by_runtime_id(allocator.buildings[index].economy_profile_runtime_id)
+                .is_some_and(|profile| profile.worker_capacity > 0)
+        });
         quotes
             .par_iter_mut()
             .enumerate()
@@ -162,7 +197,7 @@ impl ShipmentSystem {
                 }
                 *quote = self
                     .freight_route_cache
-                    .minimum_border_eta(borders, index, allocator, network, graph)
+                    .minimum_border_eta(index, allocator, network, graph)
                     .map(|seconds| {
                         super::timing::freight_cost(
                             seconds,

@@ -245,6 +245,16 @@ impl DemandSystem {
         environment: BuildingSiteEnvironment<'_>,
         mut supply: impl ProjectSupply,
     ) {
+        let timing = crate::debug::category_enabled("economy_phases");
+        let begin = timing.then(std::time::Instant::now);
+        let mut phase = begin;
+        let mut times = [0.0; 4];
+        let mut lap = |slot: usize| {
+            if let Some(previous) = phase {
+                times[slot] += previous.elapsed().as_secs_f64() * 1_000.0;
+                phase = Some(std::time::Instant::now());
+            }
+        };
         let utility_prices = local_utility_service_costs(catalog)
             .map(|price| price * economy_tuning.owa_import_price_multiplier);
         let mut commercial_spawn_resource_priorities = snapshot
@@ -265,6 +275,7 @@ impl DemandSystem {
                 .then_with(|| left.0.cmp(&right.0))
         });
         let spawn_assets = allocator.collect_spawn_asset_candidates_by_profile(zoning, catalog);
+        lap(0);
         let mut spawn_candidates_by_use = allocator.collect_demand_spawn_candidates_from_assets(
             zoning,
             graph,
@@ -273,6 +284,7 @@ impl DemandSystem {
             environment,
             &spawn_assets,
         );
+        lap(1);
         let mut absorption_context = snapshot.output_absorption.clone();
         self.workforce_reservations.reset(
             allocator,
@@ -283,6 +295,9 @@ impl DemandSystem {
             self.next_construction_start_hour,
             supply.reservations(),
         );
+        lap(2);
+        // Existing-candidate collection is interleaved with dependent zone decisions.
+        let mut existing_ms = 0.0;
         let mut optional_homes = Vec::new();
         let mut downgrade_batches = Vec::with_capacity(3);
         for use_kind in [
@@ -297,6 +312,7 @@ impl DemandSystem {
                     .binary_search_by_key(&candidate.action.parcel_id, |project| project.parcel_id)
                     .map_or(true, |index| !self.queued_construction[index].active)
             });
+            let existing_begin = timing.then(std::time::Instant::now);
             let existing_candidates = self.collect_existing_building_candidates(
                 allocator,
                 catalog,
@@ -304,6 +320,7 @@ impl DemandSystem {
                 &residential_occupants,
                 zone_type,
             );
+            if let Some(begin) = existing_begin { existing_ms += begin.elapsed().as_secs_f64() * 1_000.0; }
             let spawn_candidate_count = spawn_candidates.len();
             let upgrade_candidate_count = existing_candidates.upgrades.len();
             let downgrade_candidate_count = existing_candidates.downgrades.len();
@@ -692,6 +709,9 @@ impl DemandSystem {
             }
         }
         supply.reject();
+        lap(3);
+        crate::debug_log!("economy_phases", "demand_planning_detail assets_ms={:.3} spawn_sites_ms={:.3} workforce_ms={:.3} existing_ms={:.3} decisions_ms={:.3}",
+            times[0], times[1], times[2], existing_ms, times[3] - existing_ms);
     }
 
     pub(super) fn collect_existing_building_candidates(

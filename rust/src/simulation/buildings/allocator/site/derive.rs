@@ -64,11 +64,11 @@ impl BuildingAllocator {
         }
         // Explicit whole-catalog reload: all buildings may have changed asset geometry.
         for idx in 0..self.building_sites.len() {
-            self.accumulate_pending_site_dirty_bounds(self.site_world_bounds(idx));
+            self.record_building_site_change(idx, self.site_world_bounds(idx));
         }
         self.rebuild_building_site_clients(zone_cell_m);
         for idx in 0..self.building_sites.len() {
-            self.accumulate_pending_site_dirty_bounds(self.site_world_bounds(idx));
+            self.record_building_site_change(idx, self.site_world_bounds(idx));
         }
         self.bump_building_ref_revision();
         self.entrances_dirty = true;
@@ -95,16 +95,9 @@ impl BuildingAllocator {
             let client =
                 self.derive_building_site_client(&self.buildings[building_idx], zone_cell_m);
             let radius_m = site_radius_m(&client);
-            // Only shrinking a previous maximum needs a city-wide reduction. Otherwise
-            // radius maintenance examines this site's vertices and keeps the exact bound.
-            let maximum_decreased = radius_m < self.max_site_radius_m
-                && site_radius_m(&self.building_sites[building_idx]) == self.max_site_radius_m;
+            let previous = site_radius_m(&self.building_sites[building_idx]);
             self.building_sites[building_idx] = client;
-            if maximum_decreased {
-                self.recompute_max_site_radius_m();
-            } else {
-                self.max_site_radius_m = self.max_site_radius_m.max(radius_m);
-            }
+            self.update_site_radius(Some(previous), Some(radius_m));
         }
     }
 
@@ -112,8 +105,9 @@ impl BuildingAllocator {
         if self.building_sites.len() == building_idx {
             let client =
                 self.derive_building_site_client(&self.buildings[building_idx], zone_cell_m);
-            self.max_site_radius_m = self.max_site_radius_m.max(site_radius_m(&client));
+            let radius = site_radius_m(&client);
             self.building_sites.push(client);
+            self.update_site_radius(None, Some(radius));
         } else {
             self.rebuild_building_site_clients(zone_cell_m);
         }
@@ -124,20 +118,40 @@ impl BuildingAllocator {
         let Some(site) = self.building_sites.get(building_idx) else {
             return;
         };
-        let removed_maximum = site_radius_m(site) == self.max_site_radius_m;
+        let radius = site_radius_m(site);
         self.building_sites.swap_remove(building_idx);
-        if removed_maximum {
+        self.update_site_radius(Some(radius), None);
+    }
+
+    // A tied maximum survives local replacement/removal. Only losing its last owner
+    // needs the existing O(site vertices) reduction; ordinary updates are O(local vertices).
+    fn update_site_radius(&mut self, previous: Option<f32>, current: Option<f32>) {
+        if previous == Some(self.max_site_radius_m) {
+            self.max_site_radius_count -= 1;
+        }
+        if let Some(radius) = current {
+            if radius > self.max_site_radius_m {
+                self.max_site_radius_m = radius;
+                self.max_site_radius_count = 1;
+            } else if radius == self.max_site_radius_m {
+                self.max_site_radius_count += 1;
+            }
+        }
+        if self.max_site_radius_count == 0 {
             self.recompute_max_site_radius_m();
         }
     }
 
     pub(crate) fn recompute_max_site_radius_m(&mut self) {
-        self.max_site_radius_m = self
+        (self.max_site_radius_m, self.max_site_radius_count) = self
             .building_sites
             .par_iter()
             .with_min_len(4_096)
-            .map(site_radius_m)
-            .reduce(|| 0.0, f32::max);
+            .map(|site| (site_radius_m(site), 1))
+            .reduce(|| (0.0, 0), |a, b| {
+                if a.0 == b.0 { (a.0, a.1 + b.1) }
+                else if a.0 > b.0 { a } else { b }
+            });
     }
 
     pub(super) fn derive_building_site_client(

@@ -50,6 +50,12 @@ impl BuildingSiteClient {
 }
 
 impl BuildingAllocator {
+    /// Conservative O(1) exclusion check; stale indices retain the ordinary exact query.
+    pub(crate) fn has_explicit_cell_sites(&self) -> bool {
+        !self.building_sites.is_empty()
+            && (!self.building_site_query_index_ready() || self.explicit_cell_site_count != 0)
+    }
+
     /// Whether bounded site queries can run without rebuilding or scanning the building store.
     /// Preview workers must defer unprepared inputs to normal allocator/terrain maintenance.
     pub(crate) fn building_site_query_index_ready(&self) -> bool {
@@ -89,6 +95,24 @@ impl BuildingAllocator {
         } else {
             self.building_site_dirty_bounds = Some(bounds);
         }
+    }
+
+    /// Records terrain changes for every site and cell exclusions only for explicit sites.
+    /// Ordinary parcels own their cell claims; clearing occupancy already queues their local
+    /// frontage revalidation. Geometry work is bounded by edited sites, not their union's area.
+    pub(crate) fn record_building_site_change(&mut self, building_idx: usize,
+        bounds: Option<(f32, f32, f32, f32)>) {
+        self.accumulate_pending_site_dirty_bounds(bounds);
+        if self.buildings.get(building_idx).is_some_and(|building|
+            building.parcel_id == 0 && building.zone_type == crate::simulation::zoning::ZoneType::None)
+            && let Some(bounds) = bounds {
+            self.cell_site_dirty_bounds.push(bounds);
+        }
+    }
+
+    /// Drains one explicit-site exclusion edit, retaining the event buffer's capacity.
+    pub(crate) fn pop_pending_cell_site_dirty_bounds(&mut self) -> Option<(f32, f32, f32, f32)> {
+        self.cell_site_dirty_bounds.pop()
     }
 
     pub(crate) fn take_pending_site_dirty_bounds(&mut self) -> Option<(f32, f32, f32, f32)> {

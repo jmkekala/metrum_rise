@@ -11,18 +11,19 @@ use godot::prelude::{Vector2, Vector3};
 use i_overlay::core::{fill_rule::FillRule, overlay_rule::OverlayRule};
 use i_overlay::float::single::SingleFloatOverlay;
 use std::collections::{HashMap, HashSet};
+use std::borrow::Cow;
 
 /// Prepared polygon used for exact positive-area overlap, including concave shapes and containment.
 #[derive(Clone, Debug)]
-pub(crate) struct PolygonFootprint {
-    points: Vec<[f64; 2]>,
+pub(crate) struct PolygonFootprint<'a> {
+    points: Cow<'a, [[f64; 2]]>,
     /// Minimum world XZ bounds.
     pub(crate) min: Vector2,
     /// Maximum world XZ bounds.
     pub(crate) max: Vector2,
 }
 
-impl PolygonFootprint {
+impl PolygonFootprint<'static> {
     /// Prepares a validated world polygon once per placement query or committed edit.
     pub(crate) fn new(points: &[Vector2]) -> Self {
         Self::from_points(points.iter().copied())
@@ -36,11 +37,24 @@ impl PolygonFootprint {
     pub(crate) fn from_precise_points(points: impl Iterator<Item = [f64; 2]>) -> Self {
         let points: Vec<_> = points.collect();
         let (min, max) = precise_bounds(points.iter().copied());
-        Self { points, min, max }
+        Self { points: Cow::Owned(points), min, max }
+    }
+
+    fn from_road(points: &[RoadVec3]) -> Self {
+        Self::from_precise_points(points.iter().map(|p| [p.x, p.z]))
+    }
+}
+
+impl<'a> PolygonFootprint<'a> {
+    /// Borrows already precise query geometry without copying or allocating a contour.
+    /// Bounds and overlap semantics are identical to the owned persistent representation.
+    pub(crate) fn from_precise_slice(points: &'a [[f64; 2]]) -> Self {
+        let (min, max) = precise_bounds(points.iter().copied());
+        Self { points: Cow::Borrowed(points), min, max }
     }
 
     /// Tests occupied interiors; shared edges and vertices are permitted.
-    pub(crate) fn overlaps(&self, other: &Self) -> bool {
+    pub(crate) fn overlaps(&self, other: &PolygonFootprint<'_>) -> bool {
         self.overlaps_points(&other.points, other.min, other.max)
     }
 
@@ -48,24 +62,6 @@ impl PolygonFootprint {
     pub(crate) fn overlaps_precise_points(&self, points: &[[f64; 2]]) -> bool {
         let (min, max) = precise_bounds(points.iter().copied());
         self.overlaps_points(points, min, max)
-    }
-
-    // Conservative f64 prefilter for a road quad's corners: the margin dwarfs the f32 rounding
-    // of `precise_bounds`, so it never rejects a quad `overlaps_road_polygon` would accept.
-    fn may_overlap_corners(&self, corners: &[RoadVec3; 4]) -> bool {
-        const MARGIN_M: f64 = 1.0;
-        let (mut min_x, mut min_z) = (f64::INFINITY, f64::INFINITY);
-        let (mut max_x, mut max_z) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
-        for corner in corners {
-            min_x = min_x.min(corner.x);
-            max_x = max_x.max(corner.x);
-            min_z = min_z.min(corner.z);
-            max_z = max_z.max(corner.z);
-        }
-        f64::from(self.min.x) < max_x + MARGIN_M
-            && f64::from(self.max.x) > min_x - MARGIN_M
-            && f64::from(self.min.y) < max_z + MARGIN_M
-            && f64::from(self.max.y) > min_z - MARGIN_M
     }
 
     fn bounds_overlap(&self, min: Vector2, max: Vector2) -> bool {
@@ -76,7 +72,7 @@ impl PolygonFootprint {
         self.bounds_overlap(min, max)
             && !self
                 .points
-                .as_slice()
+                .as_ref()
                 .overlay(&points, OverlayRule::Intersect, FillRule::EvenOdd)
                 .is_empty()
     }
@@ -108,15 +104,20 @@ impl PolygonFootprint {
         inside
     }
 
-    fn from_road(points: &[RoadVec3]) -> Self {
-        Self::from_precise_points(points.iter().map(|p| [p.x, p.z]))
-    }
-
     fn overlaps_road_polygon(&self, points: &[RoadVec3]) -> bool {
         let points = points.iter().map(|p| [p.x, p.z]);
         let (min, max) = precise_bounds(points.clone());
         if !self.bounds_overlap(min, max) {
             return false;
+        }
+        // Compiled span triangles/quads need no temporary heap contour.
+        if points.len() <= 4 {
+            let mut contour = [[0.0; 2]; 4];
+            let count = points.len();
+            for (target, point) in contour.iter_mut().zip(points) {
+                *target = point;
+            }
+            return self.overlaps_points(&contour[..count], min, max);
         }
         // Most nearby road pieces miss a cell. Copy a contour only when the existing
         // outward-rounded bounds admit it; reuse those bounds for the exact overlay.
@@ -130,19 +131,33 @@ impl PolygonFootprint {
         let cell_m = cell_max.x as f32;
         let min = (self.min / cell_m).floor();
         let max = (self.max / cell_m).floor();
+        let multiple_chunks = min != max;
         let mut tested_spans = HashSet::new();
         let mut tested_nodes = HashSet::new();
         for x in min.x as i32..=max.x as i32 {
             for z in min.y as i32..=max.y as i32 {
                 if let Some(ids) = roads.query_chunk_spans.get(&(x, z)) {
                     for id in ids.iter() {
-                        if !tested_spans.insert(*id) {
+                        if multiple_chunks && !tested_spans.insert(*id) {
                             continue;
                         }
                         if let Some(piece) = roads.compiled_visual_span_pieces.get(id)
-                            && piece
-                                .surface_polygons_where(|corners| self.may_overlap_corners(corners))
-                                .any(|quad| self.overlaps_road_polygon(quad.points()))
+                            && piece.any_surface_polygon_in_bounds(
+                                [
+                                    f64::from(self.min.x) - 1.0,
+                                    f64::from(self.min.y) - 1.0,
+                                    f64::from(self.max.x) + 1.0,
+                                    f64::from(self.max.y) + 1.0,
+                                ],
+                                |corners| {
+                                    // Quad points are a subset of the original corners. Apply
+                                    // the same outward-rounded bounds before reconstructing it.
+                                    let (min, max) =
+                                        precise_bounds(corners.iter().map(|p| [p.x, p.z]));
+                                    self.bounds_overlap(min, max)
+                                },
+                                |quad| self.overlaps_road_polygon(quad.points()),
+                            )
                         {
                             return true;
                         }
@@ -150,7 +165,7 @@ impl PolygonFootprint {
                 }
                 if let Some(ids) = roads.query_chunk_nodes.get(&(x, z)) {
                     for id in ids.iter() {
-                        if !tested_nodes.insert(*id) {
+                        if multiple_chunks && !tested_nodes.insert(*id) {
                             continue;
                         }
                         if let Some(piece) = roads.compiled_visual_node_pieces.get(id)
@@ -194,7 +209,7 @@ fn precise_bounds(points: impl Iterator<Item = [f64; 2]>) -> (Vector2, Vector2) 
 /// Derived field footprints covering their full area, without inflating the building-center index.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct FieldClearanceIndex {
-    footprints: HashMap<usize, PolygonFootprint>,
+    footprints: HashMap<usize, PolygonFootprint<'static>>,
     chunks: HashMap<(i32, i32), Vec<usize>>,
 }
 
@@ -220,7 +235,7 @@ impl FieldClearanceIndex {
         self.insert(building_idx, PolygonFootprint::new(points));
     }
 
-    fn insert(&mut self, building_idx: usize, footprint: PolygonFootprint) {
+    fn insert(&mut self, building_idx: usize, footprint: PolygonFootprint<'static>) {
         for key in chunks(footprint.min, footprint.max) {
             let bucket = self.chunks.entry(key).or_default();
             let position = bucket.partition_point(|&id| id < building_idx);
@@ -229,7 +244,7 @@ impl FieldClearanceIndex {
         self.footprints.insert(building_idx, footprint);
     }
 
-    fn remove(&mut self, building_idx: usize) -> Option<PolygonFootprint> {
+    fn remove(&mut self, building_idx: usize) -> Option<PolygonFootprint<'static>> {
         let footprint = self.footprints.remove(&building_idx)?;
         for key in chunks(footprint.min, footprint.max) {
             if let Some(bucket) = self.chunks.get_mut(&key) {
@@ -357,6 +372,7 @@ impl FieldClearanceIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::simulation::network::surface::RoadSurfaceVisualPolygon;
 
     fn rectangle(x: f32, z: f32, width: f32, depth: f32) -> [Vector2; 4] {
@@ -366,6 +382,32 @@ mod tests {
             Vector2::new(x + width, z + depth),
             Vector2::new(x, z + depth),
         ]
+    }
+
+    #[test]
+    fn borrowed_footprints_preserve_owned_bounds_and_exact_overlap() {
+        for offset in [-8192.0, -512.0, 0.0, 512.0, 8192.0] {
+            let points = [[0.0, 0.0], [30.0, 0.0], [30.0, 10.0],
+                [10.0, 10.0], [10.0, 30.0], [0.0, 30.0]]
+                .map(|[x, z]| [x + offset, z + offset]);
+            let borrowed = PolygonFootprint::from_precise_slice(&points);
+            let owned = PolygonFootprint::from_precise_points(points.into_iter());
+            assert!(matches!(borrowed.points, Cow::Borrowed(_)));
+            assert_eq!(borrowed.points.as_ptr(), points.as_ptr());
+            assert_eq!((borrowed.min, borrowed.max), (owned.min, owned.max));
+            for (x, z, size) in [(1.0, 1.0, 2.0), (-1.0, -1.0, 40.0),
+                (15.0, 15.0, 5.0), (30.0, 0.0, 5.0), (29.999999, 0.0, 5.0),
+                (30.000001, 0.0, 5.0)] {
+                let query = [[x, z], [x + size, z], [x + size, z + size], [x, z + size]]
+                    .map(|[x, z]| [x + offset, z + offset]);
+                let query_borrowed = PolygonFootprint::from_precise_slice(&query);
+                let query_owned = PolygonFootprint::from_precise_points(query.into_iter());
+                let expected = owned.overlaps(&query_owned);
+                assert_eq!(borrowed.overlaps(&query_borrowed), expected);
+                assert_eq!(owned.overlaps(&query_borrowed), expected);
+                assert_eq!(borrowed.overlaps(&query_owned), expected);
+            }
+        }
     }
 
     #[test]

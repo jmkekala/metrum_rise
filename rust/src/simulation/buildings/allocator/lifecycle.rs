@@ -262,6 +262,7 @@ impl BuildingAllocator {
                 let b_parcel_id = b.parcel_id;
                 let b_zone = b.zone_type;
                 let removed_site_bounds = self.site_world_bounds(i);
+                self.record_building_site_change(i, removed_site_bounds);
                 if let Some(zone_idx) = baseline_private_zone_slot(b_zone) {
                     self.dirty_zones[zone_idx] = true;
                 }
@@ -297,7 +298,6 @@ impl BuildingAllocator {
                 self.buildings.swap_remove(i);
                 self.remove_building_site_client(i);
                 if let Some(bounds) = removed_site_bounds {
-                    self.accumulate_pending_site_dirty_bounds(Some(bounds));
                     debug_log!(
                         "economy",
                         "building site removed by cleanup: building_idx={} bounds=({:.1},{:.1})-({:.1},{:.1})",
@@ -1183,8 +1183,8 @@ impl BuildingAllocator {
         let building = &self.buildings[building_idx];
         self.level_changes
             .record((building.parcel_id, building.build_generation));
-        self.accumulate_pending_site_dirty_bounds(old_site_bounds);
-        self.accumulate_pending_site_dirty_bounds(self.site_world_bounds(building_idx));
+        self.record_building_site_change(building_idx, old_site_bounds);
+        self.record_building_site_change(building_idx, self.site_world_bounds(building_idx));
         self.bump_building_ref_revision();
         self.dirty = true;
         self.dirty_index = true;
@@ -1211,7 +1211,7 @@ impl BuildingAllocator {
         else {
             return false;
         };
-        self.accumulate_pending_site_dirty_bounds(self.site_world_bounds(building_idx));
+        self.record_building_site_change(building_idx, self.site_world_bounds(building_idx));
         zoning.clear_parcel_occupancy(parcel_id);
 
         agents.evict_building(building_idx);

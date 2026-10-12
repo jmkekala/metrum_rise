@@ -58,50 +58,8 @@ fn grid(side: u32) -> RegionGraph {
     graph
 }
 
-fn full_recount_order(graph: &RegionGraph) -> Vec<u32> {
-    let mut adj = vec![BTreeSet::new(); graph.node_count()];
-    for edge in graph
-        .edges()
-        .iter()
-        .filter(|edge| !edge.deleted && edge.start_node != edge.end_node)
-    {
-        adj[edge.start_node as usize].insert(edge.end_node);
-        adj[edge.end_node as usize].insert(edge.start_node);
-    }
-    let mut remaining: BTreeSet<u32> = (0..graph.node_count() as u32).collect();
-    let mut order = Vec::new();
-    while !remaining.is_empty() {
-        // Independent deliberately slow oracle: recount every candidate after each contraction.
-        let node = *remaining
-            .iter()
-            .min_by_key(|&&u| {
-                let neighbors: Vec<_> = adj[u as usize].iter().copied().collect();
-                let mut missing = 0_i64;
-                for (i, &v) in neighbors.iter().enumerate() {
-                    for w in &neighbors[i + 1..] {
-                        missing += i64::from(!adj[v as usize].contains(w));
-                    }
-                }
-                (missing - neighbors.len() as i64, u)
-            })
-            .unwrap();
-        let neighbors: Vec<_> = adj[node as usize].iter().copied().collect();
-        for &v in &neighbors {
-            adj[v as usize].remove(&node);
-            for &w in &neighbors {
-                if v != w {
-                    adj[v as usize].insert(w);
-                }
-            }
-        }
-        remaining.remove(&node);
-        order.push(node);
-    }
-    order
-}
-
 #[test]
-fn incremental_order_matches_full_recount_after_topology_edits() {
+fn nested_dissection_is_deterministic_after_topology_edits() {
     for side in [1, 2, 4, 8] {
         let mut graph = grid(side);
         graph.add_node(Vector3::new(-1000.0, 0.0, 0.0), NodeType::Junction);
@@ -112,10 +70,14 @@ fn incremental_order_matches_full_recount_after_topology_edits() {
                 }
                 graph.rebuild_adjacency_list();
             }
-            let expected = full_recount_order(&graph);
+            let expected = CchGraph::compute_node_order(&graph).0;
+            assert_eq!(
+                expected.iter().copied().collect::<BTreeSet<_>>().len(),
+                graph.node_count()
+            );
             for _ in 0..3 {
                 let (order, rank) = CchGraph::compute_node_order(&graph);
-                assert_eq!(order, expected, "side={side}, edited={edited}");
+                assert_eq!(order, expected);
                 for (position, node) in order.into_iter().enumerate() {
                     assert_eq!(rank[node as usize], position as u32);
                 }
@@ -303,6 +265,46 @@ fn rebuilding_with_live_congestion_preserves_free_flow_costs() {
     assert_costs_from_match_queries(&restored, &graph, TransitFlags::CAR);
 }
 
+#[test]
+fn positive_self_loop_pays_its_cost_after_each_customization() {
+    let mut graph = RegionGraph::new();
+    for _ in 0..3 {
+        graph.add_node(Vector3::ZERO, NodeType::Junction);
+    }
+    for (start_node, end_node, base_cost) in [(0, 2, 1.0), (2, 2, 5.0), (2, 1, 1.0)] {
+        graph.add_edge(Edge {
+            start_node,
+            end_node,
+            base_cost,
+            physical_length: base_cost,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            allowed_types: TransitFlags::CAR,
+            ..Default::default()
+        });
+    }
+    graph.add_lane_connection(2, 0, 0, 1, 0);
+    graph.add_lane_connection(2, 1, 0, 2, 0);
+    graph.rebuild_adjacency_list();
+    let mut cch = CchGraph::build(&graph);
+    for loop_cost in [5.0, 11.0, 0.5] {
+        graph.edge_mut(1).base_cost = loop_cost;
+        cch.customize(&graph);
+        let expected = turn_aware_dijkstra(&graph, 0, 1, usize::MAX).unwrap();
+        assert_eq!(expected, 2.0 + loop_cost);
+        let (cost, distance, path) = cch
+            .find_path(0, 1, usize::MAX, &graph, TransitFlags::CAR)
+            .unwrap();
+        assert_eq!(path, [0, 2, 2, 1]);
+        assert_eq!(distance, 7.0);
+        assert_eq!(cost, expected);
+        assert_eq!(
+            cch.costs_from_each(&[0], &graph, TransitFlags::CAR)[0].cost_to(1),
+            Some(expected)
+        );
+    }
+}
+
 fn turn_aware_dijkstra(
     graph: &RegionGraph,
     start: u32,
@@ -363,11 +365,12 @@ fn merged_open_endpoint_states_preserve_restricted_turn_routes() {
     let cch = CchGraph::build(&graph);
     for start in 0..16 {
         for end in 0..16 {
-            for start_edge in graph
-                .node_adjacency(start)
-                .iter()
-                .copied()
-                .chain([usize::MAX, usize::MAX - 1, 0])
+            for start_edge in
+                graph
+                    .node_adjacency(start)
+                    .iter()
+                    .copied()
+                    .chain([usize::MAX, usize::MAX - 1, 0])
             {
                 let expected = turn_aware_dijkstra(&graph, start, end, start_edge);
                 let actual = cch.find_path(start, end, start_edge, &graph, TransitFlags::CAR);
@@ -712,41 +715,40 @@ fn benchmark_cch_build_storage() {
     fn vec_bytes<T>(values: &Vec<T>) -> usize {
         values.capacity() * size_of::<T>()
     }
-    fn nested_bytes<T>(values: &Vec<Vec<T>>) -> usize {
-        vec_bytes(values) + values.iter().map(vec_bytes).sum::<usize>()
-    }
 
     for side in [8, 16, 32] {
         let (graph, variant) = benchmark_graph(side);
         let warm = CchGraph::build(&graph);
         let retained_bytes = size_of_val(&warm)
             + vec_bytes(&warm.shortcuts)
-            + nested_bytes(&warm.fwd_up)
-            + nested_bytes(&warm.bwd_up)
-            + nested_bytes(&warm.shortcut_alternatives)
-            + vec_bytes(&warm.customization_order);
-        // Compare every query/customization product; the debug build counter is intentionally
-        // excluded. Capacity accounting includes vector payloads/headers, not allocator metadata.
+            + vec_bytes(&warm.up.offsets)
+            + vec_bytes(&warm.up.values)
+            + vec_bytes(&warm.parent)
+            + vec_bytes(&warm.states.offsets)
+            + vec_bytes(&warm.states.values)
+            + vec_bytes(&warm.departures.offsets)
+            + vec_bytes(&warm.departures.values)
+            + vec_bytes(&warm.turns.restricted)
+            + vec_bytes(&warm.turns.allowed.offsets)
+            + vec_bytes(&warm.turns.allowed.values)
+            + vec_bytes(&warm.base_arcs)
+            + vec_bytes(&warm.base_metric)
+            + vec_bytes(&warm.triangles)
+            + vec_bytes(&warm.node_order)
+            + vec_bytes(&warm.profiles)
+            + warm
+                .profiles
+                .iter()
+                .map(|p| vec_bytes(&p.costs) + vec_bytes(&p.distances) + vec_bytes(&p.witnesses))
+                .sum::<usize>();
         let mut hash = DefaultHasher::new();
-        for shortcut in &warm.shortcuts {
-            (
-                shortcut.start_node,
-                shortcut.target_node,
-                shortcut.cost.to_bits(),
-                shortcut.dist.to_bits(),
-                shortcut.base_edge,
-                shortcut.mid_l,
-                shortcut.mid_r,
-                shortcut.first_edge,
-                shortcut.last_edge,
-                shortcut.allowed_types,
-            )
-                .hash(&mut hash);
+        warm.node_order.hash(&mut hash);
+        warm.parent.hash(&mut hash);
+        for profile in &warm.profiles {
+            for cost in &profile.costs {
+                cost.to_bits().hash(&mut hash);
+            }
         }
-        warm.fwd_up.hash(&mut hash);
-        warm.bwd_up.hash(&mut hash);
-        warm.shortcut_alternatives.hash(&mut hash);
-        warm.customization_order.hash(&mut hash);
         let fingerprint = hash.finish();
         let shortcuts = warm.shortcuts.len();
         drop(warm);
@@ -777,22 +779,26 @@ fn benchmark_cch_build_storage() {
     }
 }
 
-
 #[test]
 fn owned_path_scratch_does_not_prepare_the_city_for_invalid_or_trivial_queries() {
     let graph = grid(5);
     let cch = CchGraph::build(&graph);
     OWNED_PATH_SCRATCH.with_borrow_mut(|scratch| *scratch = CchPathScratch::default());
-    assert!(cch.find_path(0, 25, usize::MAX, &graph, TransitFlags::CAR).is_none());
-    assert_eq!(cch.find_path(0, 0, usize::MAX, &graph, TransitFlags::CAR),
-        Some((0.0, 0.0, vec![0])));
-    OWNED_PATH_SCRATCH.with_borrow(|scratch| {
-        assert_eq!(scratch.query.fwd_data.records.capacity(), 0);
-        assert_eq!(scratch.query.bwd_data.records.capacity(), 0);
-        assert_eq!(scratch.query.fwd_heap.capacity(), 0);
-        assert_eq!(scratch.query.bwd_heap.capacity(), 0);
+    assert!(
+        cch.find_path(0, 25, usize::MAX, &graph, TransitFlags::CAR)
+            .is_none()
+    );
+    assert_eq!(
+        cch.find_path(0, 0, usize::MAX, &graph, TransitFlags::CAR),
+        Some((0.0, 0.0, vec![0]))
+    );
+    OWNED_PATH_SCRATCH.with_borrow_mut(|scratch| {
+        assert_eq!(scratch.query().capacities(), [0; 4]);
     });
-    assert!(cch.find_path(0, 24, usize::MAX, &graph, TransitFlags::CAR).is_some());
+    assert!(
+        cch.find_path(0, 24, usize::MAX, &graph, TransitFlags::CAR)
+            .is_some()
+    );
 }
 
 #[test]
@@ -801,45 +807,58 @@ fn prepared_cost_queries_match_paths_without_growing_search_storage() {
     let mut cch = CchGraph::build(&graph);
     let mut scratch = CchQueryScratch::default();
     scratch.prepare(&cch, &graph);
-    let capacities = |scratch: &CchQueryScratch| [scratch.fwd_heap.capacity(),
-        scratch.bwd_heap.capacity(), scratch.fwd_data.records.capacity(), scratch.bwd_data.records.capacity()];
+    let capacities = CchQueryScratch::capacities;
     let prepared = capacities(&scratch);
     let mut paths = CchPathScratch::default();
     paths.prepare(&cch, &graph);
-    let path_capacities = |paths: &CchPathScratch| [paths.edges.capacity(),
-        paths.shortcuts.capacity(), paths.nodes.capacity()];
+    let path_capacities = CchPathScratch::capacities;
     let path_prepared = path_capacities(&paths);
     for multiplier in [1.0, 2.0] {
-        for index in 0..graph.edge_count() { graph.edge_mut(index).base_cost *= multiplier; }
+        for index in 0..graph.edge_count() {
+            graph.edge_mut(index).base_cost *= multiplier;
+        }
         cch.customize(&graph);
         for from in 0..graph.node_count() as u32 {
             for to in 0..graph.node_count() as u32 {
                 for mode in [TransitFlags::CAR, TransitFlags::FOOT] {
                     let expected = cch.find_path(from, to, usize::MAX, &graph, mode);
-                    assert_eq!(cch.find_cost(from, to, usize::MAX, &graph, mode, &mut scratch),
-                        expected.as_ref().map(|route| route.0));
-                    assert_eq!(cch.find_path_in(from, to, usize::MAX, &graph, mode, &mut paths),
-                        expected.as_ref().map(|route| (route.0, route.1, route.2.as_slice())));
+                    assert_eq!(
+                        cch.find_cost(from, to, usize::MAX, &graph, mode, &mut scratch),
+                        expected.as_ref().map(|route| route.0)
+                    );
+                    assert_eq!(
+                        cch.find_path_in(from, to, usize::MAX, &graph, mode, &mut paths),
+                        expected
+                            .as_ref()
+                            .map(|route| (route.0, route.1, route.2.as_slice()))
+                    );
                     assert_eq!(path_capacities(&paths), path_prepared);
-                    assert_eq!(capacities(&paths.query), prepared);
-                    assert_eq!(capacities(&scratch), prepared,
-                        "prepared searches must retain their storage across distinct endpoint pairs");
+                    assert_eq!(capacities(paths.query()), prepared);
+                    assert_eq!(
+                        capacities(&scratch),
+                        prepared,
+                        "prepared searches must retain their storage across distinct endpoint pairs"
+                    );
                 }
             }
         }
     }
     let mut fork = scratch.clone();
     assert_eq!(capacities(&fork), prepared);
-    assert_eq!(cch.find_cost(0, 24, usize::MAX, &graph, TransitFlags::CAR, &mut fork),
-        cch.find_path(0, 24, usize::MAX, &graph, TransitFlags::CAR).map(|route| route.0));
+    assert_eq!(
+        cch.find_cost(0, 24, usize::MAX, &graph, TransitFlags::CAR, &mut fork),
+        cch.find_path(0, 24, usize::MAX, &graph, TransitFlags::CAR)
+            .map(|route| route.0)
+    );
     assert_eq!(capacities(&fork), prepared);
     // Epoch rollover must clear old labels rather than making the first query's records
     // visible again. Nonincident and invalid incoming edges retain the ordinary origin rule.
-    fork.fwd_data.epoch = u64::MAX;
-    fork.bwd_data.epoch = u64::MAX;
+    fork.roll_epochs_over();
     for incoming in [usize::MAX, usize::MAX - 1, 0] {
-        assert_eq!(cch.find_cost(24, 0, incoming, &graph, TransitFlags::CAR, &mut fork),
-            turn_aware_dijkstra(&graph, 24, 0, incoming));
+        assert_eq!(
+            cch.find_cost(24, 0, incoming, &graph, TransitFlags::CAR, &mut fork),
+            turn_aware_dijkstra(&graph, 24, 0, incoming)
+        );
         assert_eq!(capacities(&fork), prepared);
     }
 }
@@ -862,12 +881,18 @@ fn cost_only_queries_match_paths_on_random_restricted_graphs() {
         let mut graph = grid(side);
         for edge in graph.edges_iter_mut() {
             edge.base_cost = 1.0 + next(12) as f32;
-            if next(5) == 0 { edge.bkw_lanes = 0; }
-            if next(2) == 0 { edge.allowed_types |= TransitFlags::FOOT; }
+            if next(5) == 0 {
+                edge.bkw_lanes = 0;
+            }
+            if next(2) == 0 {
+                edge.allowed_types |= TransitFlags::FOOT;
+            }
         }
         for node in 0..graph.node_count() as u32 {
             let arms = graph.node_adjacency(node).to_vec();
-            if arms.len() < 3 || next(3) != 0 { continue; }
+            if arms.len() < 3 || next(3) != 0 {
+                continue;
+            }
             let incoming = arms[next(arms.len() as u64) as usize];
             for &outgoing in &arms {
                 if outgoing != incoming && next(2) == 0 {
@@ -878,21 +903,35 @@ fn cost_only_queries_match_paths_on_random_restricted_graphs() {
         let mut cch = CchGraph::build(&graph);
         for phase in 0..2 {
             if phase == 1 {
-                for edge in graph.edges_iter_mut() { edge.base_cost = 1.0 + next(12) as f32; }
+                for edge in graph.edges_iter_mut() {
+                    edge.base_cost = 1.0 + next(12) as f32;
+                }
                 cch.customize(&graph);
             }
             for from in 0..graph.node_count() as u32 {
                 for to in 0..graph.node_count() as u32 {
-                    for start_edge in graph.node_adjacency(from).iter().copied().chain([usize::MAX]) {
+                    for start_edge in graph
+                        .node_adjacency(from)
+                        .iter()
+                        .copied()
+                        .chain([usize::MAX])
+                    {
                         for mode in [TransitFlags::CAR, TransitFlags::FOOT] {
-                            let cost = cch.find_cost(from, to, start_edge, &graph, mode, &mut scratch);
-                            let path = cch.find_path_in(from, to, start_edge, &graph, mode, &mut paths)
+                            let cost =
+                                cch.find_cost(from, to, start_edge, &graph, mode, &mut scratch);
+                            let path = cch
+                                .find_path_in(from, to, start_edge, &graph, mode, &mut paths)
                                 .map(|route| route.0);
-                            assert_eq!(cost, path,
-                                "seed={seed} phase={phase} {from}->{to} edge={start_edge} mode={mode}");
+                            assert_eq!(
+                                cost, path,
+                                "seed={seed} phase={phase} {from}->{to} edge={start_edge} mode={mode}"
+                            );
                             if mode == TransitFlags::CAR {
-                                assert_eq!(cost, turn_aware_dijkstra(&graph, from, to, start_edge),
-                                    "seed={seed} phase={phase} {from}->{to} edge={start_edge}");
+                                assert_eq!(
+                                    cost,
+                                    turn_aware_dijkstra(&graph, from, to, start_edge),
+                                    "seed={seed} phase={phase} {from}->{to} edge={start_edge}"
+                                );
                             }
                         }
                     }
@@ -900,4 +939,80 @@ fn cost_only_queries_match_paths_on_random_restricted_graphs() {
             }
         }
     }
+}
+
+#[test]
+fn filled_neighbors_are_ancestors_and_form_cliques() {
+    for variant in [false, true] {
+        let mut graph = grid(8);
+        if variant {
+            for node in (0..graph.node_count() as u32).step_by(3) {
+                let edges = graph.node_adjacency(node);
+                graph.add_lane_connection(node, edges[0], 0, *edges.last().unwrap(), 0);
+            }
+        }
+        let cch = CchGraph::build(&graph);
+        for low in 0..cch.parent.len() {
+            let neighbors = &cch.up[low];
+            for (i, &(high, _)) in neighbors.iter().enumerate() {
+                assert!(high as usize > low);
+                let mut ancestor = cch.parent[low];
+                while ancestor != u32::MAX && ancestor != high {
+                    ancestor = cch.parent[ancestor as usize];
+                }
+                assert_eq!(ancestor, high);
+                for &(other, _) in &neighbors[i + 1..] {
+                    assert!(cch.up[high as usize].iter().any(|&(node, _)| node == other));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn restricted_origin_uses_customized_metric_until_next_customization() {
+    let mut graph = grid(2);
+    graph.add_lane_connection(0, 0, 0, 1, 0);
+    let mut cch = CchGraph::build(&graph);
+    let before = cch.find_path(0, 2, 0, &graph, TransitFlags::CAR);
+    graph.edge_mut(1).base_cost *= 3.0;
+    assert_eq!(cch.find_path(0, 2, 0, &graph, TransitFlags::CAR), before);
+    cch.customize(&graph);
+    assert_eq!(
+        cch.find_path(0, 2, 0, &graph, TransitFlags::CAR).unwrap().0,
+        before.unwrap().0 * 3.0
+    );
+}
+
+#[test]
+fn restricted_detour_can_return_to_a_junction_with_a_different_arrival_edge() {
+    let mut graph = RegionGraph::new();
+    for _ in 0..4 {
+        graph.add_node(Vector3::ZERO, NodeType::Junction);
+    }
+    for (start_node, end_node, base_cost) in [(0, 1, 1.0), (1, 2, 2.0), (1, 3, 4.0)] {
+        graph.add_edge(Edge {
+            start_node,
+            end_node,
+            base_cost,
+            physical_length: base_cost,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            allowed_types: TransitFlags::CAR,
+            ..Default::default()
+        });
+    }
+    graph.add_lane_connection(1, 0, 0, 1, 0);
+    graph.add_lane_connection(1, 1, 0, 2, 0);
+    graph.rebuild_adjacency_list();
+    let cch = CchGraph::build(&graph);
+    assert_eq!(turn_aware_dijkstra(&graph, 0, 3, usize::MAX), Some(9.0));
+    assert_eq!(
+        cch.find_path(0, 3, usize::MAX, &graph, TransitFlags::CAR),
+        Some((9.0, 9.0, vec![0, 1, 2, 1, 3]))
+    );
+    assert_eq!(
+        cch.costs_from_each(&[0], &graph, TransitFlags::CAR)[0].cost_to(3),
+        Some(9.0)
+    );
 }

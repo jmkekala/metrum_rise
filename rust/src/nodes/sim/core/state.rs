@@ -843,7 +843,9 @@ impl SimCore {
     }
 
     pub(super) fn execute_hourly_demand_pass(&mut self, day_index: u32, minute_of_day: u16) {
+        let timing = crate::debug::category_enabled("economy_phases").then(Instant::now);
         self.prepare_cell_lots_internal();
+        let cells_ms = timing.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0);
         self.allocator
             .prepare_building_site_query_index(self.config.zone_cell_m);
         self.transit_network.road_surface.compile_dirty_with_reason(
@@ -854,6 +856,7 @@ impl SimCore {
         self.demand
             .set_admission_candidate_hour(day_index, minute_of_day);
         self.refresh_demand_construction_queue(day_index, minute_of_day);
+        let prepare_ms = timing.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0) - cells_ms;
         self.demand.run_hourly_pass_with_policy(
             &self.allocator,
             &self.households,
@@ -868,6 +871,7 @@ impl SimCore {
                 terrain: &self.heightmap,
             }, minute_of_day,
         );
+        let plan_ms = timing.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0) - cells_ms - prepare_ms;
         let launched_households = self
             .allocator
             .execute_demand_household_admission_with_income(
@@ -894,8 +898,10 @@ impl SimCore {
             .saturating_add(launched_households);
         self.demand
             .record_household_admission_execution(launched_households);
+        let admission_end = timing.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0);
         let queued_spawn_count = self.enqueue_hourly_demand_spawns(day_index, minute_of_day);
         let immediate_building_plan = demand_plan_without_spawns(&self.demand.building_actions);
+        let queue_end = timing.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0);
         let building_action_execution =
             if demand_plan_has_non_spawn_actions(&immediate_building_plan) {
                 self.refresh_demand_construction_queue(day_index, minute_of_day);
@@ -916,7 +922,16 @@ impl SimCore {
             } else {
                 Default::default()
             };
+        let actions_end = timing.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0);
         self.publish_pending_building_site_changes();
+        if let Some(start) = timing {
+            let total_ms = start.elapsed().as_secs_f64() * 1000.0;
+            debug_log!("economy_phases", "demand_phase_detail day={} minute={} cells_ms={:.3} prepare_ms={:.3} plan_ms={:.3} execute_ms={:.3} total_ms={:.3} admission_ms={:.3} queue_ms={:.3} actions_ms={:.3} publish_ms={:.3}",
+                day_index, minute_of_day, cells_ms, prepare_ms, plan_ms,
+                total_ms - cells_ms - prepare_ms - plan_ms, total_ms,
+                admission_end - cells_ms - prepare_ms - plan_ms, queue_end - admission_end,
+                actions_end - queue_end, total_ms - actions_end);
+        }
         self.demand
             .log_hourly_household_action_diagnostics(day_index, minute_of_day);
         self.demand
@@ -985,8 +1000,14 @@ impl SimCore {
     pub(crate) fn publish_pending_building_site_changes(&mut self) {
         self.publish_pending_production_site_removals();
         crate::nodes::simulation_node::vegetation_api::publish_yards(self);
+        while let Some(bounds) = self.allocator.pop_pending_cell_site_dirty_bounds() {
+            self.zoning.mark_cell_lots_dirty(crate::simulation::zoning::cells::CellBounds {
+                min: glam::DVec2::new(f64::from(bounds.0), f64::from(bounds.1)),
+                max: glam::DVec2::new(f64::from(bounds.2), f64::from(bounds.3)),
+            });
+        }
         if let Some(bounds) = self.allocator.take_pending_site_dirty_bounds() {
-            self.mark_building_site_terrain_dirty_bounds(bounds);
+            self.mark_building_site_terrain_only_bounds(bounds);
         }
     }
 
@@ -1017,6 +1038,10 @@ impl SimCore {
                 min: glam::DVec2::new(f64::from(bounds.0), f64::from(bounds.1)),
                 max: glam::DVec2::new(f64::from(bounds.2), f64::from(bounds.3)),
             });
+        self.mark_building_site_terrain_only_bounds(bounds);
+    }
+
+    fn mark_building_site_terrain_only_bounds(&mut self, bounds: (f32, f32, f32, f32)) {
         let margin_m =
             terrain_cdt_local_sample_margin_m(&self.heightmap, ROAD_LOCKED_TERRAIN_RENDER_STEP_M);
         self.allocator.mark_building_site_terrain_bounds_dirty(

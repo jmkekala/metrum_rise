@@ -8,6 +8,7 @@ use std::sync::atomic::AtomicU32;
 
 use super::building_economy::liquidate_outputs_until_budget;
 use super::data::{Household, HouseholdSystem};
+use super::candidate_visits::CandidateVisits;
 use super::metrics::{
     UTILITY_SERVICE_POWER,
     demand_sink_cash_cost_per_resident_excluding_resource, household_demand_profile,
@@ -69,6 +70,10 @@ const EMPTY_WORKPLACE_ROUTE_ENTRY: WorkplaceRouteCacheEntry =
 
 type WorkplaceRouteCacheKey = (usize, usize, bool);
 type WorkplaceRouteCacheEntry = (WorkplaceRouteCacheKey, Option<u16>);
+/// Exact home/workplace/car quotations. Consumers only perform keyed lookups, so the
+/// existing fixed fast hasher changes neither choice order nor daily price invalidation.
+pub(super) type WorkplaceRouteCache =
+    HashMap<WorkplaceRouteCacheKey, Option<u16>, foldhash::fast::FixedState>;
 type CurrentJobOptionKey = (HomeJobOptionsKey, usize);
 
 #[derive(Clone, Copy)]
@@ -138,51 +143,6 @@ struct WagePaymentPlan {
     wage: f32,
 }
 
-struct HomeJobBuildScratch {
-    seen_entries: Vec<u32>,
-    seen_epoch: u32,
-}
-
-impl HomeJobBuildScratch {
-    fn with<T>(query: impl FnOnce(&mut Self) -> T) -> T {
-        thread_local! {
-            // Rayon may create many tasks per worker. Keep visited labels with the worker,
-            // advancing their query epoch instead of allocating for each task partition.
-            static JOB_QUERY: std::cell::RefCell<HomeJobBuildScratch> =
-                std::cell::RefCell::new(HomeJobBuildScratch::new());
-        }
-        JOB_QUERY.with_borrow_mut(query)
-    }
-
-    fn new() -> Self {
-        Self {
-            seen_entries: Vec::new(),
-            seen_epoch: 0,
-        }
-    }
-
-    fn begin_query(&mut self, entry_count: usize) {
-        if self.seen_entries.len() < entry_count {
-            self.seen_entries.resize(entry_count, 0);
-        }
-        self.seen_epoch = self.seen_epoch.wrapping_add(1);
-        if self.seen_epoch == 0 {
-            self.seen_entries.fill(0);
-            self.seen_epoch = 1;
-        }
-    }
-
-    fn mark_seen(&mut self, entry_idx: usize) -> bool {
-        if entry_idx >= self.seen_entries.len() {
-            return false;
-        }
-        if self.seen_entries[entry_idx] == self.seen_epoch {
-            return false;
-        }
-        self.seen_entries[entry_idx] = self.seen_epoch;
-        true
-    }
-}
 
 impl HouseholdSystem {
     #[cfg(test)]
@@ -217,7 +177,10 @@ impl HouseholdSystem {
         treasury_balance: f64,
         minute_of_day: u16,
     ) {
-        let timing_enabled = debug::category_enabled("economy");
+        let timing_category = if debug::category_enabled("economy_workplace") { "economy_workplace" }
+            else if debug::category_enabled("economy_phases") { "economy_phases" } else { "economy" };
+        let timing_enabled = debug::category_enabled(timing_category);
+        let queries_before = if timing_enabled { agents.pathfind_count.load(std::sync::atomic::Ordering::Relaxed) } else { 0 };
         let total_start = Instant::now();
         let mut phase_start = total_start;
         let catalog = load_runtime_economy_catalog()
@@ -254,7 +217,7 @@ impl HouseholdSystem {
         if home_option_keys.is_empty() && current_job_keys.is_empty() {
             if timing_enabled {
                 debug_log!(
-                    "economy",
+                    timing_category,
                     "workplace_assignment_detail skipped_reason=no_candidate_agents agents={} buildings={} households={} job_supply=0 home_keys=0 current_keys=0 home_options=0 current_options=0 route_cache_entries={} new_route_entries=0 plans=0 load_ms={:.3} prep_ms={:.3} route_cache_ms=0.000 component_ms=0.000 supply_ms=0.000 collect_keys_ms={:.3} speed_bounds_ms=0.000 option_build_ms=0.000 insert_routes_ms=0.000 plan_ms=0.000 apply_ms=0.000 total_ms={:.3}",
                     agents.len(),
                     allocator.buildings.len(),
@@ -276,7 +239,7 @@ impl HouseholdSystem {
         if !has_job_supply {
             if timing_enabled {
                 debug_log!(
-                    "economy",
+                    timing_category,
                     "workplace_assignment_detail skipped_reason=no_open_jobs agents={} buildings={} households={} job_supply=0 home_keys={} current_keys={} home_options=0 current_options=0 route_cache_entries={} new_route_entries=0 plans=0 load_ms={:.3} prep_ms={:.3} route_cache_ms=0.000 component_ms=0.000 supply_ms={:.3} collect_keys_ms={:.3} speed_bounds_ms=0.000 option_build_ms=0.000 insert_routes_ms=0.000 plan_ms=0.000 apply_ms=0.000 total_ms={:.3}",
                     agents.len(),
                     allocator.buildings.len(),
@@ -317,7 +280,7 @@ impl HouseholdSystem {
         if job_supply.entries.is_empty() {
             if timing_enabled {
                 debug_log!(
-                    "economy",
+                    timing_category,
                     "workplace_assignment_detail skipped_reason=no_reachable_open_jobs agents={} buildings={} households={} job_supply=0 home_keys={} current_keys={} home_options=0 current_options=0 route_cache_entries={} new_route_entries=0 plans=0 load_ms={:.3} prep_ms={:.3} route_cache_ms={:.3} component_ms={:.3} supply_ms={:.3} collect_keys_ms={:.3} speed_bounds_ms=0.000 option_build_ms=0.000 insert_routes_ms=0.000 plan_ms=0.000 apply_ms=0.000 total_ms={:.3}",
                     agents.len(),
                     allocator.buildings.len(),
@@ -337,6 +300,11 @@ impl HouseholdSystem {
             return;
         }
         phase_start = Instant::now();
+        let targets = std::array::from_fn(|mode| job_supply.entries.par_iter()
+            .flat_map_iter(|entry| entry.trip_ends.network_nodes(mode as u8).into_iter().flatten())
+            .collect());
+        let target_searches = self.workplace_network_quotes.prepare_targets(targets, transit_network);
+        agents.pathfind_count.fetch_add(target_searches as u32, std::sync::atomic::Ordering::Relaxed);
         let max_walk_commute_speed = max_speed_for_modes(graph, TransitFlags::FOOT).max(1.0);
         let max_car_commute_speed =
             max_speed_for_modes(graph, TransitFlags::FOOT | TransitFlags::CAR).max(1.0);
@@ -364,6 +332,8 @@ impl HouseholdSystem {
         let new_route_entry_count = new_route_entries.len();
         let option_build_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
+        // Reserve the completed batch before ordered insertion; no per-quote growth.
+        self.workplace_route_cache.reserve(new_route_entry_count);
         for (key, result) in new_route_entries {
             self.workplace_route_cache.insert(key, result);
         }
@@ -415,8 +385,11 @@ impl HouseholdSystem {
         );
         let apply_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         if timing_enabled {
+            debug_log!(timing_category, "workplace_query_work minute={} cch_searches={} target_searches={}",
+                minute_of_day, agents.pathfind_count.load(std::sync::atomic::Ordering::Relaxed).wrapping_sub(queries_before), target_searches);
+
             debug_log!(
-                "economy",
+                timing_category,
                 "workplace_assignment_detail agents={} buildings={} households={} job_supply={} home_keys={} current_keys={} home_options={} current_options={} route_cache_entries={} network_quote_entries={} new_route_entries={} plans={} load_ms={:.3} prep_ms={:.3} route_cache_ms={:.3} component_ms={:.3} supply_ms={:.3} collect_keys_ms={:.3} speed_bounds_ms={:.3} option_build_ms={:.3} insert_routes_ms={:.3} plan_ms={:.3} apply_ms={:.3} total_ms={:.3}",
                 agents.len(),
                 allocator.buildings.len(),
@@ -1270,7 +1243,7 @@ fn build_home_job_options(
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
     catalog: &RuntimeEconomyCatalog,
-    route_cache: &HashMap<WorkplaceRouteCacheKey, Option<u16>>,
+    route_cache: &WorkplaceRouteCache,
     network_quotes: &SharedNetworkQuotes,
     pathfind_count: &AtomicU32,
     max_walk_commute_speed: f32,
@@ -1284,7 +1257,7 @@ fn build_home_job_options(
     let exact_entrance_cache_available = allocator.entrances.len() == allocator.buildings.len();
     let builds: Vec<_> = keys
         .par_iter()
-        .map(|&key| HomeJobBuildScratch::with(|scratch| {
+        .map(|&key| CandidateVisits::with(|scratch| {
             let mut route_entries = [EMPTY_WORKPLACE_ROUTE_ENTRY; JOB_ROUTE_SCAN_CANDIDATES];
             let mut route_entry_count = 0usize;
             let options = build_home_job_options_for_key(
@@ -1386,12 +1359,12 @@ fn build_home_job_options_for_key(
     allocator: &BuildingAllocator,
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
-    route_cache: &HashMap<WorkplaceRouteCacheKey, Option<u16>>,
+    route_cache: &WorkplaceRouteCache,
     network_quotes: &SharedNetworkQuotes,
     pathfind_count: &AtomicU32,
     exact_entrance_cache_available: bool,
     max_commute_speed: f32,
-    scratch: &mut HomeJobBuildScratch,
+    scratch: &mut CandidateVisits,
     new_route_entries: &mut [WorkplaceRouteCacheEntry; JOB_ROUTE_SCAN_CANDIDATES],
     new_route_entry_count: &mut usize,
 ) -> HomeJobOptions {
@@ -1491,14 +1464,14 @@ fn scan_home_job_bucket(
     job_supply: &JobSupplySnapshot,
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
-    route_cache: &HashMap<WorkplaceRouteCacheKey, Option<u16>>,
+    route_cache: &WorkplaceRouteCache,
     network_quotes: &SharedNetworkQuotes,
     pathfind_count: &AtomicU32,
     exact_entrance_cache_available: bool,
     origin_x: f32,
     origin_y: f32,
     max_commute_speed: f32,
-    scratch: &mut HomeJobBuildScratch,
+    scratch: &mut CandidateVisits,
     options: &mut HomeJobOptions,
     option_count: &mut usize,
     new_route_entries: &mut [WorkplaceRouteCacheEntry; JOB_ROUTE_SCAN_CANDIDATES],
@@ -1622,7 +1595,7 @@ fn build_current_job_option_for_key(
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
     catalog: &RuntimeEconomyCatalog,
-    route_cache: &HashMap<WorkplaceRouteCacheKey, Option<u16>>,
+    route_cache: &WorkplaceRouteCache,
     network_quotes: &SharedNetworkQuotes,
     pathfind_count: &AtomicU32,
     exact_entrance_cache_available: bool,
@@ -1707,7 +1680,7 @@ fn cached_commute_seconds_within(
     work_trip_ends: &BuildingTripEnds,
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
-    route_cache: &HashMap<WorkplaceRouteCacheKey, Option<u16>>,
+    route_cache: &WorkplaceRouteCache,
     network_quotes: &SharedNetworkQuotes,
     pathfind_count: &AtomicU32,
     exact_entrance_cache_available: bool,
@@ -1754,7 +1727,7 @@ fn cached_commute_seconds(
     allocator: &BuildingAllocator,
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
-    route_cache: &HashMap<WorkplaceRouteCacheKey, Option<u16>>,
+    route_cache: &WorkplaceRouteCache,
     network_quotes: &SharedNetworkQuotes,
     pathfind_count: &AtomicU32,
     exact_entrance_cache_available: bool,
@@ -1793,32 +1766,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn worker_job_scan_reuses_labels_between_tasks_and_after_epoch_wrap() {
-        let capacity = HomeJobBuildScratch::with(|scratch| {
-            scratch.begin_query(32);
-            assert!(scratch.mark_seen(7));
-            assert!(!scratch.mark_seen(7));
-            scratch.seen_entries.capacity()
-        });
-        for _ in 0..16 {
-            HomeJobBuildScratch::with(|scratch| {
-                scratch.begin_query(32);
-                assert!(scratch.mark_seen(7));
-                assert!(!scratch.mark_seen(7));
-                assert_eq!(scratch.seen_entries.capacity(), capacity);
-            });
-        }
-        HomeJobBuildScratch::with(|scratch| {
-            scratch.seen_epoch = u32::MAX;
-            scratch.begin_query(32);
-            assert_eq!(scratch.seen_epoch, 1);
-            assert!(scratch.mark_seen(7));
-            assert!(!scratch.mark_seen(7));
-            assert_eq!(scratch.seen_entries.capacity(), capacity);
-        });
-    }
-
-    #[test]
     fn job_search_keeps_farther_candidates_that_can_win_a_capped_commute_tie() {
         let mut options = empty_home_job_options();
         let mut count = 0;
@@ -1850,4 +1797,80 @@ mod tests {
             1.0
         ));
     }
+
+    #[test]
+    fn bucket_commutes_preserve_all_twenty_four_ranked_job_options() {
+        use crate::simulation::buildings::allocator::BuildingEntrance;
+        use crate::simulation::network::graph::Edge;
+        use crate::simulation::network::lanes::LaneType;
+        use crate::simulation::network::types::NodeType;
+        use crate::simulation::pathing::cch::CchGraph;
+        use godot::prelude::{Vector2, Vector3};
+        use std::sync::atomic::Ordering;
+
+        let mut graph = RegionGraph::new();
+        for node in 0..45 { graph.add_node(Vector3::new(node as f32 * 100.0, 0.0, 0.0), NodeType::Junction); }
+        for edge in 0..44 {
+            let geometry = vec![graph.node(edge).pos, graph.node(edge + 1).pos];
+            graph.add_edge(Edge { start_node: edge, end_node: edge + 1,
+                fwd_lanes: 1, bkw_lanes: 1, allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+                width: 10.0, speed_limit: 15.0, base_cost: 300.0 + (edge % 3) as f32 / 7.0,
+                physical_length: 100.0, physical_geometry: geometry.clone(), geometry, ..Default::default() });
+        }
+        graph.rebuild_adjacency_list();
+        let mut network = TransitNetwork::new(); network.lane_system.rebuild(&mut graph);
+        network.cch_graph = CchGraph::build(&graph);
+        let entrances: Vec<_> = (0..44).map(|edge| {
+            let lane = |kind, forward| network.lane_system.edge_lanes[&edge].iter().copied()
+                .find(|&id| { let lane = &network.lane_system.lanes[id]; lane.lane_type == kind && lane.is_fwd == forward }).unwrap();
+            BuildingEntrance { edge_idx: edge, entrance_s_m: 50.0, side: 1,
+                door_pos: Vector2::new(edge as f32 * 100.0 + 50.0, 12.0),
+                curb_pos: Vector2::new(edge as f32 * 100.0 + 50.0, 5.0),
+                foot_lane_fwd: lane(LaneType::Foot, true), foot_lane_bkw: lane(LaneType::Foot, false),
+                car_lane_fwd: lane(LaneType::Vehicle, true), car_lane_bkw: lane(LaneType::Vehicle, false),
+                ..Default::default() }
+        }).collect();
+        for has_car in [false, true] {
+            let origin = BuildingTripEnds::at_entrance(&entrances[0], true, &network, &graph);
+            let destinations: Vec<_> = entrances[1..].iter().map(|entrance|
+                BuildingTripEnds::at_entrance(entrance, false, &network, &graph)).collect();
+            let mut expected = Vec::new(); let mut rankings = Vec::new();
+            let mut counters = Vec::new();
+            for batched in [false, true] {
+                // Identical recustomization changes the quote revision, ensuring the batch
+                // pass cannot accidentally reuse the point pass's worker-local leg cache.
+                network.cch_graph.customize(&graph);
+                let mut shared = SharedNetworkQuotes::default();
+                if batched {
+                    shared.prepare_targets(std::array::from_fn(|mode| destinations.iter()
+                        .flat_map(|end| end.network_nodes(mode as u8).into_iter().flatten()).collect()), &network);
+                }
+                let counter = AtomicU32::new(0);
+                let mut options = empty_home_job_options(); let mut count = 0;
+                for index in 0..43 {
+                    let job = index * 17 % 43;
+                    let estimate = estimate_trip_seconds_between(&origin, &destinations[job], has_car,
+                        &network, &graph, &counter, 15.0, commute_budget_seconds(&options, count),
+                        batched.then_some(&shared));
+                    if batched { assert_eq!(estimate, expected[index], "has_car={has_car}, job={job}"); }
+                    else { expected.push(estimate); }
+                    if let TripEstimate::Seconds(Some(seconds)) = estimate {
+                        insert_home_job_option(&mut options.options, &mut count, HomeJobOption {
+                            building_idx: job, commute_penalty: normalized_commute_penalty_seconds(seconds as f32),
+                            average_daily_wage: 100.0 + (job % 3) as f32 * 10.0,
+                            effective_capacity: 2 + job as u32 % 5, open_slots: 1 + job as u32 % 4,
+                        });
+                    }
+                }
+                assert_eq!(count, JOB_SEARCH_CANDIDATES);
+                rankings.push(options.options.map(|option| (option.building_idx, option.commute_penalty.to_bits(),
+                    option.average_daily_wage.to_bits(), option.effective_capacity, option.open_slots)));
+                counters.push(counter.load(Ordering::Relaxed));
+            }
+            assert_eq!(rankings[0], rankings[1]);
+            assert!(counters[0] > 4, "point pass must perform distinct network searches");
+            assert!(counters[1] <= 4, "each of the two ranks/modes needs at most one forward search: {counters:?}");
+        }
+    }
+
 }

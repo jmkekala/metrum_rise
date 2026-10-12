@@ -5,13 +5,14 @@
 use std::sync::atomic::AtomicU32;
 
 use super::data::{Household, HouseholdSystem};
+use super::candidate_visits::CandidateVisits;
 use super::metrics::{
     OPERATIONAL_HOURS_PER_DAY, building_operation_factors, economy_profile_for_building,
 };
 use super::replenishment::{
     REPLENISHMENT_FULFILLED, REPLENISHMENT_SHOPPING_RETURNING, REPLENISHMENT_SHOPPING_TO_STORE,
-    REPLENISHMENT_STABLE, insert_shopping_candidate, shopping_route_is_feasible,
-    squared_building_distance,
+    REPLENISHMENT_STABLE, ShoppingShortlist, proven_shopping_walk,
+    shopping_route_is_feasible, squared_building_distance, prepare_walking_access,
 };
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
@@ -19,6 +20,7 @@ use crate::simulation::economy::accessibility::{
     BuildingModeComponents, ModeComponentIndex, ReachableBucketIndex, ReachableBucketScanEvent,
     chunk_for_point,
 };
+use crate::simulation::economy::agents::tick::{BuildingWalkingAccess, PedestrianReachability};
 use crate::simulation::economy::agents::{
     ACTIVITY_HOME, ACTIVITY_SHOPPING, AgentSystem, TRANSIT_IN_BUILDING,
 };
@@ -47,6 +49,7 @@ struct ServiceVisitDiagnostics {
     failed_no_shopper: u32,
     failed_no_service_candidates: u32,
     rejected_unreachable: u32,
+    rejected_outside_shortlist: u32,
     candidate_count: u32,
 }
 
@@ -62,6 +65,7 @@ impl ServiceVisitDiagnostics {
         self.failed_no_shopper += other.failed_no_shopper;
         self.failed_no_service_candidates += other.failed_no_service_candidates;
         self.rejected_unreachable += other.rejected_unreachable;
+        self.rejected_outside_shortlist += other.rejected_outside_shortlist;
         self.candidate_count += other.candidate_count;
     }
 }
@@ -85,15 +89,17 @@ struct ServiceVisitEntry {
     chunk: (i32, i32),
     foot_components: BuildingModeComponents,
     car_components: BuildingModeComponents,
+    walking_access: Option<BuildingWalkingAccess>,
 }
 
-struct ServiceVisitIndex {
+struct ServiceVisitIndex<'a> {
     entries: Vec<ServiceVisitEntry>,
     foot_buckets: ReachableBucketIndex,
     car_buckets: ReachableBucketIndex,
+    walking: Option<&'a PedestrianReachability>,
 }
 
-impl ServiceVisitIndex {
+impl<'a> ServiceVisitIndex<'a> {
     fn build(
         allocator: &BuildingAllocator,
         catalog: &RuntimeEconomyCatalog,
@@ -101,6 +107,8 @@ impl ServiceVisitIndex {
         graph: &RegionGraph,
         foot_components: &ModeComponentIndex,
         car_components: &ModeComponentIndex,
+        network: &TransitNetwork,
+        walking: Option<&'a PedestrianReachability>,
     ) -> Self {
         let mut entries: Vec<_> = allocator
             .buildings
@@ -123,6 +131,7 @@ impl ServiceVisitIndex {
                     chunk: chunk_for_point(building.center_x, building.center_y),
                     foot_components,
                     car_components,
+                    walking_access: walking.map(|walking| prepare_walking_access(idx, allocator, network, graph, walking)),
                 })
             })
             .collect();
@@ -147,6 +156,7 @@ impl ServiceVisitIndex {
             entries,
             foot_buckets: ReachableBucketIndex::from_entries(foot_bucket_entries),
             car_buckets: ReachableBucketIndex::from_entries(car_bucket_entries),
+            walking,
         }
     }
 
@@ -157,6 +167,7 @@ impl ServiceVisitIndex {
     fn fill_route_feasible_candidates(
         &self,
         home_idx: usize,
+        home_access: Option<BuildingWalkingAccess>,
         has_car: bool,
         allocator: &BuildingAllocator,
         transit_network: &TransitNetwork,
@@ -165,40 +176,26 @@ impl ServiceVisitIndex {
         car_components: &ModeComponentIndex,
         pathfind_count: &AtomicU32,
         candidates: &mut Vec<usize>,
-        seen_candidates: &mut Vec<usize>,
         diagnostics: &mut ServiceVisitDiagnostics,
     ) {
         candidates.clear();
-        seen_candidates.clear();
         if home_idx >= allocator.buildings.len() {
             return;
         }
-        let home = &allocator.buildings[home_idx];
-        let home_foot_components =
-            foot_components.building_components(allocator, graph, home_idx, TransitFlags::FOOT);
-        self.scan_candidate_bucket(
-            &self.foot_buckets,
-            home_foot_components,
-            home_idx,
-            home.center_x,
-            home.center_y,
-            allocator,
-            transit_network,
-            graph,
-            has_car,
-            pathfind_count,
-            candidates,
-            seen_candidates,
-            diagnostics,
-        );
-
-        if has_car {
-            let home_car_components =
-                car_components.building_components(allocator, graph, home_idx, TransitFlags::CAR);
+        let mut shortlist = ShoppingShortlist::<SERVICE_VISIT_SEARCH_CANDIDATES>::default();
+        CandidateVisits::with(|visits| {
+            visits.begin_query(self.entries.len());
+            let mut inspected = 0;
+            let home = &allocator.buildings[home_idx];
+            let prepared_home = home_access.or_else(|| self.walking
+                .map(|walking| prepare_walking_access(home_idx, allocator, transit_network, graph, walking)));
+            let home_foot_components =
+                foot_components.building_components(allocator, graph, home_idx, TransitFlags::FOOT);
             self.scan_candidate_bucket(
-                &self.car_buckets,
-                home_car_components,
+                &self.foot_buckets,
+                home_foot_components,
                 home_idx,
+                prepared_home.as_ref(),
                 home.center_x,
                 home.center_y,
                 allocator,
@@ -206,11 +203,35 @@ impl ServiceVisitIndex {
                 graph,
                 has_car,
                 pathfind_count,
-                candidates,
-                seen_candidates,
+                &mut shortlist,
+                visits,
+                &mut inspected,
                 diagnostics,
             );
-        }
+
+            if has_car {
+                let home_car_components =
+                    car_components.building_components(allocator, graph, home_idx, TransitFlags::CAR);
+                self.scan_candidate_bucket(
+                    &self.car_buckets,
+                    home_car_components,
+                    home_idx,
+                    prepared_home.as_ref(),
+                    home.center_x,
+                    home.center_y,
+                    allocator,
+                    transit_network,
+                    graph,
+                    has_car,
+                    pathfind_count,
+                    &mut shortlist,
+                    visits,
+                    &mut inspected,
+                    diagnostics,
+                );
+            }
+        });
+        shortlist.write_to(candidates);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -219,6 +240,7 @@ impl ServiceVisitIndex {
         buckets: &ReachableBucketIndex,
         components: BuildingModeComponents,
         home_idx: usize,
+        prepared_home: Option<&BuildingWalkingAccess>,
         origin_x: f32,
         origin_y: f32,
         allocator: &BuildingAllocator,
@@ -226,40 +248,43 @@ impl ServiceVisitIndex {
         graph: &RegionGraph,
         has_car: bool,
         pathfind_count: &AtomicU32,
-        candidates: &mut Vec<usize>,
-        seen_candidates: &mut Vec<usize>,
+        candidates: &mut ShoppingShortlist<SERVICE_VISIT_SEARCH_CANDIDATES>,
+        visits: &mut CandidateVisits,
+        inspected: &mut usize,
         diagnostics: &mut ServiceVisitDiagnostics,
     ) {
         buckets.scan_nearest(components, origin_x, origin_y, |event| match event {
             ReachableBucketScanEvent::Item { item_idx } => {
                 if let Some(entry) = self.entries.get(item_idx) {
-                    if seen_candidates.contains(&entry.building_idx) {
+                    if visits.contains(item_idx) {
                         return true;
                     }
-                    if seen_candidates.len() == SERVICE_VISIT_ROUTE_SCAN_CANDIDATES {
+                    if *inspected == SERVICE_VISIT_ROUTE_SCAN_CANDIDATES {
                         return false;
                     }
-                    seen_candidates.push(entry.building_idx);
-                    if !shopping_route_is_feasible(
-                        home_idx,
-                        entry.building_idx,
-                        has_car,
-                        allocator,
-                        transit_network,
-                        graph,
-                        pathfind_count,
-                    ) {
+                    visits.mark_seen(item_idx);
+                    *inspected += 1;
+                    let distance = squared_building_distance(origin_x, origin_y,
+                        &allocator.buildings[entry.building_idx]);
+                    let Some(position) = candidates.insertion(entry.building_idx, distance) else {
+                        diagnostics.rejected_outside_shortlist += 1;
+                        return true;
+                    };
+                    if !proven_shopping_walk(self.walking, prepared_home, entry.walking_access.as_ref())
+                        && !shopping_route_is_feasible(
+                            home_idx,
+                            entry.building_idx,
+                            has_car,
+                            allocator,
+                            transit_network,
+                            graph,
+                            pathfind_count,
+                        )
+                    {
                         diagnostics.rejected_unreachable += 1;
                         return true;
                     }
-                    insert_shopping_candidate(
-                        candidates,
-                        SERVICE_VISIT_SEARCH_CANDIDATES,
-                        entry.building_idx,
-                        origin_x,
-                        origin_y,
-                        allocator,
-                    );
+                    candidates.insert(position, entry.building_idx, distance);
                 }
                 true
             }
@@ -269,13 +294,7 @@ impl ServiceVisitIndex {
                 if candidates.len() < SERVICE_VISIT_SEARCH_CANDIDATES {
                     return true;
                 }
-                let worst = candidates
-                    .last()
-                    .map(|&idx| {
-                        squared_building_distance(origin_x, origin_y, &allocator.buildings[idx])
-                    })
-                    .unwrap_or(f32::MAX);
-                next_min_distance_sq <= worst
+                next_min_distance_sq <= candidates.worst_distance()
             }
         });
     }
@@ -393,6 +412,8 @@ impl HouseholdSystem {
             graph,
             &foot_components,
             &car_components,
+            transit_network,
+            self.job_funding.customers.walking_proofs(transit_network),
         );
         if !service_index.has_any() {
             diagnostics.failed_no_service_candidates += requests.len() as u32;
@@ -407,29 +428,28 @@ impl HouseholdSystem {
                         Vec::new(),
                         ServiceVisitDiagnostics::default(),
                         Vec::with_capacity(SERVICE_VISIT_SEARCH_CANDIDATES),
-                        Vec::with_capacity(SERVICE_VISIT_ROUTE_SCAN_CANDIDATES),
                     )
                 },
-                |(mut plans, mut diagnostics, mut candidates, mut seen_candidates), request| {
+                |(mut plans, mut diagnostics, mut candidates), request| {
                     if let Some(plan) = plan_visible_service_visit(
                         *request,
                         agents,
                         allocator,
                         &service_index,
+                        &self.job_funding.customers,
                         transit_network,
                         graph,
                         &foot_components,
                         &car_components,
                         &mut candidates,
-                        &mut seen_candidates,
                         &mut diagnostics,
                     ) {
                         plans.push(plan);
                     }
-                    (plans, diagnostics, candidates, seen_candidates)
+                    (plans, diagnostics, candidates)
                 },
             )
-            .map(|(plans, diagnostics, _, _)| (plans, diagnostics))
+            .map(|(plans, diagnostics, _)| (plans, diagnostics))
             .reduce(
                 || (Vec::new(), ServiceVisitDiagnostics::default()),
                 |mut left, right| {
@@ -482,7 +502,7 @@ impl HouseholdSystem {
 fn log_service_visit_diagnostics(absolute_hour: u32, diagnostics: &ServiceVisitDiagnostics) {
     debug_log!(
         "economy",
-        "visible service visit diagnostics: hour={} attempts={} success={} returns={} candidates={} no_service_candidates={} no_shopper={} rejected_unreachable={}",
+        "visible service visit diagnostics: hour={} attempts={} success={} returns={} candidates={} no_service_candidates={} no_shopper={} rejected_unreachable={} rejected_outside_shortlist={}",
         absolute_hour,
         diagnostics.attempts,
         diagnostics.successes,
@@ -490,7 +510,8 @@ fn log_service_visit_diagnostics(absolute_hour: u32, diagnostics: &ServiceVisitD
         diagnostics.candidate_count,
         diagnostics.failed_no_service_candidates,
         diagnostics.failed_no_shopper,
-        diagnostics.rejected_unreachable
+        diagnostics.rejected_unreachable,
+        diagnostics.rejected_outside_shortlist
     );
 }
 
@@ -546,18 +567,19 @@ fn plan_visible_service_visit(
     agents: &AgentSystem,
     allocator: &BuildingAllocator,
     service_index: &ServiceVisitIndex,
+    customers: &crate::simulation::economy::customers::ConsumerMarket,
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
     foot_components: &ModeComponentIndex,
     car_components: &ModeComponentIndex,
     candidates: &mut Vec<usize>,
-    seen_candidates: &mut Vec<usize>,
     diagnostics: &mut ServiceVisitDiagnostics,
 ) -> Option<ServiceVisitPlan> {
     let has_car = agents.has_car[request.visitor_agent_id];
     let home_idx = agents.home_building[request.visitor_agent_id];
     service_index.fill_route_feasible_candidates(
         home_idx,
+        customers.household_walking_access(request.household_id, home_idx, allocator, transit_network),
         has_car,
         allocator,
         transit_network,
@@ -566,7 +588,6 @@ fn plan_visible_service_visit(
         car_components,
         &agents.pathfind_count,
         candidates,
-        seen_candidates,
         diagnostics,
     );
     diagnostics.candidate_count += candidates.len() as u32;

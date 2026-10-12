@@ -29,7 +29,8 @@ impl HouseholdSystem {
         fiscal_policy: &CityFiscalPolicy,
         on_delivery: impl FnMut(&crate::simulation::economy::logistics::Shipment, &BuildingAllocator),
     ) -> FiscalRevenue {
-        let timing_enabled = debug::category_enabled("economy");
+        let timing_category = if debug::category_enabled("economy_phases") { "economy_phases" } else { "economy" };
+        let timing_enabled = debug::category_enabled(timing_category);
         let total_start = Instant::now();
         let mut phase_start = total_start;
         let materialized = self.materialize_arrived_household_carriers(agents, allocator);
@@ -84,7 +85,7 @@ impl HouseholdSystem {
         let money_sync_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         if timing_enabled {
             debug_log!(
-                "economy",
+                timing_category,
                 "operational_hour_detail absolute_hour={} minute={} materialized_households={} materialized_residents={} agents={} buildings={} households={} materialize_ms={:.3} validate_ms={:.3} counts_ms={:.3} building_economy_ms={:.3} logistics_ms={:.3} household_hour_ms={:.3} workplace_ms={:.3} money_sync_ms={:.3} total_ms={:.3}",
                 absolute_hour,
                 minute_of_day,
@@ -126,7 +127,8 @@ impl HouseholdSystem {
         fiscal_policy: &CityFiscalPolicy,
         on_wages_paid: impl FnOnce(&AgentSystem, &BuildingAllocator),
     ) -> FiscalRevenue {
-        let timing_enabled = debug::category_enabled("economy");
+        let timing_category = if debug::category_enabled("economy_phases") { "economy_phases" } else { "economy" };
+        let timing_enabled = debug::category_enabled(timing_category);
         let total_start = Instant::now();
         let mut phase_start = total_start;
         let materialized = self.materialize_arrived_household_carriers(agents, allocator);
@@ -184,11 +186,12 @@ impl HouseholdSystem {
         let housing_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
         // Job searches repeat for a worker only after a multi-day lock, so a commute estimated
-        // yesterday is rarely asked again. Dropping the cache daily bounds it to one day's
+        // yesterday is rarely asked again. Clearing the cache daily bounds it to one day's
         // searches; it grew with every pair ever scanned (7.4M entries at 30k by day 15).
-        // Network legs follow the same daily bound.
-        drop(std::mem::take(&mut self.workplace_route_cache));
-        self.workplace_network_quotes.clear();
+        // Complete quotes keep that pricing cadence. Network-only legs are now bounded by
+        // lane storage and stay exact across midnight; their own network revision invalidates them.
+        // Retain its allocation for the next day's requests, while expiring every price.
+        self.workplace_route_cache.clear();
         self.assign_agent_workplaces_with_service_funding(
             agents,
             allocator,
@@ -206,7 +209,7 @@ impl HouseholdSystem {
         let sync_and_finish_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         if timing_enabled {
             debug_log!(
-                "economy",
+                timing_category,
                 "daily_settlement_detail materialized_households={} materialized_residents={} agents={} buildings={} households={} materialize_ms={:.3} validate_ms={:.3} counts_ms={:.3} ledger_and_locks_ms={:.3} bankruptcy_ms={:.3} wages_ms={:.3} benefits_ms={:.3} property_tax_ms={:.3} utilities_ms={:.3} profit_tax_ms={:.3} housing_ms={:.3} workplace_ms={:.3} sync_and_finish_ms={:.3} total_ms={:.3}",
                 materialized.households,
                 materialized.residents,

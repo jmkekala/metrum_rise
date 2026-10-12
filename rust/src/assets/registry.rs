@@ -202,24 +202,25 @@ impl AssetRegistry {
     /// zoned-private asset without one upgrades to an unfamilied asset of the same zone, density
     /// and lot footprint at `level + 1`; `selection` (a stable per-site hash) picks among several.
     pub fn next_level(&self, qualified_id: &str, selection: u64) -> Option<&str> {
-        let level = self.entries.get(qualified_id)?.manifest.building.as_ref()?.level;
-        self.level_target(qualified_id, level.checked_add(1)?, selection)
+        let manifest = &self.entries.get(qualified_id)?.manifest;
+        let level = manifest.building.as_ref()?.level;
+        self.level_target(manifest, level.checked_add(1)?, selection)
     }
 
     /// Returns the qualified ID of the previous downgrade tier for the given asset, or `None`.
     ///
     /// Uses the same family or unfamilied-tier rules as [`Self::next_level`] at `level - 1`.
     pub fn prev_level(&self, qualified_id: &str, selection: u64) -> Option<&str> {
-        let level = self.entries.get(qualified_id)?.manifest.building.as_ref()?.level;
+        let manifest = &self.entries.get(qualified_id)?.manifest;
+        let level = manifest.building.as_ref()?.level;
         if level <= 1 {
             return None;
         }
-        self.level_target(qualified_id, level - 1, selection)
+        self.level_target(manifest, level - 1, selection)
     }
 
     // O(1) hash lookups; a family is explicit, so a member never falls back to unfamilied assets.
-    fn level_target(&self, qualified_id: &str, level: u8, selection: u64) -> Option<&str> {
-        let manifest = &self.entries.get(qualified_id)?.manifest;
+    fn level_target(&self, manifest: &AssetManifest, level: u8, selection: u64) -> Option<&str> {
         if let Some(asset_set) = manifest.asset_set.as_deref() {
             return self
                 .upgrade_index

@@ -136,9 +136,7 @@ impl ZoningSystem {
             return Err(ParcelPlacementError::OverlapsRoad);
         }
         self.parcels.insert_loaded(id, geometry, profile);
-        if let Some(parcel) = self.parcels.get_mut(id) {
-            parcel.set_cell_lot(lot);
-        }
+        self.parcels.set_cell_lot(id, lot);
         let restored = self.cells.restore_lot(lot, id.raw());
         debug_assert!(restored);
         self.bump_overlay_revision();
@@ -176,9 +174,7 @@ impl ZoningSystem {
             self.parcels.remove_local(id);
             return None;
         }
-        if let Some(parcel) = self.parcels.get_mut(id) {
-            parcel.set_cell_lot(lot);
-        }
+        self.parcels.set_cell_lot(id, lot);
         self.bump_overlay_revision();
         Some(id)
     }

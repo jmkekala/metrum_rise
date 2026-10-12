@@ -1163,6 +1163,95 @@ fn shopping_candidates_remain_bounded_without_growing_reserved_storage() {
 }
 
 #[test]
+fn shopping_shortlist_matches_complete_sort_for_ties_duplicates_and_nonfinite_distances() {
+    use super::super::replenishment::{insert_shopping_candidate, squared_building_distance};
+    let mut allocator = BuildingAllocator::new();
+    for index in 0..96 {
+        let x = match index % 16 {
+            0 => f32::NAN,
+            1 => f32::INFINITY,
+            2 => f32::NEG_INFINITY,
+            _ => (index % 13) as f32 - 6.0,
+        };
+        allocator.buildings.push(make_building(
+            x,
+            ZoneType::Commercial,
+            "test:shortlist",
+            0.0,
+        ));
+    }
+    for limit in [0, 1, 8, 24] {
+        for stride in [1, 95, 37] {
+            let mut actual = Vec::with_capacity(limit);
+            let mut seen = Vec::new();
+            for step in 0..192 {
+                let candidate = step * stride % 96;
+                insert_shopping_candidate(&mut actual, limit, candidate, -0.0, 3.0, &allocator);
+                seen.push(candidate);
+                seen.sort_unstable();
+                seen.dedup();
+                let mut expected = seen.clone();
+                expected.sort_unstable_by(|&a, &b| {
+                    squared_building_distance(-0.0, 3.0, &allocator.buildings[a])
+                        .total_cmp(&squared_building_distance(
+                            -0.0,
+                            3.0,
+                            &allocator.buildings[b],
+                        ))
+                        .then_with(|| a.cmp(&b))
+                });
+                expected.truncate(limit);
+                assert_eq!(
+                    actual, expected,
+                    "limit={limit} stride={stride} step={step}"
+                );
+                assert_eq!(actual.capacity(), limit);
+            }
+        }
+    }
+}
+
+#[test]
+fn shortlist_pruning_matches_every_full_reachability_checked_prefix() {
+    use super::super::replenishment::{insert_shopping_candidate, shopping_candidate_can_enter};
+    let mut allocator = BuildingAllocator::new();
+    for index in 0..384 {
+        let x = match index % 97 {
+            0 => f32::NAN,
+            1 => f32::INFINITY,
+            2 => f32::NEG_INFINITY,
+            _ => (index % 131) as f32 - 65.0,
+        };
+        allocator.buildings.push(make_building(x, ZoneType::Commercial, "test:pruned_shopping", 0.0));
+    }
+    let mut skipped = 0;
+    for limit in [0, 1, 8, 24] {
+        for stride in [1, 383, 37] {
+            for reachability in [2, 7, 31, 389] {
+                let mut expected = Vec::with_capacity(limit);
+                let mut actual = Vec::with_capacity(limit);
+                for step in 0..768 {
+                    let candidate = step * stride % 384;
+                    let reachable = candidate % reachability != 0;
+                    if reachable {
+                        insert_shopping_candidate(&mut expected, limit, candidate, -0.0, 3.0, &allocator);
+                    }
+                    if shopping_candidate_can_enter(&actual, limit, candidate, -0.0, 3.0, &allocator) {
+                        if reachable {
+                            insert_shopping_candidate(&mut actual, limit, candidate, -0.0, 3.0, &allocator);
+                        }
+                    } else { skipped += 1; }
+                    assert_eq!(actual, expected,
+                        "limit={limit} stride={stride} reachability={reachability} step={step}");
+                    assert_eq!(actual.capacity(), limit);
+                }
+            }
+        }
+    }
+    assert!(skipped > 10_000);
+}
+
+#[test]
 #[ignore = "manual matched release timing of bounded shopping destination selection"]
 fn benchmark_shopping_candidate_selection() {
     use super::super::replenishment::insert_shopping_candidate;
@@ -1207,6 +1296,96 @@ fn benchmark_shopping_candidate_selection() {
 }
 
 #[test]
+fn cached_shopping_distances_match_every_reachable_shortlist_prefix() {
+    use super::super::replenishment::{ShoppingShortlist, insert_shopping_candidate,
+        squared_building_distance};
+    let mut allocator = BuildingAllocator::new();
+    for idx in 0..384 {
+        let x = match idx % 79 {
+            0 => f32::NAN, 1 => f32::INFINITY, 2 => f32::NEG_INFINITY,
+            _ => (idx / 2) as f32,
+        };
+        allocator.buildings.push(make_building(x, ZoneType::Commercial,
+            "test:cached_distance", 0.0));
+    }
+    fn check<const N: usize>(allocator: &BuildingAllocator) {
+        for stride in [1, 383, 37] {
+            for reachability in 0..4 {
+                let mut shortlist = ShoppingShortlist::<N>::default();
+                let mut expected = Vec::with_capacity(N);
+                let mut actual = Vec::with_capacity(N);
+                for step in 0..768 {
+                    let candidate = step * stride % 384;
+                    let distance = squared_building_distance(-0.0, 3.0,
+                        &allocator.buildings[candidate]);
+                    let reachable = (candidate + reachability) % 4 != 0;
+                    if reachable {
+                        insert_shopping_candidate(&mut expected, N, candidate, -0.0, 3.0, allocator);
+                    }
+                    if let Some(position) = shortlist.insertion(candidate, distance) && reachable {
+                        shortlist.insert(position, candidate, distance);
+                    }
+                    shortlist.write_to(&mut actual);
+                    assert_eq!(actual, expected, "N={N} stride={stride} step={step}");
+                    assert_eq!(actual.capacity(), N);
+                    assert_eq!(shortlist.len(), expected.len());
+                    let worst = expected.last().map_or(f32::MAX, |&id|
+                        squared_building_distance(-0.0, 3.0, &allocator.buildings[id]));
+                    assert_eq!(shortlist.worst_distance().to_bits(), worst.to_bits());
+                }
+            }
+        }
+    }
+    check::<0>(&allocator); check::<1>(&allocator);
+    check::<8>(&allocator); check::<24>(&allocator);
+}
+
+#[test]
+#[ignore = "matched cached-distance comparison; excludes setup"]
+fn benchmark_cached_shopping_distances() {
+    use super::super::replenishment::{ShoppingShortlist, insert_shopping_candidate,
+        squared_building_distance};
+    use std::{hint::black_box, time::Instant};
+    fn run<const N: usize>() {
+        let scanned = N * 16;
+        let mut allocator = BuildingAllocator::new();
+        for id in 0..scanned {
+            allocator.buildings.push(make_building((id / 2) as f32, ZoneType::Commercial,
+                "test:cached_distance_benchmark", 0.0));
+        }
+        let mut candidates = Vec::with_capacity(N);
+        for sample in 0..11 {
+            for cached in if sample % 2 == 0 { [false, true] } else { [true, false] } {
+                let start = Instant::now();
+                for _ in 0..1000 {
+                    candidates.clear();
+                    if cached {
+                        let mut shortlist = ShoppingShortlist::<N>::default();
+                        for id in (0..scanned).rev() {
+                            let id = black_box(id);
+                            let distance = squared_building_distance(0.0, 0.0, &allocator.buildings[id]);
+                            if let Some(position) = shortlist.insertion(id, distance) {
+                                shortlist.insert(position, id, distance);
+                            }
+                        }
+                        shortlist.write_to(&mut candidates);
+                    } else {
+                        for id in (0..scanned).rev() {
+                            insert_shopping_candidate(&mut candidates, N, black_box(id), 0.0, 0.0, &allocator);
+                        }
+                    }
+                    black_box(&candidates);
+                }
+                let us_per_query = start.elapsed().as_secs_f64() * 1000.0;
+                assert_eq!(candidates, (0..N).collect::<Vec<_>>());
+                println!("CACHED_SHOPPING {{\"limit\":{N},\"cached\":{cached},\"sample\":{sample},\"us_per_query\":{us_per_query}}}");
+            }
+        }
+    }
+    run::<8>(); run::<24>();
+}
+
+#[test]
 fn routine_stock_checks_spread_evenly_over_the_check_slots() {
     // Admission hands out homes and household ids in step; the old offset kept the parity of
     // their sum, so every household of one city fell in alternate hours (`ECON-19`).
@@ -1218,9 +1397,15 @@ fn routine_stock_checks_spread_evenly_over_the_check_slots() {
             slots[usize::from(offset % 6)] += 1;
             hours[usize::from(offset)] = true;
         }
-        assert!(hours.iter().all(|&used| used), "every hour of day hosts some checks");
+        assert!(
+            hours.iter().all(|&used| used),
+            "every hour of day hosts some checks"
+        );
         for count in slots {
-            assert!((900..=1_100).contains(&count), "uneven check slots {slots:?}");
+            assert!(
+                (900..=1_100).contains(&count),
+                "uneven check slots {slots:?}"
+            );
         }
     }
 }

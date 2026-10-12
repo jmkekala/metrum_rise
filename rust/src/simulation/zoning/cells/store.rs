@@ -343,7 +343,7 @@ impl CellStore {
     /// Visits each intersecting block once without query-time allocations or a city-wide scan.
     #[inline]
     pub(crate) fn visit_in_bounds(&self, bounds: CellBounds, mut visit: impl FnMut(CellKey)) {
-        self.visit_mask_in_bounds::<false>(bounds, |key, _| visit(key));
+        self.visit_mask_in_bounds::<false>(bounds, None, |key, _| visit(key));
     }
 
     /// Uses each block's reservation mask so external placement skips generated empty cells.
@@ -353,7 +353,7 @@ impl CellStore {
         bounds: CellBounds,
         mut visit: impl FnMut(CellKey),
     ) {
-        self.visit_mask_in_bounds::<true>(bounds, |key, _| visit(key));
+        self.visit_mask_in_bounds::<true>(bounds, None, |key, _| visit(key));
     }
 
     /// Reuses the canonical footprint already computed for the spatial query's exact envelope.
@@ -363,13 +363,32 @@ impl CellStore {
         bounds: CellBounds,
         visit: impl FnMut(CellKey, [DVec2; 4]),
     ) {
-        self.visit_mask_in_bounds::<true>(bounds, visit);
+        self.visit_mask_in_bounds::<true>(bounds, None, visit);
+    }
+
+    /// Visits intersecting footprints on other canonical frames, optionally only reservations.
+    /// Skips the excluded frame before deriving block/cell geometry; O(local chunk blocks +
+    /// other-frame candidate cells), with the ordinary query's order and no allocation.
+    pub(super) fn visit_other_frame_footprints_in_bounds(
+        &self,
+        bounds: CellBounds,
+        excluded: GridFrame,
+        reserved_only: bool,
+        visit: impl FnMut(CellKey, [DVec2; 4]),
+    ) {
+        let excluded = self.frame_ids.get(&excluded).copied();
+        if reserved_only {
+            self.visit_mask_in_bounds::<true>(bounds, excluded, visit);
+        } else {
+            self.visit_mask_in_bounds::<false>(bounds, excluded, visit);
+        }
     }
 
     #[inline]
     fn visit_mask_in_bounds<const RESERVED_ONLY: bool>(
         &self,
         bounds: CellBounds,
+        excluded: Option<u64>,
         mut visit: impl FnMut(CellKey, [DVec2; 4]),
     ) {
         if !bounds.is_valid() {
@@ -380,6 +399,9 @@ impl CellStore {
                 continue;
             };
             for &key in &entry.blocks {
+                if Some(key.grid) == excluded {
+                    continue;
+                }
                 let mut mask = 0;
                 if RESERVED_ONLY {
                     let Some(block) = self.blocks.get(&key) else {

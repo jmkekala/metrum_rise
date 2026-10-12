@@ -63,8 +63,10 @@ impl BuildingAllocator {
         self.building_chunk_bounds = None;
         self.max_building_support_m = f32::NEG_INFINITY;
         self.max_lot_radius_cells = 0.0;
+        self.explicit_cell_site_count = 0;
 
         for (idx, b) in self.buildings.iter().enumerate() {
+            self.explicit_cell_site_count += usize::from(b.parcel_id == 0 && b.zone_type == ZoneType::None);
             let chunk = RegionGraph::get_chunk_coords(Vector3::new(b.center_x, 0.0, b.center_y));
             self.building_chunks.entry(chunk).or_default().push(idx);
             include_chunk(&mut self.building_chunk_bounds, chunk);
@@ -102,6 +104,7 @@ impl BuildingAllocator {
 
         self.vacancy_pos.push(usize::MAX);
         let b = &self.buildings[building_idx];
+        self.explicit_cell_site_count += usize::from(b.parcel_id == 0 && b.zone_type == ZoneType::None);
         let chunk = RegionGraph::get_chunk_coords(Vector3::new(b.center_x, 0.0, b.center_y));
         self.building_chunks
             .entry(chunk)

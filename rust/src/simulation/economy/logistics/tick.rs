@@ -27,7 +27,8 @@ impl ShipmentSystem {
         treasury_balance: &mut f64,
         on_delivery: impl FnMut(&super::data::Shipment, &BuildingAllocator),
     ) {
-        let timing_enabled = debug::category_enabled("economy");
+        let timing_category = if debug::category_enabled("economy_phases") { "economy_phases" } else { "economy" };
+        let timing_enabled = debug::category_enabled(timing_category);
         let total_start = Instant::now();
         let mut phase_start = total_start;
         let shipments_before = self.shipments.len();
@@ -78,7 +79,7 @@ impl ShipmentSystem {
         let retain_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         if timing_enabled {
             debug_log!(
-                "economy",
+                timing_category,
                 "logistics_hour_detail minute={} buildings={} agents_before={} agents_after={} shipments_before={} shipments_after={} route_cache_ms={:.3} cooldowns_ms={:.3} planning_context_ms={:.3} input_shipments_ms={:.3} output_exports_ms={:.3} finish_planning_ms={:.3} progress_ms={:.3} retain_ms={:.3} total_ms={:.3}",
                 minute_of_day,
                 allocator.buildings.len(),

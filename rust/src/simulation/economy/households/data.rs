@@ -2,8 +2,8 @@
 
 //! Household record storage and building-reference maintenance.
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, AtomicUsize};
+use rayon::prelude::*;
 
 use super::metrics::household_supply_resource_runtime_id;
 use super::replenishment::{
@@ -198,7 +198,7 @@ pub struct HouseholdSystem {
     pub(super) removal_selected_flags_scratch: Vec<bool>,
     pub(super) removal_agent_indices_scratch: Vec<usize>,
     pub(super) shopper_candidate_scratch: Vec<AtomicUsize>,
-    pub(super) workplace_route_cache: HashMap<(usize, usize, bool), Option<u16>>,
+    pub(super) workplace_route_cache: super::employment::WorkplaceRouteCache,
     pub(super) workplace_route_cache_building_revision: u64,
     pub(super) workplace_route_cache_entrance_revision: u64,
     pub(super) workplace_route_cache_cch_generation: u32,
@@ -242,7 +242,7 @@ impl HouseholdSystem {
             removal_selected_flags_scratch: Vec::new(),
             removal_agent_indices_scratch: Vec::new(),
             shopper_candidate_scratch: Vec::new(),
-            workplace_route_cache: HashMap::new(),
+            workplace_route_cache: Default::default(),
             workplace_route_cache_building_revision: u64::MAX,
             workplace_route_cache_entrance_revision: u64::MAX,
             workplace_route_cache_cch_generation: u32::MAX,
@@ -344,13 +344,21 @@ impl HouseholdSystem {
     pub fn remap_building_indices(&mut self, mapping: &std::collections::HashMap<usize, usize>) {
         self.job_funding.remap_buildings(mapping);
         self.ensure_daily_ledger_len();
-        for household in &mut self.households {
-            if let Some(&new_id) = mapping.get(&household.home_building_id) {
-                household.home_building_id = new_id;
-            }
-            if let Some(&new_id) = mapping.get(&household.reserved_store_building_id) {
-                household.reserved_store_building_id = new_id;
-            }
+        if mapping.len() == 1 {
+            let (&old, &new) = mapping.iter().next().unwrap();
+            self.households.par_iter_mut().for_each(|household| {
+                if household.home_building_id == old { household.home_building_id = new; }
+                if household.reserved_store_building_id == old { household.reserved_store_building_id = new; }
+            });
+        } else if !mapping.is_empty() {
+            self.households.par_iter_mut().for_each(|household| {
+                if let Some(&new_id) = mapping.get(&household.home_building_id) {
+                    household.home_building_id = new_id;
+                }
+                if let Some(&new_id) = mapping.get(&household.reserved_store_building_id) {
+                    household.reserved_store_building_id = new_id;
+                }
+            });
         }
     }
 

@@ -937,14 +937,75 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- Routing performance follow-up (2026-10-11): `NET-02`–`NET-05` track exact CCH hot-path
+  improvements, nested dissection/elimination-tree queries, bucket many-to-many commutes and
+  restricted CPU sweeps. `NET-02` is done against `03c1cf45`: query time falls 35–38% at
+  10k/100k; four matched 10k economy pairs improve the hour 35.50 → 25.13 ms and the day
+  9.22 → 9.01 ms, with identical paths, records and five growth reports. All 2,298 library
+  tests and four growth tests pass. `ECON-13-B` stays open; the full 100k economy benchmark
+  was not rerun for NET-02. `NET-03` now gives a further 21–29× point-query speedup at
+  10k/100k and fixes `NET-06`; all 2,303 library and four growth tests pass. Its changed
+  route ties/f32 sums alter populated-city records. The 10k hour improves 24.99 → 11.14 ms,
+  but the day regresses 9.09 → 14.15 ms. `NET-04` is complete: exact bucket commutes preserve
+  records and reduce the 100k open-job query matrix 61×; the full daily mean falls 6.2% in one
+  pair. `NET-05` is a measured production no-go; its scalar/eight-source prototype stays test-only;
+  the user deferred 1M runs. See the
+  [routing plan and measurements](entrance_and_exit.md#cch-routing-performance-track-net-02net-05).
+  `NET-06` now has an independent regression: the previous hierarchy priced a required
+  5-second loop as zero. The replacement charges it correctly and also preserves required
+  return detours. All five independent growth reports remain byte-identical.
+
 - `ECON-13` (2026-10-11): economy prices read a per-lane frontage delay published once per
   operational hour (`TransitNetwork::publish_frontage_prices`); agent trips keep the per-second
   live delay; save format 85 stores both. The funding census pins operations that cannot profit
   even at their best possible prices, and customer propagation prepares the business layout
-  itself, so a loss-making supply cycle resolves in 2 censuses at any length. `ECON-13-A`, `C`
-  and `D` pass; `B` (100k scaling) is blocked on job search and census-spike decisions. 10k
-  timing, records and growth reports are unchanged. See the
-  [status](economy.md#status-2026-10-11-one-working-tree-build-on-01888e88).
+  itself, so a loss-making supply cycle resolves in 2 censuses at any length. Latest routing
+  measurements fail `A/B` (10k day 14.33 ms; 100k hour/day 20.37× / 84.18×) and freshly pass
+  `C/D`. The 10k spike includes 55.97 ms of dirty lot regeneration; funding preparation remains
+  expensive at 100k. Exact follow-up candidates separate explicit-site cell invalidation from
+  terrain publication, index road-surface clearance, skip authored-parcel scans when none exist,
+  and combine existing border quote minima. Cached entrance geometry and exact shopping
+  shortlist/proof reuse, narrower walking-proof invalidation and bounded freight replacement
+  plus exact lattice overlap, repeated-clearance and pedestrian-prefix reuse bring two
+  10k runs to 9.22 ms/hour and 10.45 ms/day. One complete 100k run averages 134.95 / 287.73 ms
+  with the same final record; A/B still fail (14.64× / 27.54× scaling). All five growth reports
+  are byte-identical. Complete freight-quote replacement and customer-tree traversal preserve
+  records but do not establish a full-run gain. Exact customer/price dependency checks pass;
+  compact connectors, a turn-completeness proof, equivalent query keys and shared entrance
+  projection pass. Entrance-input/allocation retention also passes correctness checks, but its
+  10k 10.03/10.53 ms and 100k 143.99/305.38 ms measurements establish no further improvement.
+  Car-access-only updates and parallel entrance/removal maintenance pass 2,317 library tests
+  and preserve all reports/records. Their fresh 10k means are 9.59/10.10 ms and one 100k run
+  measures 140.87/264.65 ms. Household remaps, retained car membership, constant-time ring
+  bounds and exact freight affordability bounds pass 2,322 library tests and preserve all
+  reports/records: 10k 9.38/10.34 ms, one 100k run 143.02/252.15 ms. A/B remain open at
+  15.24×/24.38×. Exact freight-door retention and shared household visit labels now pass
+  2,324 library tests and all growth reports. Latest 10k means: 9.46/10.02 ms; one 100k run:
+  136.34/256.70 ms (14.41×/25.62×), with unchanged records. A/B remain open. Exact-price
+  affordability masks pass 2,327 library tests and all unchanged reports/records, but
+  10k 9.36/10.05 ms and 100k 138.15/255.01 ms establish no overall gain. The trial remains
+  under performance review. Borrowed cell footprints and shopping-shortlist pruning pass
+  2,329 library tests and all reports; 10k 9.48/10.10 ms and isolated cell timings establish
+  no gain. Component-wide eligibility counts pass 2,330 library tests and all reports:
+  10k 9.28/10.03 ms, one 100k 135.22/215.71 ms (14.57×/21.51×), records unchanged.
+  Clipped chunk scans, same-frame cell exclusion and cached shopping distances pass 2,334
+  library tests and all reports. Their two 10k runs meet A's budget at 9.23/9.67 ms, with
+  unchanged records. One 100k run measures 129.43/205.53 ms (14.01×/21.25×), preserving
+  records; B still fails and final repeat acceptance remains pending.
+  The workplace-cache hasher also passes 2,334 library tests and all reports: 10k
+  9.30/9.66 ms, one 100k 129.00/203.78 ms (13.87×/21.09×), with identical records.
+  Its isolated lookup gain does not establish a significant whole-city improvement.
+  Shared commute-cache stripes pass 2,336 library tests and all reports: 10k 9.26/9.62 ms,
+  one 100k 122.96/201.52 ms (13.28×/20.95×), preserving records. B remains open. A fresh
+  daily trace identifies 32–34 ms of proposed-site preparation. Exact entrance reuse passes
+  2,337 library tests and all reports: 10k 9.24/9.91 ms and one 100k 121.72/200.62 ms
+  (13.18×/20.25×), preserving records without a clear overall gain. Tied-radius maintenance
+  and household walking-proof reuse are queued for validation. The unsuccessful recurring-
+  supplier bound trial was removed.
+  A diagnostic initialization stack overflow was
+  fixed by allocating the fixed crash-recording ring once on the heap.
+  Continued exact fixes are authorized, preserving economic decisions and
+  job-lock timing. See the [status](economy.md#routing-follow-up-2026-10-11).
 
 - `DEM-02` done (2026-10-11): residential need and the workforce calendar count
   arriving households and their adults from admission's own applicant stream, not one home or one

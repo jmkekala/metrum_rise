@@ -171,6 +171,7 @@ impl LaneSystem {
         if affected_edges.is_empty() {
             return;
         }
+        self.revision = self.revision.wrapping_add(1);
 
         // Expand to every road arm whose lane mouth can move with an affected junction.
         let mut rebuild_edges: Vec<_> =

@@ -33,6 +33,7 @@ fn assert_indices(store: &ParcelStore) {
     }
     assert_eq!(store.id_to_index, rebuilt.id_to_index);
     assert_eq!(store.chunk_index, rebuilt.chunk_index);
+    assert_eq!(store.authored_count, rebuilt.authored_count);
     for edge in store
         .parcels()
         .iter()
@@ -59,6 +60,46 @@ fn assert_indices(store: &ParcelStore) {
             rebuilt.find_at_point(parcel.center())
         );
     }
+}
+
+#[test]
+fn authored_summary_tracks_cell_classification_load_removal_and_restore() {
+    use crate::simulation::zoning::cells::{CellFrontage, CellKey};
+
+    let mut store = ParcelStore::default();
+    let cell = store.insert_new(geometry(0, Vector2::ZERO), 1);
+    let authored = ParcelId::from_raw(42);
+    store.insert_loaded(authored, geometry(1, Vector2::new(30.0, 0.0)), 1);
+    let lot = CellLot::new(
+        CellKey {
+            grid: 1,
+            x: 0,
+            y: 0,
+        },
+        1,
+        1,
+        CellFrontage::MinY,
+    )
+    .unwrap();
+    store.set_cell_lot(cell, lot);
+    store.set_cell_lot(cell, lot);
+    assert_eq!(store.authored_count, 1);
+    assert_indices(&store);
+
+    let removed = store.remove_local(authored).unwrap();
+    assert!(!store.has_authored_parcels());
+    assert!(store.restore_local(removed));
+    assert!(store.has_authored_parcels());
+    let removed_cell = store.remove_local(cell).unwrap();
+    assert!(store.has_authored_parcels());
+    assert!(store.restore_local(removed_cell));
+    assert_indices(&store);
+    store.remove_ids(&HashSet::from([authored]), |_| {});
+    assert!(!store.has_authored_parcels());
+    assert_indices(&store);
+    store.insert_new(geometry(2, Vector2::new(60.0, 0.0)), 1);
+    store.clear();
+    assert!(!store.has_authored_parcels());
 }
 
 #[test]

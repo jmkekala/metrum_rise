@@ -1147,7 +1147,7 @@ impl BuildingAllocator {
         zone_cell_m: f32,
         overlaps: impl Fn(&[Vector2; 4]) -> bool,
     ) -> bool {
-        if self.building_sites.is_empty() {
+        if !self.has_explicit_cell_sites() {
             return false;
         }
         let candidate_indices =
@@ -1852,7 +1852,7 @@ impl BuildingAllocator {
         self.push_building_site_client(building_idx, zone_cell_m);
         self.queue_yard(building_idx, zone_cell_m);
         // Site publication belongs to placement, not to demand/service/industry callers.
-        self.accumulate_pending_site_dirty_bounds(self.site_world_bounds(building_idx));
+        self.record_building_site_change(building_idx, self.site_world_bounds(building_idx));
         self.bump_building_ref_revision();
         self.dirty = true;
         self.dirty_index = true;

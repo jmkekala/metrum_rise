@@ -5,6 +5,34 @@
 use super::*;
 
 #[test]
+fn unchanged_painted_lattices_skip_repeated_clearance_and_conflicts() {
+    for angle in [0.0_f32, 0.37] {
+        let mut graph = RegionGraph::new();
+        let a = node(&mut graph, -120.0 * angle.cos(), -120.0 * angle.sin());
+        let b = node(&mut graph, 120.0 * angle.cos(), 120.0 * angle.sin());
+        road(&mut graph, a, b);
+        let config = WorldConfig::default();
+        let mut store = CellStore::default();
+        store.generate_in_bounds(&graph, &config, extent(), |_| false);
+        let before = keys(&store, extent());
+        assert!(!before.is_empty());
+        let paint = store.select(CellSelectionShape::Brush { radius_m: 250.0 }, &[DVec2::ZERO]);
+        store.paint(&paint, 3).unwrap();
+        let checked = std::sync::Mutex::new(std::collections::HashSet::new());
+        let report = store.generate_in_bounds(&graph, &config, extent(), |corners| {
+            let key = corners.map(|point| [point.x.to_bits(), point.y.to_bits()]);
+            assert!(checked.lock().unwrap().insert(key), "duplicate clearance query");
+            false
+        });
+        assert!(!checked.lock().unwrap().is_empty());
+        assert_eq!(keys(&store, extent()), before);
+        assert!(paint.cells.iter().all(|&key| store.profile(key) == Some(3)));
+        assert_eq!(report.comparisons, 0, "angle={angle}");
+        assert_disjoint(&store, extent());
+    }
+}
+
+#[test]
 fn blocked_middle_row_removes_rear_cells_but_preserves_paint() {
     let mut graph = RegionGraph::new();
     let a = node(&mut graph, 0.0, 0.0);

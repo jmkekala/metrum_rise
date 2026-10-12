@@ -76,6 +76,14 @@ impl CellStore {
         if !bounds.is_valid() {
             return CellGeneration::default();
         }
+        let mut phase = crate::debug::category_enabled("economy_phases").then(std::time::Instant::now);
+        let mut times = [0.0; 6];
+        let mut lap = |slot: usize| {
+            if let Some(start) = phase {
+                times[slot] = start.elapsed().as_secs_f64() * 1000.0;
+                phase = Some(std::time::Instant::now());
+            }
+        };
         let cell_m = f64::from(config.zone_cell_m);
         // A rear cell needs up to five preceding rows, each with its own direct conflict
         // ring. This fixed halo is independent of viewport residency and city size.
@@ -88,9 +96,28 @@ impl CellStore {
             Vector3::new(query.max.x as f32, 0.0, query.max.y as f32),
         );
         roads.sort_unstable();
+        // This existing neighborhood query contains the corridor candidates for interior
+        // cells. Its exact maximum width narrows their per-cell R-tree queries; cells whose
+        // full original query escapes this envelope retain the original 128 m bound.
+        let corridor_pad = roads
+            .par_iter()
+            .map(|&id| {
+                let edge = graph.edge(id);
+                if edge.deleted || edge.class != EdgeClass::Standard {
+                    0.0
+                } else {
+                    f64::from(edge.width) * 0.5 + f64::from(crate::config::SIDEWALK_WIDTH)
+                }
+            })
+            .reduce(|| 0.0, f64::max)
+            .min(ROAD_QUERY_PAD_M);
+        let corridor_neighborhood = CellBounds {
+            min: DVec2::new(f64::from(query.min.x as f32), f64::from(query.min.y as f32)),
+            max: DVec2::new(f64::from(query.max.x as f32), f64::from(query.max.y as f32)),
+        };
         let pinned = continuity::pinned_candidates(self, graph, config, &roads, candidates_bounds);
         let curved = curves::pinned_candidates(self, graph, &roads, candidates_bounds);
-        let candidates: Vec<_> = roads
+        let mut candidates: Vec<_> = roads
             .par_iter()
             .flat_map_iter(|&edge_id| {
                 edge_candidates(
@@ -103,15 +130,30 @@ impl CellStore {
             })
             .chain(pinned.into_par_iter())
             .chain(curved.into_par_iter())
-            .filter(|candidate| {
-                let corners = candidate.corners();
-                corners.iter().all(|point| {
-                    point.x.abs() <= f64::from(config.width_m) * 0.5
-                        && point.y.abs() <= f64::from(config.height_m) * 0.5
-                }) && !overlaps_road_corridors(graph, &corners)
-                    && !blocked(&corners)
-            })
             .collect();
+        lap(0);
+        // Current roads and pinned history can describe the same square with different
+        // frontage/priority metadata. Quote its immutable footprint once, retaining every
+        // candidate and its original publication ordering below. This local sorted key list
+        // costs O(C log C) time/O(C) scratch, within generation's existing sorting bound.
+        let mut footprints: Vec<_> = candidates.par_iter()
+            .map(|candidate| (candidate.frame, candidate.x, candidate.y)).collect();
+        footprints.par_sort_unstable();
+        footprints.dedup();
+        let legal: Vec<_> = footprints.par_iter().map(|&(frame, x, y)| {
+            let corners = frame.corners(x, y);
+            corners.iter().all(|point| {
+                point.x.abs() <= f64::from(config.width_m) * 0.5
+                    && point.y.abs() <= f64::from(config.height_m) * 0.5
+            }) && !overlaps_road_corridors_bounded(
+                graph,
+                &corners,
+                Some((corridor_neighborhood, corridor_pad)),
+            ) && !blocked(&corners)
+        }).collect();
+        candidates.retain(|candidate| legal[footprints.binary_search(
+            &(candidate.frame, candidate.x, candidate.y)).unwrap()]);
+        lap(1);
 
         // Reuse the cell block spatial structure as a temporary candidate index. It is local
         // to this operation and does not clone or scan the city's persistent frame registry.
@@ -119,7 +161,6 @@ impl CellStore {
         let mut priorities = HashMap::with_capacity(candidates.len());
         let mut frontages: HashMap<CellKey, Vec<CellRoadFrontage>> = HashMap::new();
         let mut sources = HashMap::new();
-        let mut candidates = candidates;
         // Current road candidates establish ownership first. A retained copy of the same
         // square must not promote its whole strip just because a cell was painted. Only
         // historical geometry absent from the current roads needs retained priority.
@@ -149,6 +190,7 @@ impl CellStore {
         // Distinct addresses on one canonical lattice cannot overlap. The temporary
         // registry contains only this request's candidates, not historical city frames.
         let competing_frames = raw.saved_frames().nth(1).is_some();
+        lap(2);
         let mut accepted: Vec<_> = requested
             .par_iter()
             .map(|&key| {
@@ -157,54 +199,39 @@ impl CellStore {
                 let candidate_bounds = CellBounds::from_points(corners);
                 let mut valid = true;
                 let mut comparisons = 0;
-                // Painted land is pinned. Geometrically identical candidates retain paint; a new
-                // incompatible frame may not displace even one previously painted square.
-                let mut check_existing = |existing: CellKey| {
+                // Painted land is pinned. Distinct addresses on the same canonical lattice
+                // have disjoint interiors, just as in the raw-candidate check below. Only
+                // another frame can displace a painted or retained square.
+                let check_existing = |existing: CellKey, existing_corners: [DVec2; 4]| {
                     if valid
-                        && let Some(existing_frame) = self.frame(existing.grid)
                         && (self.profile(existing).is_some_and(|profile| profile != 0)
                             || self.lot(existing).is_some_and(|lot| lot != 0)
-                            || !CellBounds::from_points(
-                                existing_frame.corners(existing.x, existing.y),
-                            )
-                            .intersects(bounds))
-                        && (existing_frame != frame || existing.x != key.x || existing.y != key.y)
+                            || !CellBounds::from_points(existing_corners).intersects(bounds))
                     {
                         comparisons += 1;
-                        valid = !interiors_overlap(
-                            &corners,
-                            &existing_frame.corners(existing.x, existing.y),
-                        );
+                        valid = !interiors_overlap(&corners, &existing_corners);
                     }
                 };
-                if candidate_bounds.min.cmpge(bounds.min).all()
-                    && candidate_bounds.max.cmple(bounds.max).all()
-                {
-                    // An untouched empty cell lies outside publication bounds, so it cannot
-                    // overlap a candidate wholly inside them. Reuse the reservation mask.
-                    self.visit_reserved_in_bounds(candidate_bounds, &mut check_existing);
-                } else {
-                    self.visit_in_bounds(candidate_bounds, &mut check_existing);
-                }
-                if competing_frames {
-                    raw.visit_in_bounds(candidate_bounds, |other| {
-                        if valid
-                            && other != key
-                            && priorities[&other].0 < priorities[&key].0
-                            && let Some(other_frame) = raw.frame(other.grid)
-                            && other_frame != frame
-                        {
-                            comparisons += 1;
-                            valid = !interiors_overlap(
-                                &corners,
-                                &other_frame.corners(other.x, other.y),
-                            );
-                        }
-                    });
+                // An untouched empty cell lies outside publication bounds, so it cannot
+                // overlap a candidate wholly inside them. Reuse the reservation mask.
+                let reserved_only = candidate_bounds.min.cmpge(bounds.min).all()
+                    && candidate_bounds.max.cmple(bounds.max).all();
+                self.visit_other_frame_footprints_in_bounds(candidate_bounds, frame,
+                    reserved_only, check_existing);
+                if competing_frames && valid {
+                    let priority = priorities[&key].0;
+                    raw.visit_other_frame_footprints_in_bounds(candidate_bounds, frame, false,
+                        |other, other_corners| {
+                            if valid && priorities[&other].0 < priority {
+                                comparisons += 1;
+                                valid = !interiors_overlap(&corners, &other_corners);
+                            }
+                        });
                 }
                 (key, valid, comparisons)
             })
             .collect();
+        lap(3);
 
         // Reuse the priority table for immutable survivor membership. Support only removes
         // cells; it never lets previously defeated candidates reclaim the resulting gaps.
@@ -229,6 +256,7 @@ impl CellStore {
                         graph,
                     ));
         });
+        lap(4);
 
         let mut old = Vec::new();
         self.visit_in_bounds(bounds, |key| old.push(key));
@@ -271,6 +299,10 @@ impl CellStore {
         for source in sources {
             self.publish_curve_source(source);
         }
+        lap(5);
+        crate::debug_log!("economy_phases", "cell_generation_detail roads={} footprints={} candidates={} comparisons={} accepted={} prepare_ms={:.3} clearance_ms={:.3} indexing_ms={:.3} conflicts_ms={:.3} support_ms={:.3} publish_ms={:.3}",
+            roads.len(), footprints.len(), priorities.len(), comparisons, output.len(),
+            times[0], times[1], times[2], times[3], times[4], times[5]);
         CellGeneration {
             roads: roads.len(),
             candidates: priorities.len(),
@@ -648,41 +680,133 @@ pub(super) fn straight_frame(
 
 /// Tests canonical rectangles against every local standard road, including the supplying edge.
 pub(crate) fn overlaps_road_corridors(graph: &RegionGraph, corners: &[DVec2; 4]) -> bool {
+    overlaps_road_corridors_bounded(graph, corners, None)
+}
+
+#[cfg(test)]
+#[test]
+fn neighborhood_width_bound_matches_full_corridor_query() {
+    use crate::simulation::network::types::NodeType;
+    for wide in [false, true] {
+        let mut graph = RegionGraph::new();
+        for (x, width) in [
+            (-80.0, 7.0),
+            (0.0, if wide { 120.0 } else { 7.0 }),
+            (80.0, 16.0),
+            (450.0, 240.0),
+        ] {
+            let points = vec![
+                Vector3::new(x, 0.0, -700.0),
+                Vector3::new(x + 20.0, 0.0, 700.0),
+            ];
+            let a = graph.add_node(points[0], NodeType::Junction);
+            let b = graph.add_node(points[1], NodeType::Junction);
+            graph.add_edge(Edge {
+                start_node: a,
+                end_node: b,
+                width,
+                physical_length: points[0].distance_to(points[1]),
+                geometry: points.clone(),
+                physical_geometry: points,
+                ..Default::default()
+            });
+        }
+        for radius in [32.0, 200.0, 600.0] {
+            let known = CellBounds {
+                min: DVec2::splat(-radius),
+                max: DVec2::splat(radius),
+            };
+            let ids = graph.get_edges_near_aabb(
+                Vector3::new(-radius as f32, 0.0, -radius as f32),
+                Vector3::new(radius as f32, 0.0, radius as f32),
+            );
+            let pad = ids
+                .iter()
+                .map(|&id| {
+                    f64::from(graph.edge(id).width) * 0.5 + f64::from(crate::config::SIDEWALK_WIDTH)
+                })
+                .fold(0.0, f64::max)
+                .min(ROAD_QUERY_PAD_M);
+            for x in -15..=25 {
+                for z in [-300.0, -20.0, 0.0, 200.0, 600.0] {
+                    for offset in [-0.000001, 0.0, 0.000001] {
+                        let a = DVec2::new(f64::from(x) * 20.0 + offset, z);
+                        for (u, v) in [
+                            (DVec2::new(10.0, 0.0), DVec2::new(0.0, 10.0)),
+                            (DVec2::new(7.0, 7.0), DVec2::new(-7.0, 7.0)),
+                        ] {
+                            let corners = [a, a + u, a + u + v, a + v];
+                            assert_eq!(
+                                overlaps_road_corridors_bounded(
+                                    &graph,
+                                    &corners,
+                                    Some((known, pad))
+                                ),
+                                overlaps_road_corridors(&graph, &corners),
+                                "wide={wide} radius={radius} corners={corners:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn overlaps_road_corridors_bounded(
+    graph: &RegionGraph,
+    corners: &[DVec2; 4],
+    neighborhood: Option<(CellBounds, f64)>,
+) -> bool {
     let cell_bounds = CellBounds::from_points(*corners);
     let bounds = cell_bounds.expanded(ROAD_QUERY_PAD_M);
+    let mut min = Vector3::new(bounds.min.x as f32, 0.0, bounds.min.y as f32);
+    let mut max = Vector3::new(bounds.max.x as f32, 0.0, bounds.max.y as f32);
+    if let Some((known, pad)) = neighborhood
+        && DVec2::new(f64::from(min.x), f64::from(min.z))
+            .cmpge(known.min)
+            .all()
+        && DVec2::new(f64::from(max.x), f64::from(max.z))
+            .cmple(known.max)
+            .all()
+    {
+        // Every old candidate is in `known`. An overlapping corridor's centerline must
+        // intersect the cell bounds expanded by that set's maximum half-width. Round out
+        // for the f32 index, then intersect with the old query so its membership only shrinks.
+        min.x = min.x.max(((cell_bounds.min.x - pad) as f32).next_down());
+        min.z = min.z.max(((cell_bounds.min.y - pad) as f32).next_down());
+        max.x = max.x.min(((cell_bounds.max.x + pad) as f32).next_up());
+        max.z = max.z.min(((cell_bounds.max.y + pad) as f32).next_up());
+    }
     let mut overlaps = false;
-    graph.visit_edges_near_aabb(
-        Vector3::new(bounds.min.x as f32, 0.0, bounds.min.y as f32),
-        Vector3::new(bounds.max.x as f32, 0.0, bounds.max.y as f32),
-        |id| {
-            let edge: &Edge = graph.edge(id);
-            if overlaps || edge.deleted || edge.class != EdgeClass::Standard {
-                return;
+    graph.visit_edges_near_aabb(min, max, |id| {
+        let edge: &Edge = graph.edge(id);
+        if overlaps || edge.deleted || edge.class != EdgeClass::Standard {
+            return;
+        }
+        let half_width = f64::from(edge.width) * 0.5 + f64::from(crate::config::SIDEWALK_WIDTH);
+        for segment in edge.physical_geometry.windows(2) {
+            let a = DVec2::new(f64::from(segment[0].x), f64::from(segment[0].z));
+            let b = DVec2::new(f64::from(segment[1].x), f64::from(segment[1].z));
+            // The contracted corridor lies inside this full-width envelope. Rounding
+            // disjoint coordinate intervals cannot create positive-area intersection.
+            if !CellBounds::from_points([a, b])
+                .expanded(half_width)
+                .intersects(cell_bounds)
+            {
+                continue;
             }
-            let half_width = f64::from(edge.width) * 0.5 + f64::from(crate::config::SIDEWALK_WIDTH);
-            for segment in edge.physical_geometry.windows(2) {
-                let a = DVec2::new(f64::from(segment[0].x), f64::from(segment[0].z));
-                let b = DVec2::new(f64::from(segment[1].x), f64::from(segment[1].z));
-                // The contracted corridor lies inside this full-width envelope. Rounding
-                // disjoint coordinate intervals cannot create positive-area intersection.
-                if !CellBounds::from_points([a, b])
-                    .expanded(half_width)
-                    .intersects(cell_bounds)
-                {
-                    continue;
-                }
-                let precision = super::geometry::road_source_precision(CellBounds::from_points(
-                    corners.iter().copied().chain([a, b]),
-                ));
-                let normal = (b - a).normalize_or_zero().perp() * (half_width - precision).max(0.0);
-                if normal.length_squared() > 0.0
-                    && interiors_overlap(corners, &[a - normal, b - normal, b + normal, a + normal])
-                {
-                    overlaps = true;
-                    break;
-                }
+            let precision = super::geometry::road_source_precision(CellBounds::from_points(
+                corners.iter().copied().chain([a, b]),
+            ));
+            let normal = (b - a).normalize_or_zero().perp() * (half_width - precision).max(0.0);
+            if normal.length_squared() > 0.0
+                && interiors_overlap(corners, &[a - normal, b - normal, b + normal, a + normal])
+            {
+                overlaps = true;
+                break;
             }
-        },
-    );
+        }
+    });
     overlaps
 }
