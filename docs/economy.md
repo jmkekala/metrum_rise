@@ -805,7 +805,7 @@ part of this acceptance.
    faster (2026-10-12: 10k −6%, 100k −3.5%, ratio up). It could not show progress and was replaced.
 
    **Status on the 2026-10-12 build: FAIL.** B2: hour 111 ms passes, day 175 ms fails. B1 fails in
-   three groups. Execution-epoch censuses: census rows 13.3×, rows copied 65×, owner slots 13.4×.
+   three groups. Execution-epoch censuses: census rows 13.3×, owner slots 13.4× (rows copied are now 0).
    Staffing search: trials 20×. Supplier and job search fan-out: searches 15.9×, routes 19.7×,
    job-search keys 36×. Within the bound: CCH searches 10.5×, spawn scans 10.3×, proposed site
    rows 11.2×.
@@ -1391,6 +1391,13 @@ every hour:
 The rest of site preparation, about 0.6 ms of row updates and 1.1–1.5 ms of layout per rebuild,
 rebuilds the proposed-site and projected-source indices whenever live ports are renumbered.
 Removing it needs an incremental bucket index with stable reservation positions.
+
+**Execution epochs** now borrow their census's customer and business books inside the same pass
+journals instead of copying them, and return them restored before the next census. Their
+rollback never reads the allocator, so it stays exact across placements within the epoch.
+Test builds compare both books at lend and return. Reservation rows copied fall to **0** at 10k
+and 100k (from 1.53M and 100.0M); reports and populated records are unchanged. This last change
+was not re-timed.
 
 **Matched timings** (`5a268e64` vs the working tree; `RAYON_NUM_THREADS=8`,
 `taskset -c 0,2,4,6,8,10,12,14`; `$BENCH_BINARY --bench --noplot /10k` and `/100k`; binary

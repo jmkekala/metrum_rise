@@ -166,9 +166,17 @@ impl ProjectReservations {
     pub(super) fn begin_live_pass(&mut self, funding: &crate::simulation::economy::hiring::JobFunding,
         inputs: &mut RecurringSupply, allocator: &BuildingAllocator, catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning, fiscal: &CityFiscalPolicy, minute: u16) {
+        inputs.begin_pass();
+        self.begin_book_pass(funding, allocator, catalog, tuning, fiscal, minute);
+    }
+
+    /// Opens a pass on lent customer and business books only. Their rollback restores rows
+    /// without reading the allocator, so it stays exact across later building edits.
+    pub(super) fn begin_book_pass(&mut self, funding: &crate::simulation::economy::hiring::JobFunding,
+        allocator: &BuildingAllocator, catalog: &RuntimeEconomyCatalog, tuning: &RuntimeEconomyTuning,
+        fiscal: &CityFiscalPolicy, minute: u16) {
         self.customers.begin_pass();
         self.business.begin_pass();
-        inputs.begin_pass();
         self.prepare_pass_rows(funding, allocator, catalog, tuning, fiscal, minute);
     }
 
@@ -177,9 +185,14 @@ impl ProjectReservations {
     pub(super) fn end_live_pass(&mut self, inputs: &mut RecurringSupply, allocator: &BuildingAllocator,
         graph: &RegionGraph) {
         self.reject(inputs, allocator, graph);
+        self.end_book_pass();
+        inputs.end_pass(allocator, graph);
+    }
+
+    /// Closes [`Self::begin_book_pass`], restoring both lent books in O(rows touched).
+    pub(super) fn end_book_pass(&mut self) {
         self.business.end_pass();
         self.customers.end_pass();
-        inputs.end_pass(allocator, graph);
         self.prepared = false;
     }
 

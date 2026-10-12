@@ -965,7 +965,8 @@ reopening requires a current reproduction, not an assumption that the old geomet
   live books after every pass. 10k: 8.17 ms/hour, 8.31 ms/day (from 8.72/8.79, p = 0.0286);
   100k: 111.38/174.93 ms (from 115.46/181.52). `ECON-13-B` is rewritten as per-phase work-count scaling (≤1.2× the
   household ratio) plus a fixed 100k budget (400 ms/hour, 100 ms/day). The old same-build ratio rose
-  whenever linear work got faster. B still fails on execution epochs, staffing and search fan-out. See the
+  whenever linear work got faster. Execution epochs borrow their census books too, so copied
+  rows are 0. B still fails on execution-epoch censuses, staffing and search fan-out; paused. See the
   [record](economy.md#econ-13-work-counts-and-live-book-planning-2026-10-12).
 
 - `ECON-13` (2026-10-11): economy prices read a per-lane frontage delay published once per

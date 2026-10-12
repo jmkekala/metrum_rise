@@ -54,6 +54,11 @@ pub(super) struct ConstructionExecution {
     borders: Vec<u32>,
     pub(super) funding: crate::simulation::economy::hiring::JobFunding,
     pub(super) reservations: super::supply::ProjectReservations,
+    // The epoch census's customer and business books are lent to `reservations` inside a
+    // pass instead of being copied; they return, restored, before the next census.
+    books_lent: bool,
+    #[cfg(test)]
+    lent_fingerprint: Option<[Vec<(&'static str, u64)>; 2]>,
 }
 
 impl ConstructionExecution {
@@ -63,6 +68,17 @@ impl ConstructionExecution {
         self.funding.input_supply.discard_project_proof_for_reset();
         self.reservations.business.reject_revalidation();
         self.reservations.customers.reject_revalidation();
+        if std::mem::take(&mut self.books_lent) {
+            self.reservations.end_book_pass();
+            std::mem::swap(&mut self.funding.customers, &mut self.reservations.customers);
+            std::mem::swap(&mut self.funding.business, &mut self.reservations.business);
+            #[cfg(test)]
+            if let Some(lent) = self.lent_fingerprint.take() {
+                assert_eq!([self.funding.customers.live_fingerprint_for_test(),
+                    self.funding.business.live_fingerprint_for_test()], lent,
+                    "an execution epoch must return its census books exactly");
+            }
+        }
     }
 }
 
@@ -262,8 +278,17 @@ impl DemandSystem {
                 &execution.funding,
             );
             snapshot.reserve_queued_construction(&self.runtime_catalog, &self.queued_construction);
-            execution.reservations.reset(&execution.funding, allocator, &self.runtime_catalog,
+            #[cfg(test)]
+            if super::system::VERIFY_LIVE_PASSES.load(std::sync::atomic::Ordering::Relaxed) {
+                execution.lent_fingerprint = Some([execution.funding.customers.live_fingerprint_for_test(),
+                    execution.funding.business.live_fingerprint_for_test()]);
+            }
+            // Lend the fresh census books to the epoch instead of copying them.
+            std::mem::swap(&mut execution.funding.customers, &mut execution.reservations.customers);
+            std::mem::swap(&mut execution.funding.business, &mut execution.reservations.business);
+            execution.reservations.begin_book_pass(&execution.funding, allocator, &self.runtime_catalog,
                 &self.runtime_tuning, policy, (now % 1440) as u16);
+            execution.books_lent = true;
             logistics.prepare_site_carrier_quotes(allocator, network, graph, &execution.borders);
             let mut supply = SiteSupply::new(
                 &mut execution.funding.input_supply,
