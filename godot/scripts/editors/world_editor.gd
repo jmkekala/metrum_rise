@@ -127,7 +127,10 @@ var _new_world_height_spin: SpinBox
 var _new_world_cell_spin: SpinBox
 var _new_world_chunk_spin: SpinBox
 var _new_world_base_spin: SpinBox
-var _debug_enabled := false
+# Read live so the debug console takes effect immediately.
+var _debug_enabled: bool:
+	get:
+		return MetrumDebug.is_enabled("world-editor")
 var _brush_preview: MeshInstance3D
 var _brush_preview_material: ShaderMaterial
 var _water_marker_root: Node3D
@@ -155,7 +158,6 @@ func _ready() -> void:
 	if not sim.is_world_editor_mode():
 		push_error("WorldEditor scene loaded without --world-editor flag")
 
-	_debug_enabled = _world_editor_debug_enabled()
 	_attach_top_menu()
 	_configure_editor_camera()
 	_build_ui()
@@ -1795,21 +1797,9 @@ func _sanitize_filename(text: String) -> String:
 		return "world"
 	return cleaned
 
-func _world_editor_debug_enabled() -> bool:
-	var debug_value := OS.get_environment("METRUM_DEBUG").strip_edges()
-	if debug_value.is_empty() or debug_value == "0":
-		return false
-	var filter := OS.get_environment("METRUM_DEBUG_FILTER").strip_edges().to_lower()
-	if filter.is_empty():
-		return true
-	for entry in filter.split(","):
-		if entry.strip_edges() == "world-editor":
-			return true
-	return false
-
 func _debug_log(message: String) -> void:
 	if _debug_enabled:
-		print("[DEBUG:world-editor] %s" % message)
+		MetrumDebug.log("world-editor", message)
 
 func _world_path_label() -> String:
 	if _current_world_path.is_empty():

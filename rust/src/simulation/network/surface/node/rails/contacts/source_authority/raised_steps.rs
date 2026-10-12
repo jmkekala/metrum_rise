@@ -150,7 +150,7 @@ pub(in crate::simulation::network::surface::node::rails) fn collect_source_autho
     previous: Option<&NodeSourceAuthorizedContactCache>,
     current: &mut NodeSourceAuthorizedContactCache,
 ) -> SourceAuthorizedContactReuseStats {
-    let profile_enabled = crate::debug::category_enabled("road");
+    let profile_enabled = crate::debug::Channel::Road.enabled();
     let total_start = profile_enabled.then(Instant::now);
     let contacts_before = contacts.len();
     let mut stats = SourceAuthorizedContactReuseStats::default();

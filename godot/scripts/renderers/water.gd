@@ -125,7 +125,10 @@ var empty_water_mesh: ArrayMesh
 var water_border_instance: MeshInstance3D
 var water_border_material: ShaderMaterial
 var terrain_border_revision: int = -1
-var _terrain_debug_enabled: bool = false
+# Read live so the debug console takes effect on the next frame.
+var _terrain_debug_enabled: bool:
+	get:
+		return MetrumDebug.is_enabled("terrain")
 var _terrain_debug_verbose: bool = false
 var _terrain_force_lod1: bool = false
 var _water_visual_debug_mode: int = 0
@@ -181,10 +184,9 @@ func rebuild_from_simulation_state() -> void:
 	terrain_patch_interval_cells = max(1, int(patch_layout.get("patch_interval_cells", 1)))
 	var terrain_cell_m: float = float(patch_layout.get("terrain_cell_m", 1.0))
 	terrain_patch_span_m = terrain_cell_m * float(terrain_patch_interval_cells)
-	_terrain_debug_enabled = _terrain_debug_is_enabled()
-	_terrain_debug_verbose = _terrain_debug_is_verbose()
-	_terrain_force_lod1 = _terrain_debug_force_lod1()
-	_water_visual_debug_mode = _terrain_visual_debug_mode_from_env()
+	_terrain_debug_verbose = MetrumDebug.startup_mode("terrain_verbose")
+	_terrain_force_lod1 = MetrumDebug.startup_mode("terrain_force_lod1")
+	_water_visual_debug_mode = _terrain_visual_debug_mode_from_startup()
 	_water_mesh_lod_refresh_elapsed_s = 0.0
 	_water_lod_refresh_camera_valid = false
 	_record_lod_perf_counters(0, 0, 0, 0)
@@ -2543,52 +2545,8 @@ func _current_terrain_border_revision() -> int:
 		return int(terrain_node.get_border_revision())
 	return -1
 
-func _terrain_debug_is_enabled() -> bool:
-	var explicit_value := OS.get_environment("METRUM_DEBUG_TERRAIN").strip_edges()
-	if explicit_value == "1":
-		return true
-	var debug_value := OS.get_environment("METRUM_DEBUG").strip_edges()
-	if debug_value.is_empty() or debug_value == "0":
-		return false
-	var filter := OS.get_environment("METRUM_DEBUG_FILTER").strip_edges().to_lower()
-	if filter.is_empty():
-		return false
-	for entry_variant in filter.split(","):
-		var entry := String(entry_variant).strip_edges()
-		if (
-			entry == "terrain"
-			or entry == "terrain-verbose"
-			or entry == "terrain-full"
-			or entry == "terrain-lod1"
-			or entry == "terrain-full-lod1"
-		):
-			return true
-	return false
-
-func _terrain_debug_is_verbose() -> bool:
-	var explicit_value := OS.get_environment("METRUM_DEBUG_TERRAIN_VERBOSE").strip_edges()
-	if explicit_value == "1":
-		return true
-	var filter := OS.get_environment("METRUM_DEBUG_FILTER").strip_edges().to_lower()
-	for entry_variant in filter.split(","):
-		var entry := String(entry_variant).strip_edges()
-		if entry == "terrain-verbose":
-			return true
-	return false
-
-func _terrain_debug_force_lod1() -> bool:
-	var explicit_value := OS.get_environment("METRUM_DEBUG_TERRAIN_FORCE_LOD1").strip_edges()
-	if explicit_value == "1":
-		return true
-	var filter := OS.get_environment("METRUM_DEBUG_FILTER").strip_edges().to_lower()
-	for entry_variant in filter.split(","):
-		var entry := String(entry_variant).strip_edges()
-		if entry == "terrain-lod1" or entry == "terrain-full-lod1":
-			return true
-	return false
-
-func _terrain_visual_debug_mode_from_env() -> int:
-	var value := OS.get_environment("METRUM_DEBUG_TERRAIN_VISUAL").strip_edges().to_lower()
+func _terrain_visual_debug_mode_from_startup() -> int:
+	var value := String(MetrumDebug.startup_mode("terrain_visual"))
 	if value.is_empty() or value == "0" or value == "off" or value == "false":
 		return 0
 	if value.is_valid_int():
@@ -2704,4 +2662,4 @@ func _reset_water_debug_counters() -> void:
 
 func _water_debug_log(message: String) -> void:
 	if _terrain_debug_enabled:
-		print("[DEBUG:terrain] %s" % message)
+		MetrumDebug.log("terrain", message)

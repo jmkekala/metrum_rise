@@ -33,7 +33,7 @@ pub(in crate::simulation::economy::agents::tick) fn plan_network_replan(
     pathfind_count: &AtomicU32,
     debug_context: Option<(usize, &'static str)>,
 ) -> Option<BuiltNetworkReplan> {
-    let debug_context = debug_context.filter(|_| crate::debug::is_traffic_enabled());
+    let debug_context = debug_context.filter(|_| crate::debug::Channel::Traffic.enabled());
     let incoming_edge_valid = incoming_edge_is_incident_to_node(incoming_edge, start_node, graph);
     let mut candidate_diagnostics = [None, None];
 

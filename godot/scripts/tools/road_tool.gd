@@ -39,7 +39,10 @@ var preview_metrics: RefCounted
 var _preview_input_us := 0
 var _preview_metric_row: Dictionary = {}
 
-var _road_debug_enabled: bool = false
+# Read live so the debug console takes effect on the next road action.
+var _road_debug_enabled: bool:
+	get:
+		return MetrumDebug.is_enabled("road")
 var _preview_cache_points: PackedVector3Array = PackedVector3Array()
 var _preview_cache_surface: Dictionary = {}
 const PreviewRequest := preload("res://scripts/tools/road_preview_request.gd")
@@ -107,7 +110,7 @@ func begin_preview_measurement() -> RefCounted:
 	preview_metrics = preload("res://scripts/benchmarks/road_preview_metrics.gd").new()
 	if DisplayServer.get_name() != "headless" and not RenderingServer.frame_post_draw.is_connected(_preview_frame_completed):
 		RenderingServer.frame_post_draw.connect(_preview_frame_completed)
-	if is_inside_tree() and OS.get_environment("METRUM_DEBUG_PERF") == "1" and DisplayServer.get_name() != "headless":
+	if is_inside_tree() and MetrumDebug.is_enabled("perf") and DisplayServer.get_name() != "headless":
 		preview_metrics.viewport = get_viewport().get_viewport_rid()
 		RenderingServer.viewport_set_measure_render_time(preview_metrics.viewport, true)
 	return preview_metrics
@@ -123,8 +126,7 @@ func _ready():
 	if blueprint_mesh:
 		_road_preview_material = WorldMaterials.road_preview_material()
 		blueprint_mesh.material_override = _road_preview_material
-	_road_debug_enabled = _road_debug_is_enabled()
-	if OS.get_environment("METRUM_DEBUG_PERF") == "1":
+	if MetrumDebug.is_enabled("perf"):
 		begin_preview_measurement()
 	_hud_canvas = CanvasLayer.new()
 	_hud_canvas.layer = 10
@@ -184,19 +186,6 @@ func _process(delta):
 			var screen_pos: Vector2 = camera.unproject_position(_label_world_pos)
 			# Offset slightly so the label sits above-right of the midpoint.
 			_info_label.position = screen_pos + Vector2(8.0, -24.0)
-
-func _road_debug_is_enabled() -> bool:
-	var debug_value := OS.get_environment("METRUM_DEBUG").strip_edges()
-	if debug_value != "1":
-		return false
-	var filter := OS.get_environment("METRUM_DEBUG_FILTER").strip_edges().to_lower()
-	if filter.is_empty():
-		return true
-	for entry_variant in filter.split(","):
-		var entry := String(entry_variant).strip_edges()
-		if entry == "road":
-			return true
-	return false
 
 func _snap_to_roads_enabled() -> bool:
 	return true
@@ -798,6 +787,11 @@ func _commit_segment(end_pos: Vector3) -> bool:
 	var cancel_ms := 0.0
 	if points.size() > 1 and not preview_valid:
 		_draw_candidate_preview(points, validation)
+		MetrumDebug.log(
+			"events",
+			"road_tool rejected reason=%s max_grade=%.3f allowed_grade=%.3f"
+			% [invalid_reason, max_grade, allowed_grade]
+		)
 	if points.size() > 1 and preview_valid:
 		var add_road_start_us := Time.get_ticks_usec()
 		_commit_request_id = simulation_node.add_road_with_snap(points, fwd_lanes, bkw_lanes, _snap_to_roads_enabled())
@@ -819,8 +813,9 @@ func _commit_segment(end_pos: Vector3) -> bool:
 		_update_preview_measurement_label(validation.get("prepared_points", points), {"is_pending": true})
 
 	if _road_debug_enabled:
-		print(
-			"[DEBUG:road] commit_segment_detail raw_points=%d points=%d preview_empty=%s preview_valid=%s invalid_reason=%s max_grade=%.3f allowed_grade=%.3f span=(%.3f,%.3f) run=%.3f dy=%.3f span_y=(%.3f,%.3f) span_terrain=(%.3f,%.3f) span_delta=(%.3f,%.3f) endpoint_snap=(%d,%d) endpoint_delta=(%.3f,%.3f) queued=%s preview_ms=%.3f baked_ms=%.3f add_road_ms=%.3f bookkeeping_ms=%.3f cancel_ms=%.3f total_ms=%.3f"
+		MetrumDebug.log(
+			"road",
+			"commit_segment_detail raw_points=%d points=%d preview_empty=%s preview_valid=%s invalid_reason=%s max_grade=%.3f allowed_grade=%.3f span=(%.3f,%.3f) run=%.3f dy=%.3f span_y=(%.3f,%.3f) span_terrain=(%.3f,%.3f) span_delta=(%.3f,%.3f) endpoint_snap=(%d,%d) endpoint_delta=(%.3f,%.3f) queued=%s preview_ms=%.3f baked_ms=%.3f add_road_ms=%.3f bookkeeping_ms=%.3f cancel_ms=%.3f total_ms=%.3f"
 			% [
 				raw_points.size(),
 				points.size(),
@@ -862,7 +857,9 @@ func _poll_road_commit_result() -> void:
 		return
 	var committed := bool(result.get("committed", false))
 	if _road_debug_enabled:
-		print("[DEBUG:road] road_commit_result request_id=%d committed=%s detail=%s" % [_commit_request_id, committed, result.get("detail", "")])
+		MetrumDebug.log("road", "road_commit_result request_id=%d committed=%s detail=%s" % [_commit_request_id, committed, result.get("detail", "")])
+	if not committed:
+		MetrumDebug.log("events", "road_commit_rejected request_id=%d detail=%s" % [_commit_request_id, result.get("detail", "")])
 	_commit_request_id = 0
 	if not committed:
 		_pending_border_checks.erase(_commit_border_check)
@@ -934,8 +931,9 @@ func drain_pending_border_checks() -> void:
 			prompt_ms += float(Time.get_ticks_usec() - prompt_start_us) / 1000.0
 			prompt_count += 1
 	if _road_debug_enabled:
-		print(
-			"[DEBUG:road] border_checks_detail pending=%d candidate_calls=%d candidate_ms=%.3f prompts=%d prompt_ms=%.3f total_ms=%.3f"
+		MetrumDebug.log(
+			"road",
+			"border_checks_detail pending=%d candidate_calls=%d candidate_ms=%.3f prompts=%d prompt_ms=%.3f total_ms=%.3f"
 			% [
 				pending_count,
 				candidate_calls,
@@ -1107,8 +1105,9 @@ func _log_click_detail(
 ) -> void:
 	if not _road_debug_enabled:
 		return
-	print(
-		"[DEBUG:road] road_click_detail state=%d valid=%s mouse_ms=%.3f tangent_ms=%.3f path_ms=%.3f commit_ms=%.3f total_ms=%.3f"
+	MetrumDebug.log(
+		"road",
+		"road_click_detail state=%d valid=%s mouse_ms=%.3f tangent_ms=%.3f path_ms=%.3f commit_ms=%.3f total_ms=%.3f"
 		% [
 			state_before,
 			str(valid_after),

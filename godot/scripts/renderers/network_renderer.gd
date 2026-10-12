@@ -21,15 +21,18 @@ const PerfDebug := preload("res://scripts/core/perf_debug.gd")
 @onready var zoning_overlay = $"../ZoningOverlay"
 # @onready var rail_tool = $"../RailTool"  # uncomment when RailTool exists
 
-var _road_debug_enabled: bool = false
+# Read live so the debug console takes effect on the next refresh.
+var _road_debug_enabled: bool:
+	get:
+		return MetrumDebug.is_enabled("road")
+# Startup-only: patch geometry dumps also need the road channel.
 var _road_geometry_debug_enabled: bool = false
 var _road_mesh_refreshed_surface_generation: int = -1
 
 const ROAD_PATCH_DEBUG_MAX_DIRTY_PAIRS := 64
 
 func _ready() -> void:
-	_road_debug_enabled = _is_road_debug_enabled()
-	_road_geometry_debug_enabled = _is_road_geometry_debug_enabled()
+	_road_geometry_debug_enabled = MetrumDebug.startup_mode("road_geometry_dump")
 
 func _process(_delta: float) -> void:
 	var perf_enabled := PerfDebug.is_enabled()
@@ -153,8 +156,9 @@ func _process(_delta: float) -> void:
 			}
 		)
 	if _road_debug_enabled:
-		print(
-			"[DEBUG:road] refresh terrain_rebuild_ms=%.3f dirty_patches=%d terrain_visuals_ms=%.3f water_visuals_ms=%.3f road_mesh_ms=%.3f border_checks_ms=%.3f total_ms=%.3f"
+		MetrumDebug.log(
+			"road",
+			"refresh terrain_rebuild_ms=%.3f dirty_patches=%d terrain_visuals_ms=%.3f water_visuals_ms=%.3f road_mesh_ms=%.3f border_checks_ms=%.3f total_ms=%.3f"
 			% [
 				terrain_rebuild_ms,
 				dirty_patch_pairs,
@@ -173,66 +177,52 @@ func _current_road_surface_generation() -> int:
 		return int(simulation_node.get_network_render_generation())
 	return 0
 
-func _is_road_debug_enabled() -> bool:
-	var debug_value := OS.get_environment("METRUM_DEBUG").strip_edges()
-	if debug_value != "1":
-		return false
-	var filter := OS.get_environment("METRUM_DEBUG_FILTER").strip_edges().to_lower()
-	return filter == "road"
-
-func _is_road_geometry_debug_enabled() -> bool:
-	if OS.get_environment("METRUM_DEBUG_ROAD_GEOMETRY_DUMP").strip_edges() == "1":
-		return true
-	var debug_value := OS.get_environment("METRUM_DEBUG").strip_edges()
-	if debug_value != "1":
-		return false
-	var filter := OS.get_environment("METRUM_DEBUG_FILTER").strip_edges().to_lower()
-	return filter == "road"
-
 func _print_road_geometry_patch_debug(dirty_terrain_patch_keys: PackedInt32Array) -> void:
 	var diagnostic_start_us := Time.get_ticks_usec()
 	var dirty_pair_count := int(dirty_terrain_patch_keys.size() / 2)
-	print(
-		"[DEBUG:road] road_geometry_patch_debug dirty_patch_pairs=%d"
+	MetrumDebug.log(
+		"road",
+		"road_geometry_patch_debug dirty_patch_pairs=%d"
 		% dirty_pair_count
 	)
 	if dirty_pair_count > ROAD_PATCH_DEBUG_MAX_DIRTY_PAIRS:
-		print(
-			"[DEBUG:road] road_patch_debug_skipped dirty_patch_pairs=%d limit=%d reason=too_many_dirty_patches"
+		MetrumDebug.log(
+			"road",
+			"road_patch_debug_skipped dirty_patch_pairs=%d limit=%d reason=too_many_dirty_patches"
 			% [dirty_pair_count, ROAD_PATCH_DEBUG_MAX_DIRTY_PAIRS]
 		)
 		var skipped_ms := float(Time.get_ticks_usec() - diagnostic_start_us) / 1000.0
-		print("[DEBUG:road] road_geometry_patch_debug_terrain_ms=0.000")
-		print("[DEBUG:road] road_geometry_patch_debug_water_ms=0.000")
-		print("[DEBUG:road] road_geometry_patch_debug_zoning_ms=0.000")
-		print("[DEBUG:road] road_geometry_patch_debug_ms=%.3f" % skipped_ms)
+		MetrumDebug.log("road", "road_geometry_patch_debug_terrain_ms=0.000")
+		MetrumDebug.log("road", "road_geometry_patch_debug_water_ms=0.000")
+		MetrumDebug.log("road", "road_geometry_patch_debug_zoning_ms=0.000")
+		MetrumDebug.log("road", "road_geometry_patch_debug_ms=%.3f" % skipped_ms)
 		return
 	if terrain and terrain.has_method("road_geometry_debug_patch_lines"):
 		var terrain_start_us := Time.get_ticks_usec()
 		var terrain_lines: Array = terrain.road_geometry_debug_patch_lines(dirty_terrain_patch_keys)
 		for line_variant in terrain_lines:
-			print("[DEBUG:road] %s" % String(line_variant))
+			MetrumDebug.log("road", String(line_variant))
 		var terrain_ms := float(Time.get_ticks_usec() - terrain_start_us) / 1000.0
-		print("[DEBUG:road] road_geometry_patch_debug_terrain_ms=%.3f" % terrain_ms)
+		MetrumDebug.log("road", "road_geometry_patch_debug_terrain_ms=%.3f" % terrain_ms)
 	else:
-		print("[DEBUG:road] road_geometry_patch_debug_terrain_ms=0.000")
+		MetrumDebug.log("road", "road_geometry_patch_debug_terrain_ms=0.000")
 	if water and water.has_method("road_geometry_debug_patch_lines"):
 		var water_start_us := Time.get_ticks_usec()
 		var water_lines: Array = water.road_geometry_debug_patch_lines(dirty_terrain_patch_keys)
 		for line_variant in water_lines:
-			print("[DEBUG:road] %s" % String(line_variant))
+			MetrumDebug.log("road", String(line_variant))
 		var water_ms := float(Time.get_ticks_usec() - water_start_us) / 1000.0
-		print("[DEBUG:road] road_geometry_patch_debug_water_ms=%.3f" % water_ms)
+		MetrumDebug.log("road", "road_geometry_patch_debug_water_ms=%.3f" % water_ms)
 	else:
-		print("[DEBUG:road] road_geometry_patch_debug_water_ms=0.000")
+		MetrumDebug.log("road", "road_geometry_patch_debug_water_ms=0.000")
 	if zoning_overlay and zoning_overlay.has_method("road_geometry_debug_patch_lines"):
 		var zoning_start_us := Time.get_ticks_usec()
 		var zoning_lines: Array = zoning_overlay.road_geometry_debug_patch_lines(dirty_terrain_patch_keys)
 		for line_variant in zoning_lines:
-			print("[DEBUG:road] %s" % String(line_variant))
+			MetrumDebug.log("road", String(line_variant))
 		var zoning_ms := float(Time.get_ticks_usec() - zoning_start_us) / 1000.0
-		print("[DEBUG:road] road_geometry_patch_debug_zoning_ms=%.3f" % zoning_ms)
+		MetrumDebug.log("road", "road_geometry_patch_debug_zoning_ms=%.3f" % zoning_ms)
 	else:
-		print("[DEBUG:road] road_geometry_patch_debug_zoning_ms=0.000")
+		MetrumDebug.log("road", "road_geometry_patch_debug_zoning_ms=0.000")
 	var diagnostic_ms := float(Time.get_ticks_usec() - diagnostic_start_us) / 1000.0
-	print("[DEBUG:road] road_geometry_patch_debug_ms=%.3f" % diagnostic_ms)
+	MetrumDebug.log("road", "road_geometry_patch_debug_ms=%.3f" % diagnostic_ms)

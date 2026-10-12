@@ -18,7 +18,7 @@ impl SimCore {
 
     /// Regenerates only dirty road mesh chunks after a network edit on the sim thread.
     pub(crate) fn precompute_road_mesh_data(&mut self) {
-        let road_debug = debug::category_enabled("road");
+        let road_debug = debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
         self.transit_network.road_surface.compile_dirty_with_reason(
             &self.region_graph,

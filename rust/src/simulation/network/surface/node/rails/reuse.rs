@@ -132,7 +132,7 @@ impl NodeRailContourSet {
             Self::base_from_input_with_profile(input, profile_enabled)?;
         let base_topology = NodeRailTopologyKey::from_rails(input, &base);
 
-        if crate::debug::category_enabled("road")
+        if crate::debug::Channel::Road.enabled()
             && let Some(previous_topology) = previous.and_then(|cache| cache.base_topology.as_ref())
             && previous_topology != &base_topology
         {
@@ -184,7 +184,7 @@ impl NodeRailContourSet {
             }
         }
 
-        if crate::debug::category_enabled("road")
+        if crate::debug::Channel::Road.enabled()
             && let Some(previous) = previous
             && previous.base_topology.as_ref() == Some(&base_topology)
         {

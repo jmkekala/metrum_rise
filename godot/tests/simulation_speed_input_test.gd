@@ -23,7 +23,11 @@ func _run() -> void:
 	var simulation := SimulationNode.new()
 	root.add_child(simulation)
 	_expect(simulation.set_simulation_speed(1.0), "valid speed must be accepted")
-	await create_timer(0.1).timeout
+	# A freshly started simulation thread may still be initializing on a loaded machine, so the
+	# first command gets a deadline rather than one fixed wait.
+	var deadline_ms := Time.get_ticks_msec() + 2000
+	while float(simulation.get_road_benchmark_state()["simulation_speed"]) != 1.0 and Time.get_ticks_msec() < deadline_ms:
+		await create_timer(0.05).timeout
 	_expect(float(simulation.get_road_benchmark_state()["simulation_speed"]) == 1.0, "valid speed must reach the simulation thread")
 	for invalid_speed in [32.01, 1.0e30, INF, -INF, NAN]:
 		print("Checking simulation speed input: ", invalid_speed)

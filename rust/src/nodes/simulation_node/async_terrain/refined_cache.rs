@@ -230,7 +230,7 @@ impl SimCore {
         &mut self,
         render_step_m: f32,
     ) -> Vec<RefinedTerrainPatchBuildInput> {
-        let road_debug = crate::debug::category_enabled("road");
+        let road_debug = crate::debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
         let safe_render_step_m = render_step_m.max(f32::EPSILON);
         self.transit_network.road_surface.compile_dirty_with_reason(
@@ -391,7 +391,7 @@ impl SimCore {
 
     /// Refreshes engineered terrain ownership and invalidates stale refined terrain cache.
     pub(crate) fn refresh_road_locked_terrain_patch_state(&mut self, render_step_m: f32) -> usize {
-        let road_debug = crate::debug::category_enabled("road");
+        let road_debug = crate::debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
         let safe_render_step_m = render_step_m.max(f32::EPSILON);
         self.transit_network.road_surface.compile_dirty_with_reason(
@@ -439,7 +439,7 @@ impl SimCore {
     pub(crate) fn build_refined_terrain_patch_cache_entries(
         inputs: Vec<RefinedTerrainPatchBuildInput>,
     ) -> Vec<Arc<CachedRefinedTerrainPatch>> {
-        let road_debug = crate::debug::category_enabled("road");
+        let road_debug = crate::debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
         let input_count = inputs.len();
         let mut entries: Vec<Arc<CachedRefinedTerrainPatch>> = inputs

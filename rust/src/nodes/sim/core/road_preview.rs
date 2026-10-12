@@ -124,7 +124,7 @@ pub(crate) fn road_tool_snapshots_from_core(
     let surface_chunk_span_m = road_surface.chunk_span_m();
     let (surface_chunk_origin_x_m, surface_chunk_origin_z_m) = road_surface.chunk_origin_m();
     let surface_generation = core.road_tool_surface_generation;
-    if crate::debug::is_perf_enabled() {
+    if crate::debug::Channel::Perf.enabled() {
         println!(
             "[DEBUG:perf] road_tool_snapshot generation={} edges={} terrain_ms={:.3} graph_ms={:.3} surface_ms={:.3} water_ms={:.3} total_ms={:.3}",
             surface_generation,
@@ -191,7 +191,7 @@ pub(crate) fn run_road_preview_worker(
         let mut timing = request
             .enqueued_at
             .map(|enqueued| RoadPreviewTiming::new(enqueued, free_since));
-        let road_debug = crate::debug::category_enabled("road");
+        let road_debug = crate::debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
         let point_count = request.points.len();
         let include_terrain = request.include_terrain;

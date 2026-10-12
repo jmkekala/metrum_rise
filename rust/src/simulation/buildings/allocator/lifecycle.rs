@@ -340,7 +340,7 @@ impl BuildingAllocator {
         if self.dirty_index {
             self.rebuild_zone_index();
         }
-        for category in ["economy", "spawn"] {
+        for category in [crate::debug::Channel::Economy, crate::debug::Channel::Spawn] {
             debug_log!(
                 category,
                 "demand-owned household admission planning: households_to_spawn={}",
@@ -375,7 +375,7 @@ impl BuildingAllocator {
             let Some(border_node) =
                 self.household_arrival_border_node(home_idx, arrival, transit_network, graph)
             else {
-                for category in ["economy", "spawn"] {
+                for category in [crate::debug::Channel::Economy, crate::debug::Channel::Spawn] {
                     debug_log!(
                         category,
                         "demand-owned household admission waiting: no legal border-to-home car route for home_building={}",
@@ -401,7 +401,7 @@ impl BuildingAllocator {
                 border_pos.z,
             );
             launched += 1;
-            for category in ["economy", "spawn"] {
+            for category in [crate::debug::Channel::Economy, crate::debug::Channel::Spawn] {
                 debug_log!(
                     category,
                     "demand-owned household admission launched carrier_agent={} size={} home_building={} border_node={}",

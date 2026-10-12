@@ -120,7 +120,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
             let (next_pos, reached_handoff) = advance_along_local_access_path(current, &path, step);
             *s_pos_x.get_mut(i) = next_pos.x;
             *s_pos_y.get_mut(i) = next_pos.y;
-            if crate::debug::is_traffic_enabled()
+            if crate::debug::Channel::Traffic.enabled()
                 && local_access_should_log_step(current, next_pos, &path, reached_handoff)
             {
                 let seg_before = local_access_target_segment(current, &path);
@@ -162,7 +162,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                     true
                 };
                 if !attach_allowed {
-                    if crate::debug::is_traffic_enabled() {
+                    if crate::debug::Channel::Traffic.enabled() {
                         traffic_log!(
                             "[ACCESS_EGRESS_WAIT] agent={} bldg={} lane={}({}) lane_d={:.2} pos=({:.2},{:.2}) reason=attach-slot-busy",
                             i,
@@ -195,7 +195,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                 } else {
                     0.0
                 };
-                if crate::debug::is_traffic_enabled() {
+                if crate::debug::Channel::Traffic.enabled() {
                     traffic_log!(
                         "[ACCESS_EGRESS_ATTACH] agent={} bldg={} lane={}({}) lane_d={:.2} origin_node={} edge={} pos=({:.2},{:.2})",
                         i,
@@ -212,7 +212,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                 *s_transit.get_mut(i) = TRANSIT_NETWORK;
             }
         } else {
-            if crate::debug::is_traffic_enabled() {
+            if crate::debug::Channel::Traffic.enabled() {
                 traffic_log!(
                     "[ACCESS_EGRESS_ABORT] agent={} bldg={} mode={} lane={} lane_d={:.2} legal_attach={} exact_path={} reason=invalid-egress-plan flags=0x{:02x}",
                     i,

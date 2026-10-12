@@ -27,8 +27,8 @@ impl ShipmentSystem {
         treasury_balance: &mut f64,
         on_delivery: impl FnMut(&super::data::Shipment, &BuildingAllocator),
     ) {
-        let timing_category = if debug::category_enabled("economy_phases") { "economy_phases" } else { "economy" };
-        let timing_enabled = debug::category_enabled(timing_category);
+        let timing_category = if debug::Channel::EconomyPhases.enabled() { debug::Channel::EconomyPhases } else { debug::Channel::Economy };
+        let timing_enabled = timing_category.enabled();
         let total_start = Instant::now();
         let mut phase_start = total_start;
         let shipments_before = self.shipments.len();

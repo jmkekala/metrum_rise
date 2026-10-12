@@ -197,7 +197,7 @@ impl SimCore {
             });
             report.hourly_ms += hourly_start.elapsed().as_secs_f64() * 1000.0;
             report.hourly_ticks += 1;
-            if minute_of_day != 0 && crate::debug::is_sim_enabled() {
+            if minute_of_day != 0 && crate::debug::Channel::Sim.enabled() {
                 self.print_sim_console_summary(day_index, minute_of_day);
             }
         }
@@ -209,7 +209,7 @@ impl SimCore {
             });
             report.daily_ms += daily_start.elapsed().as_secs_f64() * 1000.0;
             report.daily_ticks += 1;
-            if crate::debug::is_sim_enabled() {
+            if crate::debug::Channel::Sim.enabled() {
                 self.print_sim_console_summary(day_index, minute_of_day);
             }
         }

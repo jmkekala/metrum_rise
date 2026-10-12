@@ -271,7 +271,7 @@ impl RoadPreviewTopologyReuse {
             surface.earthwork_section_ranges_for_edge(graph, edge_idx, edge, sections, terrain);
         let earthwork_ranges_match = candidate.earthwork_ranges == earthwork_ranges;
         if !visible_ranges_match || !earthwork_ranges_match {
-            if crate::debug::category_enabled("road") {
+            if crate::debug::Channel::Road.enabled() {
                 crate::debug_log!(
                     "road",
                     "preview_span_reuse_miss edge={} candidate_edge={} visible_ranges={} earthwork_ranges={}",
@@ -409,7 +409,7 @@ impl RoadSurfaceSystem {
             dirty_query_chunks: HashSet::new(),
             node_validation_logging_enabled: true,
             retain_complete_node_topology_for_replay: false,
-            retain_node_provenance: cfg!(test) || crate::debug::category_enabled("road"),
+            retain_node_provenance: cfg!(test) || crate::debug::Channel::Road.enabled(),
             retain_partial_validation_artifacts: false,
             compiled_sections: HashMap::new(),
             compiled_visual_span_pieces: HashMap::new(),
@@ -704,7 +704,7 @@ impl RoadSurfaceSystem {
             return;
         }
 
-        let road_debug = crate::debug::category_enabled("road");
+        let road_debug = crate::debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
         if road_debug && let Some(reuse) = preview_topology_reuse.as_ref() {
             crate::debug_log!(
@@ -1168,7 +1168,7 @@ impl RoadSurfaceSystem {
 
         if road_debug {
             let total_ms = elapsed_ms(total_start);
-            if total_ms >= 50.0 || crate::debug::is_perf_enabled() {
+            if total_ms >= 50.0 || crate::debug::Channel::Perf.enabled() {
                 crate::debug_log!(
                     "road",
                     "surface_compile_dirty_detail compile_reason={} dirty_edges={} dirty_nodes={} dirty_surface_chunks={} dirty_terrain_chunks={} span_edges={} nodes={} span_candidates={} span_topology_reused={} span_artifact_zero_copy={} node_candidates={} node_reused={} node_topology_reused={} node_height_topology_reused={} node_ownership_topology_reused={} node_artifact_zero_copy={} rebuilt_surface_chunks={} rebuilt_terrain_chunks={} prune_ms={:.3} ordering_ms={:.3} sections_ms={:.3} spans_ms={:.3} nodes_ms={:.3} node_earthwork_refresh_ms={:.3} chunk_cache_ms={:.3} total_ms={:.3}",
@@ -1290,7 +1290,7 @@ impl RoadSurfaceSystem {
         terrain: &TerrainSystem,
         reason: RoadSurfaceCompileReason,
     ) {
-        let road_debug = crate::debug::category_enabled("road");
+        let road_debug = crate::debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
         // Preview validators compile bounded graph excerpts. Frontier nodes in those excerpts can
         // be intentionally incomplete, so retain successful artifacts for the exact required-set

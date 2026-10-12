@@ -202,7 +202,7 @@ impl DemandSystem {
         environment: BuildingSiteEnvironment<'_>,
         minute_of_day: u16,
     ) {
-        let mut phase = crate::debug::category_enabled("economy_phases").then(std::time::Instant::now);
+        let mut phase = crate::debug::Channel::EconomyPhases.enabled().then(std::time::Instant::now);
         let mut times = [0.0; 7];
         let mut lap = |slot: usize| {
             if let Some(previous) = phase {

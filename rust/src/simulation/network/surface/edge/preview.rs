@@ -1287,7 +1287,7 @@ impl RoadSurfaceSystem {
         required_node_ids: &[u32],
         compile_reason: RoadSurfaceCompileReason,
     ) {
-        if !crate::debug::category_enabled("road") {
+        if !crate::debug::Channel::Road.enabled() {
             return;
         }
         let failure_label = validation_surface
@@ -1325,7 +1325,7 @@ impl RoadSurfaceSystem {
         required_node_ids: &[u32],
         compile_reason: RoadSurfaceCompileReason,
     ) {
-        if !crate::debug::category_enabled("road") {
+        if !crate::debug::Channel::Road.enabled() {
             return;
         }
         let failure_label = validation_surface

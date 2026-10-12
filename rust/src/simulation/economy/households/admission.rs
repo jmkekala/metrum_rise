@@ -154,7 +154,7 @@ impl HouseholdSystem {
                 agents.assign_household_id(resident_idx, household_id);
             }
 
-            for category in ["economy", "spawn"] {
+            for category in [crate::debug::Channel::Economy, crate::debug::Channel::Spawn] {
                 debug_log!(
                     category,
                     "household arrival carrier materialized household_id={} size={} home_building={} carrier_agent={}",

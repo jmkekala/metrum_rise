@@ -150,7 +150,7 @@ impl RoadSurfaceSystem {
         terrain: &mut TerrainSystem,
         chunks: &[SurfaceChunkKey],
     ) {
-        let road_debug = crate::debug::category_enabled("road");
+        let road_debug = crate::debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
         let collect_start = road_debug.then(Instant::now);
         let terrain_read: &TerrainSystem = terrain;

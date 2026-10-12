@@ -239,12 +239,12 @@ pub struct Building {
     /// end-of-day fuel inventory after the plant has already consumed it.
     pub daily_power_service_units: f32,
     /// This day's electricity delivered to workplaces and residences, in kWh.
-    pub(crate) daily_electricity: crate::simulation::economy::electricity::BuildingElectricityUsage,
+    pub daily_electricity: crate::simulation::economy::electricity::BuildingElectricityUsage,
     /// Last completed day's consumption, retained for building inspection.
-    pub(crate) recent_electricity:
+    pub recent_electricity:
         crate::simulation::economy::electricity::BuildingElectricityUsage,
     /// Realized production fraction for this hour, rebuilt by the owning production pass.
-    pub(crate) hourly_economy_activity: f32,
+    pub hourly_economy_activity: f32,
     /// Aggregate utility power service units consumed from this building during the current day.
     ///
     /// Daily settlement derives this from citywide power demand and the plant's share of total

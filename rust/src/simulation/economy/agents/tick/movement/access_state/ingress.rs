@@ -109,7 +109,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
             let (next_pos, reached_door) = advance_along_local_access_path(current, &path, step);
             *s_pos_x.get_mut(i) = next_pos.x;
             *s_pos_y.get_mut(i) = next_pos.y;
-            if crate::debug::is_traffic_enabled()
+            if crate::debug::Channel::Traffic.enabled()
                 && local_access_should_log_step(current, next_pos, &path, reached_door)
             {
                 let seg_before = local_access_target_segment(current, &path);
@@ -142,7 +142,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
             }
             if reached_door {
                 let ingress_target = path.points[path.count - 1];
-                if crate::debug::is_traffic_enabled() {
+                if crate::debug::Channel::Traffic.enabled() {
                     traffic_log!(
                         "[ACCESS_INGRESS_DONE] agent={} bldg={} pos=({:.2},{:.2}) activity_before={} flags=0x{:02x}",
                         i,
@@ -175,7 +175,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
             *s_lane_d.get_mut(i) = detach_lane_d;
             *s_speed.get_mut(i) = 0.0;
             s_path.get_mut(i).clear();
-            if crate::debug::is_traffic_enabled() {
+            if crate::debug::Channel::Traffic.enabled() {
                 traffic_log!(
                     "[ACCESS_INGRESS_ABORT] agent={} bldg={} mode={} lane={} lane_d={:.2} legal_detach={} exact_path={} ingress_origin=({:.2},{:.2}) reason=invalid-ingress-plan flags=0x{:02x}",
                     i,

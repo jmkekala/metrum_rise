@@ -25,7 +25,10 @@ var construction_scaffold_multimeshes: Dictionary = {}
 var building_site_ground_instance: MeshInstance3D
 var building_site_surface_instance: MeshInstance3D
 var building_site_revision: int = -1
-var building_debug_enabled: bool = false
+# Read live so the debug console takes effect on the next site-mesh rebuild.
+var building_debug_enabled: bool:
+	get:
+		return MetrumDebug.is_enabled("buildings")
 var building_site_dump_enabled: bool = false
 var building_site_visual_mode: String = ""
 var building_site_debug_materials: Dictionary = {}
@@ -62,19 +65,19 @@ func _load_enabled_packs() -> void:
 				push_warning("Asset pack warning: " + w)
 
 func _ready() -> void:
-	building_debug_enabled = _building_debug_is_enabled()
-	building_site_dump_enabled = _building_site_dump_is_enabled()
-	building_site_visual_mode = _building_site_visual_mode_from_env()
+	building_site_dump_enabled = MetrumDebug.startup_mode("building_sites_dump")
+	building_site_visual_mode = _building_site_visual_mode_from_startup()
 	if building_debug_enabled:
-		print(
-			"[DEBUG:buildings] enabled site_visual_mode=%s site_dump=%s"
+		MetrumDebug.log(
+			"buildings",
+			"enabled site_visual_mode=%s site_dump=%s"
 			% [
 				building_site_visual_mode if not building_site_visual_mode.is_empty() else "off",
 				str(building_site_dump_enabled),
 			]
 		)
 	elif _building_site_visual_debug_enabled():
-		print("[DEBUG:buildings] site visual overlay enabled mode=%s" % [building_site_visual_mode])
+		MetrumDebug.log("buildings", "site visual overlay enabled mode=%s" % [building_site_visual_mode])
 
 	_load_enabled_packs()
 
@@ -395,8 +398,9 @@ func _print_building_site_debug(
 	if not building_debug_enabled and not building_site_dump_enabled:
 		return
 	if not building_site_dump_enabled:
-		print(
-			"[DEBUG:buildings] site_mesh revision=%d ground_vertices=%d asphalt_vertices=%d concrete_vertices=%d"
+		MetrumDebug.log(
+			"buildings",
+			"site_mesh revision=%d ground_vertices=%d asphalt_vertices=%d concrete_vertices=%d"
 			% [
 				int(data.get("revision", building_site_revision)),
 				ground_vertices.size(),
@@ -409,16 +413,18 @@ func _print_building_site_debug(
 	var ground_area := _triangle_area_xz(ground_vertices)
 	var asphalt_area := _triangle_area_xz(asphalt_vertices)
 	var concrete_area := _triangle_area_xz(concrete_vertices)
-	print(
-		"[DEBUG:buildings] BUILDING_SITE_DUMP_BEGIN revision=%d sites=%d visual_mode=%s"
+	MetrumDebug.log(
+		"buildings",
+		"BUILDING_SITE_DUMP_BEGIN revision=%d sites=%d visual_mode=%s"
 		% [
 			int(data.get("revision", building_site_revision)),
 			debug_sites.size(),
 			building_site_visual_mode if not building_site_visual_mode.is_empty() else "off",
 		]
 	)
-	print(
-		"[DEBUG:buildings] buffers ground_vertices=%d ground_triangles=%d ground_area_m2=%.3f ground_bounds=%s asphalt_vertices=%d asphalt_triangles=%d asphalt_area_m2=%.3f asphalt_bounds=%s concrete_vertices=%d concrete_triangles=%d concrete_area_m2=%.3f concrete_bounds=%s"
+	MetrumDebug.log(
+		"buildings",
+		"buffers ground_vertices=%d ground_triangles=%d ground_area_m2=%.3f ground_bounds=%s asphalt_vertices=%d asphalt_triangles=%d asphalt_area_m2=%.3f asphalt_bounds=%s concrete_vertices=%d concrete_triangles=%d concrete_area_m2=%.3f concrete_bounds=%s"
 		% [
 			ground_vertices.size(),
 			ground_vertices.size() / 3,
@@ -434,26 +440,29 @@ func _print_building_site_debug(
 			_vector3_bounds_label(concrete_vertices),
 		]
 	)
-	print(
-		"[DEBUG:buildings] materials ground=%s asphalt=%s concrete=%s"
+	MetrumDebug.log(
+		"buildings",
+		"materials ground=%s asphalt=%s concrete=%s"
 		% [
 			_material_debug_label(ground_material),
 			_material_debug_label(_building_site_surface_material(WorldMaterials.MATERIAL_ASPHALT)),
 			_material_debug_label(_building_site_surface_material(WorldMaterials.MATERIAL_CONCRETE)),
 		]
 	)
-	print(
-		"[DEBUG:buildings] uv_sources ground=world_xz(site_ground grass shader) asphalt=world_xz(site_surface shader) concrete=world_xz(site_surface shader)"
+	MetrumDebug.log(
+		"buildings",
+		"uv_sources ground=world_xz(site_ground grass shader) asphalt=world_xz(site_surface shader) concrete=world_xz(site_surface shader)"
 	)
 	for site_variant in debug_sites:
 		var site: Dictionary = site_variant as Dictionary
 		_print_building_site_record(site)
-	print("[DEBUG:buildings] BUILDING_SITE_DUMP_END")
+	MetrumDebug.log("buildings", "BUILDING_SITE_DUMP_END")
 
 func _print_building_site_record(site: Dictionary) -> void:
 	var site_index := int(site.get("site_index", -1))
-	print(
-		"[DEBUG:buildings] site index=%d asset_id=%s zone=%s edge=%d side=%d frontage_t=%.3f center=%s facing=%s side_offset_m=%.3f cells=%dx%d lot_m=(%.3f,%.3f) support_y=%.3f area_m2=%.3f bounds=[%s..%s] footprint=%s surfaces=%d"
+	MetrumDebug.log(
+		"buildings",
+		"site index=%d asset_id=%s zone=%s edge=%d side=%d frontage_t=%.3f center=%s facing=%s side_offset_m=%.3f cells=%dx%d lot_m=(%.3f,%.3f) support_y=%.3f area_m2=%.3f bounds=[%s..%s] footprint=%s surfaces=%d"
 		% [
 			site_index,
 			str(site.get("asset_id", "")),
@@ -477,8 +486,9 @@ func _print_building_site_record(site: Dictionary) -> void:
 		]
 	)
 	var road_sample_count := int(site.get("road_sample_count", 0))
-	print(
-		"[DEBUG:buildings] site_grading site=%d road_samples=%d road_y=[%.3f..%.3f] road_range=%.3f max_abs_support_delta_road=%.3f terrain_visual_y=[%.3f..%.3f] terrain_visual_range=%.3f max_abs_support_delta_visual=%.3f claimed_probe_valid=%s claimed_probe_point=%s claimed_probe_has_height=%s claimed_probe_y=%.3f claimed_probe_delta=%.3f"
+	MetrumDebug.log(
+		"buildings",
+		"site_grading site=%d road_samples=%d road_y=[%.3f..%.3f] road_range=%.3f max_abs_support_delta_road=%.3f terrain_visual_y=[%.3f..%.3f] terrain_visual_range=%.3f max_abs_support_delta_visual=%.3f claimed_probe_valid=%s claimed_probe_point=%s claimed_probe_has_height=%s claimed_probe_y=%.3f claimed_probe_delta=%.3f"
 		% [
 			site_index,
 			road_sample_count,
@@ -500,8 +510,9 @@ func _print_building_site_record(site: Dictionary) -> void:
 	var samples: Array = site.get("samples", [])
 	for sample_variant in samples:
 		var sample: Dictionary = sample_variant as Dictionary
-		print(
-			"[DEBUG:buildings] site_sample site=%d label=%s point=%s terrain_source_y=%.3f terrain_visual_y=%.3f support_delta_source=%.3f support_delta_visual=%.3f"
+		MetrumDebug.log(
+			"buildings",
+			"site_sample site=%d label=%s point=%s terrain_source_y=%.3f terrain_visual_y=%.3f support_delta_source=%.3f support_delta_visual=%.3f"
 			% [
 				site_index,
 				str(sample.get("label", "")),
@@ -515,8 +526,9 @@ func _print_building_site_record(site: Dictionary) -> void:
 	var edge_samples: Array = site.get("edge_samples", [])
 	for edge_sample_variant in edge_samples:
 		var edge_sample: Dictionary = edge_sample_variant as Dictionary
-		print(
-			"[DEBUG:buildings] site_edge_sample site=%d edge=%d role=%s sample=%d/%d t=%.3f point=%s road_probe=%s road_visible=%s road_y=%.3f support_delta_road=%.3f terrain_source_y=%.3f terrain_visual_y=%.3f support_delta_source=%.3f support_delta_visual=%.3f"
+		MetrumDebug.log(
+			"buildings",
+			"site_edge_sample site=%d edge=%d role=%s sample=%d/%d t=%.3f point=%s road_probe=%s road_visible=%s road_y=%.3f support_delta_road=%.3f terrain_source_y=%.3f terrain_visual_y=%.3f support_delta_source=%.3f support_delta_visual=%.3f"
 			% [
 				site_index,
 				int(edge_sample.get("edge_index", -1)),
@@ -538,8 +550,9 @@ func _print_building_site_record(site: Dictionary) -> void:
 	var surfaces: Array = site.get("surfaces", [])
 	for surface_variant in surfaces:
 		var surface: Dictionary = surface_variant as Dictionary
-		print(
-			"[DEBUG:buildings] site_surface site=%d index=%d name=%s material=%s height_y=%.3f area_m2=%.3f bounds=[%s..%s] vertices=%s"
+		MetrumDebug.log(
+			"buildings",
+			"site_surface site=%d index=%d name=%s material=%s height_y=%.3f area_m2=%.3f bounds=[%s..%s] vertices=%s"
 			% [
 				site_index,
 				int(surface.get("surface_index", -1)),
@@ -634,26 +647,8 @@ func _packed_vector2_label(value) -> String:
 		parts.append(_vector2_label(point))
 	return "[" + ", ".join(parts) + "]"
 
-func _building_debug_is_enabled() -> bool:
-	var explicit_value := OS.get_environment("METRUM_DEBUG_BUILDINGS").strip_edges()
-	if explicit_value == "1":
-		return true
-	var debug_value := OS.get_environment("METRUM_DEBUG").strip_edges()
-	if debug_value.is_empty() or debug_value == "0":
-		return false
-	var filter := OS.get_environment("METRUM_DEBUG_FILTER").strip_edges().to_lower()
-	for entry_variant in filter.split(","):
-		var entry := String(entry_variant).strip_edges()
-		if entry == "buildings" or entry == "building-sites":
-			return true
-	return false
-
-func _building_site_dump_is_enabled() -> bool:
-	var value := OS.get_environment("METRUM_DEBUG_BUILDING_SITES_DUMP").strip_edges().to_lower()
-	return value == "1" or value == "true" or value == "yes" or value == "full"
-
-func _building_site_visual_mode_from_env() -> String:
-	var value := OS.get_environment("METRUM_DEBUG_BUILDING_SITES_VISUAL").strip_edges().to_lower()
+func _building_site_visual_mode_from_startup() -> String:
+	var value := String(MetrumDebug.startup_mode("building_sites_visual"))
 	if value.is_empty() or value == "0" or value == "false":
 		return ""
 	match value:

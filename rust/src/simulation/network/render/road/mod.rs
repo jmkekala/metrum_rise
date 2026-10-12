@@ -87,7 +87,7 @@ impl RoadRenderer {
         road_surface: &RoadSurfaceSystem,
         target_chunks: &BTreeSet<SurfaceChunkKey>,
     ) -> BTreeMap<SurfaceChunkKey, NetworkMeshData> {
-        let road_debug = debug::category_enabled("road");
+        let road_debug = debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
         let coverage_start = road_debug.then(Instant::now);
         let compiled_surface = standard_surface::build_compiled_surface_coverage_for_chunks(

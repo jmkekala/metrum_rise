@@ -1944,7 +1944,7 @@ impl SimCore {
             &self.region_graph,
         );
         self.rebuild_building_entrances_internal();
-        if crate::debug::is_traffic_enabled() {
+        if crate::debug::Channel::Traffic.enabled() {
             if (node_id as usize) < self.region_graph.node_count() {
                 let conns = &self.region_graph.node(node_id).lane_connections;
                 let mut entries: Vec<_> = conns
@@ -2097,7 +2097,7 @@ impl SimCore {
         &mut self,
         rebuild_entrances: bool,
     ) -> Vec<(usize, usize)> {
-        let road_debug = crate::debug::category_enabled("road");
+        let road_debug = crate::debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
         let debug_edges = std::mem::take(&mut self.last_surface_debug_edges);
 
@@ -2146,7 +2146,7 @@ impl SimCore {
         let mut dump_build_ms = 0.0;
         let mut dump_print_ms = 0.0;
         let mut dump_bytes = 0usize;
-        if crate::debug::category_enabled("road")
+        if crate::debug::Channel::Road.enabled()
             && Self::road_geometry_dump_enabled()
             && !debug_edges.is_empty()
         {

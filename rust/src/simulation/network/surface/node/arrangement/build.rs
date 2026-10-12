@@ -274,7 +274,7 @@ impl NodeArrangement {
     pub(super) fn reject_implicit_material_height_conflicts(
         &self,
     ) -> Result<Option<Vec<NodeExplicitVerticalStepSegment>>, NodeArrangementError> {
-        let profile_enabled = crate::debug::category_enabled("road");
+        let profile_enabled = crate::debug::Channel::Road.enabled();
         let total_start = profile_enabled.then(Instant::now);
         let grouping_start = profile_enabled.then(Instant::now);
         let mut vertices_by_key =
@@ -430,7 +430,7 @@ struct MaterialHeightConflictIndex {
 
 impl MaterialHeightConflictIndex {
     fn new(arrangement: &NodeArrangement, relevant_keys: &BTreeSet<NodeArrangementKey>) -> Self {
-        let profile_enabled = crate::debug::category_enabled("road");
+        let profile_enabled = crate::debug::Channel::Road.enabled();
         let total_start = profile_enabled.then(Instant::now);
         let steps_start = profile_enabled.then(Instant::now);
         let vertical_step_segments = arrangement.explicit_vertical_step_segments();

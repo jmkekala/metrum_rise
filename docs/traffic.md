@@ -414,8 +414,9 @@ or:
 ./run.sh --debug-traffic
 ```
 
-Traffic debug logging goes to stderr through `traffic_log!`. When redirecting output, capture
-stderr as well if you want `traffic.log`.
+Traffic debug logging goes to stdout through `traffic_log!` on the `traffic` debug channel, each
+line prefixed `[DEBUG:traffic]`. The channel can also be switched on in game from the debug
+console; see [`debug.md`](debug.md).
 
 Important log markers:
 

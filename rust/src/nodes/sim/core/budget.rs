@@ -1035,7 +1035,7 @@ impl SimCore {
     }
 
     pub(super) fn log_daily_city_flow_diagnostics(&self, day_index: u32, removed_households: u32) {
-        if !crate::debug::category_enabled("economy") {
+        if !crate::debug::Channel::Economy.enabled() {
             return;
         }
 
@@ -1143,7 +1143,7 @@ impl SimCore {
     pub(super) fn print_daily_building_economy(&self, day_index: u32) {
         use crate::simulation::economy::definitions::load_runtime_economy_catalog;
 
-        if !crate::debug::category_enabled("economy") {
+        if !crate::debug::Channel::Economy.enabled() {
             return;
         }
         let Ok(catalog) = load_runtime_economy_catalog() else {

@@ -23,6 +23,7 @@ belong here. Rust methods are called through `SimulationNode`.
 | Bottom toolbar | — | ✓ | — | ✓ |
 | Context panel | — | — | — | — |
 | Floating windows | ✓ | ✓ | — | — |
+| Debug console | ✓ | ✓ | ✓ | ✓ |
 
 The top menu bar is shared across gameplay and editor scenes. AssetEditor remains a
 self-contained editor application with no bottom toolbar. WorldEditor is the editor-shell
@@ -550,6 +551,14 @@ Zoning overlay is a separate mesh toggled with the Zoning tool or `View → Togg
 Traffic overlay is not currently implemented in the terrain renderer; do not expose it in the
 menu until a real renderer path exists.
 
+### 6. Debug Console
+
+The debug console is an autoload (`DebugConsole`) available in every scene and build. The key
+left of `1` (`§` on Nordic layouts) slides it down from the top edge, anchored left: full
+height and at most a third of the window wide. It sits above the other surfaces on canvas layer
+120. Gameplay keeps the keyboard until one of the console's two text fields is clicked, and Esc
+returns it. [`debug.md`](debug.md#console) owns its behavior and commands.
+
 ---
 
 ## Style Conventions (`UIStyle`)
@@ -742,6 +751,7 @@ ui/top_menu.gd          MenuBar, dispatches to InputManager or opens windows; sh
 ui/building_inspector.gd  Window — building stats, calls SimulationNode.get_building_info_at()
 ui/road_properties_window.gd  Window — edge class / no-build editing for SelectTool
 ui/pack_manager.gd      Window — mod pack browser
+ui/debug_console/        DebugConsole autoload controller, widget view, events Logger — reads MetrumDebug only
 core/input_manager.gd   Tool state, keyboard shortcuts, camera, Ctrl+S/L save/load
 editors/world_editor.gd WorldEditor shell, tool UI, world load/save flow, camera policy owner
 editors/world_editor_camera_input.gd  WorldEditor camera input wrapper and UI-capture gating

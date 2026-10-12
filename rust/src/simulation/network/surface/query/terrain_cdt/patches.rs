@@ -243,7 +243,7 @@ impl RoadSurfaceSystem {
                 }
             }
         }
-        if crate::debug::category_enabled("road") && crate::debug::is_perf_enabled() {
+        if crate::debug::Channel::Road.enabled() && crate::debug::Channel::Perf.enabled() {
             crate::debug_log!(
                 "road",
                 "terrain_grading_batch target_patches={} span_owners={} node_owners={} evaluated_loops={} cached_loops={} output_patches={}",

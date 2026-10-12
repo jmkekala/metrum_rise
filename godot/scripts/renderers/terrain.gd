@@ -191,12 +191,16 @@ var _resident_min_patch_x: int = 0
 var _resident_max_patch_x: int = -1
 var _resident_min_patch_z: int = 0
 var _resident_max_patch_z: int = -1
-var _terrain_debug_enabled: bool = false
+# Channel switches are read live so the debug console takes effect on the next frame.
+var _terrain_debug_enabled: bool:
+	get:
+		return MetrumDebug.is_enabled("terrain")
+var _road_debug_enabled: bool:
+	get:
+		return MetrumDebug.is_enabled("road")
 var _terrain_debug_verbose: bool = false
 var _terrain_force_full_world: bool = false
 var _terrain_force_lod1: bool = false
-var _road_debug_enabled: bool = false
-var _road_geometry_debug_enabled: bool = false
 var _terrain_mesh_lod_refresh_elapsed_s: float = 0.0
 var _terrain_lod_refresh_camera_valid: bool = false
 var _terrain_lod_refresh_last_camera_position: Vector3 = Vector3.ZERO
@@ -256,14 +260,11 @@ func rebuild_from_simulation_state() -> void:
 	_rebuild_mask_pages(int(patch_layout.get("patch_border_texels", 0)))
 	terrain_cell_m = float(patch_layout.get("terrain_cell_m", 1.0))
 	patch_span_m = terrain_cell_m * float(patch_interval_cells)
-	_terrain_debug_enabled = _terrain_debug_is_enabled()
-	_terrain_debug_verbose = _terrain_debug_is_verbose()
-	_terrain_force_full_world = _terrain_debug_force_full_world()
-	_terrain_force_lod1 = _terrain_debug_force_lod1()
-	_road_debug_enabled = _road_debug_is_enabled()
-	_road_geometry_debug_enabled = _road_geometry_debug_is_enabled()
-	_terrain_visual_debug_mode = _terrain_visual_debug_mode_from_env()
-	_terrain_grass_visual_debug_mode = _terrain_grass_visual_debug_mode_from_env()
+	_terrain_debug_verbose = MetrumDebug.startup_mode("terrain_verbose")
+	_terrain_force_full_world = MetrumDebug.startup_mode("terrain_force_full_world")
+	_terrain_force_lod1 = MetrumDebug.startup_mode("terrain_force_lod1")
+	_terrain_visual_debug_mode = _terrain_visual_debug_mode_from_startup()
+	_terrain_grass_visual_debug_mode = _terrain_grass_visual_debug_mode_from_startup()
 	_terrain_mesh_lod_refresh_elapsed_s = 0.0
 	_terrain_lod_refresh_camera_valid = false
 	_record_lod_perf_counters(0, 0, 0, 0)
@@ -314,14 +315,16 @@ func rebuild_from_simulation_state() -> void:
 			]
 		)
 	if _terrain_visual_debug_mode != 0:
-		print(
-			"[DEBUG:terrain] terrain_visual_debug_mode=%d source=%s"
-			% [_terrain_visual_debug_mode, OS.get_environment("METRUM_DEBUG_TERRAIN_VISUAL")]
+		MetrumDebug.log(
+			"terrain",
+			"terrain_visual_debug_mode=%d source=%s"
+			% [_terrain_visual_debug_mode, MetrumDebug.startup_mode("terrain_visual")]
 		)
 	if _terrain_grass_visual_debug_mode != 0:
-		print(
-			"[DEBUG:terrain] grass_visual_debug_mode=%d source=%s"
-			% [_terrain_grass_visual_debug_mode, OS.get_environment("METRUM_DEBUG_TERRAIN_GRASS")]
+		MetrumDebug.log(
+			"terrain",
+			"grass_visual_debug_mode=%d source=%s"
+			% [_terrain_grass_visual_debug_mode, MetrumDebug.startup_mode("terrain_grass")]
 		)
 
 func _process(delta: float) -> void:
@@ -918,8 +921,9 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 	if _patch_requires_engineered_refinement(key, patch_data) and not _engineered_patch_data_is_renderable(patch_data):
 		_mark_bad_cdt_generation_handled(key, patch_data)
 		if _terrain_debug_enabled or _road_debug_enabled:
-			print(
-				"[DEBUG:terrain] terrain_create key=(%d,%d) deferred_bad_cdt_no_heightmap_fallback=true cdt_status=%s cdt_error=%s"
+			MetrumDebug.log(
+				"terrain",
+				"terrain_create key=(%d,%d) deferred_bad_cdt_no_heightmap_fallback=true cdt_status=%s cdt_error=%s"
 				% [
 					key.x,
 					key.y,
@@ -1118,8 +1122,9 @@ func _upload_patch(key: Vector2i, allow_async: bool = false) -> bool:
 			return false
 		_remove_patch(key)
 		if _road_debug_enabled:
-			print(
-				"[DEBUG:road] terrain_upload key=(%d,%d) missing_patch_data=true fetch_ms=%.3f total_ms=%.3f"
+			MetrumDebug.log(
+				"road",
+				"terrain_upload key=(%d,%d) missing_patch_data=true fetch_ms=%.3f total_ms=%.3f"
 				% [
 					key.x,
 					key.y,
@@ -1137,8 +1142,9 @@ func _upload_patch(key: Vector2i, allow_async: bool = false) -> bool:
 			patch["engineered_bad_cdt_blocked"] = false
 			_apply_patch_visibility_for_residency(key, patch, previous_patch_data)
 			if _terrain_debug_enabled or _road_debug_enabled:
-				print(
-					"[DEBUG:terrain] terrain_upload key=(%d,%d) preserved_last_good_cdt=true cdt_status=%s cdt_error=%s fetch_ms=%.3f total_ms=%.3f"
+				MetrumDebug.log(
+					"terrain",
+					"terrain_upload key=(%d,%d) preserved_last_good_cdt=true cdt_status=%s cdt_error=%s fetch_ms=%.3f total_ms=%.3f"
 					% [
 						key.x,
 						key.y,
@@ -1152,8 +1158,9 @@ func _upload_patch(key: Vector2i, allow_async: bool = false) -> bool:
 		patch_render_will_change.emit(key)
 		_block_engineered_patch_until_valid_cdt(patch)
 		if _terrain_debug_enabled or _road_debug_enabled:
-			print(
-				"[DEBUG:terrain] terrain_upload key=(%d,%d) hidden_bad_cdt_no_heightmap_fallback=true cdt_status=%s cdt_error=%s fetch_ms=%.3f total_ms=%.3f"
+			MetrumDebug.log(
+				"terrain",
+				"terrain_upload key=(%d,%d) hidden_bad_cdt_no_heightmap_fallback=true cdt_status=%s cdt_error=%s fetch_ms=%.3f total_ms=%.3f"
 				% [
 					key.x,
 					key.y,
@@ -1366,8 +1373,9 @@ func _commit_staged_patch_data(
 			retaining_indices = (
 				patch_data["terrain_retaining_wall_mesh_indices"] as PackedInt32Array
 			).size()
-		print(
-			"[DEBUG:road] terrain_upload key=(%d,%d) engineered_owned=%s include_debug=%s fetch_ms=%.3f metadata_ms=%.3f texture_ms=%.3f patch_update_ms=%.3f mesh_ms=%.3f retaining_ms=%.3f position_ms=%.3f total_ms=%.3f terrain_vertices=%d terrain_indices=%d retaining_vertices=%d retaining_indices=%d"
+		MetrumDebug.log(
+			"road",
+			"terrain_upload key=(%d,%d) engineered_owned=%s include_debug=%s fetch_ms=%.3f metadata_ms=%.3f texture_ms=%.3f patch_update_ms=%.3f mesh_ms=%.3f retaining_ms=%.3f position_ms=%.3f total_ms=%.3f terrain_vertices=%d terrain_indices=%d retaining_vertices=%d retaining_indices=%d"
 			% [
 				key.x,
 				key.y,
@@ -2306,8 +2314,9 @@ func _dirty_patch_payloads_renderable_for_atomic_upload(keys: Array[Vector2i]) -
 		):
 			_mark_bad_cdt_generation_handled(key, patch_data)
 			if _road_debug_enabled:
-				print(
-					"[DEBUG:road] terrain_atomic_upload_blocked key=(%d,%d) preserved_last_good_batch=true cdt_status=%s cdt_error=%s"
+				MetrumDebug.log(
+					"road",
+					"terrain_atomic_upload_blocked key=(%d,%d) preserved_last_good_batch=true cdt_status=%s cdt_error=%s"
 					% [
 						key.x,
 						key.y,
@@ -4555,63 +4564,8 @@ func _road_geometry_baked_mesh_stats_label(patch_data: Dictionary) -> String:
 		normal_label,
 	]
 
-func _terrain_debug_is_enabled() -> bool:
-	var explicit_value := OS.get_environment("METRUM_DEBUG_TERRAIN").strip_edges()
-	if explicit_value == "1":
-		return true
-	var debug_value := OS.get_environment("METRUM_DEBUG").strip_edges()
-	if debug_value.is_empty() or debug_value == "0":
-		return false
-	var filter := OS.get_environment("METRUM_DEBUG_FILTER").strip_edges().to_lower()
-	if filter.is_empty():
-		return false
-	for entry_variant in filter.split(","):
-		var entry := String(entry_variant).strip_edges()
-		if (
-			entry == "terrain"
-			or entry == "terrain-verbose"
-			or entry == "terrain-full"
-			or entry == "terrain-lod1"
-			or entry == "terrain-full-lod1"
-		):
-			return true
-	return false
-
-func _terrain_debug_is_verbose() -> bool:
-	var explicit_value := OS.get_environment("METRUM_DEBUG_TERRAIN_VERBOSE").strip_edges()
-	if explicit_value == "1":
-		return true
-	var filter := OS.get_environment("METRUM_DEBUG_FILTER").strip_edges().to_lower()
-	for entry_variant in filter.split(","):
-		var entry := String(entry_variant).strip_edges()
-		if entry == "terrain-verbose":
-			return true
-	return false
-
-func _terrain_debug_force_full_world() -> bool:
-	var explicit_value := OS.get_environment("METRUM_DEBUG_TERRAIN_FORCE_FULL_WORLD").strip_edges()
-	if explicit_value == "1":
-		return true
-	var filter := OS.get_environment("METRUM_DEBUG_FILTER").strip_edges().to_lower()
-	for entry_variant in filter.split(","):
-		var entry := String(entry_variant).strip_edges()
-		if entry == "terrain-full" or entry == "terrain-full-lod1":
-			return true
-	return false
-
-func _terrain_debug_force_lod1() -> bool:
-	var explicit_value := OS.get_environment("METRUM_DEBUG_TERRAIN_FORCE_LOD1").strip_edges()
-	if explicit_value == "1":
-		return true
-	var filter := OS.get_environment("METRUM_DEBUG_FILTER").strip_edges().to_lower()
-	for entry_variant in filter.split(","):
-		var entry := String(entry_variant).strip_edges()
-		if entry == "terrain-lod1" or entry == "terrain-full-lod1":
-			return true
-	return false
-
-func _terrain_visual_debug_mode_from_env() -> int:
-	var value := OS.get_environment("METRUM_DEBUG_TERRAIN_VISUAL").strip_edges().to_lower()
+func _terrain_visual_debug_mode_from_startup() -> int:
+	var value := String(MetrumDebug.startup_mode("terrain_visual"))
 	if value.is_empty() or value == "0" or value == "off" or value == "false":
 		return 0
 	if value.is_valid_int():
@@ -4640,8 +4594,8 @@ func _terrain_visual_debug_mode_from_env() -> int:
 		_:
 			return 0
 
-func _terrain_grass_visual_debug_mode_from_env() -> int:
-	var value := OS.get_environment("METRUM_DEBUG_TERRAIN_GRASS").strip_edges().to_lower()
+func _terrain_grass_visual_debug_mode_from_startup() -> int:
+	var value := String(MetrumDebug.startup_mode("terrain_grass"))
 	if value.is_empty() or value == "0" or value == "off" or value == "false":
 		return 0
 	if value.is_valid_int():
@@ -4669,32 +4623,6 @@ func _terrain_grass_visual_debug_mode_from_env() -> int:
 			return 10
 		_:
 			return 0
-
-func _road_debug_is_enabled() -> bool:
-	var debug_value := OS.get_environment("METRUM_DEBUG").strip_edges()
-	if debug_value != "1":
-		return false
-	var filter := OS.get_environment("METRUM_DEBUG_FILTER").strip_edges().to_lower()
-	if filter.is_empty():
-		return true
-	for entry_variant in filter.split(","):
-		var entry := String(entry_variant).strip_edges()
-		if entry == "road":
-			return true
-	return false
-
-func _road_geometry_debug_is_enabled() -> bool:
-	if OS.get_environment("METRUM_DEBUG_ROAD_GEOMETRY_DUMP").strip_edges() == "1":
-		return true
-	var debug_value := OS.get_environment("METRUM_DEBUG").strip_edges()
-	if debug_value != "1":
-		return false
-	var filter := OS.get_environment("METRUM_DEBUG_FILTER").strip_edges().to_lower()
-	for entry_variant in filter.split(","):
-		var entry := String(entry_variant).strip_edges()
-		if entry == "road":
-			return true
-	return false
 
 func _record_terrain_debug_frame(
 	delta: float,
@@ -4835,4 +4763,4 @@ func _reset_terrain_debug_counters() -> void:
 
 func _terrain_debug_log(message: String) -> void:
 	if _terrain_debug_enabled:
-		print("[DEBUG:terrain] %s" % message)
+		MetrumDebug.log("terrain", message)

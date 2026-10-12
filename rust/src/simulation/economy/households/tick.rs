@@ -29,8 +29,8 @@ impl HouseholdSystem {
         fiscal_policy: &CityFiscalPolicy,
         on_delivery: impl FnMut(&crate::simulation::economy::logistics::Shipment, &BuildingAllocator),
     ) -> FiscalRevenue {
-        let timing_category = if debug::category_enabled("economy_phases") { "economy_phases" } else { "economy" };
-        let timing_enabled = debug::category_enabled(timing_category);
+        let timing_category = if debug::Channel::EconomyPhases.enabled() { debug::Channel::EconomyPhases } else { debug::Channel::Economy };
+        let timing_enabled = timing_category.enabled();
         let total_start = Instant::now();
         let mut phase_start = total_start;
         let materialized = self.materialize_arrived_household_carriers(agents, allocator);
@@ -127,8 +127,8 @@ impl HouseholdSystem {
         fiscal_policy: &CityFiscalPolicy,
         on_wages_paid: impl FnOnce(&AgentSystem, &BuildingAllocator),
     ) -> FiscalRevenue {
-        let timing_category = if debug::category_enabled("economy_phases") { "economy_phases" } else { "economy" };
-        let timing_enabled = debug::category_enabled(timing_category);
+        let timing_category = if debug::Channel::EconomyPhases.enabled() { debug::Channel::EconomyPhases } else { debug::Channel::Economy };
+        let timing_enabled = timing_category.enabled();
         let total_start = Instant::now();
         let mut phase_start = total_start;
         let materialized = self.materialize_arrived_household_carriers(agents, allocator);

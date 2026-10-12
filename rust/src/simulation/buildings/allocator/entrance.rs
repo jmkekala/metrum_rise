@@ -152,7 +152,7 @@ struct FreightBorderCandidate {
 
 impl BuildingAllocator {
     pub(crate) fn rebuild_entrance_cache(&mut self, graph: &RegionGraph, lanes: &LaneSystem) {
-        let traffic_debug = crate::debug::is_traffic_enabled();
+        let traffic_debug = crate::debug::Channel::Traffic.enabled();
         let old_entrances = traffic_debug.then(|| self.entrances.clone());
         self.buildings.par_iter().map(|building| {
             Self::derive_building_entrance(building, graph, lanes, &self.registry)

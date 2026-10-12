@@ -141,7 +141,7 @@ impl SimCore {
                 .unwrap_or_else(|| self.finalize_bulk_road_geometry_for_dirty_edges());
             let dirty_count = dirty.len();
             edit_metrics.dirty_edges = dirty_count;
-            if crate::debug::category_enabled("road")
+            if crate::debug::Channel::Road.enabled()
                 && std::env::var("METRUM_DEBUG_ROAD_GEOMETRY_DUMP")
                     .map(|value| !value.is_empty() && value != "0")
                     .unwrap_or(false)

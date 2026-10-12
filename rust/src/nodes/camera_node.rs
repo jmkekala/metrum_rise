@@ -248,7 +248,7 @@ impl CameraNode {
     #[func]
     pub fn configure_world_camera(&mut self) {
         self.terrain_clearance_enabled = true;
-        self.set_debug_under_terrain_enabled(crate::debug::is_enabled());
+        self.set_debug_under_terrain_enabled(crate::debug::debug_session());
     }
 
     /// Extends orbit pitch for upward inspection beneath the shared terrain-following focus.

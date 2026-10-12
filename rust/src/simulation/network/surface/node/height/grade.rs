@@ -75,7 +75,7 @@ fn apply_node_height_authority_normalization(
     regions: &mut [NodeHeightedRegion],
     normalize_same_xz_shared_height_raised_steps: bool,
 ) -> Result<(), NodeHeightFieldError> {
-    let road_debug = crate::debug::category_enabled("road");
+    let road_debug = crate::debug::Channel::Road.enabled();
     let total_start = road_debug.then(Instant::now);
     let constraint_index_start = road_debug.then(Instant::now);
     let constraint_indices = regions

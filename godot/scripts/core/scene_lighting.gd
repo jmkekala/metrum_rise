@@ -124,8 +124,7 @@ static func shadow_split_distances() -> Vector3:
 	)
 
 static func is_lighting_debug_enabled() -> bool:
-	var visual_mode := OS.get_environment("METRUM_DEBUG_TERRAIN_VISUAL").strip_edges().to_lower()
-	return visual_mode == "lighting" or visual_mode == "light" or visual_mode == "sun"
+	return MetrumDebug.is_enabled("lighting")
 
 static func apply_ground_shadow_parameters(material: ShaderMaterial) -> void:
 	if material == null:
@@ -542,8 +541,9 @@ func _print_debug_if_requested(scene_root: Node) -> void:
 	_update_distance_fade()
 	var splits := shadow_split_distances()
 	var hour := _day_sample.day_fraction * 24.0
-	print(
-		"[DEBUG:lighting] time=%02d:%02d sun_elevation=%.2f sun_azimuth=%.2f moonlit=%s key_color=%s key_energy=%.3f sky=%s fog=%s ambient=%.3f ambient_scale=%s shadow_max=%.1f splits=(%.1f,%.1f,%.1f) far_fade=(%.1f,%.1f) ground_shadow=(ambient=%.2f sun=%.2f min=%.2f)"
+	MetrumDebug.log(
+		"lighting",
+		"time=%02d:%02d sun_elevation=%.2f sun_azimuth=%.2f moonlit=%s key_color=%s key_energy=%.3f sky=%s fog=%s ambient=%.3f ambient_scale=%s shadow_max=%.1f splits=(%.1f,%.1f,%.1f) far_fade=(%.1f,%.1f) ground_shadow=(ambient=%.2f sun=%.2f min=%.2f)"
 		% [
 			int(hour),
 			int(fposmod(hour, 1.0) * 60.0),
@@ -577,8 +577,9 @@ func _print_shadow_policy_summary(scene_root: Node) -> void:
 	for key_variant in keys:
 		var key := str(key_variant)
 		var counts: Dictionary = stats[key]
-		print(
-			"[DEBUG:lighting] shadow_policy %s total=%d visible=%d policy_casts=%d policy_receives=%d off=%d on=%d double_sided=%d shadows_only=%d multimeshes=%d nonempty_multimeshes=%d multimesh_instances=%d max_extra_cull=%.1f"
+		MetrumDebug.log(
+			"lighting",
+			"shadow_policy %s total=%d visible=%d policy_casts=%d policy_receives=%d off=%d on=%d double_sided=%d shadows_only=%d multimeshes=%d nonempty_multimeshes=%d multimesh_instances=%d max_extra_cull=%.1f"
 			% [
 				key,
 				int(counts.get("total", 0)),

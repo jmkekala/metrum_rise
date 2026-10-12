@@ -550,8 +550,9 @@ fn profile_populated_boundaries(midnight: bool) {
         .map(|value| value.parse().unwrap()).unwrap_or(100_000);
     let mut city = PopulatedCity::build(residents);
     crate::debug::init();
-    let diagnostics = crate::debug::is_enabled();
-    crate::debug::ENABLED.store(false, std::sync::atomic::Ordering::Relaxed);
+    // Debug channels stay quiet outside the sampled boundary frames.
+    let diagnostics = crate::debug::mask();
+    crate::debug::set_mask(0);
     let count = std::env::var("METRUM_ECON_BENCH_REPEATS")
         .map(|value| value.parse().unwrap()).unwrap_or(if midnight { 3 } else { 23 });
     let mut samples = Vec::with_capacity(count);
@@ -571,7 +572,7 @@ fn profile_populated_boundaries(midnight: bool) {
         let boundary = preview.process_delta(FRAME_DT_S).iter_elapsed_minutes()
             .any(|(_, minute)| if midnight { minute == 0 } else { minute != 0 && minute % 60 == 0 });
         if boundary {
-            crate::debug::ENABLED.store(diagnostics, std::sync::atomic::Ordering::Relaxed);
+            crate::debug::set_mask(diagnostics);
             if !daily_only { profile_control("enable"); }
         }
         let frame = if daily_only {
@@ -579,7 +580,7 @@ fn profile_populated_boundaries(midnight: bool) {
         } else { city.core.step_frame(FRAME_DT_S) };
         if boundary {
             profile_control("disable");
-            crate::debug::ENABLED.store(false, std::sync::atomic::Ordering::Relaxed);
+            crate::debug::set_mask(0);
             assert_eq!(frame.hourly_ticks, 1);
             assert_eq!(frame.daily_ticks, usize::from(midnight));
             samples.push(if midnight { frame.daily_ms } else { frame.hourly_ms });

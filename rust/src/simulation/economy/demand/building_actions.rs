@@ -245,7 +245,7 @@ impl DemandSystem {
         environment: BuildingSiteEnvironment<'_>,
         mut supply: impl ProjectSupply,
     ) {
-        let timing = crate::debug::category_enabled("economy_phases");
+        let timing = crate::debug::Channel::EconomyPhases.enabled();
         let begin = timing.then(std::time::Instant::now);
         let mut phase = begin;
         let mut times = [0.0; 4];

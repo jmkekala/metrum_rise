@@ -390,7 +390,7 @@ impl JobFunding {
         inputs: usize,
     ) -> bool {
         let Some(components) = self.input_supply.freight_components() else { return true; };
-        let mut phase = crate::debug::category_enabled("economy_phases").then(std::time::Instant::now);
+        let mut phase = crate::debug::Channel::EconomyPhases.enabled().then(std::time::Instant::now);
         let mut times = [0.0; 3];
         let mut lap = |slot: usize| {
             if let Some(start) = phase {

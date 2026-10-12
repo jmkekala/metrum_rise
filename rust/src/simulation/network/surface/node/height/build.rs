@@ -41,7 +41,7 @@ impl NodeHeightSolution {
         rails: Option<&NodeRailContourSet>,
         ownership: &NodeBooleanOwnership,
     ) -> Result<Self, NodeHeightFieldError> {
-        let road_debug = crate::debug::category_enabled("road");
+        let road_debug = crate::debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
         validate_input_ownership_pair(input, ownership)?;
 

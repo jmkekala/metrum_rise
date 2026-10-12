@@ -359,7 +359,7 @@ impl NodeBooleanOwnership {
             });
         }
 
-        let road_debug = crate::debug::category_enabled("road");
+        let road_debug = crate::debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
         let footprint_start = road_debug.then(Instant::now);
         let footprint_contours =
@@ -1260,7 +1260,7 @@ fn rebuild_owned_region_seam_constraints_and_arrangement(
     piece_kind: RoadSurfaceVisualNodePieceKind,
     reuse: &mut NodeOwnershipBuildReuseContext<'_>,
 ) -> NodeOwnedRegionArrangement {
-    let road_debug = crate::debug::category_enabled("road");
+    let road_debug = crate::debug::Channel::Road.enabled();
     let total_start = road_debug.then(Instant::now);
     let seam_extraction_start = road_debug.then(Instant::now);
     let mut applicable_constraints_by_owner = BTreeMap::new();

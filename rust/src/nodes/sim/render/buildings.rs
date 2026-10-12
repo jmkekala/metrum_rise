@@ -98,7 +98,7 @@ impl SimCore {
             "concrete_vertices",
             PackedVector3Array::from_iter(concrete_vertices),
         );
-        if building_site_debug_enabled() {
+        if crate::debug::Channel::Buildings.enabled() {
             dict.set("debug_enabled", true);
             dict.set("debug_sites", self.building_site_debug_sites());
         }
@@ -847,24 +847,6 @@ fn normalized_or_zero(value: Vector2) -> Vector2 {
     } else {
         value.normalized()
     }
-}
-
-fn building_site_debug_enabled() -> bool {
-    let explicit_value = std::env::var("METRUM_DEBUG_BUILDINGS").unwrap_or_default();
-    if explicit_value == "1" {
-        return true;
-    }
-    let debug_value = std::env::var("METRUM_DEBUG").unwrap_or_default();
-    if debug_value.is_empty() || debug_value == "0" {
-        return false;
-    }
-    std::env::var("METRUM_DEBUG_FILTER")
-        .unwrap_or_default()
-        .split(',')
-        .any(|entry| {
-            let entry = entry.trim();
-            entry == "buildings" || entry == "building-sites"
-        })
 }
 
 fn push_site_debug_sample(

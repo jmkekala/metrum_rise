@@ -126,7 +126,7 @@ impl SimCore {
             self.treasury.balance,
             &self.fiscal_policy,
         );
-        if !crate::debug::category_enabled("spawn") {
+        if !crate::debug::Channel::Spawn.enabled() {
             return;
         }
         let admission = self.demand.last_admission_debug_summary();

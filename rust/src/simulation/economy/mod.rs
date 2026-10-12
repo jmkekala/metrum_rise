@@ -18,7 +18,7 @@ pub mod agents;
 pub(crate) mod customers;
 pub mod definitions;
 pub mod demand;
-pub(crate) mod electricity;
+pub mod electricity;
 pub(crate) mod fiscal;
 pub(crate) mod hiring;
 pub mod households;

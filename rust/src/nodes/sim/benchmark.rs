@@ -303,7 +303,8 @@ impl SimulationNode {
         }
     }
 
-    /// Returns performance statistics for the simulation.
+    /// Returns performance statistics for the simulation from the published snapshot.
+    /// Never locks the simulation core, so the debug console can poll it.
     pub fn get_perf_stats_internal(&self) -> VarDictionary {
         let snap = self.snapshot.read().unwrap();
         let mut dict = VarDictionary::new();
@@ -314,8 +315,6 @@ impl SimulationNode {
             "fps",
             godot::classes::Engine::singleton().get_frames_per_second(),
         );
-        // cell_size requires locking core — only needed for debug, do it cheaply.
-        let _ = dict.insert("cell_size", self.core.lock().unwrap().config.zone_cell_m);
         dict
     }
 

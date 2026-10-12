@@ -266,7 +266,7 @@ pub(crate) fn run_sim_thread(
                             query_snapshot,
                         );
                     }
-                    if crate::debug::is_perf_enabled() {
+                    if crate::debug::Channel::Perf.enabled() {
                         println!(
                             "[DEBUG:perf] add_road_command total_ms={:.3} lock_wait_ms={:.3} add_internal_ms={:.3} finalize_ms={:.3} surface_and_terrain_ms={:.3} mesh_ms={:.3} snapshot_ms={:.3} collect_refined_ms={:.3} refined_cache_invalidated={} refined_prebuild=validated_before_accept",
                             road_total.elapsed().as_secs_f64() * 1000.0,
@@ -312,7 +312,7 @@ pub(crate) fn run_sim_thread(
             continue;
         }
 
-        let perf_enabled = crate::debug::is_perf_enabled();
+        let perf_enabled = crate::debug::Channel::Perf.enabled();
         let lock_wait_ms: f64;
         let mut step = FrameStepReport::default();
         let snapshot_ms: f64;

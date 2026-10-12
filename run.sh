@@ -18,9 +18,14 @@
 #                        Replay pinned Kuopio terrain cases and audit road profiles (diagnostic)
 #
 # Debug modes:
-#   --debug              General debug logging (stdout)
-#   --debug <category>   Category-filtered debug logging (stdout)
-#                        Common categories: isect, economy, demand, spawn, road, border, terrain, buildings, visuals, perf
+#   These set the startup state of the debug channels. In game, the key left of "1"
+#   (§ on Nordic layouts) opens the debug console: switch channels at runtime, read,
+#   filter, copy, or dump the log to user://debug/. See docs/debug.md.
+#   --debug              General debug channels (stdout); terrain, buildings, perf,
+#                        traffic, sim and lighting are opt-in
+#   --debug <category>   Only the named channels (stdout), comma-separated
+#                        Channels: road, economy, economy_phases, economy_workplace, spawn, save,
+#                        world-editor, asset-editor, isect, init, terrain, buildings, perf
 #   --debug road         Road placement timings, committed-road geometry dumps,
 #                        terrain/water patch diagnostics (METRUM_DEBUG_SURFACE=1 adds overlay)
 #   --debug terrain      Terrain + water patch residency/perf summaries (stdout)
@@ -47,7 +52,7 @@
 #   --debug site-grading
 #                        Best combo for building/road yard seams: road geometry dump,
 #                        building-site diagnostics, and building-site material overlay.
-#   --debug traffic      Traffic/routing + road-network connectivity (stderr)
+#   --debug traffic      Traffic/routing + road-network connectivity ([DEBUG:traffic], stdout)
 #   --debug-traffic      Alias for --debug traffic
 #                        Shows per-road-placement split details, CCH rebuild connectivity
 #                        reports, agent routing decisions, and visual traffic overlay labels.
@@ -687,7 +692,7 @@ if [ $DEBUG -eq 1 ]; then
 fi
 if [ $DEBUG_TRAFFIC -eq 1 ]; then
     export METRUM_DEBUG_TRAFFIC=1
-    echo "Traffic/routing + road-network debug logging enabled (output goes to stderr)"
+    echo "Traffic/routing + road-network debug logging enabled (output goes to stdout as [DEBUG:traffic])"
     echo "  Per road placement: [ROAD] split details"
     echo "  After CCH rebuild:  [ROAD_NET] connectivity report (1 line if OK, component list if disconnected)"
     echo "  Visual overlay: car lane/connector debug auto-enabled; press P to toggle."
@@ -973,7 +978,7 @@ if [ $TEST -eq 1 ]; then
         road_junction_preview_test road_preview_stream_test vegetation_invalidation_test \
         vegetation_edit_test vegetation_appearance_test vegetation_land_cover_test \
         new_game_dialog_test day_cycle_test camera_save_load_test \
-        zoning_road_tool_test zoning_cells_tool_test zoning_reference_test; do
+        zoning_road_tool_test zoning_cells_tool_test zoning_reference_test debug_console_test; do
         bridge_test_command=(godot --headless --path "$asset_test_project" --script "res://tests/${bridge_test_script}.gd")
         # This regression probes inputs that previously stalled the simulation thread.
         if [ "$bridge_test_script" = simulation_speed_input_test ]; then

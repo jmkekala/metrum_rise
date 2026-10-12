@@ -12,6 +12,7 @@ pub mod asset_authoring;
 pub mod asset_document;
 pub mod asset_files;
 pub mod camera_node;
+pub mod debug_bridge;
 pub mod lod_policy;
 pub mod sim;
 pub mod simulation_node;

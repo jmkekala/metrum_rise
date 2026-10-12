@@ -84,7 +84,7 @@ pub(super) unsafe fn enter_next_edge_connector(
                     transit_network,
                     slices,
                 );
-                if crate::debug::is_traffic_enabled() {
+                if crate::debug::Channel::Traffic.enabled() {
                     let conn_lane = &transit_network.lane_system.lanes[chosen_conn];
                     let target_lane = conn_lane.next_lanes.first().copied().unwrap_or(usize::MAX);
                     let target_edge = transit_network
@@ -226,7 +226,7 @@ pub(super) unsafe fn enter_detach_lane_connector(
                     transit_network,
                     slices,
                 );
-                if crate::debug::is_traffic_enabled() {
+                if crate::debug::Channel::Traffic.enabled() {
                     let conn_lane = &transit_network.lane_system.lanes[conn_lane_id];
                     let target_edge = transit_network
                         .lane_system

@@ -843,7 +843,7 @@ impl SimCore {
     }
 
     pub(super) fn execute_hourly_demand_pass(&mut self, day_index: u32, minute_of_day: u16) {
-        let timing = crate::debug::category_enabled("economy_phases").then(Instant::now);
+        let timing = crate::debug::Channel::EconomyPhases.enabled().then(Instant::now);
         self.prepare_cell_lots_internal();
         let cells_ms = timing.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0);
         self.allocator

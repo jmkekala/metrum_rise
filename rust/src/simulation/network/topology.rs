@@ -665,7 +665,7 @@ pub(super) fn migrate_split_dependents(
         occupancy: allocator.edge_occupancy.get(&edge_id).cloned(),
     });
     let cell_size = zoning.config.zone_cell_m;
-    let traffic_debug = crate::debug::is_traffic_enabled();
+    let traffic_debug = crate::debug::Channel::Traffic.enabled();
     let old_occ_cells = allocator
         .edge_occupancy
         .get(&edge_id)
@@ -869,7 +869,7 @@ pub fn process_intersections(
     collect_interior_node_splits(graph, edge_id, &candidates, &mut all_splits);
 
     // 3. Emit per-split details before apply_splits consumes the map.
-    if crate::debug::is_traffic_enabled() {
+    if crate::debug::Channel::Traffic.enabled() {
         let total_splits: usize = all_splits.values().map(|v| v.len()).sum();
         crate::traffic_log!(
             "[ROAD] place e{}: candidates={} splits={} elapsed={}µs",

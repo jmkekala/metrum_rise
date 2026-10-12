@@ -89,7 +89,7 @@ impl BusinessMarket {
         debug_assert!(!self.budgets.revalidation.is_active() && self.budgets.staged.is_empty());
         let entries_current = self.sites.key.as_deref() == Some(caller_revision);
         if entries_current && self.sites.layout == Some(self.revision) { return; }
-        let timing = crate::debug::category_enabled("economy_phases").then(std::time::Instant::now);
+        let timing = crate::debug::Channel::EconomyPhases.enabled().then(std::time::Instant::now);
         if !entries_current {
             let previous = std::mem::take(&mut self.sites.entries);
             self.sites.entries = factory(previous, self.sites.key.as_deref());

@@ -169,6 +169,6 @@ cd rust && cargo doc --no-deps 2>&1 | grep "warning\[missing_docs\]" | wc -l
 
 ### What Not to Do
 
-- Do not add `println!` or `godot_print!` debug output and leave it in. Use the benchmark suite or a dedicated debug flag.
+- Do not add `println!`, `godot_print!` or GDScript `print` debug output and leave it in. Log on a debug channel (`debug_log!` in Rust, `MetrumDebug.log` in GDScript; see `docs/debug.md`) or use the benchmark suite.
 - Do not add feature flags or backwards-compatibility shims for code that can simply be changed.
 - Do not create new `docs/` files for topics already covered in existing documentation — update the existing file instead.

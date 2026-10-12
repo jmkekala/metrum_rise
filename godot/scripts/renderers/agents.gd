@@ -39,7 +39,6 @@ var debug_mesh_instance: MeshInstance3D
 var debug_mesh: ImmediateMesh
 var debug_labels: Array = []
 var show_paths = false
-var _traffic_debug_visual := false
 var _debug_overlay_visible := false
 var _pedestrian_vat_debug_mode := 0
 var _pedestrian_vat_debug_mode_name := ""
@@ -182,8 +181,8 @@ func _ready():
 	)
 	add_child(debug_mesh_instance)
 
-	_traffic_debug_visual = _env_flag_enabled("METRUM_DEBUG_TRAFFIC")
-	if _traffic_debug_visual:
+	# A traffic session launched with `--debug traffic` starts with the path overlay on.
+	if MetrumDebug.is_enabled("traffic"):
 		show_paths = true
 		print("Traffic visual debug overlay enabled (P toggles)")
 
@@ -326,12 +325,8 @@ func _hide_debug_labels() -> void:
 	for label in debug_labels:
 		label.visible = false
 
-func _env_flag_enabled(name: String) -> bool:
-	var value := OS.get_environment(name).strip_edges().to_lower()
-	return not value.is_empty() and value != "0" and value != "false" and value != "off"
-
 func _pedestrian_debug_mode_name() -> String:
-	var mode := OS.get_environment("METRUM_DEBUG_PEDESTRIAN_VAT").strip_edges().to_lower()
+	var mode := String(MetrumDebug.startup_mode("pedestrian_vat"))
 	var args := OS.get_cmdline_user_args()
 	for i in range(args.size()):
 		var arg := str(args[i]).strip_edges().to_lower()

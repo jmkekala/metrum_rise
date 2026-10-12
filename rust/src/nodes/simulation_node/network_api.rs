@@ -54,7 +54,7 @@ impl SimulationNode {
         // Send to the background thread so the Godot main thread is never blocked
         // by lane rebuilding and zoning work. The command wakes the existing simulation thread
         // without waiting for, or advancing, its next movement tick.
-        let road_debug = crate::debug::category_enabled("road");
+        let road_debug = crate::debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
         let point_count = points.len();
         let clone_start = road_debug.then(Instant::now);

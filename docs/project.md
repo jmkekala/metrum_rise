@@ -934,8 +934,24 @@ reopening requires a current reproduction, not an assumption that the old geomet
 | Gameplay HUD / menus / floating windows                     | [`ui.md`](ui.md)                                       |
 | Asset-editor workflow and pack contract                     | [`asset_editor.md`](asset_editor.md)                   |
 | Road surface / roadbed replacement                         | [`roads.md`](roads.md)               |
+| Debug channels / log / in-game debug console / `run.sh` debug flags | [`debug.md`](debug.md) |
 
 ## Recent Structural Changes
+
+- Debug system (2026-10-12, `DEBUG-01`): Rust and GDScript debug output now share one fixed
+  channel registry in a single atomic, so a disabled call is one relaxed load with no
+  allocation. Enabled lines keep their `[DEBUG:<tag>]` stdout text and also join a 4096-line log.
+  Traffic lines now print to stdout as `[DEBUG:traffic]`. An always-on, buffer-only `events`
+  channel keeps engine warnings and errors and road-tool rejections. The `§` key opens the
+  in-game console on every scene: Log, Perf and Channels tabs, commands, Copy, and Dump to
+  `user://debug/`. GDScript no longer parses `METRUM_DEBUG*` variables. Under a bare
+  `--debug`, `terrain`, `buildings`, `perf`, `traffic`, `sim` and `lighting` are opt-in. Rust,
+  Godot bridge and asset suites pass. The matched agent-tick run is within spread. Access ingress
+  measured +5.3% in the default build and −0.6% with code alignment forced, which confirms code
+  placement. See [`debug.md`](debug.md). `agent_benchmark`
+  compiles again: the `Building` electricity fields are public. `PERF-06` tracks a shorter
+  agent-tick check. The Kuopio replay fixture hash in `placements.json` is repinned to the
+  file `51cc4ca0` re-saved for save format 83, so `test_road_terrain_replay.py` passes again.
 
 - Routing performance follow-up (2026-10-11): `NET-02`–`NET-05` track exact CCH hot-path
   improvements, nested dissection/elimination-tree queries, bucket many-to-many commutes and

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 /// Delivered energy, including OWA fallback; local energy is a subset of consumption.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
-pub(crate) struct ElectricityUsage {
+pub struct ElectricityUsage {
     /// Electricity delivered during the accounting interval, in kWh.
     pub consumed_kwh: f32,
     /// Portion generated locally during the same hours, in kWh.
@@ -33,7 +33,7 @@ impl ElectricityUsage {
 
 /// Separate payers for a mixed-use building, without charging its residential portion twice.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
-pub(crate) struct BuildingElectricityUsage {
+pub struct BuildingElectricityUsage {
     /// Consumption charged to the business or city service.
     pub workplace: ElectricityUsage,
     /// Consumption apportioned to resident households, including the shared home base load.

@@ -82,7 +82,7 @@ impl AgentSystem {
     }
 
     fn log_stationary_visible_pedestrians(&mut self, delta: f32, n: usize) {
-        if !crate::debug::is_traffic_enabled() {
+        if !crate::debug::Channel::Traffic.enabled() {
             return;
         }
 

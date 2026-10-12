@@ -67,7 +67,7 @@ fn node_generated_contact_contours_with_reuse_mode(
     current_cache: &mut NodeContactNodingPairCache,
     reuse_final_components: bool,
 ) -> Result<NodeContactNodingReuseStats, NodeRailGenerationError> {
-    let profile_enabled = crate::debug::category_enabled("road");
+    let profile_enabled = crate::debug::Channel::Road.enabled();
     let total_start = profile_enabled.then(Instant::now);
     current_cache.begin_noding_call();
     let preparation_start = profile_enabled.then(Instant::now);

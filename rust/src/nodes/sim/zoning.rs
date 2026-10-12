@@ -209,7 +209,7 @@ impl SimCore {
         let cell_m = self.config.zone_cell_m;
         let blocked = |corners: &[DVec2; 4]| cell_site_blocked(allocator, roads, cell_m, corners);
         for bounds in regions {
-            let phase = crate::debug::category_enabled("economy_phases").then(std::time::Instant::now);
+            let phase = crate::debug::Channel::EconomyPhases.enabled().then(std::time::Instant::now);
             // Regenerate transient source-frontage links after load and local road changes.
             // Growth can depend on a front row just outside the changed paint's chunk.
             self.zoning.generate_cells(

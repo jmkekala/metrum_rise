@@ -2,9 +2,10 @@
 
 ## Opt-in renderer frame CPU diagnostics for `--debug perf`.
 ##
-## Renderers record their main-thread work here when `METRUM_DEBUG_PERF=1`.
-## The summary is intentionally coarse and stable: one rolling line every half
-## second with total frame renderer CPU and per-renderer costs.
+## Renderers record their main-thread work here while the `perf` debug channel is on
+## (`METRUM_DEBUG_PERF=1` at launch, or the debug console). The summary is intentionally coarse
+## and stable: one rolling line every half second with total frame renderer CPU and
+## per-renderer costs, logged on the `perf` channel and kept for the console's Perf tab.
 extends RefCounted
 
 class_name PerfDebug
@@ -12,8 +13,6 @@ class_name PerfDebug
 const LOG_INTERVAL_S := 0.5
 const FRAME_SPIKE_THRESHOLD_MS := 16.0
 
-static var _enabled_cache_valid: bool = false
-static var _enabled_cached: bool = false
 static var _current_frame: int = -1
 static var _current_frame_total_ms: float = 0.0
 static var _last_log_us: int = 0
@@ -24,20 +23,11 @@ static var _frame_spikes: int = 0
 static var _renderer_stats: Dictionary = {}
 static var _detail_stats: Dictionary = {}
 
+## Latest summary line without its channel prefix; empty until the first summary.
+static var last_summary: String = ""
+
 static func is_enabled() -> bool:
-	if not _enabled_cache_valid:
-		var perf_value := OS.get_environment("METRUM_DEBUG_PERF").strip_edges().to_lower()
-		var debug_value := OS.get_environment("METRUM_DEBUG").strip_edges()
-		var debug_filter := OS.get_environment("METRUM_DEBUG_FILTER").strip_edges().to_lower()
-		_enabled_cached = (
-			perf_value == "1"
-			or perf_value == "true"
-			or perf_value == "yes"
-			or perf_value == "on"
-			or (debug_value == "1" and debug_filter == "perf")
-		)
-		_enabled_cache_valid = true
-	return _enabled_cached
+	return MetrumDebug.is_enabled("perf")
 
 static func record(renderer_name: String, elapsed_ms: float, details: Dictionary = {}) -> void:
 	if not is_enabled():
@@ -90,8 +80,8 @@ static func _print_summary(now_us: int) -> void:
 	var frame_avg_ms := 0.0
 	if _frame_count > 0:
 		frame_avg_ms = _frame_total_ms / float(_frame_count)
-	print(
-		"[DEBUG:perf] fps=%.1f frames=%d frame_cpu_avg_ms=%.3f frame_cpu_max_ms=%.3f frame_spikes=%d render_info=%s renderer_ms=%s detail_ms=%s"
+	last_summary = (
+		"fps=%.1f frames=%d frame_cpu_avg_ms=%.3f frame_cpu_max_ms=%.3f frame_spikes=%d render_info=%s renderer_ms=%s detail_ms=%s"
 		% [
 			Engine.get_frames_per_second(),
 			_frame_count,
@@ -103,6 +93,7 @@ static func _print_summary(now_us: int) -> void:
 			_format_stats(_detail_stats),
 		]
 	)
+	MetrumDebug.log("perf", last_summary)
 	_last_log_us = now_us
 	_frame_count = 0
 	_frame_total_ms = 0.0

@@ -173,7 +173,7 @@ impl RoadSurfaceSystem {
         mouths: &[OrderedIncidentPieceMouth],
         previous_topology: Option<&super::NodeCanonicalTopologyCache>,
     ) -> Option<super::NodeCanonicalSurfaceCompileResult> {
-        let road_debug = crate::debug::category_enabled("road");
+        let road_debug = crate::debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
 
         let input_start = road_debug.then(Instant::now);

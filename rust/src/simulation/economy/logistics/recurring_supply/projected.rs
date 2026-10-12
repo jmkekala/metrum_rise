@@ -97,7 +97,7 @@ impl RecurringSupply {
         let layout = (geometry_revision(self.revision), first_slot);
         let rows_current = projected.key.as_deref() == Some(caller_revision);
         if !rows_current || projected.layout != Some(layout) {
-            let timing = crate::debug::category_enabled("economy_phases").then(std::time::Instant::now);
+            let timing = crate::debug::Channel::EconomyPhases.enabled().then(std::time::Instant::now);
             if !rows_current {
                 let previous = std::mem::take(&mut projected.sources);
                 projected.sources = factory(previous, projected.key.as_deref());

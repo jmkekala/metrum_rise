@@ -159,7 +159,7 @@ func _case(bench: Node, name: String, mode: int) -> Dictionary:
 	result.ok = result.dropped == 0 and not result.moving.is_empty()
 	for field in ["generation", "live_edges", "edge_slots", "nodes", "lanes", "agents", "buildings"]:
 		result.ok = result.ok and result.state_before[field] == result.state_after[field]
-	if OS.get_environment("METRUM_DEBUG_PERF") == "1":
+	if MetrumDebug.is_enabled("perf"):
 		# Outside latency/frame distributions: this drains CPU rendering commands, not GPU scanout.
 		var drain_us := Time.get_ticks_usec()
 		RenderingServer.force_sync()

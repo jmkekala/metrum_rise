@@ -78,7 +78,7 @@ pub(super) unsafe fn try_network_detach(
                     *s_lane_d.get_mut(i) = 0.0;
                     *s_speed.get_mut(i) = 0.0;
                     *s_transit.get_mut(i) = TRANSIT_ACCESS_INGRESS;
-                    if crate::debug::is_traffic_enabled() {
+                    if crate::debug::Channel::Traffic.enabled() {
                         let entrance = &allocator.entrances[t_bldg_idx];
                         traffic_log!(
                             "[ACCESS_INGRESS_DETACH] agent={} target_bldg={} lane={}({}) lane_d={:.2} ingress_origin=({:.2},{:.2}) detach_node={} path_count={} flags=0x{:02x}",
@@ -104,7 +104,7 @@ pub(super) unsafe fn try_network_detach(
             return false;
         }
 
-        if crate::debug::is_traffic_enabled() {
+        if crate::debug::Channel::Traffic.enabled() {
             let target_entrance = allocator.entrances.get(*s_tgt_b.get(i));
             let side = target_entrance
                 .map(|entrance| {

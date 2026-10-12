@@ -361,7 +361,7 @@ impl RoadSurfaceSystem {
         terrain: &TerrainSystem,
         edge_idx: usize,
     ) -> Option<RoadSurfaceVisualSpanPiece> {
-        let road_debug = crate::debug::category_enabled("road");
+        let road_debug = crate::debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
         if edge_idx >= graph.edge_count() {
             return None;

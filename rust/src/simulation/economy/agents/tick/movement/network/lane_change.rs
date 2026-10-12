@@ -64,7 +64,7 @@ pub(super) unsafe fn prepare_lane_change_and_overtake(
             lane_buckets,
         );
         let Some(choice) = choice else {
-            if crate::debug::is_traffic_enabled() && has_access_plan {
+            if crate::debug::Channel::Traffic.enabled() && has_access_plan {
                 if let Some(target_lane_id) = planned_lane_change_target(
                     lane_id,
                     detach_lane_id,

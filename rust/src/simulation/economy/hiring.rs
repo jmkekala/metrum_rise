@@ -443,8 +443,8 @@ impl JobFunding {
         service_capacity: impl Fn(usize, u32, &EconomyProfileRuntime) -> u32 + Sync,
         minute_of_day: u16,
     ) {
-        let timing_category = if crate::debug::category_enabled("economy_phases") { "economy_phases" } else { "economy" };
-        let timing = crate::debug::category_enabled(timing_category);
+        let timing_category = if crate::debug::Channel::EconomyPhases.enabled() { crate::debug::Channel::EconomyPhases } else { crate::debug::Channel::Economy };
+        let timing = timing_category.enabled();
         let mut phase = timing.then(std::time::Instant::now);
         let mut times = [0.0; 11];
         let mut lap = |slot: usize| {
@@ -904,7 +904,7 @@ impl JobFunding {
     }
 }
 
-fn log_funding_times(category: &str, buildings: usize, minute: u16, times: &[f64; 11]) {
+fn log_funding_times(category: crate::debug::Channel, buildings: usize, minute: u16, times: &[f64; 11]) {
     crate::debug_log!(category, "funding_detail buildings={} minute={} routes_ms={:.3} market_ms={:.3} customers_ms={:.3} import_funding_ms={:.3} household_claims_ms={:.3} sources_ms={:.3} local_funding_ms={:.3} staffing_ms={:.3} publish_ms={:.3} repair_ms={:.3} business_ms={:.3} propagate_ms={:.3}",
         buildings, minute, times[0], times[1], times[2], times[3], times[4], times[5],
         times[6..].iter().sum::<f64>(), times[6], times[7], times[8], times[9], times[10]);
@@ -1178,7 +1178,7 @@ fn funded_private_operation(
 ) -> (u32, f32) {
     #[cfg(test)]
     let mut trace = FundingSearchTrace {
-        enabled: crate::debug::category_enabled("economy_phases"),
+        enabled: crate::debug::Channel::EconomyPhases.enabled(),
         local: supply.is_some(), counts: [1, 0, 0, 0, 0, 0, 0],
     };
     if supply.is_none() { *headroom = [0.0; 2]; }

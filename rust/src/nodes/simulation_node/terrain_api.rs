@@ -389,7 +389,7 @@ impl SimulationNode {
             let jobs = Arc::clone(&self.terrain_patch_payload_jobs);
             rayon::spawn(move || {
                 let worker_start = Instant::now();
-                let perf_enabled = crate::debug::is_perf_enabled();
+                let perf_enabled = crate::debug::Channel::Perf.enabled();
                 let snapshot_start = Instant::now();
                 let (sources, mut failed_requests) =
                     SimulationNode::try_prepare_terrain_patch_payload_sources(

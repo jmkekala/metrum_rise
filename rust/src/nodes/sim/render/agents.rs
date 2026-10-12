@@ -126,7 +126,7 @@ impl SimCore {
         let mut label_positions = Vec::new();
         let mut labels = Vec::new();
         let mut displayed_count = 0;
-        let traffic_visual = crate::debug::is_traffic_enabled();
+        let traffic_visual = crate::debug::Channel::Traffic.enabled();
         let max_display = if traffic_visual { 250 } else { 2500 };
         const MAX_TRAFFIC_LABELS: usize = 96;
 

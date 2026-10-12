@@ -172,7 +172,7 @@ impl LaneSystem {
         edge_indices: &[usize],
         node_ids: &[u32],
     ) {
-        let road_debug = crate::debug::category_enabled("road");
+        let road_debug = crate::debug::Channel::Road.enabled();
         let mut edge_lane_ids = BTreeSet::new();
         for edge_idx in edge_indices {
             if let Some(ids) = self.edge_lanes.get(edge_idx) {

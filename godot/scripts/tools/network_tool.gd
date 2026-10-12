@@ -55,8 +55,8 @@ const CHUNK_COORD_MAX := 2147483647
 func _ready():
 	if name == "RoadTool":
 		WorldMaterials.prewarm_road_materials()
-	_surface_debug_enabled = _is_surface_debug_enabled()
-	_surface_probe_enabled = _is_surface_probe_enabled()
+	_surface_debug_enabled = MetrumDebug.startup_mode("road_surface")
+	_surface_probe_enabled = MetrumDebug.startup_mode("road_probe")
 	_setup_visuals()
 
 func _setup_visuals():
@@ -243,20 +243,6 @@ func get_world_mouse_pos() -> Vector3:
 	is_valid = true
 	return pos
 
-func _is_surface_debug_enabled() -> bool:
-	var explicit_value := OS.get_environment("METRUM_DEBUG_SURFACE").strip_edges()
-	if not explicit_value.is_empty():
-		return explicit_value != "0"
-	var filter_value := OS.get_environment("METRUM_DEBUG_FILTER").strip_edges().to_lower()
-	return filter_value.contains("road-surface") or filter_value.contains("surface-debug")
-
-func _is_surface_probe_enabled() -> bool:
-	var explicit_value := OS.get_environment("METRUM_DEBUG_ROAD_PROBE").strip_edges()
-	if not explicit_value.is_empty():
-		return explicit_value != "0"
-	var filter_value := OS.get_environment("METRUM_DEBUG_FILTER").strip_edges().to_lower()
-	return filter_value.contains("road-probe")
-
 func _update_surface_debug_overlay(delta: float) -> void:
 	if surface_debug_mesh == null:
 		return
@@ -287,7 +273,7 @@ func _update_surface_probe_debug(delta: float) -> void:
 		return
 	var dump: String = simulation_node.get_road_surface_probe_debug(_last_world_mouse_pos)
 	if not dump.is_empty():
-		print("[DEBUG:road] " + dump)
+		MetrumDebug.log("road", dump)
 	_surface_probe_refresh_elapsed = SURFACE_PROBE_REFRESH_SEC
 
 func _append_debug_lines(immediate: ImmediateMesh, points: PackedVector3Array, color: Color) -> void:

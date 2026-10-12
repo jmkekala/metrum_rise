@@ -414,7 +414,7 @@ impl INode3D for SimulationNode {
                     asset_editor_mode = true;
                     // Always enable debug logging in the asset editor so creators
                     // can follow export/validation output in the terminal.
-                    crate::debug::ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
+                    crate::debug::enable_debug_channels();
                 }
                 "--world-editor" => {
                     world_editor_mode = true;

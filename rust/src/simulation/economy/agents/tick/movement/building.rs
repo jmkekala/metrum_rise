@@ -166,7 +166,7 @@ pub(super) unsafe fn handle_in_building(
             *slices.next_departure_origin.get_mut(i) = usize::MAX;
             *slices.next_departure_target.get_mut(i) = usize::MAX;
             *slices.next_departure_activity.get_mut(i) = 0;
-            if crate::debug::is_traffic_enabled() {
+            if crate::debug::Channel::Traffic.enabled() {
                 let target_entrance = allocator.entrances.get(plan.target_building);
                 let attach_side = local_access_side_label(
                     plan.mode,

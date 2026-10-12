@@ -76,7 +76,7 @@ impl AgentSystem {
         let input_edges = affected_edges;
         let affected_edges = LaneSystem::incremental_rebuild_edge_closure(graph, affected_edges);
         let affected_lane_ids = collect_lane_ids_for_edges(&affected_edges, lane_system);
-        let traffic_debug = crate::debug::is_traffic_enabled();
+        let traffic_debug = crate::debug::Channel::Traffic.enabled();
         if traffic_debug {
             log_road_edit_affected(
                 "lane-invalidate",
@@ -159,7 +159,7 @@ impl AgentSystem {
         let affected_lane_ids = collect_lane_ids_for_edges(&affected_edges, lane_system);
         let affected_nodes = collect_nodes_for_edges(&affected_edges, graph);
         let max_dist_sq = LANE_REATTACH_MAX_DIST_M * LANE_REATTACH_MAX_DIST_M;
-        let traffic_debug = crate::debug::is_traffic_enabled();
+        let traffic_debug = crate::debug::Channel::Traffic.enabled();
         if traffic_debug {
             log_road_edit_affected(
                 "lane-reattach",

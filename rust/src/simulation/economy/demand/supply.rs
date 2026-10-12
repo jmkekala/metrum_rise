@@ -305,7 +305,7 @@ impl<'a> SiteSupply<'a> {
         vat: f32,
     ) -> Self {
         if !reservations.prepared {
-            let mut phase = crate::debug::category_enabled("economy_phases").then(std::time::Instant::now);
+            let mut phase = crate::debug::Channel::EconomyPhases.enabled().then(std::time::Instant::now);
             let mut lap = || phase.as_mut().map_or(0.0, |previous| {
                 let elapsed = previous.elapsed().as_secs_f64() * 1_000.0;
                 *previous = std::time::Instant::now();

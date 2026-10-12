@@ -66,7 +66,7 @@ impl SimulationNode {
         boundary_step_m: f32,
         include_debug: bool,
     ) -> TerrainCdtMeshBufferSummary {
-        let road_debug = crate::debug::category_enabled("road");
+        let road_debug = crate::debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
         let terrain_buffer_start = road_debug.then(Instant::now);
         let mut terrain_buffers = TerrainCdtTriangleBufferExport::empty();

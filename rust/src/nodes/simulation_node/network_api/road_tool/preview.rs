@@ -30,7 +30,7 @@ impl SimulationNode {
         bkw_lanes: i32,
         snap_to_existing_roads: bool,
     ) -> Variant {
-        let road_debug = crate::debug::category_enabled("road");
+        let road_debug = crate::debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
         let point_count = points.len();
         let clone_start = road_debug.then(Instant::now);
@@ -143,7 +143,7 @@ impl SimulationNode {
         bkw_lanes: i32,
         snap_to_existing_roads: bool,
     ) -> Variant {
-        let road_debug = crate::debug::category_enabled("road");
+        let road_debug = crate::debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
         let point_count = points.len();
         let clone_start = road_debug.then(Instant::now);
@@ -280,7 +280,7 @@ impl SimulationNode {
         snap_to_existing_roads: bool,
         include_terrain: bool,
     ) -> i64 {
-        let road_debug = crate::debug::category_enabled("road");
+        let road_debug = crate::debug::Channel::Road.enabled();
         let total_start = road_debug.then(Instant::now);
         let request_id = self
             .road_preview_request_counter
@@ -353,7 +353,7 @@ impl SimulationNode {
         let Ok(request_id) = u64::try_from(request_id) else {
             return Variant::nil();
         };
-        let result_lock_start = crate::debug::is_perf_enabled().then(Instant::now);
+        let result_lock_start = crate::debug::Channel::Perf.enabled().then(Instant::now);
         let preview_result = self.road_preview_result.read().unwrap();
         let result_lock_ms = result_lock_start
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)

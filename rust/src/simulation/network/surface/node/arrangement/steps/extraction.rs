@@ -24,7 +24,7 @@ impl NodeArrangement {
         BTreeSet<NodeExplicitVerticalStepSegment>,
         BTreeSet<NodeExplicitVerticalStepSegment>,
     ) {
-        let profile_enabled = crate::debug::category_enabled("road");
+        let profile_enabled = crate::debug::Channel::Road.enabled();
         let total_start = profile_enabled.then(std::time::Instant::now);
         let index_start = profile_enabled.then(std::time::Instant::now);
         let constraint_index = ExplicitStepConstraintIndex::new(self);
