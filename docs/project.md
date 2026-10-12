@@ -316,7 +316,7 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   Pre-73 saves retain cash and convert generation, but lack the new meters for their first partial day;
   see [validation and limitations](archive/economy_history_2026-10-10.md#electricity-validation-econ-14).
 
-- **Healthy city growth (`ECON-11`–`ECON-12` and `DEM-02` done; `ECON-13` in progress)**:
+- **Healthy city growth (`ECON-11`–`ECON-13` and `DEM-02` done)**:
   The original saved-town replay stayed at seven residents through day 32 despite empty homes
   and high industrial pressure. Independent entry now removes the global startup-cash recovery
   dependency; the same save grows from 7 to 85 residents, with 69 employed, over 30 days.
@@ -954,6 +954,13 @@ reopening requires a current reproduction, not an assumption that the old geomet
   `NET-06` now has an independent regression: the previous hierarchy priced a required
   5-second loop as zero. The replacement charges it correctly and also preserves required
   return detours. All five independent growth reports remain byte-identical.
+
+- Economy performance contract (2026-10-12): `ECON-13` is closed and replaced by a standing
+  [contract](economy.md#performance-contract-perf-01perf-05). It uses saved 10k and 30k cities,
+  one simulated day per tier, deterministic work-count scaling (≤1.2× the household ratio) and
+  fixed time budgets (10k: 40 ms per hour, 10 ms per day; 30k: 3×), in at most 5 minutes. The 100k
+  tier is deferred. `PERF-01` builds the runner, `PERF-02` per-phase checks, and `PERF-03`–`PERF-05`
+  track the known superlinear costs.
 
 - `ECON-13` (2026-10-12): test-only work counters (`debug::work`,
   `benchmark_populated_work_counts`) show the 100k scaling gap is algorithmic: proposed site rows

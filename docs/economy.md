@@ -39,7 +39,7 @@ Status, 2026-10-10. The healthy-growth redesign agreed on 2026-10-05 is largely 
   policy.
 
 `DEM-02` closed on 2026-10-11 ([`demand.md`](demand.md#exit-criteria)). What remains is tracked by
-runnable exit criteria: performance and scaling under [`ECON-13`](#econ-13-exit-criteria).
+runnable checks: runtime performance under the [performance contract](#performance-contract-perf-01perf-05).
 Healthy-growth acceptance is defined [below](#healthy-growth-acceptance).
 
 ## Core principles
@@ -734,7 +734,65 @@ saved-town replay (`diagnose_saved_city_growth`, ignored) uses `METRUM_DIAG_{SAV
 with a copied save and read-only mods. Economic changes that must not alter behavior compare
 these five reports byte for byte.
 
+### Performance contract (`PERF-01`–`PERF-05`)
+
+Every economy change keeps these checks. They replace `ECON-13` (closed 2026-10-12), whose
+100k runs took hours. The contract uses saved cities, deterministic work counts and one run per
+tier, so a full check takes minutes. The 100k and 1M tiers are deferred.
+
+**Fixtures.** `PopulatedCity` at 10k and 30k residents, simulated past warm-up into the regime
+where buildings are placed or removed every hour (day 7 on the 2026-10-12 fixture), then
+written with the ordinary save format. Each snapshot records its save-format and fixture
+revisions; the runner regenerates it when either changes. Generation must show that the loaded
+snapshot continues exactly like a straight-through run (same next-day `GrowthDayRecord`).
+Snapshots are local build products and are not committed.
+
+**Contract run (`PERF-01`).** `./run.sh --perf-contract` loads both snapshots, simulates one day
+(23 operational hours and one daily settlement) and reports per-phase work counts
+(`debug::work`) and timings. One release run per tier, no repeats; at most **5 minutes** in
+total, including loading. Required before merging an economy change.
+
+**Limits.**
+1. **10k time:** at most **40 ms** per mean operational hour and **10 ms** per mean daily
+   settlement.
+2. **30k time:** at most **120 ms** per mean hour and **30 ms** per mean day: 3× the 10k
+   *budget*, never 3× the measured 10k time, so a faster 10k city cannot tighten it.
+3. **Work scaling:** from 10k to 30k each bounded count grows at most **1.2× the final
+   household ratio**. Bounded: census building rows, reservation rows copied, owner slots
+   prepared, proposed site rows generated, spawn parcels scanned, staffing trials, supplier
+   searches, supplier route quotes, household job-search keys, and CCH searches (point searches
+   plus bucket sources, which replace them). Pass, census and rebuild event counts are reported
+   but not bounded.
+4. **Locality checks:** a profitability-failing supply cycle resolves in at most **3** funding
+   censuses at lengths 4/16/64 (`benchmark_combined_financing_cascades`), and a warm queued
+   check after a frontage-price change costs at most **1.2×** as much at 131,072 background
+   buildings as at 16,384 (`benchmark_queued_project_validation`).
+
+The five growth reports stay the correctness check: byte-identical for performance-only
+changes, reviewed and re-baselined for intentional behaviour changes. A single timing sample
+is informative, not a significance claim. A failed limit is investigated from the phase counts
+first. Matched alternating timings ([recipe](#econ-13-economy-tick-baseline)) are reserved for
+milestones and for changes that claim a speedup.
+
+**Per-phase checks (`PERF-02`).** Isolated checks run one phase on a loaded snapshot with frozen
+inputs: the funding census (staffing, household claims), hourly planning and site preparation,
+the execution epoch, the logistics hour, lot regeneration, daily settlement and route queries.
+A path map selects the checks a diff can affect. Shared code (customer and business books,
+allocator, save/load, the contract itself) runs every check. An isolated check cannot see a
+change elsewhere that feeds its phase more work; the one-day run covers that.
+
+**Known scaling work.** The 2026-10-12 100k counts found three superlinear groups, to be
+re-measured at 30k: the execution epoch's own hourly census (`PERF-03`), the staffing search
+(`PERF-04`) and supplier and job-search fan-out (`PERF-05`).
+
+**Status:** not yet runnable; `PERF-01` builds the runner. Last 10k measurement (ECON-13 recipe,
+2026-10-12): 8.17 ms per hour, 8.31 ms per day.
+
 ### `ECON-13` economy tick baseline
+
+Closed 2026-10-12 and replaced by the [performance contract](#performance-contract-perf-01perf-05).
+The records below are history.
+
 
 Performance acceptance uses matched, unprofiled release runs at 10k residents. The 1M tier is
 deferred.
@@ -780,7 +838,8 @@ preceding operational hour and are separate from unprofiled acceptance measureme
 
 #### `ECON-13` exit criteria
 
-`ECON-13` is done when all four checks pass on one build. The 1M tier stays deferred and is not
+Closed 2026-10-12: A, C and D passed; B retired with the 100k tier. The contract above carries
+the checks forward. `ECON-13` was done when all four checks passed on one build. The 1M tier stays deferred and is not
 part of this acceptance.
 
 1. **10k budget (`ECON-13-A`).** The recipe above measures at most **40 ms** per mean hour and
