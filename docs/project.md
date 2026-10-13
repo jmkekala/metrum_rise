@@ -938,6 +938,15 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- Junction connector overlay (2026-10-13, `DEBUG-04`): the `junction_connectors` visual mode
+  draws the connector arcs cars drive through junctions near the camera, straight from the lane
+  geometry. Its views color them by whitelist (`arcs`), turn speed cap (`speed`) or cars on them
+  (`occupancy`), or add the road lane lines (`lanes`). With no tool active, a click focuses one
+  junction and logs its connectors on `events`. While the view is on, a stall detector logs each
+  car stopped on a connector for 10 simulated seconds, with the blocking car or the cause. The
+  mesh rebuilds only on network, view, focus or camera-chunk changes. With the view off it does
+  no work and nothing runs on the simulation tick. See
+  [`debug.md`](debug.md#junction-connectors).
 - Debug visual modes (2026-10-12, `DEBUG-02`): the terrain, grass, building-site, pedestrian VAT
   and terrain residency (force LOD1, full world) debug views now switch at runtime from the
   console's Visual modes pickers or the `visual` command. Launch flags set only the starting

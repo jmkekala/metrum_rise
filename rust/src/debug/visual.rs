@@ -111,6 +111,17 @@ pub const MODES: &[VisualMode] = &[
         values: FLAG_VALUES,
         aliases: FLAG_ALIASES,
     },
+    VisualMode {
+        name: "junction_connectors",
+        env: "METRUM_DEBUG_JUNCTION_CONNECTORS",
+        values: &["off", "arcs", "speed", "occupancy", "lanes"],
+        aliases: &[
+            ("on", "arcs"),
+            ("connectors", "arcs"),
+            ("turn-speed", "speed"),
+            ("cars", "occupancy"),
+        ],
+    },
 ];
 
 static STATE: [AtomicU8; MODES.len()] = [const { AtomicU8::new(0) }; MODES.len()];
@@ -145,7 +156,7 @@ impl VisualMode {
             .unwrap_or("off")
     }
 
-    // Names are unique; a linear search over six modes only runs on console switches.
+    // Names are unique; a linear search over a handful of modes only runs on console switches.
     fn slot(&self) -> &'static AtomicU8 {
         let index = MODES
             .iter()
@@ -299,6 +310,8 @@ mod tests {
         assert_eq!(lookup("terrain_force_lod1").parse("on"), Some(1));
         assert_eq!(lookup("terrain_force_lod1").parse("yes"), Some(1));
         assert_eq!(lookup("terrain_force_lod1").parse("2"), None);
+        assert_eq!(lookup("junction_connectors").parse("on"), Some(1));
+        assert_eq!(lookup("junction_connectors").parse("lanes"), Some(4));
         for mode in MODES {
             assert_eq!(mode.values[0], "off");
             assert_eq!(mode.value_name(mode.values.len() as u8), "off");
@@ -334,6 +347,7 @@ mod tests {
                 ("pedestrian_vat", "uv"),
                 ("terrain_force_lod1", "on"),
                 ("terrain_force_full_world", "on"),
+                ("junction_connectors", "off"),
             ]
         );
         let modes = start(

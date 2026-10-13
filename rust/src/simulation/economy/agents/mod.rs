@@ -6,6 +6,7 @@ mod building_refs;
 mod daily;
 pub mod data;
 mod determinism;
+pub(crate) mod junction_stalls;
 mod lifecycle;
 mod remap;
 #[cfg(test)]

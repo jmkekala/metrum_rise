@@ -1,7 +1,7 @@
 # Metrum Rise — Debug System
 
-This document owns the runtime debug contract (`DEBUG-01`, `DEBUG-02`): the debug channels, the
-runtime visual modes, the log format, the shared log, the always-on `events` channel, the Godot
+This document owns the runtime debug contract (`DEBUG-01`, `DEBUG-02`, `DEBUG-04`): the debug
+channels, the runtime visual modes, the junction connector overlay and stall detector, the log format, the shared log, the always-on `events` channel, the Godot
 bridge, the in-game console and the `run.sh` launch flags. Crash diagnostics (`METRUM_CRASH_DIAGNOSTICS`, the hang watchdog and the
 flight recorder) are separate; this document lists only their launch flag.
 
@@ -110,6 +110,7 @@ launch variable sets only the starting value, and the console switches every mod
 | `pedestrian_vat` | `off`, `rest`, `uv`, `offsets` | `METRUM_DEBUG_PEDESTRIAN_VAT`, overridden by `--pedestrian-vat-debug` | `rest`: no VAT animation, so rigid sliding is expected. `uv`: vertex-ID UVs. `offsets`: VAT offset magnitude while offsets apply. |
 | `terrain_force_lod1` | `off`, `on` | `METRUM_DEBUG_TERRAIN_FORCE_LOD1`, or `terrain-lod1` / `terrain-full-lod1` in the filter | Every resident terrain and water patch at LOD1, the finest mesh. |
 | `terrain_force_full_world` | `off`, `on` | `METRUM_DEBUG_TERRAIN_FORCE_FULL_WORLD`, or `terrain-full` / `terrain-full-lod1` in the filter | Every terrain patch resident, with water following it. |
+| `junction_connectors` | `off`, `arcs`, `speed`, `occupancy`, `lanes` | `METRUM_DEBUG_JUNCTION_CONNECTORS` | The connector arcs cars drive through junctions near the camera, and the stuck-at-junction detector ([details](#junction-connectors)). Aliases: `on` and `connectors` for `arcs`, `turn-speed` for `speed`, `cars` for `occupancy`. |
 
 These rules apply:
 
@@ -145,6 +146,8 @@ These rules apply:
     frames load or drop patches through the normal per-frame budget, without a teardown. LOD
     refresh normally waits for the camera to move, so the switch makes it due at once. Turning
     either mode off returns to the camera-based patch set and LODs.
+  - `junction_connectors`: the junction overlay rebuilds its mesh for the new view, or clears
+    it and drops the stall detector when the view goes off.
 - Selecting the current value changes nothing and emits nothing.
 
 While no mode changes, the switch path costs nothing per frame. Nothing on the simulation tick
@@ -153,6 +156,83 @@ did when it could only be set at launch.
 
 `MetrumDebug.set_visual_mode` on its own changes the stored value, but renderers do not see the
 change; script code switches modes through `DebugConsole`.
+
+### Junction connectors
+
+Every allowed turn at a junction is a connector lane: a sampled cubic Bezier in `Lane::geometry`
+(see [Junction Connectors](traffic.md#junction-connectors)). Cars drive that exact polyline, and
+the `junction_connectors` overlay draws it unchanged, 0.25 m above the road, with a chevron
+three quarters along each lane pointing the travel direction.
+
+| View | Draws |
+|------|-------|
+| `arcs` | Every vehicle connector. Orange: the node whitelists its turns (it has a user lane connection). Blue: the default open turns. |
+| `speed` | Connectors colored by `connector_turn_speed()`: red at `CAR_JUNCTION_MIN_SPEED_MS` (2 m/s), yellow midway, green at `CAR_JUNCTION_SPEED_MS` (6 m/s). |
+| `occupancy` | Grey: empty. Yellow, orange, red: one, two, three or more cars. Magenta: a car stopped (below 0.1 m/s) at the connector end, waiting for its exit lane. |
+| `lanes` | The `arcs` colors plus the vehicle lane center lines of every edge at the drawn junctions, to check how lanes line up at junction mouths. |
+
+A strict degree-two split links road lanes directly and has no connector; the overlay marks it
+with a violet diamond, so "no connector" is distinguishable from "missing". Every view draws
+the markers.
+
+Coverage and cost:
+
+- The overlay ([`junction_debug_overlay.gd`](../godot/scripts/renderers/junction_debug_overlay.gd))
+  covers the camera's 512 m chunk and its eight neighbours, a 1,536 m square around the camera's
+  focus point. Rust finds the junctions through the 16 m node lookup grid, never a scan of all
+  nodes or lanes. A build costs O(grid cells in the square + nodes found + vertices drawn); its
+  output is one line-list mesh for all junctions.
+- `arcs`, `speed` and `lanes` rebuild only when the network render generation, the view, the
+  focus or the camera's chunk changes. `occupancy` also rebuilds four times a second.
+- If the simulation core is busy, a rebuild keeps the last mesh and retries on the next frame.
+- While the view is off the overlay does no work at all, and nothing here runs on the
+  simulation tick.
+
+Focus: with no tool active, a click within 12 m of a drawn junction focuses it. The overlay then
+draws only that junction, and the click is not passed on to the building inspector. Focusing logs
+the junction on `events`, one line per connector, as below. A click elsewhere clears the focus
+and then inspects as usual; Esc also clears it. While a tool is active, clicks go to the tool.
+
+```text
+junction 12: 6 vehicle connectors, turns open
+  connector 41: from edge 3 lane 0 to edge 5 lane 0, 17.8 m, cap 6.0 m/s, open
+```
+
+Stuck-at-junction detector: while the view is on, the overlay asks Rust to scan four times a
+second of real time. Each scan does nothing until one simulated second has passed since the last.
+A scan reads the lane occupancy snapshot the agent tick leaves behind. It visits only occupied
+lanes and the cars on vehicle connectors, so it costs O(occupied lanes + cars on connectors).
+A car that has stayed within 0.5 m on one connector for 10 simulated seconds is logged once on
+`events`:
+
+```text
+junction stall: car 5120 (agent 233) stopped 10 s at node 12 on connector 41 (17.8/17.8 m): exit lane 77 entry occupied by car 4410 at 1.2 m
+```
+
+The cause is one of:
+
+- `exit lane N entry occupied by car C at D m`: the car waits at the connector end, and the exit
+  lane's entry slot is taken. This is the exit check the agent tick runs.
+- `exit lane N entry is clear now; merging connectors keep winning its claim`: the car waits at
+  the end, but the entry is clear at scan time.
+- `queued behind car C at D m on the same connector`.
+- `connector has no exit lane`.
+- `no blocker found (speed S m/s)`.
+
+The detector keys cars by their runtime-stable render id, so swap-remove does not confuse it.
+It forgets a car that leaves its connector, starts over if the simulated clock goes back (as
+on a load), and is dropped with all its state when the view goes off. It adds no per-agent
+field and no per-tick work.
+
+`SimulationNode` methods behind the overlay:
+
+| Method | Contract |
+|--------|----------|
+| `get_junction_debug_lines(view, center, half_extent_m, focus_node)` | Line-list `points` and `colors` plus the counts `junctions`, `connectors`, `pass_throughs`, `occupied` and `blocked`. Covers the square around `center`, or only `focus_node` when it is not negative. Empty while the core is busy or `view` is `0`. |
+| `pick_debug_junction(pos, radius_m)` | Nearest drawn junction within `radius_m` (XZ), or `-1`. |
+| `log_junction_connectors(node_id)` | Logs the focus lines on `events`; returns how many. |
+| `scan_junction_stalls()` | One detector scan, rate-limited to once per simulated second; returns the number of new reports. |
+| `clear_junction_stalls()` | Drops the detector. |
 
 ## Output Contract
 
@@ -193,8 +273,9 @@ logs per agent event, and `--debug traffic` performance numbers are not acceptan
 
 ## Events
 
-The `events` channel collects messages the game already reports. It never adds per-agent or
-per-tick messages of its own.
+The `events` channel collects messages the game already reports. It never adds per-tick
+messages of its own, and per-agent messages only from the stall detector, once per stalled car
+while the `junction_connectors` view is on.
 
 - The debug console installs a Godot `Logger`
   ([`debug_event_logger.gd`](../godot/scripts/ui/debug_console/debug_event_logger.gd)). It
@@ -205,6 +286,8 @@ per-tick messages of its own.
   grade numbers it already computed.
 - The road tool logs a rejection by the simulation as `road_commit_rejected request_id=...
   detail=...`.
+- The [junction overlay](#junction-connectors) logs a focused junction's connectors and, while
+  on, each stalled car.
 
 Godot calls loggers from any thread. The logger keeps no state and forwards to the thread-safe
 Rust log.
@@ -323,6 +406,39 @@ While closed, the console does no work except watch for its key.
   are resident, at LOD 1, 2 and 4. Full-world residency loads all 64; force-LOD1 refines every
   terrain and water patch; switching either off returns the same patch set and LODs.
 
+`godot/tests/junction_debug_overlay_test.gd` runs in the bridge list. On a test world, with
+roads committed through the simulation thread, it covers:
+
+- no work while off;
+- an empty world, then a straight road (two dead ends), then a T junction: each network
+  generation redraws, with more vertices;
+- focusing the T: only its six connectors are drawn and logged on `events`; a miss and Esc clear
+  the focus;
+- `speed` and `occupancy` color the same arcs, and `lanes` adds the road lane lines;
+- the stall detector reports nothing on a network without cars;
+- switching off clears the mesh and stops the overlay.
+
+Placing a car on a connector needs the agent tick, which no bridge call exposes, so the Godot
+test does not produce a stall. The Rust unit tests in `simulation::economy::agents::junction_stalls`
+cover the reports:
+
+- a car held at a blocked exit is reported once, naming the blocking car;
+- a moving car is never reported;
+- a car that leaves its connector is forgotten;
+- the queued-behind and claim-lost causes;
+- a restart when the clock goes back.
+
+`nodes::sim::render::junctions` tests cover the overlay geometry on a T junction:
+
+- six open turns, the vertex layout and the lift;
+- the pass-through markers;
+- the node grid search and picking;
+- whitelist colors;
+- `lanes` vertex counts;
+- speed colors;
+- the focus log lines;
+- occupancy counts and the held-car highlight.
+
 Rust unit tests in `debug::channel`, `debug::log`, `debug::visual` and `debug` cover:
 
 - the startup rules;
@@ -417,6 +533,7 @@ set only the starting value; the console switches them later.
 | `--debug-sim` | `METRUM_DEBUG_SIM=1` | Hourly simulation summaries to stdout. |
 | `--debug visuals [mode]` / `--debug visual [mode]` / `--visuals [mode]` | `METRUM_DEBUG_TERRAIN_GRASS=<mode>` | Starts a terrain grass material view. Defaults to `material`. |
 | `--debug terrain-visual <mode>` | `METRUM_DEBUG_TERRAIN=1`, `METRUM_DEBUG_TERRAIN_VISUAL=<mode>` | Starts a terrain/water/lighting material view. Defaults to `patch`. |
+| `METRUM_DEBUG_JUNCTION_CONNECTORS=<view> ./run.sh` | `METRUM_DEBUG_JUNCTION_CONNECTORS=<view>` | Starts the [junction connector overlay](#junction-connectors): `arcs`, `speed`, `occupancy` or `lanes`. No `run.sh` flag; the variable passes through. |
 
 Removed debug aliases:
 

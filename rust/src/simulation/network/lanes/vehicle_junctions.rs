@@ -62,9 +62,7 @@ pub fn build_vehicle_connections_at_node(
 
     let lane_conns = &graph.node(node_id as u32).lane_connections;
     let node_deg = graph.node_adjacency_count_at(node_id as u32);
-    let node_has_any_vehicle_conn = lane_conns
-        .keys()
-        .any(|&(_, lane_idx)| lane_idx != 100 && lane_idx != -100);
+    let node_has_any_vehicle_conn = node_whitelists_vehicle_turns(graph, node_id);
     let node_allows_direct_pass_through = node_deg == 2 && !node_has_any_vehicle_conn;
     let node_uses_junction_span = node_deg >= 3 || node_has_any_vehicle_conn;
 
@@ -194,6 +192,16 @@ pub fn build_vehicle_connections_at_node(
             lanes[in_lane_id].next_lanes.push(conn_id);
         }
     }
+}
+
+/// Returns `true` when the node has a user vehicle lane connection, which puts every turn at
+/// the node in whitelist mode. Lane index `±100` marks pedestrian connections.
+pub(crate) fn node_whitelists_vehicle_turns(graph: &RegionGraph, node_id: usize) -> bool {
+    graph
+        .node(node_id as u32)
+        .lane_connections
+        .keys()
+        .any(|&(_, lane_idx)| lane_idx != 100 && lane_idx != -100)
 }
 
 fn vehicle_connection_distance_basis_m(

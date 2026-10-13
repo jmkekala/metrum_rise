@@ -435,8 +435,10 @@ Important log markers:
 - `[ACCESS_INGRESS_DETACH]`
 - `[ACCESS_INGRESS_WAIT]`
 
-When traffic debug is enabled, the agent render debug path also exposes richer lane / junction
-labels and path/connector visualization for visual diagnosis.
+When traffic debug is enabled, the agent path overlay (`P`) also shows each car's lane and
+junction labels and the connector it will take. To see every connector at nearby junctions,
+colored by whitelist, turn speed or occupancy, and to log cars stuck on a connector, use the
+`junction_connectors` visual mode ([debug.md](debug.md#junction-connectors)).
 
 ## Performance Contract
 

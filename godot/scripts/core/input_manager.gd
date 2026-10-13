@@ -29,6 +29,7 @@ var bulldoze_tool: Node3D
 @onready var buildings_node = $"../Buildings"
 var select_tool: Node3D
 var building_inspector: Node
+var junction_debug_overlay: Node3D
 
 enum Tool { NONE, ROAD, WALKWAY, ZONING, SERVICES, INDUSTRY, MOVE, AGENT, SCULPT, CUL_DE_SAC, SELECT, BULLDOZE, VEGETATION, FIELD_EDIT }
 var current_tool: Tool = Tool.NONE
@@ -105,6 +106,11 @@ func _ready():
 		inspector.set_script(load("res://scripts/ui/building_inspector.gd"))
 		get_parent().call_deferred("add_child", inspector)
 		building_inspector = inspector
+
+	junction_debug_overlay = Node3D.new()
+	junction_debug_overlay.name = "JunctionDebugOverlay"
+	junction_debug_overlay.set_script(load("res://scripts/renderers/junction_debug_overlay.gd"))
+	get_parent().call_deferred("add_child", junction_debug_overlay)
 
 	# Hide overlay mesh if exists in cul-de-sac tool
 	if cul_de_sac_tool and cul_de_sac_tool.has_node("PreviewMesh"):
@@ -290,6 +296,8 @@ func _ui_captures_keyboard_input() -> bool:
 func _handle_escape():
 	if current_tool != Tool.NONE:
 		_cancel_active_tool()
+	elif junction_debug_overlay and junction_debug_overlay.unfocus():
+		get_viewport().set_input_as_handled()
 
 func _handle_lane_adjust(fwd, bkw):
 	if current_tool == Tool.ROAD and road_tool:
@@ -613,6 +621,9 @@ func _handle_inspect_click(mouse_pos: Vector2) -> void:
 		camera.project_ray_normal(mouse_pos)
 	)
 	if pos == null:
+		return
+	# With the junction overlay on, a click on a junction focuses it instead of inspecting.
+	if junction_debug_overlay and junction_debug_overlay.try_focus_at(pos):
 		return
 	building_inspector.try_inspect(pos, mouse_pos)
 

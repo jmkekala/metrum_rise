@@ -38,6 +38,9 @@ pub(crate) use planning::{
     estimate_building_origin_trip_seconds, estimate_trip_seconds_between,
     plan_building_origin_trip, plan_building_to_border_trip, plan_immigration_trip,
 };
+// Shared with the junction debug view and its stall detector.
+pub(crate) use traffic::connector_turn_speed;
+pub(in crate::simulation::economy::agents) use traffic::lane_attach_slot_clear;
 
 impl AgentSystem {
     /// Advances the agent simulation by `delta` seconds.

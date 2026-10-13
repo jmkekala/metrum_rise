@@ -44,9 +44,7 @@ fn lane_end_tangent(lane: &Lane, at_start: bool) -> Option<Vector3> {
 }
 
 /// Returns the curvature-limited speed cap for a junction connector lane.
-pub(in crate::simulation::economy::agents::tick) fn connector_turn_speed(
-    connector_lane: &Lane,
-) -> f32 {
+pub(crate) fn connector_turn_speed(connector_lane: &Lane) -> f32 {
     let Some(start_tangent) = lane_end_tangent(connector_lane, true) else {
         return CAR_JUNCTION_SPEED_MS;
     };

@@ -34,7 +34,7 @@ pub(in crate::simulation::economy::agents::tick) fn idm_gap_bucket(
 }
 
 /// Returns whether a car can occupy `attach_d` without violating static separation.
-pub(in crate::simulation::economy::agents::tick) fn lane_attach_slot_clear(
+pub(in crate::simulation::economy::agents) fn lane_attach_slot_clear(
     bucket: &[(f32, usize)],
     attach_d: f32,
 ) -> bool {

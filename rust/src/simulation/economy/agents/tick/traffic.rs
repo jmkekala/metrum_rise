@@ -8,7 +8,8 @@ mod lane_change;
 mod occupancy;
 
 pub(super) use idm::{braking_speed_for_distance, idm_new_speed, limit_speed_change};
-pub(super) use junction::{connector_turn_speed, junction_car_speed, junction_entry_speed};
+pub(crate) use junction::connector_turn_speed;
+pub(super) use junction::{junction_car_speed, junction_entry_speed};
 pub(super) use lane_change::{
     LANE_CHANGE_FINISH_EPS_M, LANE_CHANGE_MIN_LENGTH_M, LaneChangeKind, LaneChangeParams,
     OVERTAKE_COOLDOWN_S, OVERTAKE_MIN_SPEED_GAIN_MS, choose_lane_change, lane_change_finished,
@@ -19,9 +20,10 @@ pub(super) use lane_change::{
     cruise_lane_return_target, lane_change_length_for_speed, lane_change_target_toward,
     overtaking_lane_target,
 };
+pub(in crate::simulation::economy::agents) use occupancy::lane_attach_slot_clear;
 pub(super) use occupancy::{
-    ConnectorEntry, claim_connector_entry, claim_lane_entry, idm_gap_bucket,
-    lane_attach_slot_clear, lane_change_gap_clear, lane_entry_slot_clear, live_lane_bucket_transit,
+    ConnectorEntry, claim_connector_entry, claim_lane_entry, idm_gap_bucket, lane_change_gap_clear,
+    lane_entry_slot_clear, live_lane_bucket_transit,
 };
 
 #[cfg(test)]

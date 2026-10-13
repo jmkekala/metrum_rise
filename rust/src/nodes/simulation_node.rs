@@ -156,6 +156,7 @@ mod async_terrain;
 mod building_lod_api;
 mod cell_zoning_api;
 mod economy_api;
+mod junction_debug_api;
 mod network_api;
 mod system_api;
 mod terrain_api;
@@ -266,6 +267,9 @@ pub struct SimulationNode {
     pub(crate) building_lods: crate::nodes::sim::render::building_lod::spatial::SpatialBatches,
     /// Main-thread drawn car poses between snapshots; never serialized or read by simulation.
     pub(crate) car_visuals: crate::nodes::sim::render::car_visual::CarVisualSmoother,
+    /// Stuck-at-junction detector; exists only while the `junction_connectors` view is on.
+    junction_stalls:
+        Option<crate::simulation::economy::agents::junction_stalls::JunctionStallDetector>,
     terrain_patch_payload_jobs: Arc<Mutex<TerrainPatchPayloadAsyncState>>,
     water_patch_payload_jobs: Arc<Mutex<WaterPatchPayloadAsyncState>>,
     /// Monotonic ids for stale-safe asynchronous road preview requests.
@@ -480,6 +484,7 @@ impl INode3D for SimulationNode {
             water_patch_mesh_jobs,
             building_lods: Default::default(),
             car_visuals: Default::default(),
+            junction_stalls: None,
             terrain_patch_payload_jobs,
             water_patch_payload_jobs,
             road_preview_request_counter: AtomicU64::new(0),

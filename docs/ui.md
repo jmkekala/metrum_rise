@@ -401,6 +401,10 @@ side instead.
 | Building clicked with no active tool | Building Inspector window |
 | Building clicked while `SelectTool` is active | Building Inspector window |
 
+While the `junction_connectors` debug view is on, a click with no active tool within 12 m of a
+junction focuses that junction in the overlay instead of opening the inspector. A click elsewhere,
+or Esc, clears the focus ([`debug.md`](debug.md#junction-connectors)).
+
 Selection gestures (`AUDIT-01-F7`) are owned by `SelectTool`, including lane connections and
 crosswalk controls. The inactive duplicate `LaneTool` and its scene node are removed. Tool
 switching and right-click clearing cancel both lane and edge gestures. Release is observed before
@@ -558,8 +562,8 @@ left of `1` (`§` on Nordic layouts) slides it down from the top edge, anchored 
 height and at most a third of the window wide. It sits above the other surfaces on canvas layer
 120. Gameplay keeps the keyboard until one of the console's two text fields is clicked, and Esc
 returns it. Its Channels tab also holds a Visual modes section, one value picker per renderer
-debug view (terrain, grass, building sites, pedestrian VAT, terrain residency), which switches
-the view at once. [`debug.md`](debug.md#console) owns its behavior and commands.
+debug view (terrain, grass, building sites, pedestrian VAT, terrain residency, junction
+connectors), which switches the view at once. [`debug.md`](debug.md#console) owns its behavior and commands.
 
 ---
 
