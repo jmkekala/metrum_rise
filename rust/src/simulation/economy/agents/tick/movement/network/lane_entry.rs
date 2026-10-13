@@ -9,6 +9,7 @@ use super::super::super::super::{
 use super::super::super::lane_nav::lane_origin_node;
 use super::super::super::planning::{plan_border_network_replan, plan_network_replan};
 use super::super::super::slices::MovementSlices;
+use super::super::super::trip_failures::FailureCause;
 use super::super::NETWORK_REPLAN_DELAY_S;
 use super::super::replan_watchdog::{
     delay_or_recover_after_network_replan_failure, has_recoverable_network_trip,
@@ -124,6 +125,10 @@ pub(super) unsafe fn prepare_lane_entry(
                         allocator,
                         graph,
                         "freight-border-lane-entry",
+                        FailureCause::NoBorderRoute {
+                            from: *s_cur_n.get(i),
+                            border: border_node,
+                        },
                         slices,
                     );
                     return LaneEntryAction::Break;
@@ -140,11 +145,12 @@ pub(super) unsafe fn prepare_lane_entry(
                         allocator,
                         graph,
                         "missing-current-node-lane-entry",
+                        FailureCause::NoPosition,
                         slices,
                     );
                     return LaneEntryAction::Break;
                 }
-                if let Some(replan) = plan_network_replan(
+                match plan_network_replan(
                     cur_n,
                     *s_cur_e.get(i),
                     *s_tgt_b.get(i),
@@ -156,17 +162,19 @@ pub(super) unsafe fn prepare_lane_entry(
                     pathfind_count,
                     Some((i, "network-lane-entry")),
                 ) {
-                    apply_network_replan(i, replan, slices);
-                } else {
-                    delay_or_recover_after_network_replan_failure(
-                        i,
-                        sim_time,
-                        allocator,
-                        graph,
-                        "network-lane-entry",
-                        slices,
-                    );
-                    return LaneEntryAction::Break;
+                    Ok(replan) => apply_network_replan(i, replan, slices),
+                    Err(failure) => {
+                        delay_or_recover_after_network_replan_failure(
+                            i,
+                            sim_time,
+                            allocator,
+                            graph,
+                            "network-lane-entry",
+                            FailureCause::NoRoute(failure),
+                            slices,
+                        );
+                        return LaneEntryAction::Break;
+                    }
                 }
                 if s_path.get(i).is_empty() {
                     return LaneEntryAction::Continue;
@@ -179,6 +187,7 @@ pub(super) unsafe fn prepare_lane_entry(
                         allocator,
                         graph,
                         "missing-access-plan-lane-entry",
+                        FailureCause::NoPlan,
                         slices,
                     );
                 } else {

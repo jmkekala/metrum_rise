@@ -19,6 +19,7 @@ mod departure;
 mod junctions;
 mod lane_dynamics;
 mod route_preview;
+mod trip_failures;
 mod support;
 mod trips;
 mod vehicle_flow;

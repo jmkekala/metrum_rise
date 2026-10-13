@@ -29,6 +29,7 @@ impl AgentSystem {
         let render_id = *self.agents.render_id.get(index)?;
         self.inspected = Some(InspectedAgent { index, render_id });
         self.inspection_ended = None;
+        self.inspected_failure = None;
         Some(render_id)
     }
 
@@ -36,6 +37,7 @@ impl AgentSystem {
     pub(crate) fn clear_inspected_agent(&mut self) {
         self.inspected = None;
         self.inspection_ended = None;
+        self.inspected_failure = None;
     }
 
     /// The inspected agent's row, when `render_id` is the inspected agent.
@@ -43,6 +45,14 @@ impl AgentSystem {
         self.inspected
             .filter(|inspected| inspected.render_id == render_id)
             .map(|inspected| inspected.index)
+    }
+
+    /// The `events` line of the inspected agent's latest trip failure, when `render_id` is the
+    /// inspected agent and it failed since it was picked.
+    pub(crate) fn inspected_agent_failure(&self, render_id: u64) -> Option<&str> {
+        self.inspected
+            .filter(|inspected| inspected.render_id == render_id)
+            .and(self.inspected_failure.as_deref())
     }
 
     /// Why the simulation ended `render_id`'s inspection, if it did.
@@ -68,6 +78,7 @@ impl AgentSystem {
                 reason,
             });
             self.inspected = None;
+            self.inspected_failure = None;
         } else if inspected.index == last {
             inspected.index = index;
         }

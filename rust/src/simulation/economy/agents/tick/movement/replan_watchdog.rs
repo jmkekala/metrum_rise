@@ -3,6 +3,7 @@
 //! Network replan failure watchdog and deterministic recovery fallbacks.
 
 use super::super::slices::MovementSlices;
+use super::super::trip_failures::{FailureCause, FailureOutcome, TripFailure};
 use super::NETWORK_REPLAN_DELAY_S;
 use super::access_state::{clear_access_plan, clear_network_state};
 use crate::simulation::buildings::allocator::BuildingAllocator;
@@ -43,6 +44,7 @@ pub(super) unsafe fn has_recoverable_network_trip(i: usize, slices: &MovementSli
 }
 
 /// Records one failed live network replan and recovers the agent once the watchdog threshold is hit.
+/// `reason` names the call site on `traffic`; `cause` is what the `events` log reports.
 ///
 /// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
 pub(super) unsafe fn delay_or_recover_after_network_replan_failure(
@@ -51,9 +53,12 @@ pub(super) unsafe fn delay_or_recover_after_network_replan_failure(
     allocator: &BuildingAllocator,
     graph: &RegionGraph,
     reason: &'static str,
+    cause: FailureCause,
     slices: &MovementSlices,
 ) {
     unsafe {
+        // Captured before the attempt is cleared, so the log shows where the agent failed.
+        let mut failure = TripFailure::capture(i, cause, FailureOutcome::Replans, slices);
         clear_failed_replan_attempt(i, slices);
 
         let failures = slices.network_replan_failures.get(i).saturating_add(1);
@@ -78,14 +83,25 @@ pub(super) unsafe fn delay_or_recover_after_network_replan_failure(
 
         if failures < NETWORK_REPLAN_WATCHDOG_FAILURES {
             *slices.next_replan_time.get_mut(i) = sim_time + NETWORK_REPLAN_DELAY_S;
+            failure.outcome = FailureOutcome::Retry {
+                after_s: NETWORK_REPLAN_DELAY_S,
+                failure: failures,
+                of: NETWORK_REPLAN_WATCHDOG_FAILURES,
+            };
+            slices.failures.push(failure);
             return;
         }
 
-        if use_border_recovery(i, allocator, slices) {
-            recover_to_border(i, sim_time, allocator, graph, reason, slices);
-        } else if !recover_to_home(i, sim_time, allocator, reason, slices) {
-            recover_to_border(i, sim_time, allocator, graph, reason, slices);
-        }
+        let home = if use_border_recovery(i, allocator, slices) {
+            None
+        } else {
+            recover_to_home(i, sim_time, allocator, reason, slices)
+        };
+        failure.outcome = match home {
+            Some(outcome) => outcome,
+            None => recover_to_border(i, sim_time, allocator, graph, reason, slices),
+        };
+        slices.failures.push(failure);
     }
 }
 
@@ -118,11 +134,11 @@ unsafe fn recover_to_home(
     allocator: &BuildingAllocator,
     reason: &'static str,
     slices: &MovementSlices,
-) -> bool {
+) -> Option<FailureOutcome> {
     unsafe {
         let home = *slices.home.get(i);
         if home >= allocator.buildings.len() {
-            return false;
+            return None;
         }
 
         let pos = home_recovery_position(home, allocator);
@@ -149,7 +165,11 @@ unsafe fn recover_to_home(
             pos.x,
             pos.y,
         );
-        true
+        Some(FailureOutcome::Home {
+            building: home,
+            pos,
+            failures: NETWORK_REPLAN_WATCHDOG_FAILURES,
+        })
     }
 }
 
@@ -160,7 +180,7 @@ unsafe fn recover_to_border(
     graph: &RegionGraph,
     reason: &'static str,
     slices: &MovementSlices,
-) -> bool {
+) -> FailureOutcome {
     unsafe {
         let Some(border_node) = choose_recovery_border_node(i, graph, slices) else {
             *slices.next_replan_time.get_mut(i) = sim_time + NETWORK_REPLAN_DELAY_S;
@@ -172,7 +192,9 @@ unsafe fn recover_to_border(
                 *slices.tgt_b.get(i),
                 *slices.cur_n.get(i),
             );
-            return false;
+            return FailureOutcome::NoBorder {
+                after_s: NETWORK_REPLAN_DELAY_S,
+            };
         };
 
         let pos = graph.node(border_node).pos;
@@ -218,7 +240,12 @@ unsafe fn recover_to_border(
             pos.x,
             pos.z,
         );
-        true
+        FailureOutcome::Border {
+            node: border_node,
+            pos: Vector2::new(pos.x, pos.z),
+            building: recovered_target,
+            failures: NETWORK_REPLAN_WATCHDOG_FAILURES,
+        }
     }
 }
 
@@ -312,20 +339,20 @@ mod tests {
         let slices = MovementSlices::new(&mut agents.agents);
         unsafe {
             delay_or_recover_after_network_replan_failure(
-                agent_idx, 10.0, &allocator, &graph, "test", &slices,
+                agent_idx, 10.0, &allocator, &graph, "test", FailureCause::NoPlan, &slices,
             );
             assert_eq!(*slices.network_replan_failures.get(agent_idx), 1);
             assert_eq!(*slices.transit.get(agent_idx), TRANSIT_NETWORK);
             assert_eq!(*slices.next_replan_time.get(agent_idx), 15.0);
 
             delay_or_recover_after_network_replan_failure(
-                agent_idx, 15.0, &allocator, &graph, "test", &slices,
+                agent_idx, 15.0, &allocator, &graph, "test", FailureCause::NoPlan, &slices,
             );
             assert_eq!(*slices.network_replan_failures.get(agent_idx), 2);
             assert_eq!(*slices.transit.get(agent_idx), TRANSIT_NETWORK);
 
             delay_or_recover_after_network_replan_failure(
-                agent_idx, 20.0, &allocator, &graph, "test", &slices,
+                agent_idx, 20.0, &allocator, &graph, "test", FailureCause::NoPlan, &slices,
             );
         }
 
@@ -363,13 +390,13 @@ mod tests {
         let slices = MovementSlices::new(&mut agents.agents);
         unsafe {
             delay_or_recover_after_network_replan_failure(
-                agent_idx, 10.0, &allocator, &graph, "test", &slices,
+                agent_idx, 10.0, &allocator, &graph, "test", FailureCause::NoPlan, &slices,
             );
             delay_or_recover_after_network_replan_failure(
-                agent_idx, 15.0, &allocator, &graph, "test", &slices,
+                agent_idx, 15.0, &allocator, &graph, "test", FailureCause::NoPlan, &slices,
             );
             delay_or_recover_after_network_replan_failure(
-                agent_idx, 20.0, &allocator, &graph, "test", &slices,
+                agent_idx, 20.0, &allocator, &graph, "test", FailureCause::NoPlan, &slices,
             );
         }
 

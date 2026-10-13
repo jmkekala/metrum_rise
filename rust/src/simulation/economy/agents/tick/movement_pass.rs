@@ -5,6 +5,7 @@
 use super::claims::LaneClaimContext;
 use super::runtime::dispatch_agents;
 use super::slices::MovementSlices;
+use super::trip_failures::FailureSink;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::time::TimeSystem;
 use crate::simulation::economy::agents::data::{AgentSystem, MovementClaimMode};
@@ -27,7 +28,8 @@ impl AgentSystem {
     ) {
         self.prepare_lane_claims(allocator, transit_network, graph, delta, n);
 
-        let slices = MovementSlices::new(&mut self.agents);
+        let mut slices = MovementSlices::new(&mut self.agents);
+        slices.failures = FailureSink::new(std::mem::take(&mut self.trip_failures.buffer));
 
         let lane_buckets = &self.lane_buckets;
         let lane_claims = LaneClaimContext::new(&self.lane_claim_owner, &self.movement_claim_modes);
@@ -58,8 +60,9 @@ impl AgentSystem {
             );
         });
 
-        for i in 0..n {
-            if self.movement_claim_modes[i] != MovementClaimMode::Dynamic {
+        // A borrowed slice keeps the bound in a register for this serial scan of every agent.
+        for (i, &mode) in self.movement_claim_modes[..n].iter().enumerate() {
+            if mode != MovementClaimMode::Dynamic {
                 continue;
             }
             unsafe {
@@ -80,6 +83,7 @@ impl AgentSystem {
                 );
             }
         }
+        self.trip_failures.buffer = slices.failures.into_inner();
     }
 }
 

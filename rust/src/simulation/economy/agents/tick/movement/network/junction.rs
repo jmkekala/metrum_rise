@@ -10,6 +10,7 @@ use super::super::super::super::{ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_PLAN_
 use super::super::super::claims::LaneClaimContext;
 use super::super::super::planning::{plan_border_network_replan, plan_network_replan};
 use super::super::super::slices::MovementSlices;
+use super::super::super::trip_failures::{FailureCause, FailureOutcome, record_failure};
 use super::super::replan_watchdog::delay_or_recover_after_network_replan_failure;
 use super::apply_network_replan;
 use crate::simulation::buildings::allocator::BuildingAllocator;
@@ -108,6 +109,15 @@ pub(super) unsafe fn handle_lane_end(
                     *s_path_idx.get(i),
                     path_len,
                 );
+                record_failure(
+                    i,
+                    FailureCause::NoRoad {
+                        node: *s_cur_n.get(i),
+                        next_node,
+                    },
+                    FailureOutcome::Replans,
+                    slices,
+                );
                 s_path.get_mut(i).clear();
                 *s_lane_id.get_mut(i) = usize::MAX;
                 return LaneEndAction::Break;
@@ -180,6 +190,10 @@ pub(super) unsafe fn handle_lane_end(
                         allocator,
                         graph,
                         "freight-border-junction",
+                        FailureCause::NoBorderRoute {
+                            from: *s_cur_n.get(i),
+                            border: border_node,
+                        },
                         slices,
                     );
                 }
@@ -188,7 +202,7 @@ pub(super) unsafe fn handle_lane_end(
                 return LaneEndAction::Break;
             }
             if sim_time >= *s_next_replan_time.get(i) {
-                if let Some(replan) = plan_network_replan(
+                match plan_network_replan(
                     *s_cur_n.get(i),
                     *s_cur_e.get(i),
                     *s_tgt_b.get(i),
@@ -200,16 +214,16 @@ pub(super) unsafe fn handle_lane_end(
                     pathfind_count,
                     Some((i, "network-junction")),
                 ) {
-                    apply_network_replan(i, replan, slices);
-                } else {
-                    delay_or_recover_after_network_replan_failure(
+                    Ok(replan) => apply_network_replan(i, replan, slices),
+                    Err(failure) => delay_or_recover_after_network_replan_failure(
                         i,
                         sim_time,
                         allocator,
                         graph,
                         "network-junction",
+                        FailureCause::NoRoute(failure),
                         slices,
-                    );
+                    ),
                 }
             } else {
                 *s_path_idx.get_mut(i) = 0;

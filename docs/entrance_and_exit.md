@@ -1009,6 +1009,7 @@ No midpoint heuristics are needed here.
   - for ordinary housed non-freight citizens, place the agent back inside `home_building`, clear destination/access/path/lane state, set home activity, and reset `next_replan_time` plus `network_replan_failures`
   - for freight carriers, immigrant carriers, pending household arrivals, or agents without a valid home, recover to a connected border node, preferring the freight target border/current anchor/planned anchors before the first connected border; keep a valid building target in `TRANSIT_IMMIGRATING`, otherwise remain route-less in `TRANSIT_NETWORK`
 - If `sim_time < next_replan_time`, do not attempt another replan and do not hide the agent.
+- Each failed replan, the recovery and its target, junction turn or road misses, invalid access plans and departures that cannot be planned are logged on `events` with the planner's own rejection reasons ([trip failures](debug.md#trip-failures), `DEBUG-06`).
 
 #### `ACCESS_INGRESS`
 

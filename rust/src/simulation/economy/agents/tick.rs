@@ -17,6 +17,7 @@ mod scrub;
 mod slices;
 mod speed;
 mod traffic;
+mod trip_failures;
 
 use super::data::AgentSystem;
 use super::{
@@ -44,6 +45,7 @@ pub(crate) use route_preview::{PlannedRoute, RouteEnd, planned_route};
 // Shared with the junction debug view and its stall detector.
 pub(crate) use traffic::connector_turn_speed;
 pub(in crate::simulation::economy::agents) use traffic::lane_attach_slot_clear;
+pub(crate) use trip_failures::TripFailureLog;
 
 impl AgentSystem {
     /// Advances the agent simulation by `delta` seconds.
@@ -81,6 +83,7 @@ impl AgentSystem {
         self.update_idm_speeds(delta, transit_network, graph, n, live_lane_agent_count);
 
         self.dispatch_movement_pass(allocator, transit_network, graph, delta, time, n);
+        self.report_trip_failures(allocator);
         self.log_stationary_visible_pedestrians(delta, n);
 
         self.rebuild_lanes_and_congestion(graph, lane_count, n);

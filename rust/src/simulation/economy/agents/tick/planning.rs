@@ -11,7 +11,9 @@ mod types;
 
 pub(crate) use candidate::SharedNetworkQuotes;
 pub(crate) use immigration::plan_immigration_trip;
-pub(super) use network::{plan_border_network_replan, plan_network_replan};
+pub(super) use network::{
+    ReplanCandidateDiagnostic, ReplanFailure, plan_border_network_replan, plan_network_replan,
+};
 pub(crate) use reachability::{BuildingWalkingAccess, PedestrianReachability};
 pub(crate) use trip::{
     BuildingTripEnds, TripEstimate, building_origin_trip_is_feasible,

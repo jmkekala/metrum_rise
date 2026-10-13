@@ -32,7 +32,7 @@ pub(in crate::simulation::economy::agents::tick) fn plan_network_replan(
     graph: &RegionGraph,
     pathfind_count: &AtomicU32,
     debug_context: Option<(usize, &'static str)>,
-) -> Option<BuiltNetworkReplan> {
+) -> Result<BuiltNetworkReplan, ReplanFailure> {
     let debug_context = debug_context.filter(|_| crate::debug::Channel::Traffic.enabled());
     let incoming_edge_valid = incoming_edge_is_incident_to_node(incoming_edge, start_node, graph);
     let mut candidate_diagnostics = [None, None];
@@ -53,7 +53,13 @@ pub(in crate::simulation::economy::agents::tick) fn plan_network_replan(
             transit_network,
             graph,
         );
-        return None;
+        return Err(ReplanFailure::new(
+            start_node,
+            target_building,
+            usize::MAX,
+            "target_building_out_of_range",
+            candidate_diagnostics,
+        ));
     }
     let destination_entrance = &allocator.entrances[target_building];
     if destination_entrance.edge_idx >= graph.edge_count() {
@@ -71,7 +77,13 @@ pub(in crate::simulation::economy::agents::tick) fn plan_network_replan(
             transit_network,
             graph,
         );
-        return None;
+        return Err(ReplanFailure::new(
+            start_node,
+            target_building,
+            destination_entrance.edge_idx,
+            "destination_edge_out_of_range",
+            candidate_diagnostics,
+        ));
     }
     let destination_edge = graph.edge(destination_entrance.edge_idx);
     if destination_edge.deleted {
@@ -89,7 +101,13 @@ pub(in crate::simulation::economy::agents::tick) fn plan_network_replan(
             transit_network,
             graph,
         );
-        return None;
+        return Err(ReplanFailure::new(
+            start_node,
+            target_building,
+            destination_entrance.edge_idx,
+            "destination_edge_deleted",
+            candidate_diagnostics,
+        ));
     }
     TripQueryScratch::with_routes(|scratch| {
         let route_start = if incoming_edge_valid {
@@ -282,7 +300,13 @@ pub(in crate::simulation::economy::agents::tick) fn plan_network_replan(
                 transit_network,
                 graph,
             );
-            return None;
+            return Err(ReplanFailure::new(
+            start_node,
+            target_building,
+            destination_entrance.edge_idx,
+            "no_valid_destination_candidate",
+            candidate_diagnostics,
+        ));
         };
         let current_path = scratch.finish_path();
         let mut access_flags = ACCESS_PLAN_VALID | (preserve_flags & ACCESS_IMMIGRATION_ORIGIN);
@@ -290,7 +314,7 @@ pub(in crate::simulation::economy::agents::tick) fn plan_network_replan(
             access_flags |= ACCESS_ZERO_HOP_NODE_PATH;
         }
 
-        Some(BuiltNetworkReplan {
+        Ok(BuiltNetworkReplan {
             planned_detach_node,
             planned_detach_lane_id,
             planned_detach_lane_d,
@@ -300,12 +324,50 @@ pub(in crate::simulation::economy::agents::tick) fn plan_network_replan(
     })
 }
 
-#[derive(Clone, Copy)]
-struct ReplanCandidateDiagnostic {
+/// Why one exit candidate (either end of the destination's road) was rejected.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(in crate::simulation::economy::agents::tick) struct ReplanCandidateDiagnostic {
     destination_rank: u8,
-    planned_detach_node: u32,
-    planned_detach_lane_id: usize,
-    reason: &'static str,
+    /// Node the agent would leave the road network from.
+    pub(in crate::simulation::economy::agents::tick) planned_detach_node: u32,
+    /// Lane the agent would leave the road from; `usize::MAX` when there is none.
+    pub(in crate::simulation::economy::agents::tick) planned_detach_lane_id: usize,
+    /// The planner's rejection code, such as `cch_no_path`.
+    pub(in crate::simulation::economy::agents::tick) reason: &'static str,
+}
+
+/// Why `plan_network_replan` found no route, from the planner's own checks.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(in crate::simulation::economy::agents::tick) struct ReplanFailure {
+    /// Node the search started from.
+    pub(in crate::simulation::economy::agents::tick) start_node: u32,
+    /// The destination building.
+    pub(in crate::simulation::economy::agents::tick) building: usize,
+    /// The destination's road edge; `usize::MAX` when the building is gone.
+    pub(in crate::simulation::economy::agents::tick) edge: usize,
+    /// The rejection code, such as `no_valid_destination_candidate`.
+    pub(in crate::simulation::economy::agents::tick) reason: &'static str,
+    /// Each exit candidate's rejection, by rank.
+    pub(in crate::simulation::economy::agents::tick) candidates:
+        [Option<ReplanCandidateDiagnostic>; 2],
+}
+
+impl ReplanFailure {
+    fn new(
+        start_node: u32,
+        building: usize,
+        edge: usize,
+        reason: &'static str,
+        candidates: [Option<ReplanCandidateDiagnostic>; 2],
+    ) -> Self {
+        Self {
+            start_node,
+            building,
+            edge,
+            reason,
+            candidates,
+        }
+    }
 }
 
 fn record_replan_candidate_diagnostic(

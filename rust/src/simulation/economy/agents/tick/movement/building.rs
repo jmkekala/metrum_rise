@@ -7,6 +7,7 @@ use super::super::access::local_access_side_label;
 use super::super::planning::plan_building_origin_trip;
 use super::super::schedule::{ScheduleCacheMut, maybe_schedule_work_trip};
 use super::super::slices::MovementSlices;
+use super::super::trip_failures::{FailureCause, FailureOutcome, TripFailure};
 use super::{BUILDING_REPLAN_DELAY_S, transit_mode_label};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::time::TimeSystem;
@@ -197,6 +198,7 @@ pub(super) unsafe fn handle_in_building(
                 );
             }
         } else {
+            record_departure_failure(i, next_bldg, slices);
             *s_access_flags.get_mut(i) = 0;
             *s_plan_attach_n.get_mut(i) = u32::MAX;
             *s_plan_detach_n.get_mut(i) = u32::MAX;
@@ -206,5 +208,27 @@ pub(super) unsafe fn handle_in_building(
             *s_plan_detach_lane_d.get_mut(i) = 0.0;
             *s_next_replan_time.get_mut(i) = sim_time + BUILDING_REPLAN_DELAY_S;
         }
+    }
+}
+
+// Out of line, so the failure record does not enlarge the frame every agent indoors enters.
+#[cold]
+#[inline(never)]
+unsafe fn record_departure_failure(i: usize, next_bldg: usize, slices: &MovementSlices) {
+    unsafe {
+        let mut failure = TripFailure::capture(
+            i,
+            FailureCause::NoDeparture {
+                has_car: *slices.has_car.get(i),
+            },
+            FailureOutcome::RetryDeparture {
+                after_s: BUILDING_REPLAN_DELAY_S,
+            },
+            slices,
+        );
+        // The trip was never planned: no mode yet, and the destination is the next one.
+        failure.mode = u8::MAX;
+        failure.destination = next_bldg;
+        slices.failures.push(failure);
     }
 }

@@ -938,6 +938,16 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- Trip failure log (2026-10-13, `DEBUG-06`): every trip failure in the movement tick logs a
+  line on `events`. A line names the agent by render id with its row, kind and mode, where it
+  was, its destination, the reason from the failure site's own data (missing turns and roads,
+  the planner's rejection of each exit candidate, stale access plans, departures that cannot be
+  planned) and what happens next: a replan, a retry with its failure count, or the watchdog's
+  recovery home or to a border. Records are collected during the parallel pass under a lock
+  taken only on failure and logged after it in agent order. Repeats are quiet for a simulated
+  minute. Past 20 per place or 200 per minute, failures fold into one summary per reason. The
+  agent inspector's `Last failure` row shows the inspected agent's latest line. See
+  [`debug.md`](debug.md#trip-failures).
 - Road rejection reports (2026-10-13, `DEBUG-03`): every refused road stroke, whether refused by
   the road tool's click check or the simulation's commit, logs on `events` why (the check's
   reason and numbers), where, and the stroke itself, then a `road_attempt` line with the exact

@@ -10,6 +10,7 @@ use super::super::super::access::{
 };
 use super::super::super::planning::plan_network_replan;
 use super::super::super::slices::MovementSlices;
+use super::super::super::trip_failures::FailureCause;
 use super::super::network::apply_network_replan;
 use super::super::replan_watchdog::delay_or_recover_after_network_replan_failure;
 use super::super::{NETWORK_REPLAN_DELAY_S, transit_mode_label};
@@ -193,7 +194,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
             *s_path_idx.get_mut(i) = 0;
             *s_transit.get_mut(i) = TRANSIT_NETWORK;
             if sim_time >= *s_next_replan_time.get(i) {
-                if let Some(replan) = plan_network_replan(
+                match plan_network_replan(
                     *s_plan_detach_n.get(i),
                     *s_cur_e.get(i),
                     b_id,
@@ -205,16 +206,20 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                     pathfind_count,
                     Some((i, "invalid-ingress-replan")),
                 ) {
-                    apply_network_replan(i, replan, slices);
-                } else {
-                    delay_or_recover_after_network_replan_failure(
+                    Ok(replan) => apply_network_replan(i, replan, slices),
+                    Err(failure) => delay_or_recover_after_network_replan_failure(
                         i,
                         sim_time,
                         allocator,
                         graph,
                         "invalid-ingress-replan",
+                        FailureCause::StaleExit {
+                            lane: detach_lane_id,
+                            lane_d: detach_lane_d,
+                            replan: Some(failure),
+                        },
                         slices,
-                    );
+                    ),
                 }
             }
         } else {

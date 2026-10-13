@@ -47,8 +47,9 @@ impl SimulationNode {
     /// The inspected agent's details: `render_id`, `mode`, `state`, `speed_mps`, `activity`,
     /// `freight`, the buildings `home`, `work`, `destination` and `inside` (each `id`, `kind`,
     /// `profile`, `position`, or empty), `lane`, `lane_edge`, `lane_distance_m`,
-    /// `lane_length_m`, `path_index`, `path_length` and `position`, plus `drawn_position` when
-    /// the agent is a car drawn this frame. While the simulation core is busy, only
+    /// `lane_length_m`, `path_index`, `path_length`, `position` and `last_failure` (its latest
+    /// trip failure line from `events`, empty if none), plus `drawn_position` when the agent
+    /// is a car drawn this frame. While the simulation core is busy, only
     /// `drawn_position` (if any), so the camera follow does not skip frames during a long tick;
     /// `active: false` and a `reason` once `render_id` is no longer inspected. O(1).
     #[func]
@@ -69,6 +70,10 @@ impl SimulationNode {
             return vdict! { "active": false, "reason": reason };
         };
         let mut details = inspection_details(&core, idx);
+        details.set(
+            "last_failure",
+            core.agents.inspected_agent_failure(id).unwrap_or_default(),
+        );
         drop(core);
         if let Some(origin) = self.car_visuals.drawn_origin(render_id) {
             details.set("drawn_position", Vector3::new(origin.x, origin.y, origin.z));

@@ -1,8 +1,8 @@
 # Metrum Rise — Debug System
 
-This document owns the runtime debug contract (`DEBUG-01` to `DEBUG-05`): the debug channels,
+This document owns the runtime debug contract (`DEBUG-01` to `DEBUG-06`): the debug channels,
 the runtime visual modes, the junction connector overlay and stall detector, road rejection
-reports and their replay, the agent inspector, the log format, the shared log, the always-on `events` channel, the Godot
+reports and their replay, the agent inspector, trip failure lines, the log format, the shared log, the always-on `events` channel, the Godot
 bridge, the in-game console and the `run.sh` launch flags. Crash diagnostics (`METRUM_CRASH_DIAGNOSTICS`, the hang watchdog and the
 flight recorder) are separate; this document lists only their launch flag.
 
@@ -276,7 +276,8 @@ logs per agent event, and `--debug traffic` performance numbers are not acceptan
 
 The `events` channel collects messages the game already reports. It never adds per-tick
 messages of its own. Per-agent messages come only from the stall detector, once per stalled car
-while the `junction_connectors` view is on, and per-stroke messages only from refused roads.
+while the `junction_connectors` view is on, and from [trip failures](#trip-failures), with flood
+control. Per-stroke messages come only from refused roads.
 
 - The debug console installs a Godot `Logger`
   ([`debug_event_logger.gd`](../godot/scripts/ui/debug_console/debug_event_logger.gd)). It
@@ -288,6 +289,8 @@ while the `junction_connectors` view is on, and per-stroke messages only from re
 - The console's dump logs `dump save=<path> road_generation=<n>` before it writes the text dump.
 - The [junction overlay](#junction-connectors) logs a focused junction's connectors and, while
   on, each stalled car.
+- Every [trip failure](#trip-failures) logs why and what happens next, folded into a summary per
+  minute past 20 per place or 200 in total.
 
 Godot calls loggers from any thread. The logger keeps no state and forwards to the thread-safe
 Rust log.
@@ -369,8 +372,8 @@ so it survives other agents being removed. While an agent is inspected:
   its title bar and resize it from its edges; its size is kept between sessions. It shows the
   agent's render id (the `agent` of `events` lines), mode, state, speed, activity, home, work,
   destination and the building it is in (id, zone kind and economy profile, or `none`), its
-  lane with the distance along it, and the route: path node *i* of *n*, lanes ahead, metres
-  left and how the route ends. Clicking another agent keeps the window where it is.
+  lane with the distance along it, the route (path node *i* of *n*, lanes ahead, metres
+  left and how the route ends) and its latest [trip failure](#trip-failures) line. Clicking another agent keeps the window where it is.
 - Home, work and destination are links. A link stops the follow, frames that building and
   opens its Building Inspector beside the agent window (an inspector already open for it stays
   open). The inspection and its route stay; a Follow button brings the camera back to the
@@ -460,10 +463,87 @@ selection).
 |--------|----------|
 | `SimulationNode.pick_debug_agent(pos, radius_m)` | Inspects the agent on a road or junction lane nearest `pos` (XZ) within `radius_m`; returns its render id, or `-1` and leaves the inspection as it was. |
 | `SimulationNode.clear_agent_inspection()` | Ends the inspection. |
-| `SimulationNode.get_agent_inspection(render_id)` | The window's fields, `position`, and `drawn_position` for a car drawn this frame. While the core is busy, only `drawn_position` (or nothing), so the follow keeps up during long ticks; `active: false` with a `reason` once `render_id` is no longer inspected. |
+| `SimulationNode.get_agent_inspection(render_id)` | The window's fields, `position`, `last_failure` (the latest trip failure line, or empty), and `drawn_position` for a car drawn this frame. While the core is busy, only `drawn_position` (or nothing), so the follow keeps up during long ticks; `active: false` with a `reason` once `render_id` is no longer inspected. |
 | `SimulationNode.get_agent_route_lines(render_id)` | Line-list `points` and `colors`; the same lines as a ribbon (`ribbon_vertices`, `ribbon_uv`, `ribbon_uv2`, `ribbon_colors`: six corners per segment, each with the segment's other end in `uv` and `uv2.x` and its side in `uv2.y`); plus `lanes`, `remaining_m` and `end`. Empty while the core is busy or when `render_id` is not inspected. |
 | `SimulationNode.spawn_debug_car(from, to)` | Debugging and tests: a car at the start of the shortest car route between the road nodes nearest `from` and `to`, with no home or destination; returns its render id or `-1`. It changes the simulation outside the tick, so the session is no longer reproducible. |
 | `CameraNode.follow(target)`, `stop_follow()`, `is_following()` | `follow` puts the pivot on `target` and starts following; `pan` and `pan_screen` end the follow, so `is_following()` turns false when the player pans. |
+
+## Trip Failures
+
+`DEBUG-06`. Every trip failure in the movement tick logs a line on `events`, so a stranded car or
+a resident who never leaves home can be explained without `--debug traffic`. A line names the
+agent by its render id (the agent inspector's id) with its row in brackets. It then gives its
+kind (resident, freight carrier or household moving in), its mode, where it was (node, lane,
+edge and distance, or the building it is in), its destination building with its zone kind, or
+its border node, the reason, and what happens next:
+
+```text
+trip failed: agent 5120 [row 33], resident, car, at node 12, lane 77 on edge 5 at 93.5 m, to building 418 (commercial): no turn from lane 77 (edge 5) onto edge 30 at node 12; drops its route and replans
+trip failed: agent 5120 [row 33], resident, car, at node 12, lane 77 on edge 5 at 30.0 m, to building 418 (commercial): planned exit from the road no longer legal (building 418, lane 80 at 40.0 m), then no route from node 13 to building 418: no road path from node 13 to node 40; no road path from node 13 to node 41; retry in 5 s (failure 1 of 3)
+trip failed: agent 5120 [row 33], resident, car, at node 12, lane 77 on edge 5 at 30.0 m, to building 418 (commercial): planned exit from the road no longer legal (building 418, lane 80 at 40.0 m), then no route from node 13 to building 418: no road path from node 13 to node 40; no road path from node 13 to node 41; sent home to building 12 at (120.0, 44.0) after 3 failures
+trip failed: agent 7 [row 2], resident, in building 12, to building 418 (commercial): no route from building 12 to building 418 by car or on foot; tries to leave again in 30 s
+```
+
+The reason comes from the failure site's own data. For a failed replan, that is the planner's
+rejection of each exit candidate:
+
+| Reason | Where it comes from |
+|--------|---------------------|
+| `no road from node A to node B, the next node on its route` | The route's next node has no road from the junction. |
+| `no turn from lane L (edge E) onto edge F at node N` | No connector onto the route's next edge. A car drops its route; a pedestrian waits at the lane end. |
+| `no turn from lane L into its exit lane X at node N` | No connector into the planned exit lane (zero-hop access). |
+| `no route from node N to building B: ...` | The replan found no exit candidate. Each candidate's rejection follows: `no road path from node N to node M`, `no lane by the door from node M`, `no turn into exit lane X at node M`, `no way from exit lane X to the door`, `no walkable path ...`, and so on. |
+| `building B no longer exists`, `the road beside building B (edge E) is gone` | The destination itself is gone. |
+| `planned exit from the road no longer legal (building B, lane X at d m), then ...` | The planned exit lane no longer serves the door, and the replan failed for the reason that follows. |
+| `planned way onto the road no longer legal (building B, lane X at d m)` | The planned entry onto the road no longer serves the door, so the agent goes back inside. |
+| `no road path from node N to border node M` | A freight carrier's route to its border. |
+| `no route from border node M to building B` | A household moving in. |
+| `no route from building A to building B by car or on foot` | A departure that could not be planned (also `on foot (no car)`). |
+| `no position on the road to plan from`, `travelling with no plan to reach its destination` | The agent's own state is missing. |
+
+What happens next is `drops its route and replans`, `waits at the end of its lane`,
+`retry in 5 s (failure k of 3)`, `tries to leave again in 30 s`, or the watchdog's recovery
+after the third failure: `sent home to building B at (x, y)`, `sent to border node N at (x, y)`
+(with `to drive in to building B again` for a household moving in), or
+`no border node to send it to`. Road edits clear the routes they touch, so junction lines point
+at lane or connector data that disagrees with the road graph.
+
+Flood control keeps the 4096-line log readable when a road edit strands many agents:
+
+- An agent that repeats the same failure at the same place within a simulated minute of the
+  last one is not logged again. The watchdog's quiet retries therefore log once, and its
+  recovery logs as a failure of its own.
+- Each simulated minute logs at most 20 lines per reason and place (the node, or the building
+  for departures and entries) and 200 in total.
+- The rest are counted per reason and logged once each when the minute ends, with the place
+  that had the most:
+
+```text
+trip failures: 212 more in the last simulated minute: no turn at a junction, 180 at node 12 (first agent 5120)
+```
+
+The inspected agent's failures are never folded into a summary. The agent inspector shows its
+latest line in the `Last failure` row, which stays after a watchdog recovery moves the agent.
+
+Cost:
+
+- Failure sites record into one buffer behind a mutex that is only locked when something fails,
+  so a pass without failures pays one branch at each failure site; the records are built in
+  cold, out-of-line functions. The buffer keeps its capacity between ticks. The agent tick is no
+  slower ([measurement](#trip-failure-measurement-2026-10-13)).
+- After the movement pass the records are sorted by agent row (O(f log f) for f failures), so
+  the log does not depend on the worker schedule. Only logged lines are formatted.
+- The streak and per-minute counts live in hash maps keyed by render id and place, are only
+  touched when something fails, and are pruned once a simulated minute. Each tick adds one
+  minute check. There is no new per-agent field; the watchdog's existing
+  `network_replan_failures` counter is unchanged.
+- The `traffic` channel lines (`[NETWORK_REPLAN_FAILED]`, `[NETWORK_REPLAN_WATCHDOG]`,
+  `[JUNCTION_MISSING_*]`, `[REPLAN_DIAG]`) are unchanged.
+
+Code: [`trip_failures.rs`](../rust/src/simulation/economy/agents/tick/trip_failures.rs)
+(records), [`trip_failures/report.rs`](../rust/src/simulation/economy/agents/tick/trip_failures/report.rs)
+(flood control) and [`trip_failures/text.rs`](../rust/src/simulation/economy/agents/tick/trip_failures/text.rs)
+(the words).
 
 ## Godot Bridge
 
@@ -643,7 +723,8 @@ and a car from `spawn_debug_car`, driving the real `input_manager` click and Esc
 covers:
 
 - a click where the car is drawn inspects it and does not reach the building inspector;
-- the inspection fields, the window's title and rows, and the `Route end` row;
+- the inspection fields, the window's title and rows, and the `Route end` row; `Last failure`
+  reads `none` for a car that has not failed and shows a failure line the view is given;
 - the window opens beside the click without taking the keyboard, its title bar drags it and
   its corner resizes it outward, and it still has not taken the keyboard afterwards;
 - a home link stops the follow, frames the building, opens its inspector beside the agent
@@ -677,6 +758,19 @@ Rust tests cover the rest:
   misses beyond the radius, skips stale snapshot entries and finds cars on junction connectors;
   lane-span lines run between the requested distances; ribbon corners carry their segment's
   other end and matching sides.
+
+Trip failure tests (`DEBUG-06`):
+
+- `simulation::economy::agents::tests::trip_failures`: in the agent tick, a cut turn and a route
+  to a node with no road each log one line naming the agent, the junction and the replan; a
+  stale exit with no new route logs its first failure and the recovery home, with the retries
+  in between quiet; 600 departure failures in the parallel pass log the same lines on two runs,
+  the first 20 rows in order and one summary for the other 580.
+- `simulation::economy::agents::tick::trip_failures::tests`: the full line for a missing turn;
+  a repeat inside a minute is quiet, another place or a recovery is not, and the streak ends a
+  minute after its last repeat; the place limit folds the rest into one summary at the end of
+  the minute and the next minute starts fresh; the minute limit folds failures everywhere but
+  never the inspected agent, whose line the inspector keeps.
 
 The `route_ribbon` shader draws nothing in headless runs. A one-off rendered check on Xvfb
 (`gl_compatibility`, 1280x720) measured the drawn route at 6 px of color inside a 10 px outline,
@@ -744,6 +838,27 @@ The ingress gap disappears under forced alignment, so the default-build +5.3% co
 placement. `DEBUG-01` adds no per-agent cost.
 
 `PERF-06` tracks a shorter agent-tick contract to replace this 30-minute matched comparison.
+
+### Trip failure measurement (2026-10-13)
+
+`DEBUG-06` adds failure branches and a buffer swap to the movement pass, so it was compared the
+same way: baseline `700f694e` against the `DEBUG-06` working tree, three alternating pairs with
+the `DEBUG-01` command and settings above.
+
+| Case (100k agents) | Baseline runs | Current runs | Median change |
+|--------------------|---------------|--------------|---------------|
+| `tick/on_road` | 1.893, 1.890, 1.887 ms | 1.828, 1.824, 1.839 ms | −3.3% |
+| `tick/idle_scaling` | 201.3, 200.8, 199.8 µs | 191.0, 194.7, 196.6 µs | −3.0% |
+| `tick_access/access_egress_car` | 4.409, 4.418, 4.425 ms | 4.427, 4.418, 4.409 ms | +0.0% |
+| `tick_access/access_ingress_car` | 911.2, 920.2, 926.4 µs | 916.9, 908.9, 918.8 µs | −0.4% |
+
+The first comparison showed `idle_scaling` 5–6% slower in every pair, and still under the
+forced-alignment control, so it was real work rather than placement. A profile found it outside
+the new code: the serial scan for dynamic lane claims after the parallel pass reloaded
+`movement_claim_modes.len()` on every agent once `MovementSlices` held the failure sink's
+mutex. The scan now iterates a borrowed slice, which keeps the bound in a register. The
+departure failure record also moved into a `#[cold]`, never-inlined helper, so
+`handle_in_building`, which every indoor agent enters, keeps its old stack frame.
 
 ## Launch Reference
 

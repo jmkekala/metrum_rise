@@ -10,6 +10,7 @@ use super::super::super::access::{
 use super::super::super::claims::LaneClaimContext;
 use super::super::super::lane_nav::lane_origin_node;
 use super::super::super::slices::MovementSlices;
+use super::super::super::trip_failures::{FailureCause, FailureOutcome, record_failure};
 use super::super::super::traffic::{claim_lane_entry, lane_attach_slot_clear};
 use super::super::{BUILDING_REPLAN_DELAY_S, transit_mode_label};
 use super::reset_invalid_access_plan;
@@ -225,6 +226,17 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                     *s_access_flags.get(i),
                 );
             }
+            record_failure(
+                i,
+                FailureCause::StaleEntry {
+                    lane: attach_lane_id,
+                    lane_d: attach_lane_d,
+                },
+                FailureOutcome::RetryDeparture {
+                    after_s: BUILDING_REPLAN_DELAY_S,
+                },
+                slices,
+            );
             let origin_door = entrance.door_pos;
             reset_invalid_access_plan(
                 i,

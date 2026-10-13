@@ -106,6 +106,10 @@ func _run() -> void:
 	_expect(not panel.has_focus(), "the window must not take the keyboard")
 	_expect(panel.value_text("Mode") == "car" and panel.value_text("Destination") == "none", "the panel must show the fields")
 	_expect(panel.value_text("Route end").begins_with("path ends at node"), "the panel must say where the route ends: %s" % panel.value_text("Route end"))
+	_expect(details.get("last_failure", null) == "" and panel.value_text("Last failure") == "none", "a car that has not failed must show no failure: %s" % details.get("last_failure"))
+	var failure := "trip failed: agent %d [row 0], resident, car, at node 3: no road path from node 3 to border node 1; retry in 5 s (failure 1 of 3)" % render_id
+	panel.show_agent(details.merged({"last_failure": failure}, true))
+	_expect(panel.value_text("Last failure") == failure, "the panel must show the agent's last trip failure")
 
 	var route: Dictionary = simulation.get_agent_route_lines(render_id)
 	var points: PackedVector3Array = route.get("points", PackedVector3Array())

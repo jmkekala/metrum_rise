@@ -9,6 +9,7 @@ use super::super::super::super::lane_nav::{
     direct_vehicle_lane_to_edge, direct_vehicle_lane_to_lane,
 };
 use super::super::super::super::slices::MovementSlices;
+use super::super::super::super::trip_failures::{FailureCause, FailureOutcome, record_failure};
 use super::super::super::super::traffic::{
     ConnectorEntry, claim_connector_entry, claim_lane_entry, junction_car_speed,
     junction_entry_speed, lane_entry_slot_clear,
@@ -152,7 +153,23 @@ pub(super) unsafe fn enter_next_edge_connector(
                     *s_path_idx.get(i),
                     path_len,
                 );
-                if *slices.tmode.get(i) != MODE_CAR {
+                let car = *slices.tmode.get(i) == MODE_CAR;
+                record_failure(
+                    i,
+                    FailureCause::NoTurnToEdge {
+                        node: node_id,
+                        from_lane: lane_id,
+                        from_edge,
+                        to_edge,
+                    },
+                    if car {
+                        FailureOutcome::Replans
+                    } else {
+                        FailureOutcome::Waits
+                    },
+                    slices,
+                );
+                if !car {
                     *s_path_idx.get_mut(i) = path_idx_before_lane_end;
                     *s_lane_d.get_mut(i) = transit_network.lane_system.lanes[lane_id].length;
                     *remaining_dist = 0.0;
@@ -295,7 +312,22 @@ pub(super) unsafe fn enter_detach_lane_connector(
                     *s_path_idx.get(i),
                     path_len,
                 );
-                if *slices.tmode.get(i) != MODE_CAR {
+                let car = *slices.tmode.get(i) == MODE_CAR;
+                record_failure(
+                    i,
+                    FailureCause::NoTurnToLane {
+                        node: node_id,
+                        from_lane: lane_id,
+                        to_lane: detach_lane_id,
+                    },
+                    if car {
+                        FailureOutcome::Replans
+                    } else {
+                        FailureOutcome::Waits
+                    },
+                    slices,
+                );
+                if !car {
                     *s_lane_d.get_mut(i) = transit_network.lane_system.lanes[lane_id].length;
                     *s_speed.get_mut(i) = 0.0;
                     *remaining_dist = 0.0;

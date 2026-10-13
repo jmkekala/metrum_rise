@@ -12,6 +12,7 @@ use super::super::super::planning::{
     BuiltNetworkReplan, BuiltTripPlan, plan_immigration_trip, plan_network_replan,
 };
 use super::super::super::slices::MovementSlices;
+use super::super::super::trip_failures::FailureCause;
 use super::super::replan_watchdog::{
     delay_or_recover_after_network_replan_failure, reset_network_replan_watchdog,
 };
@@ -109,6 +110,10 @@ unsafe fn bootstrap_immigration_trip(
                 allocator,
                 graph,
                 "immigration-bootstrap",
+                FailureCause::NoImmigrationRoute {
+                    border: border_node,
+                    building: home_bldg,
+                },
                 slices,
             );
             false
@@ -154,12 +159,13 @@ unsafe fn ensure_exact_access_plan(
                 allocator,
                 graph,
                 "missing-replan-start",
+                FailureCause::NoPosition,
                 slices,
             );
             return false;
         };
 
-        if let Some(replan) = plan_network_replan(
+        match plan_network_replan(
             start_node,
             incoming_edge,
             target_building,
@@ -171,18 +177,22 @@ unsafe fn ensure_exact_access_plan(
             pathfind_count,
             Some((i, "exact-access-replan")),
         ) {
-            apply_network_replan(i, replan, slices);
-            true
-        } else {
-            delay_or_recover_after_network_replan_failure(
-                i,
-                sim_time,
-                allocator,
-                graph,
-                "exact-access-replan",
-                slices,
-            );
-            false
+            Ok(replan) => {
+                apply_network_replan(i, replan, slices);
+                true
+            }
+            Err(failure) => {
+                delay_or_recover_after_network_replan_failure(
+                    i,
+                    sim_time,
+                    allocator,
+                    graph,
+                    "exact-access-replan",
+                    FailureCause::NoRoute(failure),
+                    slices,
+                );
+                false
+            }
         }
     }
 }
@@ -235,6 +245,12 @@ unsafe fn repair_stale_detach_plan(
             return false;
         }
 
+        let lane_d = *s_plan_detach_lane_d.get(i);
+        let stale_exit = |replan| FailureCause::StaleExit {
+            lane: planned_detach_lane_id,
+            lane_d,
+            replan,
+        };
         let Some((start_node, incoming_edge)) = replan_start(i, transit_network, graph, slices)
         else {
             delay_or_recover_after_network_replan_failure(
@@ -243,12 +259,13 @@ unsafe fn repair_stale_detach_plan(
                 allocator,
                 graph,
                 "missing-stale-detach-replan-start",
+                stale_exit(None),
                 slices,
             );
             return false;
         };
 
-        if let Some(replan) = plan_network_replan(
+        match plan_network_replan(
             start_node,
             incoming_edge,
             target_building,
@@ -260,18 +277,22 @@ unsafe fn repair_stale_detach_plan(
             pathfind_count,
             Some((i, "stale-detach-replan")),
         ) {
-            apply_network_replan(i, replan, slices);
-            true
-        } else {
-            delay_or_recover_after_network_replan_failure(
-                i,
-                sim_time,
-                allocator,
-                graph,
-                "stale-detach-replan",
-                slices,
-            );
-            false
+            Ok(replan) => {
+                apply_network_replan(i, replan, slices);
+                true
+            }
+            Err(failure) => {
+                delay_or_recover_after_network_replan_failure(
+                    i,
+                    sim_time,
+                    allocator,
+                    graph,
+                    "stale-detach-replan",
+                    stale_exit(Some(failure)),
+                    slices,
+                );
+                false
+            }
         }
     }
 }

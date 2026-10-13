@@ -2,6 +2,7 @@
 
 //! Unsafe SoA slice wrappers used by the parallel agent movement pass.
 
+use super::trip_failures::FailureSink;
 use crate::simulation::economy::agents::data::AgentVec;
 
 // Safety invariant upheld by callers:
@@ -94,6 +95,8 @@ pub(crate) struct MovementSlices {
     pub(super) has_car: RawSlice<bool>,
     pub(super) speed: RawSlice<f32>,
     pub(super) walk_phase: RawSlice<f32>,
+    /// Trip failures found during the pass, for the `events` log.
+    pub(super) failures: FailureSink,
 }
 
 impl MovementSlices {
@@ -152,6 +155,7 @@ impl MovementSlices {
             has_car: RawSlice::new(&mut agents.has_car),
             speed: RawSlice::new(&mut agents.speed),
             walk_phase: RawSlice::new(&mut agents.walk_phase),
+            failures: FailureSink::default(),
         }
     }
 }

@@ -26,7 +26,7 @@ const TITLE_FONT_SIZE := 16
 const ROW_FONT_SIZE := 14
 const ROWS := [
 	"Mode", "State", "Speed", "Activity", "Home", "Work", "Destination", "Inside", "Lane",
-	"Route", "Route end",
+	"Route", "Route end", "Last failure",
 ]
 ## Rows whose value is a link to the building.
 const LINK_ROWS := ["Home", "Work", "Destination"]
@@ -127,6 +127,8 @@ func show_agent(details: Dictionary) -> void:
 		float(details.get("lane_distance_m", 0.0)),
 		float(details.get("lane_length_m", 0.0)),
 	])
+	var failure := String(details.get("last_failure", ""))
+	_set_row("Last failure", "none" if failure.is_empty() else failure)
 
 ## Fills the route rows from `get_agent_inspection` and `get_agent_route_lines`.
 func show_route(details: Dictionary, route: Dictionary) -> void:

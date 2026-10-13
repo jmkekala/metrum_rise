@@ -8,6 +8,7 @@
 //! This enables cache-friendly bulk iteration and ensures all fields are kept in sync.
 
 use super::inspection::{EndedInspection, InspectedAgent};
+use super::tick::TripFailureLog;
 use soa_derive::StructOfArray;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicU32, AtomicUsize};
@@ -227,6 +228,10 @@ pub struct AgentSystem {
     pub(super) inspected: Option<InspectedAgent>,
     /// Set when removing the inspected agent ended its inspection.
     pub(super) inspection_ended: Option<EndedInspection>,
+    /// The inspected agent's latest trip failure line, if it failed since it was picked.
+    pub(super) inspected_failure: Option<String>,
+    /// Trip failure flood control and collection buffer (`DEBUG-06`); never saved.
+    pub(crate) trip_failures: TripFailureLog,
 }
 
 impl Deref for AgentSystem {
@@ -275,6 +280,8 @@ impl AgentSystem {
             traffic_debug_next_log_time: Vec::new(),
             inspected: None,
             inspection_ended: None,
+            inspected_failure: None,
+            trip_failures: TripFailureLog::default(),
         }
     }
 
