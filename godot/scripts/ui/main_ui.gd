@@ -152,6 +152,8 @@ func _build_ui():
 	var left_bottom_strip := HBoxContainer.new()
 	left_bottom_strip.add_theme_constant_override("separation", int(UIStyle.HUD_PANEL_GAP))
 	left_bottom_strip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# The debug console stops above the clock, money and RCI boxes.
+	left_bottom_strip.add_to_group("debug_console_keep_clear")
 	left_strip_stack.add_child(left_bottom_strip)
 
 	var toolbar_margin := MarginContainer.new()

@@ -5,6 +5,7 @@ extends SceneTree
 
 const DebugConsole := preload("res://scripts/ui/debug_console/debug_console.gd")
 const DebugEventLogger := preload("res://scripts/ui/debug_console/debug_event_logger.gd")
+const GameSettings := preload("res://scripts/core/game_settings.gd")
 # Rarely used channel, so the test owns its state.
 const PROBE_CHANNEL := "isect"
 var _failures := 0
@@ -16,6 +17,71 @@ func _expect(condition: bool, message: String) -> void:
 	if not condition:
 		_failures += 1
 		push_error(message)
+
+# Keep-clear HUD controls, handle drags, clamping and the size kept across restarts.
+func _check_size(console: Node, viewport: Vector2) -> void:
+	var menu_bar := Control.new()
+	menu_bar.size = Vector2(viewport.x, 28.0)
+	menu_bar.add_to_group(DebugConsole.KEEP_CLEAR_GROUP)
+	var hud := Control.new()
+	hud.position = Vector2(16.0, 600.0)
+	hud.size = Vector2(500.0, 100.0)
+	hud.add_to_group(DebugConsole.KEEP_CLEAR_GROUP)
+	var beside := Control.new()
+	beside.position = Vector2(viewport.x - 100.0, 380.0)
+	beside.size = Vector2(80.0, 50.0)
+	beside.add_to_group(DebugConsole.KEEP_CLEAR_GROUP)
+	var layer := CanvasLayer.new()
+	layer.add_child(menu_bar)
+	layer.add_child(hud)
+	layer.add_child(beside)
+	root.add_child(layer)
+	console._layout()
+	var free_height := 600.0 - DebugConsole.KEEP_CLEAR_GAP_PX - 28.0
+	_expect(console._view.position.y == 28.0, "the open console must start below the top menu bar, got %s" % console._view.position)
+	_expect(console._view.size.y == free_height, "the console must stop above the HUD strip, got %s" % console._view.size)
+	var width: float = console._view.size.x
+	# A real drag on the bottom-right grip: press, move, release.
+	var grip: Control = console._view.get_node("ResizeHandles/Resize3")
+	var press := InputEventMouseButton.new()
+	press.button_index = MOUSE_BUTTON_LEFT
+	press.pressed = true
+	grip.gui_input.emit(press)
+	var motion := InputEventMouseMotion.new()
+	motion.button_mask = MOUSE_BUTTON_MASK_LEFT
+	motion.relative = Vector2(120.0, -200.0)
+	grip.gui_input.emit(motion)
+	var release := InputEventMouseButton.new()
+	release.button_index = MOUSE_BUTTON_LEFT
+	grip.gui_input.emit(release)
+	var dragged := Vector2(width + 120.0, free_height - 200.0)
+	_expect(console._view.size == dragged, "the grip must resize both axes, got %s" % console._view.size)
+	var saved := GameSettings.load_window_layout(DebugConsole.LAYOUT_ID)
+	_expect(saved["has_size"] and Vector2(saved["size"]) == dragged, "release must save the size, got %s" % saved)
+	# The right edge moves only the width; growing past the HUD or the window is clamped.
+	var edge: Control = console._view.get_node("ResizeHandles/Resize1")
+	motion.relative = Vector2(5000.0, 5000.0)
+	edge.gui_input.emit(motion)
+	# Now as wide as the window, it also covers the strip at the right and stops above it.
+	_expect(console._view.size == Vector2(viewport.x, 380.0 - DebugConsole.KEEP_CLEAR_GAP_PX - 28.0), "the right edge must clamp to the window and clear every HUD strip it covers, got %s" % console._view.size)
+	console._view.resize_dragged.emit(Vector2(-10000.0, 10000.0))
+	_expect(console._view.size == Vector2(DebugConsole.MIN_SIZE.x, free_height), "sizes must clamp to the minimum and the free height")
+	console._view.resize_dragged.emit(dragged - console._view.size)
+	var bottom: Control = console._view.get_node("ResizeHandles/Resize2")
+	motion.relative = Vector2(500.0, -50.0)
+	bottom.gui_input.emit(motion)
+	_expect(console._view.size == dragged - Vector2(0.0, 50.0), "the bottom edge must change only the height, got %s" % console._view.size)
+	console._view.resize_dragged.emit(Vector2(0.0, 50.0))
+	console._view.resize_finished.emit()
+	# A new console, as after a restart, restores the saved size.
+	var restarted := DebugConsole.new()
+	root.add_child(restarted)
+	await process_frame
+	_expect(restarted._view.size == dragged, "a restarted console must restore its size, got %s" % restarted._view.size)
+	restarted.queue_free()
+	layer.queue_free()
+	await process_frame
+	console._layout()
 
 func _messages_since(seq: int, channel: String) -> PackedStringArray:
 	var batch: Dictionary = MetrumDebug.read_since(seq, 4096)
@@ -71,7 +137,8 @@ func _run() -> void:
 	await process_frame
 	var visible_size := root.get_visible_rect().size
 	_expect(console._view.size.x <= visible_size.x / 3.0 + 0.5, "the console must use at most a third of the width")
-	_expect(console._view.size.y == visible_size.y and console._view.position.x == 0.0, "the console must be full height on the left")
+	_expect(console._view.size.y == visible_size.y and console._view.position.x == 0.0, "without HUD strips the console must be full height on the left")
+	await _check_size(console, visible_size)
 	console._run_command("channel %s off" % PROBE_CHANNEL)
 	_expect(not MetrumDebug.is_enabled(PROBE_CHANNEL), "the channel command must switch channels")
 	# A stand-in gameplay scene, so Dump also saves the running game.

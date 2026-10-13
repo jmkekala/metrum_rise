@@ -7,7 +7,9 @@
 ## shared log in Rust. While open it reads new log lines each frame, refreshes the Perf tab twice
 ## a second and runs console commands; while closed it does no work beyond watching for its key.
 ## The events logger is installed once here so warnings and errors are kept even with the console
-## closed. Visual mode switches go through `set_visual_mode`, which applies shader globals and
+## closed. The panel's right and bottom edges resize it; its size is kept in the settings file
+## across restarts. It stays between the HUD controls in `KEEP_CLEAR_GROUP`: below the top menu
+## bar and above the bottom strips. Visual mode switches go through `set_visual_mode`, which applies shader globals and
 ## tells renderers through `visual_mode_changed`, so nothing polls for them per frame.
 extends CanvasLayer
 
@@ -16,6 +18,17 @@ signal visual_mode_changed(mode: String)
 
 const DebugConsoleView := preload("res://scripts/ui/debug_console/debug_console_view.gd")
 const DebugEventLogger := preload("res://scripts/ui/debug_console/debug_event_logger.gd")
+const GameSettings := preload("res://scripts/core/game_settings.gd")
+
+## HUD controls the console must not cover: the top menu bar and the gameplay clock, money and
+## RCI boxes. Controls in the top half of the window push the console's top edge down; the rest
+## pull its bottom edge up.
+const KEEP_CLEAR_GROUP := "debug_console_keep_clear"
+## Settings layout id under which the chosen size persists.
+const LAYOUT_ID := "debug_console"
+const MIN_SIZE := Vector2(360.0, 240.0)
+# Space left between the console's bottom edge and a keep-clear control.
+const KEEP_CLEAR_GAP_PX := 8.0
 
 const SLIDE_TIME_S := 0.12
 const PERF_REFRESH_S := 0.5
@@ -41,6 +54,11 @@ var _hidden_channels := {}
 var _filter_text := ""
 var _perf_elapsed_s := 0.0
 var _event_logger: Logger
+# The size the player chose by dragging; zero means the default (a third of the width, all the
+# height the HUD leaves free).
+var _chosen_size := Vector2.ZERO
+# Where the open console's top edge sits, below any keep-clear control at the top.
+var _top := 0.0
 
 func _ready() -> void:
 	layer = 120
@@ -69,6 +87,11 @@ func _ready() -> void:
 	_view.dump_pressed.connect(_dump)
 	_view.clear_pressed.connect(_clear)
 	_view.tab_changed.connect(func(_tab: int) -> void: _perf_elapsed_s = PERF_REFRESH_S)
+	_view.resize_dragged.connect(_on_resize_dragged)
+	_view.resize_finished.connect(_save_size)
+	var saved := GameSettings.load_window_layout(LAYOUT_ID)
+	if saved["has_size"]:
+		_chosen_size = Vector2(saved["size"])
 	get_viewport().size_changed.connect(_layout)
 	_layout()
 	set_process(false)
@@ -102,12 +125,14 @@ func set_open(open: bool) -> void:
 	_tween = create_tween()
 	var height := get_viewport().get_visible_rect().size.y
 	if open:
+		# The HUD may have changed since the console last showed: a new scene or UI scale.
+		_layout()
 		_sync_channel_states()
 		_sync_visual_states()
 		_perf_elapsed_s = PERF_REFRESH_S
 		_view.visible = true
 		_view.position.y = -height
-		_tween.tween_property(_view, "position:y", 0.0, SLIDE_TIME_S)
+		_tween.tween_property(_view, "position:y", _top, SLIDE_TIME_S)
 		set_process(true)
 	else:
 		_view.release_text_focus()
@@ -142,14 +167,49 @@ func _process(delta: float) -> void:
 	_perf_elapsed_s += delta
 	if _perf_elapsed_s >= PERF_REFRESH_S:
 		_perf_elapsed_s = 0.0
+		_layout()
 		_sync_channel_states()
 		if _view.current_tab() == DebugConsoleView.TAB_PERF:
 			_view.set_perf_text(_perf_text())
 
 func _layout() -> void:
 	var viewport_size := get_viewport().get_visible_rect().size
-	_view.position = Vector2(0.0, 0.0 if _open else -viewport_size.y)
-	_view.size = Vector2(floorf(viewport_size.x / 3.0), viewport_size.y)
+	var wanted := _chosen_size if _chosen_size != Vector2.ZERO else Vector2(floorf(viewport_size.x / 3.0), INF)
+	var width := clampf(wanted.x, minf(MIN_SIZE.x, viewport_size.x), viewport_size.x)
+	var span := _free_span(width, viewport_size.y)
+	_top = span.x
+	var free_height := span.y - span.x
+	var height := clampf(wanted.y, minf(MIN_SIZE.y, free_height), free_height)
+	_view.size = Vector2(width, height)
+	_view.position = Vector2(0.0, _top if _open else -viewport_size.y)
+
+# The free vertical span (top, bottom) between the visible keep-clear controls the console's
+# columns overlap: it starts right below the top ones and ends a gap above the bottom ones.
+# O(group members); the group holds a few HUD bars and strips.
+func _free_span(width: float, viewport_height: float) -> Vector2:
+	var top := 0.0
+	var bottom := viewport_height
+	for node in get_tree().get_nodes_in_group(KEEP_CLEAR_GROUP):
+		var control := node as Control
+		if control == null or not control.is_visible_in_tree():
+			continue
+		var rect := control.get_global_rect()
+		if rect.size.y <= 0.0 or rect.position.x >= width or rect.end.x <= 0.0:
+			continue
+		if rect.get_center().y < viewport_height * 0.5:
+			top = maxf(top, rect.end.y)
+		else:
+			bottom = minf(bottom, rect.position.y - KEEP_CLEAR_GAP_PX)
+	return Vector2(top, maxf(bottom, top))
+
+# Dragging grows or shrinks the chosen size; the layout clamps what is shown.
+func _on_resize_dragged(delta: Vector2) -> void:
+	_chosen_size = _view.size + delta
+	_layout()
+
+func _save_size() -> void:
+	_chosen_size = _view.size
+	GameSettings.save_window_layout(LAYOUT_ID, Vector2i(_chosen_size.round()), Vector2i.ZERO, false)
 
 func _read_new_lines() -> void:
 	var batch: Dictionary = MetrumDebug.read_since(_last_seq, READ_BATCH)

@@ -558,8 +558,10 @@ menu until a real renderer path exists.
 ### 6. Debug Console
 
 The debug console is an autoload (`DebugConsole`) available in every scene and build. The key
-left of `1` (`§` on Nordic layouts) slides it down from the top edge, anchored left: full
-height and at most a third of the window wide. It sits above the other surfaces on canvas layer
+left of `1` (`§` on Nordic layouts) slides it down from the top edge, anchored left: a third of
+the window wide by default, below the top menu bar and above the bottom-left strip with the
+clock, money and RCI boxes. Its right edge, bottom edge and bottom-right grip resize it, and the size persists across
+restarts. It sits above the other surfaces on canvas layer
 120. Gameplay keeps the keyboard until one of the console's two text fields is clicked, and Esc
 returns it. Its Channels tab also holds a Visual modes section, one value picker per renderer
 debug view (terrain, grass, building sites, pedestrian VAT, terrain residency, junction

@@ -84,6 +84,8 @@ func _build_menu_bar() -> void:
 	_shell.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
 	_shell.offset_bottom = BAR_HEIGHT
 	_shell.mouse_filter = Control.MOUSE_FILTER_STOP
+	# The debug console opens below the bar.
+	_shell.add_to_group("debug_console_keep_clear")
 
 	_bar_margin = MarginContainer.new()
 	_bar_margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)

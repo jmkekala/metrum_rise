@@ -398,8 +398,17 @@ available in every build and scene.
 - The physical key left of `1` opens and closes the console (`KEY_QUOTELEFT` by physical
   keycode): `§` on Nordic layouts and `` ` `` on US layouts. The key is always consumed, so it
   never types into a text field.
-- The console slides down from the top edge, anchored left. It is full height and one third of
-  the window wide, never wider. The rest of the world stays visible and clickable.
+- The console slides down from the top edge, anchored left. By default it is one third of the
+  window wide and as tall as the HUD allows. It stays between the visible controls in the
+  `debug_console_keep_clear` group that its width overlaps: those in the top half of the window
+  push its top edge down to their bottom, and the others stop its bottom edge 8 px above their
+  top. The top menu bar (gameplay and both editors) and the gameplay bottom-left strip with the
+  clock, money and RCI boxes are in the group; where neither exists, it is full height. The rest
+  of the world stays visible and clickable.
+- Dragging the right edge, the bottom edge or the bottom-right grip resizes it, down to
+  360 × 240 px and up to the window width and the free height. The size is saved on release in
+  `user://settings.cfg` (layout `debug_console`) and restored at the next start; a smaller
+  window or a taller HUD clamps what is shown without changing the saved size.
 - The game keeps the keyboard while the console is open. Clicking the filter or the command line
   gives that field the keyboard, and Esc gives it back to the game. Buttons, chips, tabs and
   toggles never take keyboard focus.
@@ -456,7 +465,9 @@ While closed, the console does no work except watch for its key.
 - runtime toggles that drop or keep GDScript lines;
 - single capture of a warning, with its script call site;
 - opening and closing with the key;
-- the one-third, full-height layout;
+- the default one-third, full-height layout, the start below a top bar and the stop above
+  keep-clear HUD strips, grip and edge drags, clamping, and the saved size restored by a new
+  console;
 - the channel command;
 - the dump's channel state and lines.
 

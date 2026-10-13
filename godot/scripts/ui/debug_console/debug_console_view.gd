@@ -3,7 +3,7 @@
 ## Widgets of the debug console: header actions, Log / Perf / Channels tabs and a command line.
 ##
 ## Pure view: it builds controls, shows what the controller hands it and reports user actions
-## through signals. Only the two text fields take keyboard focus, so the game keeps WASD and
+## through signals, including drags of its right edge, bottom edge and bottom-right grip. Only the two text fields take keyboard focus, so the game keeps WASD and
 ## its hotkeys until one of them is clicked.
 extends PanelContainer
 
@@ -18,6 +18,10 @@ signal copy_pressed
 signal dump_pressed
 signal clear_pressed
 signal tab_changed(tab: int)
+## A resize handle moved by `delta` pixels; only the dragged edges' axes are non-zero.
+signal resize_dragged(delta: Vector2)
+## The player released a resize handle.
+signal resize_finished
 
 const TAB_LOG := 0
 const TAB_PERF := 1
@@ -33,6 +37,10 @@ const CHANNEL_COLORS := [
 ]
 const EVENTS_COLOR := Color(1.00, 0.45, 0.35)
 const TIME_COLOR := Color(0.55, 0.55, 0.60)
+const EDGE_RIGHT := 1
+const EDGE_BOTTOM := 2
+const RESIZE_EDGE_PX := 6.0
+const RESIZE_GRIP_PX := 16.0
 
 var _tabs: TabContainer
 var _chips: HFlowContainer
@@ -70,6 +78,8 @@ func _ready() -> void:
 	_status.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	root.add_child(_status)
+	# Added last so the handles sit above the content.
+	add_child(_build_resize_handles())
 
 ## Creates one channel chip and one on/off toggle per channel. Locked channels cannot be
 ## switched off.
@@ -231,6 +241,57 @@ func _build_channels_tab() -> Control:
 	_modes.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
 	column.add_child(_modes)
 	return tab
+
+# A full-rect overlay: the panel fits it like its content, and its edge strips stay on top.
+func _build_resize_handles() -> Control:
+	var overlay := Control.new()
+	overlay.name = "ResizeHandles"
+	overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	overlay.add_child(_resize_handle(EDGE_RIGHT, Control.CURSOR_HSIZE, Vector2(1, 0), Vector2(1, 1),
+		Rect2(-RESIZE_EDGE_PX, 0.0, 0.0, -RESIZE_GRIP_PX)))
+	overlay.add_child(_resize_handle(EDGE_BOTTOM, Control.CURSOR_VSIZE, Vector2(0, 1), Vector2(1, 1),
+		Rect2(0.0, -RESIZE_EDGE_PX, -RESIZE_GRIP_PX, 0.0)))
+	var grip := _resize_handle(EDGE_RIGHT | EDGE_BOTTOM, Control.CURSOR_FDIAGSIZE, Vector2.ONE, Vector2.ONE,
+		Rect2(-RESIZE_GRIP_PX, -RESIZE_GRIP_PX, 0.0, 0.0))
+	grip.draw.connect(func() -> void:
+		for inset in [4.0, 9.0]:
+			grip.draw_line(Vector2(RESIZE_GRIP_PX - 2.0, inset), Vector2(inset, RESIZE_GRIP_PX - 2.0), UIStyle.TEXT_DIM, 1.0)
+	)
+	overlay.add_child(grip)
+	return overlay
+
+# `offsets` holds left, top, right and bottom offsets from the anchors.
+func _resize_handle(edges: int, cursor: int, anchor_min: Vector2, anchor_max: Vector2, offsets: Rect2) -> Control:
+	var handle := Control.new()
+	handle.name = "Resize%d" % edges
+	handle.mouse_filter = Control.MOUSE_FILTER_STOP
+	handle.mouse_default_cursor_shape = cursor
+	handle.anchor_left = anchor_min.x
+	handle.anchor_top = anchor_min.y
+	handle.anchor_right = anchor_max.x
+	handle.anchor_bottom = anchor_max.y
+	handle.offset_left = offsets.position.x
+	handle.offset_top = offsets.position.y
+	handle.offset_right = offsets.size.x
+	handle.offset_bottom = offsets.size.y
+	handle.gui_input.connect(_on_resize_input.bind(edges))
+	return handle
+
+# A pressed handle keeps the mouse until release, so the drag continues outside the strip.
+func _on_resize_input(event: InputEvent, edges: int) -> void:
+	var button := event as InputEventMouseButton
+	if button != null and button.button_index == MOUSE_BUTTON_LEFT:
+		if not button.pressed:
+			resize_finished.emit()
+		accept_event()
+		return
+	var motion := event as InputEventMouseMotion
+	if motion != null and motion.button_mask & MOUSE_BUTTON_MASK_LEFT:
+		resize_dragged.emit(Vector2(
+			motion.relative.x if edges & EDGE_RIGHT else 0.0,
+			motion.relative.y if edges & EDGE_BOTTOM else 0.0
+		))
+		accept_event()
 
 func _on_command_submitted(text: String) -> void:
 	_command.clear()
