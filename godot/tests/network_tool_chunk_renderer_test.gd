@@ -27,6 +27,7 @@ class MockSimulation:
 	var acknowledged_terrain_states: Array[PackedInt64Array] = []
 	var reject_acknowledgement: bool = false
 	var network_edit_on_border_query: bool = false
+	var rejection_reports: Array[Dictionary] = []
 
 	func is_network_dirty() -> bool:
 		return dirty
@@ -88,6 +89,10 @@ class MockSimulation:
 			return false
 		dirty = false
 		return true
+
+	func log_road_tool_rejection(points, fwd, bkw, snap, validation) -> int:
+		rejection_reports.append({"points": points, "lanes": Vector2i(fwd, bkw), "snap": snap, "validation": validation})
+		return rejection_reports.size()
 
 class MockTerrain:
 	extends Node3D
@@ -1404,6 +1409,9 @@ func _test_road_pointer_frame_updates() -> void:
 	tool.pointer = Vector3(75.0, 0.0, 0.0)
 	tool._handle_click()
 	_expect(tool.clicked_points[-1] == tool.pointer, "clicks must commit the freshly resolved cursor position")
+	_expect(simulation.rejection_reports.size() == 1, "a refused click must report once")
+	var report: Dictionary = simulation.rejection_reports[-1] if simulation.rejection_reports.size() > 0 else {}
+	_expect(report.get("points") == tool.clicked_points and report.get("validation", {}).get("invalid_reason") == "test_rejection", "the report must carry the clicked stroke and its validation")
 	tool._remember_preview_surface(PackedVector3Array([tool.start_pos, tool.pointer]), {"request_id": 6, "surface_generation": 1, "is_valid": true})
 	tool.reset_main_mesh_chunks()
 	_expect(tool._preview_cache_surface.is_empty(), "renderer reset must retire delta payloads whose retained meshes were released")

@@ -289,12 +289,16 @@ func _copy_visible() -> void:
 func _dump() -> void:
 	var stamp := Time.get_datetime_string_from_system(false, true).replace(":", "-").replace(" ", "_")
 	var base := "%s/dump-%s" % [DUMP_DIR, stamp]
+	# Save first and log which road network it holds, so the text dump names its save and a
+	# replay can tell which `road_attempt` lines were made on that network.
+	var save := _save_game(base + ".sqlite")
+	if not save.is_empty():
+		MetrumDebug.log("events", "dump save=%s road_generation=%d" % [save, _simulation_node().get_road_tool_surface_generation()])
 	var path: String = MetrumDebug.write_dump(base + ".txt")
 	if path.is_empty():
 		_view.set_status("Dump failed; see the events channel.")
 		return
 	var lines := PackedStringArray(["Dump written to %s" % path])
-	var save := _save_game(base + ".sqlite")
 	if not save.is_empty():
 		lines.append("Save %s" % save)
 	_view.set_status("\n".join(lines))

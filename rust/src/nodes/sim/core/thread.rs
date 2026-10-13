@@ -54,7 +54,7 @@ pub(crate) enum SimCommand {
         /// Dispatch timestamp for queue latency, independent of core mutex contention.
         enqueued_at: Instant,
         /// Single nonblocking acknowledgment after acceptance/rollback and query publication.
-        completion: std::sync::mpsc::SyncSender<(bool, String)>,
+        completion: std::sync::mpsc::SyncSender<super::road_commit::RoadCommitAck>,
     },
     /// Undo the latest authoring operation entirely on the simulation thread.
     Undo,
@@ -280,7 +280,11 @@ pub(crate) fn run_sim_thread(
                             outcome.invalidated_refined_cache_entries
                         );
                     }
-                    let _ = completion.try_send((outcome.committed, outcome.rejection));
+                    let _ = completion.try_send(super::road_commit::RoadCommitAck {
+                        committed: outcome.committed,
+                        reason: outcome.rejection_reason,
+                        detail: outcome.rejection,
+                    });
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     should_quit = true;

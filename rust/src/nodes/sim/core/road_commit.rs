@@ -14,6 +14,7 @@ use super::road_preview::{
     RoadPreviewRequest, RoadPreviewWorkerContext, RoadToolQuerySnapshot,
     road_tool_snapshots_from_core,
 };
+use super::road_rejection::{RejectedBy, RoadAttempt, RoadRejection};
 use super::state::SimCore;
 use super::terrain_payloads::ROAD_LOCKED_TERRAIN_RENDER_STEP_M;
 use crate::debug_log;
@@ -35,10 +36,22 @@ pub(crate) struct RoadCommitRequest {
     pub(crate) edit_plan: Option<Arc<RoadEditPlan>>,
 }
 
+/// What the road tool learns about one queued stroke.
+pub(crate) struct RoadCommitAck {
+    /// Whether the road was accepted.
+    pub(crate) committed: bool,
+    /// Stable rejection reason key, as in the `events` report; empty when committed.
+    pub(crate) reason: String,
+    /// Rejection diagnostic; empty when committed.
+    pub(crate) detail: String,
+}
+
 /// Result and phase timings of [`SimCore::commit_road`].
 pub(crate) struct RoadCommitOutcome {
     /// Whether the road was accepted.
     pub(crate) committed: bool,
+    /// Stable rejection reason key; empty when committed.
+    pub(crate) rejection_reason: String,
     /// Rejection diagnostic; empty when committed.
     pub(crate) rejection: String,
     /// Road-tool snapshots to publish after releasing the core lock.
@@ -54,7 +67,8 @@ pub(crate) struct RoadCommitOutcome {
 
 impl SimCore {
     /// Validates and commits one road stroke, then refreshes lanes, agents, entrances, routing,
-    /// road meshes and road-locked terrain. A rejected stroke leaves the network unchanged.
+    /// road meshes and road-locked terrain. A rejected stroke leaves the network unchanged and is
+    /// reported on `events` with its exact inputs.
     ///
     /// `road_total` starts the command's wall-clock measurement; `edit_metrics` arrives with
     /// queue and lock waits filled in and is stored as `last_road_edit_metrics`.
@@ -71,6 +85,9 @@ impl SimCore {
             snap_to_existing_roads,
             edit_plan,
         } = request;
+        self.last_road_rejection = None;
+        // The report of a refusal carries the stroke exactly as submitted.
+        let submitted_points = points.clone();
         // Bulk-load defers per-edge rebuilds until finalization.
         let add_internal_start = Instant::now();
         // Complete all geometry before opening the transaction. The worker and
@@ -258,8 +275,28 @@ impl SimCore {
             .last_rebuilt_terrain_chunks
             .len();
         self.last_road_edit_metrics = edit_metrics;
+        let rejection_reason = if road_add.committed {
+            String::new()
+        } else {
+            let rejection = self
+                .last_road_rejection
+                .take()
+                .unwrap_or_else(|| RoadRejection::new("unknown", self.last_road_timing.clone()));
+            rejection.report(
+                RejectedBy::Commit,
+                RoadAttempt {
+                    points: &submitted_points,
+                    fwd_lanes,
+                    bkw_lanes,
+                    snap: snap_to_existing_roads,
+                },
+                self.road_tool_surface_generation,
+            );
+            rejection.reason
+        };
         RoadCommitOutcome {
             committed: road_add.committed,
+            rejection_reason,
             rejection: if road_add.committed {
                 String::new()
             } else {
@@ -274,5 +311,68 @@ impl SimCore {
             collect_refined_ms,
             invalidated_refined_cache_entries,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::debug::log;
+    use crate::simulation::core::config::WorldConfig;
+
+    #[test]
+    fn refused_commit_reports_reason_place_and_exact_stroke() {
+        let mut core = SimCore::new(WorldConfig::default());
+        let before = log::read_since(0, 0, |_| {});
+        // Half a metre is below the minimum road length.
+        let points = vec![
+            Vector3::new(123.25, 0.0, -456.5),
+            Vector3::new(123.75, 0.0, -456.5),
+        ];
+        let outcome = core.commit_road(
+            RoadCommitRequest {
+                points: points.clone(),
+                fwd_lanes: 2,
+                bkw_lanes: 1,
+                snap_to_existing_roads: false,
+                edit_plan: None,
+            },
+            Instant::now(),
+            Default::default(),
+        );
+        assert!(!outcome.committed);
+        assert_eq!(outcome.rejection_reason, "too_short");
+        assert!(
+            core.last_road_rejection.is_none(),
+            "the report consumes the rejection"
+        );
+
+        // Other tests log concurrently; keep only this stroke's lines.
+        let mut lines = Vec::new();
+        log::read_since(before, usize::MAX, |line| {
+            if line.channel == crate::debug::Channel::Events && line.message.contains("123.") {
+                lines.push(line.message.clone());
+            }
+        });
+        let why = lines
+            .iter()
+            .find(|line| line.starts_with("road rejected by commit: too_short"))
+            .expect("events explains the refusal");
+        assert!(why.contains("Stroke (123.2, -456.5) -> (123.8, -456.5), 2 points, 0.5 m"));
+        assert!(why.contains("lanes 2/1, snap off"));
+        let replay = lines
+            .iter()
+            .find_map(|line| line.strip_prefix("road_attempt "))
+            .expect("events records the attempt");
+        let record: serde_json::Value = serde_json::from_str(replay).unwrap();
+        assert_eq!(record["by"], "commit");
+        assert_eq!(record["reason"], "too_short");
+        assert_eq!(record["generation"], core.road_tool_surface_generation);
+        assert!(why.ends_with(&format!("Attempt {}.", record["attempt"])));
+        let replayed: Vec<[f32; 3]> = serde_json::from_value(record["points"].clone()).unwrap();
+        assert_eq!(
+            replayed,
+            points.iter().map(|p| [p.x, p.y, p.z]).collect::<Vec<_>>()
+        );
     }
 }

@@ -231,6 +231,57 @@ impl SimulationNode {
         dict.to_variant()
     }
 
+    /// Logs the road tool's refusal of a clicked stroke on `events`, from the validation the tool
+    /// showed: the reason with its numbers and location, then a `road_attempt` line with the
+    /// exact points, lanes, snapping and road-tool generation for replay. Returns the attempt
+    /// number. Called only on a refused click.
+    #[func]
+    pub fn log_road_tool_rejection(
+        &self,
+        points: PackedVector3Array,
+        fwd_lanes: i32,
+        bkw_lanes: i32,
+        snap_to_existing_roads: bool,
+        validation: VarDictionary,
+    ) -> i64 {
+        use crate::nodes::sim::core::{RejectedBy, RoadAttempt, RoadRejection};
+        let int = |key: &str| {
+            validation
+                .get(key)
+                .and_then(|value| value.try_to::<i64>().ok())
+        };
+        let reason = validation
+            .get("invalid_reason")
+            .map(|value| value.to_string())
+            .filter(|reason| !reason.is_empty())
+            .unwrap_or_else(|| "unknown".to_owned());
+        let prepared = validation
+            .get("prepared_points")
+            .and_then(|value| value.try_to::<PackedVector3Array>().ok())
+            .map(|points| points.to_vec())
+            .unwrap_or_default();
+        let numbers = Self::road_preview_validation_from_dictionary(&validation);
+        let mut rejection = RoadRejection::from_validation(&reason, &numbers, &prepared);
+        if let (Some(count), Some(first)) = (
+            int("overlapping_parcel_count"),
+            int("first_overlapping_parcel_id"),
+        ) {
+            rejection = rejection.with_note(format!("{count} parcels, first {first}"));
+        }
+        let points = points.to_vec();
+        let attempt = rejection.report(
+            RejectedBy::Tool,
+            RoadAttempt {
+                points: &points,
+                fwd_lanes,
+                bkw_lanes,
+                snap: snap_to_existing_roads,
+            },
+            int("surface_generation").map_or(0, |generation| generation.max(0) as u64),
+        );
+        i64::try_from(attempt).unwrap_or(i64::MAX)
+    }
+
     /// Returns the road-tool surface snapshot generation currently used for validation.
     #[func]
     pub fn get_road_tool_surface_generation(&self) -> i64 {
@@ -644,6 +695,47 @@ impl SimulationNode {
                 (dx * dx + dy * dy + dz * dz).sqrt()
             })
             .sum()
+    }
+
+    // Inverse of `road_preview_validation_to_dictionary` for the numbers; the reason stays with
+    // the caller because tool checks add reasons the validation does not carry.
+    fn road_preview_validation_from_dictionary(dict: &VarDictionary) -> RoadPreviewValidation {
+        let number = |key: &str| {
+            dict.get(key)
+                .and_then(|value| value.try_to::<f32>().ok())
+                .unwrap_or(0.0)
+        };
+        let node = |key: &str| {
+            dict.get(key)
+                .and_then(|value| value.try_to::<i64>().ok())
+                .map_or(-1, |id| i32::try_from(id).unwrap_or(-1))
+        };
+        RoadPreviewValidation {
+            is_valid: false,
+            invalid_reason: "",
+            max_grade: number("max_grade"),
+            allowed_grade: number("allowed_grade"),
+            offending_span_start_m: number("offending_span_start_m"),
+            offending_span_end_m: number("offending_span_end_m"),
+            offending_span_run_m: number("offending_span_run_m"),
+            offending_span_height_delta_m: number("offending_span_height_delta_m"),
+            offending_span_start_height_m: number("offending_span_start_height_m"),
+            offending_span_end_height_m: number("offending_span_end_height_m"),
+            offending_span_start_terrain_height_m: number("offending_span_start_terrain_height_m"),
+            offending_span_end_terrain_height_m: number("offending_span_end_terrain_height_m"),
+            offending_span_start_support_delta_m: number("offending_span_start_support_delta_m"),
+            offending_span_end_support_delta_m: number("offending_span_end_support_delta_m"),
+            start_endpoint_snapped_node_id: node("start_endpoint_snapped_node_id"),
+            end_endpoint_snapped_node_id: node("end_endpoint_snapped_node_id"),
+            start_endpoint_height_m: number("start_endpoint_height_m"),
+            end_endpoint_height_m: number("end_endpoint_height_m"),
+            start_endpoint_terrain_height_m: number("start_endpoint_terrain_height_m"),
+            end_endpoint_terrain_height_m: number("end_endpoint_terrain_height_m"),
+            start_endpoint_support_delta_m: number("start_endpoint_support_delta_m"),
+            end_endpoint_support_delta_m: number("end_endpoint_support_delta_m"),
+            clearance_m: number("clearance_m"),
+            required_clearance_m: number("required_clearance_m"),
+        }
     }
 
     fn road_preview_validation_to_dictionary(validation: &RoadPreviewValidation) -> VarDictionary {

@@ -795,6 +795,11 @@ candidate's local post-split topology before acceptance, including interior cros
 road edges. Any edit that would fail to compile the new span or its required endpoint `Terminal` /
 `Bend` / `JunctionN` pieces is rejected before it reaches the live graph; tight switchbacks are
 allowed only when the compiled surface topology can actually represent them.
+A stroke shorter than 2 m horizontally, ignoring degenerate steps, is `too_short`. The fast hover
+check, the click check, the exact preview and the commit all apply this one rule (`ROAD-53`), so a
+too-short drag shows "Road too short" before the click instead of failing after it.
+Every refused stroke is reported on `events` with its reason, location and exact inputs, and can be
+replayed against a dumped save ([`debug.md`](debug.md#road-rejections)).
 The exact async preview carries a shared `RoadEditPlan` for its matching commit. The simulation
 thread requires identical raw road points, lanes, snap mode, surface generation and source/visual
 terrain revisions before borrowing the prepared profile and skipping its exact candidate replay. The plan

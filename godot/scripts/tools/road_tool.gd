@@ -787,11 +787,8 @@ func _commit_segment(end_pos: Vector3) -> bool:
 	var cancel_ms := 0.0
 	if points.size() > 1 and not preview_valid:
 		_draw_candidate_preview(points, validation)
-		MetrumDebug.log(
-			"events",
-			"road_tool rejected reason=%s max_grade=%.3f allowed_grade=%.3f"
-			% [invalid_reason, max_grade, allowed_grade]
-		)
+		# Rust logs the full report on events: why, where and the exact stroke for replay.
+		simulation_node.log_road_tool_rejection(points, fwd_lanes, bkw_lanes, _snap_to_roads_enabled(), validation)
 	if points.size() > 1 and preview_valid:
 		var add_road_start_us := Time.get_ticks_usec()
 		_commit_request_id = simulation_node.add_road_with_snap(points, fwd_lanes, bkw_lanes, _snap_to_roads_enabled())
@@ -858,8 +855,6 @@ func _poll_road_commit_result() -> void:
 	var committed := bool(result.get("committed", false))
 	if _road_debug_enabled:
 		MetrumDebug.log("road", "road_commit_result request_id=%d committed=%s detail=%s" % [_commit_request_id, committed, result.get("detail", "")])
-	if not committed:
-		MetrumDebug.log("events", "road_commit_rejected request_id=%d detail=%s" % [_commit_request_id, result.get("detail", "")])
 	_commit_request_id = 0
 	if not committed:
 		_pending_border_checks.erase(_commit_border_check)

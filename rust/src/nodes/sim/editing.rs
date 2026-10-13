@@ -5,7 +5,7 @@
 use crate::config;
 use crate::debug_log;
 use crate::nodes::sim::core::{
-    ROAD_BUILD_COST_PER_METER, ROAD_LOCKED_TERRAIN_RENDER_STEP_M, RoadEditPlan,
+    ROAD_BUILD_COST_PER_METER, ROAD_LOCKED_TERRAIN_RENDER_STEP_M, RoadEditPlan, RoadRejection,
     SERVICE_BUILD_COST_PER_LOT_CELL, SimCore,
 };
 use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
@@ -106,6 +106,13 @@ impl SimCore {
             Err(reason) => {
                 self.rollback_staged_road_edit();
                 self.last_road_timing = format!("rejected=render_geometry_invalid {reason}");
+                self.last_road_rejection = Some(RoadRejection::new(
+                    "render_geometry_invalid",
+                    format!(
+                        "the road surface or its terrain failed to build after the edit ({reason}); \
+                         the edit was rolled back"
+                    ),
+                ));
                 debug_log!(
                     "road",
                     "road_commit_rejected reason=render_geometry_invalid detail={} rollback=true",
@@ -1065,6 +1072,7 @@ impl SimCore {
                     .is_none())
         {
             self.last_road_timing = format!("rejected=road_plan_{}", plan.status(self));
+            self.last_road_rejection = Some(plan.rejection(self));
             return RoadAddOutcome::rejected();
         }
         let fwd_lanes_u8 = fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8;
@@ -1228,6 +1236,11 @@ impl SimCore {
                 validation.start_endpoint_support_delta_m,
                 validation.end_endpoint_support_delta_m
             );
+            self.last_road_rejection = Some(RoadRejection::from_validation(
+                validation.invalid_reason,
+                &validation,
+                &fixed_points,
+            ));
             return RoadAddOutcome::rejected();
         }
 
@@ -1239,6 +1252,10 @@ impl SimCore {
             || edit_plan.is_some_and(|plan| plan.overlaps_cell_zoning(self))
         {
             self.last_road_timing = "rejected=zoning_cell_overlap".to_owned();
+            self.last_road_rejection = Some(RoadRejection::new(
+                "zoning_cell_overlap",
+                "the road or its junctions overlap painted zoning cells",
+            ));
             return RoadAddOutcome::rejected();
         }
         let overlapping_parcels = self
@@ -1255,6 +1272,14 @@ impl SimCore {
                 "rejected=parcel_overlap parcels={}",
                 overlapping_parcels.len()
             );
+            self.last_road_rejection = Some(
+                RoadRejection::from_validation("parcel_overlap", &validation, &fixed_points)
+                    .with_note(format!(
+                        "{} parcels, first {}",
+                        overlapping_parcels.len(),
+                        overlapping_parcels[0]
+                    )),
+            );
             return RoadAddOutcome::rejected();
         }
 
@@ -1265,6 +1290,11 @@ impl SimCore {
             || edit_plan.is_some_and(|plan| plan.overlaps_fields(self))
         {
             self.last_road_timing = "rejected=field_overlap".to_owned();
+            self.last_road_rejection = Some(RoadRejection::from_validation(
+                "field_overlap",
+                &validation,
+                &fixed_points,
+            ));
             return RoadAddOutcome::rejected();
         }
 

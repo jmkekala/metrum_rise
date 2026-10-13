@@ -252,7 +252,8 @@ pub struct SimulationNode {
     /// Identity of the latest placement whose single completion may be polled by the editor.
     pub(crate) road_commit_request_id: i64,
     /// One bounded completion receiver; replacing it abandons feedback, never the queued edit.
-    pub(crate) road_commit_result: Option<std::sync::mpsc::Receiver<(bool, String)>>,
+    pub(crate) road_commit_result:
+        Option<std::sync::mpsc::Receiver<crate::nodes::sim::core::RoadCommitAck>>,
     /// Bounded latest-input mailbox for the worker outside the simulation thread.
     pub(crate) road_preview_tx: RoadPreviewSender,
     /// Immutable context consumed by the road-preview worker.

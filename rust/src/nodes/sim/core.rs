@@ -14,6 +14,7 @@ mod populated_city;
 mod road_commit;
 mod road_edit_plan;
 mod road_preview;
+mod road_rejection;
 mod road_terrain_plan;
 mod scenario;
 mod snapshot;
@@ -25,7 +26,9 @@ mod water_preview;
 pub(crate) use budget::CityServicePolicy;
 pub use budget::CityTreasury;
 pub use populated_city::{EconomyHourTimes, PopulatedCity, PopulatedCityBuildTimes};
+pub(crate) use road_commit::RoadCommitAck;
 pub(crate) use road_edit_plan::RoadEditPlan;
+pub(crate) use road_rejection::{RejectedBy, RoadAttempt, RoadRejection};
 pub(crate) use road_terrain_plan::RoadTerrainPlan;
 pub use scenario::{
     GrowthBusinessCashFlow, GrowthBusinessOutcome, GrowthDayRecord, GrowthReport, GrowthScenario,

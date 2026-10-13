@@ -347,7 +347,6 @@ impl RoadTerrainPlan {
     }
 
     /// First deterministic setup/geometry failure in this candidate, if any.
-    #[cfg(test)]
     pub(crate) fn failure_reason(&self) -> Option<&'static str> {
         self.failure_reason
     }

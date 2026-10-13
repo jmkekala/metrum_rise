@@ -938,6 +938,14 @@ reopening requires a current reproduction, not an assumption that the old geomet
 
 ## Recent Structural Changes
 
+- Road rejection reports (2026-10-13, `DEBUG-03`): every refused road stroke, whether refused by
+  the road tool's click check or the simulation's commit, logs on `events` why (the check's
+  reason and numbers), where, and the stroke itself, then a `road_attempt` line with the exact
+  points, lanes, snapping and road generation. Plans refused for a failed check now name that
+  check instead of a plan state. The console dump writes its save first and names it.
+  `./run.sh --replay-road-attempts <dump>` loads that save in a throwaway profile and replays
+  each attempt, reporting whether the refusal reproduces. See
+  [`debug.md`](debug.md#road-rejections).
 - Junction connector overlay (2026-10-13, `DEBUG-04`): the `junction_connectors` visual mode
   draws the connector arcs cars drive through junctions near the camera, straight from the lane
   geometry. Its views color them by whitelist (`arcs`), turn speed cap (`speed`) or cars on them

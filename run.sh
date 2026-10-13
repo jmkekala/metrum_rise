@@ -105,6 +105,7 @@ RELEASE=0
 TEST=0
 ROAD_CHUNK_BENCHMARK=0
 ROAD_CHUNK_UPLOAD_BENCHMARK=0
+ROAD_REPLAY_DUMP=""
 GAMEPLAY_ROAD_PROFILE_MODE=""
 GAMEPLAY_ROAD_USE_PROFILER=0
 GAMEPLAY_ROAD_GPU_PROFILE=0
@@ -284,6 +285,40 @@ sys.exit(status)
 PY
 }
 
+# Every Godot regression runs in a throwaway profile. Several of them install content packs and
+# rewrite the active pack selection, so pointing them at the player's real user:// would change
+# which packs their game loads and strand fixture packs behind an interrupted run. A unique
+# project identity also isolates user:// on macOS, which ignores XDG. Reuse imported resources
+# without copying assets or changing the project. Sets asset_test_profile, asset_test_project and
+# godot_test_profile_name, and exports XDG_DATA_HOME / XDG_CONFIG_HOME.
+create_isolated_godot_profile() {
+    asset_test_profile=$(mktemp -d -t metrum-godot-tests.XXXXXX) || return 1
+    asset_test_project="$asset_test_profile/project"
+    mkdir "$asset_test_project" || return 1
+    local entry
+    for entry in "$GODOT_DIR"/* "$GODOT_DIR/.godot"; do
+        case "${entry##*/}" in project.godot|override.cfg) continue ;; esac
+        [ -e "$entry" ] || continue
+        ln -s "$entry" "$asset_test_project/" || return 1
+    done
+    cp "$GODOT_DIR/project.godot" "$asset_test_project/project.godot" || return 1
+    # Some tests reach repo siblings through `res://../<dir>` (economy, maps, benchmarks).
+    # The relocated project makes that resolve to the temporary profile, so mirror every
+    # sibling of the real project directory beside it.
+    for entry in "$PROJECT_ROOT"/*; do
+        [ -e "$entry" ] || continue
+        [ "$entry" = "$GODOT_DIR" ] && continue
+        ln -s "$entry" "$asset_test_profile/" || return 1
+    done
+    # macOS ignores XDG and derives user:// from this name, so it is the isolation that
+    # matters there; keep one definition so the two cannot drift apart.
+    godot_test_profile_name="MetrumGodotTests-${asset_test_profile##*/}"
+    printf '[application]\nconfig/name="%s"\nconfig/use_custom_user_dir=false\n' \
+        "$godot_test_profile_name" > "$asset_test_project/override.cfg" || return 1
+    export XDG_DATA_HOME="$asset_test_profile/data"
+    export XDG_CONFIG_HOME="$asset_test_profile/config"
+}
+
 godot_import_metadata_has_missing_outputs() {
     local import_file="$1"
     local dest
@@ -384,6 +419,20 @@ while [ $i -le $# ]; do
         fi
         export METRUM_GAMEPLAY_BENCHMARK_MATRIX="terrain"
         RELEASE=1
+    elif [ "$arg" = "--replay-road-attempts" ]; then
+        next_index=$((i + 1))
+        if [ $next_index -gt $# ]; then
+            echo "Error: --replay-road-attempts needs a debug dump path." >&2
+            exit 2
+        fi
+        ROAD_REPLAY_DUMP="${!next_index}"
+        if [ ! -f "$ROAD_REPLAY_DUMP" ]; then
+            echo "Error: debug dump '$ROAD_REPLAY_DUMP' not found." >&2
+            exit 2
+        fi
+        # Godot runs from another directory, so pass an absolute path.
+        ROAD_REPLAY_DUMP="$(cd "$(dirname "$ROAD_REPLAY_DUMP")" && pwd)/$(basename "$ROAD_REPLAY_DUMP")"
+        i=$((i + 1))
     elif [ "$arg" = "--gpu-profile" ]; then
         GAMEPLAY_ROAD_GPU_PROFILE=1
     elif [ "$arg" = "--profile-gameplay-roads" ]; then
@@ -921,6 +970,32 @@ if [ $ROAD_CHUNK_BENCHMARK -eq 1 ]; then
     exit $?
 fi
 
+if [ -n "$ROAD_REPLAY_DUMP" ]; then
+    # The player's installed packs, read before the isolated profile replaces XDG_DATA_HOME.
+    if [ "$METRUM_PLATFORM" = "darwin" ]; then
+        road_replay_packs="$HOME/Library/Application Support/Godot/app_userdata/Metrum Rise/mods"
+    else
+        road_replay_packs="${XDG_DATA_HOME:-$HOME/.local/share}/godot/app_userdata/Metrum Rise/mods"
+    fi
+    road_replay_packs="${METRUM_ROAD_REPLAY_PACKS:-$road_replay_packs}"
+    # The replay loads the save and edits only that loaded copy; the profile is thrown away.
+    create_isolated_godot_profile || exit 1
+    road_replay_command=(godot --headless --path "$asset_test_project"
+        --script res://tests/replay_road_attempts.gd -- --dump "$ROAD_REPLAY_DUMP")
+    if [ -n "${METRUM_ROAD_REPLAY_SAVE:-}" ]; then
+        road_replay_command+=(--save "$METRUM_ROAD_REPLAY_SAVE")
+    fi
+    if [ -d "$road_replay_packs" ]; then
+        road_replay_command+=(--packs "$road_replay_packs")
+    else
+        echo "No asset packs at $road_replay_packs; replaying without buildings' assets."
+    fi
+    "${road_replay_command[@]}"
+    road_replay_status=$?
+    rm -rf "$asset_test_profile"
+    exit $road_replay_status
+fi
+
 if [ $TEST -eq 1 ]; then
     if ! python3 -m unittest discover -s "$PROJECT_ROOT/tools" -p test_road_terrain_replay.py; then
         exit 1
@@ -939,35 +1014,7 @@ if [ $TEST -eq 1 ]; then
     fi
     echo "Running Godot bridge tests..."
     cd ../godot
-    # Every Godot regression runs in a throwaway profile. Several of them install content
-    # packs and rewrite the active pack selection, so pointing them at the player's real
-    # user:// would change which packs their game loads and strand fixture packs behind an
-    # interrupted run. A unique project identity also isolates user:// on macOS, which
-    # ignores XDG. Reuse imported resources without copying assets or changing the project.
-    asset_test_profile=$(mktemp -d -t metrum-godot-tests.XXXXXX) || exit 1
-    asset_test_project="$asset_test_profile/project"
-    mkdir "$asset_test_project" || exit 1
-    for asset_test_entry in "$GODOT_DIR"/* "$GODOT_DIR/.godot"; do
-        case "${asset_test_entry##*/}" in project.godot|override.cfg) continue ;; esac
-        [ -e "$asset_test_entry" ] || continue
-        ln -s "$asset_test_entry" "$asset_test_project/" || exit 1
-    done
-    cp "$GODOT_DIR/project.godot" "$asset_test_project/project.godot" || exit 1
-    # Some tests reach repo siblings through `res://../<dir>` (economy, maps, benchmarks).
-    # The relocated project makes that resolve to the temporary profile, so mirror every
-    # sibling of the real project directory beside it.
-    for asset_test_sibling in "$PROJECT_ROOT"/*; do
-        [ -e "$asset_test_sibling" ] || continue
-        [ "$asset_test_sibling" = "$GODOT_DIR" ] && continue
-        ln -s "$asset_test_sibling" "$asset_test_profile/" || exit 1
-    done
-    # macOS ignores XDG and derives user:// from this name, so it is the isolation that
-    # matters there; keep one definition so the two cannot drift apart.
-    godot_test_profile_name="MetrumGodotTests-${asset_test_profile##*/}"
-    printf '[application]\nconfig/name="%s"\nconfig/use_custom_user_dir=false\n' \
-        "$godot_test_profile_name" > "$asset_test_project/override.cfg" || exit 1
-    export XDG_DATA_HOME="$asset_test_profile/data"
-    export XDG_CONFIG_HOME="$asset_test_profile/config"
+    create_isolated_godot_profile || exit 1
     echo "Godot regression fixtures and logs: $asset_test_profile"
     if [ "$METRUM_PLATFORM" = "darwin" ]; then
         echo "macOS fixtures: ~/Library/Application Support/Godot/app_userdata/$godot_test_profile_name"
@@ -981,7 +1028,7 @@ if [ $TEST -eq 1 ]; then
         vegetation_edit_test vegetation_appearance_test vegetation_land_cover_test \
         new_game_dialog_test day_cycle_test camera_save_load_test \
         zoning_road_tool_test zoning_cells_tool_test zoning_reference_test debug_console_test \
-        debug_visual_modes_test junction_debug_overlay_test; do
+        debug_visual_modes_test junction_debug_overlay_test road_rejection_report_test; do
         bridge_test_command=(godot --headless --path "$asset_test_project" --script "res://tests/${bridge_test_script}.gd")
         # This regression probes inputs that previously stalled the simulation thread.
         if [ "$bridge_test_script" = simulation_speed_input_test ]; then

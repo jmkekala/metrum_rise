@@ -1069,6 +1069,62 @@ fn fast_candidate_validation_is_not_more_permissive_than_full_surface_validation
 }
 
 #[test]
+fn every_check_refuses_a_stroke_below_the_minimum_length() {
+    // ROAD-53: the click check and the exact preview accepted strokes the commit refused.
+    let terrain = flat_terrain(96, 64);
+    let graph = RegionGraph::new();
+    let surface = RoadSurfaceSystem::new(16.0);
+    for (end_x, expected) in [
+        (0.0, "too_short"),
+        (0.5, "too_short"),
+        (1.9, "too_short"),
+        (10.0, ""),
+    ] {
+        let prepared = RoadSurfaceSystem::prepare_road_input_for_tool(
+            &[
+                Vector3::new(4.0, 0.0, 4.0),
+                Vector3::new(4.0 + end_x, 0.0, 4.0),
+            ],
+            &terrain,
+            &graph,
+            &surface,
+            true,
+        );
+        let fast = surface.validate_prepared_road_candidate_fast(&prepared, 1, 1, &terrain, &graph);
+        let new_edge = surface.validate_prepared_road_surface(
+            &prepared.points,
+            prepared.class,
+            1,
+            1,
+            &terrain,
+        );
+        let click = surface.validate_prepared_road_input_against_graph_with_compile_reason(
+            &prepared,
+            1,
+            1,
+            &terrain,
+            &graph,
+            new_edge,
+            RoadSurfaceCompileReason::CommitValidator,
+        );
+        let (preview, ..) = surface.compile_prepared_preview_surface_with_topology_reuse(
+            &prepared, 1, 1, &terrain, &graph, &surface,
+        );
+        for (check, validation) in [
+            ("fast", &fast),
+            ("click", &click),
+            ("preview", &preview.validation),
+        ] {
+            assert_eq!(
+                (validation.is_valid, validation.invalid_reason),
+                (expected.is_empty(), expected),
+                "{check} check for a {end_x} m stroke"
+            );
+        }
+    }
+}
+
+#[test]
 fn preview_validation_uses_endpoint_snap_before_reporting_valid() {
     let terrain = flat_terrain(96, 64);
     let mut graph = RegionGraph::new();

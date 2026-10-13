@@ -1,7 +1,8 @@
 # Metrum Rise — Debug System
 
-This document owns the runtime debug contract (`DEBUG-01`, `DEBUG-02`, `DEBUG-04`): the debug
-channels, the runtime visual modes, the junction connector overlay and stall detector, the log format, the shared log, the always-on `events` channel, the Godot
+This document owns the runtime debug contract (`DEBUG-01` to `DEBUG-04`): the debug channels,
+the runtime visual modes, the junction connector overlay and stall detector, road rejection
+reports and their replay, the log format, the shared log, the always-on `events` channel, the Godot
 bridge, the in-game console and the `run.sh` launch flags. Crash diagnostics (`METRUM_CRASH_DIAGNOSTICS`, the hang watchdog and the
 flight recorder) are separate; this document lists only their launch flag.
 
@@ -274,23 +275,89 @@ logs per agent event, and `--debug traffic` performance numbers are not acceptan
 ## Events
 
 The `events` channel collects messages the game already reports. It never adds per-tick
-messages of its own, and per-agent messages only from the stall detector, once per stalled car
-while the `junction_connectors` view is on.
+messages of its own. Per-agent messages come only from the stall detector, once per stalled car
+while the `junction_connectors` view is on, and per-stroke messages only from refused roads.
 
 - The debug console installs a Godot `Logger`
   ([`debug_event_logger.gd`](../godot/scripts/ui/debug_console/debug_event_logger.gd)). It
   copies every `push_warning`/`push_error`, `godot_warn!`/`godot_error!`, script and shader
   error, and `printerr` into `events`. A script call site replaces the engine's
   `push_warning` location when one is available.
-- The road tool logs a click on an invalid preview as `road_tool rejected reason=...`, with the
-  grade numbers it already computed.
-- The road tool logs a rejection by the simulation as `road_commit_rejected request_id=...
-  detail=...`.
+- Every refused road stroke, whether refused by the road tool's click check or by the simulation's
+  commit, logs a [road rejection report](#road-rejections).
+- The console's dump logs `dump save=<path> road_generation=<n>` before it writes the text dump.
 - The [junction overlay](#junction-connectors) logs a focused junction's connectors and, while
   on, each stalled car.
 
 Godot calls loggers from any thread. The logger keeps no state and forwards to the thread-safe
 Rust log.
+
+## Road Rejections
+
+A refused road stroke logs two lines on `events`. The first says why, with the numbers the check
+used, where, and what was drawn:
+
+```text
+road rejected by commit: parcel_overlap: the road corridor overlaps zoned parcels; 3 parcels, first 812. Stroke (412.0, -96.5) -> (530.2, -40.1), 2 points, 131.0 m, lanes 1/1, snap on; start node 57, road y 12.40, terrain y 12.40; end open terrain, road y 14.05, terrain y 13.90. Attempt 4.
+road_attempt {"attempt":4,"by":"commit","reason":"parcel_overlap","generation":31,"fwd_lanes":1,"bkw_lanes":1,"snap":true,"points":[[412.0,12.4,-96.5],[530.25,14.05,-40.125]]}
+```
+
+- `by` is `tool` when the road tool's click check refused the stroke, before anything reached the
+  simulation, and `commit` when the simulation's authoritative commit refused it.
+- The reason is the stable key the checks use: `bridge_clearance`, `tunnel_clearance`,
+  `same_node_connection`, `too_short`, `water_requires_bridge`, `surface_geometry_invalid` and
+  the `terrain_clip_*` compile failures, `field_overlap`, `parcel_overlap`,
+  `zoning_cell_overlap`, `render_geometry_invalid` (the committed surface or its terrain failed
+  to build and the edit was rolled back), `validation_unavailable`, and the plan states
+  `road_plan_stale`, `road_plan_pending`, `road_plan_provisional`, `road_plan_consumed`,
+  `road_plan_mismatch` and `road_plan_invalid` (terrain earthwork failure). A plan refused
+  because its stroke failed a check reports that check instead of the plan state.
+- `at (x, z)` follows the detail when the check measured one place: clearance is measured at the
+  middle of the prepared road. The stroke's ends give the snapped node or open terrain, with
+  the road and terrain heights there.
+- `road_attempt` carries the stroke exactly as submitted: every point at full `f32` precision,
+  the lane counts, snapping and the road-tool generation (`get_road_tool_surface_generation`),
+  which changes whenever the road network is rebuilt: a built or bulldozed road, an undo, a
+  loaded world. A refused stroke leaves it unchanged. Both lines end with the same attempt
+  number.
+
+The road tool sends its click refusal through `SimulationNode.log_road_tool_rejection(points,
+fwd_lanes, bkw_lanes, snap, validation)`, with the validation it showed. The commit report comes
+from `SimCore::commit_road` on the simulation thread. `get_road_commit_result` also returns the
+reason as `reason`. Reports are built only for a refused stroke, so placing roads costs the same
+as before, apart from one copy of the stroke's points per commit.
+
+### Replaying refusals
+
+The console's **Dump** writes the save first and logs `dump save=<path> road_generation=<n>`, so
+the text dump names its save and the road network it holds. To check a refusal against it:
+
+```bash
+./run.sh --replay-road-attempts <dump>.txt
+```
+
+This builds, then runs `godot/tests/replay_road_attempts.gd` headless in a throwaway profile. It
+loads every installed asset pack read-only, loads the save, and sends each `road_attempt` along
+the player's path: the click check, then, if that passes, the commit. Each attempt prints one
+line:
+
+```text
+attempt 4 (commit, parcel_overlap): reproduced, refused by commit
+attempt 2 (tool, same_node_connection): reproduced, refused by tool [made on road generation 29, save holds 31: the network changed since]
+```
+
+- An attempt made at the save's road generation was made on the saved network, so it should be
+  refused again for the same reason. The command exits `1` if one is not, `0` otherwise, and
+  `2` for a missing dump, save or attempt.
+- An older attempt was made on an earlier network; its result only hints. Zoning, fields and
+  building sites do not change the road generation, so a parcel or field refusal can also stop
+  reproducing after zoning edits made on the same network.
+- A replayed stroke that is built stays in the loaded copy, so later attempts see it. The save
+  file is never written.
+- `METRUM_ROAD_REPLAY_SAVE` replays against another save; `METRUM_ROAD_REPLAY_PACKS` replaces
+  the asset pack folder.
+- The replay also reads a captured stdout log, since `events` lines print there too; pass the
+  save with `METRUM_ROAD_REPLAY_SAVE` when the log has no `dump save=` line.
 
 ## Godot Bridge
 
@@ -364,10 +431,11 @@ available in every build and scene.
   - `clear`
 - **Copy** puts the visible, filtered lines on the clipboard.
 - **Dump** writes up to three files with the same `user://debug/dump-<date>_<time>` name:
-  - `.txt`, the text dump described below;
-  - `.sqlite`, an ordinary save of the running game and its camera, written through
+  - `.sqlite`, an ordinary save of the running game and its camera, written first through
     `SimulationNode.save_game`. Only gameplay scenes write it; the world and asset editors and
-    the menus have no game to save. It can be loaded like any other save.
+    the menus have no game to save. It can be loaded like any other save, and the dump's
+    `dump save=` line names it for [replays](#replaying-refusals).
+  - `.txt`, the text dump described below;
   - `.png`, a screenshot of the game view with the console hidden for that frame. Headless runs
     skip it.
 
@@ -405,6 +473,20 @@ While closed, the console does no work except watch for its key.
 - live terrain and water renderers on an 8 km test world with a corner camera: 49 of 64 patches
   are resident, at LOD 1, 2 and 4. Full-world residency loads all 64; force-LOD1 refines every
   terrain and water patch; switching either off returns the same patch set and LODs.
+
+`godot/tests/road_rejection_report_test.gd` runs in the bridge list. On a test world it covers:
+
+- a commit refusal and a tool refusal, each with its explanation, stroke and attempt line;
+- exact coordinates in the attempt records, their order and source;
+- the console dump writing the save first and naming it with its road generation;
+- a replay against a fresh load of that save: every refusal reproduces, the attempt made before
+  a built road is flagged as made on an older network, and a changed reason is reported as not
+  reproduced.
+
+`network_tool_chunk_renderer_test` checks that a refused click reports once, with the clicked
+stroke and its validation. Rust tests in `nodes::sim::core::road_rejection` cover the report
+text, the attempt record's exact round trip and the reason texts; `road_commit` covers a refused
+commit's report through `SimCore::commit_road`.
 
 `godot/tests/junction_debug_overlay_test.gd` runs in the bridge list. On a test world, with
 roads committed through the simulation thread, it covers:
@@ -533,6 +615,7 @@ set only the starting value; the console switches them later.
 | `--debug-sim` | `METRUM_DEBUG_SIM=1` | Hourly simulation summaries to stdout. |
 | `--debug visuals [mode]` / `--debug visual [mode]` / `--visuals [mode]` | `METRUM_DEBUG_TERRAIN_GRASS=<mode>` | Starts a terrain grass material view. Defaults to `material`. |
 | `--debug terrain-visual <mode>` | `METRUM_DEBUG_TERRAIN=1`, `METRUM_DEBUG_TERRAIN_VISUAL=<mode>` | Starts a terrain/water/lighting material view. Defaults to `patch`. |
+| `--replay-road-attempts <dump>` | `METRUM_ROAD_REPLAY_SAVE`, `METRUM_ROAD_REPLAY_PACKS` (optional) | Replays a dump's refused road strokes against its save in a throwaway profile and reports whether each refusal reproduces ([Replaying refusals](#replaying-refusals)). Exits `0`, `1` (a refusal on the saved network did not reproduce) or `2` (bad input). |
 | `METRUM_DEBUG_JUNCTION_CONNECTORS=<view> ./run.sh` | `METRUM_DEBUG_JUNCTION_CONNECTORS=<view>` | Starts the [junction connector overlay](#junction-connectors): `arcs`, `speed`, `occupancy` or `lanes`. No `run.sh` flag; the variable passes through. |
 
 Removed debug aliases:

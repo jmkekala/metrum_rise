@@ -105,21 +105,35 @@ impl SimulationNode {
         self.road_commit_request_id
     }
 
-    /// Consumes the latest placement's acceptance or rejection without locking the simulation.
-    /// Nil means pending/already consumed; a superseded id or disconnected worker is rejected.
+    /// Consumes the latest placement's acceptance or rejection without locking the simulation:
+    /// `committed`, `reason` (the stable key the `events` report uses) and `detail`. Nil means
+    /// pending/already consumed; a superseded id or disconnected worker is rejected.
     #[func]
     pub fn get_road_commit_result(&mut self, request_id: i64) -> Variant {
         if request_id != self.road_commit_request_id {
-            return vdict! { "committed": false, "detail": "road_request_replaced" }.to_variant();
+            return vdict! {
+                "committed": false,
+                "reason": "road_request_replaced",
+                "detail": "road_request_replaced",
+            }
+            .to_variant();
         }
         let Some(receiver) = self.road_commit_result.as_ref() else {
             return Variant::nil();
         };
         let result = match receiver.try_recv() {
-            Ok((committed, detail)) => vdict! { "committed": committed, "detail": detail },
+            Ok(ack) => vdict! {
+                "committed": ack.committed,
+                "reason": ack.reason,
+                "detail": ack.detail,
+            },
             Err(std::sync::mpsc::TryRecvError::Empty) => return Variant::nil(),
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                vdict! { "committed": false, "detail": "road_command_unavailable" }
+                vdict! {
+                    "committed": false,
+                    "reason": "road_command_unavailable",
+                    "detail": "road_command_unavailable",
+                }
             }
         };
         self.road_commit_result = None;

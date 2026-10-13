@@ -487,6 +487,16 @@ impl RoadSurfaceSystem {
         Option<RoadPreviewRenderInput>,
         Option<RoadTopologyPlan>,
     ) {
+        // Compiling a surface never measures the stroke, so apply the fast check's minimum here
+        // too; every full check (click, exact preview, commit plan) passes through this point.
+        if Self::preview_stroke_too_short(&prepared_input.validation_points) {
+            return (
+                new_edge_validation.with_invalid_reason(PREVIEW_TOO_SHORT_REASON),
+                None,
+                None,
+                None,
+            );
+        }
         if prepared_input.validation_points == prepared_input.points {
             return self
                 .validate_prepared_surface_geometry_against_graph_with_extension_and_topology_reuse(
@@ -563,6 +573,17 @@ impl RoadSurfaceSystem {
         self.validate_candidate_endpoint_geometry_fast(endpoint_existing, validation)
     }
 
+    // The one road length rule: fewer than two points, or a horizontal length, ignoring
+    // degenerate steps, below the endpoint minimum.
+    fn preview_stroke_too_short(points: &[Vector3]) -> bool {
+        let length_m = points
+            .windows(2)
+            .map(|pair| (pair[1].x - pair[0].x).hypot(pair[1].z - pair[0].z))
+            .filter(|&run| run > SAMPLE_EPSILON_M)
+            .fold(0.0, |length, run| length + run);
+        points.len() < 2 || length_m < PREVIEW_MIN_ENDPOINT_SEGMENT_M
+    }
+
     fn fast_prepared_profile_validation(
         edge_class: EdgeClass,
         prepared_points: &[Vector3],
@@ -602,7 +623,7 @@ impl RoadSurfaceSystem {
             station_m = next_station_m;
         }
 
-        if station_m < PREVIEW_MIN_ENDPOINT_SEGMENT_M {
+        if Self::preview_stroke_too_short(prepared_points) {
             return validation.with_invalid_reason(PREVIEW_TOO_SHORT_REASON);
         }
         if edge_class == EdgeClass::Bridge

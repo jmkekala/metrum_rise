@@ -4,7 +4,7 @@
 
 use super::road_preview::RoadPreviewRequest;
 use super::road_terrain_plan::RoadTerrainSiteInputs;
-use super::{RoadTerrainPlan, SimCore};
+use super::{RoadRejection, RoadTerrainPlan, SimCore};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::road_edit::RoadTopologyPlan;
 use crate::simulation::network::surface::{
@@ -38,6 +38,15 @@ struct RoadGeometryPlan {
     validation: RoadPreviewValidation,
     topology: Option<RoadTopologyPlan>,
     topology_reuse: Mutex<Option<RoadPreviewTopologyReuse>>,
+}
+
+// Which live-state check refused a plan; no allocation, since preview status polls it.
+#[derive(Clone, Copy)]
+enum FailedCheck {
+    Validation(&'static str),
+    Fields,
+    CellZoning,
+    Parcels { count: usize, first: u64 },
 }
 
 impl RoadEditPlan {
@@ -190,6 +199,14 @@ impl RoadEditPlan {
         {
             return "consumed";
         }
+        if self.failed_check(core).is_some() {
+            return "invalid";
+        }
+        "ready"
+    }
+
+    // The first live-state check that refuses this road: water, fields, painted cells or parcels.
+    fn failed_check(&self, core: &SimCore) -> Option<FailedCheck> {
         let fwd = self.road.request.fwd_lanes.clamp(0, 255) as u8;
         let bkw = self.road.request.bkw_lanes.clamp(0, 255) as u8;
         let validation = crate::nodes::sim::road_tool::validate_road_candidate_against_water(
@@ -200,25 +217,105 @@ impl RoadEditPlan {
             &core.watermap,
             self.road.validation.clone(),
         );
-        let width = (f32::from(fwd) + f32::from(bkw)) * crate::config::LANE_WIDTH;
-        if !validation.is_valid
-            || self.overlaps_fields(core)
-            || self.overlaps_cell_zoning(core)
-            || core.zoning.cells_overlap_road_corridor(
-                &self.road.prepared.points,
-                width.max(2.0) * 0.5 + crate::config::SIDEWALK_WIDTH,
-            )
-            || !core
-                .zoning
-                .parcel_ids_overlapping_road_corridor(
-                    &self.road.prepared.points,
-                    width.max(2.0) * 0.5 + crate::config::SIDEWALK_WIDTH,
-                )
-                .is_empty()
-        {
-            return "invalid";
+        if !validation.is_valid {
+            return Some(FailedCheck::Validation(validation.invalid_reason));
         }
-        "ready"
+        if self.overlaps_fields(core) {
+            return Some(FailedCheck::Fields);
+        }
+        let width = (f32::from(fwd) + f32::from(bkw)) * crate::config::LANE_WIDTH;
+        let half_width_m = width.max(2.0) * 0.5 + crate::config::SIDEWALK_WIDTH;
+        if self.overlaps_cell_zoning(core)
+            || core
+                .zoning
+                .cells_overlap_road_corridor(&self.road.prepared.points, half_width_m)
+        {
+            return Some(FailedCheck::CellZoning);
+        }
+        let parcels = core
+            .zoning
+            .parcel_ids_overlapping_road_corridor(&self.road.prepared.points, half_width_m);
+        parcels.first().map(|&first| FailedCheck::Parcels {
+            count: parcels.len(),
+            first,
+        })
+    }
+
+    /// Explains why this plan cannot be committed: the failed check when one failed, otherwise
+    /// the plan's state (`road_plan_stale`, `road_plan_pending`, ...). Built only on refusal.
+    pub(crate) fn rejection(&self, core: &SimCore) -> RoadRejection {
+        let validation = &self.road.validation;
+        let prepared = &self.road.prepared.points;
+        if !validation.is_valid {
+            return RoadRejection::from_validation(validation.invalid_reason, validation, prepared);
+        }
+        // Without topology the preview compile stopped early; the fast stroke checks that
+        // `add_road_internal` runs without a plan name the cause.
+        if self.road.topology.is_none() {
+            let fast = core
+                .transit_network
+                .road_surface
+                .validate_prepared_road_candidate_fast(
+                    &self.road.prepared,
+                    self.road.request.fwd_lanes.clamp(0, 255) as u8,
+                    self.road.request.bkw_lanes.clamp(0, 255) as u8,
+                    &core.heightmap,
+                    &core.region_graph,
+                );
+            if !fast.is_valid {
+                return RoadRejection::from_validation(fast.invalid_reason, &fast, prepared);
+            }
+        }
+        let status = self.status(core);
+        if self.road_status(core) == "invalid"
+            && let Some(check) = self.failed_check(core)
+        {
+            return match check {
+                FailedCheck::Validation(reason) => {
+                    RoadRejection::from_validation(reason, validation, prepared)
+                }
+                FailedCheck::Fields => {
+                    RoadRejection::from_validation("field_overlap", validation, prepared)
+                }
+                FailedCheck::CellZoning => RoadRejection::new(
+                    "zoning_cell_overlap",
+                    "the road or its junctions overlap painted zoning cells",
+                ),
+                FailedCheck::Parcels { count, first } => {
+                    RoadRejection::from_validation("parcel_overlap", validation, prepared)
+                        .with_note(format!("{count} parcels, first {first}"))
+                }
+            };
+        }
+        if let Some(reason) = self.terrain().and_then(RoadTerrainPlan::failure_reason) {
+            return RoadRejection::new(
+                "road_plan_invalid",
+                format!("the road's terrain earthwork failed ({reason})"),
+            );
+        }
+        let (reason, detail) = match status {
+            "stale" => (
+                "road_plan_stale",
+                "the road, terrain or building sites changed after the stroke was prepared",
+            ),
+            "pending" => (
+                "road_plan_pending",
+                "terrain or building-site data was still being prepared",
+            ),
+            "provisional" => (
+                "road_plan_provisional",
+                "the stroke's road or terrain plan was incomplete",
+            ),
+            "consumed" => (
+                "road_plan_consumed",
+                "the prepared plan was already used by an earlier commit",
+            ),
+            _ => (
+                "road_plan_mismatch",
+                "the prepared plan does not match the submitted stroke",
+            ),
+        };
+        RoadRejection::new(reason, detail)
     }
 
     /// Rechecks current field reservations against final local road and junction footprints.
