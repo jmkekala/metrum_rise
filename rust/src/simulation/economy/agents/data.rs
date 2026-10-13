@@ -7,6 +7,7 @@
 //! [`AgentSystem`] uses a Structure-of-Arrays (SoA) layout provided by the `soa_derive` crate.
 //! This enables cache-friendly bulk iteration and ensures all fields are kept in sync.
 
+use super::inspection::{EndedInspection, InspectedAgent};
 use soa_derive::StructOfArray;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicU32, AtomicUsize};
@@ -222,6 +223,10 @@ pub struct AgentSystem {
     pub(crate) traffic_debug_stationary_s: Vec<f32>,
     /// Traffic-debug scratch: next simulation time at which a stationary line may be emitted.
     pub(crate) traffic_debug_next_log_time: Vec<f32>,
+    /// The agent the inspector follows; repaired by swap-remove, never saved.
+    pub(super) inspected: Option<InspectedAgent>,
+    /// Set when removing the inspected agent ended its inspection.
+    pub(super) inspection_ended: Option<EndedInspection>,
 }
 
 impl Deref for AgentSystem {
@@ -268,6 +273,8 @@ impl AgentSystem {
             traffic_debug_last_pos_y: Vec::new(),
             traffic_debug_stationary_s: Vec::new(),
             traffic_debug_next_log_time: Vec::new(),
+            inspected: None,
+            inspection_ended: None,
         }
     }
 

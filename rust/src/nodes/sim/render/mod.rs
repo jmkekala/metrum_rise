@@ -5,6 +5,7 @@
 //! Decouples Godot-facing render transform generation into focused units
 //! for agents, buildings, road network, and zoning overlays.
 
+pub(crate) mod agent_inspection;
 /// Agent-specific rendering (pedestrians, cars, path debug).
 pub mod agents;
 pub(crate) mod building_lod;

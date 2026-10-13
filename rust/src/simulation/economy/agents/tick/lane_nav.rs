@@ -5,6 +5,7 @@
 use crate::simulation::economy::agents::ACCESS_PLAN_VALID;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::lanes::LaneType;
 
 /// Returns the road node where a road lane begins for its travel direction.
 pub(super) fn lane_origin_node(
@@ -126,6 +127,65 @@ pub(super) fn collect_connector_lanes_to_lane(
         }
     }
     !out.is_empty()
+}
+
+/// Returns the vehicle lane of `target_edge_id` that `from_lane_id` runs straight into at a
+/// pass-through node with no connectors.
+pub(super) fn direct_vehicle_lane_to_edge(
+    from_lane_id: usize,
+    target_edge_id: usize,
+    transit_network: &TransitNetwork,
+) -> Option<usize> {
+    let from_lane = transit_network.lane_system.lanes.get(from_lane_id)?;
+    if from_lane.lane_type != LaneType::Vehicle {
+        return None;
+    }
+
+    from_lane.next_lanes.iter().copied().find(|&next_lane_id| {
+        transit_network
+            .lane_system
+            .lanes
+            .get(next_lane_id)
+            .is_some_and(|lane| {
+                lane.edge_id == target_edge_id && lane.lane_type == LaneType::Vehicle
+            })
+    })
+}
+
+/// Returns whether `from_lane_id` runs straight into the road lane `target_lane_id`.
+pub(super) fn direct_vehicle_lane_to_lane(
+    from_lane_id: usize,
+    target_lane_id: usize,
+    transit_network: &TransitNetwork,
+) -> bool {
+    let Some(from_lane) = transit_network.lane_system.lanes.get(from_lane_id) else {
+        return false;
+    };
+    if from_lane.lane_type != LaneType::Vehicle {
+        return false;
+    }
+    from_lane.next_lanes.contains(&target_lane_id)
+        && transit_network
+            .lane_system
+            .lanes
+            .get(target_lane_id)
+            .is_some_and(|lane| lane.lane_type == LaneType::Vehicle && lane.edge_id != usize::MAX)
+}
+
+/// Seed of the stable choice among equally short connectors at a junction.
+#[inline(always)]
+pub(super) fn connector_choice_seed(
+    agent_idx: usize,
+    from_lane_id: usize,
+    target_id: usize,
+    node_id: u32,
+    path_idx: usize,
+) -> u64 {
+    (agent_idx as u64)
+        ^ ((from_lane_id as u64) << 11)
+        ^ ((target_id as u64) << 23)
+        ^ ((node_id as u64) << 37)
+        ^ ((path_idx as u64) << 3)
 }
 
 fn connection_lane_to_edge(

@@ -400,10 +400,18 @@ side instead.
 | Road edge selected (`SelectTool`) | Road Properties window |
 | Building clicked with no active tool | Building Inspector window |
 | Building clicked while `SelectTool` is active | Building Inspector window |
+| Car, bike or pedestrian on a road clicked with no active tool | Agent Inspector window, and the camera follows the agent |
 
 While the `junction_connectors` debug view is on, a click with no active tool within 12 m of a
 junction focuses that junction in the overlay instead of opening the inspector. A click elsewhere,
 or Esc, clears the focus ([`debug.md`](debug.md#junction-connectors)).
+
+A click with no active tool that hits an agent opens the Agent Inspector instead of the
+Building Inspector. A click that misses every agent ends the inspection and then inspects as
+usual; Esc and the window's close button also end it. Its home, work and destination links
+frame that building and open its Building Inspector. Panning with WASD also stops the follow
+without ending the inspection; Follow returns the camera to the agent
+([`debug.md`](debug.md#agent-inspector)).
 
 Selection gestures (`AUDIT-01-F7`) are owned by `SelectTool`, including lane connections and
 crosswalk controls. The inactive duplicate `LaneTool` and its scene node are removed. Tool
@@ -452,7 +460,8 @@ inspecting another building closes the previous window.
 | Gameplay | Options → Gameplay | `scripts/ui/gameplay_options.gd` *(implemented)* | Persistent road-only or road-and-terrain construction previews, applied live through the shared footer. |
 | Graphics | Options → Graphics | `scripts/ui/graphics_options.gd` *(implemented)* | Fullscreen, V-Sync, Show FPS, Max FPS, render scale (FSR 2), shadows, view distance and building detail, persisted through `user://settings.cfg` and applied through the Options footer. |
 | Accessibility | Options → Accessibility | `scripts/ui/accessibility_options.gd` *(implemented)* | Embedded UI Scale control, persisted through `user://settings.cfg` and applied immediately to scale-aware procedural UI fonts and eligible floating-window sizes. |
-| Building Inspector | Click building with no active tool or while `SelectTool` is active | `scripts/ui/building_inspector.gd` *(implemented)* | Per-building stats: type, level, occupancy, budget, revenue, inventory, extraction-pit reserve/depletion, alerts. One inspector is open at a time: clicking another building replaces it, clicking the same building again closes it, and the open window refreshes on each in-game hour boundary. Uses Godot's built-in draggable `Window` chrome. |
+| Building Inspector | Click building with no active tool or while `SelectTool` is active | `scripts/ui/building_inspector.gd` *(implemented)* | Per-building stats: type, level, occupancy, budget, revenue, inventory, extraction-pit reserve/depletion, alerts. One inspector is open at a time: clicking another building replaces it, clicking the same building again closes it, and the open window refreshes on each in-game hour boundary. Uses Godot's built-in draggable `Window` chrome. It holds the keyboard focus only while a mouse button is down in it, so WASD, zoom and Esc keep moving the camera while it is open. |
+| Agent Inspector | Click a car, bike or pedestrian on a road with no active tool | `scripts/ui/agent_inspector_panel.gd` *(implemented)*, controlled by `scripts/renderers/agent_inspector.gd` | The agent's mode, state, speed, activity, buildings, lane and route. Home, work and destination link to their buildings. Opens beside the cursor; draggable and resizable `Window` chrome with its size persisted. Like the Building Inspector it holds the keyboard focus only while a mouse button is down in it (`UIStyle.keep_keyboard_with_game`), so camera controls keep working. |
 | Road Properties | Select one or more road edges with `SelectTool` | `scripts/ui/road_properties_window.gd` *(implemented)* | Edge class (Standard / Bridge / Tunnel), No Buildings flag, and slope warnings for the current selection. Uses Godot's built-in draggable `Window` chrome. |
 | Mods | Options → Mods | `scripts/ui/pack_manager.gd` *(implemented)* | Embedded content-pack browser / manager panel. |
 | City Statistics | City → City Statistics | inline placeholder in `scripts/ui/top_menu.gd` | Placeholder window for future population, housed/unhoused counts, budget summary, and utility status. |

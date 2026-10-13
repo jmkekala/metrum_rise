@@ -151,6 +151,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
+mod agent_inspection_api;
 mod asset_api;
 mod async_terrain;
 mod building_lod_api;

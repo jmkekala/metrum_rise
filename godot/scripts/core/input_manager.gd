@@ -8,7 +8,8 @@
 ## and refreshes the thin Godot render nodes after world mutations.
 ##
 ## The Building Inspector helper is always present in the scene and can be
-## opened by the active selection workflow.
+## opened by the active selection workflow. With no tool active, a click on an agent opens the
+## agent inspector instead, which follows the agent with the camera until Esc.
 extends Node
 
 @onready var simulation_node = $"../SimulationNode"
@@ -30,6 +31,7 @@ var bulldoze_tool: Node3D
 var select_tool: Node3D
 var building_inspector: Node
 var junction_debug_overlay: Node3D
+var agent_inspector: Node3D
 
 enum Tool { NONE, ROAD, WALKWAY, ZONING, SERVICES, INDUSTRY, MOVE, AGENT, SCULPT, CUL_DE_SAC, SELECT, BULLDOZE, VEGETATION, FIELD_EDIT }
 var current_tool: Tool = Tool.NONE
@@ -111,6 +113,12 @@ func _ready():
 	junction_debug_overlay.name = "JunctionDebugOverlay"
 	junction_debug_overlay.set_script(load("res://scripts/renderers/junction_debug_overlay.gd"))
 	get_parent().call_deferred("add_child", junction_debug_overlay)
+
+	agent_inspector = Node3D.new()
+	agent_inspector.name = "AgentInspector"
+	agent_inspector.set_script(load("res://scripts/renderers/agent_inspector.gd"))
+	agent_inspector.building_requested.connect(_on_agent_building_requested)
+	get_parent().call_deferred("add_child", agent_inspector)
 
 	# Hide overlay mesh if exists in cul-de-sac tool
 	if cul_de_sac_tool and cul_de_sac_tool.has_node("PreviewMesh"):
@@ -296,6 +304,8 @@ func _ui_captures_keyboard_input() -> bool:
 func _handle_escape():
 	if current_tool != Tool.NONE:
 		_cancel_active_tool()
+	elif agent_inspector and agent_inspector.end_inspection():
+		get_viewport().set_input_as_handled()
 	elif junction_debug_overlay and junction_debug_overlay.unfocus():
 		get_viewport().set_input_as_handled()
 
@@ -430,6 +440,8 @@ func _refresh_after_world_load():
 	_cancel_active_tool()
 	if building_inspector:
 		building_inspector.close_window()
+	if agent_inspector:
+		agent_inspector.end_inspection()
 	# Both load paths pause Rust; reset the controls that display and toggle that state.
 	set_simulation_speed(0.0)
 	# Never leave the previous world's road chunks visible while the new terrain is rebuilt.
@@ -625,7 +637,15 @@ func _handle_inspect_click(mouse_pos: Vector2) -> void:
 	# With the junction overlay on, a click on a junction focuses it instead of inspecting.
 	if junction_debug_overlay and junction_debug_overlay.try_focus_at(pos):
 		return
+	# A click on an agent inspects it; any other click ends that inspection.
+	if agent_inspector and agent_inspector.try_inspect_at(pos, mouse_pos):
+		return
 	building_inspector.try_inspect(pos, mouse_pos)
+
+# A home, work or destination link in the agent inspector: open that building, never toggle it.
+func _on_agent_building_requested(world_pos: Vector3, screen_pos: Vector2) -> void:
+	if building_inspector:
+		building_inspector.try_inspect(world_pos, screen_pos, false)
 
 func _handle_right_click():
 	if (current_tool == Tool.ROAD or current_tool == Tool.WALKWAY) and road_tool.current_state != 0:

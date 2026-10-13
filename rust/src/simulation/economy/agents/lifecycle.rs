@@ -17,6 +17,7 @@ use crate::simulation::economy::agents::tick::{
 use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
+use godot::prelude::Vector2;
 
 impl AgentSystem {
     /// Spawns one agent already housed inside a building.
@@ -53,6 +54,26 @@ impl AgentSystem {
         agent.speed = DEFAULT_URBAN_ROAD_SPEED_MS;
         agent.transit_mode = MODE_CAR;
         self.insert_agent(agent)
+    }
+
+    /// Places a car at the start of road lane `lane_id` on edge `edge_id`, driving `path` from
+    /// `path[0]` with no home or destination building. For debugging and bridge tests only: it
+    /// changes the simulation outside the tick, so the session is no longer reproducible.
+    pub(crate) fn spawn_debug_car(
+        &mut self,
+        path: Vec<u32>,
+        edge_id: usize,
+        lane_id: usize,
+        start: Vector2,
+    ) -> usize {
+        let idx = self.spawn_border_arrival_agent(usize::MAX, path[0], start.x, start.y);
+        self.agents.transit[idx] = TRANSIT_NETWORK;
+        self.agents.current_edge[idx] = edge_id;
+        self.agents.current_lane_id[idx] = lane_id;
+        self.agents.lane_distance[idx] = 0.0;
+        self.agents.current_path[idx] = path;
+        self.agents.current_path_index[idx] = 1;
+        idx
     }
 
     /// Spawns a household carrier, preserving the composition selected with `household_seed`.
@@ -280,7 +301,7 @@ impl AgentSystem {
         if !self.freight_carrier_matches(index, shipment_id) {
             return None;
         }
-        self.remove_agent_record(index, households)
+        self.remove_agent_record(index, households, "finished its freight trip")
     }
 
     /// Permanently removes an agent from the simulation using O(1) swap-remove.
@@ -308,17 +329,20 @@ impl AgentSystem {
                 allocator.buildings[work].worker_count.saturating_sub(1);
         }
 
-        self.remove_agent_record(index, households)
+        self.remove_agent_record(index, households, "left the city with its household")
     }
 
+    // `reason` explains the removal when it ends an inspection.
     fn remove_agent_record(
         &mut self,
         index: usize,
         households: &mut HouseholdSystem,
+        reason: &'static str,
     ) -> Option<(usize, usize)> {
         let last = self.agents.len() - 1;
         self.agents.swap_remove(index);
         self.invalidate_lane_bucket_snapshot();
+        self.repair_inspection_after_remove(index, last, reason);
         if index != last {
             households.remap_shopper_agent_index(last, index, self);
             Some((last, index))

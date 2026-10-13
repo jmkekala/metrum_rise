@@ -6,7 +6,7 @@
 ## window. Only one inspector is open at a time: inspecting another building
 ## replaces it, and inspecting the same building again closes it. The open window
 ## refreshes only when the in-game hour changes, so the steady-state cost is O(1)
-## per frame.
+## per frame. The window never keeps the keyboard, so the camera can move while it is open.
 extends Node
 
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
@@ -32,7 +32,9 @@ func _process(_delta: float) -> void:
 	_last_observed_hour = absolute_hour
 	_refresh_open_windows()
 
-func try_inspect(world_pos: Vector3, screen_pos: Vector2 = Vector2.ZERO) -> bool:
+## Opens the inspector for the building at `world_pos`. Inspecting the open building again
+## closes it, unless `toggle` is false (a link to the building), which keeps it open.
+func try_inspect(world_pos: Vector3, screen_pos: Vector2 = Vector2.ZERO, toggle := true) -> bool:
 	var info: Dictionary = simulation_node.get_building_info_at(world_pos.x, world_pos.z)
 	if info.is_empty():
 		return false
@@ -40,7 +42,8 @@ func try_inspect(world_pos: Vector3, screen_pos: Vector2 = Vector2.ZERO) -> bool
 	var key := _building_key(info)
 	var entry: Dictionary = _open_windows.get(key, {})
 	if not entry.is_empty():
-		_close_entry(key)
+		if toggle:
+			_close_entry(key)
 		return true
 
 	close_window()
@@ -53,7 +56,6 @@ func try_inspect(world_pos: Vector3, screen_pos: Vector2 = Vector2.ZERO) -> bool
 	var window: Window = entry["window"]
 	_place_window_near_cursor(window, screen_pos)
 	window.show()
-	window.grab_focus()
 	_last_observed_hour = _current_absolute_hour()
 	return true
 
@@ -90,6 +92,8 @@ func _create_window_entry(key: String) -> Dictionary:
 	window.exclusive = false
 	window.visible = false
 	window.close_requested.connect(_close_entry.bind(key))
+	# The camera keys, zoom and Esc keep working while the window is open.
+	UIStyle.keep_keyboard_with_game(window)
 	UIStyle.set_persistent_window_layout(
 		window,
 		"building_inspector",
@@ -177,29 +181,7 @@ func _display_name(info: Dictionary) -> String:
 	return asset_id.substr(colon + 1) if colon != -1 else asset_id
 
 func _place_window_near_cursor(window: Window, screen_pos: Vector2) -> void:
-	if window == null:
-		return
-
-	if screen_pos == Vector2.ZERO:
-		screen_pos = get_viewport().get_mouse_position()
-
-	var viewport_size := get_viewport().get_visible_rect().size
-	var window_size := Vector2(window.size)
-	var padding := UIStyle.CURSOR_WINDOW_GAP
-	var top_margin := 40.0
-	var bottom_margin := 12.0
-
-	var x := screen_pos.x + padding
-	if x + window_size.x > viewport_size.x - padding:
-		x = screen_pos.x - window_size.x - padding
-	if x < padding:
-		x = padding
-
-	var y := screen_pos.y - 24.0
-	var max_y := maxf(top_margin, viewport_size.y - window_size.y - bottom_margin)
-	y = clampf(y, top_margin, max_y)
-
-	window.position = Vector2i(int(round(x)), int(round(y)))
+	UIStyle.place_window_near_cursor(window, screen_pos, get_viewport())
 
 func _populate(entry: Dictionary, info: Dictionary) -> void:
 	entry["info"] = info

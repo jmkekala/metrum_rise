@@ -1,8 +1,8 @@
 # Metrum Rise — Debug System
 
-This document owns the runtime debug contract (`DEBUG-01` to `DEBUG-04`): the debug channels,
+This document owns the runtime debug contract (`DEBUG-01` to `DEBUG-05`): the debug channels,
 the runtime visual modes, the junction connector overlay and stall detector, road rejection
-reports and their replay, the log format, the shared log, the always-on `events` channel, the Godot
+reports and their replay, the agent inspector, the log format, the shared log, the always-on `events` channel, the Godot
 bridge, the in-game console and the `run.sh` launch flags. Crash diagnostics (`METRUM_CRASH_DIAGNOSTICS`, the hang watchdog and the
 flight recorder) are separate; this document lists only their launch flag.
 
@@ -359,6 +359,112 @@ attempt 2 (tool, same_node_connection): reproduced, refused by tool [made on roa
 - The replay also reads a captured stdout log, since `events` lines print there too; pass the
   save with `METRUM_ROAD_REPLAY_SAVE` when the log has no `dump save=` line.
 
+## Agent Inspector
+
+`DEBUG-05`. With no tool active, a click on a car, bike or pedestrian that is on a road or in a
+junction inspects its agent; a click on another agent switches to it. Rust keeps the selection,
+so it survives other agents being removed. While an agent is inspected:
+
+- A window opens beside the cursor, like the Building Inspector, and the player can drag it by
+  its title bar and resize it from its edges; its size is kept between sessions. It shows the
+  agent's render id (the `agent` of `events` lines), mode, state, speed, activity, home, work,
+  destination and the building it is in (id, zone kind and economy profile, or `none`), its
+  lane with the distance along it, and the route: path node *i* of *n*, lanes ahead, metres
+  left and how the route ends. Clicking another agent keeps the window where it is.
+- Home, work and destination are links. A link stops the follow, frames that building and
+  opens its Building Inspector beside the agent window (an inspector already open for it stays
+  open). The inspection and its route stay; a Follow button brings the camera back to the
+  agent and follows it again.
+- The window takes the keyboard focus only while a mouse button is held inside it (so a resize
+  drag that leaves the window keeps working), then gives it back: zoom, orbit and Esc keep
+  reaching the game while it is open.
+- The route is drawn from the agent to its destination door, above buildings and terrain, as a
+  6 px line inside a dark 2 px outline. The width stays the same on screen at any zoom, so the
+  route can be traced from far away: Rust turns each line segment into two triangles, and the
+  `route_ribbon` shader moves their corners apart across the segment's screen direction.
+- The camera pivot sits on the agent's drawn position every frame. Zoom and orbit work as
+  usual. Inside a building the pivot stays at its door, and follows again when the agent comes
+  out.
+- Panning (WASD) takes the camera back: the follow stops, but the inspection, its window and
+  its route stay, so the player can look along the route. Follow in the window returns to the
+  agent. Esc, or a click that hits no agent, still ends the inspection.
+
+| Route color | Part |
+|-------------|------|
+| Blue | The lane or connector the agent is on. |
+| Green | The next road lane. |
+| Cyan | Road lanes after that. |
+| Amber | Junction connectors. |
+| Pale yellow | Driveways between a door and the road. |
+| Magenta cross with a post | The destination door. |
+| Red cross with a post | Where the route stops without reaching a destination. |
+
+The route is what the agent will drive, not a straight line between nodes. Rust walks the
+remaining node path with the movement tick's own rules: the path index steps as at a lane end,
+lanes continue straight through degree-two splits, and the zero-hop connector leads into the
+planned detach lane. Among equally short connectors it takes the stable pick, which is the one a
+car takes when the junction is free. Overtaking, returning to the outer lane, or waiting for a
+busy connector can put the car on another lane; the drawing then follows from that lane. The
+`Route end` row says how the route ends:
+
+- `destination building N`: the agent leaves the road at its planned detach point and drives to
+  the door.
+- `path ends at node N`: the path stops at node N without a detach, as a trip to the world border
+  does; a car that still has a destination replans there.
+- `no lane leads on to node N; the agent replans there`: the movement tick will drop the path at
+  this point.
+- `no route on the roads`: the agent is in a building or moving in from the world border.
+
+Starting logs the agent on `events`. The inspection ends on Esc, the window's close button, a
+click that hits no agent (the click then reaches the building inspector), a world load, or the
+agent's removal; the camera stays where it is. A removal is explained on `events`:
+
+```text
+agent inspection: agent 5120, car, on a road, home 12 residential (house_small), work 40 office (office_tower), destination 40 office (office_tower)
+agent inspection ended: agent 5120 left the city with its household
+```
+
+The other removal is `finished its freight trip`; anything else says `is no longer in the
+simulation`.
+
+Limits:
+
+- An agent on a driveway (leaving or entering a building) or moving in from the world border is
+  not on a lane and cannot be picked until it reaches a road. An agent already inspected stays
+  inspected through those states.
+- The window has no source building. Agents do not store where a trip began, and `DEBUG-05`
+  adds no per-agent field for it.
+
+Cost:
+
+- A pick visits the roads and junction nodes within the pick radius plus 20 m (the edge R-tree
+  and the 16 m node grid), their lanes, and the agents on those lanes from the lane occupancy
+  snapshot. An entry made stale since the last tick fails the agent's current-lane check. The
+  pick radius is 1.5% of the camera distance, from 3 m to 15 m.
+- The selection stores the agent's row and render id. The single swap-remove site repairs the
+  row in O(1), so each frame's `get_agent_inspection` is O(1) and never searches the agents.
+  The camera follow adds one lookup in the car smoother's drawn poses.
+- A route build is O(path nodes + connectors at each junction + geometry points drawn). It runs
+  ten times a second and when the agent changes lane or path.
+- With nothing inspected the overlay does no work. The agent system gains two optional fields,
+  no per-agent data, and no tick work beyond one check per agent removal.
+
+Code: [`agent_inspector.gd`](../godot/scripts/renderers/agent_inspector.gd) (controller),
+[`agent_inspector_panel.gd`](../godot/scripts/ui/agent_inspector_panel.gd) (view),
+[`agent_inspection.rs`](../rust/src/nodes/sim/render/agent_inspection.rs) (picking, details,
+lines), [`route_preview.rs`](../rust/src/simulation/economy/agents/tick/route_preview.rs) (the
+route walk) and [`inspection.rs`](../rust/src/simulation/economy/agents/inspection.rs) (the
+selection).
+
+| Method | Contract |
+|--------|----------|
+| `SimulationNode.pick_debug_agent(pos, radius_m)` | Inspects the agent on a road or junction lane nearest `pos` (XZ) within `radius_m`; returns its render id, or `-1` and leaves the inspection as it was. |
+| `SimulationNode.clear_agent_inspection()` | Ends the inspection. |
+| `SimulationNode.get_agent_inspection(render_id)` | The window's fields, `position`, and `drawn_position` for a car drawn this frame. While the core is busy, only `drawn_position` (or nothing), so the follow keeps up during long ticks; `active: false` with a `reason` once `render_id` is no longer inspected. |
+| `SimulationNode.get_agent_route_lines(render_id)` | Line-list `points` and `colors`; the same lines as a ribbon (`ribbon_vertices`, `ribbon_uv`, `ribbon_uv2`, `ribbon_colors`: six corners per segment, each with the segment's other end in `uv` and `uv2.x` and its side in `uv2.y`); plus `lanes`, `remaining_m` and `end`. Empty while the core is busy or when `render_id` is not inspected. |
+| `SimulationNode.spawn_debug_car(from, to)` | Debugging and tests: a car at the start of the shortest car route between the road nodes nearest `from` and `to`, with no home or destination; returns its render id or `-1`. It changes the simulation outside the tick, so the session is no longer reproducible. |
+| `CameraNode.follow(target)`, `stop_follow()`, `is_following()` | `follow` puts the pivot on `target` and starts following; `pan` and `pan_screen` end the follow, so `is_following()` turns false when the player pans. |
+
 ## Godot Bridge
 
 `MetrumDebug` ([`debug_bridge.rs`](../rust/src/nodes/debug_bridge.rs)) is a stateless
@@ -531,6 +637,50 @@ cover the reports:
 - speed colors;
 - the focus log lines;
 - occupancy counts and the held-car highlight.
+
+`godot/tests/agent_inspector_test.gd` runs in the bridge list. On a test world with one road
+and a car from `spawn_debug_car`, driving the real `input_manager` click and Esc handlers, it
+covers:
+
+- a click where the car is drawn inspects it and does not reach the building inspector;
+- the inspection fields, the window's title and rows, and the `Route end` row;
+- the window opens beside the click without taking the keyboard, its title bar drags it and
+  its corner resizes it outward, and it still has not taken the keyboard afterwards;
+- a home link stops the follow, frames the building, opens its inspector beside the agent
+  window without toggling it, and keeps the camera there; Follow brings it back to the car;
+- the route: it starts at the car, reaches the far end of the road, measures the rest of it,
+  and is drawn as a ribbon of six corners per segment;
+- while the car drives at 4x, the pivot sits on its drawn position (at least 80% of frames, never
+  more than 5 m off), a mouse wheel event over the world zooms with the window open, and orbit
+  changes the view;
+- holding D through the Input singleton pans the camera, ends the follow and offers Follow,
+  while the inspection, window and route stay and the camera stays where it was panned; Follow
+  brings it back to the car;
+- an Esc key event through the viewport ends the inspection and the follow, clears the route
+  and the window, drops the Rust
+  selection, and leaves the camera where it was; pan works again;
+- a click beside the road ends a new inspection and reaches the building inspector;
+- a real Building Inspector window, open and then clicked, never keeps the keyboard, and WASD
+  moves the camera while it is open;
+- the start line on `events`.
+
+Rust tests cover the rest:
+
+- `simulation::economy::agents::tests::route_preview`: on a two-lane four-way junction, the
+  planned lanes for both approach lanes and all three exits equal the lanes the agent tick then
+  drives. The route starts at the car's lane distance and ends at the detach point, a replan
+  changes it, a path without a road onwards ends at that node, and an agent in a building has
+  none.
+- `simulation::economy::agents::inspection`: the selection follows the agent a swap-remove
+  moves, and the removal of the inspected agent ends it with its reason.
+- `nodes::sim::render::agent_inspection`: the pick takes the nearest car on a nearby lane,
+  misses beyond the radius, skips stale snapshot entries and finds cars on junction connectors;
+  lane-span lines run between the requested distances; ribbon corners carry their segment's
+  other end and matching sides.
+
+The `route_ribbon` shader draws nothing in headless runs. A one-off rendered check on Xvfb
+(`gl_compatibility`, 1280x720) measured the drawn route at 6 px of color inside a 10 px outline,
+the same with the camera 50 m and 3,000 m away.
 
 Rust unit tests in `debug::channel`, `debug::log`, `debug::visual` and `debug` cover:
 

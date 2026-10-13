@@ -107,29 +107,7 @@ func close_window() -> void:
 		_window.hide()
 
 func _place_window_near_cursor(screen_pos: Vector2) -> void:
-	if _window == null:
-		return
-
-	if screen_pos == Vector2.ZERO:
-		screen_pos = get_viewport().get_mouse_position()
-
-	var viewport_size := get_viewport().get_visible_rect().size
-	var window_size := Vector2(_window.size)
-	var padding := UIStyle.CURSOR_WINDOW_GAP
-	var top_margin := 40.0
-	var bottom_margin := 12.0
-
-	var x := screen_pos.x + padding
-	if x + window_size.x > viewport_size.x - padding:
-		x = screen_pos.x - window_size.x - padding
-	if x < padding:
-		x = padding
-
-	var y := screen_pos.y - 24.0
-	var max_y := maxf(top_margin, viewport_size.y - window_size.y - bottom_margin)
-	y = clampf(y, top_margin, max_y)
-
-	_window.position = Vector2i(int(round(x)), int(round(y)))
+	UIStyle.place_window_near_cursor(_window, screen_pos, get_viewport())
 
 func _refresh() -> void:
 	if _selected_edges.is_empty() or _simulation_node == null:

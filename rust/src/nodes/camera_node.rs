@@ -75,6 +75,8 @@ pub struct CameraNode {
     pitch: f32,
     /// Distance from the pivot point.
     distance: f32,
+    /// While true the owner moves the pivot with `follow()`; pan input ends it.
+    following: bool,
     /// Cached terrain/runtime source for height sampling.
     simulation_node: Option<Gd<SimulationNode>>,
 
@@ -105,6 +107,7 @@ impl ICamera3D for CameraNode {
             yaw: INITIAL_YAW,
             pitch: INITIAL_PITCH,
             distance: INITIAL_DISTANCE_M,
+            following: false,
             simulation_node: None,
             orthogonal: false,
         }
@@ -164,6 +167,8 @@ impl CameraNode {
     #[func]
     pub fn pan(&mut self, direction: Vector3, speed_mult: f32, delta: f32) {
         if direction.length() > 0.0 {
+            // The player takes the camera back from whatever it was following.
+            self.following = false;
             let yaw_rot = Basis::from_euler(EulerOrder::YXZ, Vector3::new(0.0, self.yaw, 0.0));
             // Scale pan speed by zoom distance: faster when zoomed out, slower when close
             let zoom_factor = (self.distance / INITIAL_DISTANCE_M).max(0.1);
@@ -180,6 +185,7 @@ impl CameraNode {
         if mouse_delta.length_squared() <= 0.0 {
             return;
         }
+        self.following = false;
         let yaw_rot = Basis::from_euler(EulerOrder::YXZ, Vector3::new(0.0, self.yaw, 0.0));
         let right = yaw_rot * Vector3::RIGHT;
         let forward = yaw_rot * Vector3::new(0.0, 0.0, -1.0);
@@ -218,6 +224,28 @@ impl CameraNode {
         self.pivot = center;
         self.set_orbit_distance(radius * self.focus_padding_mult);
         self.update_camera_transform();
+    }
+
+    /// Centres the orbit on `target` and starts following. The owner calls this every frame with
+    /// the followed object's drawn position; zoom and orbit keep working, and panning stops the
+    /// follow (`is_following()` turns false). Terrain clearance still sets the pivot height.
+    #[func]
+    pub fn follow(&mut self, target: Vector3) {
+        self.following = true;
+        self.pivot = target;
+        self.update_camera_transform();
+    }
+
+    /// Stops following; the camera stays where it is and panning works again.
+    #[func]
+    pub fn stop_follow(&mut self) {
+        self.following = false;
+    }
+
+    /// Returns `true` between `follow()` and `stop_follow()`.
+    #[func]
+    pub fn is_following(&self) -> bool {
+        self.following
     }
 
     /// Sets the allowed zoom-distance range for the current scene.

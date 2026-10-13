@@ -946,6 +946,18 @@ reopening requires a current reproduction, not an assumption that the old geomet
   `./run.sh --replay-road-attempts <dump>` loads that save in a throwaway profile and replays
   each attempt, reporting whether the refusal reproduces. See
   [`debug.md`](debug.md#road-rejections).
+- Agent inspector (2026-10-13, `DEBUG-05`): with no tool active, a click on a car, bike or
+  pedestrian on a road opens a window beside the cursor (draggable and resizable, like the
+  Building Inspector) with its mode, state, speed, activity, lane, route progress and its home,
+  work and destination as links that frame the building and open its inspector. The route is
+  an outlined line of constant screen width, readable from far away; panning stops the follow
+  but keeps the inspection until Esc, and Follow returns to the agent. Its route is drawn from the agent to the
+  destination door, walked with the movement tick's own lane and connector rules. The camera
+  follows the agent's drawn position, with zoom and orbit still working, until Esc, the close
+  button, a miss, a world load or the agent's removal (explained on `events`). The selection
+  lives in the agent system and is repaired in O(1) at swap-remove; picking reads the lane
+  occupancy snapshot near the click. There is no source building: agents do not store where a
+  trip began. See [`debug.md`](debug.md#agent-inspector).
 - Junction connector overlay (2026-10-13, `DEBUG-04`): the `junction_connectors` visual mode
   draws the connector arcs cars drive through junctions near the camera, straight from the lane
   geometry. Its views color them by whitelist (`arcs`), turn speed cap (`speed`) or cars on them

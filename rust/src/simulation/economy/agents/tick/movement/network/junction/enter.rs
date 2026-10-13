@@ -5,7 +5,8 @@
 use super::super::super::super::super::{MODE_CAR, TRANSIT_INTERSECTION, TRANSIT_NETWORK};
 use super::super::super::super::claims::LaneClaimContext;
 use super::super::super::super::lane_nav::{
-    collect_connector_lanes_to_edge, collect_connector_lanes_to_lane,
+    collect_connector_lanes_to_edge, collect_connector_lanes_to_lane, connector_choice_seed,
+    direct_vehicle_lane_to_edge, direct_vehicle_lane_to_lane,
 };
 use super::super::super::super::slices::MovementSlices;
 use super::super::super::super::traffic::{
@@ -14,7 +15,6 @@ use super::super::super::super::traffic::{
 };
 use super::LaneEndAction;
 use crate::simulation::network::TransitNetwork;
-use crate::simulation::network::lanes::LaneType;
 use crate::traffic_log;
 use std::cell::RefCell;
 
@@ -308,46 +308,6 @@ pub(super) unsafe fn enter_detach_lane_connector(
     }
 }
 
-fn direct_vehicle_lane_to_edge(
-    from_lane_id: usize,
-    target_edge_id: usize,
-    transit_network: &TransitNetwork,
-) -> Option<usize> {
-    let from_lane = transit_network.lane_system.lanes.get(from_lane_id)?;
-    if from_lane.lane_type != LaneType::Vehicle {
-        return None;
-    }
-
-    from_lane.next_lanes.iter().copied().find(|&next_lane_id| {
-        transit_network
-            .lane_system
-            .lanes
-            .get(next_lane_id)
-            .is_some_and(|lane| {
-                lane.edge_id == target_edge_id && lane.lane_type == LaneType::Vehicle
-            })
-    })
-}
-
-fn direct_vehicle_lane_to_lane(
-    from_lane_id: usize,
-    target_lane_id: usize,
-    transit_network: &TransitNetwork,
-) -> bool {
-    let Some(from_lane) = transit_network.lane_system.lanes.get(from_lane_id) else {
-        return false;
-    };
-    if from_lane.lane_type != LaneType::Vehicle {
-        return false;
-    }
-    from_lane.next_lanes.contains(&target_lane_id)
-        && transit_network
-            .lane_system
-            .lanes
-            .get(target_lane_id)
-            .is_some_and(|lane| lane.lane_type == LaneType::Vehicle && lane.edge_id != usize::MAX)
-}
-
 #[allow(clippy::too_many_arguments)]
 unsafe fn enter_direct_vehicle_lane(
     i: usize,
@@ -507,21 +467,6 @@ unsafe fn enter_connector_lane(
         );
         clamp_remaining_to_connector_sample(conn_lane_id, remaining_dist, transit_network);
     }
-}
-
-#[inline(always)]
-fn connector_choice_seed(
-    agent_idx: usize,
-    from_lane_id: usize,
-    target_id: usize,
-    node_id: u32,
-    path_idx: usize,
-) -> u64 {
-    (agent_idx as u64)
-        ^ ((from_lane_id as u64) << 11)
-        ^ ((target_id as u64) << 23)
-        ^ ((node_id as u64) << 37)
-        ^ ((path_idx as u64) << 3)
 }
 
 unsafe fn apply_connector_entry_speed(

@@ -102,6 +102,53 @@ static func set_font_size(control: Control, base_size: int) -> void:
 	control.set_meta(FONT_SIZE_META, base_size)
 	control.add_theme_font_size_override("font_size", scaled_font_size(base_size))
 
+## Lets the game keep the keyboard while `window` is open, so the camera keys, zoom and Esc keep
+## working. The window takes the focus only while the left button is down inside it: an
+## unfocusable embedded window stops getting the mouse once it leaves, which would end a resize
+## drag at its edge. On release it is shown again without the focus. Only for windows without
+## text fields.
+static func keep_keyboard_with_game(window: Window) -> void:
+	window.unfocusable = true
+	window.window_input.connect(func(event: InputEvent) -> void:
+		var button := event as InputEventMouseButton
+		if button == null or button.button_index != MOUSE_BUTTON_LEFT:
+			return
+		if button.pressed:
+			window.unfocusable = false
+			window.grab_focus()
+		else:
+			window.unfocusable = true
+			_drop_focus.call_deferred(window)
+	)
+
+# Showing an embedded window again registers it without the focus, in the same frame.
+static func _drop_focus(window: Window) -> void:
+	if is_instance_valid(window) and window.visible:
+		window.hide()
+		window.show()
+
+## Puts `window` beside `screen_pos` (the mouse when zero): right of it, or left when it would
+## leave the viewport, with its top a little above the point and clear of the top menu.
+static func place_window_near_cursor(window: Window, screen_pos: Vector2, viewport: Viewport) -> void:
+	if window == null or viewport == null:
+		return
+	if screen_pos == Vector2.ZERO:
+		screen_pos = viewport.get_mouse_position()
+	var viewport_size := viewport.get_visible_rect().size
+	var window_size := Vector2(window.size)
+	var padding := CURSOR_WINDOW_GAP
+	var top_margin := 40.0
+	var bottom_margin := 12.0
+	var x := screen_pos.x + padding
+	if x + window_size.x > viewport_size.x - padding:
+		x = screen_pos.x - window_size.x - padding
+	if x < padding:
+		x = padding
+	var y := screen_pos.y - 24.0
+	var max_y := maxf(top_margin, viewport_size.y - window_size.y - bottom_margin)
+	y = clampf(y, top_margin, max_y)
+	window.position = Vector2i(int(round(x)), int(round(y)))
+
 static func set_window_base_size(
 	window: Window,
 	base_size: Vector2i,

@@ -10,6 +10,7 @@ mod lane_nav;
 mod movement;
 mod movement_pass;
 mod planning;
+mod route_preview;
 mod runtime;
 mod schedule;
 mod scrub;
@@ -38,6 +39,8 @@ pub(crate) use planning::{
     estimate_building_origin_trip_seconds, estimate_trip_seconds_between,
     plan_building_origin_trip, plan_building_to_border_trip, plan_immigration_trip,
 };
+// The agent inspector draws the route the movement rules below would follow.
+pub(crate) use route_preview::{PlannedRoute, RouteEnd, planned_route};
 // Shared with the junction debug view and its stall detector.
 pub(crate) use traffic::connector_turn_speed;
 pub(in crate::simulation::economy::agents) use traffic::lane_attach_slot_clear;

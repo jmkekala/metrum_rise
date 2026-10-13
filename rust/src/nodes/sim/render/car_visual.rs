@@ -114,6 +114,11 @@ impl CarVisualSmoother {
         std::mem::swap(&mut self.drawn, &mut self.next);
         self.next.clear();
     }
+
+    /// Where car `id` was drawn this frame, if it was. One lookup.
+    pub(crate) fn drawn_origin(&self, id: i64) -> Option<Vec3> {
+        self.drawn.get(&id).map(|pose| pose.origin)
+    }
 }
 
 /// Restores the snapshot pose of every off-lane car. Used when the support solve is busy or

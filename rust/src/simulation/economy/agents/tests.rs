@@ -18,6 +18,7 @@ use godot::prelude::{Vector2, Vector3};
 mod departure;
 mod junctions;
 mod lane_dynamics;
+mod route_preview;
 mod support;
 mod trips;
 mod vehicle_flow;
