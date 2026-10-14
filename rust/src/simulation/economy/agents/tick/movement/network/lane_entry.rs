@@ -4,11 +4,10 @@
 
 use super::super::super::super::{
     ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_PLAN_VALID, ACCESS_ZERO_HOP_NODE_PATH, MODE_WALK,
-    TRANSIT_NETWORK,
 };
 use super::super::super::lane_nav::lane_origin_node;
 use super::super::super::planning::{plan_border_network_replan, plan_network_replan};
-use super::super::super::slices::MovementSlices;
+use super::super::super::slices::{MovementSlices, enter_lane};
 use super::super::super::trip_failures::FailureCause;
 use super::super::NETWORK_REPLAN_DELAY_S;
 use super::super::replan_watchdog::{
@@ -55,7 +54,6 @@ pub(super) unsafe fn prepare_lane_entry(
         let s_cur_n = &slices.cur_n;
         let s_tmode = &slices.tmode;
         let s_speed = &slices.speed;
-        let s_transit = &slices.transit;
         let s_cur_b = &slices.cur_b;
         let s_tgt_b = &slices.tgt_b;
         let s_freight_target_border_node = &slices.freight_target_border_node;
@@ -66,7 +64,6 @@ pub(super) unsafe fn prepare_lane_entry(
         let s_access_flags = &slices.access_flags;
         let s_next_replan_time = &slices.next_replan_time;
         let s_lane_id = &slices.lane_id;
-        let s_lane_d = &slices.lane_d;
         let s_cur_e = &slices.cur_e;
 
         if s_path.get(i).is_empty() && *s_lane_id.get(i) == usize::MAX {
@@ -85,9 +82,14 @@ pub(super) unsafe fn prepare_lane_entry(
                     if detach_origin == *s_plan_detach_n.get(i) {
                         let parent_edge =
                             transit_network.lane_system.lanes[planned_detach_lane_id].edge_id;
-                        *s_cur_e.get_mut(i) = parent_edge;
-                        *s_lane_id.get_mut(i) = planned_detach_lane_id;
-                        *s_lane_d.get_mut(i) = 0.0;
+                        enter_lane!(
+                            slices,
+                            i,
+                            transit_network,
+                            planned_detach_lane_id,
+                            0.0,
+                            *s_cur_n.get(i)
+                        );
                         if *s_speed.get(i) == 0.0 {
                             *s_speed.get_mut(i) = graph.edge(parent_edge).speed_limit;
                         }
@@ -240,10 +242,14 @@ pub(super) unsafe fn prepare_lane_entry(
                                     lane_entry_choice_seed(i, *s_cur_n.get(i), next_node, best_e);
                                 let chosen =
                                     valid_lanes[stable_index(choice_seed, valid_lanes.len())];
-                                *s_lane_id.get_mut(i) = chosen;
-                                *s_lane_d.get_mut(i) = 0.0;
-                                *s_cur_e.get_mut(i) = best_e;
-                                *s_transit.get_mut(i) = TRANSIT_NETWORK;
+                                enter_lane!(
+                                    slices,
+                                    i,
+                                    transit_network,
+                                    chosen,
+                                    0.0,
+                                    *s_cur_n.get(i)
+                                );
                                 *s_cur_b.get_mut(i) = usize::MAX;
                                 // Seed speed from edge limit on first lane entry.
                                 if *s_speed.get(i) == 0.0 {

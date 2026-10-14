@@ -2,18 +2,18 @@
 
 //! Connector entry, wait, and claim handling.
 
-use super::super::super::super::super::{MODE_CAR, TRANSIT_INTERSECTION, TRANSIT_NETWORK};
+use super::super::super::super::super::MODE_CAR;
 use super::super::super::super::claims::LaneClaimContext;
 use super::super::super::super::lane_nav::{
     collect_connector_lanes_to_edge, collect_connector_lanes_to_lane, connector_choice_seed,
     direct_vehicle_lane_to_edge, direct_vehicle_lane_to_lane,
 };
-use super::super::super::super::slices::MovementSlices;
-use super::super::super::super::trip_failures::{FailureCause, FailureOutcome, record_failure};
+use super::super::super::super::slices::{MovementSlices, enter_lane};
 use super::super::super::super::traffic::{
     ConnectorEntry, claim_connector_entry, claim_lane_entry, junction_car_speed,
     junction_entry_speed, lane_entry_slot_clear,
 };
+use super::super::super::super::trip_failures::{FailureCause, FailureOutcome, record_failure};
 use super::LaneEndAction;
 use crate::simulation::network::TransitNetwork;
 use crate::traffic_log;
@@ -391,10 +391,7 @@ unsafe fn enter_direct_vehicle_lane(
             return LaneEndAction::Break;
         }
 
-        *slices.lane_id.get_mut(i) = target_lane_id;
-        *slices.lane_d.get_mut(i) = 0.0;
-        *slices.transit.get_mut(i) = TRANSIT_NETWORK;
-        *slices.cur_e.get_mut(i) = target_edge;
+        enter_lane!(slices, i, transit_network, target_lane_id, 0.0, node_id);
         traffic_log!(
             "[JUNCTION_BYPASS] agent={} node={} from_lane={} from_edge={} to_lane={} to_edge={} remaining_dist={:.2} path_idx={}/{} reason=direct-pass-through",
             i,
@@ -485,10 +482,14 @@ unsafe fn enter_connector_lane(
     slices: &MovementSlices,
 ) {
     unsafe {
-        *slices.lane_id.get_mut(i) = conn_lane_id;
-        *slices.lane_d.get_mut(i) = 0.0;
-        *slices.transit.get_mut(i) = TRANSIT_INTERSECTION;
-        *slices.cur_e.get_mut(i) = usize::MAX;
+        enter_lane!(
+            slices,
+            i,
+            transit_network,
+            conn_lane_id,
+            0.0,
+            *slices.cur_n.get(i)
+        );
         apply_connector_entry_speed(
             i,
             conn_lane_id,

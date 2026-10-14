@@ -2,16 +2,16 @@
 
 //! Local access-egress movement from a building door to the planned network lane.
 
-use super::super::super::super::{ACCESS_PLAN_VALID, MODE_CAR, TRANSIT_NETWORK};
+use super::super::super::super::{ACCESS_PLAN_VALID, MODE_CAR};
 use super::super::super::access::{
     advance_along_local_access_path, local_access_path, local_access_should_log_step,
     local_access_side_label, local_access_target_segment, planned_attach_is_legal,
 };
 use super::super::super::claims::LaneClaimContext;
 use super::super::super::lane_nav::lane_origin_node;
-use super::super::super::slices::MovementSlices;
-use super::super::super::trip_failures::{FailureCause, FailureOutcome, record_failure};
+use super::super::super::slices::{MovementSlices, enter_lane};
 use super::super::super::traffic::{claim_lane_entry, lane_attach_slot_clear};
+use super::super::super::trip_failures::{FailureCause, FailureOutcome, record_failure};
 use super::super::{BUILDING_REPLAN_DELAY_S, transit_mode_label};
 use super::reset_invalid_access_plan;
 use crate::config::{AGENT_DRIVEWAY_SPEED_MS, AGENT_WALK_SPEED_MS};
@@ -42,13 +42,8 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
         let s_plan_attach_lane = &slices.planned_attach_lane;
         let s_plan_attach_lane_d = &slices.planned_attach_lane_d;
         let s_access_flags = &slices.access_flags;
-        let s_cur_n = &slices.cur_n;
-        let s_cur_e = &slices.cur_e;
-        let s_lane_id = &slices.lane_id;
-        let s_lane_d = &slices.lane_d;
         let s_tmode = &slices.tmode;
         let s_speed = &slices.speed;
-        let s_transit = &slices.transit;
         let s_pos_x = &slices.pos_x;
         let s_pos_y = &slices.pos_y;
 
@@ -184,10 +179,14 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                 *s_pos_x.get_mut(i) = path.points[path.count - 1].x;
                 *s_pos_y.get_mut(i) = path.points[path.count - 1].y;
                 *s_cur_b.get_mut(i) = usize::MAX;
-                *s_cur_n.get_mut(i) = origin_node;
-                *s_cur_e.get_mut(i) = parent_edge;
-                *s_lane_id.get_mut(i) = attach_lane_id;
-                *s_lane_d.get_mut(i) = attach_lane_d;
+                enter_lane!(
+                    slices,
+                    i,
+                    transit_network,
+                    attach_lane_id,
+                    attach_lane_d,
+                    origin_node
+                );
                 *s_speed.get_mut(i) = if *s_tmode.get(i) == MODE_CAR {
                     graph
                         .edge(parent_edge)
@@ -210,7 +209,6 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                         path.points[path.count - 1].y,
                     );
                 }
-                *s_transit.get_mut(i) = TRANSIT_NETWORK;
             }
         } else {
             if crate::debug::Channel::Traffic.enabled() {

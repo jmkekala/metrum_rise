@@ -5,6 +5,25 @@
 use super::trip_failures::FailureSink;
 use crate::simulation::economy::agents::data::AgentVec;
 
+// Expand inside the caller's existing unsafe movement scope: no additional raw-pointer
+// access boundary or unsafe helper is needed. Evaluate inputs before borrowing the fields.
+macro_rules! enter_lane {
+    ($s:expr, $i:expr, $network:expr, $id:expr, $distance:expr, $node:expr) => {{
+        let (s, i, id, distance, node) = ($s, $i, $id, $distance, $node);
+        let mode = *s.tmode.get(i);
+        crate::simulation::economy::agents::lane_state::LaneStateMut {
+            agent: i,
+            lane: s.lane_id.get_mut(i),
+            edge: s.cur_e.get_mut(i),
+            node: s.cur_n.get_mut(i),
+            distance: s.lane_d.get_mut(i),
+            transit: s.transit.get_mut(i),
+        }
+        .enter(&$network.lane_system, mode, id, distance, node);
+    }};
+}
+pub(super) use enter_lane;
+
 // Safety invariant upheld by callers:
 // Rayon's `(0..n).into_par_iter()` visits each index `i` exactly once. All
 // mutable field accesses below index into disjoint SoA slots, so the raw

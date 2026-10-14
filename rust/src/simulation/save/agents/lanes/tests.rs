@@ -243,6 +243,61 @@ fn snapshot_remaps_all_lane_roles_after_incremental_rebuild_and_edge_compaction(
 }
 
 #[test]
+fn snapshot_rejects_walker_on_vehicle_lane_on_write_and_restore() {
+    let (graph, mut network) = fixture();
+    let id = network.lane_system.edge_lanes[&1]
+        .iter()
+        .copied()
+        .find(|&id| network.lane_system.lanes[id].lane_type == LaneType::Vehicle)
+        .unwrap();
+    let mut agents = AgentSystem::new();
+    let i = add_agent(&mut agents, id, &graph, &network.lane_system);
+    let allocator = BuildingAllocator::new();
+    let maps = crate::simulation::save::build_snapshot_maps(&graph, &allocator, &agents).unwrap();
+    let mut conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(crate::simulation::save::schema::SCHEMA)
+        .unwrap();
+    agents.transit_mode[i] = MODE_WALK;
+    {
+        let tx = conn.transaction().unwrap();
+        let error = save_agents(&tx, &agents, &graph, &network, &maps).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("lane type does not match travel mode")
+        );
+    }
+    agents.transit_mode[i] = MODE_CAR;
+    let tx = conn.transaction().unwrap();
+    save_agents(&tx, &agents, &graph, &network, &maps).unwrap();
+    tx.commit().unwrap();
+    conn.execute("UPDATE agents SET transit_mode = 0", [])
+        .unwrap();
+    let version = crate::simulation::save::schema::SAVE_VERSION;
+    let mut loaded = load_agents(&conn, 0.0, version).unwrap();
+    // Snapshot edges are compacted; restore against the corresponding compacted graph.
+    let tx = conn.transaction().unwrap();
+    crate::simulation::save::network::save_network(&tx, &graph, &maps).unwrap();
+    tx.commit().unwrap();
+    let mut restored_graph = crate::simulation::save::network::load_graph(&conn).unwrap();
+    network.lane_system.rebuild(&mut restored_graph);
+    let error = restore_lane_references(
+        &conn,
+        version,
+        &mut loaded,
+        &restored_graph,
+        &mut network,
+        &allocator,
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("lane type does not match travel mode")
+    );
+}
+
+#[test]
 fn v57_restores_both_sidewalk_directions_and_backward_vehicle_sentinel() {
     let (graph, network) = fixture();
     let lanes = &network.lane_system;

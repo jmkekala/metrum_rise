@@ -159,9 +159,13 @@ impl SimulationNode {
             return -1;
         };
         let at = lanes.lanes[lane_id].geometry[0];
-        let idx = core
-            .agents
-            .spawn_debug_car(path, edge_id, lane_id, Vector2::new(at.x, at.z));
+        let core = &mut *core;
+        let idx = core.agents.spawn_debug_car(
+            path,
+            &core.transit_network.lane_system,
+            lane_id,
+            Vector2::new(at.x, at.z),
+        );
         core.agents.render_id[idx] as i64
     }
 }

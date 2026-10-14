@@ -240,16 +240,18 @@ impl AgentSystem {
                     candidate.pos.y,
                 );
             }
-            self.agents.current_lane_id[i] = candidate.lane_id;
-            self.agents.current_edge[i] = candidate.edge_id;
-            self.agents.current_node[i] = candidate.origin_node;
-            self.agents.lane_distance[i] = candidate.lane_d;
+            self.agents.enter_lane(
+                i,
+                lane_system,
+                candidate.lane_id,
+                candidate.lane_d,
+                candidate.origin_node,
+            );
             self.agents.pos_x[i] = candidate.pos.x;
             self.agents.pos_y[i] = candidate.pos.y;
             self.agents.current_path[i].clear();
             self.agents.current_path_index[i] = 0;
             self.agents.network_replan_failures[i] = 0;
-            self.agents.transit[i] = TRANSIT_NETWORK;
             self.agents.lane_change_from_lane_id[i] = u32::MAX;
             self.agents.lane_change_start_d[i] = 0.0;
             self.agents.lane_change_length_m[i] = 0.0;
@@ -1102,6 +1104,57 @@ mod tests {
             old_pos.distance_to(new_pos) < 0.5,
             "reattach moved the car too far: old={old_pos:?} new={new_pos:?}",
         );
+    }
+
+    #[test]
+    fn nearby_road_addition_reattaches_walkers_to_sidewalks() {
+        let (mut graph, mut lanes) = make_simple_lane_system();
+        let mut sys = AgentSystem::new();
+        let old_ids: Vec<_> = lanes.edge_lanes[&0]
+            .iter()
+            .copied()
+            .filter(|&id| lanes.lanes[id].lane_type == LaneType::Foot)
+            .collect();
+        for &id in &old_ids {
+            let lane = &lanes.lanes[id];
+            let node = if lane.is_fwd { 0 } else { 1 };
+            let pos = sample_lane_position_xz(lane, 40.0).unwrap();
+            let i = sys.spawn_housed_agent(usize::MAX, pos.x, pos.y);
+            sys.agents.transit_mode[i] = MODE_WALK;
+            sys.agents.enter_lane(i, &lanes, id, 40.0, node);
+        }
+        // Add a branch at the neighbouring junction; the walkers' own edge is unchanged.
+        let end = graph.add_node(
+            Vector3::new(100.0, 0.0, 100.0),
+            crate::simulation::network::types::NodeType::Junction,
+        );
+        let mut branch = graph.edge(1).clone();
+        branch.end_node = end;
+        branch.geometry = vec![
+            Vector3::new(100.0, 0.0, 0.0),
+            Vector3::new(100.0, 0.0, 100.0),
+        ];
+        branch.physical_geometry = branch.geometry.clone();
+        let added = graph.add_edge(branch);
+        graph.rebuild_adjacency_list();
+        let dirty = HashSet::from([added]);
+        sys.invalidate_lane_ids_for_edges(&dirty, &lanes, &graph);
+        assert!(sys.current_lane_id.iter().all(|&id| id == usize::MAX));
+        lanes.rebuild_edges_incremental(&mut graph, &dirty);
+        sys.reattach_invalidated_lanes_for_edges(&dirty, &lanes, &graph);
+        for (i, &old_id) in old_ids.iter().enumerate() {
+            let id = sys.current_lane_id[i];
+            assert_ne!(id, old_id);
+            let lane = super::super::lane_state::lane_for_mode(&lanes, id, MODE_WALK).unwrap();
+            assert_eq!(lane.edge_id, 0);
+            super::super::lane_state::validate_lane_owner(
+                lane,
+                sys.current_edge[i],
+                sys.current_node[i],
+                sys.transit[i],
+            )
+            .unwrap();
+        }
     }
 
     #[test]

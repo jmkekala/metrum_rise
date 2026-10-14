@@ -190,30 +190,36 @@ pub(in crate::simulation::save) fn restore_lane_references(
     Ok(())
 }
 
-fn validate_current_lane(
+/// Checks the shared mode/ownership contract for a snapshot lane.
+pub(super) fn validate_current_lane(
     agents: &AgentSystem,
     i: usize,
     id: usize,
     graph: &RegionGraph,
     lanes: &LaneSystem,
 ) -> SaveLoadResult<()> {
-    let lane = &lanes.lanes[id];
-    let desired = if agents.transit_mode[i] == MODE_WALK {
-        LaneType::Foot
-    } else {
-        LaneType::Vehicle
+    use crate::simulation::economy::agents::lane_state::{lane_for_mode, validate_lane_owner};
+    let check = || {
+        let lane = lane_for_mode(lanes, id, agents.transit_mode[i])?;
+        if lane.edge_id != usize::MAX && lane.edge_id >= graph.edge_count() {
+            return Err("lane road owner is out of bounds");
+        }
+        validate_lane_owner(
+            lane,
+            agents.current_edge[i],
+            agents.current_node[i],
+            agents.transit[i],
+        )
     };
-    let owner_ok = if lane.edge_id == usize::MAX {
-        agents.transit[i] == TRANSIT_INTERSECTION && lane.node_id == agents.current_node[i] as usize
-    } else {
-        lane.edge_id == agents.current_edge[i] && lane.edge_id < graph.edge_count()
-    };
-    if lane.lane_type != desired || !owner_ok {
-        return Err(SaveLoadError::custom(format!(
-            "agent {i} lane does not match its travel mode or owner"
-        )));
-    }
-    Ok(())
+    check().map_err(|reason| {
+        SaveLoadError::custom(format!(
+            "agent {i} lane {id} mode={} edge={} node={} transit={}: {reason}",
+            agents.transit_mode[i],
+            agents.current_edge[i],
+            agents.current_node[i],
+            agents.transit[i]
+        ))
+    })
 }
 
 fn restore_v57_lane_references(

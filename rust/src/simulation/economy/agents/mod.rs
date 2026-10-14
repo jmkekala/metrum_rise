@@ -8,6 +8,7 @@ pub mod data;
 mod determinism;
 pub(crate) mod inspection;
 pub(crate) mod junction_stalls;
+pub(crate) mod lane_state;
 mod lifecycle;
 mod remap;
 #[cfg(test)]

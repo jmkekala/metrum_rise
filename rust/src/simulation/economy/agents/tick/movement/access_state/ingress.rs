@@ -9,7 +9,7 @@ use super::super::super::access::{
     planned_detach_is_legal,
 };
 use super::super::super::planning::plan_network_replan;
-use super::super::super::slices::MovementSlices;
+use super::super::super::slices::{MovementSlices, enter_lane};
 use super::super::super::trip_failures::FailureCause;
 use super::super::network::apply_network_replan;
 use super::super::replan_watchdog::delay_or_recover_after_network_replan_failure;
@@ -165,15 +165,14 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
         ) {
             *s_pos_x.get_mut(i) = ingress_origin.x;
             *s_pos_y.get_mut(i) = ingress_origin.y;
-            *s_cur_n.get_mut(i) = *s_plan_detach_n.get(i);
-            *s_cur_e.get_mut(i) = transit_network
-                .lane_system
-                .lanes
-                .get(detach_lane_id)
-                .map(|lane| lane.edge_id)
-                .unwrap_or(usize::MAX);
-            *s_lane_id.get_mut(i) = detach_lane_id;
-            *s_lane_d.get_mut(i) = detach_lane_d;
+            enter_lane!(
+                slices,
+                i,
+                transit_network,
+                detach_lane_id,
+                detach_lane_d,
+                *s_plan_detach_n.get(i)
+            );
             *s_speed.get_mut(i) = 0.0;
             s_path.get_mut(i).clear();
             if crate::debug::Channel::Traffic.enabled() {

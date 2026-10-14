@@ -8,6 +8,11 @@ This document is now intended to be a deterministic implementation spec for the 
 
 ## Current System
 
+Lane attachment and ingress rollback publish occupancy through the shared
+[`TRAFFIC-02` lane contract](traffic.md#shared-lane-occupancy-contract-traffic-02).
+Entrance planning still owns exact attachment legality; movement no longer independently writes
+the lane ID, road owner, distance and transit state at those handoffs.
+
 ### Core data model
 
 Buildings do not have explicit doors, lobbies, or interior navigation state.
@@ -1924,6 +1929,88 @@ and four growth integration tests (113 library diagnostics ignored). Its source 
 `92c59a1562167df4069c3e94d51e7cb456e23e53f273c0634a5421033d3c0c95`;
 source snapshots, executables and the test log are under `$ARTIFACTS/routing-final`.
 This validates the routing cleanup; subsequent ECON-13 fixes require their own checks.
+
+##### Vehicle U-turn routing contract (`NET-07`, `NET-08`)
+
+**Rule.** A car may reverse onto the road it arrived on only at a dead end (one arm). Bends,
+pass-throughs and junctions of any size have no U-turn. Roundabouts are ordinary junctions,
+so driving around one is the legal way to turn back. Junctions with explicit vehicle turn
+connections keep following their whitelist. The lane builder already implements this rule
+(`vehicle_junctions.rs` creates a same-edge connector only when the node has one arm).
+
+**Mismatch (`NET-07`).** The router does not follow it. NET-03 keeps one CCH state per
+unrestricted node because "unrestricted arrivals are equivalent". That holds only if every
+turn, including the U-turn, is legal there. As a result, routes U-turn for free at every open
+node, while movement finds no connector. Car routes also never check the final turn into the
+detach lane: `network_path` skips connector validation for cars, and
+`path_has_valid_vehicle_turns` checks only interior nodes. Cars whose attach and detach nodes
+match are priced as a free zero hop without any connector check, and outbound border trips
+quote without their origin edge. Each failed car drops its route and replans from the same
+position, receiving the same route again.
+
+Evidence: debug dump `dump-2026-10-14_20-28-16` (road generation 13) logs repeated
+`trip failed ... no turn` events at 15 nodes over about 240 s, many repeating for the same
+agents. At node 2 (three arms: edges 1, 2, 9), vehicle lanes 60/61 of edge 9 connect only to
+lanes 8, 14 and 15. Routes ask for lane 61 → 63 (edge 9's opposite direction) and edge 9 →
+edge 9. Nodes 16 and 26 are two-arm bends with the same pattern. The dumped graph has 125
+nodes: 36 dead ends, 25 bends, 52 three-arm and 12 four-arm junctions.
+
+**Why endpoint checks alone are insufficient.** Banning the U-turn only at the first or last
+node moves it: the cheapest route then turns into a neighbouring open node, U-turns there for
+free, and comes back. An exact route must forbid U-turns wherever the lanes do. In the CCH
+that means every non-dead-end node needs one arrival state per incoming edge, the existing
+restricted-node model with an "every turn except the U-turn" rule.
+
+**Cost with the current ordering (2026-10-14).** Matched unprofiled release runs of
+`benchmark_populated_cch_queries` at 10k residents with temporary hierarchy-size/build timers
+(not retained), two alternating pairs, `RAYON_NUM_THREADS=8 taskset -c 0,2,4,6,8,10,12,14`,
+working tree based on `abb37aa5` with the pending `TRAFFIC-02` changes:
+
+| Variant | States | Filled arcs | Build ms | Cost query µs | Path query µs |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Baseline (one state per open node) | 247 | 1,770 | ~0.8 | 0.68 | 0.85 |
+| Split every non-dead-end node (this rule) | 892 | 23,564 | 16–18 | 6.5 | 6.8 |
+| Split two-arm bends only | 251 | 1,778 | ~0.8 | 0.68 | 0.86 |
+
+On the dump's road graph (temporary ignored test; 4,096 random car queries), splitting bends
+only changes 125 → 150 states, 344 → 473 arcs, 0.17 → 0.22 µs per query and 0.21 → 0.24 ms
+per build. The dead-end-only rule is therefore unaffordable with the current ordering.
+
+**Ordering (`NET-08`).** `order.rs` runs nested dissection on road nodes, using median
+coordinate cuts with junction separators. `topology.rs` then places each restricted node's
+arrival states consecutively at that node's rank. That is appropriate for one state per
+node. When junctions split, every separator junction contributes three or four states and
+filled arcs grow roughly quadratically. A turn-aware ordering must order the expanded state
+graph, so that separators cut roads (one or two states) rather than junctions. Turn-expanded
+CCH in the literature typically costs about 2–3× the node-based query. That figure is
+unverified here and is what `NET-08` must measure.
+
+**Implementation plan once `NET-08` is accepted.** Every item is O(1) or O(degree) per query
+and allocation-free:
+
+- Share the U-turn rule between the lane builder and `VehicleTurns` through one
+  `RegionGraph` predicate. Restrict every non-dead-end node: whitelists keep their pairs;
+  other nodes permit every turn except `incoming == outgoing`. Make
+  `CchGraph::vehicle_turn_allowed` (the uncompiled reference used by tests and the path
+  validator) apply the same rule.
+- Store each state's arrival edge. Add an `outgoing` (detach-edge) argument to point
+  queries: the backward search seeds only the arrival states permitted to turn onto it.
+  Canonicalize it like `source_context` for retained labels and quote keys. A start equal to
+  the end costs zero only when that turn is legal; otherwise the search returns the shortest
+  legal loop.
+- Bucket targets become (node, canonical exit context) pairs. Same-node targets get zero cost
+  only when the turn is legal. `BuildingTripEnds` supplies frontage edges with target nodes.
+- The planner passes origin and detach edges everywhere: `combine`/`network_seconds`/quote
+  keys, `network_path`, `network_leg_is_reachable`, immigration and border-out `cch_cost`.
+  Zero-hop car trips and replans require a legal turn. Flow-field paths validate both trip
+  ends through `path_has_valid_vehicle_turns(path, from_edge, to_edge, graph)`.
+- Tests: the edge-state Dijkstra oracles gain the U-turn rule and an exit-edge constraint.
+  Add regressions for a destination across the road at a three-arm junction, a car facing
+  away from its destination, a bend, and departure direction. Egress follows the planned
+  attach lane, and the planner chooses the departure direction by cost. With free U-turns it
+  sends cars toward the nearer junction to turn there, as with building 651 in the dump. A car
+  leaving a building must now depart in the direction whose route needs no U-turn. Then run the routing benchmarks and the
+  `--perf-contract` runner.
 
 ##### Flow-field and CCH precedence
 

@@ -23,6 +23,52 @@ Implementation lives mainly in:
 
 ## Current Scope
 
+### Shared lane occupancy contract (TRAFFIC-02)
+
+All live lane acquisitions use `agents/lane_state.rs`: building egress and ingress rollback,
+network entry, connector entry/exit, direct continuations, lane changes, road-edit reattachment,
+building-origin recovery, and debug spawning. The shared writer validates the lane ID and travel
+mode, finite nonnegative distance, and connector junction ownership before publishing lane,
+edge, node, distance, and transit state together. Routing, access legality, and traffic claims
+remain the responsibility of the requesting subsystem. Leaving a lane and clearing/replanning
+a route remain separate operations.
+
+The contract costs O(1) per acquisition and allocates nothing on success. It uses safe disjoint
+field references, including at the existing parallel movement boundary; it adds no unsafe blocks.
+A violated runtime invariant panics at the caller with agent/mode, previous occupancy, requested
+lane and network revision. It does not silently change travel mode or relocate the agent.
+`./run.sh --release` enables the existing crash diagnostics by default, so a rejected transition
+is captured with its caller and the simulation flight recorder under `logs/` (see
+[`debug.md`](debug.md)). This is a fail-fast invariant, including in release builds.
+Save and load share the mode/owner checks. A rejected save retains the previous file through the
+existing transactional replacement mechanism.
+
+The `zoned-city-26-days.sqlite` investigation found 14 walkers assigned to vehicle lanes; lane 61
+held five walkers ahead of nine cars. Their pedestrian destination plans and saved positions
+confirm inconsistent runtime occupancy. Nearby road additions are a possible trigger, but the
+original corrupting transition has not been reproduced. This contract refactor does not repair
+that already-invalid snapshot or establish the historical root cause.
+
+Performance acceptance (2026-10-14): matched unprofiled release executables, baseline
+`abb37aa5` (SHA-256 `eabe4dc799995762e66b84552deb5865133b31fc19d59b8f5dee797da221136d`)
+and the contract working tree (`11e08f2a3a59097cca794527c1741edbcbfa2451b6d8d0d53ba0f2678167c3a3`),
+each run as `RAYON_NUM_THREADS=8 taskset -c 0,2,4,6,8,10,12,14 "$TEST_BINARY" <test> --exact
+--ignored --nocapture --test-threads=1` in alternating order with nothing else running.
+
+- `benchmark_lane_transitions` (five pairs): transition counts match in every scenario. At
+  65,536 groups the median deltas are clear +1.3%, merge +1.6%, blocked +1.4%, cruise +2.9% and
+  lateral −4.0% (at most +0.08 ms); smaller tiers stay within pair-to-pair noise.
+- `benchmark_agent_tick_contract` (`PERF-06`, 25 pairs): work counts are identical. Medians at
+  10k/30k: network 0.228→0.237/0.494→0.494 ms, egress 0.478→0.471/1.415→1.381 ms; ingress
+  (0.230→0.265/0.443→0.361 ms) has overlapping interquartile ranges in both directions.
+- `python3 tools/perf_contract.py --binary "$TEST_BINARY" --artifacts "$ARTIFACTS"` on both
+  executables reports the same pre-existing `PERF-03`–`PERF-05` budget and scaling failures,
+  with every non-timing field identical. Daily ticks are 6.98→6.62/34.45→34.56 ms
+  (baseline) and 22.01→21.72/73.88→70.96 ms (fiscal stress) at 10k/30k.
+
+The shared contract therefore adds no measurable cost beyond about 2% on transition-dominated
+microbenchmarks and leaves simulation work unchanged.
+
 Save format 58 stores one identity row per live lane: road edge, direction and local lane index,
 or junction node plus incoming/outgoing road lanes. Current and planned agent references resolve
 through these identities after graph compaction and lane rebuilds. Tombstoned lanes are excluded.

@@ -503,10 +503,13 @@ impl AgentSystem {
         self.agents.access_flags[agent_idx] = plan.access_flags;
         self.agents.next_replan_time[agent_idx] = 0.0;
         self.agents.network_replan_failures[agent_idx] = 0;
-        self.agents.current_node[agent_idx] = origin_node;
-        self.agents.current_edge[agent_idx] = lane.edge_id;
-        self.agents.current_lane_id[agent_idx] = plan.planned_attach_lane_id;
-        self.agents.lane_distance[agent_idx] = plan.planned_attach_lane_d;
+        self.agents.enter_lane(
+            agent_idx,
+            &transit_network.lane_system,
+            plan.planned_attach_lane_id,
+            plan.planned_attach_lane_d,
+            origin_node,
+        );
         self.agents.lane_change_from_lane_id[agent_idx] = u32::MAX;
         self.agents.lane_change_start_d[agent_idx] = 0.0;
         self.agents.lane_change_length_m[agent_idx] = 0.0;

@@ -90,6 +90,15 @@ pub(super) fn save_agents(
     )?;
 
     for i in 0..agents.len() {
+        if agents.current_lane_id[i] != usize::MAX {
+            lanes::validate_current_lane(
+                agents,
+                i,
+                agents.current_lane_id[i],
+                graph,
+                &network.lane_system,
+            )?;
+        }
         let span = if agents.planned_attach_node[i] != u32::MAX {
             let canon =
                 super::network::canonical_existing_node(graph, agents.planned_attach_node[i])?;

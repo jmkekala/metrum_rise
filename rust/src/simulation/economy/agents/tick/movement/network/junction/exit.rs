@@ -3,7 +3,7 @@
 //! Connector-lane exit handling.
 
 use super::super::super::super::claims::LaneClaimContext;
-use super::super::super::super::slices::MovementSlices;
+use super::super::super::super::slices::{MovementSlices, enter_lane};
 use super::super::super::super::traffic::{claim_lane_entry, lane_entry_slot_clear};
 use super::LaneEndAction;
 use crate::simulation::economy::agents::MODE_CAR;
@@ -21,12 +21,10 @@ pub(super) unsafe fn exit_connector_lane(
 ) -> LaneEndAction {
     unsafe {
         let s_speed = &slices.speed;
-        let s_transit = &slices.transit;
         let s_path = &slices.path;
         let s_path_idx = &slices.path_idx;
         let s_lane_id = &slices.lane_id;
         let s_lane_d = &slices.lane_d;
-        let s_cur_e = &slices.cur_e;
 
         let lane = &transit_network.lane_system.lanes[lane_id];
         if !lane.next_lanes.is_empty() {
@@ -55,10 +53,14 @@ pub(super) unsafe fn exit_connector_lane(
                     *s_path_idx.get(i),
                     s_path.get(i).len(),
                 );
-                *s_lane_id.get_mut(i) = tgt_road_lane;
-                *s_lane_d.get_mut(i) = 0.0;
-                *s_transit.get_mut(i) = super::super::super::super::super::TRANSIT_NETWORK;
-                *s_cur_e.get_mut(i) = target_edge;
+                enter_lane!(
+                    slices,
+                    i,
+                    transit_network,
+                    tgt_road_lane,
+                    0.0,
+                    *slices.cur_n.get(i)
+                );
                 return LaneEndAction::KeepMoving;
             }
             traffic_log!(

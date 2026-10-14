@@ -8,7 +8,6 @@ License: [GNU General Public License, version 2 only (GPL-2.0-only)](LICENSE.md)
 - Godot
 - Rust
 - Git LFS
-- Samply for profiling
 - Linux, MacOS, WSL2
 
 ## How-to

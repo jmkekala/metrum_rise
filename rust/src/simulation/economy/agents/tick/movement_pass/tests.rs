@@ -59,6 +59,27 @@ fn connector_exit_fixture(count: usize, blocked: bool, mode: u8) -> (AgentSystem
     (agents, network)
 }
 
+#[test]
+fn pedestrian_connector_cannot_publish_a_vehicle_lane_exit() {
+    let (mut agents, mut network) = connector_exit_fixture(1, false, MODE_WALK);
+    // A malformed connection must fail at the transition, before the walker occupies asphalt.
+    network.lane_system.lanes[2].lane_type = LaneType::Vehicle;
+    let allocator = BuildingAllocator::new();
+    let graph = RegionGraph::new();
+    let clock = TimeSystem::new();
+    let n = agents.len();
+    agents.prepare_lane_buckets_for_tick(&network, n);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        agents.dispatch_movement_pass(&allocator, &network, &graph, 0.25, &clock, n);
+    }));
+    let error = result.expect_err("cross-mode connector exit must be rejected");
+    let message = error.downcast_ref::<String>().expect("contract diagnostic");
+    assert!(message.contains("lane transition rejected: agent=0 mode=0"));
+    assert!(message.contains("to_lane=2"));
+    assert_eq!(agents.current_lane_id[0], 0);
+    assert_eq!(agents.transit[0], TRANSIT_INTERSECTION);
+}
+
 fn lane_change_fixture(count: usize, cruise: bool) -> (AgentSystem, TransitNetwork) {
     let mut agents = AgentSystem::new();
     let mut network = TransitNetwork::new();

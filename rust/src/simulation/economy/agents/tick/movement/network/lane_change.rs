@@ -4,7 +4,7 @@
 
 use super::super::super::super::{ACCESS_PLAN_VALID, MODE_CAR, TRANSIT_NETWORK};
 use super::super::super::claims::LaneClaimContext;
-use super::super::super::slices::MovementSlices;
+use super::super::super::slices::{MovementSlices, enter_lane};
 use super::super::super::traffic::{
     LaneChangeKind, LaneChangeParams, OVERTAKE_COOLDOWN_S, choose_lane_change, claim_lane_entry,
     lane_change_finished, lane_change_gap_clear, planned_lane_change_target,
@@ -104,9 +104,14 @@ pub(super) unsafe fn prepare_lane_change_and_overtake(
         *slices.lane_change_from_lane.get_mut(i) = lane_id as u32;
         *slices.lane_change_start_d.get_mut(i) = lane_d;
         *slices.lane_change_length.get_mut(i) = choice.length;
-        *slices.lane_id.get_mut(i) = choice.target_lane_id;
-        *slices.lane_d.get_mut(i) = lane_d.min(target.length);
-        *slices.cur_e.get_mut(i) = target.edge_id;
+        enter_lane!(
+            slices,
+            i,
+            transit_network,
+            choice.target_lane_id,
+            lane_d.min(target.length),
+            *slices.cur_n.get(i)
+        );
         if choice.kind != LaneChangeKind::Planned {
             *slices.overtake_blocked_time.get_mut(i) = 0.0;
             *slices.overtake_cooldown.get_mut(i) = OVERTAKE_COOLDOWN_S;

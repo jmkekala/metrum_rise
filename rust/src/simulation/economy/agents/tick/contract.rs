@@ -96,7 +96,7 @@ fn fixture(count: usize) -> (AgentSystem, BuildingAllocator, TransitNetwork, Reg
     for index in 0..count {
         let agent = agents.spawn_debug_car(
             vec![start, end],
-            edge,
+            &network.lane_system,
             lane,
             Vector2::new(index as f32 * 16.0, 0.0),
         );

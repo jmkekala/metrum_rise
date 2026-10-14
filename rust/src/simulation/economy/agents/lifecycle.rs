@@ -56,21 +56,18 @@ impl AgentSystem {
         self.insert_agent(agent)
     }
 
-    /// Places a car at the start of road lane `lane_id` on edge `edge_id`, driving `path` from
+    /// Places a car at the start of road lane `lane_id`, driving `path` from
     /// `path[0]` with no home or destination building. For debugging and bridge tests only: it
     /// changes the simulation outside the tick, so the session is no longer reproducible.
     pub(crate) fn spawn_debug_car(
         &mut self,
         path: Vec<u32>,
-        edge_id: usize,
+        lanes: &crate::simulation::network::lanes::LaneSystem,
         lane_id: usize,
         start: Vector2,
     ) -> usize {
         let idx = self.spawn_border_arrival_agent(usize::MAX, path[0], start.x, start.y);
-        self.agents.transit[idx] = TRANSIT_NETWORK;
-        self.agents.current_edge[idx] = edge_id;
-        self.agents.current_lane_id[idx] = lane_id;
-        self.agents.lane_distance[idx] = 0.0;
+        self.agents.enter_lane(idx, lanes, lane_id, 0.0, path[0]);
         self.agents.current_path[idx] = path;
         self.agents.current_path_index[idx] = 1;
         idx
