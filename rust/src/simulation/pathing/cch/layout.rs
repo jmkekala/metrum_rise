@@ -56,11 +56,14 @@ impl<T> Index<usize> for NodeSlices<T> {
     }
 }
 
-/// Exact edge-pair projection of the topology's vehicle lane whitelists.
+/// Exact edge-pair projection of the vehicle connectors the lane builder creates.
 pub(super) struct VehicleTurns {
-    /// A node with an empty explicit whitelist remains restricted.
+    /// Nodes whose legal departures depend on the arrival edge: explicit whitelists, and every
+    /// open node except a dead end, where the lane builder creates no U-turn connector.
     pub(super) restricted: Vec<bool>,
-    /// Sorted unique permitted edge pairs per node.
+    /// Restricted nodes governed by an explicit whitelist; a whitelist may be empty.
+    whitelisted: Vec<bool>,
+    /// Sorted unique permitted edge pairs per whitelisted node.
     pub(super) allowed: NodeSlices<(usize, usize)>,
 }
 
@@ -69,6 +72,7 @@ impl VehicleTurns {
     pub(super) fn empty(nodes: usize) -> Self {
         Self {
             restricted: vec![false; nodes],
+            whitelisted: vec![false; nodes],
             allowed: NodeSlices::empty(nodes),
         }
     }
@@ -79,9 +83,9 @@ impl VehicleTurns {
         // nonincident edge IDs, duplicate lane entries and empty vehicle whitelists exactly.
         let rows: Vec<_> = (0..graph.node_count())
             .into_par_iter()
-            .map(|node| {
-                let node = graph.node(node as u32);
-                let restricted = CchGraph::node_has_vehicle_whitelist(node);
+            .map(|id| {
+                let node = graph.node(id as u32);
+                let whitelisted = CchGraph::node_has_vehicle_whitelist(node);
                 let mut pairs: Vec<_> = node
                     .lane_connections
                     .iter()
@@ -94,31 +98,39 @@ impl VehicleTurns {
                     .collect();
                 pairs.sort_unstable();
                 pairs.dedup();
-                (restricted, pairs)
+                let restricted = whitelisted || !graph.open_node_allows_u_turn(id as u32);
+                (restricted, whitelisted, pairs)
             })
             .collect();
         let mut allowed = NodeSlices::empty(graph.node_count());
-        for (node, (_, pairs)) in rows.iter().enumerate() {
+        for (node, (_, _, pairs)) in rows.iter().enumerate() {
             allowed.offsets[node + 1] = allowed.offsets[node] + pairs.len();
         }
         allowed.values.reserve(allowed.offsets[graph.node_count()]);
         let mut restricted = Vec::with_capacity(graph.node_count());
-        for (flag, pairs) in rows {
+        let mut whitelisted = Vec::with_capacity(graph.node_count());
+        for (flag, whitelist, pairs) in rows {
             restricted.push(flag);
+            whitelisted.push(whitelist);
             allowed.values.extend(pairs);
         }
         Self {
             restricted,
+            whitelisted,
             allowed,
         }
     }
 
-    /// O(1) at open junctions, O(log T) for T explicit pairs at restricted junctions.
+    /// O(1) at open nodes, O(log T) for T explicit pairs at whitelisted junctions.
+    /// Other restricted nodes permit every turn except the U-turn onto the arrival edge.
     pub(super) fn permits(&self, node: u32, incoming: usize, outgoing: usize) -> bool {
-        !self.restricted[node as usize]
-            || self.allowed[node as usize]
+        if self.whitelisted[node as usize] {
+            self.allowed[node as usize]
                 .binary_search(&(incoming, outgoing))
                 .is_ok()
+        } else {
+            !self.restricted[node as usize] || incoming != outgoing
+        }
     }
 }
 
@@ -154,6 +166,7 @@ mod tests {
         }
         let mut graph = RegionGraph::new();
         graph.set_nodes_edges_for_test(nodes, Vec::new());
+        graph.rebuild_adjacency_list();
         for phase in 0..2 {
             if phase == 1 {
                 graph.remove_lane_connection(2, (0, 0));
@@ -165,7 +178,7 @@ mod tests {
                     for outgoing in 0..5 {
                         assert_eq!(
                             turns.permits(node, incoming, outgoing),
-                            CchGraph::vehicle_turn_allowed(graph.node(node), incoming, outgoing),
+                            CchGraph::vehicle_turn_allowed(&graph, node, incoming, outgoing),
                             "phase={phase} node={node} {incoming}->{outgoing}"
                         );
                     }

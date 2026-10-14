@@ -3,8 +3,11 @@
 //! Focused routing and economy measurements; city setup is outside subsystem timing.
 
 use super::PopulatedCity;
+use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::TransitFlags;
-use crate::simulation::pathing::cch::{CchPathScratch, CchQueryScratch};
+use crate::simulation::pathing::cch::{
+    CchBucketSource, CchBuckets, CchGraph, CchPathScratch, CchQueryScratch,
+};
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use std::hint::black_box;
 use std::io::Write;
@@ -17,8 +20,42 @@ fn benchmark_populated_cch_queries() {
         .map(|value| value.parse().unwrap())
         .unwrap_or(10_000);
     let city = PopulatedCity::build(residents);
-    let graph = &city.core.region_graph;
-    let cch = &city.core.transit_network.cch_graph;
+    profile_cch(
+        &format!("populated-{residents}"),
+        &format!("{:?}", city.record()),
+        &city.core.region_graph,
+        &city.core.transit_network.cch_graph,
+    );
+}
+
+#[test]
+#[ignore = "release routing benchmark on a saved city's road graph (METRUM_CCH_GRAPH_SAVE)"]
+fn benchmark_saved_cch_queries() {
+    // Opened read-only; point it at a copy, never at a save in the active game profile.
+    let path = std::env::var("METRUM_CCH_GRAPH_SAVE").expect("METRUM_CCH_GRAPH_SAVE");
+    let graph = crate::simulation::save::load_road_graph(std::path::Path::new(&path)).unwrap();
+    let cch = crate::simulation::pathing::cch::CchGraph::build(&graph);
+    let label = std::path::Path::new(&path)
+        .file_stem()
+        .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
+    profile_cch(&label, "", &graph, &cch);
+}
+
+// Hierarchy size/build time, 4,096 mixed point queries and a car bucket batch. The query
+// mix and seed are unchanged from the original populated benchmark for comparability.
+fn profile_cch(label: &str, header: &str, graph: &RegionGraph, cch: &CchGraph) {
+    let mut build_ms = Vec::new();
+    for _ in 0..5 {
+        let begin = Instant::now();
+        black_box(CchGraph::build(graph));
+        build_ms.push(begin.elapsed().as_secs_f64() * 1e3);
+    }
+    let (states, arcs) = cch.size();
+    eprintln!(
+        "CCH_HIERARCHY {}",
+        serde_json::json!({ "label": label, "nodes": graph.node_count(),
+            "edges": graph.edge_count(), "states": states, "arcs": arcs, "build_ms": build_ms })
+    );
     let mut rng = StdRng::seed_from_u64(0x4e45_542d_3032);
     let queries: Vec<_> = (0..4096)
         .map(|i| {
@@ -43,7 +80,7 @@ fn benchmark_populated_cch_queries() {
     costs.prepare(cch, graph);
     paths.prepare(cch, graph);
     let mut report = Vec::new();
-    writeln!(report, "{:?}", city.record()).unwrap();
+    writeln!(report, "{header}").unwrap();
     for &(start, end, edge, mode) in &queries {
         let cost = cch.find_cost(start, end, edge, graph, mode, &mut costs);
         let path = cch.find_path_in(start, end, edge, graph, mode, &mut paths);
@@ -74,11 +111,52 @@ fn benchmark_populated_cch_queries() {
         eprintln!(
             "CCH_POPULATED_BENCH {}",
             serde_json::json!({
-                "residents": residents, "nodes": graph.node_count(), "edges": graph.edge_count(),
+                "label": label, "nodes": graph.node_count(), "edges": graph.edge_count(),
                 "queries": queries.len(), "materialize": materialize, "samples_us": samples,
             })
         );
     }
+    // Car buckets: 64 targets and 256 sources, a third of them with an incoming road edge.
+    let mut targets: Vec<_> = (0..64)
+        .map(|_| rng.gen_range(0..graph.node_count() as u32))
+        .collect();
+    targets.sort_unstable();
+    targets.dedup();
+    let sources: Vec<_> = (0..256)
+        .map(|i| {
+            let start = rng.gen_range(0..graph.node_count() as u32);
+            let arms = graph.node_adjacency(start);
+            let edge = if i % 3 == 0 && !arms.is_empty() {
+                arms[rng.gen_range(0..arms.len())]
+            } else {
+                usize::MAX
+            };
+            (start, edge)
+        })
+        .collect();
+    let mut bucket_build_us = Vec::new();
+    for _ in 0..5 {
+        let begin = Instant::now();
+        black_box(CchBuckets::build(cch, &targets, TransitFlags::CAR));
+        bucket_build_us.push(begin.elapsed().as_secs_f64() * 1e6);
+    }
+    let buckets = CchBuckets::build(cch, &targets, TransitFlags::CAR);
+    let mut source = CchBucketSource::default();
+    source.prepare(&buckets, cch);
+    let mut samples = Vec::new();
+    for _ in 0..11 {
+        let begin = Instant::now();
+        for &(start, edge) in &sources {
+            buckets.query_source(cch, start, edge, &mut source);
+            black_box(buckets.cost(0, &source));
+        }
+        samples.push(begin.elapsed().as_secs_f64() * 1e6 / sources.len() as f64);
+    }
+    eprintln!(
+        "CCH_BUCKET_BENCH {}",
+        serde_json::json!({ "label": label, "targets": targets.len(),
+            "sources": sources.len(), "build_us": bucket_build_us, "source_us": samples })
+    );
 }
 
 #[test]

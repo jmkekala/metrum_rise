@@ -1985,6 +1985,94 @@ graph, so that separators cut roads (one or two states) rather than junctions. T
 CCH in the literature typically costs about 2–3× the node-based query. That figure is
 unverified here and is what `NET-08` must measure.
 
+**`NET-08` first pass (2026-10-14, branch `u-turns`, uncommitted on `0ba23dc8`).** The router
+splits every node with more than one arm, using `RegionGraph::open_node_allows_u_turn`. The
+lane builder, trip ends and planner are unchanged (`NET-07`). Three ordering changes were
+measured in sequence:
+
+1. **State order.** `topology.rs` orders the arrival states themselves: nested dissection over
+   the state transition graph, with each state placed 0.5 m inside its node along the arrival
+   edge. Before, states inherited their node's rank.
+2. **Minimum-cover separators.** The median cut's separator is the minimum vertex cover of the
+   crossing links (maximum bipartite matching, König). Before, it was the smaller side's whole
+   boundary. A cut across one road then costs that road's two arrival states.
+3. **Flow cuts.** Four directions (x, z and both diagonals) per level. For each, the smallest
+   vertex separator between the first and last quarter of the vertices, by unit-capacity max
+   flow (inertial flow). It is kept when smaller than the median cover, or equally small and
+   better balanced.
+
+All are exact and deterministic: the ordering changes speed, never legality. The 35 pathing
+tests pass at each step, including the randomized edge-state Dijkstra oracles, which now apply
+the dead-end-only rule. The final state also passes 2,418 release library tests and the 4
+growth integration tests.
+
+Measurements:
+- `benchmark_populated_cch_queries`: populated 10k/30k fixtures.
+- `benchmark_saved_cch_queries`: a save's road graph, read-only via `METRUM_CCH_GRAPH_SAVE`,
+  run on a copy.
+- Both print `CCH_HIERARCHY`, `CCH_POPULATED_BENCH` and `CCH_BUCKET_BENCH`, each run as
+  `RAYON_NUM_THREADS=8 taskset -c 0,2,4,6,8,10,12,14 "$TEST_BINARY" <test> --exact --ignored
+  --nocapture --test-threads=1`.
+- Medians of 11 passes: 4,096 mixed car/foot point queries; car buckets with 64 targets and
+  256 sources (per-source µs).
+- Baseline and the final variant ran twice in alternating order (shown: the second round,
+  within about 5% of the first). The intermediate variants ran once.
+
+| Variant | Graph | States | Arcs | Build ms | Cost µs | Path µs | Bucket µs |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Baseline (no split, node order) | 10k | 247 | 1,770 | 0.68 | 0.667 | 0.837 | 0.97 |
+| | 30k | 642 | 6,321 | 2.66 | 1.632 | 1.961 | 1.88 |
+| | dump | 125 | 344 | 0.19 | 0.176 | 0.289 | 0.23 |
+| | 26-days | 161 | 396 | 0.24 | 0.174 | 0.296 | 0.25 |
+| Split, node order | 10k | 892 | 23,564 | 16.0 | 6.546 | 6.797 | 5.10 |
+| | 30k | 2,402 | 89,808 | 101.2 | 15.56 | 16.13 | 10.54 |
+| | dump | 290 | 2,373 | 0.91 | 0.892 | 1.051 | 0.73 |
+| | 26-days | 362 | 3,031 | 1.22 | 1.003 | 1.183 | 0.85 |
+| Split, state order | 10k | 892 | 18,926 | 11.6 | 5.612 | 5.868 | 4.16 |
+| | 30k | 2,402 | 62,626 | 50.6 | 12.15 | 12.60 | 8.34 |
+| + minimum-cover separators | 10k | 892 | 15,517 | 10.0 | 3.761 | 4.026 | 2.83 |
+| | 30k | 2,402 | 50,962 | 33.9 | 8.602 | 8.953 | 5.80 |
+| + flow cuts (final) | 10k | 892 | 14,640 | 14.0 | 3.447 | 3.694 | 2.75 |
+| | 30k | 2,402 | 48,435 | 51.7 | 7.864 | 8.341 | 5.58 |
+| | dump | 290 | 1,766 | 2.35 | 0.637 | 0.775 | 0.44 |
+| | 26-days | 362 | 2,165 | 2.86 | 0.623 | 0.786 | 0.48 |
+| Final ordering, no split | 10k | 247 | 1,755 | 2.30 | 0.670 | 0.847 | 1.06 |
+| | 30k | 642 | 6,163 | 5.68 | 1.751 | 2.022 | 2.05 |
+| | dump | 125 | 264 | 0.78 | 0.133 | 0.240 | 0.18 |
+| | 26-days | 161 | 313 | 1.08 | 0.133 | 0.249 | 0.18 |
+
+The intermediate rows' saved-city values are in the same run logs and follow the same trend.
+The final ordering cuts the split's cost from 9.5× to 4.8× the baseline at 30k (5.2× at 10k;
+3.6× on the saved cities). Bucket sources cost 3.0× and builds about 20× (52 ms at 30k).
+Without the split, the new ordering is neutral on the fixtures, 24% faster on the saved
+cities, and builds 2–4× slower. This is still above the 2–3× literature range, and acceptance
+is the user's decision. Further options:
+- A stronger partitioner (repeated/multi-direction flow cuts, FlowCutter-style refinement).
+- Contracting chains of two-arm bends before ordering.
+- Running the `--perf-contract` runner to see what 5× routing cost means for whole-city
+  hourly and daily time.
+
+**Whole-city cost (`--perf-contract`, 2026-10-14).** Command:
+`RAYON_NUM_THREADS=8 taskset -c 0,2,4,6,8,10,12,14 python3 tools/perf_contract.py --binary
+"$TEST_BINARY" --artifacts "$ARTIFACTS/<run>"`, two alternating pairs. Both executables read
+identical copies of the existing snapshot cache, which was reused, not regenerated.
+
+| Workload | Baseline (pair 1 / pair 2) | Final split variant | Change |
+| --- | --- | --- | ---: |
+| 10k hour | 17.57 / 16.91 ms | 18.98 / 18.99 ms | +10% |
+| 10k day | 7.19 / 6.75 ms | 7.04 / 7.01 ms | ≈0 |
+| 30k hour | 52.41 / 52.81 ms | 62.46 / 62.47 ms | +18% |
+| 30k day | 35.46 / 34.58 ms | 41.63 / 41.05 ms | +18% |
+| Fiscal stress 10k/30k hour | 27.6 / 76.5 ms | 27.8 / 78.1 ms | +1–2% |
+| Isolated routing phase 10k/30k (4,096 queries) | 2.84 / 6.76 ms | 13.34 / 29.83 ms | 4.4–4.7× |
+
+The failure list is unchanged: the pre-existing `PERF-03`–`PERF-05` budget and scaling
+failures. The 30k daily budget, already failing at 35 ms against 30 ms, rises to 41 ms. CCH point
+searches rise 11–12% in the baseline day (30k: 288,059 → 319,613). Arrival-specific source
+contexts at every non-dead-end origin split the quote and endpoint caches, which previously
+shared one key per node. Growth records differ only in treasury cents and, under fiscal stress at
+30k, one vacant home and one unhoused household: different legal routes change commutes.
+
 **Implementation plan once `NET-08` is accepted.** Every item is O(1) or O(degree) per query
 and allocation-free:
 

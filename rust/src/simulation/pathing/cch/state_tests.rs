@@ -46,7 +46,7 @@ fn oracle(graph: &RegionGraph, start: u32, end: u32, incoming: usize, mask: u8) 
             }
             if mask != TransitFlags::FOOT
                 && in_edge != usize::MAX
-                && !CchGraph::vehicle_turn_allowed(graph.node(node), in_edge, id)
+                && !CchGraph::vehicle_turn_allowed(graph, node, in_edge, id)
             {
                 continue;
             }
@@ -309,9 +309,7 @@ fn fractional_multimode_routes_match_independent_dijkstra_and_edge_witnesses() {
                                         mask == TransitFlags::FOOT
                                             || previous == usize::MAX
                                             || CchGraph::vehicle_turn_allowed(
-                                                graph.node(node),
-                                                previous,
-                                                id
+                                                &graph, node, previous, id
                                             )
                                     );
                                     let forward = edge.start_node == node;

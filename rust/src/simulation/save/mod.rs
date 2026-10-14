@@ -482,6 +482,15 @@ fn write_snapshot(
     Ok(())
 }
 
+/// Reads only a snapshot's road graph, without writing to the file, for routing benchmarks.
+#[cfg(test)]
+pub(crate) fn load_road_graph(path: &Path) -> SaveLoadResult<RegionGraph> {
+    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let mut graph = network::load_graph(&conn)?;
+    graph.rebuild_adjacency_list();
+    Ok(graph)
+}
+
 /// Entry point to load a simulation state from a SQLite database.
 pub(crate) fn load_from_sqlite(
     path: &Path,

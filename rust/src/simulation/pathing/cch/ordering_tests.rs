@@ -337,7 +337,7 @@ fn turn_aware_dijkstra(
                 continue;
             };
             if state.incoming_edge != usize::MAX
-                && !CchGraph::vehicle_turn_allowed(graph.node(state.node), state.incoming_edge, id)
+                && !CchGraph::vehicle_turn_allowed(graph, state.node, state.incoming_edge, id)
             {
                 continue;
             }

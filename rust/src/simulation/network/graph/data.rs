@@ -360,6 +360,12 @@ impl RegionGraph {
         self.adjacency[node_id as usize].len()
     }
 
+    /// Whether a vehicle may reverse onto its arrival edge at a node without explicit turn
+    /// connections: only at a dead end, matching the lane builder's U-turn connectors.
+    pub fn open_node_allows_u_turn(&self, node_id: u32) -> bool {
+        self.node_adjacency_count_at(node_id) <= 1
+    }
+
     /// Returns the total number of edges in the graph (including soft-deleted slots).
     pub fn edge_count(&self) -> usize {
         self.edges.len()

@@ -173,11 +173,12 @@ impl CchGraph {
             || self.turns.permits(node, incoming, outgoing)
     }
 
-    /// Returns whether a vehicle turn from `in_edge` to `out_edge` at `node_data` is
-    /// permitted under the global whitelist model.
+    /// Returns whether a vehicle turn from `in_edge` to `out_edge` at `node` is permitted
+    /// under the lane builder's connector rules.
     ///
     /// - If the node has **no** user-defined vehicle connections (lane_idx ≠ ±100) the
-    ///   junction is fully open and all turns are allowed.
+    ///   junction is open: every turn is allowed except a U-turn, which only a dead end
+    ///   permits (see [`RegionGraph::open_node_allows_u_turn`]).
     /// - If **any** user vehicle connection exists anywhere on the node, the entire node
     ///   enters whitelist mode: only explicitly listed turns are permitted; all others
     ///   are blocked regardless of which arm they come from.
@@ -185,14 +186,16 @@ impl CchGraph {
     /// Pedestrian lane entries (lane_idx == ±100) are always ignored so that the
     /// presence of sidewalk connections does not accidentally engage whitelist mode.
     fn vehicle_turn_allowed(
-        node_data: &crate::simulation::network::graph::data::Node,
+        graph: &RegionGraph,
+        node: u32,
         in_edge: usize,
         out_edge: usize,
     ) -> bool {
         // Global whitelist: if the node has any user vehicle connection, all unspecified
-        // turns are blocked. If the node has no user connections, all turns are open.
+        // turns are blocked. Otherwise only the U-turn depends on the node.
+        let node_data = graph.node(node);
         if !Self::node_has_vehicle_whitelist(node_data) {
-            return true; // open node
+            return in_edge != out_edge || graph.open_node_allows_u_turn(node);
         }
         // Whitelist mode: check explicit vehicle turns only.
         for (&(e_from, lane_idx), targets) in &node_data.lane_connections {
@@ -238,11 +241,19 @@ impl CchGraph {
             let Some(out_e) = graph.get_edge_between_nodes(jct, b) else {
                 continue;
             };
-            if !Self::vehicle_turn_allowed(graph.node(jct), in_e, out_e) {
+            if !Self::vehicle_turn_allowed(graph, jct, in_e, out_e) {
                 return false;
             }
         }
         true
+    }
+}
+
+#[cfg(test)]
+impl CchGraph {
+    /// Arrival states and filled arcs, reported by hierarchy-size benchmarks.
+    pub(crate) fn size(&self) -> (usize, usize) {
+        (self.parent.len(), self.shortcuts.len())
     }
 }
 

@@ -13,11 +13,11 @@ impl CchGraph {
         let mut result = Self::new(graph.node_count());
         result.build_generation = BUILD_GEN.fetch_add(1, Ordering::Relaxed);
         result.turns = VehicleTurns::build(graph);
-        let (order, _) = Self::compute_node_order(graph);
+        // States are created in node order, then relabelled by their own contraction order.
         let mut states = vec![Vec::new(); graph.node_count()];
         let mut incoming = Vec::new();
         let mut arrival = HashMap::new();
-        for &node in &order {
+        for node in 0..graph.node_count() as u32 {
             if result.turns.restricted[node as usize] {
                 let mut edges = graph.node_adjacency(node).to_vec();
                 edges.sort_unstable();
@@ -56,6 +56,21 @@ impl CchGraph {
                 });
             }
         }
+        let rank = Self::order_states(graph, &result.turns, &states, &incoming, &departures);
+        let mut ranked = vec![usize::MAX; incoming.len()];
+        for (state, &edge) in incoming.iter().enumerate() {
+            ranked[rank[state] as usize] = edge;
+        }
+        incoming = ranked;
+        for state in states.iter_mut().flatten() {
+            *state = rank[*state as usize];
+        }
+        for departure in departures.iter_mut().flatten() {
+            departure.target = rank[departure.target as usize];
+        }
+        // Road nodes by their highest-ranked state, for diagnostics and tests.
+        let mut order: Vec<_> = (0..graph.node_count() as u32).collect();
+        order.sort_unstable_by_key(|&node| states[node as usize].iter().max().copied());
         let mut neighbors = vec![BTreeSet::new(); incoming.len()];
         let mut arc_ids = HashMap::new();
         fn ensure_arc(
@@ -172,8 +187,70 @@ impl CchGraph {
         result
     }
 
-    /// Returns original road-node ranks before lifting their arrival states.
+    /// Returns the road-node nested-dissection order and ranks.
+    #[cfg(test)]
     pub(super) fn compute_node_order(graph: &RegionGraph) -> (Vec<u32>, Vec<u32>) {
         order::nested_dissection(graph)
+    }
+
+    /// Contraction rank of every arrival state, by nested dissection of the state transition
+    /// graph. A restricted node's states sit just inside the node along their arrival edges, so
+    /// separators may cut between one junction's states instead of taking all of them.
+    /// O((S log S + T) log S) for S states and T transitions; deterministic.
+    fn order_states(
+        graph: &RegionGraph,
+        turns: &VehicleTurns,
+        states: &[Vec<u32>],
+        incoming: &[usize],
+        departures: &[Vec<Departure>],
+    ) -> Vec<u32> {
+        // Offset in metres, bounded by a quarter of the edge so states stay on their own side.
+        const STATE_OFFSET_M: f32 = 0.5;
+        let mut positions = vec![[0.0; 2]; incoming.len()];
+        let mut adjacency = vec![Vec::new(); incoming.len()];
+        for (node, node_states) in states.iter().enumerate() {
+            let pos = graph.node(node as u32).pos;
+            for &state in node_states {
+                let mut point = [pos.x, pos.z];
+                let edge = incoming[state as usize];
+                if edge != usize::MAX {
+                    let edge = graph.edge(edge);
+                    let other = if edge.start_node as usize == node {
+                        edge.end_node
+                    } else {
+                        edge.start_node
+                    };
+                    let towards = graph.node(other).pos - pos;
+                    let length = (towards.x * towards.x + towards.z * towards.z).sqrt();
+                    if length > 0.0 {
+                        let step = STATE_OFFSET_M.min(length * 0.25) / length;
+                        point = [pos.x + towards.x * step, pos.z + towards.z * step];
+                    }
+                }
+                positions[state as usize] = point;
+                // The same transitions the hierarchy keeps as base arcs.
+                for departure in &departures[node] {
+                    let from = incoming[state as usize];
+                    let vehicle_turn =
+                        from == usize::MAX || turns.permits(node as u32, from, departure.edge);
+                    if state != departure.target
+                        && (vehicle_turn || departure.flags & TransitFlags::FOOT != 0)
+                    {
+                        adjacency[state as usize].push(departure.target);
+                        adjacency[departure.target as usize].push(state);
+                    }
+                }
+            }
+        }
+        for neighbors in &mut adjacency {
+            neighbors.sort_unstable();
+            neighbors.dedup();
+        }
+        let order = order::dissect_points(&positions, &adjacency);
+        let mut rank = vec![0; order.len()];
+        for (position, &state) in order.iter().enumerate() {
+            rank[state as usize] = position as u32;
+        }
+        rank
     }
 }
