@@ -131,6 +131,8 @@ impl AgentSystem {
                 .enumerate()
                 .for_each(classify);
         }
+        #[cfg(test)]
+        super::contract::add(super::contract::Phase::ClaimAgents, n);
     }
 }
 

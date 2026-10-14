@@ -476,12 +476,12 @@ pub(super) fn validate_loaded_agents(
             agents.target_building[i] = usize::MAX;
             clear = true;
         }
-        if agents.current_path_index[i] > agents.current_path[i].len() {
-            if loaded_empty_network_path_has_replan_context(agents, i, graph) {
-                agents.current_path_index[i] = 0;
-            } else {
-                clear = true;
-            }
+        // A failed route retains its old cursor while waiting to retry. The empty path
+        // makes it inactive; preserving it keeps an ordinary continuation bit-identical.
+        if agents.current_path_index[i] > agents.current_path[i].len()
+            && !loaded_empty_network_path_has_replan_context(agents, i, graph)
+        {
+            clear = true;
         }
         if agents.current_path[i]
             .iter()
@@ -499,7 +499,11 @@ pub(super) fn validate_loaded_agents(
             clear_agent_access_plan(agents, i);
         }
         if agents.access_flags[i] & ACCESS_PLAN_VALID == 0 {
-            clear_agent_access_plan(agents, i);
+            if preserve_loaded_network_retry_state(agents, i, graph) {
+                clear_loaded_access_plan_fields(agents, i);
+            } else {
+                clear_agent_access_plan(agents, i);
+            }
         } else {
             let attach_ok = if matches!(
                 agents.transit[i],
@@ -558,6 +562,15 @@ fn loaded_empty_network_path_has_replan_context(
         && !graph.edge(agents.current_edge[i]).deleted
 }
 
+fn preserve_loaded_network_retry_state(
+    agents: &AgentSystem,
+    i: usize,
+    graph: &RegionGraph,
+) -> bool {
+    loaded_empty_network_path_has_replan_context(agents, i, graph)
+        && (agents.next_replan_time[i] > 0.0 || agents.network_replan_failures[i] > 0)
+}
+
 fn repair_orphaned_loaded_network_agent(
     agents: &mut AgentSystem,
     i: usize,
@@ -571,6 +584,14 @@ fn repair_orphaned_loaded_network_agent(
         || !agents.current_path[i].is_empty()
         || agents.access_flags[i] & ACCESS_PLAN_VALID != 0
     {
+        return;
+    }
+    if preserve_loaded_network_retry_state(agents, i, graph)
+        || (loaded_empty_network_path_has_replan_context(agents, i, graph)
+            && agents.target_building[i] < allocator.buildings.len())
+    {
+        // Demolition can leave a valid destination awaiting its first immediate replan.
+        // It has no backoff or failures yet, but its pending target and cursor are live state.
         return;
     }
 
@@ -638,6 +659,12 @@ fn clear_agent_travel_state(agents: &mut AgentSystem, i: usize) {
 }
 
 fn clear_agent_access_plan(agents: &mut AgentSystem, i: usize) {
+    clear_loaded_access_plan_fields(agents, i);
+    agents.next_replan_time[i] = 0.0;
+    agents.network_replan_failures[i] = 0;
+}
+
+fn clear_loaded_access_plan_fields(agents: &mut AgentSystem, i: usize) {
     agents.planned_attach_node[i] = u32::MAX;
     agents.planned_detach_node[i] = u32::MAX;
     agents.planned_attach_lane_id[i] = u32::MAX;
@@ -645,14 +672,16 @@ fn clear_agent_access_plan(agents: &mut AgentSystem, i: usize) {
     agents.planned_attach_lane_d[i] = 0.0;
     agents.planned_detach_lane_d[i] = 0.0;
     agents.access_flags[i] = 0;
-    agents.next_replan_time[i] = 0.0;
-    agents.network_replan_failures[i] = 0;
 }
 
 pub(super) fn validate_loaded_planned_lane_ids(agents: &mut AgentSystem, lane_count: usize) {
     for i in 0..agents.len() {
         if agents.access_flags[i] & ACCESS_PLAN_VALID == 0 {
-            clear_agent_access_plan(agents, i);
+            if preserve_loaded_network_retry_state_without_graph(agents, i) {
+                clear_loaded_access_plan_fields(agents, i);
+            } else {
+                clear_agent_access_plan(agents, i);
+            }
             continue;
         }
 
@@ -678,4 +707,11 @@ pub(super) fn validate_loaded_planned_lane_ids(agents: &mut AgentSystem, lane_co
             clear_agent_access_plan(agents, i);
         }
     }
+}
+
+fn preserve_loaded_network_retry_state_without_graph(agents: &AgentSystem, i: usize) -> bool {
+    matches!(agents.transit[i], TRANSIT_NETWORK | TRANSIT_INTERSECTION)
+        && agents.current_lane_id[i] == usize::MAX
+        && agents.current_path[i].is_empty()
+        && (agents.next_replan_time[i] > 0.0 || agents.network_replan_failures[i] > 0)
 }

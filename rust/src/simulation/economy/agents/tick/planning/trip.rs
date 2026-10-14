@@ -300,10 +300,42 @@ pub(crate) fn estimate_building_origin_trip_seconds(
     pathfind_count: &AtomicU32,
     shared: Option<&SharedNetworkQuotes>,
 ) -> Option<u16> {
+    TripQueryScratch::with(transit_network, graph, |scratch| {
+        estimate_building_origin_trip_seconds_with_scratch(
+            current_building,
+            target_building,
+            has_car,
+            allocator,
+            transit_network,
+            graph,
+            pathfind_count,
+            shared,
+            scratch,
+        )
+    })
+}
+
+/// Estimates a building-origin trip using caller-owned prepared scratch.
+///
+/// The caller must invoke [`TripQueryScratch::prepare`] (or
+/// [`TripQueryScratch::prepare_deferred_quotes`]) before entering a query phase. This preserves
+/// the exact candidate ordering and result of [`estimate_building_origin_trip_seconds`] while
+/// allowing a Rayon worker to retain route scratch across a batch.
+pub(crate) fn estimate_building_origin_trip_seconds_with_scratch(
+    current_building: usize,
+    target_building: usize,
+    has_car: bool,
+    allocator: &BuildingAllocator,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    pathfind_count: &AtomicU32,
+    shared: Option<&SharedNetworkQuotes>,
+    scratch: &mut TripQueryScratch,
+) -> Option<u16> {
     let origin = BuildingTripEnds::origin(current_building, allocator, transit_network, graph);
     let destination =
         BuildingTripEnds::destination(target_building, allocator, transit_network, graph);
-    match estimate_trip_seconds_between(
+    match estimate_trip_seconds_with_scratch(
         &origin,
         &destination,
         has_car,
@@ -313,6 +345,7 @@ pub(crate) fn estimate_building_origin_trip_seconds(
         f32::INFINITY,
         f32::INFINITY,
         shared,
+        scratch,
     ) {
         TripEstimate::Seconds(seconds) => seconds,
         TripEstimate::OverBudget => unreachable!("an unbounded estimate has no budget"),
@@ -592,6 +625,7 @@ pub(crate) enum TripEstimate {
 /// the one an exhaustive search picks. When every bound exceeds `budget_s` the result is
 /// [`TripEstimate::OverBudget`] without any query. `shared` lends network legs priced by other
 /// workers or earlier passes; it never changes the estimate.
+#[cfg(test)]
 pub(crate) fn estimate_trip_seconds_between(
     origin: &BuildingTripEnds,
     destination: &BuildingTripEnds,
@@ -619,7 +653,11 @@ pub(crate) fn estimate_trip_seconds_between(
     })
 }
 
-fn estimate_trip_seconds_with_scratch(
+/// Estimates a trip from prepared building ends using caller-owned query scratch.
+///
+/// The caller must prepare `scratch` for the current network and graph before calling. The
+/// Uses the same exact candidate ordering as the full trip planner.
+pub(crate) fn estimate_trip_seconds_with_scratch(
     origin: &BuildingTripEnds,
     destination: &BuildingTripEnds,
     has_car: bool,
@@ -629,7 +667,7 @@ fn estimate_trip_seconds_with_scratch(
     network_speed_bound_ms: f32,
     budget_s: f32,
     shared: Option<&SharedNetworkQuotes>,
-    scratch: &mut super::candidate::TripQueryScratch,
+    scratch: &mut TripQueryScratch,
 ) -> TripEstimate {
     let mut best: Option<PlannedTripCandidate> = None;
     let mut networked = [(0.0_f32, MODE_WALK, 0_u8, 0_u8); 8];

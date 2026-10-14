@@ -325,8 +325,7 @@ impl AgentSystem {
             && work != usize::MAX
             && work < allocator.buildings.len()
         {
-            allocator.buildings[work].worker_count =
-                allocator.buildings[work].worker_count.saturating_sub(1);
+            allocator.set_worker_count(work, allocator.buildings[work].worker_count.saturating_sub(1));
         }
 
         self.remove_agent_record(index, households, "left the city with its household")

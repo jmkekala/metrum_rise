@@ -71,9 +71,20 @@ impl AgentSystem {
             }
         }
 
+        #[cfg(test)]
+        super::contract::add(super::contract::Phase::CongestionAgents, n);
         self.sort_dirty_lane_buckets();
         self.correct_lane_overlaps();
         self.add_lane_change_source_ghosts(lane_count);
+        #[cfg(test)]
+        {
+            let entries = self
+                .dirty_lanes
+                .iter()
+                .map(|&lane_id| self.lane_buckets[lane_id].len())
+                .sum();
+            super::contract::add(super::contract::Phase::LaneBucketEntries, entries);
+        }
         self.commit_edge_congestion(graph, edge_count);
         self.mark_lane_bucket_snapshot_valid(lane_count, n, live_lane_agent_count);
     }
@@ -99,8 +110,19 @@ impl AgentSystem {
             }
         }
 
+        #[cfg(test)]
+        super::contract::add(super::contract::Phase::LaneBucketAgents, n);
         self.sort_dirty_lane_buckets();
         self.add_lane_change_source_ghosts(lane_count);
+        #[cfg(test)]
+        {
+            let entries = self
+                .dirty_lanes
+                .iter()
+                .map(|&lane_id| self.lane_buckets[lane_id].len())
+                .sum();
+            super::contract::add(super::contract::Phase::LaneBucketEntries, entries);
+        }
         self.mark_lane_bucket_snapshot_valid(lane_count, n, live_lane_agent_count);
     }
 }

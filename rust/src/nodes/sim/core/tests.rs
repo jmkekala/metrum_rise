@@ -1118,6 +1118,12 @@ fn load_game_rebuilds_entrances_after_registry_restore() {
     let _ = std::fs::remove_file(save_path);
 
     assert_eq!(loaded.allocator.entrances.len(), 1);
+    assert!(loaded.allocator.household_capacity(0) > 0);
+    assert_eq!(
+        loaded.allocator.first_rehousing_vacancy(|_| true),
+        Some(0),
+        "loaded vacancies must use the restored registry before the first tick"
+    );
     let entrance = &loaded.allocator.entrances[0];
     assert_ne!(entrance.foot_lane_fwd, usize::MAX);
     assert_ne!(entrance.foot_lane_bkw, usize::MAX);
@@ -2171,6 +2177,116 @@ fn benchmark_queued_project_validation() {
             median(2)
         );
     }
+}
+
+#[test]
+#[ignore = "short PERF-01 locality acceptance; setup and census timed separately"]
+fn perf_contract_queued_locality() {
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    // One fixed batch per tier: the former ~1 ms batch was dominated by timing noise.
+    const WARM_CHECKS: usize = 131_072;
+    let execution_censuses = crate::debug::work::Work::ExecutionCensuses as usize;
+    let census_buildings = crate::debug::work::Work::CensusBuildings as usize;
+    let mut results = Vec::new();
+
+    for background in [16_384, 131_072] {
+        let setup = Instant::now();
+        let (mut core, homes, factories) = construction_execution_fixture();
+        execute_test_construction(&mut core, &homes[0], ZoneType::Residential, 1);
+        execute_test_construction(&mut core, &homes[1], ZoneType::Residential, 2);
+        let background_home = core.allocator.buildings[0].clone();
+        core.allocator
+            .buildings
+            .resize(background + 2, background_home);
+        let setup_ms = setup.elapsed().as_secs_f64() * 1_000.0;
+        let prepare = |core: &mut SimCore, index: usize| {
+            core.demand.prepare_queued_spawn(
+                &factories[index % factories.len()],
+                ZoneType::Industrial,
+                &core.allocator,
+                &core.households,
+                &core.region_graph,
+                3,
+                &core.transit_network,
+                &mut core.logistics,
+                &core.zoning,
+                core.treasury.balance,
+                &core.fiscal_policy,
+            )
+        };
+        let live_revision = |core: &mut SimCore, index: usize| {
+            for lane in &mut core.transit_network.lane_system.lanes {
+                lane.live_frontage_delay_s = 1.0 + (index % 17) as f32;
+            }
+            core.agents.update_frontage_delay_cache(
+                &mut core.transit_network,
+                &core.region_graph,
+                1.0,
+            );
+        };
+
+        core.demand.invalidate_construction_execution();
+        let cold = Instant::now();
+        assert!(black_box(prepare(&mut core, 0)).is_ok());
+        let cold_ms = cold.elapsed().as_secs_f64() * 1_000.0;
+
+        let revision = core.transit_network.frontage_delay_revision;
+        live_revision(&mut core, 0);
+        core.transit_network.publish_frontage_prices();
+        assert_ne!(
+            core.transit_network.frontage_delay_revision, revision,
+            "the locality check must exercise a published frontage revision"
+        );
+        let published = Instant::now();
+        assert!(black_box(prepare(&mut core, 0)).is_ok());
+        let published_ms = published.elapsed().as_secs_f64() * 1_000.0;
+
+        for index in 0..1_024 {
+            live_revision(&mut core, index);
+            assert!(black_box(prepare(&mut core, index)).is_ok());
+        }
+        let before = crate::debug::work::snapshot();
+        let mut warm = std::time::Duration::ZERO;
+        for index in 0..WARM_CHECKS {
+            live_revision(&mut core, index);
+            let started = Instant::now();
+            let result = black_box(prepare(&mut core, index));
+            warm += started.elapsed();
+            assert!(result.is_ok());
+        }
+        let warm_batch_ms = warm.as_secs_f64() * 1_000.0;
+        let after = crate::debug::work::snapshot();
+        assert_eq!(
+            after[execution_censuses], before[execution_censuses],
+            "warm queued validation changed execution census count"
+        );
+        assert_eq!(
+            after[census_buildings], before[census_buildings],
+            "warm queued validation changed census row count"
+        );
+        results.push(serde_json::json!({
+            "background": background,
+            "setup_ms": setup_ms,
+            "cold_ms": cold_ms,
+            "published_revision_ms": published_ms,
+            "warm_checks": WARM_CHECKS,
+            "warm_batch_ms": warm_batch_ms,
+            "warm_check_ms": warm_batch_ms / WARM_CHECKS as f64,
+        }));
+    }
+
+    let small = results[0]["warm_batch_ms"].as_f64().unwrap();
+    let large = results[1]["warm_batch_ms"].as_f64().unwrap();
+    eprintln!(
+        "PERF_LOCALITY {}",
+        serde_json::json!({ "kind": "queued", "results": results })
+    );
+    assert!(
+        large <= small * 1.2,
+        "warm queued locality exceeded PERF-01 bound: 16k={small:.3} ms, 131k={large:.3} ms"
+    );
 }
 
 #[test]

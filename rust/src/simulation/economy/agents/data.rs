@@ -8,7 +8,7 @@
 //! This enables cache-friendly bulk iteration and ensures all fields are kept in sync.
 
 use super::inspection::{EndedInspection, InspectedAgent};
-use super::tick::TripFailureLog;
+use super::tick::{TripFailureLog, TripQueryScratch};
 use soa_derive::StructOfArray;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicU32, AtomicUsize};
@@ -232,6 +232,14 @@ pub struct AgentSystem {
     pub(super) inspected_failure: Option<String>,
     /// Trip failure flood control and collection buffer (`DEBUG-06`); never saved.
     pub(crate) trip_failures: TripFailureLog,
+    /// One route-query scratch value per deterministic parallel movement slice.
+    ///
+    /// The slices are retained between ticks so route storage is prepared once per topology
+    /// revision instead of allocating from an agent loop. This derived state is never saved.
+    pub(crate) movement_query_shards: Vec<TripQueryScratch>,
+    /// Route-query scratch for serial movement, including dynamic handoffs and small populations.
+    /// This is separate from the parallel shards so the caller thread cannot change its cache.
+    pub(crate) movement_serial_query: TripQueryScratch,
 }
 
 impl Deref for AgentSystem {
@@ -282,6 +290,8 @@ impl AgentSystem {
             inspection_ended: None,
             inspected_failure: None,
             trip_failures: TripFailureLog::default(),
+            movement_query_shards: Vec::new(),
+            movement_serial_query: TripQueryScratch::default(),
         }
     }
 

@@ -33,6 +33,43 @@ struct Access {
     walk_nodes: [u32; 2],
 }
 
+/// Exact geometry and request inputs for a direct household quote.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub(crate) struct DirectConsumerQuoteKey {
+    resource: u16,
+    category: usize,
+    requested: u64,
+    gross_price: u32,
+    origin_chunk: (i32, i32),
+    components: [[u32; 2]; 2],
+    origin_groups: [usize; 2],
+    destination_groups: [usize; 2],
+    nodes: [u32; 2],
+}
+
+fn direct_component_key(component: BuildingModeComponents) -> [u32; 2] {
+    let mut key = [crate::simulation::economy::accessibility::NO_COMPONENT; 2];
+    let values = component.as_slice();
+    key[..values.len()].copy_from_slice(values);
+    key
+}
+
+#[cfg(test)]
+fn consumer_quote_trace_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        crate::debug::Channel::EconomyPhases.enabled()
+            && std::env::var_os("METRUM_TRACE_CONSUMER_QUOTES").is_some()
+    })
+}
+
+#[cfg(test)]
+fn trace_consumer_book_changed(marker: &str) {
+    if consumer_quote_trace_enabled() {
+        crate::debug_log!("economy_phases", "consumer_book_changed marker={}", marker);
+    }
+}
+
 /// Finite family accounts and their reusable component/chunk candidate indices.
 /// Component membership only prunes candidates; both directed trips must still succeed.
 #[derive(Clone, Debug, Default)]
@@ -60,9 +97,15 @@ pub(crate) struct ConsumerMarket {
     access_resamples: u64,
     #[cfg(test)]
     index_builds: u64,
+    claim_revision: u64,
+    last_claim_direct: bool,
 }
 
 impl ConsumerMarket {
+    fn bump_quote_revision(&mut self) {
+        self.claim_revision = self.claim_revision.wrapping_add(1);
+    }
+
     /// Lifetime refresh/retention counts followed by overlapping budget, network, home
     /// access, fallback-geometry and fallback-price invalidations; diagnostics only.
     #[cfg(test)]
@@ -80,6 +123,72 @@ impl ConsumerMarket {
     #[cfg(test)]
     pub(crate) fn index_builds_for_test(&self) -> u64 {
         self.index_builds
+    }
+
+    /// Returns the exact account/access revision for rejected direct-quote reuse.
+    pub(crate) fn quote_revision(&self) -> u64 {
+        self.claim_revision
+    }
+
+    /// Reports whether the last claim used only direct walking-group proofs.
+    pub(crate) fn last_claim_was_direct(&self) -> bool {
+        self.last_claim_direct
+    }
+
+    /// Builds the direct-only quote key when no staged account mutation is pending.
+    pub(crate) fn direct_quote_key(
+        &self,
+        entrance: &BuildingEntrance,
+        resource: u16,
+        requested: f64,
+        gross_price: f32,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) -> Option<DirectConsumerQuoteKey> {
+        if !self.budgets.staged.is_empty()
+            || self.budgets.releasing_owner.is_some()
+            || !requested.is_finite()
+            || requested <= 0.0
+            || !gross_price.is_finite()
+            || gross_price <= 0.0
+        {
+            return None;
+        }
+        let &category = self.budgets.category_by_resource.get(resource as usize)?;
+        if category >= self.indices.len()
+            || !self.indices[category]
+                .iter()
+                .any(ReachableBucketIndex::has_available)
+        {
+            return None;
+        }
+        let components = self.components.as_ref()?;
+        let mode_components = [
+            components[0].entrance_components(entrance, graph, TransitFlags::FOOT),
+            components[1].entrance_components(entrance, graph, TransitFlags::CAR),
+        ];
+        if mode_components.iter().all(|component| component.as_slice().is_empty()) {
+            return None;
+        }
+        let [origin, destination] =
+            BuildingTripEnds::walking_pair_at_entrance(entrance, network, graph);
+        let nodes = graph
+            .get_edge(entrance.edge_idx)
+            .map_or([u32::MAX; 2], |edge| [edge.start_node, edge.end_node]);
+        Some(DirectConsumerQuoteKey {
+            resource,
+            category,
+            requested: requested.to_bits(),
+            gross_price: gross_price.to_bits(),
+            origin_chunk: chunk_for_point(entrance.door_pos.x, entrance.door_pos.y),
+            components: [
+                direct_component_key(mode_components[0]),
+                direct_component_key(mode_components[1]),
+            ],
+            origin_groups: origin.walking_groups(&self.walking),
+            destination_groups: destination.walking_groups(&self.walking),
+            nodes,
+        })
     }
 
     /// Walking proofs built for the current network; `None` before the first census or
@@ -125,6 +234,9 @@ impl ConsumerMarket {
 
     /// Withdraws all customer accounts and access, retaining reusable account allocations.
     pub(crate) fn clear(&mut self) {
+        self.bump_quote_revision();
+        #[cfg(test)]
+        trace_consumer_book_changed("clear");
         self.budgets.clear();
         self.frontage_sensitive = false;
         self.revision = None;
@@ -170,6 +282,9 @@ impl ConsumerMarket {
         network: &TransitNetwork,
         graph: &RegionGraph,
     ) -> bool {
+        self.bump_quote_revision();
+        #[cfg(test)]
+        trace_consumer_book_changed("refresh");
         let budgets_unchanged = self
             .budgets
             .prepare_budgets(households, allocator, catalog, tuning, policy, treasury);
@@ -383,6 +498,9 @@ impl ConsumerMarket {
     /// The caller must keep this census's household, basket and access inputs immutable.
     /// Receipt and bucket storage remain allocated; no budgets or routes are requoted.
     pub(crate) fn reset_claims(&mut self) {
+        self.bump_quote_revision();
+        #[cfg(test)]
+        trace_consumer_book_changed("reset_claims");
         self.budgets.reset_claims();
         let count = self.budgets.categories.len();
         self.indices
@@ -411,6 +529,9 @@ impl ConsumerMarket {
     /// Forks live accounts and owner receipts once per construction pass. Matching access
     /// retains bucket storage; warm copying is O(household accounts + accepted claims).
     pub(crate) fn copy_reservations_from(&mut self, source: &Self) {
+        self.bump_quote_revision();
+        #[cfg(test)]
+        trace_consumer_book_changed("copy_reservations_from");
         if self.revision != source.revision
             || self.walking_revision != source.walking_revision
             || self.access != source.access
@@ -469,6 +590,9 @@ impl ConsumerMarket {
     /// Temporarily returns only this incumbent's accepted purchases for a replacement quote.
     /// Rejection restores the exact pre-release accounts and spatial eligibility.
     pub(crate) fn release_owner(&mut self, owner: usize) {
+        self.bump_quote_revision();
+        #[cfg(test)]
+        trace_consumer_book_changed("release_owner");
         self.reject();
         self.budgets.release_owner(owner);
         self.sync_staged(false);
@@ -487,11 +611,17 @@ impl ConsumerMarket {
 
     /// Publishes all accepted owner changes in the enclosing proof.
     pub(crate) fn accept_revalidation(&mut self) {
+        self.bump_quote_revision();
+        #[cfg(test)]
+        trace_consumer_book_changed("accept_revalidation");
         self.budgets.accept_revalidation();
     }
 
     /// Restores exact accounts, owner receipts and only affected spatial eligibility.
     pub(crate) fn reject_revalidation(&mut self) {
+        self.bump_quote_revision();
+        #[cfg(test)]
+        trace_consumer_book_changed("reject_revalidation");
         self.reject();
         let count = self.budgets.categories.len();
         let access = &self.access;
@@ -509,6 +639,10 @@ impl ConsumerMarket {
 
     /// Retains this live owner's receipt so a later replacement can reclaim its own customers.
     pub(crate) fn accept_for(&mut self, owner: usize) {
+        self.bump_quote_revision();
+        #[cfg(test)]
+        trace_consumer_book_changed("accept_for");
+        self.sync_staged(false);
         self.budgets.accept_for(owner);
     }
 
@@ -516,9 +650,13 @@ impl ConsumerMarket {
     /// the retained arena exactly when the census estimate is short. O(staged claims + reusable
     /// cells); warm censuses keep the grown capacity and do not allocate.
     pub(crate) fn accept_growing_for(&mut self, owner: usize) {
+        self.bump_quote_revision();
+        #[cfg(test)]
+        trace_consumer_book_changed("accept_growing_for");
         if let Err(required) = self.budgets.check_accept_capacity(owner) {
             self.budgets.reserve_receipts(required);
         }
+        self.sync_staged(false);
         self.budgets.accept_for(owner);
     }
 
@@ -587,7 +725,8 @@ impl ConsumerMarket {
 
     /// Stages at most `requested` recurring units from actual reached families, in stable
     /// foot/car, chunk-ring and household order. A family is checked once per call, including
-    /// homes appearing in multiple components. Exhausted accounts leave the index immediately.
+    /// homes appearing in multiple components. Pending reductions keep an upper-bound index;
+    /// authoritative balances exclude exhausted accounts until acceptance publishes eligibility.
     /// Cost is visited bucket candidates plus their directed route queries, not all households.
     pub(crate) fn claim_reachable(
         &mut self,
@@ -599,6 +738,7 @@ impl ConsumerMarket {
         network: &TransitNetwork,
         graph: &RegionGraph,
     ) -> f64 {
+        self.last_claim_direct = true;
         let Some(&category) = self.budgets.category_by_resource.get(resource as usize) else {
             return 0.0;
         };
@@ -630,6 +770,18 @@ impl ConsumerMarket {
         let nodes = graph
             .get_edge(entrance.edge_idx)
             .map_or([u32::MAX; 2], |edge| [edge.start_node, edge.end_node]);
+        #[cfg(test)]
+        let mut reached_components = [BuildingModeComponents::default(); 2];
+        #[cfg(test)]
+        let trace = consumer_quote_trace_enabled();
+        #[cfg(test)]
+        let initial_staged = trace.then_some(self.budgets.staged.len());
+        #[cfg(test)]
+        let mut candidates = 0usize;
+        #[cfg(test)]
+        let mut direct_claims = 0usize;
+        #[cfg(test)]
+        let mut fallback_needed = 0usize;
         let mut claimed = 0.0;
         let mut fallback_ends = None;
         for (mode, flag) in [TransitFlags::FOOT, TransitFlags::CAR]
@@ -637,6 +789,8 @@ impl ConsumerMarket {
             .enumerate()
         {
             let reached = components[mode].entrance_components(entrance, graph, flag);
+            #[cfg(test)]
+            { reached_components[mode] = reached; }
             self.indices[category][mode].scan_nearest(
                 reached,
                 entrance.door_pos.x,
@@ -655,6 +809,10 @@ impl ConsumerMarket {
                         return true;
                     }
                     self.visited[household] = self.visit;
+                    #[cfg(test)]
+                    if trace {
+                        candidates += 1;
+                    }
                     if self.budgets.available(household, resource, gross_price) <= 0.0 {
                         return true;
                     }
@@ -672,13 +830,23 @@ impl ConsumerMarket {
                         access.walk_nodes,
                     );
                     if outward && homeward {
-                        claimed += self.budgets.claim(
+                        let added = self.budgets.claim(
                             household,
                             resource,
                             requested - claimed,
                             gross_price,
                         );
+                        claimed += added;
+                        #[cfg(test)]
+                        if trace && added > 0.0 {
+                            direct_claims += 1;
+                        }
                         return claimed < requested;
+                    }
+                    self.last_claim_direct = false;
+                    #[cfg(test)]
+                    if trace {
+                        fallback_needed += 1;
                     }
                     let [origin, destination] = fallback_ends.get_or_insert_with(|| {
                         [
@@ -718,7 +886,30 @@ impl ConsumerMarket {
                 },
             );
         }
-        self.sync_staged(false);
+        #[cfg(test)]
+        if trace {
+            let key = (
+                category,
+                resource,
+                requested.to_bits(),
+                gross_price.to_bits(),
+                chunk_for_point(entrance.door_pos.x, entrance.door_pos.y),
+                reached_components,
+                origin_groups,
+                destination_groups,
+                nodes,
+            );
+            crate::debug_log!(
+                "economy_phases",
+                "consumer_quote key={:?} units={} candidates={} direct={} fallback={} initially_staged={}",
+                key,
+                claimed.to_bits(),
+                candidates,
+                direct_claims,
+                fallback_needed,
+                initial_staged.unwrap_or(0),
+            );
+        }
         claimed
     }
 
@@ -742,7 +933,29 @@ impl ConsumerMarket {
 
     /// Restores exact pre-quote accounts and their spatial eligibility after rejection.
     pub(crate) fn reject(&mut self) {
-        self.sync_staged(true);
+        let releasing_owner = self.budgets.releasing_owner.is_some();
+        if releasing_owner {
+            self.bump_quote_revision();
+        }
+        #[cfg(test)]
+        {
+            if consumer_quote_trace_enabled() {
+                crate::debug_log!(
+                    "economy_phases",
+                    "consumer_quote_reject staged={} releasing_owner={}",
+                    self.budgets.staged.len(),
+                    releasing_owner
+                );
+            }
+            if releasing_owner {
+                trace_consumer_book_changed("reject_releasing_owner");
+            }
+        }
+        // Only releasing an incumbent published provisional eligibility. Ordinary quotes
+        // reduce balances without changing the index, so rejection needs no tree writes.
+        if self.budgets.releasing_owner.is_some() {
+            self.sync_staged(true);
+        }
         self.budgets.reject();
     }
 
@@ -765,6 +978,9 @@ impl ConsumerMarket {
     /// proofs and route scratch, as a forked book had; [`Self::end_pass`] restores the live
     /// book bit for bit. O(1) unless the walking revision changed, which copies those proofs.
     pub(crate) fn begin_pass(&mut self) {
+        self.bump_quote_revision();
+        #[cfg(test)]
+        trace_consumer_book_changed("begin_pass");
         self.budgets.begin_pass();
         let pass = &mut self.pass;
         if pass.revision != self.walking_revision {
@@ -783,6 +999,7 @@ impl ConsumerMarket {
     /// the pass changed, with exactly their bucket eligibility, and the live walking proofs.
     /// Temporary project owners and appended receipts are truncated. O(touched rows).
     pub(crate) fn end_pass(&mut self) {
+        self.bump_quote_revision();
         self.reject_revalidation();
         let count = self.budgets.categories.len();
         let access = &self.access;

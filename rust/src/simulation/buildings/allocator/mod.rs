@@ -14,6 +14,7 @@ mod index;
 mod lifecycle;
 mod placement;
 mod site;
+mod production_changes;
 pub(crate) mod yard;
 
 #[cfg(test)]
@@ -367,6 +368,8 @@ pub struct BuildingAllocator {
     pub(crate) building_ref_revision: u64,
     // Building indices changed at each `building_ref_revision` step, for incremental tables.
     building_changes: crate::simulation::core::change_log::IndexChangeLog,
+    production_revision: u64,
+    production_changes: crate::simulation::core::change_log::IndexChangeLog,
     /// Appearance-only revision; does not invalidate routing or entrance references.
     pub(crate) building_visual_revision: u64,
     /// Revision bumped whenever derived building entrance/access data changes.
@@ -701,6 +704,8 @@ impl BuildingAllocator {
             entrances_dirty: false,
             building_ref_revision: 0,
             building_changes: Default::default(),
+            production_revision: 0,
+            production_changes: Default::default(),
             building_visual_revision: 0,
             entrance_ref_revision: 0,
             entrances: Vec::new(),
@@ -827,6 +832,7 @@ impl BuildingAllocator {
             self.building_visual_revision = self.building_visual_revision.wrapping_add(1);
         }
         if completed_any {
+            self.invalidate_production_changes();
             self.dirty = true;
             self.dirty_index = true;
             for (zone_idx, dirty) in completed_zone_dirty.into_iter().enumerate() {
@@ -891,12 +897,14 @@ impl BuildingAllocator {
     /// Advances the building revision for changes whose rows are unknown; incremental
     /// building-indexed tables rebuild in full.
     pub(crate) fn bump_building_ref_revision(&mut self) {
+        self.invalidate_production_changes();
         self.building_ref_revision = self.building_ref_revision.wrapping_add(1);
         self.building_changes.clear(self.building_ref_revision);
     }
 
     // Revision step whose only changed building rows are `indices`, including removed rows.
     fn record_building_changes(&mut self, indices: impl IntoIterator<Item = usize>) {
+        self.invalidate_production_changes();
         self.building_ref_revision = self.building_ref_revision.wrapping_add(1);
         self.building_changes
             .record(self.building_ref_revision, indices);

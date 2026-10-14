@@ -528,6 +528,9 @@ impl EconomyProfileRuntime {
 /// Cached compiled runtime economy catalog derived from authored `economy_profile` data.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RuntimeEconomyCatalog {
+    // Compiled catalogs are immutable after construction. Retaining this token prevents
+    // address reuse from making a replacement catalog look like the cached one.
+    identity: std::sync::Arc<()>,
     pub(super) profiles: Vec<EconomyProfileRuntime>,
     pub(super) by_id: BTreeMap<String, u16>,
     pub(super) resource_by_id: BTreeMap<String, ResourceRuntimeId>,
@@ -543,6 +546,11 @@ pub(crate) struct RuntimeEconomyCatalog {
 }
 
 impl RuntimeEconomyCatalog {
+    /// Lifetime-safe identity for derived caches; immutable catalog clones share the token.
+    pub(crate) fn cache_identity(&self) -> &std::sync::Arc<()> {
+        &self.identity
+    }
+
     /// Stable local-funding phase; mutually dependent recipes share a phase, while
     /// downstream recipes follow all their suppliers. Invalid/non-economic ids use phase zero.
     pub(crate) fn funding_phase(&self, runtime_id: u16) -> usize {

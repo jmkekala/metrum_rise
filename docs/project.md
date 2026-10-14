@@ -1023,6 +1023,97 @@ reopening requires a current reproduction, not an assumption that the old geomet
   fixed time budgets (10k: 40 ms per hour, 10 ms per day; 30k: 3×), in at most 5 minutes. The 100k
   tier is deferred. `PERF-01` builds the runner, `PERF-02` per-phase checks, and `PERF-03`–`PERF-05`
   track the known superlinear costs.
+  Implementation started 2026-10-13: snapshot-backed runner, phase attribution, conservative
+  diff selection and short locality gates are wired. The short agent and locality contracts
+  pass initial release checks. Completing bulk lane-height initialization fixes exact 10k
+  save/load continuation. The 30k probe found omitted retained commute quotes; save version 86
+  now persists them without changing their daily pricing cadence. Preserving pending network
+  retries fixes another continuation mismatch; both tiers now pass at day 12. A complete cached
+  run with physical-core affinity finishes in 55.20 seconds; locality and short agent gates pass.
+  `PERF-02` and `PERF-06` are complete. The 30k daily budget and census/owner/staffing/supplier/job
+  work bounds fail. Stable workplace and movement query ownership now makes all work counters
+  match across three fresh runs per tier, with unchanged next-day records and 125 targeted
+  regressions passing. All five growth reports remain byte-identical; busy-city and queued
+  save continuation pass. Active-window coverage and full economy acceptance remain pending.
+  A short staffing experiment removed only four daily trials at 30k and was reverted;
+  fresh five-report references are retained for the remaining census and search changes.
+  Opt-in funding-input traces complete in 3.15/10.06 seconds at 10k/30k. They identify one/four
+  unchanged execution inputs; reusing only those would still fail census scaling (3.5395×).
+  The remaining census fix must address changed inputs or eliminate additional full passes.
+  Exact import-quote reuse within closure retries now cuts staffing trials to 60,333/291,769
+  at 10k/30k, preserving next-day records and passing 118 targeted regressions. The 4.8360×
+  ratio still fails the 3.4176× limit. All five growth reports remain byte-identical and
+  recovery/expansion/save-load checks pass; full acceptance remains pending.
+  Hourly placement/removal counters now enforce fixture coverage: fresh short day runs show
+  churn in only 8/24 intervals at 10k and 20/24 at 30k. Both snapshots fail `PERF-01`
+  coverage; next-day records and previous work counts remain unchanged.
+  Early and later continuation scans rule out every day-4–18 midnight boundary. The historical
+  every-hour observation was for 100k; choosing a different boundary in this window cannot
+  satisfy the unchanged 10k/30k fixture requirement.
+  Snapshot revisions now include runtime economy and demand TOML inputs. Fresh regeneration
+  preserves exact continuation and previous records/counts; the cached full contract takes
+  56.05 seconds, with the same nine failures. Configuration invalidation and 14 runner tests pass.
+  Local-input funding now skips an unused import-priced inventory valuation. All 122 targeted
+  tests pass; short day checks preserve both records and all work counts. The 30k daily sample
+  remains over budget at 34.57 ms; no additional contract gate is closed.
+  A normal fiscal-policy stress case now demonstrates hourly removals throughout days 16–25
+  at both tiers. Loading now rebuilds vacancy/admission indices after restoring the asset
+  registry, fixing the extra unhoused household. Twenty focused regressions pass; both stress
+  continuations match every hourly record and churn count in 11.26/31.82 seconds including
+  preparation. The integrated two-workload runner passes 19 unit regressions. Loading also now
+  preserves valid immediate network replans after demolition; 33 save regressions pass and both
+  fiscal snapshots pass exact agent continuation and 24/24 churn coverage. The expanded contract
+  finishes in 67.16 seconds, with 31.72 seconds of initial 30k fiscal generation reported separately.
+  Thirteen limits fail: the original seven, plus four fiscal time budgets and fiscal supplier/CCH
+  scaling. Original records/counts remain identical; phase, locality and agent checks pass.
+  Demand now reuses the existing cell-generation completeness cache while deriving every dirty
+  lot region. A fresh full contract takes 64.91 seconds: fiscal hourly samples pass at
+  30.17/85.62 ms; eleven limits remain, including daily settlement and work scaling. All four
+  next-day records, work counts and churn sequences match the retained pre-cache build.
+  Recovery, expansion and the corrected four-test growth run pass; all five reports are
+  byte-identical. A fixed-cost profit bound was tested and removed because it reduced no work
+  counts. Household claims now defer downward eligibility-index updates until acceptance,
+  preserving immediate release and rollback semantics. All 179 targeted regressions pass;
+  the full contract takes 65.36 seconds with the same eleven failures and unchanged records
+  and work counts. Fiscal daily samples are 28.01/91.48 ms. Four growth tests plus recovery and
+  expansion pass; all five reports remain byte-identical.
+  Recurring supplier quotes now bypass spatial search for empty resources using existing indices.
+  All 238 targeted tests pass; records, churn and other counters are unchanged. The full contract
+  takes 64.50 seconds with ten failures: fiscal supplier searches are now zero, while baseline
+  searches fall to 20,978/105,798 and still fail scaling. Four growth tests plus recovery and
+  expansion pass; all five reports remain byte-identical.
+  Both workloads retain independent time/work gates because bankruptcy sharply reduces employment.
+  Fresh opt-in staffing attribution preserves both baseline records and all work counts:
+  30k successful trials alone exceed the scaling allowance. Failed-worker pruning cannot close
+  `PERF-04`; the next target is repeated successful funding evaluations/passes (see economy.md).
+  `PERF-03` now has allocator-owned, allocation-free worker-change tracking across employment,
+  agent removal and bulk recounts. All 362 targeted tests and four unchanged cached days pass.
+  Census counts and acceptance failures remain unchanged.
+  The journal now also covers productive area and operational eligibility. All 375 targeted
+  tests and four unchanged cached days pass; an opt-in 30k assertion validates nine complete
+  execution-pair journals and six conservative layout-change fallbacks. Funding now reuses unchanged
+  production-market chunks; 379 targeted tests and four unchanged cached days pass. Its full
+  cached contract takes 63.95 seconds; phase, locality and agent checks pass, while ten limits
+  remain open. Fresh import-plan attribution rules out a broader capital guard alone as the
+  staffing fix. Fresh growth integration, recovery and scarce-labor expansion regressions pass;
+  all five reports remain byte-identical. Full funding reuse remains pending.
+  Exact import-plan handoff now passes 131 targeted tests and preserves all four cached-day
+  records/churn. Baseline staffing trials fall to 56,488/251,537, still above the scaling limit.
+  The full cached contract takes 64.15 seconds: phase, locality and agent checks pass, with the
+  same ten failed limits. Fresh growth integration, recovery and scarce-labor expansion tests
+  pass on the handoff build; all five reports are byte-identical. A short fiscal trace identifies
+  household reservations for rejected plans as the next daily-cost investigation. Exact-key
+  diagnostics now find reusable rejected queries covering 82.50%/84.12% of daily visited
+  candidates at 10k/30k. Production reuse now retains exact rejected single-output quantities
+  and restages receipts before any later acceptance. It passes 147 targeted tests and preserves
+  all four cached-day records, churn and work counts. The full contract takes 64.20 seconds;
+  phase, locality and agent checks pass, but the same ten limits remain open. Fiscal daily
+  samples are 22.21/72.67 ms, still over budget; no matched speedup is claimed. Fresh growth
+  integration, recovery and scarce-labor expansion tests pass; all five reports are byte-identical.
+  **Scope clarified 2026-10-14:** the fast benchmark suite is the deliverable and is complete
+  (`PERF-01`, `PERF-02`, `PERF-06`). Scaling fixes (`PERF-03`–`PERF-05`) are parked.
+  The suite continues to report the ten known limits without requiring their repair. Use
+  `./run.sh --perf-contract`, `--phase census`, or `--agents`; see economy.md for routine commands.
 
 - `ECON-13` (2026-10-12): test-only work counters (`debug::work`,
   `benchmark_populated_work_counts`) show the 100k scaling gap is algorithmic: proposed site rows

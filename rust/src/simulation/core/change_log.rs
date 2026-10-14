@@ -18,6 +18,25 @@ pub(crate) struct IndexChangeLog {
 const MAX_ENTRIES: usize = 1 << 16;
 
 impl IndexChangeLog {
+    /// Reserves bounded recording space outside mutation loops, without discarding history.
+    pub(crate) fn prepare_recording(&mut self, entries: usize) {
+        let target = entries.min(MAX_ENTRIES);
+        if self.entries.capacity() < target {
+            self.entries
+                .reserve(target.saturating_sub(self.entries.len()));
+        }
+    }
+
+    /// Records one row without allocation. Exhausted/unprepared storage marks the revision
+    /// incomplete, so consumers rebuild instead of accepting a partial change set.
+    pub(crate) fn record_prepared(&mut self, revision: u64, index: usize) {
+        if self.entries.len() >= self.entries.capacity().min(MAX_ENTRIES) {
+            self.clear(revision);
+            return;
+        }
+        self.entries.push((revision, index));
+    }
+
     /// Records the indices changed by the owner's step to `revision`.
     pub(crate) fn record(&mut self, revision: u64, indices: impl IntoIterator<Item = usize>) {
         if self.entries.len() >= MAX_ENTRIES {
@@ -56,6 +75,29 @@ impl IndexChangeLog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prepared_recording_never_grows_and_overflow_requires_a_rebuild() {
+        let mut log = IndexChangeLog::default();
+        let mut out = Vec::new();
+        log.record_prepared(1, 2);
+        assert_eq!(log.entries.capacity(), 0);
+        assert!(!log.changes_since(0, 1, &mut out));
+        log.prepare_recording(8);
+        let capacity = log.entries.capacity();
+        for revision in 2..=capacity as u64 + 1 {
+            log.record_prepared(revision, 3);
+        }
+        assert!(log.changes_since(1, capacity as u64 + 1, &mut out));
+        assert_eq!(out, [3]);
+        let overflow = capacity as u64 + 2;
+        log.record_prepared(overflow, 4);
+        assert_eq!(log.entries.capacity(), capacity);
+        assert!(!log.changes_since(1, overflow, &mut out));
+        log.record_prepared(overflow + 1, 5);
+        assert!(log.changes_since(overflow, overflow + 1, &mut out));
+        assert_eq!(out, [5]);
+    }
 
     #[test]
     fn changes_follow_recorded_revisions_and_unknown_changes_force_rebuilds() {

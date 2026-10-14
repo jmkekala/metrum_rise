@@ -2486,6 +2486,8 @@ fn insolvent_self_fire_decrements_worker_count() {
     agents.consecutive_unpaid_days[agent] = 1;
 
     households.job_funding.capacities = vec![0, 1];
+    allocator.prepare_production_changes();
+    let production_revision = allocator.production_revision();
     let mut treasury_balance = 0.0;
     households.pay_daily_wages(&mut agents, &mut allocator, 0.0, &mut treasury_balance);
 
@@ -2493,6 +2495,9 @@ fn insolvent_self_fire_decrements_worker_count() {
     assert_eq!(allocator.buildings[1].worker_count, 0);
     assert_eq!(households.households[0].budget, 0.0);
     assert_eq!(allocator.buildings[1].operating_budget, 0.0);
+    let mut changed = Vec::new();
+    assert!(allocator.production_changes_since(production_revision, &mut changed));
+    assert_eq!(changed, [1]);
 }
 
 #[test]
@@ -2718,6 +2723,8 @@ fn operational_hour_tick_rebuilds_household_and_worker_counts_together() {
         0.0,
     ));
     allocator.rebuild_zone_index();
+    allocator.prepare_production_changes();
+    let production_revision = allocator.production_revision();
 
     let mut agents = AgentSystem::new();
     let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
@@ -2746,6 +2753,7 @@ fn operational_hour_tick_rebuilds_household_and_worker_counts_together() {
 
     assert_eq!(households.households[0].member_count, 1);
     assert_eq!(allocator.buildings[1].worker_count, 1);
+    assert!(!allocator.production_changes_since(production_revision, &mut Vec::new()));
 }
 
 #[test]

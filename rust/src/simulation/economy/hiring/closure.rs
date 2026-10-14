@@ -30,6 +30,13 @@ impl PotentialCustomers {
     /// over the existing customer index only when a joint financing proof needs a retry.
     pub(super) fn prepare(&mut self, buildings: usize) {
         self.counted.resize(buildings, false);
+        // Closure only withdraws members from this original census list. Restore those
+        // seed flags before changed production chunks overwrite their current membership.
+        for &owner in &self.owners {
+            if let Some(counted) = self.counted.get_mut(owner) {
+                *counted = true;
+            }
+        }
         self.activity.resize(buildings, 0.0);
         self.owners.clear();
         self.pending.clear();

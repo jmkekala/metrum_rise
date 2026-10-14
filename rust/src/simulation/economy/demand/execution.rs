@@ -264,6 +264,44 @@ impl DemandSystem {
         Ok(permit)
     }
 
+    /// Prepares the execution epoch directly for isolated performance-contract runs.
+    ///
+    /// This keeps the contract focused on the execution census and market replay even when
+    /// the frozen city has no queued spawn at the selected hour. The epoch key deliberately
+    /// matches [`Self::prepare_queued_spawn`] so both harness and gameplay use the same cache
+    /// invalidation boundary.
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)] // Mirrors the existing execution inputs without owning them.
+    pub(crate) fn prepare_execution_epoch_for_test(
+        &mut self,
+        allocator: &BuildingAllocator,
+        households: &HouseholdSystem,
+        graph: &RegionGraph,
+        now: u64,
+        network: &TransitNetwork,
+        logistics: &mut ShipmentSystem,
+        zoning: &ZoningSystem,
+        treasury: f64,
+        policy: &CityFiscalPolicy,
+    ) {
+        let current = epoch(
+            allocator,
+            now.saturating_sub(1) / 60,
+            network.cch_graph.build_generation,
+            network.cch_graph.metric_revision,
+            network.frontage_delay_revision,
+            crate::simulation::economy::logistics::freight_price_phase(
+                &self.runtime_tuning,
+                (now % 1440) as u16,
+            ),
+            zoning.overlay_revision(),
+        );
+        self.prepare_execution_market(
+            current, allocator, households, graph, now, network, logistics, zoning, treasury,
+            policy,
+        );
+    }
+
     // One census per execution epoch; successful actions keep the books and owner namespace.
     fn prepare_execution_market(
         &mut self,
@@ -278,6 +316,8 @@ impl DemandSystem {
         treasury: f64,
         policy: &CityFiscalPolicy,
     ) {
+        #[cfg(test)]
+        let _contract_phase = crate::debug::work::phases::enter("execution");
         let execution = &mut self.construction_execution;
         if execution.epoch != Some(current) {
             // A dropped placement permit can retain provisional inner commits. The new
@@ -285,6 +325,18 @@ impl DemandSystem {
             execution.discard_project_proof_for_reset();
             collect_connected_border_nodes(graph, &mut execution.borders);
             crate::debug::work::add(crate::debug::work::Work::ExecutionCensuses, 1);
+            #[cfg(test)]
+            households.job_funding.trace_execution_inputs(
+                allocator,
+                &households.households,
+                logistics,
+                network,
+                &self.runtime_catalog,
+                &self.runtime_tuning,
+                policy,
+                treasury,
+                (now % 1440) as u16,
+            );
             execution.funding.refresh_with_service_capacity(
                 allocator,
                 &households.households,
@@ -304,6 +356,7 @@ impl DemandSystem {
                         .unwrap_or(0)
                         .min(physical)
                 },
+                Some(&households.job_funding),
                 (now % 1440) as u16,
             );
             let mut snapshot = DailyDemandSnapshot::from_runtime_with_funding(

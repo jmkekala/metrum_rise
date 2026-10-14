@@ -458,6 +458,14 @@ workers quit after 2 unpaid days.
 
 Costs: market aggregation is O(B·ports + households·categories) in fixed parallel chunks.
 Household and supplier claims commit serially through the existing component and chunk indices.
+Pending household purchases reduce authoritative balances immediately but defer downward
+availability-index updates until owner acceptance. Rejection of an ordinary quote restores only
+balances; releasing an incumbent still publishes restored eligibility immediately and rolls it
+back on rejection. Thus a pending index can overestimate availability but cannot hide a buyer.
+Repeated queries check balances before routing. With `Q` resource queries and `S` staged accounts
+in a proposal, deferral can add at most `O(Q*S)` candidate checks; it adds no route queries or
+allocations and avoids tree updates for rejected purchases. `Q` follows proposal recipe size,
+not city population. Acceptance and enclosing transaction rollback publish exact eligibility.
 Consumers read capacities in O(1).
 
 ## Labor
@@ -736,21 +744,565 @@ these five reports byte for byte.
 
 ### Performance contract (`PERF-01`–`PERF-05`)
 
+**Scope clarified 2026-10-14:** the deliverable is a fast diagnostic benchmark suite.
+`PERF-01`, `PERF-02` and `PERF-06` infrastructure is complete; fixing the simulation scaling
+issues in `PERF-03`–`PERF-05` is parked. Existing budgets and counters remain visible and
+unchanged. A reported budget failure describes measured simulation performance; it does not
+mean the diagnostic suite is unfinished. Earlier implementation notes below retain their
+historical acceptance status.
+
+Routine commands:
+
+```bash
+./run.sh --perf-contract                 # Full overview; latest cached run: 64.20 s
+./run.sh --perf-contract --phase census  # One phase at both tiers
+./run.sh --perf-contract --agents        # Short agent-tick checks only
+./run.sh --perf-contract --diff HEAD     # Select affected phases; keep full-day coverage
+```
+
+The runner writes timings, deterministic work counts and failures to `report.json` under its
+artifact directory. Current full runs return exit code 1 for the known budget/scaling failures
+while retaining the complete report. Compilation and initial snapshot generation are reported
+separately from cached runtime; `--binary "$TEST_BINARY"` skips compilation. Use `--plan` to
+inspect selection without running, and `--prepare --keep-baseline` to prepare snapshots and
+retain the first baseline executable (it deliberately refuses to overwrite an existing one).
+
 Every economy change keeps these checks. They replace `ECON-13` (closed 2026-10-12), whose
 100k runs took hours. The contract uses saved cities, deterministic work counts and one run per
 tier, so a full check takes minutes. The 100k and 1M tiers are deferred.
 
-**Fixtures.** `PopulatedCity` at 10k and 30k residents, simulated past warm-up into the regime
-where buildings are placed or removed every hour (day 7 on the 2026-10-12 fixture), then
-written with the ordinary save format. Each snapshot records its save-format and fixture
-revisions; the runner regenerates it when either changes. Generation must show that the loaded
-snapshot continues exactly like a straight-through run (same next-day `GrowthDayRecord`).
-Snapshots are local build products and are not committed.
+**Fixtures.** Two separate `PopulatedCity` workloads at 10k and 30k residents use the ordinary
+save format. The day-12 baseline retains the original census, staffing and search workload.
+The day-16 fiscal-stress workload starts from that baseline, sets commercial and industrial
+property tax to 500 through the ordinary policy API, then advances normally. It must place
+or remove buildings in every subsequent hourly interval. Initial job locks are unchanged.
+Both workloads independently retain all time and work-scaling limits below; their results
+are never pooled. Churn coverage belongs to the fiscal workload, while the original baseline
+churn is still reported. Bankruptcy reduces employment, so fiscal results cannot substitute
+for baseline performance acceptance.
 
-**Contract run (`PERF-01`).** `./run.sh --perf-contract` loads both snapshots, simulates one day
-(23 operational hours and one daily settlement) and reports per-phase work counts
-(`debug::work`) and timings. One release run per tier, no repeats; at most **5 minutes** in
-total, including loading. Required before merging an economy change.
+Each snapshot records its save-format and fixture revisions, tier and boundary; the runner
+regenerates it when these change. Generation must show that loading preserves every subsequent
+hourly `GrowthDayRecord`, placement/removal counts and the checked agent movement/schedule state
+through the next daily boundary. Fiscal generation also enforces 24/24 active intervals before
+publishing its cache. Snapshots are local build products and are not committed.
+
+Fixture revisions hash the fixture source and algorithm marker, bootstrap JSON/TOML
+manifests, `economy/profiles.toml`, and `demand/growth_profiles.toml`. Relative paths and
+contents participate, so changed tuning or renamed assets cannot silently reuse a city
+generated from different inputs. Meshes and textures are excluded because fixture setup
+does not read them. Simulation changes that alter fixture generation still require a
+fixture-source change or an explicit algorithm-marker bump.
+
+Fresh revision-guard validation (2026-10-14), release binary SHA-256
+`ad0c54a2a25b9b8bdf6af14609ec83675b499542c0b2a184e09c2ea9b0dca8a6`:
+the isolated configuration/asset mutation test and lane-geometry regression pass, as do
+all 14 runner regressions. New 10k/30k snapshots pass exact continuation; generation and
+validation take **25.00/72.30 seconds**, reported separately. With eight Rayon workers and
+affinity `0,2,4,6,8,10,12,14`, the complete cached runner then finishes in **56.05 seconds**;
+both preparation reports have `generation_s: null`, proving cache reuse. Next-day records
+and every work count match the earlier hourly-churn reference. Hour/day samples are
+23.15/7.03 ms and 69.26/34.77 ms. All isolated phases, locality checks and agent checks pass;
+the same nine full-day gates fail (two fixture-coverage gates, 30k daily time and six work
+counts). The old snapshots are retained separately and the revised snapshots populate the
+default local cache. This verifies cache invalidation, not overall `PERF-01` acceptance.
+
+The one-day report includes `building_churn`: 24 chronological `[placed, removed]`
+pairs, one per simulated hour interval. These count successful allocator insertions and
+removals, including cleanup, rather than reference revisions or execution-census events.
+The runner rejects missing coverage and any interval with neither event. A nonzero daily
+total alone does not prove the required hourly churn. Instrumentation is test-only, O(1)
+per insertion/removal, and allocates nothing in simulation loops.
+
+Fresh coverage check (2026-10-14), release binary SHA-256
+`f0da0caa727a0b604e9f44cbd596c96610405b58ea1372534bc5babc56f6e0d5`:
+the current day-12 snapshots have churn in only **8/24** intervals at 10k and **20/24**
+at 30k. Both fail fixture acceptance; an execution census is not evidence of a placement.
+With `RAYON_NUM_THREADS=8`, affinity `0,2,4,6,8,10,12,14`, and
+`METRUM_PERF_RESIDENTS` set separately to each tier, run
+`METRUM_PERF_CACHE="$ARTIFACTS/snapshots" taskset -c 0,2,4,6,8,10,12,14 "$TEST_BINARY" nodes::sim::core::populated_city::contract::perf_contract_day --exact --ignored --nocapture --test-threads=1`.
+The two runs took **2.98/9.11 seconds**, including loading, with unchanged next-day records
+and all prior work counts. Hour/day samples were 22.90/7.01 ms and 68.77/34.41 ms;
+the previous seven time/work failures remain, plus the two newly enforced coverage failures.
+Fourteen runner regressions and 38 allocator regressions pass (five allocator checks ignored).
+These are targeted checks, not a fresh complete-contract or five-growth-report run.
+
+A bounded follow-up uses the ignored `perf_contract_churn_scan` test at the same module path
+and with the same environment. It follows each existing snapshot for seven days without
+changing job locks, economic inputs or cached saves. Binary SHA-256
+`d5b23a838a1183d81e1babc750db5e6dafdd00365e338dd0572332581bacd344` completed the
+10k/30k scans serially in **10.28/34.26 seconds**, including loading. Active hourly intervals
+on days 12–18 were **8, 6, 4, 2, 2, 0, 2** at 10k and **20, 15, 14, 13, 15, 14, 14**
+at 30k. No boundary in that window meets fixture coverage. Removal pacing accumulates
+`eligible_candidates × authored_daily_fraction / 24` credits per operational pass
+(`demand/building_actions.rs`, `demand/credits.rs`); merely waiting longer is not evidence
+of sustained churn. Keep the current snapshots as diagnostic references while developing
+a representative fixture with sustained demand-driven rebuilding. This scan is diagnostic
+only and is not added to the routine one-day contract.
+
+The complementary `perf_contract_early_churn_scan` builds the ordinary city, advances to
+the first post-warm-up midnight and checks days 4–12. Binary SHA-256
+`7bfd8a4a9a1758e54a1356e85e32f785f020c62f7ff8b11778de3b5feaa45840`, with the same
+workers and affinity, found **0, 0, 0, 0, 0, 0, 6, 8, 8** active intervals at 10k and
+**0, 0, 0, 0, 0, 0, 3, 15, 20** at 30k. Generation to the first boundary took
+**9.86/26.77 seconds** separately; total diagnostic runtimes were **20.74/61.34 seconds**.
+Together, the scans rule out every midnight boundary from day 4 through day 18 in the
+current setup. The historical every-hour observation from day 7 applied to **100k**, not
+these smaller tiers. The hourly coverage requirement remains unchanged.
+
+A setup-only industrial oversupply trial (2026-10-14) repainted one residential row per
+16-row cycle as industrial before filling any lots, retaining streets, admission and initial
+job-lock behavior. At 10k, days 4–12 had **0, 0, 0, 0, 0, 0, 3, 6, 6** active intervals,
+with no placements. Initial preparation took **10.13 seconds** and the complete diagnostic
+**20.99 seconds**, using eight workers and the affinity above. It also exhausted the spare
+housing, reaching 5,236 households with zero vacant homes. This variant was rejected before
+running 30k; the original snapshots and all acceptance gates remain unchanged. Diagnostic
+binary SHA-256: `cd11954eed5b2f0b8c4ea7f9d56c71180dea4574db34b2b8c66f580907ddccec`.
+The trial source and log are retained with its local artifacts; it is not a routine test.
+
+A separate fiscal-stress diagnostic finds a real hourly-removal window at both tiers.
+`perf_contract_fiscal_churn_scan` loads the unchanged day-12 snapshot, sets commercial and
+industrial property tax to 500 through the ordinary policy API, then advances normally for
+14 days. With eight workers and the same affinity, both tiers have **24/24 active intervals
+on every day 16–25**. Total diagnostic runtimes are **23.78/68.63 seconds**, including
+1.42/4.04 seconds for loading and policy setup. Binary SHA-256:
+`f96299357ce6a76417b6ec352cb750a27c759098d6fdd2e38d3903c4ce05c462`.
+The day-16 intervals remove 3–6 buildings at 10k and 11–19 at 30k, with no placements.
+This is a bankruptcy stress case: employment falls sharply, so it cannot replace the
+original workload's census, staffing or search gates. The original snapshots remain intact.
+Saving and validating the day-16 boundary and integrating both workloads into the runner
+remain pending; these diagnostic results do not close fixture acceptance.
+The first day-16 save/load check fails at 10k after **8.53 seconds**: in the first subsequent
+hour, the loaded city has 268 vacant homes and one unhoused household versus 267 and zero
+straight-through. Population, employment, jobs, buildings, treasury and six removals match.
+Binary SHA-256: `b42e6206683e823db828b6022f4dc83ef8f52735e46642315817c26fc9730af0`.
+The 30k continuation check was not started after this failure. The housing difference must
+be resolved before this stress fixture can be accepted.
+The focused follow-up identifies household 157: the straight run assigns it home 162,
+while the loaded run leaves it unhoused. Loading rebuilt vacancy/admission indices while
+the allocator's asset registry was empty, then restored the registry without rebuilding
+those indices. The load bridge now rebuilds them immediately after restoring the registry;
+the existing registry-restoration regression checks that a vacant home is available before
+the first tick. This costs O(buildings + vacancies log vacancies) once during loading and
+adds no tick-path work. Fresh release validation passes the registry-restoration regression,
+16 save regressions (three ignored), and three queued-execution reload regressions.
+Both fiscal continuations now match every hourly record and placement/removal count, with
+24/24 active intervals. Serial elapsed times including preparation are **11.26/31.82 seconds**
+at 10k/30k; detailed agent-state comparison and revision-checked runner integration remain
+pending. Binary SHA-256:
+`6345fbad1bfff2bdd099ba877ac539f3408949d3abe4362a0adc5076fe646888`.
+The original cached workload retains identical records, every work count and hourly churn
+against the retained local-capital build. Fresh single-run hour/day samples are
+**22.77/6.62 ms** and **69.29/34.06 ms**, with total day checks taking **3.05/9.33 seconds**.
+These are routine checks with eight workers and the affinity above, not speedup evidence;
+the original scaling failures and 30k daily-budget failure remain open.
+
+The two-workload runner and v5 snapshot integration now compile, and 19 Python runner
+regressions pass, including independent workload limits and partial-failure reporting.
+Release binary `ec499f9b0a39a9137371b98afc0d81bf25af9f2abc55860e722538a1f1b218fa`
+passes both snapshot unit regressions (one manual test ignored). Fresh baseline generation
+passes the strengthened hourly record/churn/agent-state comparison in **25.23/72.22 seconds**.
+The 10k fiscal snapshot also passes in **11.39 seconds**. At 30k, fiscal preparation fails
+after **24.50 seconds** at continuation hour 1: agent 627 has identical position, route,
+home and active target, but the loaded planned target is absent instead of home 14930.
+The SQLite snapshot contains that target correctly. No 30k fiscal cache was published and
+the expanded full timed contract was not started. This new plan-state mismatch must be
+resolved before fixture acceptance; matching aggregate records alone is insufficient.
+The load-only probe reproduces it in **4.07 seconds**, before a tick. The orphan-repair
+guard preserved delayed retries but missed an immediate replan after demolition: an empty
+path with valid node, edge and destination and zero retry counters. The loader now preserves
+that live state as well; agents with no usable destination retain the existing repair path.
+The focused retry regression covers both cases. Release binary
+`cb0d58b84562146fb8e77513bb70f853d675863ac87853b25508e77b37ac8240` passes all
+33 save regressions (three manual checks ignored) and the load-only plan probe in 4.05 seconds.
+Both gameplay queued-growth and busy-city save-continuation regressions pass in 23.05 seconds.
+The 30k fiscal snapshot now passes exact hourly continuation, including agent state, in
+**31.72 seconds** and is published. Both baseline snapshots and 10k fiscal stress are reused.
+
+The complete two-workload contract takes **67.16 seconds**, including all workload/phase
+loads, locality checks and the short agent contract; the 31.72-second initial fiscal
+generation is reported separately. All 14 isolated phase checks, both locality gates and
+all six agent samples pass. The retained baseline binary's hash is verified. Reproduction:
+`RAYON_NUM_THREADS=8 taskset -c 0,2,4,6,8,10,12,14 python3 tools/perf_contract.py --binary "$TEST_BINARY" --artifacts "$ARTIFACTS"`.
+
+| Workload | 10k hour/day (ms) | 30k hour/day (ms) | Active intervals, 10k/30k |
+|---|---:|---:|---:|
+| Baseline day 12 | 23.09 / 6.83 | 69.92 / 34.24 | 8/24, 20/24 |
+| Fiscal stress day 16 | 58.06 / 47.13 | 128.73 / 150.26 | 24/24, 24/24 |
+
+**Thirteen limits fail.** Baseline retains the same seven time/work failures: 30k daily
+settlement, census rows, owner slots, staffing trials, supplier searches/routes and job keys.
+Its records, every work count and churn sequence match the retained local-capital build.
+Fiscal stress fails all four timing budgets plus supplier searches (**2,818 → 12,533**) and
+combined CCH searches (**1,914 → 15,752**) against the same **3.4176×** work bound. Its census
+rows (**182,930 → 501,935**) and staffing trials (**241,255 → 683,638**) pass scaling.
+Fiscal lot regeneration accounts for **965.90/1,788.22 ms** inclusive over the full day and
+is the next timing investigation; removals total **112/357**. These single release samples
+establish current failures, not speedup claims. Fixture coverage is now validated; performance
+acceptance remains open, and no original baseline time/work gate was removed.
+
+A subsequent **diagnostic-only** 10k fiscal trace with the same binary and worker/affinity
+settings finishes in **3.23 seconds**. `cell_lot_detail` reports **93 local regions**,
+**958.36 ms** in cell generation and **31.74 ms** in lot derivation, with **zero candidates,
+created, retired or reattached lots**. Command:
+`METRUM_DEBUG=1 METRUM_DEBUG_FILTER=economy_phases METRUM_PERF_RESIDENTS=10000 METRUM_PERF_CACHE="$ARTIFACTS/snapshots" RAYON_NUM_THREADS=8 taskset -c 0,2,4,6,8,10,12,14 "$TEST_BINARY" nodes::sim::core::populated_city::contract::perf_contract_fiscal_day --exact --ignored --nocapture --test-threads=1`.
+Inspection traces this to ordinary occupancy release queuing the existing 512 m dirty regions;
+it does not establish a whole-city scan. Cell regeneration after release is the next target,
+while retaining the occupied-lot road-removal/frontage revalidation contract in `zoning.md`.
+Trace timings are for diagnosis only and do not replace the unprofiled contract above.
+
+**Demand cell-cache integration (2026-10-14).** Demand preparation now consumes the existing
+cell-generation completeness cache used by selection, generating cold chunks or local dirty
+envelopes and marking them complete. Every dirty region still derives lots; occupancy and
+frontage invalidation are unchanged. The work bound is requested chunks plus generation in
+dirty envelopes, with no additional spatial index. Targeted cell and zoning regressions pass
+**107 tests, seven ignored**. Release binary SHA-256
+`97af8fc6b7dbbfe082b9936f2e16a998aa16c1f8dd2e84f75b0a4ac00839e5ba`, eight Rayon workers,
+affinity `0,2,4,6,8,10,12,14`: four short next-day checks preserve records, work counts and
+hourly churn exactly against the retained immediate-replan build. The integrated cached run
+(`RAYON_NUM_THREADS=8 taskset -c 0,2,4,6,8,10,12,14 python3 tools/perf_contract.py --binary "$TEST_BINARY" --artifacts "$ARTIFACTS"`)
+finishes in **64.91 seconds**, with no fixture regeneration. All isolated phases, locality
+and agent checks pass. Baseline hour/day samples are **16.95/7.08 ms** and **51.63/34.86 ms**;
+fiscal samples are **30.17/37.50 ms** and **85.62/129.19 ms**. Fiscal hourly budgets now pass;
+the original seven failures plus fiscal daily budgets and supplier/CCH scaling leave **eleven
+failed limits**. Fiscal lot-phase totals are **320.49/771.40 ms**. These are routine single
+samples, not a statistical speedup claim. Recovery and scarce-labor expansion pass with
+byte-identical reports. After correcting an initial stale executable selection, all four growth
+integration tests pass on the Cargo-emitted executable (SHA-256
+`aa36e1369d9f22f02777b8c7d9ab7a2ec2eb24ffbd6727b14ff5850e8053c4da`). All five reports
+are byte-identical to the retained import-replay reports. This integration build used the default
+x86-64 target and is correctness evidence only, not a matched timing comparison.
+
+A diagnostic-only 30k fiscal day on this binary finishes in **7.66 seconds** using the
+trace command above with `METRUM_PERF_RESIDENTS=30000`. Midnight workplace assignment reports
+**58.05 ms preparation**, **58.84 ms total**, and `skipped_reason=no_open_jobs`; household
+daily settlement totals **62.18 ms**, inside **129.34 ms** for the full daily phase.
+Preparation includes commercial activity refresh, the live funding census and inactive-worker
+ejection. This identifies a narrower next investigation, not proof that any of those steps
+can be skipped. Traced samples are not acceptance timings.
+
+A fixed-cost profitability bound was tested and removed: even maximum output revenue below
+property tax plus one wage cannot fund an operation, but this condition prunes no additional
+work in either saved workload. Candidate SHA-256
+`feeb99f97cd0693b506ddafd924a79b8f836ec4a9f451101daaf27a5ca707f24` passes the new tax-change
+oracle and 14 market regressions (six ignored); all four next-day records, churn sequences
+and work counts match the retained cell-cache build. These checks used the executable emitted
+by Cargo. An initial script copied a stale executable; those results were discarded. The
+candidate was built from the repository root without the Rust directory's x86-64-v2 settings,
+so its timings are not a matched performance comparison. No production bound or associated
+test remains. The existing detailed trace assigns **53.56 ms** to the combined household-claim
+and serial funding phase at midnight; this phase needs finer attribution before another fix.
+For standalone checks, build from `rust/` and use Cargo's emitted executable path; do not reuse
+a hard-coded dependency hash. The contract runner already follows both rules.
+
+**Deferred household eligibility (2026-10-14).** Test-only timing separates the first household
+funding pass into reservation, staffing and acceptance/rejection. Diagnostic binary
+`f9e583a205f786060ddb5d7b928f5852d2106316ef376dc6f374f247853535cb` attributes the 30k fiscal
+midnight pass to **38.97/0.70/14.44 ms**, respectively. Timer calls run only with diagnostic
+logging enabled and are absent from gameplay builds. This motivates deferring availability
+tree updates for pending reductions while retaining immediate publication of released receipts.
+
+Candidate SHA-256 `ac57451a679d09e3a3f71eb8c91c49a50d4944c507bb9ae79f1e554682ec00d0`, built
+from `rust/` with x86-64-v2 settings, passes **179 targeted tests, 15 ignored** covering
+employment, customer transactions and demand journals. Four one-day checks preserve all records,
+churn and bounded work counts exactly. With eight workers and affinity `0,2,4,6,8,10,12,14`,
+the full cached runner command above completes in **65.36 seconds**. All phase, locality and
+agent gates pass; the same **eleven limits** remain open. Baseline hour/day samples are
+**17.03/6.88 ms** and **55.38/42.86 ms**; fiscal samples are **28.41/28.01 ms** and
+**77.27/91.48 ms**. The preceding targeted baseline 30k day sampled **33.92 ms**, so these
+single runs do not establish a stable baseline timing change or a statistical speedup.
+All four growth integration tests plus recovery and scarce-labor expansion pass. All five
+reports are byte-identical to the retained import-replay reports. The growth executable was
+selected from Cargo's JSON output, SHA-256
+`e0f567b7633f16d7b029928df86bce657c36040facbe5ca543192eb088473e5f`.
+A follow-up 30k fiscal diagnostic takes **7.46 seconds**, with midnight reservation/staffing/
+finish at **24.93/0.69/1.73 ms**. Midnight demand remains **53.27 ms**: cell preparation
+**12.97 ms**, planning **29.39 ms**, execution **10.91 ms**. These traced samples confirm the
+intended reduction in provisional-index work and locate remaining cost; they are not acceptance
+timings. The supplier/job-search and repeated census/staffing scaling failures remain unchanged.
+
+**Empty supplier markets (`PERF-05`, 2026-10-14).** Recurring quotes now reuse the existing
+resource-availability proof before starting a nearest-supplier search. An empty live/projected
+resource skips buyer-component resolution and spatial traversal, then takes the ordinary import
+fallback. No counter definition changed. The guard uses existing resource lookups, adds no
+allocation or index, and preserves normal searches when supply is available. The regression
+checks both empty-market avoidance and recovery after funded production returns.
+
+Binary SHA-256 `0a0a25ad501f802d249cb7aab1d80c825f6c405f62b6617866e7933be7c4b113` passes
+**238 targeted tests, 19 ignored**. Four short days preserve records, hourly churn and every
+counter except supplier searches: baseline **38,018/196,356 → 20,978/105,798**, fiscal
+**2,818/12,533 → 0/0**. Baseline search growth is still **5.0433×**, above **3.4176×**;
+route-quote and job-search scaling are unchanged. With the same eight-worker affinity and
+full-runner command, the cached contract finishes in **64.50 seconds**. All phase, locality
+and agent checks pass. **Ten limits remain:** the original seven baseline limits, both fiscal
+daily budgets and fiscal CCH scaling. Hour/day samples are baseline **16.92/6.70 ms** and
+**51.58/34.34 ms**, fiscal **27.63/26.58 ms** and **77.77/89.64 ms**. These are routine
+samples, not a speedup claim. All four growth integration tests plus recovery and scarce-labor
+expansion pass; all five reports are byte-identical to the retained import-replay reports.
+
+**Staffing attribution (`PERF-03`/`PERF-04`, 2026-10-14).** Test-only
+`METRUM_TRACE_STAFFING=1`, together with the `economy_phases` debug channel, emits per-operation
+profile, import/local mode, physical capacity, closure ceiling and rejection counts. It is
+absent from gameplay builds and disabled in acceptance runs. Binary SHA-256
+`90e1b170c819d434e5097d576919bfeb84c485d3a6858e46a62fa108a1548e46` passes **54 targeted
+funding/employment tests, 9 ignored**. Two serial traced baseline days take **3.08/9.45 seconds**
+including loading and retain every record, churn entry and work count. These are diagnostic
+durations, not acceptance timings; no full contract or growth reports were rerun for this
+test-only instrumentation.
+
+Run the cached-day command below with `METRUM_DEBUG=1 METRUM_DEBUG_FILTER=economy_phases
+METRUM_TRACE_STAFFING=1`. Exclude the initial load census (through its first
+`household_import_funding_detail` line) when aggregating operation rows: the remaining trial
+totals exactly match the contract's **60,333/291,769**. Successful trials alone are
+**46,721/208,765**; capital rejects are **3,494/77,526**, profit rejects **10,118/5,478**.
+Food processors account for **33,049/192,302** trials, combining import and local paths.
+At the current 10k count, the 30k limit is **206,196**: even eliminating every 30k rejected
+trial cannot pass it while all successful evaluations remain. Exact worker-range exclusion
+may reduce cost, but cannot independently close this gate. Reusing successful evaluations or
+reducing repeated funding passes/censuses is therefore necessary; changing counter definitions
+is not an optimization. Neither tier rejects any measured trial with the existing free-input
+profit bound, which also rules out that weaker bound as a useful next change for this workload.
+
+An exact derived-share import memo guard was tested and removed next. Rather than requiring
+identical raw household quotas, it accepted identical capped `provisional_local_share` bits,
+using the same arithmetic as revenue, inventory valuation and exports. Existing per-refresh,
+activity and ceiling guards remained. Binary SHA-256
+`dac14541aa4a7c3a0d1d897b88721b1004d030836c2633e01b032439d0188ff7` passes **128 targeted
+funding, employment and logistics tests, 13 ignored**. Four serial cached days preserve records,
+churn and **every work count**: this broader guard avoids no additional evaluations. Baseline
+10k/30k runs take **2.93/8.94 seconds**, fiscal runs **2.48/7.45 seconds**, including loading.
+Hour/day samples are baseline **17.13/6.81 ms**, **51.83/34.31 ms**, fiscal **27.94/27.00 ms**,
+**79.15/92.20 ms**; they establish no speedup. The candidate was removed rather than retaining
+an extra O(output ports) comparison with no measured benefit. No full contract or growth-report
+acceptance is claimed for this trial. The next investigation is repeated funding-pass/census
+invalidation, rather than further relaxation of this raw-quota guard.
+
+A fresh 30k baseline input-difference trace on the retained staffing-attribution binary
+preserves records, churn and counters. All 15 execution censuses follow hourly censuses with
+identical staffing trial/success totals, but only four have unchanged captured building,
+household, freight and dependency inputs. Every paired household-budget vector is unchanged;
+the other pairs include worker changes or building removal/remapping. Equal aggregate results
+therefore do not authorize wholesale census reuse. The next implementation needs explicit
+changed-owner/dependency handling, preserving remaps and ordered market reductions.
+
+**Worker-change journal foundation (`PERF-03`, 2026-10-14).** The allocator now owns a
+separate workforce revision and reuses `IndexChangeLog` for changed worker-count owners.
+Employment, capacity enforcement and agent removal use the allocator setter. Each mutation
+is allocation-free O(1); preparation reserves bounded history before staffing. Overflow or
+unprepared storage marks history incomplete rather than allocating or silently losing changes.
+Building-index changes invalidate the history. The existing parallel recount detects repairs
+within its current traversal and invalidates conservatively, without another city scan.
+Unchanged counts do not advance the revision.
+
+This is an incremental-census prerequisite, **not a census optimization yet**: funding does
+not consume the journal, and its read API is currently unused outside tests (reported by
+`cargo check` as dead code). No acceptance limit is closed. Release binary SHA-256
+`b41398d0b71a6b75925f5d18336a071f07960a1618227ce1f8d378cf66fa7179` passes **362 targeted
+change-log, allocator, household and agent tests, 39 ignored**, including allocation-capacity,
+overflow, no-op, index invalidation, unpaid-worker departure and recount regressions.
+Four serial cached days preserve every record, churn entry and work count. Baseline durations
+are **2.89/9.00 seconds**, fiscal **2.47/7.47 seconds**, including loading; hour/day samples
+are baseline **16.85/6.74 ms**, **52.16/35.22 ms**, fiscal **27.85/26.96 ms**,
+**79.14/94.13 ms**. These are routine samples, not speedup evidence. Full contracts and the
+five growth reports have not been rerun for this intermediate integration stage.
+
+The journal now covers **production inputs**, not only worker counts: allocator-owned
+work-area updates and abandonment record affected owners; construction completion invalidates
+history conservatively. Positive construction-hour decrements do not change eligibility.
+Agriculture and extraction use the allocator setter, retaining sanitized scales, startup
+capital and missing-owner behavior. Road/entrance and catalog revisions remain separate
+required cache guards. The module is `allocator/production_changes.rs`; the mutation path
+remains allocation-free O(1).
+
+The opt-in funding-input diagnostic now asserts that every changed captured production row
+appears in a complete journal when the other dependency revisions match. Release binary
+SHA-256 `6e5fff16123a43cc8b9bb53c9fe3eb4ad1c468f3af7f137e903e64561c92457d` passes
+**375 targeted tests, 40 ignored**. Four serial cached days again preserve all records, churn
+and work counts, taking baseline **2.91/8.93 seconds**, fiscal **2.48/7.45 seconds**.
+Hour/day samples are baseline **17.00/7.38 ms**, **51.77/34.87 ms**, fiscal **27.93/26.34 ms**,
+**79.17/91.11 ms**. A separate **9.72-second** 30k diagnostic checks all 15 execution pairs:
+nine have complete history (four empty, five with one or two changed owners); six correctly
+require full rebuilding after layout changes. The assertion passes and outcomes/counters remain
+unchanged. These checks establish journal coverage for this workload, not incremental funding
+acceptance. Full funding integration, full contracts and growth-report validation remain pending.
+
+**Production-market chunk reuse (`PERF-03`, 2026-10-14).** Funding now consumes the production
+journal to rebuild only affected 256-building market chunks. Catalog identity, building layout,
+registry, entrance and topology guards force conservative rebuilding. Existing chunk arithmetic
+and ordered final reduction are unchanged; closure-withdrawn buyer flags are restored before
+changed chunks overwrite membership. With K logged changes, D dirty chunks and R resources,
+preparation costs O(K log K + 256D + BR/256), plus original buyer-list restoration; other census
+passes still scan all buildings. Census counter definitions are unchanged.
+
+Release binary SHA-256 `e9d7bf1bb57dfe205062694d1712ae038cabf55dc34e8ab65e5e657c0287131c`
+passes **379 targeted tests, 40 ignored**, including exact full-census comparisons after worker,
+area, catalog and history changes. Four serial cached days with eight Rayon workers and affinity
+`0,2,4,6,8,10,12,14` preserve every record, churn entry and work count. Baseline runs take
+**2.88/8.87 seconds**, fiscal runs **2.44/7.43 seconds**, including loading. Hour/day samples
+are baseline **16.90/6.85 ms**, **51.92/35.49 ms**, fiscal **28.17/27.75 ms**,
+**79.06/95.36 ms**. These establish no speedup and close no gate. A subsequent full cached
+contract on the same binary finishes in **63.95 seconds**, with all 14 isolated phases,
+both locality checks and all six agent samples passing. The same **ten limits fail**:
+baseline 30k daily time and six work-scaling limits, both fiscal daily budgets and fiscal
+CCH scaling. Baseline hour/day samples are **16.97/7.02 ms**, **51.67/34.22 ms**; fiscal
+samples are **28.00/27.41 ms**, **78.84/95.48 ms**. No snapshots regenerate. All four growth
+integration tests plus recovery and scarce-labor expansion subsequently pass, with all five
+reports byte-identical to the retained import-replay reference. The integration executable is
+SHA-256 `ce7d74b7a6e016b2328f1ac2499e5b6511d9bc253c2e42b24a7675d50df78bf8`; recovery and
+expansion use the retained chunk-cache library binary above. These serial correctness runs
+take **96.62, 43.16 and 55.77 seconds**, respectively, with the same eight-worker affinity;
+they are not performance acceptance measurements. Full funding still needs exact
+dependency-aware reuse.
+
+A buyer-specific supplier-incumbent trial was tested and removed next (`PERF-05`). It kept
+one previous placed supplier per buyer, repriced it as an upper bound, and retained the exact
+candidate and tie checks. Binary SHA-256
+`88bc05095e09f5ac41e30473a9ad6d57845dd905c6de4aba7af8ba740f2cabba` passes **129 targeted
+tests, 13 ignored**. Four serial cached days use the same build settings, eight workers and
+affinity as the chunk trial, preserving all records and churn. Baseline supplier routes fall
+**433,189/2,023,720 → 407,313/1,903,633**, but the **4.6736×** ratio still exceeds **3.4176×**.
+Point CCH searches fall **85,568/288,059 → 85,286/286,731**; fiscal counts are unchanged.
+Baseline runs take **2.86/8.82 seconds**, fiscal runs **2.46/7.37 seconds**, including loading.
+Hour/day samples are baseline **17.25/6.80 ms**, **51.92/33.86 ms**, fiscal **28.15/27.67 ms**,
+**78.67/93.80 ms**. These show no clear timing gain. The trial was removed rather than adding
+O(buildings) storage and pass-rollback integration for essentially unchanged scaling. No full
+contract or growth-report acceptance is claimed for this exploratory build.
+
+Inspection also rules out simply skipping employed workers' dominated job searches: those
+searches publish historical complete commute quotes retained across traffic-price revisions.
+Suppressing publication can change later job choices even when the current choice cannot improve.
+Any reuse must preserve that publication behavior as well as current choices and lock timing.
+
+**Import-plan eligibility diagnostic (2026-10-14).** Test-only
+`METRUM_TRACE_IMPORT_PLANS=1` with the `economy_phases` channel records exact import-plan
+cost/sales inputs, capital, desired/accepted workers and required capital. It does not authorize
+production reuse. Binary SHA-256
+`d6a52d243c056591b0748a83cb7d6dd85e17171500b8bac17255a8f47d08a7c9` passes **59 targeted
+tests, nine ignored**. Serial traced baseline days take **3.10/9.52 seconds**, retaining
+records, churn and every counter. These are diagnostic durations, not acceptance timings.
+
+For unchanged cost/sales inputs, a previously successful maximal plan remains viable when
+current capital still covers its exact stored requirement; capital surplus must be recomputed.
+Offline comparisons confirm exact accepted workers and capital requirements for every observed
+match. An optimistic shared history keyed by parcel finds **7,340/50,940** eligible reuses,
+including **3,494/10,648** with changed capital. It ignores layout invalidation and separate
+live/execution ownership, so it is not a production hit-rate claim. Clearing history when the
+building count changes reduces this to **6,218/27,704**; additionally separating hourly live
+and non-boundary execution censuses reduces it to **2,641/7,140**. Even the optimistic case
+leaves staffing-trial scaling at **4.5445×**, above **3.4176×**. A broader capital guard alone
+cannot close the gate; further work needs exact sharing/incremental handling across census
+instances and their owner remaps, rather than another isolated per-instance memo.
+
+**Exact import-plan handoff (`PERF-04`, 2026-10-14).** Construction censuses now borrow
+successful maximal import-only plans from the live employment census. Reuse requires the same
+catalog identity, profile, physical capacity, area, all prices, export mode, demand-limited
+activity, desired workers and exact output-share bits. Current cash, inventory and paid cargo
+are valued again; they must cover the stored exact f64 working-capital requirement. Profit
+headroom is unchanged and capital headroom is recomputed. Customer and supplier reservations
+remain owned and rebuilt by each census. Partial owner remaps retain sparse share offsets;
+replacement catalogs invalidate proofs. No submaximal or failed operation is reused.
+
+Storage is O(B + output ports), retained across refreshes. Preparation adds O(B + sum of
+per-profile output-port counts squared), using existing share lookup arithmetic; proof lookup
+is O(output ports), without allocations inside quotation. Remapping costs O(mapping + new
+slots). Independent import quotation remains parallel. This avoids actual staffing evaluations,
+without changing work-counter definitions or weakening acceptance limits.
+
+Release binary SHA-256 `72a1ae82551b32b59bc3e506c256b41abd22919e741846014ec346e0f0545aa6`
+passes **131 targeted tests, 12 ignored**, including comparison with cold funding after capital,
+customer income, price, area and catalog changes, plus remap and capital-threshold tests.
+Four serial cached days with eight workers and affinity `0,2,4,6,8,10,12,14` preserve records,
+churn and every count except reduced baseline staffing trials: **60,333/291,769 →
+56,488/251,537**. The **4.4529×** ratio still exceeds **3.4176×**. Durations including loading
+are baseline **2.87/8.88 seconds**, fiscal **2.47/7.35 seconds**. Hour/day samples are baseline
+**17.16/6.73 ms**, **52.05/35.54 ms**, fiscal **27.95/27.04 ms**, **78.12/92.98 ms**.
+These are routine samples, not evidence of a timing speedup. The full cached contract on the
+same binary takes **64.15 seconds**, without snapshot generation: all 14 isolated phases,
+both locality checks and all six agent samples pass. The same **ten limits remain open**:
+baseline 30k daily time and census/owner/staffing/supplier-search/supplier-route/job-key scaling,
+both fiscal daily budgets, and fiscal CCH scaling. Full-run hour/day samples are baseline
+**17.11/6.90 ms**, **52.32/34.53 ms**, fiscal **27.81/27.22 ms**, **78.36/93.33 ms**.
+All four growth integration tests, recovery and scarce-labor expansion now pass; all five
+reports are byte-identical to the retained import-replay reference. Integration executable
+SHA-256 `367f5aa55b4f2c7d4d1005cfd62d1c560db17ea0a7b32494776eea5f2e18417c` takes
+**96.58 seconds**; recovery and expansion use the handoff library binary and take
+**43.64/56.58 seconds**, serially with the same worker/affinity settings. These are correctness
+checks, not speedup measurements. Reproduce the contract with the retained `$TEST_BINARY`:
+`RAYON_NUM_THREADS=8 taskset -c 0,2,4,6,8,10,12,14 python3 tools/perf_contract.py --binary "$TEST_BINARY" --artifacts "$ARTIFACTS"`.
+
+
+The preceding exact staffing trace separates import/local trials into **37,430/22,903** at
+10k and **139,446/152,323** at 30k. Subtracting the freshly measured handoff savings implies
+current import counts **33,585/99,214** (2.9541×) and unchanged local counts
+**22,903/152,323** (6.6508×). This is attribution inferred from historical component counts,
+not a freshly instrumented split. Local trials must still reserve inputs and revalue inventory
+at their actual supplier prices; reusing only sales arithmetic does not remove that work.
+
+A fresh opt-in 30k fiscal diagnostic on the handoff binary takes **7.98 seconds**, preserving
+the record, churn and every work count. At the daily boundary, household import reservations
+take **25.94 ms**, staffing **4.84 ms**, and claim completion **1.82 ms**. These diagnostic
+times locate work and are not acceptance timings. None of the **101,067** logged import
+plans (including load) has import-valued capital below property tax alone, so that simple
+necessary affordability bound would skip no observed plan. A broader inventory-aware bound
+is not established. Remaining fiscal diagnosis should focus on costly customer reservations
+for rejected plans while preserving exact customer ordering and routing behavior.
+
+**Rejected household-query attribution (2026-10-14).** Test-only
+`METRUM_TRACE_CONSUMER_QUOTES=1` plus the `economy_phases` channel records exact request,
+price, routing chunk, mode components, walking groups and endpoint-node keys. It counts
+visited candidates and route fallbacks. Account refresh, release, acceptance, reset and
+transaction changes emit conservative invalidation markers. Ordinary rejection restores
+accounts; only a single traced query with no pre-existing staged claims or released owner
+is eligible for comparison. Queries requiring any route fallback are excluded.
+
+Release binary SHA-256 `0c698a22b09314befb23007900c631abd94d52dbb60428a6855a8bc875d2ae30`
+passes **78 targeted tests, nine ignored**. Two serial fiscal diagnostic days with eight Rayon
+workers and affinity `0,2,4,6,8,10,12,14` take **2.54/7.66 seconds**, including loading,
+and preserve both records, churn and every work count. After excluding load, 10k/30k query
+counts are **7,312/20,554**, visiting **2,440,131/8,452,018** candidates. Rejected exact-key
+matches between invalidations account for **2,551/6,609** queries and
+**956,010/3,183,275** candidates. Every match returns identical f64 quantity bits and uses
+no route fallback. These are measured reuse opportunities, not an implemented cache or speedup.
+
+At the daily boundary specifically, matches account for **233,327 of 282,811** candidates
+at 10k (**82.50%**) and **836,082 of 993,896** at 30k (**84.12%**). The next implementation
+can extend the existing lazy household quotation: reuse a rejected single-output scalar
+quote only under this exact key and unchanged account revision, then perform the ordinary
+reservation if staffing subsequently accepts. It must invalidate on all surviving account
+changes and preserve the existing owner-prefix replay, rollback and customer order. Quotation
+storage must be prepared outside the claim loop. These diagnostic changes add no gameplay
+cache and close no acceptance gate.
+
+**Exact rejected household-quote reuse (2026-10-14).** The census now retains rejected
+single-output quantities under the exact geometry/request key and customer-book revision.
+Only queries using direct walking proofs qualify. Surviving account mutations invalidate
+the result; ordinary rejection restores accounts exactly. A later acceptance repeats ordinary
+quotation to materialize receipts before committing. The table is cleared/preallocated outside
+quotation, with O(consumer firms) retained storage and expected O(1) lookup; hash collisions
+still compare the complete key. Existing ordered-prefix replay is preserved.
+
+Release library SHA-256 `e3fdfadb75f18f0631a199ad91d34ef5aafb8af5e43f4397850bb697e11dbbe3`
+passes **147 targeted tests, 12 ignored**, including cached-versus-ordinary funding and
+receipt equivalence when a later solvent owner accepts a previously rejected query. Four
+short cached days preserve records, churn and every existing work count. With eight Rayon
+workers pinned to `0,2,4,6,8,10,12,14`, the full cached contract takes **64.20 seconds**,
+without snapshot generation. All 14 isolated phases, two locality checks and six agent samples
+pass. Baseline hour/day samples are **17.17/6.99 ms**, **52.05/34.90 ms**; fiscal samples
+are **27.33/22.21 ms**, **76.16/72.67 ms**. The same ten timing/scaling limits remain open.
+These are single-run regression signals, not matched speedup evidence. Reproduce with the
+contract command above and this retained `$TEST_BINARY`. Fresh growth validation passes all
+four integration tests, recovery and scarce-labor expansion; all five reports are byte-identical
+to the retained import-replay reference. Integration executable SHA-256
+`8638a5e8aea664bd82df76db4966c124bbf4733ba494780a7bd1d649911727a8` takes **102.09 seconds**;
+recovery and expansion take **46.17/59.42 seconds** on the library executable, serially with
+the same worker/affinity settings. These runs establish correctness, not a timing improvement.
+
+**Contract run (`PERF-01`).** `./run.sh --perf-contract` loads both tiers of both workloads,
+simulates one day each (23 operational hours and one daily settlement) and reports per-phase
+work counts (`debug::work`) and timings. One release run per tier and workload, no repeats;
+at most **5 minutes** in total, including loading. Baseline and fiscal generation are reported
+separately outside that runtime budget. Isolated `--phase` diagnosis prepares only baseline
+snapshots. The full contract is required before merging an economy change.
 
 **Limits.**
 1. **10k time:** at most **40 ms** per mean operational hour and **10 ms** per mean daily
@@ -785,8 +1337,312 @@ change elsewhere that feeds its phase more work; the one-day run covers that.
 re-measured at 30k: the execution epoch's own hourly census (`PERF-03`), the staffing search
 (`PERF-04`) and supplier and job-search fan-out (`PERF-05`).
 
-**Status:** not yet runnable; `PERF-01` builds the runner. Last 10k measurement (ECON-13 recipe,
-2026-10-12): 8.17 ms per hour, 8.31 ms per day.
+**Implementation in progress (2026-10-13).** `./run.sh --perf-contract` now dispatches an
+engine-independent release-library-test runner. Snapshot continuation and end-to-end acceptance
+are still being validated; no current-build performance acceptance is claimed. The last historical
+10k measurement (ECON-13 recipe, 2026-10-12) was 8.17 ms per hour and 8.31 ms per day.
+
+Snapshot validation exposed incomplete bulk fixture setup: its connector heights had not been
+fitted to the compiled road surface, so ordinary loading changed connector lengths and arrival
+times. Setup now compiles the final border edits and synchronizes lane heights before agents
+run, using the existing road geometry path. This is one-time O(lane geometry vertices) setup,
+outside the contract timing. The 10k continuation passes. The 30k probe now isolates the first
+divergence to workplace reassignment at 04:00: complete commute quotes retained by the live city
+are absent after loading (one retained quote is 220 seconds versus 40 seconds when recomputed).
+Their documented daily expiry preserves a historical frontage price, so these quotes must survive
+save/load; repricing them more often would change simulation behavior. Save version 86 now
+retains valid complete quotes in a sorted compact blob (20 bytes per quote). Saving costs
+O(Q log Q + B), loading O(Q + B), including the B-building entrance dependency guard,
+outside agent and economy tick loops. The previously failing 30k
+day-7 continuation now passes, with generation and diagnostics taking 73.07 seconds; the
+134,932 retained quotes occupy 2,698,652 bytes. Fresh 10k and 30k counts show no execution
+census on day 7. Days 12–13 exercise the missing work. That boundary also exposed a loader
+repair that discarded a legitimate empty-route agent's retry timer and retargeted it home.
+Loading now preserves pending network retries; legacy orphans without retry state retain their
+repair path. Both tiers pass next-day continuation at the day-12 boundary (generation and
+validation: 29.17 seconds at 10k, 80.63 seconds at 30k). This window exercises four execution
+censuses at 10k and fifteen at 30k; it does not establish the originally assumed every-hour
+building churn. Fixture coverage and full performance acceptance remain open.
+
+Fresh cached diagnosis (2026-10-14), release binary SHA-256
+`f95ee313f5df20b80d68968576e6598b07ae103b3836d4f045ef40416ccc0c52`, eight Rayon workers,
+inherited affinity, no concurrent build or measurement:
+`python3 tools/perf_contract.py --binary "$TEST_BINARY"` (the runner defaults to eight workers).
+Both next-day runs and all fourteen isolated phases completed; the run stopped at the queued
+locality gate after 55.86 seconds including loading. The 10k hour/day measured 26.63/7.07 ms;
+30k measured 76.36/37.26 ms, failing the 30 ms daily limit. Snapshot loads took 1.47/4.07 seconds.
+Against a 3.4176× work limit (15,180/5,330 final households), counts were:
+
+| Bounded work | 10k | 30k | Result |
+|---|---:|---:|---|
+| Census building rows | 214,476 | 814,404 | fail |
+| Owner slots prepared | 621,256 | 2,382,279 | fail |
+| Staffing trials | 72,192 | 396,486 | fail |
+| Supplier searches | 38,018 | 196,356 | fail |
+| Supplier route quotes | 433,189 | 2,023,720 | fail |
+| Job-search keys | 659 | 7,759 | fail |
+
+Copied reservation rows remain zero; proposed-site rows, spawn scans and combined CCH searches
+meet their scaling limits. Queued locality measured 0.957/2.363 ms per 1,024-check batch, failing
+1.2×; the short batch's timing stability needs investigation. Financing locality and the agent
+contract were not reached in this run. These are failure diagnostics, not acceptance or a
+speedup claim. The runner now retains completed day-limit failures if a later check aborts,
+and continues independent locality and agent gates after a gate failure while time remains.
+
+The subsequent complete unprofiled run uses the documented physical-core affinity:
+`RAYON_NUM_THREADS=8 taskset -c 0,2,4,6,8,10,12,14 python3 tools/perf_contract.py --binary "$TEST_BINARY"`,
+binary SHA-256 `06e8aa0a4a2899a89cff7ad78bcfea5a6c2eb32ee2bdabbd3f2c33449347074c`.
+All checks execute in **55.00 seconds**, including loading. Hour/day times are 22.81/6.70 ms
+at 10k and 69.04/33.66 ms at 30k: the 30k daily limit still fails. The six failed work counts
+above are unchanged. Queued locality uses one warmed 131,072-check batch per tier and passes
+at 124.53/125.15 ms (1.005×); financing cycles use two censuses at all three lengths. The
+agent contract also passes. An earlier short profile found substantial Rayon scheduling
+overhead under mixed performance/efficiency-core affinity; its timings are not acceptance.
+
+Isolated lot and settlement checks now prepare load-invalidated derived lots outside their
+phase timer and report `setup_s` separately; that setup remains inside the overall deadline.
+Local lot regeneration measures 15.32/14.45 ms, instead of accidentally timing whole-map
+reconstruction. All fourteen isolated phase checks and thirteen runner regressions pass,
+completing `PERF-02`. Save, queued post-load execution and bulk lane geometry regressions
+pass together (35 tests, three ignored). Full growth-report comparison remains pending.
+Standard `cargo clippy --all-targets` still fails on the pre-existing `mut_from_ref` error in
+`agents/tick/slices.rs`; allowing only that lint completes the check with existing warnings.
+
+`PERF-01` is still incomplete because of the failed limits and fixture coverage. Earlier runs
+also exposed nondeterministic CCH work. All non-CCH economy counts matched; point searches differed by
+18 at 10k and 1,015 at 30k, and bucket-source searches by 1 and 4. Parallel shared-leg cache
+misses can compute the same quote twice, and two-slot eviction order depends on scheduling.
+The counters correctly exposed actual searches. The ownership change below addresses this;
+changing counter attribution would have concealed the problem.
+
+**Deterministic routing work (2026-10-14).** Workplace searches now assign sorted key slices to
+retained query buffers rather than Rayon threads. Each parallel phase reads a frozen shared
+network-leg cache; ordered publication visits only changed local slots after the phase.
+Agent movement also assigns query scratch to fixed contiguous agent ranges, with separate
+storage for serial movement. Scoped TLS swaps preserve existing planner entry points and
+restore the caller's scratch on return or unwind. Household reset discards workplace scratch
+and shared quotes. Scratch ownership and deferred publication add no per-query allocations;
+preparation and retained storage are bounded
+by worker count, graph size, target count and current/high-water job-key counts. Warm ordered
+publication is O(changed quote slots), without a whole-network scan.
+
+Release binary SHA-256 `c7ca3b0bf9514d00a0e89d5c7f02a16b47fc0489da9536418073c08de8a2d66a`
+passes 125 targeted movement, employment and save regressions (20 manual checks ignored).
+With eight workers pinned to `0,2,4,6,8,10,12,14`, all economy work counts match across three
+fresh processes per tier, including the complete contract. Point/bucket counts are
+85,568/220 at 10k and 288,059/2,951 at 30k; combined routing work stays within the scaling
+bound. Both next-day records match the retained pre-change binary
+`51bfd66e9e59a7c537a431255106158d6704d76e8182681dfce1696543a7459d`.
+The full pinned command above completes in **55.20 seconds**, with hour/day times
+22.96/6.76 ms and 69.25/34.43 ms. Locality and agent gates pass; the same seven economy
+limits still fail. These samples establish reproducible work, not a timing speedup.
+Fresh-process peak RSS is 493,232/1,051,036 KiB versus 483,620/1,022,664 KiB before the
+change (`os.wait4`, ordinary one-day contract, same workers/affinity). These are whole-process
+peaks including load, not exact cache sizes. An earlier measurement inherited the executable
+hashing parent's high-water RSS and is excluded. All five growth reports are byte-identical
+to the retained pre-change executable. The four growth integration tests and four selected
+balance-case tests pass, including busy-city and queued-construction save continuation.
+The all-targets Clippy check completes with the previously documented `mut_from_ref` lint
+disabled; existing warnings remain. Targeted regression command:
+`RAYON_NUM_THREADS=8 "$TEST_BINARY" simulation::economy::agents::tick:: simulation::economy::households::employment::tests:: simulation::economy::households::tests::employment:: simulation::save:: --test-threads=1`.
+
+**Short staffing diagnosis (2026-10-14).** The ignored phase runner now initializes the
+existing debug channels, so `METRUM_DEBUG=1 METRUM_DEBUG_FILTER=economy_phases` exposes
+funding-search detail without a long city-generation benchmark. A 30k census trace takes
+4.0 seconds including loading and reports 8,666 import trials, 1,518 capital rejections and
+1,700 profit rejections, plus 4,468 local trials. Trace timing is diagnostic only.
+An exact import-payroll affordability cap was tested and removed: the complete pinned
+contract finished in 54.85 seconds, but daily staffing trials only changed from
+72,192/396,486 to 72,192/396,482 at 10k/30k. Both next-day records matched, five targeted
+hiring regressions passed, and the same seven contract limits failed. This does not justify
+the extra search logic or establish a speedup. The rejected executable has SHA-256
+`b35181e143bc54eac21d203ef95f4b56008cb25cae82de6877a8f0c7017861e8`; its report is retained
+separately from the restored implementation. The run used the same eight-worker pinned
+command above. The pre-trial executable (`51bfd66e9e59a7c537a431255106158d6704d76e8182681dfce1696543a7459d`)
+also passed all four growth integration tests and both recovery/expansion tests, producing
+fresh reference copies of all five reports for subsequent production changes. Repeated
+execution censuses remain the next scaling target; the existing structural revision keys
+do not cover changes to staffing, budgets, stock or household funding inputs, so reusing
+their funding books solely on those keys would be incorrect.
+
+Inspection of the owned-routing build's cached 30k day trace narrows that reuse target:
+all 15 execution censuses occur in distinct hours, one minute after the live census.
+Splitting queue-replay invalidation alone therefore removes none of this workload's censuses.
+An opt-in test-only input trace now compares selected building/household scalar bits, exact
+ordered consumer budgets, freight capital and structural/routing revisions between the live
+census and execution. It allocates diagnostic rows and is excluded from gameplay; matching
+rows locate reuse candidates but are not a complete production validity proof.
+With `METRUM_TRACE_FUNDING_INPUTS=1 METRUM_DEBUG=1 METRUM_DEBUG_FILTER=economy_phases`,
+the cached `perf_contract_day` test completes in 3.15/10.06 seconds at 10k/30k including loading
+(eight workers, the pinned affinity above). Binary SHA-256:
+`d4bfa8e9cd2fd96048c2bdc0fbf8f399f384faf6c34f4a2b3aef323f3fa83c3c`.
+Both next-day records and all work counts match the owned-routing baseline; 92 targeted
+hiring, freight-timing, employment and save tests pass (12 manual tests ignored).
+These instrumented durations are diagnostic turnaround, not performance acceptance.
+
+The trace finds unchanged selected inputs at minutes 121, 541, 901 and 1141 at 30k, but
+also at minute 541 at 10k. Treasury balances change while actual consumer budgets remain
+bit-identical. The other execution boundaries change staffing or buildings. Reusing only
+these candidates would leave 207,081/732,964 census rows, a **3.5395×** ratio against the
+**3.4176×** limit: it cannot close `PERF-03`. With one census removed at 10k, at least six
+would need eliminating at 30k. Further work must cover changed inputs incrementally or
+avoid more full censuses, while retaining exact books. Any live-book loan must also restore
+the books before household shopping/service visits consume them. No runtime behavior or
+acceptance limits changed; the new trace prevents treating the four-case shortcut as sufficient.
+
+An exact per-buyer nearest-supplier memo was also tested and removed. It reused a positive
+winner only while resource eligibility had not grown, using sparse authored input slots and
+route/registry guards. The full pinned contract took 55.85 seconds and retained all seven
+failures. Supplier searches changed from 38,018/196,356 to 38,010/195,196, and route quotes
+from 433,189/2,023,720 to 433,030/2,011,929. This sub-1% reduction does not justify retaining
+another cache. Both next-day records matched and 117 targeted logistics/hiring/employment
+tests passed (12 manual checks ignored). The rejected binary was
+`66a0b62e2aa7f14be3cf4d1fc8d655af3b6f464752e2eb35ee20a9ea85f6b22c`; its patch and report
+are retained separately. This is diagnostic rejection evidence, not a speedup or current-source
+acceptance result. The existing per-operation offer replay remains unchanged.
+
+A one-worker, freight-free import capital bound was tested and removed as well. After the
+first capital rejection it could prove that no positive staffing plan was affordable, counting
+the extra bound evaluation as a staffing trial. At 10k trials fell from 72,192 to 71,046;
+at 30k they rose from 396,486 to 396,844, so the shortcut worsened scaling. Both next-day
+records matched and all other work counts were unchanged. The 118 targeted hiring, logistics
+and employment tests passed (12 manual checks ignored). Two serial cached day tests took
+2.98/9.13 seconds including loading, with eight Rayon workers pinned to
+`0,2,4,6,8,10,12,14`; hour/day samples were 22.97/7.33 ms and 69.43/34.91 ms. These are
+diagnostic samples, not full-contract acceptance or a speedup claim. Command:
+`METRUM_PERF_RESIDENTS=<10000|30000> METRUM_PERF_CACHE="$ARTIFACTS/snapshots" RAYON_NUM_THREADS=8 taskset -c 0,2,4,6,8,10,12,14 "$TEST_BINARY" nodes::sim::core::populated_city::contract::perf_contract_day --exact --ignored --nocapture --test-threads=1`.
+Trial binary SHA-256: `89c77c33a7e9849d5fc25de1fe438c9626df1e678aafc997402746fca2bdc839`.
+Its patch and results are retained separately; no runtime shortcut remains.
+
+Import-only funding now reuses exact results across closure retries within one census.
+Building assets, prices and aggregate market inputs are immutable during that census;
+reuse additionally requires bit-identical activity and household quotas, a nonincreasing
+worker ceiling and a cached result that still fits it. Capacity, activity and financial
+headroom return together. Household claim reserve/finish and all local-input reservations
+still execute normally. Storage is O(buildings + output ports), prepared outside quotation;
+checks are O(1) for nonconsumer firms and O(output ports) for household sellers. Every new
+census clears validity, so changing income, prices or capital cannot reuse an old result.
+
+Fresh serial cached day tests, using the command and eight-worker affinity above, took
+2.99/9.13 seconds including loading. Staffing trials fell from 72,192/396,486 to
+60,333/291,769; staffing operations fell from 65,026/298,794 to 54,809/214,075. All other work
+counts and both next-day records matched. The **4.8360×** staffing ratio still exceeds
+**3.4176×**, so `PERF-04` remains open. Hour/day samples were 23.11/7.04 ms and
+69.55/34.90 ms; these single samples establish no timing gain. Binary SHA-256:
+`cf251d64ca4e3f8f2b281f81e0b6dcea324750a0960d5f7aacc396061a9ad5fa`.
+All 118 targeted hiring, logistics and employment tests pass (12 manual checks ignored),
+including cached/uncached funding comparisons after income, import-price and capital changes.
+All five growth reports are byte-identical to the retained owned-routing baseline. Four
+growth integration tests pass in 96.75 seconds; recovery, expansion, queued save/load and
+busy-city save/load checks pass in 116.76 seconds. Those are serial correctness runs, not
+performance comparisons. The integration binary SHA-256 is
+`b38076aa02ed9cca0d76f707556c593044bc9333478eab4981899ef912145457`.
+The complete pinned contract (`RAYON_NUM_THREADS=8 taskset -c 0,2,4,6,8,10,12,14 python3 tools/perf_contract.py --binary "$TEST_BINARY"`)
+finishes in 56.6 seconds. Locality and short agent checks pass; seven limits remain failed:
+30k daily settlement (35.85 ms), census rows, owner slots, staffing trials, supplier searches,
+supplier routes and job-search keys. Counts match the short day diagnostics above. This
+change is partial progress on `PERF-04`, not full performance acceptance.
+
+Local-input funding now skips an unused import-priced inventory valuation; its existing
+supplier-priced valuation still runs after each quote. This removes one O(I + O×I)
+recipe-port traversal per local operation, with no reservation or decision changes.
+Release binary SHA-256 `14a18ab71409a69605fe8ecedad7e917c733446b441032babb2bb3c1a7b72638`
+passes 122 hiring, logistics, employment and operation tests (12 ignored). Using the serial
+cached-day command above, 10k/30k checks took 3.02/9.27 seconds including loading and preserved
+both next-day records, hourly churn and every work count against the revision-guard build.
+Hour/day samples are 22.84/6.81 ms and 69.09/34.57 ms. These samples establish no speedup;
+the 30k daily budget and all previous work/coverage failures remain. The five growth reports
+and full contract have not been rerun for this change.
+
+An additional supplier network-bound check was tested and removed (`PERF-05`, 2026-10-14).
+It used the existing metric-scoped entrance-endpoint lower bound before exact route quotes,
+with strict rejection to retain ties. Binary SHA-256
+`7f61b0ba5ab5091b592c16a304f4e001af79941e6dfcbeec806683b924f6a838`
+passes 120 targeted hiring, logistics, employment and CCH-bound tests (12 ignored).
+Serial cached 10k/30k day checks took 3.03/9.31 seconds with the command above, preserving
+both records, churn and every work count: the bound rejected no additional route quotes.
+Hour/day samples were 23.10/6.84 ms and 70.20/35.28 ms. The check added work without pruning
+this workload, so it is not retained; `cargo check --tests` passes after restoration.
+This also agrees with the earlier rejected L1 supplier-bound experiment below.
+
+A complete entrance-ETA bound was also tested and removed (2026-10-14). It reused
+`FreightEntranceAccess::eta_to`, substituting coordinate potentials for network queries while
+retaining driveway/frontage arithmetic and strict incumbent rejection. Release binary SHA-256
+`8b6eed2d27714dc5f1e735c3675e319af819f3be093cdb06d6a4d4cdc490edc8` passes **127 targeted
+logistics, employment and CCH-bound tests, 13 ignored**. The same pinned, serial cached-day
+command above takes **3.20/10.33 seconds**, including loading, and preserves both records and
+hourly churn. Supplier quotes fall **433,189/2,023,720 → 64,673/374,717**, but their scaling
+worsens to **5.7940×**, still above **3.4176×**. CCH point searches fall only
+**85,568/288,059 → 85,143/285,609**; all other work counts remain unchanged. Hour/day samples
+are **28.14/13.02 ms** and **87.58/76.03 ms**. These single samples are not matched speedup
+evidence; the extra per-candidate entrance calculations do not justify retaining the trial.
+Review also found that missing network proofs must disable pruning rather than assume zero
+for arbitrary negative metrics. No candidate code is retained and no full-contract or growth
+report acceptance is claimed for it. Further work should reduce repeated searches/staffing
+evaluations or candidate traversal, rather than price the same candidate set twice.
+
+An exact whole-result home-job cache was tested and removed (`PERF-05`, 2026-10-14).
+It required unchanged ordered open-job supply and geometry/route revisions, and expired
+with the existing complete commute cache. Full 96-quote publication batches were ineligible:
+skipping the next search could otherwise suppress historical prices published on that search.
+All 55 targeted employment tests passed (nine manual checks ignored). One serial release
+day per tier, with the same eight workers and physical-core affinity, took **3.03/9.22 seconds**
+including loading, with unchanged records and all work counts: job-search keys remained
+**659/7,759**. Binary SHA-256:
+`321fbf5afab7d6d734a03acc0a15dd1c2e55a56d9bf91d3592d0698be0d1fab7`.
+A deliberately optimistic diagnostic also ignored metric/frontage revisions when no
+over-budget estimate occurred and complete quotes were retained. It still saved **zero**
+searches (2.99/9.21 seconds). That second trial was not correctness-eligible: ring pruning
+also depends on the home's live departure price. Both trials were removed; a fresh
+`cargo check --lib` passes after restoration. Retaining this O(open jobs) comparison and
+O(searched homes) result storage would add cost without reducing the measured work.
+
+A cross-census extension was subsequently tested and removed. It compared exact recipe
+fields, all operation prices, physical capacity, area, valued capital and per-output local
+sales shares, clearing on recipe/layout changes. With 119 targeted tests passing and both
+next-day records unchanged, it reduced 10k trials from 60,333 to 56,932 but left 30k at
+291,769. All other bounded counts were unchanged. The extra guards and wider memo therefore
+did not address the failing tier; only the within-census replay above remains. The two serial
+cached runs took 2.97/9.19 seconds including loading, using the same command, eight workers
+and affinity. Hour/day samples were 23.01/6.98 ms and 69.39/35.71 ms. Trial binary SHA-256:
+`3b2a77e650323657bb405a3d790bca69d2560b640fdfc874d224f40562d288b1`.
+This is rejection evidence, not acceptance or a speedup claim; its patch and results are
+retained separately. Cross-census input changes require more than retaining the last quote.
+
+The fresh 30k diagnosis used eight Rayon workers and inherited CPU affinity, with release binary
+SHA-256 `2b6afd9c980530c8a4ae50611798e523a8736419ab8200298c5b0c3f1d6df6a9`:
+`RAYON_NUM_THREADS=8 METRUM_CCH_BENCH_RESIDENTS=30000 METRUM_ECON_WORK_DAYS=15 METRUM_SKIP_PASS_VERIFY=1 "$TEST_BINARY" nodes::sim::core::populated_city::routing_benchmark::benchmark_populated_work_counts --exact --ignored --nocapture --test-threads=1`.
+It completed in 95.86 seconds including generation. The day ending at day 13 visited 814,404
+census rows, ran 15 execution censuses and 396,486 staffing trials, issued 196,356 supplier
+searches and 2,023,718 supplier route quotes, and searched 7,759 household job keys. This is
+diagnostic evidence for the active workload, not acceptance of the cached contract or a speedup.
+
+Runner commands (from the repository root):
+
+```bash
+./run.sh --perf-contract --plan                 # inspect selection without building
+./run.sh --perf-contract --prepare              # generate and validate snapshots separately
+./run.sh --perf-contract --keep-baseline        # keep this release test binary and identity
+./run.sh --perf-contract --diff HEAD            # affected isolated phases plus full next day
+./run.sh --perf-contract --phase census         # diagnosis only, not merge acceptance
+./run.sh --perf-contract --agents               # short traffic contract only
+```
+
+`--artifacts "$ARTIFACTS"` selects local logs, JSON reports, snapshots and retained executables;
+`--binary "$TEST_BINARY"` reuses an already built release test executable. Compilation and first
+fixture generation are reported separately. Cached verification has a 300-second deadline,
+including loading, both one-day runs, selected isolated phases and locality checks. Eight Rayon
+workers are the default; `RAYON_NUM_THREADS` and inherited CPU affinity are recorded with the
+binary hash and source revision. Test-only full-book fingerprints are disabled in timing runs;
+ordinary correctness tests retain them. Counters and inclusive phase attribution compile out of
+gameplay builds. Nested phase totals overlap and must not be summed.
+
+Snapshots are published only after next-day continuation matches the straight-through fixture.
+Save-version changes, fixture source changes and bootstrap manifest changes invalidate them.
+Simulation changes outside those fixture inputs that intentionally alter fixture generation must
+bump its explicit algorithm revision. Unknown or shared changed paths select every phase;
+documentation-only diffs skip runtime checks. Isolated phase runs always load their own snapshot,
+so selecting a different preceding phase cannot alter their inputs.
 
 ### `ECON-13` economy tick baseline
 

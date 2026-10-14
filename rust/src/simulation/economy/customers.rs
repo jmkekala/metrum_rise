@@ -11,7 +11,7 @@ use rayon::prelude::*;
 pub(crate) mod business;
 mod revalidation;
 mod routing;
-pub(crate) use routing::ConsumerMarket;
+pub(crate) use routing::{ConsumerMarket, DirectConsumerQuoteKey};
 
 #[derive(Clone, Copy, Debug)]
 struct Category {

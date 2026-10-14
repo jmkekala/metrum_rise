@@ -163,13 +163,22 @@ impl HouseholdSystem {
                 }
             });
 
-        allocator
+        let workers_changed = allocator
             .buildings
             .par_iter_mut()
             .zip(worker_count_scratch.par_iter())
-            .for_each(|(building, count)| {
-                building.worker_count = count.load(Ordering::Relaxed);
-            });
+            .map(|(building, count)| {
+                let count = count.load(Ordering::Relaxed);
+                let changed = building.worker_count != count;
+                building.worker_count = count;
+                changed
+            })
+            .reduce(|| false, |a, b| a || b);
+        // A recount can repair assignments that bypassed the incremental mutators. Keep
+        // its existing parallel scan and conservatively invalidate incomplete history.
+        if workers_changed {
+            allocator.invalidate_production_changes();
+        }
         self.refresh_household_wage_snapshot(agents, allocator);
     }
 

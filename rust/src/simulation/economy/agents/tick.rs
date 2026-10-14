@@ -4,6 +4,8 @@
 
 mod access;
 mod claims;
+#[cfg(test)]
+mod contract;
 mod frontage;
 mod lane_buckets;
 mod lane_nav;
@@ -36,10 +38,13 @@ const TRAFFIC_DEBUG_STATIONARY_LOG_INTERVAL_S: f32 = 5.0;
 
 pub(crate) use planning::{
     BuildingTripEnds, BuildingWalkingAccess, BuiltTripPlan, PedestrianReachability,
-    SharedNetworkQuotes, TripEstimate, building_origin_trip_is_feasible,
-    estimate_building_origin_trip_seconds, estimate_trip_seconds_between,
+    SharedNetworkQuotes, TripEstimate, TripQueryScratch, building_origin_trip_is_feasible,
+    estimate_building_origin_trip_seconds, estimate_building_origin_trip_seconds_with_scratch,
+    estimate_trip_seconds_with_scratch,
     plan_building_origin_trip, plan_building_to_border_trip, plan_immigration_trip,
 };
+#[cfg(test)]
+pub(crate) use planning::estimate_trip_seconds_between;
 // The agent inspector draws the route the movement rules below would follow.
 pub(crate) use route_preview::{PlannedRoute, RouteEnd, planned_route};
 // Shared with the junction debug view and its stall detector.

@@ -1287,6 +1287,12 @@ parcel changes invalidate intersecting cached chunks, including the direct confl
 Paint updates only its own overlay chunk; cached empty geometry stays usable. Cold and differently
 ordered view queries have matching cell footprints around competing rotated roads.
 
+Demand lot preparation uses this same completeness cache. Each requested chunk generates its
+cold contents or recorded local dirty envelope, then publishes completion; ready chunks require
+only a lookup. Cost is `O(requested chunks + generation in dirty envelopes)`, using existing
+indices. Lot derivation still runs for every dirty lot region, even when geometry is already
+current. Occupancy release and road/frontage invalidation retain their existing semantics.
+
 The renderer polls visible chunk metadata in one nonblocking call and uploads at most two changed
 chunks per frame. Each full cell and authored parcel belongs to its centre's 512 m chunk. Derived
 lots are represented by their cells, so they do not cause a second whole-city parcel mesh upload.

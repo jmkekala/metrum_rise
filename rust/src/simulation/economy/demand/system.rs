@@ -212,6 +212,8 @@ impl DemandSystem {
         environment: BuildingSiteEnvironment<'_>,
         minute_of_day: u16,
     ) {
+        #[cfg(test)]
+        let _contract_phase = crate::debug::work::phases::enter("planning");
         let mut phase = crate::debug::Channel::EconomyPhases
             .enabled()
             .then(std::time::Instant::now);
@@ -282,6 +284,7 @@ impl DemandSystem {
                         .unwrap_or(0)
                         .min(physical)
                 },
+                Some(&households.job_funding),
                 minute_of_day,
             );
         }

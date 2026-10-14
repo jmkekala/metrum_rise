@@ -123,6 +123,39 @@ fn same_products(actual: &CellStore, expected: &CellStore) {
 }
 
 #[test]
+fn cached_generation_reuses_ready_chunks_and_matches_full_refresh_after_exclusion() {
+    let mut graph = RegionGraph::new();
+    let a = node(&mut graph, 0.0, 0.0);
+    let b = node(&mut graph, 1000.0, 0.0);
+    road(&mut graph, a, b);
+    let config = WorldConfig::default();
+    let bounds = box_at(0.0, 400.0);
+    let mut cells = CellStore::default();
+    let cold = cells.ensure_generated_in_bounds(&graph, &config, bounds, |_| false);
+    assert!(cold.candidates > 0);
+    assert_eq!(
+        cells.ensure_generated_in_bounds(&graph, &config, bounds, |_| false),
+        CellGeneration::default(),
+        "ready geometry must not regenerate",
+    );
+    let blocked = |corners: &[DVec2; 4]| {
+        let center = corners.iter().copied().sum::<DVec2>() * 0.25;
+        (40.0..60.0).contains(&center.x) && (10.0..30.0).contains(&center.y)
+    };
+    let mut full = cells.clone();
+    cells.invalidate_generated_cells(box_at(-100.0, 200.0));
+    full.invalidate_all_generated_cells();
+    let local = cells.ensure_generated_in_bounds(&graph, &config, bounds, blocked);
+    let rebuilt = full.ensure_generated_in_bounds(&graph, &config, bounds, blocked);
+    assert!(local.candidates < rebuilt.candidates);
+    same_products(&cells, &full);
+    assert_eq!(
+        cells.ensure_generated_in_bounds(&graph, &config, bounds, blocked),
+        CellGeneration::default(),
+    );
+}
+
+#[test]
 fn partial_paint_erase_and_external_exclusion_match_full_chunk_rebuilds() {
     for angle in [0.0_f64, 0.35] {
         for shape in 0..4 {

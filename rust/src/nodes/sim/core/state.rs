@@ -731,6 +731,8 @@ impl SimCore {
         day_index: u32,
         observer: &mut impl EconomyObserver,
     ) {
+        #[cfg(test)]
+        let _contract_phase = crate::debug::work::phases::enter("settlement");
         let tick_start = Instant::now();
 
         debug_log!(

@@ -192,6 +192,8 @@ impl SimCore {
         if self.transit_network.road_edit_is_staged() || !self.zoning.has_dirty_cell_lots() {
             return CellLotGeneration::default();
         }
+        #[cfg(test)]
+        let _contract_phase = crate::debug::work::phases::enter("lots");
         let regions = self.zoning.take_dirty_cell_lot_regions();
         if regions.is_empty() {
             return CellLotGeneration::default();
@@ -212,9 +214,9 @@ impl SimCore {
             let phase = crate::debug::Channel::EconomyPhases
                 .enabled()
                 .then(std::time::Instant::now);
-            // Regenerate transient source-frontage links after load and local road changes.
+            // Share cell selection's completeness cache, including local dirty envelopes.
             // Growth can depend on a front row just outside the changed paint's chunk.
-            self.zoning.generate_cells(
+            self.zoning.prepare_generated_cells(
                 &self.region_graph,
                 bounds.expanded(f64::from(MAX_PARCEL_FRONTAGE_M)),
                 &blocked,

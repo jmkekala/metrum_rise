@@ -296,6 +296,7 @@ impl BuildingAllocator {
                 self.record_production_site_removal(i, last_idx);
                 self.queue_yard_removal(i);
                 self.buildings.swap_remove(i);
+                crate::debug::work::add(crate::debug::work::Work::BuildingsRemoved, 1);
                 self.remove_building_site_client(i);
                 if let Some(bounds) = removed_site_bounds {
                     debug_log!(
@@ -1256,6 +1257,7 @@ impl BuildingAllocator {
         self.record_production_site_removal(building_idx, last_idx);
         self.queue_yard_removal(building_idx);
         self.buildings.swap_remove(building_idx);
+        crate::debug::work::add(crate::debug::work::Work::BuildingsRemoved, 1);
         self.remove_building_site_client(building_idx);
         self.record_building_changes([building_idx, last_idx]);
         self.dirty = true;

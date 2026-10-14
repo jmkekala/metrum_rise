@@ -27,6 +27,8 @@ impl AgentSystem {
         n: usize,
         live_lane_agent_count: usize,
     ) {
+        #[cfg(test)]
+        super::contract::add(super::contract::Phase::SpeedAgents, n);
         if live_lane_agent_count == 0 {
             self.reset_inactive_traffic_timers(delta, n);
             return;

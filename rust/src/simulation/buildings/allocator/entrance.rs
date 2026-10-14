@@ -34,7 +34,7 @@ pub(crate) struct DemandSiteEntranceKey {
 
 /// Exact entrance inputs for derived geometry/proofs, including every floating-point bit.
 /// Unrelated allocator revisions may retain work only when this key is unchanged.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub(crate) struct BuildingEntranceKey {
     edge: usize,
     side: i8,

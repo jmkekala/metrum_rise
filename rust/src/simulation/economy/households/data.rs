@@ -205,6 +205,8 @@ pub struct HouseholdSystem {
     // Network legs of workplace commutes; exact across hours while the CCH revision holds.
     pub(super) workplace_network_quotes:
         crate::simulation::economy::agents::tick::SharedNetworkQuotes,
+    // Sorted workplace keys keep the same scratch owner regardless of Rayon scheduling.
+    pub(super) workplace_query_shards: Vec<super::employment::WorkplaceQueryShard>,
     pub(super) daily_ledgers: Vec<DailyHouseholdLedger>,
     pub(super) last_power_settlement: DailyPowerSettlementSummary,
     pub(super) last_city_service_wages: CityServiceWages,
@@ -247,6 +249,7 @@ impl HouseholdSystem {
             workplace_route_cache_entrance_revision: u64::MAX,
             workplace_route_cache_cch_generation: u32::MAX,
             workplace_network_quotes: Default::default(),
+            workplace_query_shards: Vec::new(),
             daily_ledgers: Vec::new(),
             last_power_settlement: DailyPowerSettlementSummary::default(),
             last_city_service_wages: CityServiceWages::default(),
@@ -313,6 +316,40 @@ impl HouseholdSystem {
         self.workplace_route_cache_cch_generation = u32::MAX;
     }
 
+    /// Returns the topology revisions attached to the complete workplace quotes.
+    pub(crate) fn workplace_route_cache_revisions(&self) -> (u64, u64, u32) {
+        (
+            self.workplace_route_cache_building_revision,
+            self.workplace_route_cache_entrance_revision,
+            self.workplace_route_cache_cch_generation,
+        )
+    }
+
+    /// Iterates complete workplace quotes for deterministic save serialization.
+    pub(crate) fn workplace_route_cache_entries(
+        &self,
+    ) -> impl Iterator<Item = ((usize, usize, bool), Option<u16>)> + '_ {
+        self.workplace_route_cache
+            .iter()
+            .map(|(&key, &value)| (key, value))
+    }
+
+    /// Restores complete workplace quotes after the loaded topology has been rebuilt.
+    pub(crate) fn restore_workplace_route_cache(
+        &mut self,
+        building_revision: u64,
+        entrance_revision: u64,
+        cch_generation: u32,
+        entries: Vec<((usize, usize, bool), Option<u16>)>,
+    ) {
+        self.workplace_route_cache.clear();
+        self.workplace_route_cache.reserve(entries.len());
+        self.workplace_route_cache.extend(entries);
+        self.workplace_route_cache_building_revision = building_revision;
+        self.workplace_route_cache_entrance_revision = entrance_revision;
+        self.workplace_route_cache_cch_generation = cch_generation;
+    }
+
     /// Clears all households.
     pub fn clear(&mut self) {
         self.households.clear();
@@ -331,6 +368,8 @@ impl HouseholdSystem {
         self.removal_agent_indices_scratch.clear();
         self.shopper_candidate_scratch.clear();
         self.invalidate_workplace_route_cache();
+        self.workplace_network_quotes = Default::default();
+        self.workplace_query_shards.clear();
         self.daily_ledgers.clear();
         self.last_power_settlement = DailyPowerSettlementSummary::default();
         self.last_city_service_wages = CityServiceWages::default();

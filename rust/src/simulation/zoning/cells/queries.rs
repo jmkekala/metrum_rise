@@ -2,12 +2,43 @@
 
 //! Gesture materialization independent of previously viewed or generated neighborhoods.
 
-use super::{CellBounds, CellSelection, CellSelectionShape, CellStore};
+use super::{CellBounds, CellGeneration, CellSelection, CellSelectionShape, CellStore};
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::network::graph::RegionGraph;
 use glam::DVec2;
 
 impl CellStore {
+    /// Materializes cold chunks or retained dirty envelopes in a bounded query region.
+    /// Ready chunks cost one lookup; generation and publication use the existing local cache.
+    pub(crate) fn ensure_generated_in_bounds(
+        &mut self,
+        graph: &RegionGraph,
+        config: &WorldConfig,
+        bounds: CellBounds,
+        blocked: impl Fn(&[DVec2; 4]) -> bool + Sync,
+    ) -> CellGeneration {
+        let mut report = CellGeneration::default();
+        if !bounds.is_valid() {
+            return report;
+        }
+        let size = f64::from(RegionGraph::CHUNK_SIZE);
+        let min = (bounds.min / size).floor();
+        let max = (bounds.max / size).floor();
+        for x in min.x as i32..=max.x as i32 {
+            for y in min.y as i32..=max.y as i32 {
+                if let Some(dirty) = self.chunk_generation_bounds((x, y)) {
+                    let generated = self.generate_in_bounds(graph, config, dirty, &blocked);
+                    report.roads += generated.roads;
+                    report.candidates += generated.candidates;
+                    report.comparisons += generated.comparisons;
+                    report.accepted += generated.accepted;
+                    self.complete_generated_chunk((x, y), dirty);
+                }
+            }
+        }
+        report
+    }
+
     /// Generates only gesture-relevant chunks before selecting. Fill follows its component
     /// into uncached chunks; storage and previous camera coverage never stop the traversal.
     /// Work is local generation per visited chunk plus the ordinary selector's work.
@@ -45,17 +76,7 @@ impl CellStore {
             if !bounds.is_valid() {
                 return;
             }
-            let size = f64::from(RegionGraph::CHUNK_SIZE);
-            let min = (bounds.min / size).floor();
-            let max = (bounds.max / size).floor();
-            for x in min.x as i32..=max.x as i32 {
-                for y in min.y as i32..=max.y as i32 {
-                    if let Some(dirty) = store.chunk_generation_bounds((x, y)) {
-                        store.generate_in_bounds(graph, config, dirty, &blocked);
-                        store.complete_generated_chunk((x, y), dirty);
-                    }
-                }
-            }
+            store.ensure_generated_in_bounds(graph, config, bounds, &blocked);
         };
         materialize(
             self,

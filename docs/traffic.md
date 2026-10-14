@@ -29,6 +29,10 @@ through these identities after graph compaction and lane rebuilds. Tombstoned la
 Loading rebuilds final visible-surface lane heights before restoring distances and references,
 and validates each current lane against its owner and travel mode. Pedestrian lanes remain active
 through load, including final frontage legs with an exhausted graph-node path.
+An empty network path can also be a pending immediate replan after demolition. With valid
+node, edge and destination references, loading preserves its planned target and path cursor
+even when retry time and failure count are zero. Delayed retries retain their backoff;
+agents without a usable destination or pending retry still receive orphan repair.
 
 Version 57 saves recover sidewalk direction from the saved road/node and connector identity from
 the saved junction, outgoing route and authoritative position (including the pedestrian offset).
@@ -452,6 +456,56 @@ Traffic code is a hot path. New traffic behavior must preserve these rules:
   indices answer the query
 - keep route planning and traffic movement separate; local traffic behavior must not trigger
   per-tick CCH pathfinding
+
+### Short agent-tick contract (`PERF-06`)
+
+Routine traffic changes use the ignored release test
+`simulation::economy::agents::tick::contract::benchmark_agent_tick_contract`. It warms each isolated
+lane fixture once, then records one setup-free timed tick for the 10k and 30k agent tiers. The
+test emits one `PERF_AGENT` JSON line per mode and tier with deterministic row counts for lane
+bucket preparation, speed updates, lane claims, movement, congestion rebuild and frontage-delay
+aggregation. The fixture uses one long straight lane, fixed 16 m spacing and no route-planning
+work; construction and buffer allocation stay outside the timed tick.
+
+The bounded counts are the contract's first diagnostic. Every emitted phase count must grow by at
+most `1.2 × (30k / 10k) = 3.6×`; a zero count at 10k must remain zero at 30k. A failed count is
+investigated before any timing comparison.
+The one timing sample per tier is a routine regression signal, not a speedup claim. Keep a
+release baseline executable beside the current executable and report both build identities when
+the contract runs. Matched alternating process pairs remain reserved for milestone comparisons
+and claimed speedups. The short contract is run serially with no concurrent build or measurement;
+the 30-minute Criterion `agent_benchmark` is no longer a routine gate.
+
+Movement now owns route-query scratch by fixed contiguous agent ranges, retaining the existing
+small-city serial threshold and separate ordered dynamic movement. Scoped TLS access restores
+the previous scratch on return or unwind; this preserves planner entry points while making
+memoization independent of which Rayon worker executes a range. Storage is prepared outside
+agent loops and bounded by worker count and graph size. The 2026-10-14 owned-scratch build
+(`c7ca3b0bf9514d00a0e89d5c7f02a16b47fc0489da9536418073c08de8a2d66a`) passes the short
+agent contract: network 0.205/0.587 ms, egress 0.472/1.334 ms, ingress 0.404/0.427 ms at
+10k/30k. Agent work is exactly 3× and lane work stays constant. These single samples are
+routine validation, not speedup evidence. See `economy.md` for repeatable whole-day CCH counts.
+
+Fresh infrastructure check (2026-10-13): the release test above passed with eight Rayon
+workers and inherited CPU affinity, run serially as
+`RAYON_NUM_THREADS=8 "$TEST_BINARY" simulation::economy::agents::tick::contract::benchmark_agent_tick_contract --exact --ignored --nocapture --test-threads=1`.
+Executable SHA-256: `b660a61e02aa320874e141994a55a518dcdf78efd60569bdba60694dd111c84e`
+(working tree based on `395b810f6575ac8c73eee0ff1cbc1d5c5b2b9ad3`).
+Network ticks measured 0.417/1.077 ms at 10k/30k, access egress 0.556/1.368 ms,
+and access ingress 0.211/0.316 ms. All exercised agent-row counts grew exactly 3×,
+lane counts stayed at 16, and fresh-fixture counter repeats matched. The complete test
+took 0.05 seconds including setup. These single samples validate the short runner and
+work bounds; they establish no speedup against the retained baseline.
+
+`PERF-06` acceptance (2026-10-14): the complete performance runner passes all six agent samples
+and deterministic repeats with eight Rayon workers pinned to CPUs `0,2,4,6,8,10,12,14`.
+Current executable SHA-256 is `06e8aa0a4a2899a89cff7ad78bcfea5a6c2eb32ee2bdabbd3f2c33449347074c`;
+the retained baseline executable's verified SHA-256 is
+`b34a0bedb12609c2b1fb8382d2e4f2cabc5e0102553fcd59fca46944fd88d546`.
+Network ticks measure 0.242/0.507 ms, access egress 0.458/1.342 ms and ingress 0.143/0.313 ms
+at 10k/30k. Every exercised agent count is exactly 3×; lane counts remain 16. The 36 targeted
+agent-tick regression tests pass (eight manual tests ignored). These are routine contract
+samples, not a measured speedup against the baseline.
 
 Current known bounded scans:
 

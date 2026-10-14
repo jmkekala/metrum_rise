@@ -77,6 +77,21 @@ impl ZoningSystem {
             })
     }
 
+    /// Refreshes only cold or invalidated cell geometry before deriving demand lots.
+    /// Uses the same parcel and caller-owned blockers as direct generation.
+    pub(crate) fn prepare_generated_cells(
+        &mut self,
+        graph: &RegionGraph,
+        bounds: CellBounds,
+        blocked: impl Fn(&[DVec2; 4]) -> bool + Sync,
+    ) -> CellGeneration {
+        let parcels = &self.parcels;
+        self.cells
+            .ensure_generated_in_bounds(graph, &self.config, bounds, |corners| {
+                overlaps_parcels(parcels, corners) || blocked(corners)
+            })
+    }
+
     /// Revalidates every cell before applying one paint/erase delta; profile zero means Erase.
     /// Building-lot invalidation consumes the returned delta at the simulation transaction layer.
     pub(crate) fn paint_cells(

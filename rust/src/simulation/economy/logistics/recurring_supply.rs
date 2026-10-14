@@ -298,14 +298,18 @@ impl RecurringSupply {
                 .output_port(input.resource_runtime_id)
                 .map_or(0.0, |output| output.units_per_day);
             input.units_per_day > internal
-                && [
-                    self.index.buckets_for_resource(input.resource_runtime_id),
-                    self.projected_buckets(input.resource_runtime_id),
-                ]
-                .into_iter()
-                .flatten()
-                .any(|buckets| buckets.has_available())
+                && self.offers_resource(input.resource_runtime_id)
         })
+    }
+
+    fn offers_resource(&self, resource: ResourceRuntimeId) -> bool {
+        [
+            self.index.buckets_for_resource(resource),
+            self.projected_buckets(resource),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|buckets| buckets.has_available())
     }
 
     /// Visits existing source membership for a resource/component, including depleted or
@@ -1321,9 +1325,16 @@ impl RecurringSupply {
         if self.input_offers[list].exhausted {
             return None;
         }
-        let choice = self.nearest(
-            resource, buyer, excluded, entrance, allocator, catalog, network, graph, routes,
-        );
+        // The existing resource indices can prove an empty market without deriving buyer
+        // components or opening a spatial search. Normal quote fallback still prices imports.
+        let choice = if self.offers_resource(resource) {
+            self.nearest(
+                resource, buyer, excluded, entrance, allocator, catalog, network, graph, routes,
+            )
+        } else {
+            self.nearest_incumbents[resource as usize] = None;
+            None
+        };
         if let Some((source, slot, seconds)) = choice {
             let next = self.offers.len();
             let previous = self.input_offers[list].last;

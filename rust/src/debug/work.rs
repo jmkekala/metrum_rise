@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Test-only work counters for `ECON-13` scaling attribution.
+//! Test-only work counters for the short performance contracts and scaling attribution.
 //!
 //! Counters separate algorithmic growth from cache effects: a tier whose counts grow 10× but
 //! whose time grows faster is memory-bound. Gameplay and benchmark builds compile every
@@ -11,6 +11,10 @@
 #[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Work {
+    /// Successful building insertions, for hourly fixture churn coverage.
+    BuildingsPlaced,
+    /// Successful building removals, including deserted-building cleanup.
+    BuildingsRemoved,
     /// Hourly demand planning passes.
     PlanningPasses,
     /// Live hourly funding censuses run by employment.
@@ -81,6 +85,8 @@ pub(crate) fn snapshot() -> [u64; WORK_COUNT] {
 /// Stable report names, in counter order.
 #[cfg(test)]
 pub(crate) const WORK_NAMES: [&str; WORK_COUNT] = [
+    "buildings_placed",
+    "buildings_removed",
     "planning_passes",
     "live_censuses",
     "planner_censuses",
@@ -127,4 +133,84 @@ macro_rules! debug_fingerprint {
     ($($name:literal => $value:expr),* $(,)?) => {
         vec![$(($name, $crate::debug::work::debug_hash(&$value))),*]
     };
+}
+
+/// Inclusive phase attribution. Nested phases deliberately overlap; do not sum their totals.
+#[cfg(test)]
+pub(crate) mod phases {
+    use super::{WORK_COUNT, WORK_NAMES, snapshot};
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
+    use std::time::Instant;
+
+    static ENABLED: AtomicBool = AtomicBool::new(false);
+    type PhaseTotal = (&'static str, u64, f64, [u64; WORK_COUNT]);
+    static TOTALS: Mutex<Vec<PhaseTotal>> = Mutex::new(Vec::new());
+
+    /// Adds this invocation's inclusive time and work when the scope ends.
+    pub(crate) struct Guard {
+        name: &'static str,
+        start: Instant,
+        counts: [u64; WORK_COUNT],
+    }
+
+    /// Opens a measured scope only while the serialized contract runner is active.
+    pub(crate) fn enter(name: &'static str) -> Option<Guard> {
+        ENABLED.load(Ordering::Relaxed).then(|| Guard {
+            name,
+            start: Instant::now(),
+            counts: snapshot(),
+        })
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            let ms = self.start.elapsed().as_secs_f64() * 1000.0;
+            let after = snapshot();
+            let mut totals = TOTALS.lock().unwrap();
+            let index = totals
+                .iter()
+                .position(|row| row.0 == self.name)
+                .unwrap_or_else(|| {
+                    totals.push((self.name, 0, 0.0, [0; WORK_COUNT]));
+                    totals.len() - 1
+                });
+            let row = &mut totals[index];
+            row.1 += 1;
+            row.2 += ms;
+            for (i, value) in after.into_iter().enumerate() {
+                row.3[i] += value - self.counts[i];
+            }
+        }
+    }
+
+    /// Starts an empty phase report. Only serial ignored contract tests call this.
+    pub(crate) fn begin() {
+        TOTALS.lock().unwrap().clear();
+        ENABLED.store(true, Ordering::Relaxed);
+    }
+
+    /// Stops attribution and returns named inclusive times and counter deltas.
+    pub(crate) fn finish() -> serde_json::Value {
+        ENABLED.store(false, Ordering::Relaxed);
+        let totals = TOTALS.lock().unwrap();
+        serde_json::Value::Object(
+            totals
+                .iter()
+                .map(|(name, calls, ms, counts)| {
+                    let counts: serde_json::Map<_, _> = WORK_NAMES
+                        .iter()
+                        .zip(counts)
+                        .map(|(name, count)| (name.to_string(), (*count).into()))
+                        .collect();
+                    (
+                        name.to_string(),
+                        serde_json::json!({"calls":calls,"inclusive_ms":ms,"counts":counts}),
+                    )
+                })
+                .collect(),
+        )
+    }
 }

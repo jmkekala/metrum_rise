@@ -2474,10 +2474,16 @@ fn recurring_input_quotes_reserve_production_not_stock_and_roll_back_rejection()
     assert!(!quote(&mut supply, &mut logistics, 1.0).goods.is_finite());
     supply.reject(&allocator, &graph);
     supply.reset(&allocator, &graph, &network, &catalog, &[0.0, 0.0]);
+    let searches = supply.search_counts_for_test()[0];
     assert!(
         !quote(&mut supply, &mut logistics, 1.0).goods.is_finite(),
         "large physical stock cannot manufacture funded recurring production"
     );
+    assert_eq!(supply.search_counts_for_test()[0], searches);
+    supply.reject(&allocator, &graph);
+    supply.reset(&allocator, &graph, &network, &catalog, &[1.0, 0.0]);
+    assert!(quote(&mut supply, &mut logistics, 1.0).goods.is_finite());
+    assert!(supply.search_counts_for_test()[0] > searches);
 }
 
 #[test]

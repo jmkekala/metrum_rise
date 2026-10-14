@@ -224,8 +224,8 @@ impl ResourceExtractionSystem {
             Err(idx) => self.sites.insert(idx, site),
         }
         self.bump_visual_revision();
+        allocator.set_work_area_scale(building_idx, area_scale);
         if let Some(building) = allocator.buildings.get_mut(building_idx) {
-            building.set_work_area_scale(area_scale);
             if !had_site && let Ok(catalog) = load_runtime_economy_catalog() {
                 top_up_explicit_work_area_startup_budget(building, catalog.as_ref(), area_scale);
             }
@@ -241,9 +241,7 @@ impl ResourceExtractionSystem {
     /// Rebuilds cached productive area from committed sites; depleted deposits have no capacity.
     pub(crate) fn apply_work_area_scales(&self, allocator: &mut BuildingAllocator) {
         for site in &self.sites {
-            if let Some(building) = allocator.buildings.get_mut(site.building_idx) {
-                building.set_work_area_scale(site.productive_area_scale());
-            }
+            allocator.set_work_area_scale(site.building_idx, site.productive_area_scale());
         }
     }
 
@@ -312,7 +310,7 @@ impl ResourceExtractionSystem {
                 factors.throughput_factor * (produced / hourly_units);
             building.add_inventory_units(output_port.resource_runtime_id, produced);
             site.extracted_units += produced;
-            building.set_work_area_scale(site.productive_area_scale());
+            allocator.set_work_area_scale(site.building_idx, site.productive_area_scale());
         }
     }
 

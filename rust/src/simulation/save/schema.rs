@@ -6,7 +6,10 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 85;
+pub const SAVE_VERSION: i64 = 86;
+
+/// First version retaining complete workplace commute quotes for exact continuation.
+pub const WORKPLACE_ROUTE_CACHE_SAVE_VERSION: i64 = 86;
 
 /// Lanes persist the live frontage delay apart from the hourly published economy price
 /// (`ECON-13-D`). Older continuation saves load both from the single saved delay.
@@ -101,6 +104,11 @@ CREATE TABLE saved_lanes(
 CREATE TABLE network_runtime_state(
     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
     frontage_delay_elapsed_s REAL NOT NULL
+);
+CREATE TABLE workplace_route_cache(
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    quote_blob BLOB NOT NULL,
+    entrance_keys_json BLOB NOT NULL
 );
 CREATE TABLE world_config(
     width_m REAL NOT NULL,

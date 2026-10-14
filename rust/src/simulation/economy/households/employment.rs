@@ -21,8 +21,8 @@ use crate::simulation::economy::accessibility::{
     chunk_for_point, lower_bound_travel_seconds, max_speed_for_modes,
 };
 use crate::simulation::economy::agents::tick::{
-    BuildingTripEnds, SharedNetworkQuotes, TripEstimate, estimate_building_origin_trip_seconds,
-    estimate_trip_seconds_between,
+    BuildingTripEnds, SharedNetworkQuotes, TripEstimate, TripQueryScratch,
+    estimate_building_origin_trip_seconds_with_scratch, estimate_trip_seconds_with_scratch,
 };
 use crate::simulation::economy::agents::{AgentSystem, TRANSIT_IN_BUILDING, age_group_can_work};
 use crate::simulation::economy::definitions::{
@@ -115,6 +115,14 @@ struct CurrentJobOptionBuild {
     route_entries: [WorkplaceRouteCacheEntry; JOB_ROUTE_SCAN_CANDIDATES],
 }
 
+/// Stable workplace-query ownership with reusable result buffers, independent of worker scheduling.
+#[derive(Default)]
+pub(super) struct WorkplaceQueryShard {
+    query: TripQueryScratch,
+    home: Vec<HomeJobOptionsBuild>,
+    current: Vec<CurrentJobOptionBuild>,
+}
+
 struct JobSupplyEntry {
     building_idx: usize,
     open_slots: u32,
@@ -200,6 +208,7 @@ impl HouseholdSystem {
         let load_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
         refresh_commercial_activity_floor(&catalog, allocator, self.job_funding.activities());
+        allocator.prepare_production_changes();
         crate::debug::work::add(crate::debug::work::Work::LiveCensuses, 1);
         self.job_funding.refresh(
             allocator,
@@ -347,7 +356,8 @@ impl HouseholdSystem {
             graph,
             &catalog,
             &self.workplace_route_cache,
-            &self.workplace_network_quotes,
+            &mut self.workplace_network_quotes,
+            &mut self.workplace_query_shards,
             &agents.pathfind_count,
             max_walk_commute_speed,
             max_car_commute_speed,
@@ -625,10 +635,10 @@ impl HouseholdSystem {
                     agents.consecutive_unpaid_days[plan.agent_idx].saturating_add(1);
 
                 if agents.consecutive_unpaid_days[plan.agent_idx] >= JOB_UNPAID_ABANDON_DAYS {
-                    allocator.buildings[plan.work_building].worker_count = allocator.buildings
-                        [plan.work_building]
-                        .worker_count
-                        .saturating_sub(1);
+                    allocator.set_worker_count(
+                        plan.work_building,
+                        allocator.buildings[plan.work_building].worker_count.saturating_sub(1),
+                    );
                     agents.assign_work_building(plan.agent_idx, usize::MAX, 0);
                     debug_log!(
                         "economy",
@@ -903,12 +913,12 @@ fn apply_workplace_plan(
         }
 
         if plan.old_job < allocator.buildings.len() {
-            allocator.buildings[plan.old_job].worker_count = allocator.buildings[plan.old_job]
-                .worker_count
-                .saturating_sub(1);
+            allocator.set_worker_count(
+                plan.old_job,
+                allocator.buildings[plan.old_job].worker_count.saturating_sub(1),
+            );
         }
-        allocator.buildings[job].worker_count =
-            allocator.buildings[job].worker_count.saturating_add(1);
+        allocator.set_worker_count(job, allocator.buildings[job].worker_count.saturating_add(1));
         agents.assign_work_building(plan.agent_idx, job, job_lock_days(plan.agent_idx, job));
         debug_log!(
             "economy",
@@ -944,8 +954,7 @@ fn eject_inactive_work_assignments(
         .collect();
     for i in ejected_agents {
         let work = agents.work_building[i];
-        allocator.buildings[work].worker_count =
-            allocator.buildings[work].worker_count.saturating_sub(1);
+        allocator.set_worker_count(work, allocator.buildings[work].worker_count.saturating_sub(1));
         agents.assign_work_building(i, usize::MAX, 0);
     }
 }
@@ -1025,14 +1034,13 @@ fn enforce_worker_capacities(
 
     // Publishing one count per building is cheaper than another Rayon dispatch after the
     // ordered retention pass (matched staffing benchmark); capacity evaluation stays parallel.
-    for ((building, capacity), kept_workers) in allocator
-        .buildings
-        .iter_mut()
-        .zip(active_capacity_by_building)
+    for (index, (capacity, kept_workers)) in active_capacity_by_building
+        .iter()
         .zip(kept_workers_by_building)
+        .enumerate()
     {
         if capacity.is_some() {
-            building.worker_count = kept_workers;
+            allocator.set_worker_count(index, kept_workers);
         }
     }
 }
@@ -1283,7 +1291,8 @@ fn build_home_job_options(
     graph: &RegionGraph,
     catalog: &RuntimeEconomyCatalog,
     route_cache: &WorkplaceRouteCache,
-    network_quotes: &SharedNetworkQuotes,
+    network_quotes: &mut SharedNetworkQuotes,
+    shards: &mut Vec<WorkplaceQueryShard>,
     pathfind_count: &AtomicU32,
     max_walk_commute_speed: f32,
     max_car_commute_speed: f32,
@@ -1293,47 +1302,69 @@ fn build_home_job_options(
     BTreeMap<CurrentJobOptionKey, HomeJobOption>,
     Vec<WorkplaceRouteCacheEntry>,
 ) {
+    #[cfg(test)]
+    let _contract_phase = crate::debug::work::phases::enter("workplace_queries");
     let exact_entrance_cache_available = allocator.entrances.len() == allocator.buildings.len();
-    let builds: Vec<_> = keys
-        .par_iter()
-        .map(|&key| {
+    // Preparation is outside the per-key loops. Storage is bounded by worker count and
+    // graph size; result buffers grow only when the corresponding sorted key slice grows.
+    shards.resize_with(rayon::current_num_threads(), WorkplaceQueryShard::default);
+    let home_chunk = keys.len().div_ceil(shards.len()).max(1);
+    let current_chunk = current_job_keys.len().div_ceil(shards.len()).max(1);
+    shards.par_iter_mut().for_each(|shard| {
+        shard.query.prepare_deferred_quotes(transit_network, graph, network_quotes);
+        shard.home.clear();
+        shard.home.reserve(home_chunk);
+        shard.current.clear();
+        shard.current.reserve(current_chunk);
+    });
+    let shared = &*network_quotes;
+    shards
+        .par_iter_mut()
+        .zip(keys.par_chunks(home_chunk))
+        .for_each(|(shard, keys)| {
             CandidateVisits::with(|scratch| {
-                let mut route_entries = [EMPTY_WORKPLACE_ROUTE_ENTRY; JOB_ROUTE_SCAN_CANDIDATES];
-                let mut route_entry_count = 0usize;
-                let options = build_home_job_options_for_key(
-                    key,
-                    job_supply,
-                    foot_components,
-                    car_components,
-                    allocator,
-                    transit_network,
-                    graph,
-                    route_cache,
-                    network_quotes,
-                    pathfind_count,
-                    exact_entrance_cache_available,
-                    if key.has_car {
-                        max_car_commute_speed
-                    } else {
-                        max_walk_commute_speed
-                    },
-                    scratch,
-                    &mut route_entries,
-                    &mut route_entry_count,
-                );
-                HomeJobOptionsBuild {
-                    key,
-                    options,
-                    route_entry_count: route_entry_count as u8,
-                    route_entries,
+                scratch.begin_query(job_supply.entries.len());
+                for &key in keys {
+                    let mut route_entries = [EMPTY_WORKPLACE_ROUTE_ENTRY; JOB_ROUTE_SCAN_CANDIDATES];
+                    let mut route_entry_count = 0usize;
+                    let options = build_home_job_options_for_key(
+                        key,
+                        job_supply,
+                        foot_components,
+                        car_components,
+                        allocator,
+                        transit_network,
+                        graph,
+                        route_cache,
+                        shared,
+                        pathfind_count,
+                        exact_entrance_cache_available,
+                        if key.has_car {
+                            max_car_commute_speed
+                        } else {
+                            max_walk_commute_speed
+                        },
+                        scratch,
+                        &mut shard.query,
+                        &mut route_entries,
+                        &mut route_entry_count,
+                    );
+                    shard.home.push(HomeJobOptionsBuild {
+                        key,
+                        options,
+                        route_entry_count: route_entry_count as u8,
+                        route_entries,
+                    });
                 }
-            })
-        })
-        .collect();
+            });
+        });
+    for shard in shards.iter_mut() {
+        shard.query.publish_quotes(network_quotes);
+    }
 
     let mut home_options = BTreeMap::new();
     let mut route_entries = Vec::new();
-    for build in builds {
+    for build in shards.iter_mut().flat_map(|shard| shard.home.drain(..)) {
         if build.options.option_count > 0 {
             home_options.insert(build.key, build.options);
         }
@@ -1346,36 +1377,43 @@ fn build_home_job_options(
         );
     }
 
-    let current_builds: Vec<_> = current_job_keys
-        .par_iter()
-        .map(|&key| {
-            let mut route_entries = [EMPTY_WORKPLACE_ROUTE_ENTRY; JOB_ROUTE_SCAN_CANDIDATES];
-            let mut route_entry_count = 0usize;
-            let option = build_current_job_option_for_key(
-                key,
-                allocator,
-                transit_network,
-                graph,
-                catalog,
-                route_cache,
-                network_quotes,
-                pathfind_count,
-                exact_entrance_cache_available,
-                &mut route_entries,
-                &mut route_entry_count,
-                job_capacities,
-            );
-            CurrentJobOptionBuild {
-                key,
-                option,
-                route_entry_count: route_entry_count as u8,
-                route_entries,
+    let shared = &*network_quotes;
+    shards
+        .par_iter_mut()
+        .zip(current_job_keys.par_chunks(current_chunk))
+        .for_each(|(shard, keys)| {
+            for &key in keys {
+                let mut route_entries = [EMPTY_WORKPLACE_ROUTE_ENTRY; JOB_ROUTE_SCAN_CANDIDATES];
+                let mut route_entry_count = 0usize;
+                let option = build_current_job_option_for_key(
+                    key,
+                    allocator,
+                    transit_network,
+                    graph,
+                    catalog,
+                    route_cache,
+                    shared,
+                    pathfind_count,
+                    exact_entrance_cache_available,
+                    &mut shard.query,
+                    &mut route_entries,
+                    &mut route_entry_count,
+                    job_capacities,
+                );
+                shard.current.push(CurrentJobOptionBuild {
+                    key,
+                    option,
+                    route_entry_count: route_entry_count as u8,
+                    route_entries,
+                });
             }
-        })
-        .collect();
+        });
+    for shard in shards.iter_mut() {
+        shard.query.publish_quotes(network_quotes);
+    }
 
     let mut current_job_options = BTreeMap::new();
-    for build in current_builds {
+    for build in shards.iter_mut().flat_map(|shard| shard.current.drain(..)) {
         if let Some(option) = build.option {
             current_job_options.insert(build.key, option);
         }
@@ -1406,6 +1444,7 @@ fn build_home_job_options_for_key(
     exact_entrance_cache_available: bool,
     max_commute_speed: f32,
     scratch: &mut CandidateVisits,
+    query: &mut TripQueryScratch,
     new_route_entries: &mut [WorkplaceRouteCacheEntry; JOB_ROUTE_SCAN_CANDIDATES],
     new_route_entry_count: &mut usize,
 ) -> HomeJobOptions {
@@ -1461,6 +1500,7 @@ fn build_home_job_options_for_key(
         home.center_y,
         max_commute_speed,
         scratch,
+        query,
         &mut options,
         &mut option_count,
         new_route_entries,
@@ -1486,6 +1526,7 @@ fn build_home_job_options_for_key(
             home.center_y,
             max_commute_speed,
             scratch,
+            query,
             &mut options,
             &mut option_count,
             new_route_entries,
@@ -1514,6 +1555,7 @@ fn scan_home_job_bucket(
     origin_y: f32,
     max_commute_speed: f32,
     scratch: &mut CandidateVisits,
+    query: &mut TripQueryScratch,
     options: &mut HomeJobOptions,
     option_count: &mut usize,
     new_route_entries: &mut [WorkplaceRouteCacheEntry; JOB_ROUTE_SCAN_CANDIDATES],
@@ -1541,6 +1583,7 @@ fn scan_home_job_bucket(
                 exact_entrance_cache_available,
                 max_commute_speed,
                 commute_budget_seconds(options, *option_count),
+                query,
                 new_route_entries,
                 new_route_entry_count,
             ) else {
@@ -1641,6 +1684,7 @@ fn build_current_job_option_for_key(
     network_quotes: &SharedNetworkQuotes,
     pathfind_count: &AtomicU32,
     exact_entrance_cache_available: bool,
+    query: &mut TripQueryScratch,
     new_route_entries: &mut [WorkplaceRouteCacheEntry; JOB_ROUTE_SCAN_CANDIDATES],
     new_route_entry_count: &mut usize,
     job_capacities: &[u32],
@@ -1659,6 +1703,7 @@ fn build_current_job_option_for_key(
         network_quotes,
         pathfind_count,
         exact_entrance_cache_available,
+        query,
         new_route_entries,
         new_route_entry_count,
     )?;
@@ -1728,6 +1773,7 @@ fn cached_commute_seconds_within(
     exact_entrance_cache_available: bool,
     network_speed_bound_ms: f32,
     budget_s: f32,
+    query: &mut TripQueryScratch,
     new_route_entries: &mut [WorkplaceRouteCacheEntry; JOB_ROUTE_SCAN_CANDIDATES],
     new_route_entry_count: &mut usize,
 ) -> Option<u16> {
@@ -1741,7 +1787,7 @@ fn cached_commute_seconds_within(
     if !exact_entrance_cache_available {
         return None;
     }
-    let TripEstimate::Seconds(result) = estimate_trip_seconds_between(
+    let TripEstimate::Seconds(result) = estimate_trip_seconds_with_scratch(
         home_trip_ends,
         work_trip_ends,
         has_car,
@@ -1751,6 +1797,7 @@ fn cached_commute_seconds_within(
         network_speed_bound_ms,
         budget_s,
         Some(network_quotes),
+        query,
     ) else {
         return None;
     };
@@ -1773,6 +1820,7 @@ fn cached_commute_seconds(
     network_quotes: &SharedNetworkQuotes,
     pathfind_count: &AtomicU32,
     exact_entrance_cache_available: bool,
+    query: &mut TripQueryScratch,
     new_route_entries: &mut [WorkplaceRouteCacheEntry; JOB_ROUTE_SCAN_CANDIDATES],
     new_route_entry_count: &mut usize,
 ) -> Option<u16> {
@@ -1786,7 +1834,7 @@ fn cached_commute_seconds(
     if !exact_entrance_cache_available {
         return None;
     }
-    let result = estimate_building_origin_trip_seconds(
+    let result = estimate_building_origin_trip_seconds_with_scratch(
         home_idx,
         work_idx,
         has_car,
@@ -1795,6 +1843,7 @@ fn cached_commute_seconds(
         graph,
         pathfind_count,
         Some(network_quotes),
+        query,
     );
     if *new_route_entry_count < JOB_ROUTE_SCAN_CANDIDATES {
         new_route_entries[*new_route_entry_count] = (key, result);
@@ -1806,6 +1855,15 @@ fn cached_commute_seconds(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::simulation::economy::agents::tick::estimate_trip_seconds_between;
+
+    #[test]
+    fn clearing_households_discards_workplace_query_shards() {
+        let mut households = HouseholdSystem::new();
+        households.workplace_query_shards.push(Default::default());
+        households.clear();
+        assert!(households.workplace_query_shards.is_empty());
+    }
 
     #[test]
     fn job_search_keeps_farther_candidates_that_can_win_a_capped_commute_tie() {

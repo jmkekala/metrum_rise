@@ -44,6 +44,7 @@ pub(crate) mod sqlite;
 pub mod tests;
 mod vegetation;
 pub mod world;
+mod workplace_quotes;
 
 pub(crate) use camera::SavedCameraState;
 use schema::*;
@@ -476,6 +477,7 @@ fn write_snapshot(
     )?;
     network::save_network(tx, view.graph, maps)?;
     agents::save_agents(tx, view.agents, view.graph, view.network, maps)?;
+    workplace_quotes::save(tx, view.households, view.allocator, view.network, maps)?;
 
     Ok(())
 }
@@ -675,6 +677,14 @@ pub(crate) fn load_from_sqlite(
     allocator.dirty = true;
     transit_network.cch_graph = CchGraph::build(&graph);
     agents::validate_loaded_agents(&mut agents, &graph, &allocator)?;
+    workplace_quotes::load(
+        &conn,
+        version,
+        &mut households,
+        &allocator,
+        &transit_network,
+        quarantined_parcels.is_empty(),
+    )?;
 
     let mut desirability = DesirabilitySystem::new(&config);
     desirability.tick(&pollution, &noise);

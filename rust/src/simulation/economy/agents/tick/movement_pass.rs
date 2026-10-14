@@ -2,8 +2,9 @@
 
 //! Parallel dispatch phase for the movement state machine.
 
+use super::TripQueryScratch;
 use super::claims::LaneClaimContext;
-use super::runtime::dispatch_agents;
+use super::runtime::{PAR_THRESHOLD, dispatch_agents_with_owned_scratch};
 use super::slices::MovementSlices;
 use super::trip_failures::FailureSink;
 use crate::simulation::buildings::allocator::BuildingAllocator;
@@ -14,6 +15,7 @@ use crate::simulation::economy::definitions::{
 };
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
+use rayon::prelude::*;
 
 impl AgentSystem {
     /// Dispatches the parallel per-agent movement state machine.
@@ -39,33 +41,27 @@ impl AgentSystem {
         let economy_catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
 
-        dispatch_agents(n, |i| unsafe {
-            if self.movement_claim_modes[i] == MovementClaimMode::Dynamic {
-                return;
-            }
-            Self::process_agent_movement(
-                i,
-                delta,
-                sim_time,
-                time,
-                allocator,
-                transit_network,
-                graph,
-                &self.pathfind_count,
-                lane_buckets,
-                &lane_claims,
-                &economy_tuning.operational_clock,
-                &economy_catalog,
-                &slices,
-            );
-        });
+        if n >= PAR_THRESHOLD {
+            self.movement_query_shards
+                .resize_with(rayon::current_num_threads(), Default::default);
+            self.movement_query_shards.par_iter_mut().for_each(|scratch| {
+                scratch.prepare_routes(transit_network, graph);
+            });
+        }
+        self.movement_serial_query
+            .prepare_routes(transit_network, graph);
 
-        // A borrowed slice keeps the bound in a register for this serial scan of every agent.
-        for (i, &mode) in self.movement_claim_modes[..n].iter().enumerate() {
-            if mode != MovementClaimMode::Dynamic {
-                continue;
-            }
-            unsafe {
+        let movement_claim_modes = &self.movement_claim_modes;
+        let pathfind_count = &self.pathfind_count;
+
+        dispatch_agents_with_owned_scratch(
+            n,
+            &mut self.movement_query_shards,
+            &mut self.movement_serial_query,
+            |i| unsafe {
+                if movement_claim_modes[i] == MovementClaimMode::Dynamic {
+                    return;
+                }
                 Self::process_agent_movement(
                     i,
                     delta,
@@ -74,15 +70,43 @@ impl AgentSystem {
                     allocator,
                     transit_network,
                     graph,
-                    &self.pathfind_count,
+                    pathfind_count,
                     lane_buckets,
                     &lane_claims,
                     &economy_tuning.operational_clock,
                     &economy_catalog,
                     &slices,
                 );
+            },
+        );
+
+        // A borrowed slice keeps the bound in a register for this serial scan of every agent.
+        TripQueryScratch::with_owned(&mut self.movement_serial_query, || {
+            for (i, &mode) in movement_claim_modes[..n].iter().enumerate() {
+                if mode != MovementClaimMode::Dynamic {
+                    continue;
+                }
+                unsafe {
+                    Self::process_agent_movement(
+                        i,
+                        delta,
+                        sim_time,
+                        time,
+                        allocator,
+                        transit_network,
+                        graph,
+                        pathfind_count,
+                        lane_buckets,
+                        &lane_claims,
+                        &economy_tuning.operational_clock,
+                        &economy_catalog,
+                        &slices,
+                    );
+                }
             }
-        }
+        });
+        #[cfg(test)]
+        super::contract::add(super::contract::Phase::MovementAgents, n);
         self.trip_failures.buffer = slices.failures.into_inner();
     }
 }

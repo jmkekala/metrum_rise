@@ -70,7 +70,7 @@ pub enum EdgeClass {
 }
 
 /// Determines which vehicle lane groups along a road edge may directly serve building frontage.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
 pub enum VehicleFrontageAccess {
     /// Cars may only attach to or detach from the lane group on the building's own frontage side.
     SameSideOnly,

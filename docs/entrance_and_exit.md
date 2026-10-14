@@ -1795,11 +1795,21 @@ user instruction.
   open-workplace set rebuilds tables while retaining valid pair quotes. The shared leg cache
   now uses two exact entries per fixed bucket, bounded by O(lanes), with O(1) lookup/replacement
   and no query allocation. It survives midnight; complete door-to-door quotes still expire daily
-  to preserve their original frontage-pricing cadence. Lane epochs cover terrain-driven rebuilds
+  to preserve their original frontage-pricing cadence. Save format 86 retains complete quotes
+  with valid topology stamps: these contain historical frontage prices, so recomputing them
+  after loading would change workplace choices. Rebuilt network-leg caches remain transient.
+  Lane epochs cover terrain-driven rebuilds
   even when lane count and CCH generation are unchanged. Worker scratch caches
   the two source attachment ranks per mode. A prepared source query allocates nothing and costs
   O(H log H + A_H + visited bucket entries + targets); retained tables cost O(sum of target
   ancestor labels), and each worker costs O(states + targets) per source slot.
+- `PERF-01` now gives sorted workplace-query slices stable ownership of this scratch.
+  Shared network quotes remain read-only during each parallel phase; shards publish the last
+  retained value in each changed local slot in fixed shard order between phases. Quote values
+  and complete frontage-sensitive cache insertion order stay unchanged. Movement likewise
+  owns route scratch by fixed agent ranges, with a separate serial scratch. This removes
+  scheduling-dependent memoization work without making route selection approximate or adding
+  an unbounded pair cache; fresh work-count and memory evidence lives in `economy.md`.
 - Full frontage arithmetic, entrance combinations, the exact 24-option ranking, current-job
   fallback and rounded commute seconds remain unchanged. Pedestrian forecasts use the exhaustive
   turn-completeness proof above when available; otherwise they materialize the identical witness

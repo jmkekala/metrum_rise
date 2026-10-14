@@ -11,7 +11,11 @@
 //! `docs/economy.md#econ-13-economy-tick-baseline`.
 
 #[cfg(test)]
+mod contract;
+#[cfg(test)]
 mod routing_benchmark;
+#[cfg(test)]
+mod snapshot;
 
 use std::time::{Duration, Instant};
 
@@ -311,6 +315,19 @@ pub(super) fn street_grid(side_m: f32) -> (SimCore, Vec<f32>, f32) {
         assert!(border >= 0, "trunk {k} must end at the world edge");
         core.set_border_connection_internal(border as i32);
     }
+    // Bulk benchmark setup skips render preparation, which normally fits connector heights
+    // to the road surface. Finalize the same movement geometry before any agents run; otherwise
+    // loading the ordinary save changes connector lengths and therefore arrival times.
+    core.transit_network
+        .road_surface
+        .compile_dirty(&core.region_graph, &core.heightmap);
+    core.transit_network
+        .lane_system
+        .sync_heights_to_visible_surface(
+            &core.region_graph,
+            &core.heightmap,
+            &core.transit_network.road_surface,
+        );
     (core, row_z, half_x)
 }
 

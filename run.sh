@@ -2,6 +2,8 @@
 # Metrum Rise Run Script
 #
 # Verification:
+#   --perf-contract [--diff BASE | --phase PHASE | --agents | --prepare]
+#                        Run short saved-city/agent release performance contracts
 #   --test               Run the Rust suite and headless Godot bridge regressions
 #   --benchmark-road-chunks
 #                        Run deterministic Rust generation and Godot upload benchmarks
@@ -86,6 +88,11 @@
 #   METRUM_FORCE_GODOT_IMPORT_REPAIR=1 retries even after a previous attempt.
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Performance contracts are engine-independent and must not build/deploy the GDExtension.
+if [ "${1:-}" = "--perf-contract" ]; then
+    shift
+    exec python3 "$PROJECT_ROOT/tools/perf_contract.py" "$@"
+fi
 GODOT_DIR="$PROJECT_ROOT/godot"
 case "$(uname -s)" in
     Linux)

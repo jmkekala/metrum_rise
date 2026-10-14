@@ -27,6 +27,8 @@ impl ShipmentSystem {
         treasury_balance: &mut f64,
         on_delivery: impl FnMut(&super::data::Shipment, &BuildingAllocator),
     ) {
+        #[cfg(test)]
+        let _contract_phase = crate::debug::work::phases::enter("logistics");
         let timing_category = if debug::Channel::EconomyPhases.enabled() {
             debug::Channel::EconomyPhases
         } else {

@@ -177,6 +177,9 @@ impl BuildingAllocator {
 
     /// Latches abandonment and immediately withdraws the home from admission and rehousing. O(1).
     pub(crate) fn mark_building_deserted(&mut self, building_idx: usize) {
+        if !self.buildings[building_idx].is_deserted {
+            self.record_production_change(building_idx);
+        }
         self.buildings[building_idx].is_deserted = true;
         self.building_visual_revision = self.building_visual_revision.wrapping_add(1);
         self.remove_housing_vacancy(building_idx);

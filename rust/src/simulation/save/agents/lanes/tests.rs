@@ -324,3 +324,64 @@ fn loaded_network_and_ingress_plans_preserve_detach_without_origin_attach() {
             .all(|&id| id == lane_id as u32)
     );
 }
+
+#[test]
+fn loaded_network_retry_preserves_backoff_without_repairing_to_home() {
+    let (graph, network) = fixture();
+    let mut allocator = BuildingAllocator::new();
+    allocator.buildings.push(crate::simulation::buildings::allocator::indexed_test_building(
+        "test:retry_home".into(),
+        crate::simulation::zoning::ZoneType::Residential,
+        0,
+    ));
+    let current_node = graph.edge(1).start_node;
+    let mut agents = AgentSystem::new();
+    let i = agents.spawn_border_arrival_agent(usize::MAX, current_node, 0.0, 0.0);
+    agents.transit[i] = TRANSIT_NETWORK;
+    agents.transit_mode[i] = MODE_WALK;
+    agents.home_building[i] = 0;
+    agents.current_building[i] = usize::MAX;
+    agents.target_building[i] = usize::MAX;
+    agents.current_node[i] = current_node;
+    agents.current_edge[i] = 1;
+    agents.current_lane_id[i] = usize::MAX;
+    agents.current_path[i].clear();
+    agents.current_path_index[i] = 1;
+    agents.access_flags[i] = 0;
+    agents.next_replan_time[i] = 9.5;
+    agents.network_replan_failures[i] = 2;
+
+    validate_loaded_planned_lane_ids(&mut agents, network.lane_system.lanes.len());
+    assert_eq!(agents.next_replan_time[i], 9.5);
+    assert_eq!(agents.network_replan_failures[i], 2);
+
+    validate_loaded_agents(&mut agents, &graph, &allocator).unwrap();
+    assert_eq!(agents.current_path_index[i], 1);
+    assert_eq!(agents.target_building[i], usize::MAX);
+    assert_eq!(agents.next_replan_time[i], 9.5);
+    assert_eq!(agents.network_replan_failures[i], 2);
+    assert_eq!(agents.transit[i], TRANSIT_NETWORK);
+    assert_eq!(agents.current_node[i], current_node);
+    assert_eq!(agents.current_edge[i], 1);
+
+    // An immediate replan after demolition also has live state, despite zero retry counters.
+    agents.next_replan_time[i] = 0.0;
+    agents.network_replan_failures[i] = 0;
+    agents.target_building[i] = 0;
+    agents.planned_target_building[i] = 0;
+    validate_loaded_planned_lane_ids(&mut agents, network.lane_system.lanes.len());
+    validate_loaded_agents(&mut agents, &graph, &allocator).unwrap();
+    assert_eq!(agents.current_path_index[i], 1);
+    assert_eq!(agents.target_building[i], 0);
+    assert_eq!(agents.planned_target_building[i], 0);
+    assert_eq!(agents.next_replan_time[i], 0.0);
+    assert_eq!(agents.network_replan_failures[i], 0);
+
+    // A legacy orphan with neither a destination nor a pending retry still gets home repair.
+    agents.target_building[i] = usize::MAX;
+    agents.planned_target_building[i] = usize::MAX;
+    validate_loaded_agents(&mut agents, &graph, &allocator).unwrap();
+    assert_eq!(agents.current_path_index[i], 0);
+    assert_eq!(agents.target_building[i], 0);
+    assert_eq!(agents.next_replan_time[i], 0.0);
+}

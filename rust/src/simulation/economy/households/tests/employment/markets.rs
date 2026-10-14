@@ -181,6 +181,117 @@ impl MarketFixture {
 }
 
 #[test]
+fn production_market_chunks_match_full_census_after_input_changes() {
+    let tuning = load_runtime_economy_tuning().unwrap();
+    let mut cached = MarketFixture::new(&[0, 1, 2, 3, 0, 1]);
+    let mut full = MarketFixture::new(&[0, 1, 2, 3, 0, 1]);
+    let count = cached.allocator.buildings.len();
+    for market in [&mut cached, &mut full] {
+        market.allocator.prepare_production_changes();
+    }
+    for step in 0..9 {
+        for market in [&mut cached, &mut full] {
+            match step {
+                2 => market.allocator.set_worker_count(HOMES + 1, 0),
+                3 => market.allocator.set_worker_count(HOMES + 1, 3),
+                4 => market.allocator.set_work_area_scale(HOMES, 2.0),
+                5 => market.allocator.invalidate_production_changes(),
+                6 => market.catalog = std::sync::Arc::new((*market.catalog).clone()),
+                7 => market.allocator.bump_building_ref_revision(),
+                8 => {
+                    let authored = include_str!("../../../../../../../economy/profiles.toml");
+                    market.catalog = std::sync::Arc::new(
+                        crate::simulation::economy::definitions::compile_test_catalog(authored)
+                            .unwrap(),
+                    );
+                }
+                _ => {}
+            }
+        }
+        full.funding.invalidate_market_for_test();
+        cached.refresh(&tuning);
+        full.refresh(&tuning);
+        cached.assert_same_funding(&full);
+        cached.funding.assert_same_market_for_test(&full.funding);
+        let expected = match step {
+            1 | 6 => 0,
+            2..=4 => 256,
+            _ => count,
+        };
+        assert_eq!(cached.funding.market_rows_for_test(), expected, "step {step}");
+        assert_eq!(full.funding.market_rows_for_test(), count);
+    }
+}
+
+#[test]
+fn import_plan_handoff_matches_cold_funding_after_input_changes() {
+    let mut tuning = (*load_runtime_economy_tuning().unwrap()).clone();
+    let mut cached = MarketFixture::new(&[0, 1, 2, 3]);
+    let mut cold = MarketFixture::new(&[0, 1, 2, 3]);
+    cached.refresh(&tuning);
+    let source = std::mem::take(&mut cached.funding);
+    let mut hits = 0;
+    for step in 0..8 {
+        if step == 4 { tuning.owa_import_price_multiplier = 1.25; }
+        for market in [&mut cached, &mut cold] {
+            match step {
+                1 => market.allocator.buildings[HOMES + 1].operating_budget += 10_000.0,
+                2 => market.allocator.buildings[HOMES + 1].operating_budget = 1.0,
+                3 => market.families[0].gross_daily_wages = 0.0,
+                5 => market.allocator.set_work_area_scale(HOMES, 2.0),
+                6 => market.catalog = std::sync::Arc::new((*market.catalog).clone()),
+                7 => {
+                    let authored = include_str!("../../../../../../../economy/profiles.toml");
+                    market.catalog = std::sync::Arc::new(
+                        crate::simulation::economy::definitions::compile_test_catalog(authored).unwrap()
+                    );
+                }
+                _ => {}
+            }
+        }
+        cached.funding.refresh_with_service_capacity(
+            &cached.allocator, &cached.families, &mut cached.logistics,
+            &cached.network, &cached.graph, &cached.catalog, &tuning,
+            &CityFiscalPolicy::from_runtime_tuning(&tuning), 0.0,
+            |_, _, _| 0, Some(&source), 420,
+        );
+        cold.refresh(&tuning);
+        cached.assert_same_funding(&cold);
+        cached.funding.assert_same_operations_for_test(&cold.funding);
+        hits += cached.funding.import_plan_replays();
+        if step == 7 { assert_eq!(cached.funding.import_plan_replays(), 0); }
+    }
+    assert!(hits > 0, "fixture must exercise the import plan handoff");
+}
+
+#[test]
+fn import_quote_retries_preserve_funding_and_reset_after_input_changes() {
+    let mut tuning = (*load_runtime_economy_tuning().unwrap()).clone();
+    tuning.owa_export_price_multiplier = 0.0;
+    let mut cached = MarketFixture::new(&[0, 1, 2, 3]);
+    let mut ordinary = MarketFixture::new(&[0, 1, 2, 3]);
+    ordinary.funding.disable_import_quote_replay();
+    let mut reused = 0;
+    for (income, imports, capital) in [
+        (240.0, 1.0, 100_000.0),
+        (0.0, 10.0, 0.0),
+        (60.0, 1.25, 2_000.0),
+        (240.0, 1.0, 100_000.0),
+    ] {
+        tuning.owa_import_price_multiplier = imports;
+        for market in [&mut cached, &mut ordinary] {
+            market.families[0].gross_daily_wages = income;
+            market.allocator.buildings[HOMES + 1].operating_budget = capital;
+            market.refresh(&tuning);
+        }
+        cached.assert_same_funding(&ordinary);
+        reused += cached.funding.import_quote_replays();
+        assert_eq!(ordinary.funding.import_quote_replays(), 0);
+    }
+    assert!(reused > 0, "fixture must exercise import quotation reuse");
+}
+
+#[test]
 fn disconnected_populated_markets_keep_local_financing_and_customer_claims() {
     let mut tuning = (*load_runtime_economy_tuning().unwrap()).clone();
     tuning.owa_export_price_multiplier = 0.0;
@@ -224,6 +335,40 @@ fn disconnected_populated_markets_keep_local_financing_and_customer_claims() {
             }
         }
     }
+}
+
+#[test]
+fn rejected_direct_household_quotes_restage_before_acceptance() {
+    let tuning = load_runtime_economy_tuning().unwrap();
+    let mut cached = MarketFixture::new(&[0]);
+    let mut ordinary = MarketFixture::new(&[0]);
+    ordinary.funding.disable_household_quote_replay();
+    let mut policy = CityFiscalPolicy::from_runtime_tuning(&tuning);
+    policy.commercial_property_tax_per_building_per_day = 100.0;
+    policy.industrial_property_tax_per_building_per_day = 100.0;
+    for market in [&mut cached, &mut ordinary] {
+        let profile = market.catalog.profile_for_id("personal_service_small").unwrap();
+        for index in HOMES + 1..DISTRICT {
+            let building = &mut market.allocator.buildings[index];
+            building.economy_profile_runtime_id = profile.runtime_id;
+            building.zone_type = ZoneType::Commercial;
+            building.worker_count = profile.worker_capacity;
+            building.operating_budget = if index == HOMES + 3 { 100_000.0 } else { 100.0 };
+        }
+        market.allocator.bump_building_ref_revision();
+        market.allocator.rebuild_zone_index();
+        market.funding.refresh(
+            &market.allocator, &market.families, &mut market.logistics,
+            &market.network, &market.graph, &market.catalog, &tuning,
+            &policy, &[], 0.0, 420,
+        );
+    }
+    cached.assert_same_funding(&ordinary);
+    cached.funding.assert_same_operations_for_test(&ordinary.funding);
+    let (reused, accepted) = cached.funding.household_rejected_quote_counts();
+    assert!(reused > 0, "fixture must reuse a rejected spatial question");
+    assert!(accepted > 0, "a later solvent shop must materialize the reused quote");
+    assert_eq!(ordinary.funding.household_rejected_quote_counts(), (0, 0));
 }
 
 #[test]
@@ -1529,4 +1674,54 @@ fn benchmark_combined_financing_cascades() {
             samples[7], samples[14]
         );
     }
+}
+
+#[test]
+#[ignore = "short PERF-01 locality acceptance; setup excluded from timings"]
+fn perf_contract_financing_locality() {
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    let mut tuning = (*load_runtime_economy_tuning().unwrap()).clone();
+    tuning.owa_import_price_multiplier = 10.0;
+    tuning.owa_export_price_multiplier = 0.0;
+    let mut results = Vec::new();
+    for length in [4, 16, 64] {
+        let setup = Instant::now();
+        let mut market = financing_links(length, true, 199.8, None, 0);
+        let setup_ms = setup.elapsed().as_secs_f64() * 1_000.0;
+
+        let cold = Instant::now();
+        black_box(market.refresh(&tuning));
+        let cold_ms = cold.elapsed().as_secs_f64() * 1_000.0;
+        let cold_passes = market.funding.closure_passes;
+        assert!(
+            cold_passes <= 3,
+            "cold financing closure exceeded PERF-01 bound: length={length} passes={cold_passes}"
+        );
+
+        let warm_start = Instant::now();
+        let mut warm_passes = 0;
+        for _ in 0..8 {
+            black_box(market.refresh(&tuning));
+            warm_passes = warm_passes.max(market.funding.closure_passes);
+        }
+        let warm_ms = warm_start.elapsed().as_secs_f64() * 1_000.0;
+        assert!(
+            warm_passes <= 3,
+            "warm financing closure exceeded PERF-01 bound: length={length} passes={warm_passes}"
+        );
+        results.push(serde_json::json!({
+            "length": length,
+            "setup_ms": setup_ms,
+            "cold_ms": cold_ms,
+            "cold_closure_passes": cold_passes,
+            "warm_batch_ms": warm_ms,
+            "warm_closure_passes": warm_passes,
+        }));
+    }
+    eprintln!(
+        "PERF_LOCALITY {}",
+        serde_json::json!({ "kind": "financing", "results": results })
+    );
 }

@@ -1235,10 +1235,11 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     assert_eq!(loaded.agents.transit[1], TRANSIT_NETWORK);
     assert_eq!(loaded.agents.current_lane_id[1], usize::MAX);
     assert_eq!(loaded.agents.current_path[1], Vec::<u32>::new());
-    assert_eq!(loaded.agents.current_path_index[1], 0);
+    // An empty network route with a saved retry remains pending across loading.
+    assert_eq!(loaded.agents.current_path_index[1], 1);
     assert_eq!(loaded.agents.current_edge[1], 0);
-    assert_eq!(loaded.agents.target_building[1], 0);
-    assert_eq!(loaded.agents.next_replan_time[1], 0.0);
+    assert_eq!(loaded.agents.target_building[1], usize::MAX);
+    assert_eq!(loaded.agents.next_replan_time[1], 9.5);
     assert_eq!(loaded.agents.planned_attach_node[0], 0);
     assert_eq!(loaded.agents.planned_detach_node[0], 1);
     assert_eq!(loaded.agents.planned_attach_lane_id[0], planned_lane_id);

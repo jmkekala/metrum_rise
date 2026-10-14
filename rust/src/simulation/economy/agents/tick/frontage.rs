@@ -50,6 +50,8 @@ impl AgentSystem {
             self.lane_speed_sum[lid] += self.agents.speed[i];
             self.lane_vehicle_cnt[lid] += 1;
         }
+        #[cfg(test)]
+        super::contract::add(super::contract::Phase::FrontageAgents, self.agents.len());
 
         let smoothing_retain = 0.75_f32.powi(update_steps);
         let smoothing_gain = 1.0 - smoothing_retain;
@@ -88,5 +90,7 @@ impl AgentSystem {
                     }
                 };
             });
+        #[cfg(test)]
+        super::contract::add(super::contract::Phase::FrontageLanes, lane_count);
     }
 }

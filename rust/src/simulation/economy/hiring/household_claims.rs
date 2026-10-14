@@ -2,7 +2,8 @@
 
 //! Exact household-quote prefixes across matching live funding inputs and closure attempts.
 
-use super::super::customers::ConsumerMarket;
+use super::super::customers::{ConsumerMarket, DirectConsumerQuoteKey};
+use std::collections::HashMap;
 use super::*;
 use crate::simulation::buildings::allocator::BuildingEntranceKey;
 
@@ -102,11 +103,23 @@ pub(super) struct HouseholdQuotes {
     pub(super) census_reused: usize,
     // Exact request keys need comparison once across censuses, not on immutable retries.
     previous_census: bool,
+    // Rejected direct-only single-output questions share a result while accounts are unchanged.
+    // Keys are immutable within a census; revisions replace values without growing storage.
+    rejected: HashMap<DirectConsumerQuoteKey, (u64, f64)>,
+    pending_key: Option<(DirectConsumerQuoteKey, u64)>,
+    pending_direct: bool,
+    pending_rejected_replay: bool,
+    /// Cross-owner rejected queries reused in this census.
+    #[cfg(test)]
+    pub(super) rejected_reused: usize,
+    /// Reused rejected queries subsequently reserved normally before acceptance.
+    #[cfg(test)]
+    pub(super) rejected_accepted: usize,
 }
 
 impl HouseholdQuotes {
     /// Prepares at most three requests per consumer firm: imports, current local staff and
-    /// local expansion. O(consumer firms + their output ports) cold storage, O(1) warm reset.
+    /// local expansion. O(consumer firms + their output ports) storage; the rejected-question table clears once per census.
     pub(super) fn prepare(
         &mut self,
         firms: usize,
@@ -114,6 +127,11 @@ impl HouseholdQuotes {
         maximum_ports: usize,
         retained: bool,
     ) {
+        self.rejected.clear();
+        self.rejected.reserve(firms);
+        self.pending_key = None;
+        self.pending_direct = false;
+        self.pending_rejected_replay = false;
         if !retained {
             self.quotes.clear();
             self.units.clear();
@@ -132,6 +150,8 @@ impl HouseholdQuotes {
         self.pending = false;
         #[cfg(test)]
         {
+            self.rejected_reused = 0;
+            self.rejected_accepted = 0;
             self.reused = 0;
             self.rebuilt = 0;
             self.census_reused = 0;
@@ -166,6 +186,9 @@ impl HouseholdQuotes {
         census: &Census<'_>,
     ) {
         debug_assert!(!self.pending);
+        self.pending_key = None;
+        self.pending_direct = false;
+        self.pending_rejected_replay = false;
         let building = &census.allocator.buildings[owner];
         let profile = census
             .catalog
@@ -210,7 +233,35 @@ impl HouseholdQuotes {
                 self.census_reused += usize::from(self.previous_census);
             }
         } else {
-            census.quote(owner, customers, units);
+            #[cfg(test)]
+            let reuse_enabled = !self.disabled;
+            #[cfg(not(test))]
+            let reuse_enabled = true;
+            if reuse_enabled && profile.outputs.len() == 1 {
+                let output = &profile.outputs[0];
+                self.pending_key = census.allocator.entrances.get(owner).and_then(|entrance| {
+                    customers.direct_quote_key(
+                        entrance,
+                        output.resource_runtime_id,
+                        f64::from(profile.net_output_units_per_day(output) * area),
+                        f32::from_bits(gross_price),
+                        census.network,
+                        census.graph,
+                    ).map(|key| (key, customers.quote_revision()))
+                });
+            }
+            if let Some((key, revision)) = self.pending_key
+                && let Some(&(saved_revision, value)) = self.rejected.get(&key)
+                && revision == saved_revision
+            {
+                units[0] = value;
+                self.pending_rejected_replay = true;
+                #[cfg(test)]
+                { self.rejected_reused += 1; }
+            } else {
+                census.quote(owner, customers, units);
+                self.pending_direct = self.pending_key.is_some() && customers.last_claim_was_direct();
+            }
             assert!(
                 self.quotes.len() < self.quotes.capacity()
                     && self.units.len() + units.len() <= self.units.capacity()
@@ -254,9 +305,28 @@ impl HouseholdQuotes {
         }
         if !self.replaying {
             if accepted {
+                if self.pending_rejected_replay {
+                    // A scalar proof has no receipts. Materialize them in the original
+                    // family order before publishing this owner's accepted purchases.
+                    census.quote(quote.owner, customers, &mut self.scratch[..quote.ports]);
+                    debug_assert_eq!(
+                        &self.scratch[..quote.ports],
+                        &self.units[quote.first..quote.first + quote.ports]
+                    );
+                    #[cfg(test)]
+                    { self.rejected_accepted += 1; }
+                }
                 customers.accept_growing_for(quote.owner);
-            } else {
+            } else if !self.pending_rejected_replay {
                 customers.reject();
+                if self.pending_direct
+                    && let Some((key, revision)) = self.pending_key
+                    && revision == customers.quote_revision()
+                {
+                    assert!(self.rejected.len() < self.rejected.capacity() || self.rejected.contains_key(&key),
+                        "rejected household quotes require census preparation");
+                    self.rejected.insert(key, (revision, self.units[quote.first]));
+                }
             }
             self.quotes[self.cursor].accepted = accepted;
         }

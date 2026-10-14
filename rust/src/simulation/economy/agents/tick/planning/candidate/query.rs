@@ -29,6 +29,9 @@ pub(crate) struct TripQueryScratch {
     revision: Option<(u32, usize, u64)>,
     network_quotes: Vec<Option<NetworkQuote>>,
     quote_revision: Option<NetworkQuoteRevision>,
+    deferred_shared: bool,
+    dirty_quote_slots: Vec<usize>,
+    dirty_quote_flags: Vec<bool>,
     batch_revision: [Option<u64>; 2],
     batch_sources: [[BatchSource; 2]; 2],
 }
@@ -393,7 +396,10 @@ impl TripQueryScratch {
     /// Borrows route scratch without preparing a graph for invalid or zero-hop plans.
     /// Methods that search or reconstruct paths prepare their required storage lazily.
     pub(in super::super) fn with_routes<T>(plan: impl FnOnce(&mut Self) -> T) -> T {
-        QUERY.with_borrow_mut(plan)
+        QUERY.with_borrow_mut(|scratch| {
+            scratch.disable_deferred_quotes();
+            plan(scratch)
+        })
     }
 
     pub(in super::super) fn with<T>(
@@ -402,9 +408,93 @@ impl TripQueryScratch {
         quote: impl FnOnce(&mut Self) -> T,
     ) -> T {
         QUERY.with_borrow_mut(|scratch| {
+            scratch.disable_deferred_quotes();
             scratch.prepare(network, graph);
             quote(scratch)
         })
+    }
+
+    /// Runs a planning callback with `owned` installed as the current thread-local scratch.
+    ///
+    /// The previous TLS value is restored when the callback returns or unwinds, so nested
+    /// planning helpers retain their existing TLS access without borrowing the TLS cell across
+    /// the callback. The caller regains its updated scratch when the scope ends.
+    pub(crate) fn with_owned<T>(owned: &mut Self, work: impl FnOnce() -> T) -> T {
+        struct Restore<'a> {
+            owned: &'a mut TripQueryScratch,
+        }
+
+        impl Drop for Restore<'_> {
+            fn drop(&mut self) {
+                QUERY.with_borrow_mut(|scratch| std::mem::swap(scratch, self.owned));
+            }
+        }
+
+        QUERY.with_borrow_mut(|scratch| std::mem::swap(scratch, owned));
+        let _restore = Restore { owned };
+        work()
+    }
+
+    /// Prepares this worker's query storage for a deferred shared-quote phase.
+    ///
+    /// Cache misses remain local until [`Self::publish_quotes`] is called. The dirty-slot
+    /// vectors and shared batch frontiers are prepared here, outside the query loop, and only
+    /// unique changed slots are revisited during publication. A network revision change
+    /// discards pending old entries.
+    pub(crate) fn prepare_deferred_quotes(
+        &mut self,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+        shared: &SharedNetworkQuotes,
+    ) {
+        self.discard_deferred_quotes();
+        self.deferred_shared = true;
+        self.prepare(network, graph);
+        if self.dirty_quote_flags.len() != self.network_quotes.len() {
+            self.dirty_quote_flags
+                .resize(self.network_quotes.len(), false);
+        }
+        self.dirty_quote_slots.reserve(self.network_quotes.len());
+        self.prepare_batch(shared, network);
+    }
+
+    /// Publishes this worker's last retained quote for each changed slot in deterministic order.
+    ///
+    /// The caller publishes shards serially. A revision mismatch drops all pending entries so
+    /// stale route costs cannot enter the shared cache.
+    pub(crate) fn publish_quotes(&mut self, shared: &mut SharedNetworkQuotes) {
+        if let Some(revision) = self.quote_revision
+            && shared.revision == Some(revision)
+        {
+            for &slot in &self.dirty_quote_slots {
+                if let Some(Some(quote)) = self.network_quotes.get(slot) {
+                    shared.insert(quote.key, quote.seconds, revision);
+                }
+            }
+        }
+        self.discard_deferred_quotes();
+    }
+
+    fn disable_deferred_quotes(&mut self) {
+        self.discard_deferred_quotes();
+        self.deferred_shared = false;
+    }
+
+    fn discard_deferred_quotes(&mut self) {
+        for &slot in &self.dirty_quote_slots {
+            if let Some(flag) = self.dirty_quote_flags.get_mut(slot) {
+                *flag = false;
+            }
+        }
+        self.dirty_quote_slots.clear();
+    }
+
+    fn mark_dirty_quote(&mut self, slot: usize) {
+        debug_assert!(slot < self.dirty_quote_flags.len());
+        if !self.dirty_quote_flags[slot] {
+            self.dirty_quote_flags[slot] = true;
+            self.dirty_quote_slots.push(slot);
+        }
     }
 
     /// Reserves lane/connector scratch and CCH ancestor labels at a topology boundary.
@@ -451,7 +541,7 @@ impl TripQueryScratch {
 
     /// Prepares predecessor and retained-path buffers only for full route work. Cost-only
     /// forecasts keep their existing storage; warm route queries merely check the revision.
-    pub(in super::super) fn prepare_routes(
+    pub(crate) fn prepare_routes(
         &mut self,
         network: &TransitNetwork,
         graph: &RegionGraph,
@@ -506,7 +596,11 @@ impl TripQueryScratch {
                             shared,
                         );
                         if let Some(shared) = shared {
-                            shared.insert(key, seconds, revision);
+                            if self.deferred_shared {
+                                self.mark_dirty_quote(slot);
+                            } else {
+                                shared.insert(key, seconds, revision);
+                            }
                         }
                         seconds
                     }
@@ -1270,6 +1364,80 @@ mod tests {
 
     fn cache_value(key: &super::NetworkQuoteKey) -> Option<f32> {
         (key.from_node % 7 != 0).then_some((key.from_node * 32 + key.to_node) as f32 / 7.0)
+    }
+
+    #[test]
+    fn deferred_quotes_publish_last_slot_and_drop_stale_revision() {
+        let mut network = TransitNetwork::new();
+        let graph = RegionGraph::new();
+        let mut shared = SharedNetworkQuotes::default();
+        shared.sync(&network);
+        let mut scratch = TripQueryScratch::default();
+        scratch.prepare_deferred_quotes(&network, &graph, &shared);
+
+        let key = cache_key(1);
+        scratch.network_quotes[0] = Some(NetworkQuote {
+            key,
+            seconds: Some(1.0),
+        });
+        scratch.mark_dirty_quote(0);
+        scratch.network_quotes[0] = Some(NetworkQuote {
+            key,
+            seconds: Some(2.0),
+        });
+        scratch.mark_dirty_quote(0);
+        scratch.publish_quotes(&mut shared);
+        assert_eq!(shared.get(&key, network_quote_revision(&network)), Some(Some(2.0)));
+        assert!(scratch.dirty_quote_slots.is_empty());
+        assert!(scratch.deferred_shared);
+        assert!(scratch.dirty_quote_slots.capacity() >= scratch.network_quotes.len());
+
+        scratch.prepare_deferred_quotes(&network, &graph, &shared);
+        scratch.network_quotes[0] = Some(NetworkQuote {
+            key,
+            seconds: Some(3.0),
+        });
+        scratch.mark_dirty_quote(0);
+        network.cch_graph.metric_revision = network.cch_graph.metric_revision.wrapping_add(1);
+        shared.sync(&network);
+        scratch.prepare_deferred_quotes(&network, &graph, &shared);
+        scratch.publish_quotes(&mut shared);
+        assert_eq!(shared.len(), 0);
+        assert!(scratch.dirty_quote_slots.is_empty());
+    }
+
+    #[test]
+    fn owned_scratch_restores_tls_after_return_and_unwind() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+
+        let tls_marker = Some((5, 6, 7, 8));
+        TripQueryScratch::with_routes(|scratch| scratch.quote_revision = tls_marker);
+        let mut owned = TripQueryScratch {
+            quote_revision: Some((1, 2, 3, 4)),
+            ..Default::default()
+        };
+
+        TripQueryScratch::with_owned(&mut owned, || {
+            TripQueryScratch::with_routes(|scratch| {
+                assert_eq!(scratch.quote_revision, Some((1, 2, 3, 4)));
+                scratch.quote_revision = Some((9, 10, 11, 12));
+            });
+        });
+        assert_eq!(owned.quote_revision, Some((9, 10, 11, 12)));
+        assert_eq!(
+            TripQueryScratch::with_routes(|scratch| scratch.quote_revision),
+            tls_marker
+        );
+
+        let panic = catch_unwind(AssertUnwindSafe(|| {
+            TripQueryScratch::with_owned(&mut owned, || panic!("restore scratch"));
+        }));
+        assert!(panic.is_err());
+        assert_eq!(owned.quote_revision, Some((9, 10, 11, 12)));
+        assert_eq!(
+            TripQueryScratch::with_routes(|scratch| scratch.quote_revision),
+            tls_marker
+        );
     }
 
     #[test]
