@@ -1661,7 +1661,8 @@ deferred.
   - one `OWA` trunk per 10,000 residents and an effectively unlimited treasury;
   - two warm-up days. It then runs frame by frame, so trips complete.
 - **Benchmark:** `rust/benches/economy_tick_benchmark.rs`. Each `operational_hour` sample is one
-  of 23 demand hours; each `daily_settlement` sample is one of ten days.
+  of 23 demand hours; each `daily_settlement` sample is one of ten days. Since 2026-10-15 only
+  the 10k tier runs by default; `ECONOMY_TICK_TIERS=10k,100k,1m` requests the larger ones.
 - **Recipe:** run `cargo bench --bench economy_tick_benchmark -- /10k` with
   `RAYON_NUM_THREADS=8` and `taskset -c 0,2,4,6,8,10,12,14`. Alternate builds over four runs each,
   check that `GrowthDayRecord`s are identical, and compare run means with an exact permutation

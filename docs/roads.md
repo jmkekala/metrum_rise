@@ -3942,7 +3942,8 @@ Retained heap of the 10k road layout (same probe method as above, single thread)
 | Node compile provenance dropped | about 145 MB |
 | Retained lists shrunk to size at publication | about 141 MB |
 
-`ECON-13` benchmark (`cargo bench --bench economy_tick_benchmark -- operational_hour/100k`),
+`ECON-13` benchmark (`cargo bench --bench economy_tick_benchmark -- operational_hour/100k`;
+since 2026-10-15 the 100k tier also needs `ECONOMY_TICK_TIERS=100k`),
 peak RSS sampled with `ps`, release bench profile, default workers, nothing else running. City
 records were identical in every run:
 

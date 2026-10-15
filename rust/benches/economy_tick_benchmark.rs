@@ -7,13 +7,16 @@
 //! cadence. Every sample is one tick: the hourly benchmark samples each demand-pass hour of one
 //! day and the daily benchmark ten consecutive days, so the city cannot drift far from its built
 //! state during a run. Criterion warns that the target time is too short; that is intended.
-//! Select tiers with a filter, e.g. `cargo bench --bench economy_tick_benchmark -- /10k`.
+//! Only the 10k tier runs by default. The 100k and 1M builds take minutes in release and hours
+//! in a debug `cargo test --all-targets`, so they run only on request:
+//! `ECONOMY_TICK_TIERS=10k,100k,1m cargo bench --bench economy_tick_benchmark`.
 
 use criterion::{BenchmarkId, Criterion, SamplingMode, criterion_group, criterion_main};
 use metrum_rise::nodes::sim::core::PopulatedCity;
 use std::time::{Duration, Instant};
 
 const TIERS: [(&str, u32); 3] = [("10k", 10_000), ("100k", 100_000), ("1m", 1_000_000)];
+const DEFAULT_TIERS: &str = "10k";
 const DEMAND_PASS_HOURS_PER_DAY: usize = 23;
 const SETTLEMENT_DAYS: usize = 10;
 
@@ -28,6 +31,21 @@ fn build(label: &str, residents: u32) -> PopulatedCity {
     city
 }
 
+// Tiers named in `ECONOMY_TICK_TIERS` (comma-separated labels), in that order.
+fn selected_tiers() -> Vec<(&'static str, u32)> {
+    std::env::var("ECONOMY_TICK_TIERS")
+        .unwrap_or_else(|_| DEFAULT_TIERS.to_owned())
+        .split(',')
+        .map(|label| {
+            let label = label.trim();
+            *TIERS
+                .iter()
+                .find(|(name, _)| *name == label)
+                .unwrap_or_else(|| panic!("unknown tier {label:?}; expected 10k, 100k or 1m"))
+        })
+        .collect()
+}
+
 fn bench_economy_ticks(c: &mut Criterion) {
     metrum_rise::debug::init();
     let mut group = c.benchmark_group("economy_tick");
@@ -35,7 +53,7 @@ fn bench_economy_ticks(c: &mut Criterion) {
         .sampling_mode(SamplingMode::Flat)
         .warm_up_time(Duration::from_nanos(1))
         .measurement_time(Duration::from_nanos(1));
-    for (label, residents) in TIERS {
+    for (label, residents) in selected_tiers() {
         let mut city = None;
         group.sample_size(DEMAND_PASS_HOURS_PER_DAY);
         group.bench_function(BenchmarkId::new("operational_hour", label), |b| {
