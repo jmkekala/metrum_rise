@@ -300,7 +300,8 @@ impl AgentSystem {
     }
 
     // The remaining route's turns, from the current road into the planned exit lane. A car on
-    // a junction connector has already committed to its next road.
+    // a junction connector has already committed to the one lane it leads into, so that lane's
+    // road is the incoming road at the next turn; the path has already advanced past this node.
     fn route_turns_are_legal(
         &self,
         i: usize,
@@ -322,11 +323,16 @@ impl AgentSystem {
         };
         let current = agents.current_lane_id[i];
         let detach = agents.planned_detach_lane_id[i];
-        let incoming = if agents.transit[i] == TRANSIT_NETWORK {
-            lane_edge(current)
+        let road_lane = if agents.transit[i] == TRANSIT_NETWORK {
+            current
         } else {
-            usize::MAX
+            lane_system
+                .lanes
+                .get(current)
+                .and_then(|lane| lane.next_lanes.first().copied())
+                .unwrap_or(usize::MAX)
         };
+        let incoming = lane_edge(road_lane);
         let outgoing = if detach == u32::MAX {
             usize::MAX
         } else {
@@ -339,7 +345,7 @@ impl AgentSystem {
         }
         // A direct frontage stays on its lane; a zero hop turns at the detach node.
         let node = agents.planned_detach_node[i];
-        current == detach as usize
+        road_lane == detach as usize
             || node == u32::MAX
             || CchGraph::path_has_valid_vehicle_turns(&[node], incoming, outgoing, graph)
     }

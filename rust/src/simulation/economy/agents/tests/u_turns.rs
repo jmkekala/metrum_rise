@@ -116,3 +116,38 @@ fn loaded_routes_needing_a_forbidden_turn_are_dropped_for_replanning() {
     assert_eq!(kept, [false, false, true, true]);
     assert!(agents.current_path[0].is_empty() && agents.current_path[1].is_empty());
 }
+
+#[test]
+fn loaded_routes_from_a_junction_connector_check_their_next_turn() {
+    // Saved while crossing junction A onto the frontage road: the connector has committed the
+    // car to that road, so turning straight back at B is still a forbidden U-turn.
+    let (network, graph) = frontage_town();
+    let eastbound = fwd_vehicle_lanes(&network, 0)[0];
+    let westbound = bkw_vehicle_lanes(&network, 0)[0];
+    let connector = (0..network.lane_system.lanes.len())
+        .find(|&lane| {
+            let lane = &network.lane_system.lanes[lane];
+            lane.edge_id == usize::MAX
+                && lane.node_id == 0
+                && lane.next_lanes.first() == Some(&eastbound)
+        })
+        .unwrap();
+    let mut agents = AgentSystem::new();
+    for path in [vec![1], vec![1, 4, 1]] {
+        let idx = agents.spawn_border_arrival_agent(usize::MAX, 0, 0.0, 0.0);
+        agents.transit_mode[idx] = MODE_CAR;
+        agents.transit[idx] = TRANSIT_INTERSECTION;
+        agents.current_lane_id[idx] = connector;
+        agents.target_building[idx] = 0;
+        agents.current_path[idx] = path;
+        agents.current_path_index[idx] = 0;
+        agents.planned_detach_node[idx] = 1;
+        agents.planned_detach_lane_id[idx] = westbound as u32;
+        agents.access_flags[idx] = ACCESS_PLAN_VALID;
+    }
+    agents.clear_routes_with_illegal_turns(&network.lane_system, &graph);
+    let kept: Vec<_> = (0..agents.len())
+        .map(|i| agents.access_flags[i] & ACCESS_PLAN_VALID != 0)
+        .collect();
+    assert_eq!(kept, [false, true]);
+}

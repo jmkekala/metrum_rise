@@ -2103,8 +2103,10 @@ nothing.
   checks the attach and detach turns.
 - **Saved routes.** `AgentSystem::clear_routes_with_illegal_turns` runs after load. It drops
   any car route on the road whose remaining turns, including the final turn into its exit
-  lane, the current rules forbid. The car then replans before reaching that turn. Road edits
-  already clear routes through edited nodes.
+  lane, the current rules forbid. The car then replans before reaching that turn. A car saved
+  on a junction connector has committed to the one lane the connector leads into, so that
+  lane's road is the incoming road at its next turn. Road edits already clear routes through
+  edited nodes.
 
 Correction to the earlier diagnosis: on a straight frontage road, banning junction U-turns
 does not change which way a car departs. A door on the opposite-direction lane must be
@@ -2130,6 +2132,8 @@ changes):
 - `car_facing_away_from_its_destination_turns_back_legally` (fails before): end-to-end
   movement; the car drives home with no trip failure.
 - `loaded_routes_needing_a_forbidden_turn_are_dropped_for_replanning`.
+- `loaded_routes_from_a_junction_connector_check_their_next_turn` (fails before the
+  2026-10-15 follow-up below).
 - The planner tests' `drivable` check follows only the lanes' own continuations and junction
   connectors.
 
@@ -2139,6 +2143,13 @@ packs and runs ordinary frames. On `dump-2026-10-14_20-28-16` (a byte-identical 
 checked by SHA-256, with a byte-identical copy of its asset packs), the final build gives 0
 trip failures over 1 and 3 simulated days. Without the load-time route check, the same replay logged 4 `no turn`
 failures, once per car with a route saved by the old planner, then replanned cleanly.
+
+Follow-up (2026-10-15). Replaying copies of two further saves, `zoned-city-23-days` and
+`zoned-city-26-days`, the first logged one `no turn` failure: a car saved on a junction
+connector, entering the road to node 2, whose old route U-turned at node 2 into its exit
+lane. The load check treated a connector's incoming road as unknown and skipped that turn.
+It now uses the road of the lane the connector leads into. All three saves then replay 1 and
+3 simulated days with 0 trip failures, and `perf_contract_saved_agent_plans` passes on each.
 
 Cost (2026-10-15). Matched unprofiled release runs, two alternating rounds, `9e70526f` against
 the `NET-07` working tree, `RAYON_NUM_THREADS=8 taskset -c 0,2,4,6,8,10,12,14`:
