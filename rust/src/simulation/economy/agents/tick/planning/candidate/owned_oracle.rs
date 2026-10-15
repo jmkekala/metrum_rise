@@ -33,7 +33,9 @@ pub(super) fn combine_trip_ends(
     let destination_frontage_time_s = destination.frontage_time_s?;
 
     let mut network_path = None;
-    let network_path_time_s = if origin.node == destination.node {
+    let network_path_time_s = if origin.node == destination.node
+        && super::joins_at_shared_node(mode, origin, destination, transit_network)
+    {
         if mode == MODE_CAR
             || connector_to_lane_exists(origin.lane_id, destination.lane_id, transit_network)
         {
@@ -48,10 +50,16 @@ pub(super) fn combine_trip_ends(
             .lanes
             .get(origin.lane_id)?
             .edge_id;
+        let planned_detach_edge = transit_network
+            .lane_system
+            .lanes
+            .get(destination.lane_id)?
+            .edge_id;
         let (mut travel_seconds, _, mut path) = transit_network.cch_graph.find_path(
             origin.node,
             destination.node,
             planned_attach_edge,
+            planned_detach_edge,
             graph,
             transit_flags_for_mode(mode),
         )?;

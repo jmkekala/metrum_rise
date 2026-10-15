@@ -26,6 +26,8 @@ pub(crate) use query::{SharedNetworkQuotes, TripQueryScratch};
 
 #[cfg(test)]
 mod owned_oracle;
+#[cfg(test)]
+mod u_turn_tests;
 
 pub(super) const NODE_RANKS: [u8; 2] = [0, 1];
 pub(super) const NODE_RANK_PAIRS: [(u8, u8); 4] = [(0, 0), (0, 1), (1, 0), (1, 1)];
@@ -261,6 +263,11 @@ impl TripEnd {
         self.node
     }
 
+    /// Frontage road this end's lane lies on: the edge a trip leaves on after its last node.
+    pub(super) fn frontage_edge(&self) -> usize {
+        self.edge_idx
+    }
+
     /// Network node this end attaches to or detaches from.
     pub(super) fn node_pos(&self) -> (f32, f32) {
         (self.node_x, self.node_z)
@@ -306,7 +313,9 @@ pub(super) fn price_trip_without_network(
     else {
         return TripLeg::Priced(None);
     };
-    if origin.node == destination.node {
+    if origin.node == destination.node
+        && joins_at_shared_node(mode, origin, destination, transit_network)
+    {
         return TripLeg::Priced(combine_trip_ends(
             mode,
             origin_rank,
@@ -352,6 +361,7 @@ pub(super) fn network_leg_is_reachable(
             origin.node,
             destination.node,
             origin.edge_idx,
+            destination.edge_idx,
             graph,
             transit_flags_for_mode(mode),
             query,
@@ -413,7 +423,11 @@ pub(super) fn combine_trip_ends(
     let origin_frontage_time_s = origin.frontage_time_s?;
     let destination_frontage_time_s = destination.frontage_time_s?;
 
-    if origin.node != destination.node {
+    // A car whose two ends share a node it may not turn at (a U-turn away from a dead end, or
+    // a whitelist) takes the shortest legal loop, which the network query prices.
+    if origin.node != destination.node
+        || !joins_at_shared_node(mode, origin, destination, transit_network)
+    {
         return TripQueryScratch::with(transit_network, graph, |scratch| {
             scratch.combine(
                 mode,
@@ -446,6 +460,32 @@ pub(super) fn combine_trip_ends(
             + destination_frontage_time_s
             + destination.local_time_s,
     )
+}
+
+/// Whether trip ends sharing a node join without a network leg for this mode: always for
+/// walkers (their connector is checked separately), and for cars only when the routes permit
+/// the turn from the origin road onto the destination road there.
+pub(super) fn joins_at_shared_node(
+    mode: u8,
+    origin: &TripEnd,
+    destination: &TripEnd,
+    transit_network: &TransitNetwork,
+) -> bool {
+    mode != MODE_CAR
+        || transit_network.cch_graph.vehicle_turn_permitted(
+            origin.node,
+            origin.edge_idx,
+            destination.edge_idx,
+        )
+}
+
+// Road edge of a lane, or `usize::MAX` for a missing lane or a junction connector.
+fn lane_edge_id(lane: usize, transit_network: &TransitNetwork) -> usize {
+    transit_network
+        .lane_system
+        .lanes
+        .get(lane)
+        .map_or(usize::MAX, |lane| lane.edge_id)
 }
 
 fn finish_candidate(
@@ -538,7 +578,15 @@ pub(super) fn build_exact_path_for_candidate(
         return Some((Vec::new(), ACCESS_PLAN_VALID));
     }
 
-    if candidate.planned_attach_node == candidate.planned_detach_node {
+    // A car that may not turn at the shared node keeps the legal loop its candidate priced.
+    if candidate.planned_attach_node == candidate.planned_detach_node
+        && (candidate.mode != MODE_CAR
+            || transit_network.cch_graph.vehicle_turn_permitted(
+                candidate.planned_attach_node,
+                lane_edge_id(candidate.planned_attach_lane_id, transit_network),
+                lane_edge_id(candidate.planned_detach_lane_id, transit_network),
+            ))
+    {
         return Some((Vec::new(), ACCESS_PLAN_VALID | ACCESS_ZERO_HOP_NODE_PATH));
     }
 

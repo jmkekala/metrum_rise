@@ -4,12 +4,13 @@
 
 use super::data::AgentSystem;
 use super::{
-    ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_PLAN_VALID, MODE_WALK, TRANSIT_IN_BUILDING,
+    ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_PLAN_VALID, MODE_CAR, MODE_WALK, TRANSIT_IN_BUILDING,
     TRANSIT_INTERSECTION, TRANSIT_NETWORK,
 };
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::lanes::{Lane, LaneSystem, LaneType};
+use crate::simulation::pathing::cch::CchGraph;
 use godot::prelude::Vector2;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -278,6 +279,69 @@ impl AgentSystem {
             }
         }
         self.invalidate_lane_bucket_snapshot();
+    }
+
+    /// Drops every car route on the road that needs a turn the network's lanes do not build,
+    /// so the car replans before reaching it. Saved routes may predate the current turn rules
+    /// (`NET-07`); road edits already clear routes through edited nodes. A parallel scan,
+    /// O(agents × remaining route length), then a serial clear of the affected agents.
+    pub(crate) fn clear_routes_with_illegal_turns(
+        &mut self,
+        lane_system: &LaneSystem,
+        graph: &RegionGraph,
+    ) {
+        let illegal: Vec<_> = (0..self.agents.len())
+            .into_par_iter()
+            .filter(|&i| !self.route_turns_are_legal(i, lane_system, graph))
+            .collect();
+        for i in illegal {
+            self.clear_route_plan_after_road_edit(i, lane_system);
+        }
+    }
+
+    // The remaining route's turns, from the current road into the planned exit lane. A car on
+    // a junction connector has already committed to its next road.
+    fn route_turns_are_legal(
+        &self,
+        i: usize,
+        lane_system: &LaneSystem,
+        graph: &RegionGraph,
+    ) -> bool {
+        let agents = &self.agents;
+        if agents.transit_mode[i] != MODE_CAR
+            || agents.access_flags[i] & ACCESS_PLAN_VALID == 0
+            || !matches!(agents.transit[i], TRANSIT_NETWORK | TRANSIT_INTERSECTION)
+        {
+            return true;
+        }
+        let lane_edge = |lane: usize| {
+            lane_system
+                .lanes
+                .get(lane)
+                .map_or(usize::MAX, |lane| lane.edge_id)
+        };
+        let current = agents.current_lane_id[i];
+        let detach = agents.planned_detach_lane_id[i];
+        let incoming = if agents.transit[i] == TRANSIT_NETWORK {
+            lane_edge(current)
+        } else {
+            usize::MAX
+        };
+        let outgoing = if detach == u32::MAX {
+            usize::MAX
+        } else {
+            lane_edge(detach as usize)
+        };
+        let path = &agents.current_path[i];
+        let rest = &path[agents.current_path_index[i].min(path.len())..];
+        if !rest.is_empty() {
+            return CchGraph::path_has_valid_vehicle_turns(rest, incoming, outgoing, graph);
+        }
+        // A direct frontage stays on its lane; a zero hop turns at the detach node.
+        let node = agents.planned_detach_node[i];
+        current == detach as usize
+            || node == u32::MAX
+            || CchGraph::path_has_valid_vehicle_turns(&[node], incoming, outgoing, graph)
     }
 
     fn clear_route_plan_after_road_edit(&mut self, i: usize, lane_system: &LaneSystem) {

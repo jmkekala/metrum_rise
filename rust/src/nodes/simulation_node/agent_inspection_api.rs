@@ -131,6 +131,7 @@ impl SimulationNode {
             start,
             end,
             usize::MAX,
+            usize::MAX,
             graph,
             TransitFlags::CAR,
         ) else {

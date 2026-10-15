@@ -328,7 +328,7 @@ impl HouseholdSystem {
                 .flat_map_iter(|entry| {
                     entry
                         .trip_ends
-                        .network_nodes(mode as u8)
+                        .network_targets(mode as u8)
                         .into_iter()
                         .flatten()
                 })
@@ -1981,7 +1981,9 @@ mod tests {
                         std::array::from_fn(|mode| {
                             destinations
                                 .iter()
-                                .flat_map(|end| end.network_nodes(mode as u8).into_iter().flatten())
+                                .flat_map(|end| {
+                                    end.network_targets(mode as u8).into_iter().flatten()
+                                })
                                 .collect()
                         }),
                         &network,

@@ -151,6 +151,7 @@ impl CchGraph {
         }
         result.up = NodeSlices::from_rows(up);
         result.states = NodeSlices::from_rows(states);
+        result.arrival_edges = incoming;
         result.departures = NodeSlices::from_rows(departures);
         result.node_order = order;
         // Cache only semantically distinct masks: identical enabled directed road types and

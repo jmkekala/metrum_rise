@@ -209,6 +209,7 @@ pub(crate) fn plan_building_to_border_trip(
                 scratch.cch_cost(
                     planned_attach_node,
                     border_node,
+                    origin_entrance.edge_idx,
                     usize::MAX,
                     MODE_CAR,
                     transit_network,
@@ -544,9 +545,13 @@ impl BuildingTripEnds {
         false
     }
 
-    /// Validated attachment nodes for both ranks of one travel mode, used by batch queries.
-    pub(crate) fn network_nodes(&self, mode: u8) -> [Option<u32>; 2] {
-        NODE_RANKS.map(|rank| self.get(mode, rank).map(|end| end.network_node()))
+    /// Validated attachment nodes and their frontage edges for both ranks of one travel mode,
+    /// used as exit-aware batch query targets.
+    pub(crate) fn network_targets(&self, mode: u8) -> [Option<(u32, usize)>; 2] {
+        NODE_RANKS.map(|rank| {
+            self.get(mode, rank)
+                .map(|end| (end.network_node(), end.frontage_edge()))
+        })
     }
 
     fn present(&self) -> impl Iterator<Item = &TripEnd> {

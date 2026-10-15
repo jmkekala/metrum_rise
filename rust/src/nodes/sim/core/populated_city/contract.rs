@@ -341,6 +341,7 @@ fn perf_contract_phase() {
                     i.wrapping_mul(2654435761) % nodes,
                     i.wrapping_mul(2246822519).wrapping_add(1) % nodes,
                     usize::MAX,
+                    usize::MAX,
                     &core.region_graph,
                     crate::simulation::network::types::TransitFlags::CAR,
                     &mut route_scratch,

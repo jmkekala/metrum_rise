@@ -97,7 +97,7 @@ fn reordered_grid_routes_match_all_pairs_shortest_costs() {
                 let expected_steps = (a % side).abs_diff(b % side) + (a / side).abs_diff(b / side);
                 let expected = expected_steps as f32 * edge_cost;
                 let (cost, _, path) = cch
-                    .find_path(a, b, usize::MAX, &graph, TransitFlags::CAR)
+                    .find_path(a, b, usize::MAX, usize::MAX, &graph, TransitFlags::CAR)
                     .unwrap();
                 assert!(
                     (cost - expected).abs() < 0.001,
@@ -139,7 +139,7 @@ fn assert_all_pairs_costs(cch: &CchGraph, graph: &RegionGraph, mode: u8) {
     }
     for (a, row) in costs.iter().enumerate() {
         for (b, &expected) in row.iter().enumerate() {
-            let actual = cch.find_path(a as u32, b as u32, usize::MAX, graph, mode);
+            let actual = cch.find_path(a as u32, b as u32, usize::MAX, usize::MAX, graph, mode);
             if expected.is_infinite() {
                 assert!(actual.is_none(), "unexpected path {a}->{b}");
             } else {
@@ -220,7 +220,7 @@ fn cheaper_lower_triangle_survives_a_direct_arc_and_metric_changes() {
     graph.rebuild_adjacency_list();
     let mut cch = CchGraph::build(&graph);
     assert_eq!(
-        cch.find_path(1, 2, usize::MAX, &graph, TransitFlags::CAR)
+        cch.find_path(1, 2, usize::MAX, usize::MAX, &graph, TransitFlags::CAR)
             .unwrap()
             .0,
         12.0
@@ -229,7 +229,7 @@ fn cheaper_lower_triangle_survives_a_direct_arc_and_metric_changes() {
     graph.edge_mut(0).base_cost = 1000.0;
     cch.customize(&graph);
     assert_eq!(
-        cch.find_path(1, 2, usize::MAX, &graph, TransitFlags::CAR)
+        cch.find_path(1, 2, usize::MAX, usize::MAX, &graph, TransitFlags::CAR)
             .unwrap()
             .0,
         100.0
@@ -237,7 +237,7 @@ fn cheaper_lower_triangle_survives_a_direct_arc_and_metric_changes() {
     graph.edge_mut(0).base_cost = original_cost;
     cch.customize(&graph);
     assert_eq!(
-        cch.find_path(1, 2, usize::MAX, &graph, TransitFlags::CAR)
+        cch.find_path(1, 2, usize::MAX, usize::MAX, &graph, TransitFlags::CAR)
             .unwrap()
             .0,
         12.0
@@ -248,18 +248,18 @@ fn cheaper_lower_triangle_survives_a_direct_arc_and_metric_changes() {
 fn rebuilding_with_live_congestion_preserves_free_flow_costs() {
     let mut graph = grid(3);
     let mut original = CchGraph::build(&graph);
-    let expected = original.find_path(0, 8, usize::MAX, &graph, TransitFlags::CAR);
+    let expected = original.find_path(0, 8, usize::MAX, usize::MAX, &graph, TransitFlags::CAR);
     for edge in graph.edges_iter_mut() {
         edge.current_congestion = 100.0;
     }
     let restored = CchGraph::build(&graph);
     assert_eq!(
-        restored.find_path(0, 8, usize::MAX, &graph, TransitFlags::CAR),
+        restored.find_path(0, 8, usize::MAX, usize::MAX, &graph, TransitFlags::CAR),
         expected
     );
     original.customize(&graph);
     assert_eq!(
-        original.find_path(0, 8, usize::MAX, &graph, TransitFlags::CAR),
+        original.find_path(0, 8, usize::MAX, usize::MAX, &graph, TransitFlags::CAR),
         expected
     );
     assert_costs_from_match_queries(&restored, &graph, TransitFlags::CAR);
@@ -293,7 +293,7 @@ fn positive_self_loop_pays_its_cost_after_each_customization() {
         let expected = turn_aware_dijkstra(&graph, 0, 1, usize::MAX).unwrap();
         assert_eq!(expected, 2.0 + loop_cost);
         let (cost, distance, path) = cch
-            .find_path(0, 1, usize::MAX, &graph, TransitFlags::CAR)
+            .find_path(0, 1, usize::MAX, usize::MAX, &graph, TransitFlags::CAR)
             .unwrap();
         assert_eq!(path, [0, 2, 2, 1]);
         assert_eq!(distance, 7.0);
@@ -373,14 +373,26 @@ fn merged_open_endpoint_states_preserve_restricted_turn_routes() {
                     .chain([usize::MAX, usize::MAX - 1, 0])
             {
                 let expected = turn_aware_dijkstra(&graph, start, end, start_edge);
-                let actual = cch.find_path(start, end, start_edge, &graph, TransitFlags::CAR);
+                let actual = cch.find_path(
+                    start,
+                    end,
+                    start_edge,
+                    usize::MAX,
+                    &graph,
+                    TransitFlags::CAR,
+                );
                 assert_eq!(
                     actual.as_ref().map(|path| path.0),
                     expected,
                     "{start}->{end}, origin edge={start_edge}"
                 );
                 if let Some((_, _, path)) = actual {
-                    assert!(CchGraph::path_has_valid_vehicle_turns(&path, &graph));
+                    assert!(CchGraph::path_has_valid_vehicle_turns(
+                        &path,
+                        start_edge,
+                        usize::MAX,
+                        &graph
+                    ));
                 }
             }
         }
@@ -410,17 +422,38 @@ fn vehicle_whitelists_preserve_pedestrian_routes_and_origin_context() {
         for start in 0..16 {
             for end in 0..16 {
                 let expected_foot = cch
-                    .find_path(start, end, usize::MAX, &graph, TransitFlags::FOOT)
+                    .find_path(
+                        start,
+                        end,
+                        usize::MAX,
+                        usize::MAX,
+                        &graph,
+                        TransitFlags::FOOT,
+                    )
                     .unwrap()
                     .0;
                 for &start_edge in graph.node_adjacency(start) {
-                    let foot = cch.find_path(start, end, start_edge, &graph, TransitFlags::FOOT);
+                    let foot = cch.find_path(
+                        start,
+                        end,
+                        start_edge,
+                        usize::MAX,
+                        &graph,
+                        TransitFlags::FOOT,
+                    );
                     assert_eq!(
                         foot.map(|route| route.0),
                         Some(expected_foot),
                         "walk {start}->{end}, incoming edge={start_edge}, phase={phase}"
                     );
-                    let car = cch.find_path(start, end, start_edge, &graph, TransitFlags::CAR);
+                    let car = cch.find_path(
+                        start,
+                        end,
+                        start_edge,
+                        usize::MAX,
+                        &graph,
+                        TransitFlags::CAR,
+                    );
                     assert_eq!(
                         car.map(|route| route.0),
                         turn_aware_dijkstra(&graph, start, end, start_edge),
@@ -438,7 +471,7 @@ fn assert_costs_from_match_queries(cch: &CchGraph, graph: &RegionGraph, mode: u8
         for end in 0..graph.node_count() as u32 {
             assert_eq!(
                 costs.cost_to(end),
-                cch.find_path(start, end, usize::MAX, graph, mode)
+                cch.find_path(start, end, usize::MAX, usize::MAX, graph, mode)
                     .map(|route| route.0),
                 "{start}->{end}, mode={mode}"
             );
@@ -553,11 +586,25 @@ fn equal_cost_query_paths_repeat_with_stable_inputs() {
             (side - 1, side * (side - 1)),
             (side, side * (side - 1) - 1),
         ] {
-            let expected = cch.find_path(start, end, usize::MAX, &graph, TransitFlags::CAR);
+            let expected = cch.find_path(
+                start,
+                end,
+                usize::MAX,
+                usize::MAX,
+                &graph,
+                TransitFlags::CAR,
+            );
             assert!(expected.is_some());
             for _ in 0..128 {
                 assert_eq!(
-                    cch.find_path(start, end, usize::MAX, &graph, TransitFlags::CAR),
+                    cch.find_path(
+                        start,
+                        end,
+                        usize::MAX,
+                        usize::MAX,
+                        &graph,
+                        TransitFlags::CAR
+                    ),
                     expected,
                     "identical graph/query must reproduce route: side={side}, {start}->{end}"
                 );
@@ -604,13 +651,18 @@ fn equal_cost_query_paths_repeat_with_stable_inputs() {
     graph.add_lane_connection(4, 0, 0, 2, 0);
     let cch = CchGraph::build(&graph);
     let expected = cch
-        .find_path(0, 3, usize::MAX, &graph, TransitFlags::CAR)
+        .find_path(0, 3, usize::MAX, usize::MAX, &graph, TransitFlags::CAR)
         .unwrap();
     assert_eq!(expected.0, 12.0);
-    assert!(CchGraph::path_has_valid_vehicle_turns(&expected.2, &graph));
+    assert!(CchGraph::path_has_valid_vehicle_turns(
+        &expected.2,
+        usize::MAX,
+        usize::MAX,
+        &graph
+    ));
     for _ in 0..128 {
         assert_eq!(
-            cch.find_path(0, 3, usize::MAX, &graph, TransitFlags::CAR)
+            cch.find_path(0, 3, usize::MAX, usize::MAX, &graph, TransitFlags::CAR)
                 .unwrap(),
             expected,
             "equal-cost legal turns must not depend on randomized search-map iteration"
@@ -665,7 +717,14 @@ fn benchmark_cch_queries() {
             .collect();
         for &(start, end) in &queries {
             let (cost, distance, path) = cch
-                .find_path(start, end, usize::MAX, &graph, TransitFlags::CAR)
+                .find_path(
+                    start,
+                    end,
+                    usize::MAX,
+                    usize::MAX,
+                    &graph,
+                    TransitFlags::CAR,
+                )
                 .unwrap();
             let expected = turn_aware_dijkstra(&graph, start, end, usize::MAX).unwrap();
             assert_eq!(cost, expected);
@@ -680,6 +739,7 @@ fn benchmark_cch_queries() {
                 let (cost, distance, path) = black_box(cch.find_path(
                     black_box(start),
                     black_box(end),
+                    usize::MAX,
                     usize::MAX,
                     &graph,
                     TransitFlags::CAR,
@@ -785,18 +845,18 @@ fn owned_path_scratch_does_not_prepare_the_city_for_invalid_or_trivial_queries()
     let cch = CchGraph::build(&graph);
     OWNED_PATH_SCRATCH.with_borrow_mut(|scratch| *scratch = CchPathScratch::default());
     assert!(
-        cch.find_path(0, 25, usize::MAX, &graph, TransitFlags::CAR)
+        cch.find_path(0, 25, usize::MAX, usize::MAX, &graph, TransitFlags::CAR)
             .is_none()
     );
     assert_eq!(
-        cch.find_path(0, 0, usize::MAX, &graph, TransitFlags::CAR),
+        cch.find_path(0, 0, usize::MAX, usize::MAX, &graph, TransitFlags::CAR),
         Some((0.0, 0.0, vec![0]))
     );
     OWNED_PATH_SCRATCH.with_borrow_mut(|scratch| {
         assert_eq!(scratch.query().capacities(), [0; 4]);
     });
     assert!(
-        cch.find_path(0, 24, usize::MAX, &graph, TransitFlags::CAR)
+        cch.find_path(0, 24, usize::MAX, usize::MAX, &graph, TransitFlags::CAR)
             .is_some()
     );
 }
@@ -821,13 +881,21 @@ fn prepared_cost_queries_match_paths_without_growing_search_storage() {
         for from in 0..graph.node_count() as u32 {
             for to in 0..graph.node_count() as u32 {
                 for mode in [TransitFlags::CAR, TransitFlags::FOOT] {
-                    let expected = cch.find_path(from, to, usize::MAX, &graph, mode);
+                    let expected = cch.find_path(from, to, usize::MAX, usize::MAX, &graph, mode);
                     assert_eq!(
-                        cch.find_cost(from, to, usize::MAX, &graph, mode, &mut scratch),
+                        cch.find_cost(from, to, usize::MAX, usize::MAX, &graph, mode, &mut scratch),
                         expected.as_ref().map(|route| route.0)
                     );
                     assert_eq!(
-                        cch.find_path_in(from, to, usize::MAX, &graph, mode, &mut paths),
+                        cch.find_path_in(
+                            from,
+                            to,
+                            usize::MAX,
+                            usize::MAX,
+                            &graph,
+                            mode,
+                            &mut paths
+                        ),
                         expected
                             .as_ref()
                             .map(|route| (route.0, route.1, route.2.as_slice()))
@@ -846,8 +914,16 @@ fn prepared_cost_queries_match_paths_without_growing_search_storage() {
     let mut fork = scratch.clone();
     assert_eq!(capacities(&fork), prepared);
     assert_eq!(
-        cch.find_cost(0, 24, usize::MAX, &graph, TransitFlags::CAR, &mut fork),
-        cch.find_path(0, 24, usize::MAX, &graph, TransitFlags::CAR)
+        cch.find_cost(
+            0,
+            24,
+            usize::MAX,
+            usize::MAX,
+            &graph,
+            TransitFlags::CAR,
+            &mut fork
+        ),
+        cch.find_path(0, 24, usize::MAX, usize::MAX, &graph, TransitFlags::CAR)
             .map(|route| route.0)
     );
     assert_eq!(capacities(&fork), prepared);
@@ -856,7 +932,15 @@ fn prepared_cost_queries_match_paths_without_growing_search_storage() {
     fork.roll_epochs_over();
     for incoming in [usize::MAX, usize::MAX - 1, 0] {
         assert_eq!(
-            cch.find_cost(24, 0, incoming, &graph, TransitFlags::CAR, &mut fork),
+            cch.find_cost(
+                24,
+                0,
+                incoming,
+                usize::MAX,
+                &graph,
+                TransitFlags::CAR,
+                &mut fork
+            ),
             turn_aware_dijkstra(&graph, 24, 0, incoming)
         );
         assert_eq!(capacities(&fork), prepared);
@@ -917,10 +1001,25 @@ fn cost_only_queries_match_paths_on_random_restricted_graphs() {
                         .chain([usize::MAX])
                     {
                         for mode in [TransitFlags::CAR, TransitFlags::FOOT] {
-                            let cost =
-                                cch.find_cost(from, to, start_edge, &graph, mode, &mut scratch);
+                            let cost = cch.find_cost(
+                                from,
+                                to,
+                                start_edge,
+                                usize::MAX,
+                                &graph,
+                                mode,
+                                &mut scratch,
+                            );
                             let path = cch
-                                .find_path_in(from, to, start_edge, &graph, mode, &mut paths)
+                                .find_path_in(
+                                    from,
+                                    to,
+                                    start_edge,
+                                    usize::MAX,
+                                    &graph,
+                                    mode,
+                                    &mut paths,
+                                )
                                 .map(|route| route.0);
                             assert_eq!(
                                 cost, path,
@@ -974,12 +1073,17 @@ fn restricted_origin_uses_customized_metric_until_next_customization() {
     let mut graph = grid(2);
     graph.add_lane_connection(0, 0, 0, 1, 0);
     let mut cch = CchGraph::build(&graph);
-    let before = cch.find_path(0, 2, 0, &graph, TransitFlags::CAR);
+    let before = cch.find_path(0, 2, 0, usize::MAX, &graph, TransitFlags::CAR);
     graph.edge_mut(1).base_cost *= 3.0;
-    assert_eq!(cch.find_path(0, 2, 0, &graph, TransitFlags::CAR), before);
+    assert_eq!(
+        cch.find_path(0, 2, 0, usize::MAX, &graph, TransitFlags::CAR),
+        before
+    );
     cch.customize(&graph);
     assert_eq!(
-        cch.find_path(0, 2, 0, &graph, TransitFlags::CAR).unwrap().0,
+        cch.find_path(0, 2, 0, usize::MAX, &graph, TransitFlags::CAR)
+            .unwrap()
+            .0,
         before.unwrap().0 * 3.0
     );
 }
@@ -1008,7 +1112,7 @@ fn restricted_detour_can_return_to_a_junction_with_a_different_arrival_edge() {
     let cch = CchGraph::build(&graph);
     assert_eq!(turn_aware_dijkstra(&graph, 0, 3, usize::MAX), Some(9.0));
     assert_eq!(
-        cch.find_path(0, 3, usize::MAX, &graph, TransitFlags::CAR),
+        cch.find_path(0, 3, usize::MAX, usize::MAX, &graph, TransitFlags::CAR),
         Some((9.0, 9.0, vec![0, 1, 2, 1, 3]))
     );
     assert_eq!(

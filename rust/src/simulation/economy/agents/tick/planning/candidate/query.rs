@@ -229,9 +229,9 @@ impl BatchSource {
 struct NetworkQuoteKey {
     mode: u8,
     // Exact lane constraints for pedestrian fallback; otherwise the canonical CCH
-    // incoming edge and MAX arrival constraint. Door-local terms stay outside this key.
+    // incoming and exit edge contexts. Door-local terms stay outside this key.
     from_context: usize,
-    to_lane: usize,
+    to_context: usize,
     from_node: u32,
     to_node: u32,
 }
@@ -309,19 +309,23 @@ impl SharedNetworkQuotes {
         self.targets = Default::default();
     }
 
-    /// Prepares open workplace attachment nodes once per distinct target set and metric.
+    /// Prepares open workplace attachment nodes, each with the frontage edge its trips leave
+    /// on, once per distinct canonical target set and metric.
     /// Existing exact leg quotes remain valid when only workplace availability changes.
     /// Returns the number of backward target searches for routing-work instrumentation.
     pub(crate) fn prepare_targets(
         &mut self,
-        mut nodes: [Vec<u32>; 2],
+        mut nodes: [Vec<(u32, usize)>; 2],
         network: &TransitNetwork,
     ) -> usize {
         self.sync(network);
         let mut searches = 0;
         for (mode, nodes) in nodes.iter_mut().enumerate() {
-            nodes.sort_unstable();
-            nodes.dedup();
+            CchBuckets::canonical_targets(
+                &network.cch_graph,
+                nodes,
+                transit_flags_for_mode(mode as u8),
+            );
             if self.targets[mode].as_ref().is_some_and(|targets| {
                 targets.is_current(&network.cch_graph) && targets.targets() == nodes.as_slice()
             }) {
@@ -572,8 +576,12 @@ impl TripQueryScratch {
         pathfind_count: &AtomicU32,
         shared: Option<&SharedNetworkQuotes>,
     ) -> Option<PlannedTripCandidate> {
-        // The caller has already priced shared frontages/nodes without a search.
-        debug_assert!(origin.node != destination.node);
+        // The caller has already priced shared frontages/nodes without a search, except a
+        // car loop back to a node it may not turn at.
+        debug_assert!(
+            origin.node != destination.node
+                || !super::joins_at_shared_node(mode, origin, destination, network)
+        );
         let key = self.quote_key(mode, origin, destination, network, graph);
         let slot = foldhash::fast::FixedState::default().hash_one(key) as usize
             & (self.network_quotes.len() - 1);
@@ -634,17 +642,16 @@ impl TripQueryScratch {
             || self
                 .connectors
                 .proves_path(origin, destination, network, graph);
-        let (from_context, to_lane) = if unconstrained {
-            let edge = network
-                .lane_system
-                .lanes
-                .get(origin.lane_id)
-                .map_or(usize::MAX, |lane| lane.edge_id);
+        let (from_context, to_context) = if unconstrained {
+            let flags = transit_flags_for_mode(mode);
+            let cch = &network.cch_graph;
             (
-                network
-                    .cch_graph
-                    .source_context(origin.node, edge, transit_flags_for_mode(mode)),
-                usize::MAX,
+                cch.source_context(origin.node, lane_edge(origin.lane_id, network), flags),
+                cch.target_context(
+                    destination.node,
+                    lane_edge(destination.lane_id, network),
+                    flags,
+                ),
             )
         } else {
             (origin.lane_id, destination.lane_id)
@@ -652,18 +659,22 @@ impl TripQueryScratch {
         NetworkQuoteKey {
             mode,
             from_context,
-            to_lane,
+            to_context,
             from_node: origin.node,
             to_node: destination.node,
         }
     }
 
-    /// Prices a CCH leg in prepared storage without retaining an owned route.
+    /// Prices a CCH leg in prepared storage without retaining an owned route. `from_edge` is
+    /// the road arriving at `from` and `to_edge` the road left on after `to` (`usize::MAX`
+    /// for an unconstrained end).
+    #[allow(clippy::too_many_arguments)]
     pub(in super::super) fn cch_cost(
         &mut self,
         from: u32,
         to: u32,
-        edge: usize,
+        from_edge: usize,
+        to_edge: usize,
         mode: u8,
         network: &TransitNetwork,
         graph: &RegionGraph,
@@ -675,7 +686,8 @@ impl TripQueryScratch {
             .find_path_in(
                 from,
                 to,
-                edge,
+                from_edge,
+                to_edge,
                 graph,
                 transit_flags_for_mode(mode),
                 &mut self.cch,
@@ -699,11 +711,7 @@ impl TripQueryScratch {
         self.prepare_routes(network, graph);
         self.last_path_is_walking = false;
         let edge = match start {
-            RouteStart::Lane(lane) => network
-                .lane_system
-                .lanes
-                .get(lane)
-                .map_or(usize::MAX, |lane| lane.edge_id),
+            RouteStart::Lane(lane) => lane_edge(lane, network),
             RouteStart::Edge(edge) => edge,
             RouteStart::Node => usize::MAX,
         };
@@ -713,6 +721,7 @@ impl TripQueryScratch {
                 from,
                 to,
                 edge,
+                lane_edge(detach, network),
                 graph,
                 transit_flags_for_mode(mode),
                 &mut self.cch,
@@ -819,7 +828,12 @@ impl TripQueryScratch {
             return None;
         }
         let valid = if candidate.mode == MODE_CAR {
-            crate::simulation::pathing::cch::CchGraph::path_has_valid_vehicle_turns(path, graph)
+            crate::simulation::pathing::cch::CchGraph::path_has_valid_vehicle_turns(
+                path,
+                lane_edge(candidate.planned_attach_lane_id, network),
+                lane_edge(candidate.planned_detach_lane_id, network),
+                graph,
+            )
         } else {
             path_has_connectors(
                 path,
@@ -986,13 +1000,15 @@ impl TripQueryScratch {
         shared: Option<&SharedNetworkQuotes>,
     ) -> Option<f32> {
         let edge = network.lane_system.lanes.get(origin.lane_id)?.edge_id;
+        let exit = lane_edge(destination.lane_id, network);
         let flags = transit_flags_for_mode(mode);
         let batch = shared.and_then(|shared| {
             let targets = shared.targets[usize::from(mode)].as_ref()?;
             if !targets.is_current(&network.cch_graph) {
                 return None;
             }
-            Some((shared, targets, targets.target_index(destination.node)?))
+            let target = targets.target_index(&network.cch_graph, destination.node, exit)?;
+            Some((shared, targets, target))
         });
         if let Some((shared, targets, target)) = batch {
             // Each worker owns two origins per mode, matching the existing entrance ranks.
@@ -1072,6 +1088,7 @@ impl TripQueryScratch {
                 origin.node,
                 destination.node,
                 edge,
+                exit,
                 graph,
                 flags,
                 self.cch.query(),
@@ -1081,6 +1098,7 @@ impl TripQueryScratch {
             origin.node,
             destination.node,
             edge,
+            exit,
             graph,
             flags,
             &mut self.cch,
@@ -1145,6 +1163,15 @@ impl TripQueryScratch {
         }
         None
     }
+}
+
+// Road edge of a lane, or `usize::MAX` for a missing lane or a junction connector.
+fn lane_edge(lane: usize, network: &TransitNetwork) -> usize {
+    network
+        .lane_system
+        .lanes
+        .get(lane)
+        .map_or(usize::MAX, |lane| lane.edge_id)
 }
 
 fn path_has_connectors(
@@ -1356,7 +1383,7 @@ mod tests {
             } else {
                 index % 23
             },
-            to_lane: usize::MAX,
+            to_context: usize::MAX,
             from_node: (index / 32) as u32,
             to_node: (index % 32) as u32,
         }
@@ -1801,7 +1828,11 @@ mod tests {
                 .each_mut()
                 .map(|quotes| quotes.get_mut().unwrap().buckets.capacity());
             bucketed.prepare_targets(
-                std::array::from_fn(|_| (0..graph.node_count() as u32).collect()),
+                std::array::from_fn(|_| {
+                    (0..graph.node_count() as u32)
+                        .map(|node| (node, usize::MAX))
+                        .collect()
+                }),
                 &network,
             );
             batched.prepare(&network, &graph);

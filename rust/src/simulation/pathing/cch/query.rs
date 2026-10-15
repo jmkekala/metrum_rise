@@ -87,7 +87,7 @@ pub(crate) struct CchQueryScratch {
     // The two sweeps depend on only one endpoint each. Retain their exact labels and
     // witnesses until that endpoint, turn context, mode or frozen metric changes.
     fwd_key: Option<(u64, u8, u32, usize)>,
-    bwd_key: Option<(u64, u8, u32)>,
+    bwd_key: Option<(u64, u8, u32, usize)>,
 }
 impl Clone for CchQueryScratch {
     fn clone(&self) -> Self {
@@ -175,6 +175,19 @@ impl CchGraph {
         }
     }
 
+    // Seeds the arrival states that may turn onto `context`, or every state when unconstrained.
+    fn seed_target(&self, end: u32, context: usize, data: &mut SearchData) {
+        for &state in &self.states[end as usize] {
+            if context == usize::MAX
+                || self
+                    .turns
+                    .permits(end, self.arrival_edges[state as usize], context)
+            {
+                data.seed(state, 0.0, 0.0, usize::MAX, &self.parent);
+            }
+        }
+    }
+
     fn sweep_up(&self, metric: &Metric, data: &mut SearchData, reverse: bool) {
         // Each higher filled neighbor is an ancestor: the higher neighbors form a clique,
         // so induction along the smallest higher neighbor proves ancestor containment.
@@ -204,11 +217,13 @@ impl CchGraph {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn search(
         &self,
         start: u32,
         end: u32,
         incoming: usize,
+        outgoing: usize,
         graph: &RegionGraph,
         mask: u8,
         scratch: &mut CchQueryScratch,
@@ -224,7 +239,8 @@ impl CchGraph {
             start,
             self.source_context(start, incoming, mask),
         ));
-        let bwd_key = Some((self.metric_revision, mask, end));
+        let target = self.target_context(end, outgoing, mask);
+        let bwd_key = Some((self.metric_revision, mask, end, target));
         let forward = &mut scratch.fwd_data;
         let backward = &mut scratch.bwd_data;
         let metric = &self.profiles[self.profile_for_mask[mask as usize] as usize];
@@ -236,9 +252,7 @@ impl CchGraph {
         }
         if scratch.bwd_key != bwd_key {
             backward.clear();
-            for &state in &self.states[end as usize] {
-                backward.seed(state, 0.0, 0.0, usize::MAX, &self.parent);
-            }
+            self.seed_target(end, target, backward);
             self.sweep_up(metric, backward, true);
             scratch.bwd_key = bwd_key;
         }
@@ -256,18 +270,20 @@ impl CchGraph {
         (best.0 < f32::MAX).then_some(best)
     }
 
-    /// Finds a deterministic shortest route, preserving the incoming-edge turn context.
+    /// Finds a deterministic shortest route, preserving the incoming-edge turn context at
+    /// `start` and the turn onto `outgoing` (the edge left on after `end`, or `usize::MAX`).
     /// Cost uses f32 hierarchy sums; physical distance follows the selected path witnesses.
     pub fn find_path(
         &self,
         start: u32,
         end: u32,
         incoming: usize,
+        outgoing: usize,
         graph: &RegionGraph,
         mask: u8,
     ) -> Option<(f32, f32, Vec<u32>)> {
         OWNED_PATH_SCRATCH.with_borrow_mut(|scratch| {
-            self.find_path_in(start, end, incoming, graph, mask, scratch)
+            self.find_path_in(start, end, incoming, outgoing, graph, mask, scratch)
                 .map(|(cost, distance, nodes)| (cost, distance, nodes.to_vec()))
         })
     }
@@ -290,13 +306,62 @@ impl CchGraph {
         }
     }
 
+    /// Canonical exit context for retaining an exact query's backward labels: `outgoing` when
+    /// some vehicle arrival state at `end` may not turn onto it (a U-turn away from a dead
+    /// end, or a whitelist), otherwise `usize::MAX`. Pedestrian queries ignore vehicle turns.
+    /// O(arrival states at `end`) with O(log T) whitelist lookups; allocation-free.
+    pub(crate) fn target_context(&self, end: u32, outgoing: usize, mask: u8) -> usize {
+        let constrained = mask != TransitFlags::FOOT
+            && outgoing != usize::MAX
+            && self
+                .turns
+                .restricted
+                .get(end as usize)
+                .copied()
+                .unwrap_or(false)
+            && self.states[end as usize].iter().any(|&state| {
+                !self
+                    .turns
+                    .permits(end, self.arrival_edges[state as usize], outgoing)
+            });
+        if constrained { outgoing } else { usize::MAX }
+    }
+
+    // A route from a node to itself is empty unless its two ends need a forbidden turn there;
+    // the search then finds the shortest legal loop.
+    pub(super) fn turns_in_place(
+        &self,
+        node: u32,
+        incoming: usize,
+        outgoing: usize,
+        mask: u8,
+    ) -> bool {
+        mask == TransitFlags::FOOT || self.vehicle_turn_permitted(node, incoming, outgoing)
+    }
+
+    /// Whether a vehicle may turn from `incoming` onto `outgoing` at `node`, exactly as routes
+    /// do; `usize::MAX` on either side is unconstrained. O(1), or O(log T) at a whitelist.
+    pub(crate) fn vehicle_turn_permitted(
+        &self,
+        node: u32,
+        incoming: usize,
+        outgoing: usize,
+    ) -> bool {
+        incoming == usize::MAX
+            || outgoing == usize::MAX
+            || node as usize >= self.turns.restricted.len()
+            || self.turns.permits(node, incoming, outgoing)
+    }
+
     /// Quotes a route in O(H log H + A_H), for H ancestors and their A_H upward arcs.
     /// The source and target may each seed multiple arrival states; storage is reused.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn find_cost(
         &self,
         start: u32,
         end: u32,
         incoming: usize,
+        outgoing: usize,
         graph: &RegionGraph,
         mask: u8,
         scratch: &mut CchQueryScratch,
@@ -304,19 +369,21 @@ impl CchGraph {
         if start as usize >= self.states.len() || end as usize >= self.states.len() {
             return None;
         }
-        if start == end {
+        if start == end && self.turns_in_place(start, incoming, outgoing, mask) {
             return Some(0.0);
         }
-        self.search(start, end, incoming, graph, mask, scratch)
+        self.search(start, end, incoming, outgoing, graph, mask, scratch)
             .map(|(cost, _)| cost)
     }
 
     /// Materializes the same selected route into prepared caller-owned storage.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn find_path_in<'s>(
         &self,
         start: u32,
         end: u32,
         incoming: usize,
+        outgoing: usize,
         graph: &RegionGraph,
         mask: u8,
         scratch: &'s mut CchPathScratch,
@@ -327,12 +394,20 @@ impl CchGraph {
         scratch.edges.clear();
         scratch.shortcuts.clear();
         scratch.nodes.clear();
-        if start == end {
+        if start == end && self.turns_in_place(start, incoming, outgoing, mask) {
             scratch.nodes.push(start);
             return Some((0.0, 0.0, &scratch.nodes));
         }
         scratch.prepare(self, graph);
-        let (cost, meeting) = self.search(start, end, incoming, graph, mask, &mut scratch.query)?;
+        let (cost, meeting) = self.search(
+            start,
+            end,
+            incoming,
+            outgoing,
+            graph,
+            mask,
+            &mut scratch.query,
+        )?;
         let metric = &self.profiles[self.profile_for_mask[mask as usize] as usize];
         let forward = &scratch.query.fwd_data.records;
         let backward = &scratch.query.bwd_data.records;
@@ -518,13 +593,21 @@ mod endpoint_tests {
             ] {
                 let before = [scratch.query.fwd_data.epoch, scratch.query.bwd_data.epoch];
                 let actual = cch
-                    .find_path_in(start, end, usize::MAX, &graph, mode, &mut scratch)
+                    .find_path_in(
+                        start,
+                        end,
+                        usize::MAX,
+                        usize::MAX,
+                        &graph,
+                        mode,
+                        &mut scratch,
+                    )
                     .map(|(cost, distance, nodes)| {
                         (cost.to_bits(), distance.to_bits(), nodes.to_vec())
                     });
                 let mut fresh = CchPathScratch::default();
                 let expected = cch
-                    .find_path_in(start, end, usize::MAX, &graph, mode, &mut fresh)
+                    .find_path_in(start, end, usize::MAX, usize::MAX, &graph, mode, &mut fresh)
                     .map(|(cost, distance, nodes)| {
                         (cost.to_bits(), distance.to_bits(), nodes.to_vec())
                     });
@@ -569,6 +652,7 @@ mod endpoint_tests {
                         start,
                         end,
                         usize::MAX,
+                        usize::MAX,
                         &graph,
                         TransitFlags::CAR,
                         &mut scratch,
@@ -591,6 +675,7 @@ mod endpoint_tests {
                         let actual = cch.find_cost(
                             start,
                             end,
+                            usize::MAX,
                             usize::MAX,
                             &graph,
                             TransitFlags::CAR,

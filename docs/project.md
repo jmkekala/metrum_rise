@@ -6,6 +6,12 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
+Cars now turn around only where the lanes allow it: at dead ends, or by looping, for example
+around a roundabout. Routes, commute quotes and same-junction trips follow that rule at both
+trip ends, and routes saved under the old rules are replanned on load. The dumped city that
+looped cars through impossible U-turns now replays with no trip failures
+([NET-07/NET-08](entrance_and_exit.md#vehicle-u-turn-routing-contract-net-07-net-08)).
+
 Lane acquisition now shares one mode/ownership contract across movement, road edits and debug
 spawning; save/load use the same checks ([TRAFFIC-02](traffic.md#shared-lane-occupancy-contract-traffic-02)).
 The saved-city pedestrian/vehicle-lane mismatch remains under investigation; the original

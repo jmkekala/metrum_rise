@@ -16,28 +16,15 @@ fn diagnose_saved_city_growth() {
         .parse()
         .unwrap();
     assert!(days > 0);
-    let mut core = SimCore::new(WorldConfig::new(WORLD_SIZE_M, WORLD_SIZE_M, 40.0, 10.0));
-    let scan = scan_pack_dir(Path::new(&mods));
-    assert!(!scan.packs.is_empty(), "{:?}", scan.warnings);
-    core.replace_asset_registry(scan.packs.into_iter().flat_map(|pack| {
-        let pack_id = pack.pack.pack_id;
-        pack.assets
-            .into_iter()
-            .map(move |(manifest, dir)| (pack_id.clone(), manifest, dir))
-    }));
-    core.load_game_internal(&source).unwrap();
+    let mut scenario = load_saved_scenario(&source, &mods);
     assert!(
-        core.allocator
+        scenario
+            .core
+            .allocator
             .buildings
             .iter()
             .all(|b| !b.broken && !b.economy_broken)
     );
-    // Resume the loaded world without changing balances, zoning, staffing or demand rules.
-    core.time.speed_multiplier = *SIMULATION_SPEED_STEPS.last().unwrap();
-    let mut scenario = GrowthScenario {
-        core,
-        departures: 0,
-    };
     let initial = scenario.record();
     let report = scenario.run_diagnosed_days(days);
     std::fs::write(
@@ -46,6 +33,58 @@ fn diagnose_saved_city_growth() {
     )
     .unwrap();
     eprintln!("Saved-city replay: {initial:?} -> {:?}", scenario.record());
+}
+
+// Loads a saved city with the asset packs it was built from, at the fastest game speed and
+// otherwise unchanged: balances, zoning, staffing and demand rules stay as saved.
+fn load_saved_scenario(source: &str, mods: &str) -> GrowthScenario {
+    let mut core = SimCore::new(WorldConfig::new(WORLD_SIZE_M, WORLD_SIZE_M, 40.0, 10.0));
+    let scan = scan_pack_dir(Path::new(mods));
+    assert!(!scan.packs.is_empty(), "{:?}", scan.warnings);
+    core.replace_asset_registry(scan.packs.into_iter().flat_map(|pack| {
+        let pack_id = pack.pack.pack_id;
+        pack.assets
+            .into_iter()
+            .map(move |(manifest, dir)| (pack_id.clone(), manifest, dir))
+    }));
+    core.load_game_internal(source).unwrap();
+    core.time.speed_multiplier = *SIMULATION_SPEED_STEPS.last().unwrap();
+    GrowthScenario {
+        core,
+        departures: 0,
+    }
+}
+
+#[test]
+#[ignore = "manual saved-city replay; requires METRUM_REPLAY_SAVE and METRUM_REPLAY_MODS"]
+fn replay_saved_city_without_impossible_turns() {
+    // NET-07: a route needing a turn the lanes do not build fails as "no turn" when a car
+    // reaches it. Replays ordinary frames for METRUM_REPLAY_DAYS (default 1) and reports
+    // every trip failure line.
+    let source = std::env::var("METRUM_REPLAY_SAVE").expect("input save path");
+    let mods = std::env::var("METRUM_REPLAY_MODS").expect("matching asset pack directory");
+    let days: u32 = std::env::var("METRUM_REPLAY_DAYS")
+        .unwrap_or_else(|_| "1".into())
+        .parse()
+        .unwrap();
+    let mut scenario = load_saved_scenario(&source, &mods);
+    let initial = scenario.record();
+    scenario.run_days(days);
+    let last = scenario.record();
+    let lines = &scenario.core.agents.trip_failures.lines;
+    let no_turn: Vec<_> = lines
+        .iter()
+        .filter(|line| line.contains(": no turn "))
+        .collect();
+    eprintln!(
+        "REPLAY_TRIP_FAILURES {}",
+        serde_json::json!({ "days": days, "failures": lines.len(), "no_turn": no_turn.len(),
+            "initial": format!("{initial:?}"), "final": format!("{last:?}") })
+    );
+    for line in lines {
+        eprintln!("REPLAY_FAILURE {line}");
+    }
+    assert!(no_turn.is_empty(), "{no_turn:#?}");
 }
 
 #[test]

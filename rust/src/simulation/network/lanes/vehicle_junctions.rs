@@ -75,10 +75,12 @@ pub fn build_vehicle_connections_at_node(
         // Nodes with no user connections remain fully open (allow all non-U-turns).
         if allowed.is_none() {
             if !node_has_any_vehicle_conn {
-                // Open node: allow all non-U-turn outbound lanes.
+                // Open node: allow all non-U-turn outbound lanes; dead ends allow the U-turn.
+                // The router reads the same rule.
+                let allows_u_turn = graph.open_node_allows_u_turn(node_id as u32);
                 let mut defaults = Vec::new();
                 for &(out_edge_id, out_lane_idx, _) in &outbound {
-                    if out_edge_id != in_edge_id || node_deg == 1 {
+                    if out_edge_id != in_edge_id || allows_u_turn {
                         defaults.push((out_edge_id, out_lane_idx));
                     }
                 }

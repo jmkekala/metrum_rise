@@ -9,8 +9,20 @@ use godot::prelude::Vector3;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 
 fn oracle(graph: &RegionGraph, start: u32, end: u32, incoming: usize, mask: u8) -> Option<f64> {
+    exit_oracle(graph, start, end, incoming, usize::MAX, mask)
+}
+
+fn exit_oracle(
+    graph: &RegionGraph,
+    start: u32,
+    end: u32,
+    incoming: usize,
+    outgoing: usize,
+    mask: u8,
+) -> Option<f64> {
     // Deliberately slow O(E²) Dijkstra on original directed-road arrival states. Neither
     // hierarchy arcs, the elimination order, cached turn tables nor f32 shortcut sums enter it.
+    // An arrival at `end` counts only if a vehicle may turn from it onto `outgoing`.
     let root = graph.edge_count() * 2;
     let mut costs = vec![f64::INFINITY; root + 1];
     let mut settled = vec![false; root + 1];
@@ -35,7 +47,12 @@ fn oracle(graph: &RegionGraph, start: u32, end: u32, incoming: usize, mask: u8) 
                 state / 2,
             )
         };
-        if node == end {
+        if node == end
+            && (mask == TransitFlags::FOOT
+                || in_edge == usize::MAX
+                || outgoing == usize::MAX
+                || CchGraph::vehicle_turn_allowed(graph, end, in_edge, outgoing))
+        {
             return Some(cost);
         }
         settled[state] = true;
@@ -69,6 +86,134 @@ fn oracle(graph: &RegionGraph, start: u32, end: u32, incoming: usize, mask: u8) 
     }
 }
 
+// Same random graph family as the multimode test below, including whitelists, deleted edges,
+// self-loops and one-way roads.
+fn random_graph(rng: &mut StdRng) -> RegionGraph {
+    let mut graph = RegionGraph::new();
+    for node in 0..9 {
+        graph.add_node(
+            Vector3::new((node % 3) as f32, 0.0, (node / 3) as f32),
+            NodeType::Junction,
+        );
+    }
+    for _ in 0..23 {
+        graph.add_edge(Edge {
+            start_node: rng.gen_range(0..9),
+            end_node: rng.gen_range(0..9),
+            base_cost: rng.gen_range(0..100) as f32 / 7.0,
+            physical_length: rng.gen_range(1..100) as f32 / 3.0,
+            allowed_types: rng.gen_range(1..8),
+            fwd_lanes: rng.gen_range(0..2),
+            bkw_lanes: rng.gen_range(0..2),
+            deleted: rng.gen_ratio(1, 12),
+            ..Default::default()
+        });
+    }
+    graph.rebuild_adjacency_list();
+    for node in 0..9 {
+        if rng.gen_ratio(1, 2) {
+            let edges = graph.node_adjacency(node).to_vec();
+            for &from in &edges {
+                for &to in &edges {
+                    if rng.gen_ratio(1, 4) {
+                        graph.add_lane_connection(node, from, 0, to, 0);
+                    }
+                }
+            }
+        }
+    }
+    graph
+}
+
+#[test]
+fn exit_constrained_routes_match_dijkstra_in_point_and_bucket_queries() {
+    // NET-07: the edge left on after the destination constrains the final turn exactly as
+    // the lane builder does (no U-turn away from a dead end; whitelists otherwise).
+    let mut rng = StdRng::seed_from_u64(0x4e45543037);
+    for seed in 0..24 {
+        let graph = random_graph(&mut rng);
+        let cch = CchGraph::build(&graph);
+        let mut scratch = CchPathScratch::default();
+        for mask in [
+            TransitFlags::CAR,
+            TransitFlags::FOOT | TransitFlags::CAR,
+            TransitFlags::FOOT,
+        ] {
+            let mut targets = Vec::new();
+            for end in 0..9 {
+                targets.push((end, usize::MAX));
+                targets.extend(graph.node_adjacency(end).iter().map(|&edge| (end, edge)));
+            }
+            let buckets = CchBuckets::build(&cch, &targets, mask);
+            let mut source = CchBucketSource::default();
+            let mut batch_path = CchPathScratch::default();
+            for start in 0..9 {
+                let arms = graph.node_adjacency(start).to_vec();
+                for incoming in [usize::MAX].into_iter().chain(arms) {
+                    buckets.query_source(&cch, start, incoming, &mut source);
+                    for &(end, outgoing) in &targets {
+                        let expected = exit_oracle(&graph, start, end, incoming, outgoing, mask);
+                        let actual = cch
+                            .find_path_in(
+                                start,
+                                end,
+                                incoming,
+                                outgoing,
+                                &graph,
+                                mask,
+                                &mut scratch,
+                            )
+                            .map(|(cost, _, nodes)| (cost, nodes.to_vec()));
+                        let context = format!(
+                            "seed={seed} mask={mask} {start}->{end} in={incoming} out={outgoing}"
+                        );
+                        assert_eq!(actual.is_some(), expected.is_some(), "{context}");
+                        let Some((cost, nodes)) = actual else {
+                            continue;
+                        };
+                        let expected = expected.unwrap();
+                        assert!(
+                            (f64::from(cost) - expected).abs() <= 2e-5 * expected.max(1.0),
+                            "{context}: {cost} != {expected}"
+                        );
+                        // Every turn of the witness is legal, including both trip ends.
+                        let mut previous = incoming;
+                        let mut node = start;
+                        for &edge in scratch.selected_edges() {
+                            assert!(
+                                mask == TransitFlags::FOOT
+                                    || previous == usize::MAX
+                                    || CchGraph::vehicle_turn_allowed(&graph, node, previous, edge),
+                                "{context}: illegal turn at {node}"
+                            );
+                            let value = graph.edge(edge);
+                            node = if value.start_node == node {
+                                value.end_node
+                            } else {
+                                value.start_node
+                            };
+                            previous = edge;
+                        }
+                        assert_eq!(node, end, "{context}");
+                        assert!(
+                            mask == TransitFlags::FOOT
+                                || previous == usize::MAX
+                                || outgoing == usize::MAX
+                                || CchGraph::vehicle_turn_allowed(&graph, end, previous, outgoing),
+                            "{context}: illegal exit turn"
+                        );
+                        let index = buckets.target_index(&cch, end, outgoing).unwrap();
+                        let batch = buckets
+                            .path_in(index, &cch, &graph, &source, &mut batch_path)
+                            .map(|(cost, nodes)| (cost.to_bits(), nodes.to_vec()));
+                        assert_eq!(batch, Some((cost.to_bits(), nodes)), "{context}: bucket");
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn fractional_multimode_routes_match_independent_dijkstra_and_edge_witnesses() {
     let mut rng = StdRng::seed_from_u64(0x4e45543033);
@@ -82,39 +227,7 @@ fn fractional_multimode_routes_match_independent_dijkstra_and_edge_witnesses() {
         31,
     ];
     for seed in 0..16 {
-        let mut graph = RegionGraph::new();
-        for node in 0..9 {
-            graph.add_node(
-                Vector3::new((node % 3) as f32, 0.0, (node / 3) as f32),
-                NodeType::Junction,
-            );
-        }
-        for _ in 0..23 {
-            graph.add_edge(Edge {
-                start_node: rng.gen_range(0..9),
-                end_node: rng.gen_range(0..9),
-                base_cost: rng.gen_range(0..100) as f32 / 7.0,
-                physical_length: rng.gen_range(1..100) as f32 / 3.0,
-                allowed_types: rng.gen_range(1..8),
-                fwd_lanes: rng.gen_range(0..2),
-                bkw_lanes: rng.gen_range(0..2),
-                deleted: rng.gen_ratio(1, 12),
-                ..Default::default()
-            });
-        }
-        graph.rebuild_adjacency_list();
-        for node in 0..9 {
-            if rng.gen_ratio(1, 2) {
-                let edges = graph.node_adjacency(node).to_vec();
-                for &from in &edges {
-                    for &to in &edges {
-                        if rng.gen_ratio(1, 4) {
-                            graph.add_lane_connection(node, from, 0, to, 0);
-                        }
-                    }
-                }
-            }
-        }
+        let mut graph = random_graph(&mut rng);
         let mut cch = CchGraph::build(&graph);
         let mut cost_bounds = CchCarCostBounds::default();
         let mut scratch = CchPathScratch::default();
@@ -128,7 +241,8 @@ fn fractional_multimode_routes_match_independent_dijkstra_and_edge_witnesses() {
             }
             cost_bounds.prepare(&cch, &graph);
             for mask in modes {
-                let targets = CchBuckets::build(&cch, &(0..9).collect::<Vec<_>>(), mask);
+                let target_nodes: Vec<_> = (0..9).map(|node| (node, usize::MAX)).collect();
+                let targets = CchBuckets::build(&cch, &target_nodes, mask);
                 let mut source = CchBucketSource::default();
                 source.prepare(&targets, &cch);
                 let capacity = source.capacities();
@@ -218,11 +332,27 @@ fn fractional_multimode_routes_match_independent_dijkstra_and_edge_witnesses() {
                                 }
                             }
                             let actual = cch
-                                .find_path_in(start, end, incoming, &graph, mask, &mut scratch)
+                                .find_path_in(
+                                    start,
+                                    end,
+                                    incoming,
+                                    usize::MAX,
+                                    &graph,
+                                    mask,
+                                    &mut scratch,
+                                )
                                 .map(|(c, d, _)| (c, d));
                             let mut fresh = CchPathScratch::default();
                             let uncached = cch
-                                .find_path_in(start, end, incoming, &graph, mask, &mut fresh)
+                                .find_path_in(
+                                    start,
+                                    end,
+                                    incoming,
+                                    usize::MAX,
+                                    &graph,
+                                    mask,
+                                    &mut fresh,
+                                )
                                 .map(|(cost, distance, nodes)| {
                                     (cost.to_bits(), distance.to_bits(), nodes)
                                 });
@@ -262,6 +392,7 @@ fn fractional_multimode_routes_match_independent_dijkstra_and_edge_witnesses() {
                                     start,
                                     end,
                                     cch.source_context(start, incoming, mask),
+                                    usize::MAX,
                                     &graph,
                                     mask,
                                     &mut batch_path,

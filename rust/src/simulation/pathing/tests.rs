@@ -157,7 +157,7 @@ fn test_pathing_avoids_steep_slope() {
     graph.add_edge(edge_cb);
 
     let cch = CchGraph::build(&graph);
-    let path = cch.find_path(n_a, n_b, usize::MAX, &graph, TransitFlags::CAR);
+    let path = cch.find_path(n_a, n_b, usize::MAX, usize::MAX, &graph, TransitFlags::CAR);
 
     assert!(path.is_some(), "Should find a path");
     let (_cost_found, _dist, nodes) = path.unwrap();
@@ -205,21 +205,21 @@ fn test_bidirectional_walkway_pathing() {
     let cch = CchGraph::build(&graph);
 
     // 1. Pedestrian should be able to walk n0 -> n1
-    let path_fwd = cch.find_path(n0, n1, usize::MAX, &graph, TransitFlags::FOOT);
+    let path_fwd = cch.find_path(n0, n1, usize::MAX, usize::MAX, &graph, TransitFlags::FOOT);
     assert!(
         path_fwd.is_some(),
         "Pedestrian should find path n0 -> n1 on walkway"
     );
 
     // 2. Pedestrian should be able to walk n1 -> n0
-    let path_bkw = cch.find_path(n1, n0, usize::MAX, &graph, TransitFlags::FOOT);
+    let path_bkw = cch.find_path(n1, n0, usize::MAX, usize::MAX, &graph, TransitFlags::FOOT);
     assert!(
         path_bkw.is_some(),
         "Pedestrian should find path n1 -> n0 on walkway"
     );
 
     // 3. Car should NOT be able to use walkway
-    let path_car = cch.find_path(n0, n1, usize::MAX, &graph, TransitFlags::CAR);
+    let path_car = cch.find_path(n0, n1, usize::MAX, usize::MAX, &graph, TransitFlags::CAR);
     assert!(path_car.is_none(), "Car should NOT find path on walkway");
 }
 
@@ -258,7 +258,7 @@ fn test_car_uturn_allowed() {
     // Agent is at n1, having come from n0 via edge_idx.
     // They want to go back to n0.
     // If U-turns are allowed on same edge, they should find path [n0] via edge_idx.
-    let path = cch.find_path(n1, n0, edge_idx, &graph, TransitFlags::CAR);
+    let path = cch.find_path(n1, n0, edge_idx, usize::MAX, &graph, TransitFlags::CAR);
     assert!(
         path.is_some(),
         "Car should be allowed to U-turn on bidirectional road"
@@ -316,7 +316,14 @@ fn test_border_spur_routes_to_connected_residential_branch() {
     graph.rebuild_adjacency_list();
 
     let cch = CchGraph::build(&graph);
-    let path_to_home_branch = cch.find_path(border, center, usize::MAX, &graph, TransitFlags::CAR);
+    let path_to_home_branch = cch.find_path(
+        border,
+        center,
+        usize::MAX,
+        usize::MAX,
+        &graph,
+        TransitFlags::CAR,
+    );
 
     assert!(
         path_to_home_branch.is_some(),
@@ -416,7 +423,7 @@ fn test_car_avoids_walkway_shortcut() {
     let cch = cch::CchGraph::build(&graph);
 
     // Car should take the road path (2 nodes) and ignore the shortcut
-    let path_car = cch.find_path(n0, n2, usize::MAX, &graph, TransitFlags::CAR);
+    let path_car = cch.find_path(n0, n2, usize::MAX, usize::MAX, &graph, TransitFlags::CAR);
     assert!(path_car.is_some());
     let (_cost, _dist, nodes) = path_car.unwrap();
     assert_eq!(nodes.len(), 3, "Car should take 3 nodes (n0, n1, n2)");
@@ -426,7 +433,7 @@ fn test_car_avoids_walkway_shortcut() {
     );
 
     // Pedestrian should take the shortcut (n2 only)
-    let path_ped = cch.find_path(n0, n2, usize::MAX, &graph, TransitFlags::FOOT);
+    let path_ped = cch.find_path(n0, n2, usize::MAX, usize::MAX, &graph, TransitFlags::FOOT);
     assert!(path_ped.is_some());
     let (_c, _d, nodes_ped) = path_ped.unwrap();
     assert_eq!(
@@ -508,7 +515,14 @@ fn test_cch_finds_direct_path_without_restriction() {
     let (mut g, n_east, _n_jct, _n_west, n_north, _n_south, _, _, _) =
         build_loop_with_restriction();
     let cch = CchGraph::build(&mut g);
-    let result = cch.find_path(n_east, n_north, usize::MAX, &g, TransitFlags::CAR);
+    let result = cch.find_path(
+        n_east,
+        n_north,
+        usize::MAX,
+        usize::MAX,
+        &g,
+        TransitFlags::CAR,
+    );
     assert!(result.is_some(), "Should find a path from east to north");
     let (_, _, nodes) = result.unwrap();
     assert_eq!(nodes.first(), Some(&n_east));
@@ -528,7 +542,14 @@ fn test_cch_reroutes_around_turn_restriction() {
     g.add_lane_connection(n_jct, e_ew_e, 0, _e_ew_w, 0);
 
     let cch = CchGraph::build(&mut g);
-    let result = cch.find_path(n_east, n_north, usize::MAX, &g, TransitFlags::CAR);
+    let result = cch.find_path(
+        n_east,
+        n_north,
+        usize::MAX,
+        usize::MAX,
+        &g,
+        TransitFlags::CAR,
+    );
 
     assert!(
         result.is_some(),

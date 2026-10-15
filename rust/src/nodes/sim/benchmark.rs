@@ -128,6 +128,7 @@ impl SimCore {
                 s,
                 e,
                 usize::MAX,
+                usize::MAX,
                 &self.region_graph,
                 TransitFlags::CAR,
             ) {

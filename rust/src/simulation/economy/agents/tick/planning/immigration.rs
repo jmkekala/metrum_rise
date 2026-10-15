@@ -96,6 +96,7 @@ pub(crate) fn plan_immigration_trip(
                     border_node,
                     planned_detach_node,
                     usize::MAX,
+                    destination_entrance.edge_idx,
                     MODE_CAR,
                     transit_network,
                     graph,

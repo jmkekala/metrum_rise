@@ -206,7 +206,19 @@ pub(in crate::simulation::economy::agents::tick) fn plan_network_replan(
                 );
                 continue;
             };
-            let network_time_s = if start_node == planned_detach_node {
+            // A car that may not turn at the shared node replans the legal loop below.
+            let car_loop = mode == MODE_CAR
+                && start_node == planned_detach_node
+                && !transit_network.cch_graph.vehicle_turn_permitted(
+                    start_node,
+                    if incoming_edge_valid {
+                        incoming_edge
+                    } else {
+                        usize::MAX
+                    },
+                    destination_entrance.edge_idx,
+                );
+            let network_time_s = if start_node == planned_detach_node && !car_loop {
                 if mode == MODE_CAR
                     || scratch.has_connectors(
                         &[start_node],
@@ -273,7 +285,7 @@ pub(in crate::simulation::economy::agents::tick) fn plan_network_replan(
                 }
             };
             if replace {
-                scratch.retain_network_path(start_node == planned_detach_node);
+                scratch.retain_network_path(start_node == planned_detach_node && !car_loop);
                 best = Some((
                     total_cost_s,
                     destination_rank,

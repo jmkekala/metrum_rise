@@ -2073,32 +2073,90 @@ contexts at every non-dead-end origin split the quote and endpoint caches, which
 shared one key per node. Growth records differ only in treasury cents and, under fiscal stress at
 30k, one vacant home and one unhoused household: different legal routes change commutes.
 
-**Implementation plan once `NET-08` is accepted.** Every item is O(1) or O(degree) per query
-and allocation-free:
+**`NET-07` implementation (2026-10-14, branch `u-turns`).** One rule,
+`RegionGraph::open_node_allows_u_turn`, is read by the lane builder
+(`vehicle_junctions.rs`) and the router (`VehicleTurns`, which `NET-08` already splits at
+every non-dead-end node). Every addition below is O(1) or O(degree) per query and allocates
+nothing.
 
-- Share the U-turn rule between the lane builder and `VehicleTurns` through one
-  `RegionGraph` predicate. Restrict every non-dead-end node: whitelists keep their pairs;
-  other nodes permit every turn except `incoming == outgoing`. Make
-  `CchGraph::vehicle_turn_allowed` (the uncompiled reference used by tests and the path
-  validator) apply the same rule.
-- Store each state's arrival edge. Add an `outgoing` (detach-edge) argument to point
-  queries: the backward search seeds only the arrival states permitted to turn onto it.
-  Canonicalize it like `source_context` for retained labels and quote keys. A start equal to
-  the end costs zero only when that turn is legal; otherwise the search returns the shortest
-  legal loop.
-- Bucket targets become (node, canonical exit context) pairs. Same-node targets get zero cost
-  only when the turn is legal. `BuildingTripEnds` supplies frontage edges with target nodes.
-- The planner passes origin and detach edges everywhere: `combine`/`network_seconds`/quote
-  keys, `network_path`, `network_leg_is_reachable`, immigration and border-out `cch_cost`.
-  Zero-hop car trips and replans require a legal turn. Flow-field paths validate both trip
-  ends through `path_has_valid_vehicle_turns(path, from_edge, to_edge, graph)`.
-- Tests: the edge-state Dijkstra oracles gain the U-turn rule and an exit-edge constraint.
-  Add regressions for a destination across the road at a three-arm junction, a car facing
-  away from its destination, a bend, and departure direction. Egress follows the planned
-  attach lane, and the planner chooses the departure direction by cost. With free U-turns it
-  sends cars toward the nearer junction to turn there, as with building 651 in the dump. A car
-  leaving a building must now depart in the direction whose route needs no U-turn. Then run the routing benchmarks and the
-  `--perf-contract` runner.
+- **Exit turn at the destination.** Point queries (`find_cost`, `find_path_in`, `find_path`)
+  take `outgoing`, the edge left on after `end`. The backward search seeds only the arrival
+  states whose turn onto it is legal. `CchGraph::target_context` canonicalizes it like
+  `source_context`, so retained backward labels and quote keys stay exact. A start equal to
+  its end costs zero only when the turn between the two ends is legal; otherwise the search
+  returns the shortest legal loop.
+- **Buckets.** Targets are (node, canonical exit context) pairs.
+  `BuildingTripEnds::network_targets` supplies each end's frontage edge. Same-node targets
+  are zero only when the turn is legal. The NET-05 RPHAST comparison benchmark keeps
+  unconstrained exits, so it still compares like with like.
+- **Planner.** Every car query passes both trip-end edges: quote keys and
+  `network_seconds`, `network_path`, `cch_cost` (immigration now passes the destination
+  frontage, border-out trips the origin frontage), and `network_leg_is_reachable`.
+  Node-to-node logistics pricing, the benchmark helper and the debug car keep unconstrained
+  ends.
+- **Same-node car trips.** Pricing (`combine_trip_ends`, `price_trip_without_network`), route
+  building (`build_exact_path_for_candidate`) and replanning (`plan_network_replan`) treat a
+  shared node as a free zero hop only when `CchGraph::vehicle_turn_permitted` allows the
+  turn. Otherwise the trip goes through the network query as the shortest legal loop, and
+  replanning keeps that loop path.
+- **Flow-field paths.** `path_has_valid_vehicle_turns(path, from_edge, to_edge, graph)` also
+  checks the attach and detach turns.
+- **Saved routes.** `AgentSystem::clear_routes_with_illegal_turns` runs after load. It drops
+  any car route on the road whose remaining turns, including the final turn into its exit
+  lane, the current rules forbid. The car then replans before reaching that turn. Road edits
+  already clear routes through edited nodes.
+
+Correction to the earlier diagnosis: on a straight frontage road, banning junction U-turns
+does not change which way a car departs. A door on the opposite-direction lane must be
+reached through the far junction in either case. What changes is where the car turns
+around: a dead end or a loop instead of a free U-turn at the nearest junction (building 651
+in the dump). The departure direction flips when the cheap direction needs an illegal turn
+into the exit lane further on, as in the departure regression below.
+
+Tests (all pass; the four marked "fails before" fail on `9e70526f`, the commit before these
+changes):
+- `exit_constrained_routes_match_dijkstra_in_point_and_bucket_queries`: random graphs with
+  whitelists, deleted edges, self-loops and one-way roads; every arrival and exit edge. Point
+  costs match the edge-state Dijkstra oracle with the exit constraint. Witness paths have
+  only legal turns, both trip ends included. Bucket paths equal point paths.
+- `across_the_road_at_a_three_arm_junction_turns_at_a_dead_end` (fails before): building
+  651's shape.
+- `bend_never_hosts_a_u_turn` (fails before).
+- `departure_direction_flips_when_the_cheap_side_needs_a_u_turn` (fails before): the door is
+  on the next road B–C, served only by the C→B lane. Leaving east and turning back at the
+  three-arm junction C is about 200 m but illegal. The car now leaves west around the block
+  (about 500 m) instead of the 4.2 km stub loop. Every departure and arrival rank pair yields
+  a lane-drivable plan.
+- `car_facing_away_from_its_destination_turns_back_legally` (fails before): end-to-end
+  movement; the car drives home with no trip failure.
+- `loaded_routes_needing_a_forbidden_turn_are_dropped_for_replanning`.
+- The planner tests' `drivable` check follows only the lanes' own continuations and junction
+  connectors.
+
+Dump replay: `replay_saved_city_without_impossible_turns` (`METRUM_REPLAY_SAVE`,
+`METRUM_REPLAY_MODS`, `METRUM_REPLAY_DAYS`). It loads a copy of a save with copied asset
+packs and runs ordinary frames. On `dump-2026-10-14_20-28-16` (a byte-identical copy,
+checked by SHA-256, with a byte-identical copy of its asset packs), the final build gives 0
+trip failures over 1 and 3 simulated days. Without the load-time route check, the same replay logged 4 `no turn`
+failures, once per car with a route saved by the old planner, then replanned cleanly.
+
+Cost (2026-10-15). Matched unprofiled release runs, two alternating rounds, `9e70526f` against
+the `NET-07` working tree, `RAYON_NUM_THREADS=8 taskset -c 0,2,4,6,8,10,12,14`:
+- **Hierarchy and point queries** (`benchmark_populated_cch_queries`,
+  `benchmark_saved_cch_queries`): states, arcs and build time are identical. Point queries
+  are unchanged to 6% faster (30k cost: 7.74/7.84 → 7.65/7.77 µs; dump: 0.63/0.64 →
+  0.59/0.60 µs).
+- **Bucket sources** cost 9–10% more on the fixtures and about 20% more on saved cities.
+  The synthetic targets now carry exit edges, so one node can hold several target rows; the
+  two versions' bucket workloads are therefore not identical.
+- **`--perf-contract`** (identical snapshot copies, reused not regenerated): whole-city time
+  is unchanged within noise. 30k baseline hour 62.69/62.43 → 62.53/62.56 ms, day
+  41.13/41.47 → 42.49/40.86 ms; 10k hour 19.34/18.92 → 18.66/18.90 ms; fiscal stress
+  −1–3%; isolated routing phase 29.83/29.78 → 29.75/29.49 ms at 30k.
+- The failure list is unchanged (the pre-existing `PERF-03`–`PERF-05` limits). CCH point
+  searches rise 8% (30k day: 319,613 → 346,350), from exit-specific quote keys and legal
+  loops. Fiscal-stress growth records are identical; baseline records differ in treasury
+  cents.
 
 ##### Flow-field and CCH precedence
 

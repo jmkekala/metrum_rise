@@ -686,6 +686,7 @@ pub(crate) fn load_from_sqlite(
     allocator.dirty = true;
     transit_network.cch_graph = CchGraph::build(&graph);
     agents::validate_loaded_agents(&mut agents, &graph, &allocator)?;
+    agents.clear_routes_with_illegal_turns(&transit_network.lane_system, &graph);
     workplace_quotes::load(
         &conn,
         version,

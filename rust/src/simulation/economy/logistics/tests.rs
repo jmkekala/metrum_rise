@@ -3537,6 +3537,7 @@ fn prepared_freight_quotes_stay_exact_after_cache_saturation_and_invalidation() 
                                 from,
                                 to,
                                 usize::MAX,
+                                usize::MAX,
                                 &graph,
                                 TransitFlags::CAR,
                                 &mut scratch,
@@ -3820,6 +3821,7 @@ fn customer_route_cache_does_not_alias_replacement_doors_to_live_owners() {
                             from,
                             to,
                             usize::MAX,
+                            usize::MAX,
                             &graph,
                             TransitFlags::CAR,
                             &mut oracle,
@@ -3887,6 +3889,7 @@ fn customer_route_cache_does_not_alias_replacement_doors_to_live_owners() {
             network.cch_graph.find_cost(
                 from,
                 to,
+                usize::MAX,
                 usize::MAX,
                 &graph,
                 TransitFlags::CAR,

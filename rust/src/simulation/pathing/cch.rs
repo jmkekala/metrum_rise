@@ -88,6 +88,8 @@ pub struct CchGraph {
     up: NodeSlices<(u32, usize)>,
     parent: Vec<u32>,
     states: NodeSlices<u32>,
+    // Arrival edge of each state; MAX for a node's single unrestricted state.
+    arrival_edges: Vec<usize>,
     departures: NodeSlices<Departure>,
     turns: VehicleTurns,
     base_arcs: Vec<BaseArc>,
@@ -108,6 +110,7 @@ impl CchGraph {
             up: NodeSlices::empty(0),
             parent: Vec::new(),
             states: NodeSlices::empty(nodes),
+            arrival_edges: Vec::new(),
             departures: NodeSlices::empty(nodes),
             turns: VehicleTurns::empty(nodes),
             base_arcs: Vec::new(),
@@ -221,29 +224,37 @@ impl CchGraph {
     }
 
     /// Returns `true` if every turn in `path` is permitted under the current vehicle
-    /// restrictions. Pedestrian trips validate lane connectors separately. A path with fewer
-    /// than 3 nodes has no intermediate junctions and
-    /// is always valid. Paths where consecutive edge IDs cannot be resolved are skipped
-    /// (treated as open).
+    /// restrictions, including the turn from `from_edge` at the first node and onto `to_edge`
+    /// at the last node; `usize::MAX` leaves that trip end unconstrained. A single-node path
+    /// checks the direct turn between the two ends. Pedestrian trips validate lane connectors
+    /// separately. Paths where consecutive edge IDs cannot be resolved are skipped (treated
+    /// as open).
     ///
     /// Complexity: O(path.len() × node_degree) — cheap for typical city paths.
-    pub fn path_has_valid_vehicle_turns(path: &[u32], graph: &RegionGraph) -> bool {
-        if path.len() < 3 {
+    pub fn path_has_valid_vehicle_turns(
+        path: &[u32],
+        from_edge: usize,
+        to_edge: usize,
+        graph: &RegionGraph,
+    ) -> bool {
+        let Some(last) = path.len().checked_sub(1) else {
             return true;
-        }
-        for i in 0..path.len() - 2 {
-            let a = path[i];
-            let jct = path[i + 1];
-            let b = path[i + 2];
-            let Some(in_e) = graph.get_edge_between_nodes(a, jct) else {
-                continue;
+        };
+        let mut incoming = Some(from_edge);
+        for (i, &node) in path.iter().enumerate() {
+            let outgoing = if i == last {
+                Some(to_edge)
+            } else {
+                graph.get_edge_between_nodes(node, path[i + 1])
             };
-            let Some(out_e) = graph.get_edge_between_nodes(jct, b) else {
-                continue;
-            };
-            if !Self::vehicle_turn_allowed(graph, jct, in_e, out_e) {
+            if let (Some(in_e), Some(out_e)) = (incoming, outgoing)
+                && in_e != usize::MAX
+                && out_e != usize::MAX
+                && !Self::vehicle_turn_allowed(graph, node, in_e, out_e)
+            {
                 return false;
             }
+            incoming = outgoing;
         }
         true
     }
@@ -399,7 +410,7 @@ mod tests {
     fn test_cch_pathfinding() {
         let graph = setup_test_graph();
         let cch = CchGraph::build(&graph);
-        let path_opt = cch.find_path(0, 2, usize::MAX, &graph, TransitFlags::CAR);
+        let path_opt = cch.find_path(0, 2, usize::MAX, usize::MAX, &graph, TransitFlags::CAR);
         assert!(path_opt.is_some());
         let (cost, _dist, sequence) = path_opt.unwrap();
         // Base cost of path 0->3->2 is 10 + 10 = 20.

@@ -273,7 +273,7 @@ fn test_car_avoids_walkway() {
     g.add_edge(create_test_edge(n2, n1));
     let cch = CchGraph::build(&g);
     let (_, _, p) = cch
-        .find_path(n0, n1, usize::MAX, &g, TransitFlags::CAR)
+        .find_path(n0, n1, usize::MAX, usize::MAX, &g, TransitFlags::CAR)
         .expect("Car should find a path");
     assert_eq!(p.len(), 3);
 }
@@ -302,7 +302,7 @@ fn test_pedestrian_prefers_walkway() {
     });
     let cch = CchGraph::build(&g);
     let (_, _, p) = cch
-        .find_path(n0, n1, usize::MAX, &g, TransitFlags::FOOT)
+        .find_path(n0, n1, usize::MAX, usize::MAX, &g, TransitFlags::FOOT)
         .unwrap();
     assert_eq!(p.len(), 3);
 }

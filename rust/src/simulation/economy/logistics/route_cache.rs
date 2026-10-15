@@ -566,6 +566,7 @@ impl FreightRouteCache {
             from,
             to,
             usize::MAX,
+            usize::MAX,
             graph,
             TransitFlags::CAR,
             &mut self.query,
@@ -725,7 +726,15 @@ mod tests {
                         let (a, b) = if reverse { (b, a) } else { (a, b) };
                         let expected = network
                             .cch_graph
-                            .find_cost(a, b, usize::MAX, &graph, TransitFlags::CAR, &mut scratch)
+                            .find_cost(
+                                a,
+                                b,
+                                usize::MAX,
+                                usize::MAX,
+                                &graph,
+                                TransitFlags::CAR,
+                                &mut scratch,
+                            )
                             .map(f32::to_bits);
                         unreachable |= a != b && expected.is_none();
                         assert_eq!(

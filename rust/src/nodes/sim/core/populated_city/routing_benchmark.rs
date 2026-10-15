@@ -82,8 +82,8 @@ fn profile_cch(label: &str, header: &str, graph: &RegionGraph, cch: &CchGraph) {
     let mut report = Vec::new();
     writeln!(report, "{header}").unwrap();
     for &(start, end, edge, mode) in &queries {
-        let cost = cch.find_cost(start, end, edge, graph, mode, &mut costs);
-        let path = cch.find_path_in(start, end, edge, graph, mode, &mut paths);
+        let cost = cch.find_cost(start, end, edge, usize::MAX, graph, mode, &mut costs);
+        let path = cch.find_path_in(start, end, edge, usize::MAX, graph, mode, &mut paths);
         assert_eq!(cost.map(f32::to_bits), path.as_ref().map(|p| p.0.to_bits()));
         writeln!(
             report,
@@ -101,9 +101,17 @@ fn profile_cch(label: &str, header: &str, graph: &RegionGraph, cch: &CchGraph) {
             let begin = Instant::now();
             for &(start, end, edge, mode) in &queries {
                 if materialize {
-                    black_box(cch.find_path_in(start, end, edge, graph, mode, &mut paths));
+                    black_box(cch.find_path_in(
+                        start,
+                        end,
+                        edge,
+                        usize::MAX,
+                        graph,
+                        mode,
+                        &mut paths,
+                    ));
                 } else {
-                    black_box(cch.find_cost(start, end, edge, graph, mode, &mut costs));
+                    black_box(cch.find_cost(start, end, edge, usize::MAX, graph, mode, &mut costs));
                 }
             }
             samples.push(begin.elapsed().as_secs_f64() * 1e6 / queries.len() as f64);
@@ -116,9 +124,19 @@ fn profile_cch(label: &str, header: &str, graph: &RegionGraph, cch: &CchGraph) {
             })
         );
     }
-    // Car buckets: 64 targets and 256 sources, a third of them with an incoming road edge.
+    // Car buckets: 64 targets, each left on one of its roads, and 256 sources, a third of
+    // them with an incoming road edge.
     let mut targets: Vec<_> = (0..64)
-        .map(|_| rng.gen_range(0..graph.node_count() as u32))
+        .map(|_| {
+            let node = rng.gen_range(0..graph.node_count() as u32);
+            let arms = graph.node_adjacency(node);
+            let exit = if arms.is_empty() {
+                usize::MAX
+            } else {
+                arms[rng.gen_range(0..arms.len())]
+            };
+            (node, exit)
+        })
         .collect();
     targets.sort_unstable();
     targets.dedup();
@@ -186,10 +204,9 @@ fn benchmark_populated_cch_batches() {
         .filter(|&i| allocator.household_capacity(i) > 0)
         .flat_map_iter(|i| {
             BuildingTripEnds::origin(i, allocator, network, graph)
-                .network_nodes(MODE_CAR)
+                .network_targets(MODE_CAR)
                 .into_iter()
                 .flatten()
-                .map(move |node| (node, allocator.entrances[i].edge_idx))
         })
         .collect();
     homes.sort_unstable();
@@ -223,10 +240,12 @@ fn benchmark_populated_cch_batches() {
                         }
             })
             .flat_map_iter(|(i, _)| {
+                // Node-only exits keep the comparison with the node-target RPHAST prototype.
                 BuildingTripEnds::destination(i, allocator, network, graph)
-                    .network_nodes(MODE_CAR)
+                    .network_targets(MODE_CAR)
                     .into_iter()
                     .flatten()
+                    .map(|(node, _)| node)
             })
             .collect();
         let target_collect_us = target_collect_start.elapsed().as_secs_f64() * 1e6;
@@ -236,12 +255,19 @@ fn benchmark_populated_cch_batches() {
             homes.clone()
         };
         let begin = Instant::now();
-        let buckets = CchBuckets::build(cch, &targets, TransitFlags::CAR);
+        let bucket_targets: Vec<_> = targets.iter().map(|&node| (node, usize::MAX)).collect();
+        let buckets = CchBuckets::build(cch, &bucket_targets, TransitFlags::CAR);
         let bucket_build_us = begin.elapsed().as_secs_f64() * 1e6;
         let begin = Instant::now();
         let restricted = RestrictedTargets::build(cch, &targets);
         let restricted_build_us = begin.elapsed().as_secs_f64() * 1e6;
-        assert_eq!(buckets.targets(), restricted.targets());
+        assert!(
+            buckets
+                .targets()
+                .iter()
+                .map(|&(node, _)| node)
+                .eq(restricted.targets().iter().copied())
+        );
         let chunk_size = sources.len().div_ceil(rayon::current_num_threads()).max(1);
         let chunks: Vec<_> = sources.chunks(chunk_size).collect();
         let begin = Instant::now();
@@ -404,6 +430,7 @@ fn benchmark_populated_cch_batches() {
                                         start,
                                         target,
                                         incoming,
+                                        usize::MAX,
                                         graph,
                                         TransitFlags::CAR,
                                         scratch,

@@ -104,7 +104,14 @@ mod tests {
         assert!(graph.edge(0).deleted);
         let (cost, _, nodes) = network
             .cch_graph
-            .find_path(start, end, usize::MAX, &graph, TransitFlags::CAR)
+            .find_path(
+                start,
+                end,
+                usize::MAX,
+                usize::MAX,
+                &graph,
+                TransitFlags::CAR,
+            )
             .expect("live edge must remain routable after rebuild");
         assert_eq!(cost, 7.0, "CCH must ignore the deleted lower-cost edge");
         assert_eq!(nodes, vec![start, end]);

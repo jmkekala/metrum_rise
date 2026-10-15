@@ -37,7 +37,8 @@ pub(crate) struct CchBuckets {
     pub(crate) id: u64,
     revision: (u32, u64),
     mask: u8,
-    targets: Vec<u32>,
+    // Sorted road node and canonical exit context (see `CchGraph::target_context`).
+    targets: Vec<(u32, usize)>,
     backward: NodeSlices<TargetRecord>,
     buckets: NodeSlices<BucketEntry>,
 }
@@ -65,14 +66,24 @@ impl CchBucketSource {
 }
 
 impl CchBuckets {
+    /// Canonicalizes (road node, exit edge) targets into sorted unique search keys.
+    /// O(T log T) for T targets; the exit edge is dropped wherever every arrival may take it.
+    pub(crate) fn canonical_targets(cch: &CchGraph, targets: &mut Vec<(u32, usize)>, mask: u8) {
+        for (node, exit) in targets.iter_mut() {
+            *exit = cch.target_context(*node, *exit, mask);
+        }
+        targets.sort_unstable();
+        targets.dedup();
+    }
+
     /// Builds one backward search per distinct target, in parallel with per-worker scratch.
+    /// Each target is a road node and the edge left on after it (`usize::MAX` for none).
     /// Retained storage is O(sum of target ancestor labels), independent of source count.
-    pub(crate) fn build(cch: &CchGraph, targets: &[u32], mask: u8) -> Self {
+    pub(crate) fn build(cch: &CchGraph, targets: &[(u32, usize)], mask: u8) -> Self {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT_ID: AtomicU64 = AtomicU64::new(0);
         let mut targets = targets.to_vec();
-        targets.sort_unstable();
-        targets.dedup();
+        Self::canonical_targets(cch, &mut targets, mask);
         let rows: Vec<Vec<TargetRecord>> = targets
             .par_iter()
             .with_min_len(targets.len().div_ceil(rayon::current_num_threads()).max(1))
@@ -82,14 +93,12 @@ impl CchBuckets {
                     scratch.prepare(cch.parent.len());
                     scratch
                 },
-                |scratch, &target| {
+                |scratch, &(target, context)| {
                     scratch.clear();
                     if target as usize >= cch.states.len() || cch.parent.is_empty() {
                         return Vec::new();
                     }
-                    for &state in &cch.states[target as usize] {
-                        scratch.seed(state, 0.0, 0.0, usize::MAX, &cch.parent);
-                    }
+                    cch.seed_target(target, context, scratch);
                     cch.sweep_up(
                         &cch.profiles[cch.profile_for_mask[mask as usize] as usize],
                         scratch,
@@ -135,13 +144,15 @@ impl CchBuckets {
         self.revision == (cch.build_generation, cch.metric_revision)
     }
 
-    /// Finds a prepared target in O(log targets), independently of lane attachment details.
-    pub(crate) fn target_index(&self, node: u32) -> Option<usize> {
-        self.targets.binary_search(&node).ok()
+    /// Finds a prepared target in O(log targets) by road node and the edge left on after it.
+    pub(crate) fn target_index(&self, cch: &CchGraph, node: u32, exit: usize) -> Option<usize> {
+        self.targets
+            .binary_search(&(node, cch.target_context(node, exit, self.mask)))
+            .ok()
     }
 
     /// Checks target-set equality without rebuilding buckets when open job sites are unchanged.
-    pub(crate) fn targets(&self) -> &[u32] {
+    pub(crate) fn targets(&self) -> &[(u32, usize)] {
         &self.targets
     }
 
@@ -184,11 +195,19 @@ impl CchBuckets {
                 }
             }
         }
-        if let Some(index) = self.target_index(start) {
-            source.meetings[index] = Meeting {
-                cost: 0.0,
-                state: u32::MAX,
-            };
+        // Same-node targets are empty routes unless their exit needs a forbidden turn; those
+        // keep the shortest legal loop joined above, exactly as a point query does.
+        let first = self.targets.partition_point(|&(node, _)| node < start);
+        for (index, &(node, exit)) in self.targets.iter().enumerate().skip(first) {
+            if node != start {
+                break;
+            }
+            if cch.turns_in_place(start, incoming, exit, self.mask) {
+                source.meetings[index] = Meeting {
+                    cost: 0.0,
+                    state: u32::MAX,
+                };
+            }
         }
     }
 
@@ -262,7 +281,7 @@ impl CchBuckets {
             };
             scratch.nodes.push(node);
         }
-        debug_assert_eq!(node, self.targets[target]);
+        debug_assert_eq!(node, self.targets[target].0);
         Some((cost, &scratch.nodes))
     }
 }
