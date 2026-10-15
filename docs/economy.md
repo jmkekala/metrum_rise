@@ -62,6 +62,9 @@ Healthy-growth acceptance is defined [below](#healthy-growth-acceptance).
 
 ## Time and cadence
 
+This section describes the current cadence. Its replacement is planned in
+[`simulation.md`](simulation.md#sim-02-scheduler-refactor) (`SIM-02`).
+
 ### Clocks and day length
 
 - **Operational clock:** travel, work, deliveries, consumption, wages and production. At 1×

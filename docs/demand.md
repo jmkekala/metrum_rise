@@ -176,6 +176,9 @@ later viable proposal is not hidden.
 
 ## Cadence and handoff
 
+This section describes the current cadence. Its replacement is planned in
+[`simulation.md`](simulation.md#sim-02-scheduler-refactor) (`SIM-02`).
+
 - **Hourly demand pass:** runs after each completed operational hour at minutes other than 0
   (`SimCore::execute_hourly_demand_pass`). It plans projects, admits households, executes level
   changes and clearances, and queues new construction. Its proposals are provisional: the live

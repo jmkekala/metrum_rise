@@ -311,6 +311,12 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
 
 ## Current Priorities
 
+- **Simulation scheduler refactor (`SIM-02`, planned)**: hourly and midnight work moves from
+  calendar boundaries to per-entity phases, timed events, rolling snapshots and request queues.
+  Old saves break; continuous income and per-entity settlement windows are accepted gameplay
+  changes; GPU compute is deferred. See the [engine contract and migration](simulation.md#sim-02-scheduler-refactor)
+  and the [`PERF-07` frame budget](simulation.md#frame-budget-perf-07).
+
 - **Starting treasury**: new games begin with 500,000, increased from 100,000. See
   [money source](economy.md#money-source); earlier balance runs retain their original starting capital.
 
@@ -946,6 +952,7 @@ reopening requires a current reproduction, not an assumption that the old geomet
 | Asset-editor workflow and pack contract                     | [`asset_editor.md`](asset_editor.md)                   |
 | Road surface / roadbed replacement                         | [`roads.md`](roads.md)               |
 | Debug channels / log / in-game debug console / `run.sh` debug flags | [`debug.md`](debug.md) |
+| Simulation clock / scheduler / sim-frame budget | [`simulation.md`](simulation.md) |
 
 ## Recent Structural Changes
 
