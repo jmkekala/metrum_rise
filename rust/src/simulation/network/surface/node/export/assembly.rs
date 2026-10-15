@@ -5,6 +5,7 @@
 use super::super::*;
 
 impl RoadSurfaceSystem {
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::simulation::network::surface::node) fn assemble_explicit_node_piece(
         &self,
         node_id: u32,

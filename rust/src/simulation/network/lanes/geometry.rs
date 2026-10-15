@@ -46,6 +46,7 @@ fn trim_from_front(geom: &[Vector3], dist: f32) -> Vec<Vector3> {
 }
 
 /// Builds geometry and appends one straight lane to `lanes`, updating `lane_map` and `edge_lane_indices`.
+#[allow(clippy::too_many_arguments)]
 pub fn build_one_lane(
     lanes: &mut Vec<Lane>,
     lane_map: &mut HashMap<(usize, bool, i8), usize>,

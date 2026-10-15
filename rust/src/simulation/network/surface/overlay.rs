@@ -334,7 +334,7 @@ impl RoadSurfaceSystem {
     pub(super) fn overlay_numeric_area_budget_for_shape(shape: &NodeOverlayShape) -> f32 {
         let perimeter_m = shape
             .iter()
-            .map(|contour| Self::overlay_contour_perimeter_m(contour))
+            .map(Self::overlay_contour_perimeter_m)
             .sum::<f32>();
         let vertex_count = shape.iter().map(Vec::len).sum::<usize>();
         Self::overlay_numeric_area_budget_m2(perimeter_m, vertex_count)
@@ -344,7 +344,7 @@ impl RoadSurfaceSystem {
         let perimeter_m = shapes
             .iter()
             .flat_map(|shape| shape.iter())
-            .map(|contour| Self::overlay_contour_perimeter_m(contour))
+            .map(Self::overlay_contour_perimeter_m)
             .sum::<f32>();
         let vertex_count = shapes
             .iter()

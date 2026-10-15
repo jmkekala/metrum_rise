@@ -584,7 +584,7 @@ fn authored_chunk_cells(config: &WorldConfig) -> usize {
 }
 
 fn pack_f32_slice(values: &[f32]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(values.len() * std::mem::size_of::<f32>());
+    let mut out = Vec::with_capacity(std::mem::size_of_val(values));
     for value in values {
         out.extend_from_slice(&value.to_le_bytes());
     }
@@ -604,14 +604,14 @@ fn unpack_f32_blob(blob: &[u8], expected_len: usize) -> WorldDefinitionResult<Ve
     }
 
     let mut out = Vec::with_capacity(expected_len);
-    for chunk in blob.chunks_exact(4) {
+    for chunk in blob.as_chunks::<4>().0 {
         out.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
     }
     Ok(out)
 }
 
 fn pack_u16_slice(values: &[u16]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(values.len() * std::mem::size_of::<u16>());
+    let mut out = Vec::with_capacity(std::mem::size_of_val(values));
     for value in values {
         out.extend_from_slice(&value.to_le_bytes());
     }
@@ -631,7 +631,7 @@ fn unpack_u16_blob(blob: &[u8], expected_len: usize) -> WorldDefinitionResult<Ve
     }
 
     let mut out = Vec::with_capacity(expected_len);
-    for chunk in blob.chunks_exact(2) {
+    for chunk in blob.as_chunks::<2>().0 {
         out.push(u16::from_le_bytes([chunk[0], chunk[1]]));
     }
     Ok(out)

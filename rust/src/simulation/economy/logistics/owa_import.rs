@@ -64,9 +64,13 @@ impl ShipmentSystem {
         // `OWA` accepts every load; only the roads limit trade.
         let mut best: Option<(u32, f32)> = None;
         for &border_node in border_nodes {
-            let Some(travel_seconds) =
-                route_cache.from_border(border_node, dest_idx, allocator, transit_network, graph)
-            else {
+            let Some(travel_seconds) = route_cache.between_border_and_building(
+                border_node,
+                dest_idx,
+                allocator,
+                transit_network,
+                graph,
+            ) else {
                 continue;
             };
             let fee = freight_cost(travel_seconds, seconds_per_day, logistics_tuning);

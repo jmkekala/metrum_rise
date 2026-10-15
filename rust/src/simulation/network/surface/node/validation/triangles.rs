@@ -467,8 +467,7 @@ fn plane_fit_residual_max_m(points: &[super::super::backend::RoadVec3]) -> Optio
     let grade_z = solution[1];
     let plane_y_at_origin = solution[2];
 
-    points.iter().fold(Some(0.0_f64), |max_residual, point| {
-        let max_residual = max_residual?;
+    points.iter().try_fold(0.0_f64, |max_residual, point| {
         let fitted_y =
             grade_x * (point.x - x_origin) + grade_z * (point.z - z_origin) + plane_y_at_origin;
         Some(max_residual.max((point.y - fitted_y).abs()))

@@ -68,6 +68,7 @@ fn arrangement_with_owner_pair_vertical_step_support(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn arrangement_with_owner_pair_vertical_step_support_and_heights(
     lower_kind: RoadSurfaceBandKind,
     raised_kind: RoadSurfaceBandKind,
@@ -91,6 +92,7 @@ fn arrangement_with_owner_pair_vertical_step_support_and_heights(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn arrangement_with_owner_pair_vertical_step_support_and_heights_and_region_authority(
     lower_kind: RoadSurfaceBandKind,
     raised_kind: RoadSurfaceBandKind,
@@ -148,9 +150,11 @@ fn arrangement_with_owner_pair_vertical_step_support_and_heights_and_region_auth
         Vec::new(),
         vec![lower_edge],
         1.0,
-        include_region_authority
-            .then(|| vec![seam.clone()])
-            .unwrap_or_default(),
+        if include_region_authority {
+            vec![seam.clone()]
+        } else {
+            Default::default()
+        },
     );
     arrangement.push_face(
         lower_region,
@@ -192,9 +196,11 @@ fn arrangement_with_owner_pair_vertical_step_support_and_heights_and_region_auth
         Vec::new(),
         Vec::new(),
         1.0,
-        include_region_authority
-            .then(|| vec![seam])
-            .unwrap_or_default(),
+        if include_region_authority {
+            vec![seam]
+        } else {
+            Default::default()
+        },
     );
     arrangement.push_face(
         upper_region,

@@ -73,31 +73,29 @@ pub fn build_vehicle_connections_at_node(
         // Global whitelist mode: if the node has ANY user vehicle connection (lane_idx ≠ ±100),
         // ALL unspecified turns are blocked. Only explicitly listed turns are permitted.
         // Nodes with no user connections remain fully open (allow all non-U-turns).
-        if allowed.is_none() {
-            if !node_has_any_vehicle_conn {
-                // Open node: allow all non-U-turn outbound lanes; dead ends allow the U-turn.
-                // The router reads the same rule.
-                let allows_u_turn = graph.open_node_allows_u_turn(node_id as u32);
-                let mut defaults = Vec::new();
-                for &(out_edge_id, out_lane_idx, _) in &outbound {
-                    if out_edge_id != in_edge_id || allows_u_turn {
-                        defaults.push((out_edge_id, out_lane_idx));
-                    }
-                }
-                if !defaults.is_empty() {
-                    allowed = Some(defaults);
+        if allowed.is_none() && !node_has_any_vehicle_conn {
+            // Open node: allow all non-U-turn outbound lanes; dead ends allow the U-turn.
+            // The router reads the same rule.
+            let allows_u_turn = graph.open_node_allows_u_turn(node_id as u32);
+            let mut defaults = Vec::new();
+            for &(out_edge_id, out_lane_idx, _) in &outbound {
+                if out_edge_id != in_edge_id || allows_u_turn {
+                    defaults.push((out_edge_id, out_lane_idx));
                 }
             }
-            // If node_has_any_vehicle_conn but this arm has no explicit connection, allowed stays
-            // None → no junction connection lanes created → turn is blocked.
+            if !defaults.is_empty() {
+                allowed = Some(defaults);
+            }
         }
+        // If node_has_any_vehicle_conn but this arm has no explicit connection, allowed stays
+        // None → no junction connection lanes created → turn is blocked.
 
         let mut valid_outs = Vec::new();
         for &(out_edge_id, out_lane_idx, out_lid) in &outbound {
-            if let Some(rules) = &allowed {
-                if rules.contains(&(out_edge_id, out_lane_idx)) {
-                    valid_outs.push(out_lid);
-                }
+            if let Some(rules) = &allowed
+                && rules.contains(&(out_edge_id, out_lane_idx))
+            {
+                valid_outs.push(out_lid);
             }
         }
 

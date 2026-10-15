@@ -202,7 +202,7 @@ pub(in crate::simulation::network::surface::node) fn constrained_height_triangle
             vertices[indices[2]],
         );
     }
-    triangles.sort_by(|a, b| height_triangle_sort_key(a).cmp(&height_triangle_sort_key(b)));
+    triangles.sort_by_key(height_triangle_sort_key);
     triangles.dedup_by_key(|triangle| height_triangle_sort_key(triangle));
     (!triangles.is_empty())
         .then_some(triangles)

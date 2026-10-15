@@ -41,6 +41,7 @@ impl RoadSurfaceSystem {
     /// The ownership range controls which longitudinal section range belongs to the edge span
     /// instead of the node piece. The profile range controls grade blending near junction and bend
     /// mouths. Grounded-road elevation is independent of material ownership and input density.
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::simulation::network::surface) fn visual_edge_mouth_policy_for_edge(
         &self,
         graph: &RegionGraph,

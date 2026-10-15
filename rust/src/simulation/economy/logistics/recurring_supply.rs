@@ -613,6 +613,7 @@ impl RecurringSupply {
     /// Replaces a household claim on staffed output in the shared supply ledger.
     /// Negative availability exposes affected business inputs for revalidation; changes cost
     /// O(source output ports + changed eligibility * log bucket size), with no allocation.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn reserve_household_output(
         &mut self,
         source: usize,
@@ -823,6 +824,7 @@ impl RecurringSupply {
     /// production. O(source ports + changed eligibility * log bucket size), no route query
     /// or per-delivery allocation after `prepare_customer_deliveries`. A storage shortage
     /// returns the exact required arena size before changing any source or receipt.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn commit_customer_delivery(
         &mut self,
         source: usize,
@@ -1173,6 +1175,7 @@ impl RecurringSupply {
     /// Repeated source searches skip depleted entries; an exhausted component costs O(log C).
     /// Imported residual supply requires a real border quote. Caller accepts or rejects the
     /// complete operation, so a later input/capital/income failure cannot consume local supply.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn quote(
         &mut self,
         input: InputRequirement,
@@ -1285,6 +1288,7 @@ impl RecurringSupply {
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn next_offer(
         &mut self,
         resource: ResourceRuntimeId,
@@ -1356,6 +1360,7 @@ impl RecurringSupply {
         choice
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn nearest(
         &mut self,
         resource: ResourceRuntimeId,

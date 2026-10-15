@@ -177,14 +177,14 @@ impl NodeFootprintBoundaryExportSources {
         ) {
             return Ok(Some(candidate.height_mm));
         }
-        if contour_context.is_some() {
-            if let Some(candidate) = self.source_authorized_side_join_asphalt_sidewalk_candidate(
+        if contour_context.is_some()
+            && let Some(candidate) = self.source_authorized_side_join_asphalt_sidewalk_candidate(
                 key,
                 &final_candidates,
                 &heights,
-            ) {
-                return Ok(Some(candidate.height_mm));
-            }
+            )
+        {
+            return Ok(Some(candidate.height_mm));
         }
         if allow_final_context_raised_step
             && let Some(height_mm) =
@@ -250,14 +250,14 @@ impl NodeFootprintBoundaryExportSources {
         ) {
             return Ok(Some(candidate.height_mm));
         }
-        if allow_source_authorized_side_join {
-            if let Some(candidate) = self.source_authorized_side_join_asphalt_sidewalk_candidate(
+        if allow_source_authorized_side_join
+            && let Some(candidate) = self.source_authorized_side_join_asphalt_sidewalk_candidate(
                 key,
                 &exact_candidates,
                 &heights,
-            ) {
-                return Ok(Some(candidate.height_mm));
-            }
+            )
+        {
+            return Ok(Some(candidate.height_mm));
         }
         if let Some(candidate) =
             self.canonical_distinct_source_provenance_candidate(&exact_candidates, &heights)
@@ -286,10 +286,10 @@ impl NodeFootprintBoundaryExportSources {
                 incoming_y_mm: heights[1],
                 existing_owner_kind: existing.source.owner_kind,
                 existing_owner_index: existing.source.owner_index,
-                existing_source: existing.source.source,
+                existing_source: Box::new(existing.source.source),
                 incoming_owner_kind: incoming.source.owner_kind,
                 incoming_owner_index: incoming.source.owner_index,
-                incoming_source: incoming.source.source,
+                incoming_source: Box::new(incoming.source.source),
             },
         )
     }
@@ -391,10 +391,10 @@ impl NodeFootprintBoundaryExportSources {
                     incoming_y_mm: heights[1],
                     existing_owner_kind: existing.source.owner_kind,
                     existing_owner_index: existing.source.owner_index,
-                    existing_source: existing.source.source,
+                    existing_source: Box::new(existing.source.source),
                     incoming_owner_kind: incoming.source.owner_kind,
                     incoming_owner_index: incoming.source.owner_index,
-                    incoming_source: incoming.source.source,
+                    incoming_source: Box::new(incoming.source.source),
                 },
             );
         }
@@ -983,7 +983,7 @@ impl NodeFootprintBoundaryExportSources {
                 (candidate.height_mm == *raised_height_mm).then_some(candidate)
             })
             .collect::<Vec<_>>();
-        raised_candidates.sort_by(|a, b| a.source.source.cmp(&b.source.source));
+        raised_candidates.sort_by_key(|a| a.source.source);
         raised_candidates
             .dedup_by(|a, b| node_footprint_height_candidates_share_source_identity(*a, *b));
         let [raised_candidate] = raised_candidates.as_slice() else {

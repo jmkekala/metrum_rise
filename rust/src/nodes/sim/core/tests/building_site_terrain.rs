@@ -1600,7 +1600,7 @@ fn yard_hedges_stand_on_the_graded_lawn_of_a_sloping_yard() {
         true,
     );
     let mut modules = 0;
-    for plant in packed.chunks_exact(6) {
+    for plant in packed.as_chunks::<6>().0 {
         let (species, variant) = (plant[5] as u32 & 3, plant[5] as u32 >> 2);
         if !(species == 2 && variant > 12) {
             continue;
@@ -1618,7 +1618,7 @@ fn yard_hedges_stand_on_the_graded_lawn_of_a_sloping_yard() {
     assert!(modules > 40, "modules {modules}");
     let runs = hedge_runs(&core, origin, span);
     assert!(!runs.is_empty());
-    for run in runs.chunks_exact(7) {
+    for run in runs.as_chunks::<7>().0 {
         let pos = Vector2::new(run[0], run[2]);
         let lawn = core.get_world_surface_height_internal(pos);
         assert!(
@@ -1628,7 +1628,7 @@ fn yard_hedges_stand_on_the_graded_lawn_of_a_sloping_yard() {
         );
     }
     // A distant run is one sheared box, so it is cut wherever the graded lawn bends under it.
-    for run in runs.chunks_exact(7) {
+    for run in runs.as_chunks::<7>().0 {
         let along = Vector2::new(run[3].cos(), -run[3].sin());
         for k in 0..=16 {
             let t = k as f32 / 16.0 - 0.5;

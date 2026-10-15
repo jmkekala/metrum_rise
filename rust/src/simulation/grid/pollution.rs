@@ -48,10 +48,13 @@ impl PollutionSystem {
                 let gx = gx_raw.round() as i32;
                 let gy = gy_raw.round() as i32;
 
-                if gx >= 0 && gx < w as i32 && gy >= 0 && gy < h as i32 {
-                    if let Some(val) = self.grid.get_mut(gx as usize, gy as usize) {
-                        *val += 5.0;
-                    }
+                if gx >= 0
+                    && gx < w as i32
+                    && gy >= 0
+                    && gy < h as i32
+                    && let Some(val) = self.grid.get_mut(gx as usize, gy as usize)
+                {
+                    *val += 5.0;
                 }
             }
         }

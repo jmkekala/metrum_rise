@@ -60,46 +60,42 @@ pub(super) unsafe fn try_network_detach(
         };
         if detach_allowed {
             let t_bldg_idx = *s_tgt_b.get(i);
-            if t_bldg_idx < allocator.entrances.len() {
-                if let Some(ingress_origin) = local_access_point(
+            if t_bldg_idx < allocator.entrances.len()
+                && let Some(ingress_origin) = local_access_point(
                     *s_tmode.get(i),
                     &allocator.entrances[t_bldg_idx],
                     planned_detach_lane_id,
                     detach_d,
                     transit_network,
-                ) {
-                    *s_pos_x.get_mut(i) = ingress_origin.x;
-                    *s_pos_y.get_mut(i) = ingress_origin.y;
-                    s_path.get_mut(i).clear();
-                    *s_path_idx.get_mut(i) = 0;
-                    *s_cur_n.get_mut(i) = u32::MAX;
-                    *s_cur_e.get_mut(i) = usize::MAX;
-                    *s_lane_id.get_mut(i) = usize::MAX;
-                    *s_lane_d.get_mut(i) = 0.0;
-                    *s_speed.get_mut(i) = 0.0;
-                    *s_transit.get_mut(i) = TRANSIT_ACCESS_INGRESS;
-                    if crate::debug::Channel::Traffic.enabled() {
-                        let entrance = &allocator.entrances[t_bldg_idx];
-                        traffic_log!(
-                            "[ACCESS_INGRESS_DETACH] agent={} target_bldg={} lane={}({}) lane_d={:.2} ingress_origin=({:.2},{:.2}) detach_node={} path_count={} flags=0x{:02x}",
-                            i,
-                            t_bldg_idx,
-                            planned_detach_lane_id,
-                            local_access_side_label(
-                                *s_tmode.get(i),
-                                entrance,
-                                planned_detach_lane_id,
-                            ),
-                            detach_d,
-                            ingress_origin.x,
-                            ingress_origin.y,
-                            *s_plan_detach_n.get(i),
-                            s_path.get(i).len(),
-                            *s_access_flags.get(i),
-                        );
-                    }
-                    return true;
+                )
+            {
+                *s_pos_x.get_mut(i) = ingress_origin.x;
+                *s_pos_y.get_mut(i) = ingress_origin.y;
+                s_path.get_mut(i).clear();
+                *s_path_idx.get_mut(i) = 0;
+                *s_cur_n.get_mut(i) = u32::MAX;
+                *s_cur_e.get_mut(i) = usize::MAX;
+                *s_lane_id.get_mut(i) = usize::MAX;
+                *s_lane_d.get_mut(i) = 0.0;
+                *s_speed.get_mut(i) = 0.0;
+                *s_transit.get_mut(i) = TRANSIT_ACCESS_INGRESS;
+                if crate::debug::Channel::Traffic.enabled() {
+                    let entrance = &allocator.entrances[t_bldg_idx];
+                    traffic_log!(
+                        "[ACCESS_INGRESS_DETACH] agent={} target_bldg={} lane={}({}) lane_d={:.2} ingress_origin=({:.2},{:.2}) detach_node={} path_count={} flags=0x{:02x}",
+                        i,
+                        t_bldg_idx,
+                        planned_detach_lane_id,
+                        local_access_side_label(*s_tmode.get(i), entrance, planned_detach_lane_id,),
+                        detach_d,
+                        ingress_origin.x,
+                        ingress_origin.y,
+                        *s_plan_detach_n.get(i),
+                        s_path.get(i).len(),
+                        *s_access_flags.get(i),
+                    );
                 }
+                return true;
             }
             return false;
         }

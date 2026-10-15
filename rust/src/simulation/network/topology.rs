@@ -648,6 +648,7 @@ fn apply_splits(
 }
 
 /// Migrates zoning occupancy and buildings when an edge is split.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn migrate_split_dependents(
     edge_id: usize,
     new_edge_id: usize,
@@ -806,7 +807,7 @@ fn collect_interior_node_splits(
         // Skip if this node is already scheduled for a split on this edge.
         if all_splits
             .get(&edge_id)
-            .map_or(false, |v| v.iter().any(|&(_, jid)| jid == node_id))
+            .is_some_and(|v| v.iter().any(|&(_, jid)| jid == node_id))
         {
             continue;
         }
@@ -918,6 +919,7 @@ const SPLIT_KNOT_MERGE_M: f32 = INTERSECTION_NODE_CAPTURE_EPSILON;
 ///
 /// Handles the geometric split, re-indexing, and migration of all dependent
 /// simulation data including zoning cells and buildings.
+#[allow(clippy::too_many_arguments)]
 pub fn split_edge(
     network: &mut TransitNetwork,
     graph: &mut RegionGraph,
@@ -1453,7 +1455,7 @@ mod tests {
         // straight road
         net.add_road(
             &mut graph,
-            vec![Vector3::new(-10.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)].into(),
+            vec![Vector3::new(-10.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
             1,
             1,
             crate::simulation::network::types::EdgeClass::Standard,
@@ -1464,7 +1466,7 @@ mod tests {
         // side road connecting to the middle
         net.add_road(
             &mut graph,
-            vec![Vector3::new(0.0, 0.0, 10.0), Vector3::new(0.0, 0.0, 0.0)].into(),
+            vec![Vector3::new(0.0, 0.0, 10.0), Vector3::new(0.0, 0.0, 0.0)],
             1,
             1,
             crate::simulation::network::types::EdgeClass::Standard,
@@ -1482,7 +1484,7 @@ mod tests {
 
         net.add_road(
             &mut graph,
-            vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)].into(),
+            vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
             1,
             1,
             crate::simulation::network::types::EdgeClass::Standard,

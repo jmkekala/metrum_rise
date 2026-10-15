@@ -118,8 +118,7 @@ fn side_join_gap(
 }
 
 fn side_join_gap_angle_rad(from_mouth: &NodeInputMouth, to_mouth: &NodeInputMouth) -> f64 {
-    (f64::from(to_mouth.direction_angle_ccw) - f64::from(from_mouth.direction_angle_ccw))
-        .rem_euclid(TAU)
+    (to_mouth.direction_angle_ccw - from_mouth.direction_angle_ccw).rem_euclid(TAU)
 }
 
 fn append_adjacent_side_join_bands(
@@ -439,6 +438,7 @@ fn side_join_band_inner_path(
     .map(|path| path.rounded_world))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn pushed_side_join_band(
     join_bands: &mut Vec<NodeInputSideJoinBand>,
     source_band_index: usize,

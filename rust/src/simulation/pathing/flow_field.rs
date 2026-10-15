@@ -225,6 +225,12 @@ pub struct FlowFieldSystem {
     dirty: [bool; FLOW_FIELD_ZONE_COUNT],
 }
 
+impl Default for FlowFieldSystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FlowFieldSystem {
     /// Creates a new system with all fields absent and all zones dirty.
     pub fn new() -> Self {

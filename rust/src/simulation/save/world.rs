@@ -143,6 +143,7 @@ fn demand_spawn_zone_from_db(code: i64) -> SaveLoadResult<ZoneType> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn save_world(
     tx: &Transaction,
     terrain: &TerrainSystem,
@@ -1375,6 +1376,7 @@ pub(super) fn repaint_building_occupancy(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn repair_quarantined_loaded_parcels(
     zoning: &mut ZoningSystem,
     allocator: &mut BuildingAllocator,

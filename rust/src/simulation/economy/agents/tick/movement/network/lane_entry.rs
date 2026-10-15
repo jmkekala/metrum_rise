@@ -75,28 +75,24 @@ pub(super) unsafe fn prepare_lane_entry(
                 && planned_detach_lane_id != usize::MAX
                 && *s_cur_n.get(i) == *s_plan_detach_n.get(i)
                 && *s_lane_id.get(i) == usize::MAX
-            {
-                if let Some(detach_origin) =
+                && let Some(detach_origin) =
                     lane_origin_node(planned_detach_lane_id, transit_network, graph)
-                {
-                    if detach_origin == *s_plan_detach_n.get(i) {
-                        let parent_edge =
-                            transit_network.lane_system.lanes[planned_detach_lane_id].edge_id;
-                        enter_lane!(
-                            slices,
-                            i,
-                            transit_network,
-                            planned_detach_lane_id,
-                            0.0,
-                            *s_cur_n.get(i)
-                        );
-                        if *s_speed.get(i) == 0.0 {
-                            *s_speed.get_mut(i) = graph.edge(parent_edge).speed_limit;
-                        }
-                        reset_network_replan_watchdog(i, slices);
-                        return LaneEntryAction::Continue;
-                    }
+                && detach_origin == *s_plan_detach_n.get(i)
+            {
+                let parent_edge = transit_network.lane_system.lanes[planned_detach_lane_id].edge_id;
+                enter_lane!(
+                    slices,
+                    i,
+                    transit_network,
+                    planned_detach_lane_id,
+                    0.0,
+                    *s_cur_n.get(i)
+                );
+                if *s_speed.get(i) == 0.0 {
+                    *s_speed.get_mut(i) = graph.edge(parent_edge).speed_limit;
                 }
+                reset_network_replan_watchdog(i, slices);
+                return LaneEntryAction::Continue;
             }
 
             if access_plan_valid {

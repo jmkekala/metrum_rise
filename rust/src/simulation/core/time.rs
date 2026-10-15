@@ -104,6 +104,12 @@ pub struct TimeSystem {
     pub seconds_per_day: f64,
 }
 
+impl Default for TimeSystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TimeSystem {
     /// Creates a new time system, starting at day `1`, `07:30`, and initially paused.
     pub fn new() -> Self {

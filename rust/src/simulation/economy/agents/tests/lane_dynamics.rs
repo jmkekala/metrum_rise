@@ -34,7 +34,7 @@ fn test_lane_bucket_preserves_all_agents_in_sorted_order() {
     use crate::config::{CAR_LENGTH, IDM_S_MIN};
     let (mut network, mut graph, edge_idx, fwd_lane) = setup_straight_road();
     let mut agents = AgentSystem::new();
-    let mut allocator = BuildingAllocator::new();
+    let allocator = BuildingAllocator::new();
 
     // Place three agents in deliberately unsorted distance order.
     let _c = place_on_lane(&mut agents, edge_idx, fwd_lane, 80.0, 10.0); // front
@@ -43,13 +43,7 @@ fn test_lane_bucket_preserves_all_agents_in_sorted_order() {
 
     // Run a few ticks so IDM and overlap correction settle.
     for _ in 0..5 {
-        agents.tick(
-            &mut allocator,
-            &mut network,
-            &mut graph,
-            0.1,
-            &test_clock(0, 0),
-        );
+        agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
     }
 
     let expected = [_a, _b, _c].map(|i| (agents.lane_distance[i], i));
@@ -72,7 +66,7 @@ fn test_lane_bucket_preserves_all_agents_in_sorted_order() {
 fn test_lane_bucket_empty_for_idle_agents() {
     let (mut network, mut graph, _, _) = setup_straight_road();
     let mut agents = AgentSystem::new();
-    let mut allocator = BuildingAllocator::new();
+    let allocator = BuildingAllocator::new();
 
     // Spawn idle agents (home/work = MAX → safety scrub keeps them idle).
     for _ in 0..10 {
@@ -83,13 +77,7 @@ fn test_lane_bucket_empty_for_idle_agents() {
         agents.transit[i] = TRANSIT_IN_BUILDING;
     }
 
-    agents.tick(
-        &mut allocator,
-        &mut network,
-        &mut graph,
-        0.1,
-        &test_clock(0, 0),
-    );
+    agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
 
     assert!(
         agents.dirty_lanes.is_empty(),
@@ -109,19 +97,13 @@ fn test_lane_bucket_multi_lane_independence() {
     let lane1 = fwd_lanes[1];
 
     let mut agents = AgentSystem::new();
-    let mut allocator = BuildingAllocator::new();
+    let allocator = BuildingAllocator::new();
 
     // One agent per lane at the same distance, both at full speed.
     let a0 = place_on_lane(&mut agents, 0, lane0, 50.0, 14.0);
     let a1 = place_on_lane(&mut agents, 0, lane1, 50.0, 14.0);
 
-    agents.tick(
-        &mut allocator,
-        &mut network,
-        &mut graph,
-        0.5,
-        &test_clock(0, 0),
-    );
+    agents.tick(&allocator, &mut network, &mut graph, 0.5, &test_clock(0, 0));
 
     // Both should advance by roughly the same amount — neither should be
     // slowed down by the other since they are in separate lanes.
@@ -144,7 +126,7 @@ fn test_lane_bucket_multi_lane_independence() {
 fn test_lane_bucket_invalid_lane_id_does_not_crash() {
     let (mut network, mut graph, edge_idx, _) = setup_straight_road();
     let mut agents = AgentSystem::new();
-    let mut allocator = BuildingAllocator::new();
+    let allocator = BuildingAllocator::new();
 
     // Spawn with a valid edge but invalid lane — matches the benchmark default.
     let i = agents.spawn_border_arrival_agent(usize::MAX, 0, 0.0, 0.0);
@@ -160,13 +142,7 @@ fn test_lane_bucket_invalid_lane_id_does_not_crash() {
     // The tick may assign the agent to a real lane (expected behaviour),
     // so we only assert the invariant that every entry in dirty_lanes is
     // a valid lane index.
-    agents.tick(
-        &mut allocator,
-        &mut network,
-        &mut graph,
-        0.1,
-        &test_clock(0, 0),
-    );
+    agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
 
     let lane_count = network.lane_system.lanes.len();
     for &lid in &agents.dirty_lanes {
@@ -183,20 +159,14 @@ fn test_lane_bucket_invalid_lane_id_does_not_crash() {
 fn test_lane_bucket_dirty_lanes_no_duplicates() {
     let (mut network, mut graph, edge_idx, fwd_lane) = setup_straight_road();
     let mut agents = AgentSystem::new();
-    let mut allocator = BuildingAllocator::new();
+    let allocator = BuildingAllocator::new();
 
     // Place 5 agents spread across the same lane.
     for k in 0..5 {
         place_on_lane(&mut agents, edge_idx, fwd_lane, 10.0 + k as f32 * 15.0, 5.0);
     }
 
-    agents.tick(
-        &mut allocator,
-        &mut network,
-        &mut graph,
-        0.1,
-        &test_clock(0, 0),
-    );
+    agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
 
     let count = agents
         .dirty_lanes
@@ -215,23 +185,11 @@ fn test_congestion_zero_at_free_flow_speed() {
     let (mut network, mut graph, edge_idx, fwd_lane) = setup_straight_road();
     let speed_limit = graph.edge(edge_idx).speed_limit;
     let mut agents = AgentSystem::new();
-    let mut allocator = BuildingAllocator::new();
+    let allocator = BuildingAllocator::new();
 
     place_on_lane(&mut agents, edge_idx, fwd_lane, 50.0, speed_limit);
-    agents.tick(
-        &mut allocator,
-        &mut network,
-        &mut graph,
-        0.1,
-        &test_clock(0, 0),
-    );
-    agents.tick(
-        &mut allocator,
-        &mut network,
-        &mut graph,
-        0.1,
-        &test_clock(0, 0),
-    );
+    agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
+    agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
 
     assert_eq!(
         graph.edge(edge_idx).current_congestion,
@@ -246,25 +204,13 @@ fn test_congestion_proportional_to_speed_deficit() {
     let (mut network, mut graph, edge_idx, fwd_lane) = setup_straight_road();
     let speed_limit = graph.edge(edge_idx).speed_limit;
     let mut agents = AgentSystem::new();
-    let mut allocator = BuildingAllocator::new();
+    let allocator = BuildingAllocator::new();
 
     place_on_lane(&mut agents, edge_idx, fwd_lane, 50.0, speed_limit * 0.5);
-    agents.tick(
-        &mut allocator,
-        &mut network,
-        &mut graph,
-        0.1,
-        &test_clock(0, 0),
-    );
+    agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
     // Force speed to stay at 50 % and tick again so congestion is written.
     agents.speed[0] = speed_limit * 0.5;
-    agents.tick(
-        &mut allocator,
-        &mut network,
-        &mut graph,
-        0.1,
-        &test_clock(0, 0),
-    );
+    agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
 
     let c = graph.edge(edge_idx).current_congestion;
     assert!(
@@ -345,14 +291,8 @@ fn test_frontage_delay_cache_decays_without_agents() {
     network.lane_system.lanes[fwd_lane].live_frontage_delay_s = 10.0;
 
     let mut agents = AgentSystem::new();
-    let mut allocator = BuildingAllocator::new();
-    agents.tick(
-        &mut allocator,
-        &mut network,
-        &mut graph,
-        1.0,
-        &test_clock(0, 0),
-    );
+    let allocator = BuildingAllocator::new();
+    agents.tick(&allocator, &mut network, &mut graph, 1.0, &test_clock(0, 0));
 
     let penalty = network.lane_system.lanes[fwd_lane].live_frontage_delay_s;
     assert!(
@@ -369,7 +309,7 @@ fn test_overlap_correction_stable_over_many_ticks() {
     use crate::config::{CAR_LENGTH, IDM_S_MIN};
     let (mut network, mut graph, edge_idx, fwd_lane) = setup_straight_road();
     let mut agents = AgentSystem::new();
-    let mut allocator = BuildingAllocator::new();
+    let allocator = BuildingAllocator::new();
 
     let min_sep = CAR_LENGTH + IDM_S_MIN;
     let indices: Vec<usize> = (0..4)
@@ -385,13 +325,7 @@ fn test_overlap_correction_stable_over_many_ticks() {
         .collect();
 
     for _ in 0..30 {
-        agents.tick(
-            &mut allocator,
-            &mut network,
-            &mut graph,
-            0.1,
-            &test_clock(0, 0),
-        );
+        agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
     }
 
     let mut dists: Vec<f32> = indices.iter().map(|&i| agents.lane_distance[i]).collect();
@@ -494,7 +428,7 @@ fn test_lane_bucket_parallel_sort_matches_sequential_order() {
     network.cch_graph = CchGraph::build(&graph);
 
     let mut agents = AgentSystem::new();
-    let mut allocator = BuildingAllocator::new();
+    let allocator = BuildingAllocator::new();
 
     // Place 2 agents per edge in reverse order so the sort has real work to do.
     for &eid in &edges {
@@ -519,13 +453,7 @@ fn test_lane_bucket_parallel_sort_matches_sequential_order() {
         }
     }
 
-    agents.tick(
-        &mut allocator,
-        &mut network,
-        &mut graph,
-        0.1,
-        &test_clock(0, 0),
-    );
+    agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
 
     // Build an independent sequential reference from authoritative agent state, then compare
     // the actual retained buckets. Sorting a copy and only checking that copy is tautological.

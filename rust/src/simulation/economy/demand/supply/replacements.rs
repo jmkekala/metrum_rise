@@ -510,10 +510,9 @@ impl SiteSupply<'_> {
                                     }),
                                     units,
                                     site.goods_multiplier,
-                                ) {
-                                    if let Some(source) = source {
-                                        book.seed_for(source, slot);
-                                    }
+                                ) && let Some(source) = source
+                                {
+                                    book.seed_for(source, slot);
                                 }
                             },
                         );

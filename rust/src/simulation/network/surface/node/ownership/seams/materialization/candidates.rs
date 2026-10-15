@@ -241,6 +241,7 @@ pub(super) enum OwnedEdgeSeamCandidate<'a> {
     },
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn materialized_seam_candidates_for_owned_edge<'a>(
     start: NodeOwnershipPointKey,
     end: NodeOwnershipPointKey,
@@ -320,6 +321,7 @@ pub(super) fn materialized_seam_candidates_for_owned_edge<'a>(
     .unwrap_or_default()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn append_matching_rail_constraints_for_owned_edge<'a>(
     start: NodeOwnershipPointKey,
     end: NodeOwnershipPointKey,
@@ -409,6 +411,7 @@ fn source_authorized_point_contact_constraint_index_at_key(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn materialized_source_constraint_for_owned_step_edge(
     start: NodeOwnershipPointKey,
     end: NodeOwnershipPointKey,

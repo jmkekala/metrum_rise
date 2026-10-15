@@ -30,6 +30,7 @@ pub(in crate::simulation::network::surface::node::boundary::tests) fn test_sourc
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::simulation::network::surface::node::boundary::tests) fn test_source_edge_for_owner(
     owner_kind: RoadSurfaceBandKind,
     owner_index: usize,
@@ -53,6 +54,7 @@ pub(in crate::simulation::network::surface::node::boundary::tests) fn test_sourc
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::simulation::network::surface::node::boundary::tests) fn test_source_edge_for_owner_and_kind(
     kind: RoadSurfaceVisualNodePieceKind,
     owner_kind: RoadSurfaceBandKind,

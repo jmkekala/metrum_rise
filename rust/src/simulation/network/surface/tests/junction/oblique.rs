@@ -258,7 +258,7 @@ fn logged_bend_upgraded_to_junctionn_preserves_exterior_non_road_arc() {
         NodeType::Junction,
     );
     let center = graph.add_node(Vector3::new(14.830101, 0.0, -29.937523), NodeType::Junction);
-    let northeast = graph.add_node(Vector3::new(70.083397, 0.0, 73.646095), NodeType::Junction);
+    let northeast = graph.add_node(Vector3::new(70.083_4, 0.0, 73.646095), NodeType::Junction);
     let branch = graph.add_node(Vector3::new(-3.189828, 0.0, 24.678764), NodeType::Junction);
     graph.add_edge(test_edge(
         west,
@@ -277,7 +277,7 @@ fn logged_bend_upgraded_to_junctionn_preserves_exterior_non_road_arc() {
         northeast,
         vec![
             Vector3::new(14.830101, 0.0, -29.937523),
-            Vector3::new(70.083397, 0.0, 73.646095),
+            Vector3::new(70.083_4, 0.0, 73.646095),
         ],
         7.0,
         EdgeClass::Standard,
@@ -325,17 +325,17 @@ fn logged_bend_upgraded_to_junctionn_preserves_exterior_non_road_arc() {
 fn logged_current_bend_upgraded_to_junctionn_preserves_exterior_non_road_without_asphalt() {
     let mut graph = RegionGraph::new();
     let west = graph.add_node(
-        Vector3::new(-87.623878, 0.0, -15.375183),
+        Vector3::new(-87.623_88, 0.0, -15.375183),
         NodeType::Junction,
     );
     let center = graph.add_node(Vector3::new(4.538681, 0.0, -18.090569), NodeType::Junction);
-    let northeast = graph.add_node(Vector3::new(46.647079, 0.0, 80.608551), NodeType::Junction);
+    let northeast = graph.add_node(Vector3::new(46.647_08, 0.0, 80.608_55), NodeType::Junction);
     let branch = graph.add_node(Vector3::new(-20.544514, 0.0, 42.822044), NodeType::Junction);
     graph.add_edge(test_edge(
         west,
         center,
         vec![
-            Vector3::new(-87.623878, 0.0, -15.375183),
+            Vector3::new(-87.623_88, 0.0, -15.375183),
             Vector3::new(4.538681, 0.0, -18.090569),
         ],
         7.0,
@@ -348,7 +348,7 @@ fn logged_current_bend_upgraded_to_junctionn_preserves_exterior_non_road_without
         northeast,
         vec![
             Vector3::new(4.538681, 0.0, -18.090569),
-            Vector3::new(46.647079, 0.0, 80.608551),
+            Vector3::new(46.647_08, 0.0, 80.608_55),
         ],
         7.0,
         EdgeClass::Standard,
@@ -403,15 +403,15 @@ fn logged_current_bend_upgraded_to_junctionn_preserves_exterior_non_road_without
 #[test]
 fn logged_bent_t_junction_preserves_exterior_non_road_without_asphalt() {
     let mut graph = RegionGraph::new();
-    let west = graph.add_node(Vector3::new(-76.432709, 0.0, 3.041950), NodeType::Junction);
+    let west = graph.add_node(Vector3::new(-76.432_71, 0.0, 3.041_95), NodeType::Junction);
     let center = graph.add_node(Vector3::new(2.923641, 0.0, -1.916813), NodeType::Junction);
     let northeast = graph.add_node(Vector3::new(56.311253, 0.0, 51.254074), NodeType::Junction);
-    let branch = graph.add_node(Vector3::new(-29.772259, 0.0, 78.427689), NodeType::Junction);
+    let branch = graph.add_node(Vector3::new(-29.772259, 0.0, 78.427_69), NodeType::Junction);
     graph.add_edge(test_edge(
         west,
         center,
         vec![
-            Vector3::new(-76.432709, 0.0, 3.041950),
+            Vector3::new(-76.432_71, 0.0, 3.041_95),
             Vector3::new(2.923641, 0.0, -1.916813),
         ],
         7.0,
@@ -435,7 +435,7 @@ fn logged_bent_t_junction_preserves_exterior_non_road_without_asphalt() {
         branch,
         center,
         vec![
-            Vector3::new(-29.772259, 0.0, 78.427689),
+            Vector3::new(-29.772259, 0.0, 78.427_69),
             Vector3::new(2.923641, 0.0, -1.916813),
         ],
         7.0,
@@ -549,8 +549,8 @@ fn logged_current_bent_t_junction_trims_exterior_asphalt_islands() {
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-85.998276, 0.0, 15.480217), NodeType::Junction);
     let center = graph.add_node(Vector3::new(17.261505, 0.0, 36.514523), NodeType::Junction);
-    let northeast = graph.add_node(Vector3::new(64.834915, 0.0, 117.753670), NodeType::Junction);
-    let branch = graph.add_node(Vector3::new(-28.215271, 0.0, 82.433357), NodeType::Junction);
+    let northeast = graph.add_node(Vector3::new(64.834915, 0.0, 117.753_67), NodeType::Junction);
+    let branch = graph.add_node(Vector3::new(-28.215271, 0.0, 82.433_36), NodeType::Junction);
     graph.add_edge(test_edge(
         west,
         center,
@@ -568,7 +568,7 @@ fn logged_current_bent_t_junction_trims_exterior_asphalt_islands() {
         northeast,
         vec![
             Vector3::new(17.261505, 0.0, 36.514523),
-            Vector3::new(64.834915, 0.0, 117.753670),
+            Vector3::new(64.834915, 0.0, 117.753_67),
         ],
         7.0,
         EdgeClass::Standard,
@@ -579,7 +579,7 @@ fn logged_current_bent_t_junction_trims_exterior_asphalt_islands() {
         branch,
         center,
         vec![
-            Vector3::new(-28.215271, 0.0, 82.433357),
+            Vector3::new(-28.215271, 0.0, 82.433_36),
             Vector3::new(17.261505, 0.0, 36.514523),
         ],
         7.0,
@@ -595,8 +595,8 @@ fn logged_current_bent_t_junction_trims_exterior_asphalt_islands() {
 
     let piece = assert_compiled_junction_piece(&surface, &graph, center);
     let bad_islands = [
-        Vector2::new(20.482485, 35.878922),
-        Vector2::new(16.822950, 33.260852),
+        Vector2::new(20.482485, 35.878_92),
+        Vector2::new(16.822_95, 33.260852),
     ];
     for point in bad_islands {
         assert!(

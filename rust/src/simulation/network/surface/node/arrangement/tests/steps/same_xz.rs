@@ -541,6 +541,7 @@ fn sidewalk_source_vertex(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn sourced_vertex(
     point_xz: RoadVec2,
     height_m: f64,

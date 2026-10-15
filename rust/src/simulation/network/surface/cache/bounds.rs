@@ -23,10 +23,10 @@ impl RoadSurfaceSystem {
                     .iter()
                     .flat_map(|polygon| polygon.points_world.iter())
                 {
-                    min_x = min_x.min(f64::from(point.x));
-                    max_x = max_x.max(f64::from(point.x));
-                    min_z = min_z.min(f64::from(point.z));
-                    max_z = max_z.max(f64::from(point.z));
+                    min_x = min_x.min(point.x);
+                    max_x = max_x.max(point.x);
+                    min_z = min_z.min(point.z);
+                    max_z = max_z.max(point.z);
                     saw_point = true;
                 }
             }
@@ -36,10 +36,10 @@ impl RoadSurfaceSystem {
                     .iter()
                     .flat_map(|polygon| polygon.points_world.iter())
                 {
-                    min_x = min_x.min(f64::from(point.x));
-                    max_x = max_x.max(f64::from(point.x));
-                    min_z = min_z.min(f64::from(point.z));
-                    max_z = max_z.max(f64::from(point.z));
+                    min_x = min_x.min(point.x);
+                    max_x = max_x.max(point.x);
+                    min_z = min_z.min(point.z);
+                    max_z = max_z.max(point.z);
                     saw_point = true;
                 }
                 if !saw_point {
@@ -47,10 +47,10 @@ impl RoadSurfaceSystem {
                         .earthwork_surface_polygons()
                         .flat_map(|polygon| polygon.points_world.iter())
                     {
-                        min_x = min_x.min(f64::from(point.x));
-                        max_x = max_x.max(f64::from(point.x));
-                        min_z = min_z.min(f64::from(point.z));
-                        max_z = max_z.max(f64::from(point.z));
+                        min_x = min_x.min(point.x);
+                        max_x = max_x.max(point.x);
+                        min_z = min_z.min(point.z);
+                        max_z = max_z.max(point.z);
                         saw_point = true;
                     }
                 }
@@ -81,10 +81,10 @@ impl RoadSurfaceSystem {
                     .iter()
                     .flat_map(|polygon| polygon.points_world.iter())
                 {
-                    min_x = min_x.min(f64::from(point.x));
-                    max_x = max_x.max(f64::from(point.x));
-                    min_z = min_z.min(f64::from(point.z));
-                    max_z = max_z.max(f64::from(point.z));
+                    min_x = min_x.min(point.x);
+                    max_x = max_x.max(point.x);
+                    min_z = min_z.min(point.z);
+                    max_z = max_z.max(point.z);
                     saw_point = true;
                 }
             }
@@ -94,10 +94,10 @@ impl RoadSurfaceSystem {
                     .iter()
                     .flat_map(|polygon| polygon.points_world.iter())
                 {
-                    min_x = min_x.min(f64::from(point.x));
-                    max_x = max_x.max(f64::from(point.x));
-                    min_z = min_z.min(f64::from(point.z));
-                    max_z = max_z.max(f64::from(point.z));
+                    min_x = min_x.min(point.x);
+                    max_x = max_x.max(point.x);
+                    min_z = min_z.min(point.z);
+                    max_z = max_z.max(point.z);
                     saw_point = true;
                 }
                 if !saw_point {
@@ -105,10 +105,10 @@ impl RoadSurfaceSystem {
                         .earthwork_surface_polygons()
                         .flat_map(|polygon| polygon.points_world.iter())
                     {
-                        min_x = min_x.min(f64::from(point.x));
-                        max_x = max_x.max(f64::from(point.x));
-                        min_z = min_z.min(f64::from(point.z));
-                        max_z = max_z.max(f64::from(point.z));
+                        min_x = min_x.min(point.x);
+                        max_x = max_x.max(point.x);
+                        min_z = min_z.min(point.z);
+                        max_z = max_z.max(point.z);
                         saw_point = true;
                     }
                 }

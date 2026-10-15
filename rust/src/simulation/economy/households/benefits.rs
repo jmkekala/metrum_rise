@@ -19,9 +19,11 @@ impl HouseholdSystem {
         allocator: &BuildingAllocator,
         treasury_balance: &mut f64,
     ) {
-        let mut policy = CityFiscalPolicy::default();
-        policy.pension_per_elder_per_day = 0.0;
-        policy.child_support_per_child_per_day = 0.0;
+        let policy = CityFiscalPolicy {
+            pension_per_elder_per_day: 0.0,
+            child_support_per_child_per_day: 0.0,
+            ..Default::default()
+        };
         self.pay_household_transfers(agents, allocator, treasury_balance, &policy);
     }
 

@@ -254,12 +254,14 @@ pub(in crate::simulation::network::surface::tests) fn triangulation_open_boundar
     Some(format!("open_boundary_debug={open_regions:?}"))
 }
 
+type RegionEdgeNearOpenEdge = (usize, (i64, i64), (i64, i64), (i64, i64), (i64, i64));
+
 fn arrangement_region_edges_near_open_edge(
     arrangement: &super::arrangement::NodeArrangement,
     region: &super::arrangement::NodeOwnedRegion,
     start: (i64, i64),
     end: (i64, i64),
-) -> Vec<(usize, (i64, i64), (i64, i64), (i64, i64), (i64, i64))> {
+) -> Vec<RegionEdgeNearOpenEdge> {
     std::iter::once(region.outer_loop())
         .chain(region.holes().iter().map(Vec::as_slice))
         .flat_map(|contour| {

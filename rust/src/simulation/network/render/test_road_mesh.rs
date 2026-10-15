@@ -114,6 +114,7 @@ mod tests {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn create_surface_edge(
         n1: u32,
         n2: u32,
@@ -168,7 +169,7 @@ mod tests {
                 0,
                 "{label}: vertex count must be a multiple of 3"
             );
-            for (tri_idx, chunk) in vertices.chunks_exact(3).enumerate() {
+            for (tri_idx, chunk) in vertices.as_chunks::<3>().0.iter().enumerate() {
                 let (v0, v1, v2) = (chunk[0], chunk[1], chunk[2]);
                 for (vi, v) in [(0, v0), (1, v1), (2, v2)] {
                     assert!(
@@ -205,8 +206,10 @@ mod tests {
                 "raised_step normals must match vertex count"
             );
             for (tri_idx, (triangle, triangle_normals)) in vertices
-                .chunks_exact(3)
-                .zip(normals.chunks_exact(3))
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .zip(normals.as_chunks::<3>().0)
                 .enumerate()
             {
                 let triangle = [triangle[0], triangle[1], triangle[2]];
@@ -263,7 +266,9 @@ mod tests {
 
     fn triangles_from_vertices(vertices: &[Vector3]) -> Vec<[Vector3; 3]> {
         vertices
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .map(|triangle| [triangle[0], triangle[1], triangle[2]])
             .collect()
     }
@@ -279,15 +284,14 @@ mod tests {
             "colored triangle data must keep vertices and colors aligned"
         );
         vertices
-            .chunks_exact(3)
-            .zip(colors.chunks_exact(3))
-            .filter_map(|(triangle, triangle_colors)| {
-                triangle_colors
-                    .iter()
-                    .copied()
-                    .all(&mut matches_color)
-                    .then(|| [triangle[0], triangle[1], triangle[2]])
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .zip(colors.as_chunks::<3>().0)
+            .filter(|&(_triangle, triangle_colors)| {
+                triangle_colors.iter().copied().all(&mut matches_color)
             })
+            .map(|(triangle, _triangle_colors)| [triangle[0], triangle[1], triangle[2]])
             .collect()
     }
 
@@ -346,7 +350,8 @@ mod tests {
 
         edge_counts
             .into_iter()
-            .filter_map(|(edge, count)| (count == 1).then(|| edge_segments[&edge]))
+            .filter(|&(_edge, count)| count == 1)
+            .map(|(edge, _count)| edge_segments[&edge])
             .collect()
     }
 
@@ -796,15 +801,15 @@ mod tests {
         let mut graph = RegionGraph::new();
 
         let southwest = graph.add_node(
-            Vector3::new(-73.806625, 0.0, -50.709042),
+            Vector3::new(-73.806625, 0.0, -50.709_04),
             NodeType::Junction,
         );
         let center = graph.add_node(Vector3::new(3.799001, 0.0, -32.290504), NodeType::Junction);
         let southeast = graph.add_node(
-            Vector3::new(19.964146, 0.0, -100.398422),
+            Vector3::new(19.964146, 0.0, -100.398_42),
             NodeType::Junction,
         );
-        let east = graph.add_node(Vector3::new(99.692421, 0.0, -9.531635), NodeType::Junction);
+        let east = graph.add_node(Vector3::new(99.692_42, 0.0, -9.531635), NodeType::Junction);
         graph.add_edge(create_surface_edge(
             southwest,
             center,
@@ -1536,13 +1541,13 @@ mod tests {
         let lane_system = crate::simulation::network::lanes::LaneSystem::new();
         let mut graph = RegionGraph::new();
 
-        let start_point = Vector3::new(-91.794_937, 0.0, -166.171_524);
-        let end_point = Vector3::new(-169.931_305, 0.0, -185.171_753);
+        let start_point = Vector3::new(-91.794_94, 0.0, -166.171_52);
+        let end_point = Vector3::new(-169.931_3, 0.0, -185.171_75);
         let points = vec![
             start_point,
-            Vector3::new(-100.156_898, 0.0, -168.204_865),
-            Vector3::new(-130.863_113, 0.0, -175.671_646),
-            Vector3::new(-160.968_079, 0.0, -182.992_188),
+            Vector3::new(-100.156_9, 0.0, -168.204_86),
+            Vector3::new(-130.863_11, 0.0, -175.671_65),
+            Vector3::new(-160.968_08, 0.0, -182.992_19),
             end_point,
         ];
         let n0 = graph.add_node(start_point, NodeType::Junction);
@@ -1861,23 +1866,20 @@ mod tests {
         let mut graph = RegionGraph::new();
 
         let west = graph.add_node(
-            Vector3::new(-72.868_027, 0.0, -49.521_713),
+            Vector3::new(-72.868_03, 0.0, -49.521_713),
             NodeType::Junction,
         );
         let center = graph.add_node(
             Vector3::new(-21.145_235, 0.0, -24.091_516),
             NodeType::Junction,
         );
-        let north = graph.add_node(
-            Vector3::new(-43.206_322, 0.0, 20.778_391),
-            NodeType::Junction,
-        );
+        let north = graph.add_node(Vector3::new(-43.206_32, 0.0, 20.778_39), NodeType::Junction);
         let east = graph.add_node(Vector3::new(32.258_186, 0.0, 2.164_986), NodeType::Junction);
         graph.add_edge(create_surface_edge(
             west,
             center,
             &[
-                Vector3::new(-72.868_027, 0.0, -49.521_713),
+                Vector3::new(-72.868_03, 0.0, -49.521_713),
                 Vector3::new(-21.145_235, 0.0, -24.091_516),
             ],
             7.0,
@@ -1892,7 +1894,7 @@ mod tests {
             north,
             &[
                 Vector3::new(-21.145_235, 0.0, -24.091_516),
-                Vector3::new(-43.206_322, 0.0, 20.778_391),
+                Vector3::new(-43.206_32, 0.0, 20.778_39),
             ],
             7.0,
             TransitType::Road,
@@ -1934,7 +1936,7 @@ mod tests {
         let mut graph = RegionGraph::new();
 
         let southwest = graph.add_node(
-            Vector3::new(-107.867_722, 0.0, -42.304_695),
+            Vector3::new(-107.867_72, 0.0, -42.304_695),
             NodeType::Junction,
         );
         let center = graph.add_node(
@@ -3003,10 +3005,12 @@ mod tests {
         assert_eq!(vertices.len(), colors.len());
         assert_eq!(vertices.len() % 3, 0);
         vertices
-            .chunks_exact(3)
-            .zip(normals.chunks_exact(3))
-            .zip(uvs.chunks_exact(3))
-            .zip(colors.chunks_exact(3))
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .zip(normals.as_chunks::<3>().0)
+            .zip(uvs.as_chunks::<3>().0)
+            .zip(colors.as_chunks::<3>().0)
             .map(
                 |(((triangle_vertices, triangle_normals), triangle_uvs), triangle_colors)| {
                     std::array::from_fn(|index| {

@@ -189,7 +189,7 @@ impl SimCore {
             observer.buildings_changed(self);
         }
         report.pending_spawn_ms += pending_spawn_start.elapsed().as_secs_f64() * 1000.0;
-        if minute_of_day % 60 == 0 {
+        if minute_of_day.is_multiple_of(60) {
             let hourly_start = Instant::now();
             record_crash_phase_for_core(self, "operational hour tick");
             run_sim_phase("operational hour tick", || {

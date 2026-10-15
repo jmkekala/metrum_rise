@@ -630,14 +630,14 @@ fn validate_lot_polygon(
         }
     }
 
-    if super::geometry::signed_area(&vertices).abs() <= 0.001 {
+    if super::geometry::signed_area(vertices).abs() <= 0.001 {
         return Err(ManifestError::Validation(format!(
             "asset_id '{}': {what} '{}' has zero or near-zero polygon area",
             asset_id, name
         )));
     }
 
-    if super::geometry::self_intersects(&vertices) {
+    if super::geometry::self_intersects(vertices) {
         return Err(ManifestError::Validation(format!(
             "asset_id '{}': {what} '{}' polygon self-intersects",
             asset_id, name

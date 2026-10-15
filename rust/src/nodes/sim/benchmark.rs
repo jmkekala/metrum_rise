@@ -131,17 +131,16 @@ impl SimCore {
                 usize::MAX,
                 &self.region_graph,
                 TransitFlags::CAR,
-            ) {
-                if path.len() > 1 {
-                    let mut bounce = path.clone();
-                    for _ in 0..4 {
-                        let mut rev = path.clone();
-                        rev.reverse();
-                        bounce.extend_from_slice(&rev[1..]);
-                        bounce.extend_from_slice(&path[1..]);
-                    }
-                    routes.push(bounce);
+            ) && path.len() > 1
+            {
+                let mut bounce = path.clone();
+                for _ in 0..4 {
+                    let mut rev = path.clone();
+                    rev.reverse();
+                    bounce.extend_from_slice(&rev[1..]);
+                    bounce.extend_from_slice(&path[1..]);
                 }
+                routes.push(bounce);
             }
         }
         godot_print!(

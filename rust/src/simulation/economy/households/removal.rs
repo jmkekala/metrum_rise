@@ -98,7 +98,7 @@ impl HouseholdSystem {
         }
         candidates.truncate(removal_count);
         // Descending IDs keep swap-remove from invalidating another selected household.
-        candidates.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        candidates.sort_unstable_by_key(|a| std::cmp::Reverse(a.0));
 
         debug_log!(
             "economy",

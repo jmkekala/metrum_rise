@@ -543,12 +543,11 @@ pub(super) fn validate_loaded_agents(
         if agents.lane_distance[i] < 0.0 || !agents.lane_distance[i].is_finite() {
             clear = true;
         }
-        if agents.current_edge[i] != usize::MAX {
-            if agents.current_edge[i] >= graph.edge_count()
-                || graph.edge(agents.current_edge[i]).deleted
-            {
-                clear = true;
-            }
+        if agents.current_edge[i] != usize::MAX
+            && (agents.current_edge[i] >= graph.edge_count()
+                || graph.edge(agents.current_edge[i]).deleted)
+        {
+            clear = true;
         }
         if clear {
             clear_agent_travel_state(agents, i);
@@ -660,9 +659,8 @@ fn clear_agent_travel_state(agents: &mut AgentSystem, i: usize) {
     agents.current_lane_id[i] = usize::MAX;
     agents.lane_distance[i] = 0.0;
     clear_agent_access_plan(agents, i);
-    if agents.transit[i] == TRANSIT_INTERSECTION {
-        agents.transit[i] = TRANSIT_NETWORK;
-    } else if agents.transit[i] != TRANSIT_IN_BUILDING && agents.transit[i] != TRANSIT_IMMIGRATING {
+    // Intersection and every other moving state return to the plain network state.
+    if agents.transit[i] != TRANSIT_IN_BUILDING && agents.transit[i] != TRANSIT_IMMIGRATING {
         agents.transit[i] = TRANSIT_NETWORK;
     }
 }

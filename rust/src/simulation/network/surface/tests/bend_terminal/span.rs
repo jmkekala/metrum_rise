@@ -119,7 +119,7 @@ fn span_visual_pieces_compile_explicit_band_polygons() {
     assert!(
         span_piece
             .road_surface_polygons()
-            .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points()))
+            .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(polygon.points()))
     );
     assert!(
         span_piece

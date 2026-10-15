@@ -155,18 +155,17 @@ impl ShipmentSystem {
         let mut has_open_inbound = vec![false; slot_count];
 
         for shipment in &self.shipments {
-            if shipment.status.reserves_cargo() {
-                if let ShipmentEndpoint::Building(destination_building_id) = shipment.destination
-                    && let Some(slot) = reservation_slot(
-                        destination_building_id,
-                        shipment.resource_runtime_id,
-                        resource_count,
-                    )
-                    && slot < reserved_inbound.len()
-                {
-                    reserved_inbound[slot] += shipment.amount;
-                    has_open_inbound[slot] = true;
-                }
+            if shipment.status.reserves_cargo()
+                && let ShipmentEndpoint::Building(destination_building_id) = shipment.destination
+                && let Some(slot) = reservation_slot(
+                    destination_building_id,
+                    shipment.resource_runtime_id,
+                    resource_count,
+                )
+                && slot < reserved_inbound.len()
+            {
+                reserved_inbound[slot] += shipment.amount;
+                has_open_inbound[slot] = true;
             }
             if let Some(slot) = source_reservation_slot(shipment, resource_count)
                 && slot < reserved_outbound.len()

@@ -334,7 +334,7 @@ fn rail_generation_error_to_height_error(error: NodeRailGenerationError) -> Node
                 point_z_key,
                 point_x_mm: key.x_mm(),
                 point_z_mm: key.z_mm(),
-                source_segment_id,
+                source_segment_id: Box::new(source_segment_id),
             }
         }
         NodeRailGenerationError::InvalidHeightCarrier { reason, .. } => {

@@ -771,6 +771,7 @@ impl<'a> NodeOwnershipBuildReuseContext<'a> {
         seams
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn materialized_owned_edge_seams<'constraint>(
         &mut self,
         start: NodeOwnershipPointKey,

@@ -9,6 +9,7 @@ use crate::simulation::zoning::parcels::{self, ParcelPlacementError};
 
 impl ZoningSystem {
     /// Restores one saved parcel from road attachment data.
+    #[allow(clippy::too_many_arguments)]
     pub fn restore_parcel_from_attachment(
         &mut self,
         parcel_id: u64,
@@ -37,6 +38,7 @@ impl ZoningSystem {
         Ok(id)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn restore_saved_parcel_from_attachment(
         &mut self,
         parcel_id: u64,
@@ -76,6 +78,7 @@ impl ZoningSystem {
         Ok((false, false))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn restored_parcel_geometry_from_attachment(
         &self,
         parcel_id: u64,

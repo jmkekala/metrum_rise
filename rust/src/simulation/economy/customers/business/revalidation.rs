@@ -557,9 +557,9 @@ mod tests {
         let mut book = BusinessBudgets::default();
         let mut passes = [0; 2];
         let mut results = Vec::new();
-        for repetition in 0..2 {
+        for pass_count in &mut passes {
             loop {
-                passes[repetition] += 1;
+                *pass_count += 1;
                 book.reset(16, 16, 32, 32);
                 for buyer in 0..16 {
                     book.set_finance(buyer, [100.0, 1_000_000.0]);

@@ -187,20 +187,16 @@ fn build_surface_bench_setup() -> SurfaceBenchSetup {
     }
 
     let mut dirty_edge = 0;
-    for z in 0..GRID_NODES_PER_AXIS {
-        for x in 0..GRID_NODES_PER_AXIS - 1 {
-            let start = node_ids[z][x];
-            let end = node_ids[z][x + 1];
-            let edge_idx = graph.add_edge(bench_edge(start, end, x, z, true));
+    for (z, row) in node_ids.iter().enumerate() {
+        for (x, pair) in row.windows(2).enumerate() {
+            let edge_idx = graph.add_edge(bench_edge(pair[0], pair[1], x, z, true));
             if x == GRID_NODES_PER_AXIS / 2 && z == GRID_NODES_PER_AXIS / 2 {
                 dirty_edge = edge_idx;
             }
         }
     }
-    for z in 0..GRID_NODES_PER_AXIS - 1 {
-        for x in 0..GRID_NODES_PER_AXIS {
-            let start = node_ids[z][x];
-            let end = node_ids[z + 1][x];
+    for (z, rows) in node_ids.windows(2).enumerate() {
+        for (x, (&start, &end)) in rows[0].iter().zip(&rows[1]).enumerate() {
             graph.add_edge(bench_edge(start, end, x, z, false));
         }
     }

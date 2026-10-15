@@ -67,10 +67,12 @@ fn single_elder_receives_pension_without_work_or_unemployment() {
 
     let agents = AgentSystem::new();
     let mut treasury = 1_000.0;
-    let mut policy = crate::simulation::economy::fiscal::CityFiscalPolicy::default();
-    policy.unemployment_benefit_per_adult_per_day = 30.0;
-    policy.pension_per_elder_per_day = 30.0;
-    policy.child_support_per_child_per_day = 0.0;
+    let policy = crate::simulation::economy::fiscal::CityFiscalPolicy {
+        unemployment_benefit_per_adult_per_day: 30.0,
+        pension_per_elder_per_day: 30.0,
+        child_support_per_child_per_day: 0.0,
+        ..Default::default()
+    };
 
     households.pay_household_transfers(&agents, &allocator, &mut treasury, &policy);
 
@@ -102,9 +104,11 @@ fn daily_residential_property_tax_debits_occupied_household_budget() {
     household.budget = 10.0;
     households.households.push(household);
 
-    let mut policy = crate::simulation::economy::fiscal::CityFiscalPolicy::default();
-    policy.residential_property_tax_per_home_per_day = 2.0;
-    policy.property_tax_level_multiplier = 1.75;
+    let policy = crate::simulation::economy::fiscal::CityFiscalPolicy {
+        residential_property_tax_per_home_per_day: 2.0,
+        property_tax_level_multiplier: 1.75,
+        ..Default::default()
+    };
 
     let revenue = households.settle_daily_property_tax(&mut allocator, &policy);
 
@@ -139,10 +143,12 @@ fn daily_nonresidential_property_tax_debits_private_building_budgets() {
     allocator.buildings.push(industrial);
 
     let mut households = HouseholdSystem::new();
-    let mut policy = crate::simulation::economy::fiscal::CityFiscalPolicy::default();
-    policy.commercial_property_tax_per_building_per_day = 25.0;
-    policy.industrial_property_tax_per_building_per_day = 35.0;
-    policy.property_tax_level_multiplier = 2.0;
+    let policy = crate::simulation::economy::fiscal::CityFiscalPolicy {
+        commercial_property_tax_per_building_per_day: 25.0,
+        industrial_property_tax_per_building_per_day: 35.0,
+        property_tax_level_multiplier: 2.0,
+        ..Default::default()
+    };
 
     let revenue = households.settle_daily_property_tax(&mut allocator, &policy);
 
@@ -172,8 +178,10 @@ fn explicit_work_area_property_tax_uses_industrial_rate() {
     allocator.buildings.push(farm);
 
     let mut households = HouseholdSystem::new();
-    let mut policy = crate::simulation::economy::fiscal::CityFiscalPolicy::default();
-    policy.industrial_property_tax_per_building_per_day = 35.0;
+    let policy = crate::simulation::economy::fiscal::CityFiscalPolicy {
+        industrial_property_tax_per_building_per_day: 35.0,
+        ..Default::default()
+    };
 
     let revenue = households.settle_daily_property_tax(&mut allocator, &policy);
 

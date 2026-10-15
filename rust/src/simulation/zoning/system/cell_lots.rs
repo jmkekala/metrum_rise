@@ -80,6 +80,7 @@ impl ZoningSystem {
     }
 
     /// Restores a cell lot's exact footprint and claim, including mixed paint during grace.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn restore_saved_cell_lot(
         &mut self,
         id: ParcelId,

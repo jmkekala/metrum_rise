@@ -6,6 +6,7 @@ use super::cleaning::cleaned_open_rail;
 use super::paths::{clean_generated_constraint_path, open_world_path_xz};
 use super::*;
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::simulation::network::surface::node::rails) fn push_generated_band_constraint(
     constraints: &mut Vec<NodeRailConstraint>,
     kind: NodeRailConstraintKind,
@@ -96,6 +97,7 @@ pub(in crate::simulation::network::surface::node::rails) fn push_span_handoff_co
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_owned_rail_constraint(
     constraints: &mut Vec<NodeRailConstraint>,
     kind: NodeRailConstraintKind,
@@ -136,6 +138,7 @@ fn push_owned_rail_constraint(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::simulation::network::surface::node::rails) fn push_constraint(
     constraints: &mut Vec<NodeRailConstraint>,
     kind: NodeRailConstraintKind,

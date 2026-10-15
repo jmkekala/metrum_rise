@@ -311,6 +311,7 @@ impl BuildingAllocator {
 
     /// Reuses a prepared entrance only when its complete geometry inputs still match.
     /// Lookup and key construction allocate nothing; a miss projects onto frontage geometry.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn demand_site_entrance_reusing(
         &self,
         parcel_id: u64,

@@ -349,10 +349,8 @@ pub fn find_intersection_2d(
     let u = cross_xz(qp, r) / denom;
 
     const PARAM_EPSILON: f32 = 0.00001;
-    if t >= -PARAM_EPSILON
-        && t <= 1.0 + PARAM_EPSILON
-        && u >= -PARAM_EPSILON
-        && u <= 1.0 + PARAM_EPSILON
+    if (-PARAM_EPSILON..=1.0 + PARAM_EPSILON).contains(&t)
+        && (-PARAM_EPSILON..=1.0 + PARAM_EPSILON).contains(&u)
     {
         Some((t.clamp(0.0, 1.0), u.clamp(0.0, 1.0)))
     } else {

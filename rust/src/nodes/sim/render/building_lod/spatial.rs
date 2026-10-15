@@ -472,6 +472,7 @@ fn scheme_bindings(
 
 /// Derive a finite conservative chunk rectangle from the view frustum and its directional
 /// shadow extrusion. No tiny-object culling is part of this query. Invalid views are rejected.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn query_bounds(
     view: View,
     camera: Vec3,

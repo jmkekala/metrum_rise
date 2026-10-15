@@ -512,9 +512,8 @@ fn build_loop_with_restriction() -> (RegionGraph, u32, u32, u32, u32, u32, usize
 /// Without any restrictions the direct path east → jct → north should be found.
 #[test]
 fn test_cch_finds_direct_path_without_restriction() {
-    let (mut g, n_east, _n_jct, _n_west, n_north, _n_south, _, _, _) =
-        build_loop_with_restriction();
-    let cch = CchGraph::build(&mut g);
+    let (g, n_east, _n_jct, _n_west, n_north, _n_south, _, _, _) = build_loop_with_restriction();
+    let cch = CchGraph::build(&g);
     let result = cch.find_path(
         n_east,
         n_north,
@@ -541,7 +540,7 @@ fn test_cch_reroutes_around_turn_restriction() {
     // Setting only e_ew_e → e_ew_w puts the node in whitelist mode; e_ew_e → e_n is blocked.
     g.add_lane_connection(n_jct, e_ew_e, 0, _e_ew_w, 0);
 
-    let cch = CchGraph::build(&mut g);
+    let cch = CchGraph::build(&g);
     let result = cch.find_path(
         n_east,
         n_north,

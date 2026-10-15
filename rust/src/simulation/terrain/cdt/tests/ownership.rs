@@ -63,6 +63,8 @@ fn road_site_intersections_near_pad_corners_keep_distinct_vertices() {
 
 #[test]
 #[ignore = "unprofiled local CDT timing; run alone with --release --ignored --nocapture"]
+// Runtime guard: the ignored check must still compile in a debug test build.
+#[allow(clippy::assertions_on_constants)]
 fn benchmark_road_site_cdt_noding() {
     assert!(
         !cfg!(debug_assertions),

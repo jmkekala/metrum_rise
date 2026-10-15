@@ -144,6 +144,10 @@ struct NodeFootprintBoundaryDirectVertexConflict {
     incoming: NodeFootprintBoundaryDirectVertex,
 }
 
+/// Nearby source edge reported by a missing-segment-source diagnostic: start/end keys, band
+/// kind, owner index and whether it lies on the outer boundary.
+pub(crate) type NearbySourceEdge = ((i64, i64), (i64, i64), RoadSurfaceBandKind, usize, bool);
+
 #[derive(Debug)]
 pub(crate) enum NodeBoundaryExportError {
     EmptyOuterBoundary,
@@ -158,10 +162,10 @@ pub(crate) enum NodeBoundaryExportError {
         incoming_y_mm: i64,
         existing_owner_kind: RoadSurfaceBandKind,
         existing_owner_index: usize,
-        existing_source: NodeFootprintBoundaryVertexSource,
+        existing_source: Box<NodeFootprintBoundaryVertexSource>,
         incoming_owner_kind: RoadSurfaceBandKind,
         incoming_owner_index: usize,
-        incoming_source: NodeFootprintBoundaryVertexSource,
+        incoming_source: Box<NodeFootprintBoundaryVertexSource>,
     },
     ConflictingFootprintBoundarySplitHeight {
         x_key: i64,
@@ -178,8 +182,8 @@ pub(crate) enum NodeBoundaryExportError {
         end_y_mm: i64,
         existing_height_field_id: Option<arrangement::NodeBandHeightFieldId>,
         incoming_height_field_id: Option<arrangement::NodeBandHeightFieldId>,
-        existing_source: RoadSurfaceEarthworkFaceSource,
-        incoming_source: RoadSurfaceEarthworkFaceSource,
+        existing_source: Box<RoadSurfaceEarthworkFaceSource>,
+        incoming_source: Box<RoadSurfaceEarthworkFaceSource>,
     },
     AmbiguousFootprintBoundaryPointSource {
         x_key: i64,
@@ -187,10 +191,10 @@ pub(crate) enum NodeBoundaryExportError {
         y_mm: i64,
         existing_owner_kind: RoadSurfaceBandKind,
         existing_owner_index: usize,
-        existing_source: NodeFootprintBoundaryVertexSource,
+        existing_source: Box<NodeFootprintBoundaryVertexSource>,
         incoming_owner_kind: RoadSurfaceBandKind,
         incoming_owner_index: usize,
-        incoming_source: NodeFootprintBoundaryVertexSource,
+        incoming_source: Box<NodeFootprintBoundaryVertexSource>,
     },
     DegenerateOuterBoundaryLoop,
     MissingEarthworkBoundarySource,
@@ -199,7 +203,7 @@ pub(crate) enum NodeBoundaryExportError {
         start_z_key: i64,
         end_x_key: i64,
         end_z_key: i64,
-        nearby_source_edges: Vec<((i64, i64), (i64, i64), RoadSurfaceBandKind, usize, bool)>,
+        nearby_source_edges: Vec<NearbySourceEdge>,
     },
     MissingNodeTopSurfaceGradeAuthority,
 }
@@ -413,10 +417,10 @@ fn ambiguous_footprint_boundary_point_source_error(
         y_mm: point_key.y_mm,
         existing_owner_kind: existing.owner_kind,
         existing_owner_index: existing.owner_index,
-        existing_source: existing.source,
+        existing_source: Box::new(existing.source),
         incoming_owner_kind: incoming.owner_kind,
         incoming_owner_index: incoming.owner_index,
-        incoming_source: incoming.source,
+        incoming_source: Box::new(incoming.source),
     }
 }
 

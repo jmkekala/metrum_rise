@@ -316,10 +316,10 @@ fn record_watchdog_progress(event: CrashEvent) {
     let elapsed_ms = event.elapsed_ms.min(u128::from(u64::MAX)) as u64;
     WATCHDOG_LAST_PROGRESS_MS.store(elapsed_ms, Ordering::Release);
     WATCHDOG_PROGRESS_SEQUENCE.store(event.sequence.saturating_add(1), Ordering::Release);
-    if let Some(state) = WATCHDOG_STATE.get() {
-        if let Ok(mut state) = state.lock() {
-            state.last_event = Some(event);
-        }
+    if let Some(state) = WATCHDOG_STATE.get()
+        && let Ok(mut state) = state.lock()
+    {
+        state.last_event = Some(event);
     }
     WATCHDOG_MONITOR_ACTIVE.store(true, Ordering::Release);
 }

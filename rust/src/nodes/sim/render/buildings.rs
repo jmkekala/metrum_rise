@@ -916,6 +916,7 @@ pub(super) fn building_part_pose(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_scaffold_transforms(
     buffer: &mut Vec<f32>,
     center_x: f32,
@@ -990,6 +991,7 @@ fn push_scaffold_transforms(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_oriented_box_transform(
     buffer: &mut Vec<f32>,
     center_x: f32,

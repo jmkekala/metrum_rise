@@ -56,6 +56,7 @@ impl ShipmentSystem {
     /// Prices a live or proposed seller's directed delivery to a business customer.
     /// Call `prepare_site_carrier_quotes` once before a batch. Each query reuses bounded
     /// network search storage and applies live frontage delays, without temporary IDs.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn customer_carrier_quote(
         &mut self,
         source: &BuildingEntrance,
@@ -77,13 +78,16 @@ impl ShipmentSystem {
             (Some(from), Some(to)) => self
                 .freight_route_cache
                 .between_buildings(from, to, allocator, network, graph),
-            (Some(from), None) => {
-                self.freight_route_cache
-                    .to_site(from, destination, allocator, network, graph)
-            }
+            (Some(from), None) => self.freight_route_cache.building_to_site(
+                from,
+                destination,
+                allocator,
+                network,
+                graph,
+            ),
             (None, Some(to)) => self
                 .freight_route_cache
-                .from_site(source, to, allocator, network, graph),
+                .site_to_building(source, to, allocator, network, graph),
             (None, None) => {
                 self.freight_route_cache
                     .between_entrances(source, destination, network, graph)
@@ -100,6 +104,7 @@ impl ShipmentSystem {
 
     /// Stages a finite recurring input quote using the same revision-scoped freight routes.
     /// The caller commits the complete funded operation or rolls every local claim back.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn quote_recurring_input(
         &mut self,
         supply: &mut super::RecurringSupply,
@@ -133,6 +138,7 @@ impl ShipmentSystem {
     /// Repairs only the missing part of an accepted buyer's input after source withdrawal.
     /// Retained tranches keep their quantities/prices; the full requirement prices buffers.
     /// Commit with `extend_inputs_for` inside the enclosing revalidation transaction.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn quote_missing_recurring_input(
         &mut self,
         supply: &mut super::RecurringSupply,
@@ -211,6 +217,7 @@ impl ShipmentSystem {
     /// border sweeps. Their exact minima cost O(N*K) once per routing/border revision for N
     /// road nodes and K borders. Warm work is O(B), parallel across buildings.
     /// The caller reuses quote storage. No per-building path search or allocation is added.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn write_border_carrier_quotes(
         &mut self,
         allocator: &BuildingAllocator,

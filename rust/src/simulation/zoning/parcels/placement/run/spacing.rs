@@ -9,6 +9,7 @@ use crate::simulation::zoning::parcels::{
     ParcelGeometry,
 };
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn next_non_overlapping_run_geometry(
     graph: &RegionGraph,
     edge_idx: usize,
@@ -35,6 +36,7 @@ pub(super) fn next_non_overlapping_run_geometry(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn next_non_overlapping_run_geometry_directed(
     graph: &RegionGraph,
     edge_idx: usize,
@@ -66,6 +68,7 @@ pub(super) fn next_non_overlapping_run_geometry_directed(
 
 /// Advances the shared run-spacing solver using a caller's local overlap query.
 /// The accepted station obeys the same saved-attachment bounds and search tolerance as drag runs.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn next_non_overlapping_run_geometry_with(
     graph: &RegionGraph,
     edge_idx: usize,

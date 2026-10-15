@@ -75,6 +75,7 @@ impl ZoningSystem {
     /// already legal parcels in the same drag stroke. On curved roads, Rust may widen spacing
     /// between generated parcels to preserve non-overlap, then stops when no further parcel can
     /// fit inside the drag span.
+    #[allow(clippy::too_many_arguments)]
     pub fn place_parcel_run_at(
         &mut self,
         start_x: f32,

@@ -53,6 +53,7 @@ impl ZoningSystem {
     }
 
     /// Projects the legal parcels in a same-road drag run without mutating storage.
+    #[allow(clippy::too_many_arguments)]
     pub fn preview_parcel_run_at(
         &self,
         start_x: f32,

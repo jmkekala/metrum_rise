@@ -167,6 +167,7 @@ impl DemandSpawnPlacementRejectionCounts {
 
 impl BuildingAllocator {
     /// Removes invalid attachments and advances incompatible-zoning grace by actual elapsed days.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn cleanup_stale_buildings(
         &mut self,
         elapsed_days: u8,
@@ -445,6 +446,7 @@ impl BuildingAllocator {
         best.map(|(border_node, _)| border_node)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn execute_demand_building_actions(
         &mut self,
         plan: &DemandBuildingActionPlan,
@@ -576,6 +578,7 @@ impl BuildingAllocator {
     }
 
     /// Executes one queued demand spawn through the same final placement path as batch demand.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn execute_single_demand_spawn_action(
         &mut self,
         zone_type: ZoneType,

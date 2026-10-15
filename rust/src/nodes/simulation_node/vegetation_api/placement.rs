@@ -304,7 +304,7 @@ fn plan_row(
     }
     let span = to - from;
     let length = span.length();
-    if !(length <= MAX_LINE_M) {
+    if length.is_nan() || length > MAX_LINE_M {
         return Vec::new();
     }
     // Never more than one module length apart, so the row closes; the overlap is hidden inside.
@@ -575,7 +575,7 @@ pub(super) fn paint_at(
                         layer_base(0x51a7_32b9, seed),
                     );
             let rank = preset.rank(x, z, salt, clump * influence(&plant, pos, radius));
-            if !(rank < 1.0) {
+            if rank.is_nan() || rank >= 1.0 {
                 return None;
             }
             (plant.species, plant.variant) = preset.plant(x, z, salt);

@@ -26,6 +26,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 const BOUND_ROUNDING_MARGIN: f32 = 1.0e-3;
 
 /// Builds a full plan for a trip that starts inside a building.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn plan_building_origin_trip(
     current_building: usize,
     target_building: usize,
@@ -268,6 +269,7 @@ pub(crate) fn plan_building_to_border_trip(
 }
 
 /// Returns whether the ordinary building-origin trip planner can build this trip.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn building_origin_trip_is_feasible(
     current_building: usize,
     target_building: usize,
@@ -291,6 +293,7 @@ pub(crate) fn building_origin_trip_is_feasible(
 }
 
 /// Estimates physical travel seconds, rounded up and saturated to the commute-cache range.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn estimate_building_origin_trip_seconds(
     current_building: usize,
     target_building: usize,
@@ -322,6 +325,7 @@ pub(crate) fn estimate_building_origin_trip_seconds(
 /// [`TripQueryScratch::prepare_deferred_quotes`]) before entering a query phase. This preserves
 /// the exact candidate ordering and result of [`estimate_building_origin_trip_seconds`] while
 /// allowing a Rayon worker to retain route scratch across a batch.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn estimate_building_origin_trip_seconds_with_scratch(
     current_building: usize,
     target_building: usize,
@@ -631,6 +635,7 @@ pub(crate) enum TripEstimate {
 /// [`TripEstimate::OverBudget`] without any query. `shared` lends network legs priced by other
 /// workers or earlier passes; it never changes the estimate.
 #[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn estimate_trip_seconds_between(
     origin: &BuildingTripEnds,
     destination: &BuildingTripEnds,
@@ -662,6 +667,7 @@ pub(crate) fn estimate_trip_seconds_between(
 ///
 /// The caller must prepare `scratch` for the current network and graph before calling. The
 /// Uses the same exact candidate ordering as the full trip planner.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn estimate_trip_seconds_with_scratch(
     origin: &BuildingTripEnds,
     destination: &BuildingTripEnds,

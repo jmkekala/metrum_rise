@@ -59,7 +59,7 @@ fn missing_footprint_shape_is_canonical_numeric_dust(shape: &NodeOverlayShape) -
 fn overlay_shape_numeric_area_budget_m2(shape: &NodeOverlayShape) -> f32 {
     let perimeter_m = shape
         .iter()
-        .map(|contour| RoadSurfaceSystem::overlay_contour_perimeter_m(contour))
+        .map(RoadSurfaceSystem::overlay_contour_perimeter_m)
         .sum::<f32>();
     let vertex_count = shape.iter().map(Vec::len).sum::<usize>();
     RoadSurfaceSystem::overlay_numeric_area_budget_m2(perimeter_m, vertex_count)
@@ -69,7 +69,7 @@ fn overlay_shape_thin_width_m(shape: &NodeOverlayShape) -> f32 {
     let area_m2 = RoadSurfaceSystem::overlay_shape_area_m2(shape);
     let perimeter_m = shape
         .iter()
-        .map(|contour| RoadSurfaceSystem::overlay_contour_perimeter_m(contour))
+        .map(RoadSurfaceSystem::overlay_contour_perimeter_m)
         .sum::<f32>();
     if perimeter_m <= f32::EPSILON {
         return 0.0;

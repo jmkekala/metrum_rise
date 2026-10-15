@@ -1069,10 +1069,7 @@ fn insert_support_overlap_parameter(
     parameter_count: &mut usize,
     parameter: keys::SurfaceSegmentParameter,
 ) {
-    if parameters[..*parameter_count]
-        .iter()
-        .any(|existing| *existing == parameter)
-    {
+    if parameters[..*parameter_count].contains(&parameter) {
         return;
     }
     debug_assert!(*parameter_count < parameters.len());

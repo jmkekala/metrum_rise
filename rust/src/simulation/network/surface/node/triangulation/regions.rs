@@ -134,7 +134,7 @@ pub(super) fn triangulate_arrangement_region(
         &mut constraints,
         &mut triangles,
     )?;
-    triangles.sort_by(|a, b| triangle_sort_key(a, &vertices).cmp(&triangle_sort_key(b, &vertices)));
+    triangles.sort_by_key(|a| triangle_sort_key(a, &vertices));
     triangles.dedup();
     if triangles.is_empty() {
         return Err(NodeTriangulationError::EmptyTriangulation {
@@ -346,6 +346,7 @@ fn triangle_area_is_numeric_dust(
     triangle_double_area_m2(triangle, vertices).abs() * 0.5 <= f64::from(NODE_OVERLAY_MIN_AREA_M2)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn insert_carriageway_interior_guides(
     node_id: u32,
     region_index: usize,
@@ -501,6 +502,7 @@ fn plane_height_m(plane: [f64; 3], point: RoadVec2) -> f64 {
     plane[0] * point.x + plane[1] * point.y + plane[2]
 }
 
+#[allow(clippy::too_many_arguments)]
 fn insert_carriageway_interior_guide_vertex(
     node_id: u32,
     region_index: usize,
@@ -558,17 +560,12 @@ fn overlay_shape_bounds(shape: &NodeOverlayShape) -> Option<(f64, f64, f64, f64)
     for point in shape.iter().flatten() {
         bounds = Some(match bounds {
             Some((min_x, min_z, max_x, max_z)) => (
-                min_x.min(f64::from(point[0])),
-                min_z.min(f64::from(point[1])),
-                max_x.max(f64::from(point[0])),
-                max_z.max(f64::from(point[1])),
+                min_x.min(point[0]),
+                min_z.min(point[1]),
+                max_x.max(point[0]),
+                max_z.max(point[1]),
             ),
-            None => (
-                f64::from(point[0]),
-                f64::from(point[1]),
-                f64::from(point[0]),
-                f64::from(point[1]),
-            ),
+            None => (point[0], point[1], point[0], point[1]),
         });
     }
     bounds
@@ -579,10 +576,10 @@ fn point_lies_on_segment(
     start: NodeOverlayPoint,
     end: NodeOverlayPoint,
 ) -> bool {
-    let dx = f64::from(end[0] - start[0]);
-    let dz = f64::from(end[1] - start[1]);
-    let px = f64::from(point[0] - start[0]);
-    let pz = f64::from(point[1] - start[1]);
+    let dx = end[0] - start[0];
+    let dz = end[1] - start[1];
+    let px = point[0] - start[0];
+    let pz = point[1] - start[1];
     let length = dx.hypot(dz);
     if length <= f64::EPSILON {
         return false;
@@ -595,6 +592,7 @@ fn point_lies_on_segment(
     dot >= 0.0 && dot <= length * length
 }
 
+#[allow(clippy::too_many_arguments)]
 fn append_owner_clipped_triangles(
     node_id: u32,
     region_index: usize,
@@ -640,6 +638,7 @@ fn append_owner_clipped_triangles(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn append_missing_owner_coverage_triangles(
     node_id: u32,
     region_index: usize,
@@ -678,6 +677,7 @@ fn append_missing_owner_coverage_triangles(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn append_triangulated_clipped_shape(
     node_id: u32,
     region_index: usize,
@@ -799,6 +799,7 @@ fn append_triangulated_clipped_shape(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn append_triangulated_missing_owner_shape(
     node_id: u32,
     region_index: usize,
@@ -925,6 +926,7 @@ fn append_triangulated_missing_owner_shape(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn insert_clipped_triangle_vertex(
     node_id: u32,
     region_index: usize,
@@ -936,7 +938,7 @@ fn insert_clipped_triangle_vertex(
     vertex_lookup: &mut BTreeMap<NodeTriangulationPointKey, (usize, NodeTriangulationHeightKey)>,
 ) -> Result<usize, NodeTriangulationError> {
     let height_m = interpolate_source_triangle_height(source_triangle, vertices, point);
-    let source_point_world = RoadVec3::new(f64::from(point[0]), height_m, f64::from(point[1]));
+    let source_point_world = RoadVec3::new(point[0], height_m, point[1]);
     let point_key = NodeTriangulationPointKey::from_world(source_point_world);
     let height_key = NodeTriangulationHeightKey(quantize_m(height_m));
     if let Some((index, existing_height_key)) = vertex_lookup.get(&point_key).copied() {
@@ -981,6 +983,7 @@ fn insert_clipped_triangle_vertex(
     Ok(index)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn insert_missing_owner_vertex(
     node_id: u32,
     region_index: usize,
@@ -1045,6 +1048,7 @@ fn insert_missing_owner_vertex(
     Ok(Some(index))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn missing_owner_vertex_height_authority(
     arrangement: &NodeArrangement,
     region: &NodeOwnedRegion,
@@ -1199,8 +1203,8 @@ fn interpolate_source_triangle_height(
     let a = vertices[triangle.vertices[0]].point_world;
     let b = vertices[triangle.vertices[1]].point_world;
     let c = vertices[triangle.vertices[2]].point_world;
-    let px = f64::from(point[0]);
-    let pz = f64::from(point[1]);
+    let px = point[0];
+    let pz = point[1];
     let denominator = (b.z - c.z) * (a.x - c.x) + (c.x - b.x) * (a.z - c.z);
     if denominator.abs() <= f64::EPSILON {
         return (a.y + b.y + c.y) / 3.0;

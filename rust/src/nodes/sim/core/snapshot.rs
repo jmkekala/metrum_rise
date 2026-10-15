@@ -116,7 +116,7 @@ pub(crate) enum SimulationRuntimeSnapshot {
     /// Delayed demand spawns captured by isolated runtime tests/tools.
     PendingDemandSpawns(VecDeque<PendingDemandSpawnAction>),
     /// Records changed by one building bulldoze operation.
-    BuildingRemoval(BuildingRemovalUndo),
+    BuildingRemoval(Box<BuildingRemovalUndo>),
     /// Cells changed by one vegetation brush stroke.
     VegetationEdit(VegetationEditUndo),
     /// Previous designations and affected lots of one gesture; buildings are never snapshotted.

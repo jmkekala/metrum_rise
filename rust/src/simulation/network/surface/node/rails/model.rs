@@ -55,6 +55,10 @@ pub(crate) enum NodeRailConstraintKind {
     },
 }
 
+// Height carrier points keyed by source band kind, mouth-order index and band index.
+pub(crate) type HeightCarrierPointsBySource =
+    BTreeMap<(RoadSurfaceBandKind, usize, usize), Vec<RoadVec3>>;
+
 #[derive(Clone, Debug)]
 pub(crate) struct NodeRailContourSet {
     pub(crate) node_id: u32,
@@ -65,8 +69,7 @@ pub(crate) struct NodeRailContourSet {
     pub(crate) constraints: Vec<NodeRailConstraint>,
     pub(crate) height_carrier_paths_by_source:
         BTreeMap<(RoadSurfaceBandKind, usize, usize), Vec<NodeRailHeightCarrierPaths>>,
-    pub(crate) height_carrier_points_by_source:
-        BTreeMap<(RoadSurfaceBandKind, usize, usize), Vec<RoadVec3>>,
+    pub(crate) height_carrier_points_by_source: HeightCarrierPointsBySource,
     pub(crate) source_carriers: NodeSourceCarrierRegistry,
 }
 
@@ -269,8 +272,7 @@ impl NodeRailContourSet {
     pub(in crate::simulation::network::surface::node) fn height_carrier_points_for_ownership(
         &self,
         ownership: Option<&NodeBooleanOwnership>,
-    ) -> Result<BTreeMap<(RoadSurfaceBandKind, usize, usize), Vec<RoadVec3>>, NodeRailGenerationError>
-    {
+    ) -> Result<HeightCarrierPointsBySource, NodeRailGenerationError> {
         let mut points_by_source = self.height_carrier_points_by_source.clone();
         if let Some(ownership) = ownership {
             push_owned_region_height_carrier_points(&mut points_by_source, self, ownership)?;

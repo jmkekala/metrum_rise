@@ -90,7 +90,13 @@ impl ShipmentSystem {
                 adjusted_unit_price(import_unit_price, freight_profile, minute_of_day);
             let cheaper_import = border_nodes.iter().any(|&border| {
                 route_cache
-                    .from_border(border, dest_idx, allocator, transit_network, graph)
+                    .between_border_and_building(
+                        border,
+                        dest_idx,
+                        allocator,
+                        transit_network,
+                        graph,
+                    )
                     .is_some_and(|seconds| {
                         choice.amount * imported_price
                             + freight_cost(seconds, seconds_per_day, logistics_tuning)

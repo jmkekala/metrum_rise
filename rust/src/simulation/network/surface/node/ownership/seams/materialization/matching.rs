@@ -177,6 +177,7 @@ fn owners_form_sidewalk_footpath_contact(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn owned_edge_lies_on_prepared_rail_constraint(
     start: NodeOwnershipPointKey,
     end: NodeOwnershipPointKey,

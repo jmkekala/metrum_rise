@@ -189,6 +189,7 @@ impl NodeArrangement {
         Some((first.height_m(), grade_authority))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn push_region(
         &mut self,
         owner: NodeBandOwner,

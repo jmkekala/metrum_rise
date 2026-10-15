@@ -22,6 +22,7 @@ enum CarrierProgress {
 }
 
 impl ShipmentSystem {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn progress_shipments(
         &mut self,
         allocator: &mut BuildingAllocator,
@@ -424,6 +425,7 @@ impl ShipmentSystem {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn start_return_or_finish(
         &mut self,
         shipment_idx: usize,
@@ -604,27 +606,25 @@ fn shipment_endpoints_ready(
     allocator: &BuildingAllocator,
     catalog: &RuntimeEconomyCatalog,
 ) -> bool {
-    if let ShipmentEndpoint::Building(source_idx) = shipment.source {
-        if source_idx >= allocator.buildings.len()
+    if let ShipmentEndpoint::Building(source_idx) = shipment.source
+        && (source_idx >= allocator.buildings.len()
             || !building_can_participate_in_freight(allocator, source_idx)
             || allocator.buildings[source_idx].inventory_units(shipment.resource_runtime_id)
-                < shipment.amount
-        {
-            return false;
-        }
+                < shipment.amount)
+    {
+        return false;
     }
 
-    if let ShipmentEndpoint::Building(destination_idx) = shipment.destination {
-        if destination_idx >= allocator.buildings.len()
+    if let ShipmentEndpoint::Building(destination_idx) = shipment.destination
+        && (destination_idx >= allocator.buildings.len()
             || !building_can_participate_in_freight(allocator, destination_idx)
             || !building_accepts_input_resource(
                 catalog,
                 &allocator.buildings[destination_idx],
                 shipment.resource_runtime_id,
-            )
-        {
-            return false;
-        }
+            ))
+    {
+        return false;
     }
 
     true

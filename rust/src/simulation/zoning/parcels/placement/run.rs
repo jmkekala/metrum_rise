@@ -101,6 +101,7 @@ fn project_parcel_run_layouts_from_projected_start(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn project_parcel_run_layout_from_phase(
     graph: &RegionGraph,
     edge_idx: usize,

@@ -156,7 +156,7 @@ impl ShipmentSystem {
                 let mut best: Option<(u32, f32)> = None;
                 for &border_node in &border_nodes {
                     // Reuse the import ETA helper: travel time border↔building is symmetric.
-                    let Some(travel_seconds) = planning.route_cache.from_border(
+                    let Some(travel_seconds) = planning.route_cache.between_border_and_building(
                         border_node,
                         src_idx,
                         allocator,

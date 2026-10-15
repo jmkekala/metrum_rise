@@ -48,9 +48,10 @@ pub(in crate::simulation::network::surface::node::terminal) fn terminal_cap_band
     let paired_layers = first_carriageway.min(mouth.band_intervals.len() - last_carriageway - 1);
     let mut cap_bands = Vec::new();
     let mut inner_offset_m = 0.0;
-    let mut next_terminal_source_band_index = mouth.band_intervals.len();
 
-    for layer_index in 0..paired_layers {
+    for (layer_index, next_terminal_source_band_index) in
+        (0..paired_layers).zip(mouth.band_intervals.len()..)
+    {
         let left_band_index = first_carriageway - 1 - layer_index;
         let right_band_index = last_carriageway + 1 + layer_index;
         let left_band = &mouth.band_intervals[left_band_index];
@@ -115,7 +116,6 @@ pub(in crate::simulation::network::surface::node::terminal) fn terminal_cap_band
             inner_offset_m,
             outer_offset_m,
         )?;
-        next_terminal_source_band_index += 1;
         inner_offset_m = outer_offset_m;
     }
 

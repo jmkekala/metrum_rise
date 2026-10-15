@@ -51,15 +51,15 @@ impl NoiseSystem {
             if gx >= 0 && gx < w as i32 && gy >= 0 && gy < h as i32 {
                 let gx = gx as usize;
                 let gy = gy as usize;
-                if b.zone_type == ZoneType::Commercial {
-                    if let Some(val) = self.grid.get_mut(gx, gy) {
-                        *val = (*val + 30.0).min(100.0);
-                    }
+                if b.zone_type == ZoneType::Commercial
+                    && let Some(val) = self.grid.get_mut(gx, gy)
+                {
+                    *val = (*val + 30.0).min(100.0);
                 }
-                if b.zone_type == ZoneType::Industrial {
-                    if let Some(val) = self.grid.get_mut(gx, gy) {
-                        *val = (*val + 80.0).min(100.0);
-                    }
+                if b.zone_type == ZoneType::Industrial
+                    && let Some(val) = self.grid.get_mut(gx, gy)
+                {
+                    *val = (*val + 80.0).min(100.0);
                 }
             }
         }
@@ -78,10 +78,13 @@ impl NoiseSystem {
                 let (gx_raw, gz_raw) = config.world_to_env_grid(p.x, p.z);
                 let gx = gx_raw.round() as i32;
                 let gz = gz_raw.round() as i32;
-                if gx >= 0 && gx < w as i32 && gz >= 0 && gz < h as i32 {
-                    if let Some(val) = self.grid.get_mut(gx as usize, gz as usize) {
-                        *val = (*val + road_noise).min(100.0);
-                    }
+                if gx >= 0
+                    && gx < w as i32
+                    && gz >= 0
+                    && gz < h as i32
+                    && let Some(val) = self.grid.get_mut(gx as usize, gz as usize)
+                {
+                    *val = (*val + road_noise).min(100.0);
                 }
             }
         }

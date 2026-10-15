@@ -35,13 +35,11 @@ impl RoadSurfaceSystem {
         if signed_area < 0.0 {
             points_world.reverse();
         }
-        let Some((start_index, _)) = points_world.iter().enumerate().min_by(|(_, a), (_, b)| {
+        let (start_index, _) = points_world.iter().enumerate().min_by(|(_, a), (_, b)| {
             a.x.total_cmp(&b.x)
                 .then(a.z.total_cmp(&b.z))
                 .then(a.y.total_cmp(&b.y))
-        }) else {
-            return None;
-        };
+        })?;
         points_world.rotate_left(start_index);
         let triangles = if Self::polygon_is_convex_xz(&points_world) {
             Self::triangulate_fan_polygon_xz(&points_world)?

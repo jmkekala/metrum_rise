@@ -1224,7 +1224,7 @@ mod reservation_tests {
         components.push(0);
         for round in 0..3 {
             let eligible = |entry: &ReachableBucketEntry| {
-                (entry.item_idx + round) % 4 != 0 && !(round == 2 && entry.component == 1)
+                !(entry.item_idx + round).is_multiple_of(4) && !(round == 2 && entry.component == 1)
             };
             for &entry in &entries {
                 index.set_available(entry, eligible(&entry));
@@ -1424,10 +1424,10 @@ mod reservation_tests {
                 for stop in [1, 7, usize::MAX] {
                     let mut expected = Vec::new();
                     index.scan_nearest(components, 14.0, 250.0, |event| {
-                        if let ReachableBucketScanEvent::Item { item_idx } = event {
-                            if masks[item_idx] & mask != 0 {
-                                expected.push(item_idx);
-                            }
+                        if let ReachableBucketScanEvent::Item { item_idx } = event
+                            && masks[item_idx] & mask != 0
+                        {
+                            expected.push(item_idx);
                         }
                         expected.len() < stop
                     });
@@ -1478,7 +1478,7 @@ mod reservation_tests {
             components.push(0);
             components.push(1);
             for round in 0..4 {
-                let available = |item: usize| (item * 7 + round) % 5 != 0;
+                let available = |item: usize| !(item * 7 + round).is_multiple_of(5);
                 let mask = |item: usize| 1u64 << ((item + round) % 9);
                 for index in [&mut merged, &mut low, &mut high] {
                     index.reset_available(available);
@@ -1663,7 +1663,7 @@ mod reservation_tests {
                 let eligible = |item: usize| match pattern {
                     0 => true,
                     1 => item > count / 3 && item < count * 2 / 3,
-                    2 => item % 37 == 0,
+                    2 => item.is_multiple_of(37),
                     _ => false,
                 };
                 index.reset_available(eligible);

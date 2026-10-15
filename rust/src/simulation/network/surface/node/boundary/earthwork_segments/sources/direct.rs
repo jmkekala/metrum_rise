@@ -4,6 +4,7 @@
 
 use super::*;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn node_earthwork_source_for_direct_boundary_segment(
     node_id: u32,
     kind: RoadSurfaceVisualNodePieceKind,
@@ -139,10 +140,7 @@ fn explicit_vertical_step_boundary_owner(
         start_owner,
         end_owner,
     )?;
-    if !explicit_vertical_step_segments
-        .iter()
-        .any(|segment| *segment == expected_step)
-    {
+    if !explicit_vertical_step_segments.contains(&expected_step) {
         return None;
     }
 

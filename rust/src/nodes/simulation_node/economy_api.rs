@@ -44,12 +44,15 @@ impl SimulationNode {
             history.push(&dict.to_variant());
         }
 
-        let latest = core.budget_history.back().copied().unwrap_or_else(|| {
-            let mut entry = DailyBudgetLedgerEntry::default();
-            entry.day_index = core.time.day_index;
-            entry.treasury = core.treasury.balance;
-            entry
-        });
+        let latest =
+            core.budget_history
+                .back()
+                .copied()
+                .unwrap_or_else(|| DailyBudgetLedgerEntry {
+                    day_index: core.time.day_index,
+                    treasury: core.treasury.balance,
+                    ..Default::default()
+                });
 
         let mut services = VarArray::new();
         let mut electricity = VarDictionary::new();

@@ -34,12 +34,21 @@ pub struct PackManifest {
     pub tags: Vec<String>,
 }
 
-impl PackManifest {
-    /// Parses a `pack.toml` TOML string into a [`PackManifest`].
-    pub fn from_str(s: &str) -> Result<Self, ManifestError> {
+impl std::str::FromStr for PackManifest {
+    type Err = ManifestError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         let manifest: Self = toml::from_str(s)?;
         manifest.validate()?;
         Ok(manifest)
+    }
+}
+
+impl PackManifest {
+    /// Parses a `pack.toml` TOML string into a [`PackManifest`].
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(source: &str) -> Result<Self, ManifestError> {
+        source.parse()
     }
 
     /// Validates structural and semantic constraints on this manifest.

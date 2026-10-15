@@ -5,6 +5,14 @@
 use super::classification::incident_direction_ordering;
 use super::*;
 
+// Boundary, band-start and band-end world paths, plus whether explicit band domains were used.
+type IncidentMouthPaths = (
+    Vec<Vec<RoadVec3>>,
+    Vec<Vec<RoadVec3>>,
+    Vec<Vec<RoadVec3>>,
+    bool,
+);
+
 impl RoadSurfaceSystem {
     pub(in crate::simulation::network::surface) fn build_ordered_piece_mouths(
         &self,
@@ -52,12 +60,7 @@ impl RoadSurfaceSystem {
         incident: IncidentSurfaceEdge,
         profile: &IncidentMouthProfile,
         endpoint_profile: &IncidentMouthProfile,
-    ) -> (
-        Vec<Vec<RoadVec3>>,
-        Vec<Vec<RoadVec3>>,
-        Vec<Vec<RoadVec3>>,
-        bool,
-    ) {
+    ) -> IncidentMouthPaths {
         let Some(sections) = self.compiled_sections.get(&incident.edge_idx) else {
             return (Vec::new(), Vec::new(), Vec::new(), false);
         };

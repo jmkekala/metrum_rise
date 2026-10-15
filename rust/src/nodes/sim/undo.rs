@@ -231,7 +231,9 @@ impl SimCore {
             trans_graph: None,
             road_surface_topology: None,
             zoning: None,
-            runtime: Some(SimulationRuntimeSnapshot::BuildingRemoval(runtime)),
+            runtime: Some(SimulationRuntimeSnapshot::BuildingRemoval(Box::new(
+                runtime,
+            ))),
         });
         true
     }
@@ -411,9 +413,11 @@ impl SimCore {
             } = state;
             let restored_dense_terrain = terrain.is_some();
             let mut sync_trans_graph = false;
-            let old_engineered_patch_keys = restored_dense_terrain
-                .then(|| self.engineered_terrain_patch_keys.clone())
-                .unwrap_or_default();
+            let old_engineered_patch_keys = if restored_dense_terrain {
+                self.engineered_terrain_patch_keys.clone()
+            } else {
+                Default::default()
+            };
             let mut restored_topology_scope = None;
 
             if let Some(t_data) = terrain {
@@ -457,7 +461,7 @@ impl SimCore {
                         self.pending_demand_spawns = pending;
                     }
                     SimulationRuntimeSnapshot::BuildingRemoval(removal) => {
-                        self.restore_building_removal_undo(removal);
+                        self.restore_building_removal_undo(*removal);
                     }
                     SimulationRuntimeSnapshot::VegetationEdit(journal) => {
                         // Every cell restores independently and every patch revision only has

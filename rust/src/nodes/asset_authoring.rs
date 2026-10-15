@@ -248,7 +248,9 @@ impl AssetAuthoringPolicy {
         };
         let walls: Vec<[[f32; 2]; 2]> = structures
             .as_slice()
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| [[c[0], c[1]], [c[2], c[3]]])
             .collect();
         GString::from(

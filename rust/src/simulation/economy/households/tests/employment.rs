@@ -425,7 +425,7 @@ fn local_stock_repricing_preserves_the_funded_import_alternative() {
                 |resource| f64::from(catalog.unit_price_for_resource(resource).unwrap_or(0.0)),
             );
             assert!(
-                capital >= f64::from(costs.working_capital),
+                capital >= costs.working_capital,
                 "stock={stock} local={local_units}: capital={capital}, required={}",
                 costs.working_capital
             );
@@ -2833,7 +2833,7 @@ fn consumer_market_reserves_transfers_once_and_excludes_temporary_income() {
     assert_eq!(buyers(&[pensioner.clone(), pensioner.clone()], 0.0), 0.0);
     let unemployed = make_household(0, 1, 100.0, 0.0);
     assert_eq!(
-        buyers(&[unemployed.clone()], 100.0),
+        buyers(std::slice::from_ref(&unemployed), 100.0),
         0.0,
         "time-limited transfers cannot promise ongoing customer revenue"
     );

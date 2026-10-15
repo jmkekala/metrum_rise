@@ -46,12 +46,15 @@ struct VacancyCandidate {
     chunk: (i32, i32),
 }
 
+// Inclusive (min, max) chunk coordinates.
+type ChunkBounds = ((i32, i32), (i32, i32));
+
 struct VacancyPlanner {
     candidates: Vec<VacancyCandidate>,
     levels_desc: Vec<u8>,
     by_level: BTreeMap<u8, Vec<usize>>,
     by_level_chunk: BTreeMap<u8, BTreeMap<(i32, i32), Vec<usize>>>,
-    level_chunk_bounds: BTreeMap<u8, ((i32, i32), (i32, i32))>,
+    level_chunk_bounds: BTreeMap<u8, ChunkBounds>,
 }
 
 impl VacancyPlanner {
@@ -253,13 +256,12 @@ impl VacancyPlanner {
                     }
                 }
             });
-            if let Some((_, best_distance, _)) = best {
-                if ring == max_ring
+            if let Some((_, best_distance, _)) = best
+                && (ring == max_ring
                     || best_distance
-                        < min_possible_ring_distance_sq(origin_x, origin_y, origin_chunk, ring + 1)
-                {
-                    break;
-                }
+                        < min_possible_ring_distance_sq(origin_x, origin_y, origin_chunk, ring + 1))
+            {
+                break;
             }
         }
         best.map(|(candidate_pos, _, _)| candidate_pos)
@@ -329,7 +331,7 @@ fn insert_candidate_pos_by_building(
 }
 
 fn update_level_chunk_bounds(
-    bounds_by_level: &mut BTreeMap<u8, ((i32, i32), (i32, i32))>,
+    bounds_by_level: &mut BTreeMap<u8, ChunkBounds>,
     level: u8,
     chunk: (i32, i32),
 ) {
@@ -344,7 +346,7 @@ fn update_level_chunk_bounds(
         .or_insert((chunk, chunk));
 }
 
-fn max_chunk_ring_for_level(bounds: ((i32, i32), (i32, i32)), origin_chunk: (i32, i32)) -> i32 {
+fn max_chunk_ring_for_level(bounds: ChunkBounds, origin_chunk: (i32, i32)) -> i32 {
     let (min_chunk, max_chunk) = bounds;
     [
         (origin_chunk.0 - min_chunk.0).abs(),
@@ -610,6 +612,7 @@ impl HouseholdSystem {
         self.household_member_next_scratch = household_member_next;
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn relocate_household(
         &mut self,
         household_id: usize,
@@ -639,6 +642,7 @@ impl HouseholdSystem {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn occupy_household_home(
         &mut self,
         household_id: usize,
@@ -673,6 +677,7 @@ impl HouseholdSystem {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn evict_household(
         &mut self,
         household_id: usize,

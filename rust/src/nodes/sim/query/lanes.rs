@@ -76,7 +76,6 @@ impl SimCore {
             if geo.len() < 2 {
                 continue;
             }
-            let lc = geo.len();
 
             // Process each end that matches this junction.
             // If both match (self-loop), we process it twice for both stub ends!
@@ -97,8 +96,8 @@ impl SimCore {
                 let mut best_stub = Vector3::ZERO;
 
                 if is_start_side {
-                    for j in 0..lc {
-                        let d = geo[j] - junction_pos;
+                    for &point in geo.iter() {
+                        let d = point - junction_pos;
                         if d.length() > SEARCH_RADIUS {
                             diff = d;
                             break;
@@ -108,8 +107,8 @@ impl SimCore {
                         }
                     }
                 } else {
-                    for j in (0..lc).rev() {
-                        let d = geo[j] - junction_pos;
+                    for &point in geo.iter().rev() {
+                        let d = point - junction_pos;
                         if d.length() > SEARCH_RADIUS {
                             diff = d;
                             break;

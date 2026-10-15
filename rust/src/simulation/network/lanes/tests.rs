@@ -539,11 +539,11 @@ fn test_crosswalk_counts() {
         for &lid in &inbound_lane_ids {
             for &next_id in &lanes.lanes[lid].next_lanes {
                 let next_l = &lanes.lanes[next_id];
-                if lanes.crosswalk_marking(next_id).is_some() && next_l.lane_type == LaneType::Foot
+                if lanes.crosswalk_marking(next_id).is_some()
+                    && next_l.lane_type == LaneType::Foot
+                    && !crosswalk_lanes.contains(&next_id)
                 {
-                    if !crosswalk_lanes.contains(&next_id) {
-                        crosswalk_lanes.push(next_id);
-                    }
+                    crosswalk_lanes.push(next_id);
                 }
             }
         }
@@ -605,10 +605,10 @@ fn vehicle_conns_for_turn(
             if conn.edge_id != usize::MAX {
                 continue;
             } // must be a connection lane
-            if let Some(&out_road) = conn.next_lanes.first() {
-                if lanes.lanes[out_road].edge_id == outbound_edge {
-                    result.push(conn_id);
-                }
+            if let Some(&out_road) = conn.next_lanes.first()
+                && lanes.lanes[out_road].edge_id == outbound_edge
+            {
+                result.push(conn_id);
             }
         }
     }

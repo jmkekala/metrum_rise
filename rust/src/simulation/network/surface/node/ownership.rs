@@ -857,9 +857,10 @@ fn discard_unprovenanced_numeric_dust_regions(
     Ok(changed)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn materialize_final_boundary_vertices_for_height(
     node_id: u32,
-    owned_regions: &mut Vec<NodeBooleanOwnedRegion>,
+    owned_regions: &mut [NodeBooleanOwnedRegion],
     footprint_shapes: &mut NodeOverlayShapes,
     owned_region_arrangement: &mut NodeOwnedRegionArrangement,
     carrier_context: &NodeCarrierProvenanceContext<'_>,
@@ -1249,6 +1250,7 @@ fn final_footprint_shapes_from_owned_regions(
     overlay_union(&contours, "final_owned_footprint_union")
 }
 
+#[allow(clippy::too_many_arguments)]
 fn rebuild_owned_region_seam_constraints_and_arrangement(
     node_id: u32,
     owned_regions: &mut [NodeBooleanOwnedRegion],

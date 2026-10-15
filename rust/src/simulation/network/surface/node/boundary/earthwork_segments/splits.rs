@@ -6,6 +6,7 @@ use super::sources::node_earthwork_source_for_boundary_subsegment;
 use super::*;
 use std::collections::BTreeMap;
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::simulation::network::surface::node::boundary) fn push_sourced_node_earthwork_boundary_segments(
     node_id: u32,
     kind: RoadSurfaceVisualNodePieceKind,
@@ -152,7 +153,7 @@ fn nearby_source_edges_for_missing_segment(
     start_key: arrangement::NodeArrangementKey,
     end_key: arrangement::NodeArrangementKey,
     source_edges: &[NodeEarthworkBoundarySourceEdge],
-) -> Vec<((i64, i64), (i64, i64), RoadSurfaceBandKind, usize, bool)> {
+) -> Vec<NearbySourceEdge> {
     const DIAGNOSTIC_OVERLAY_KEY_MARGIN: i64 = 1024;
     let min_x = start_key.x_key().min(end_key.x_key()) - DIAGNOSTIC_OVERLAY_KEY_MARGIN;
     let max_x = start_key.x_key().max(end_key.x_key()) + DIAGNOSTIC_OVERLAY_KEY_MARGIN;

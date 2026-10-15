@@ -652,10 +652,12 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     let service_policy = CityServicePolicy {
         electricity_funding: 0.35,
     };
-    let mut fiscal_policy = CityFiscalPolicy::default();
-    fiscal_policy.pension_per_elder_per_day = 42.0;
-    fiscal_policy.child_support_per_child_per_day = 11.0;
-    fiscal_policy.income_tax_rate = 0.22;
+    let fiscal_policy = CityFiscalPolicy {
+        pension_per_elder_per_day: 42.0,
+        child_support_per_child_per_day: 11.0,
+        income_tax_rate: 0.22,
+        ..Default::default()
+    };
     let mut budget_history = VecDeque::new();
     budget_history.push_back(DailyBudgetLedgerEntry {
         day_index: 3,

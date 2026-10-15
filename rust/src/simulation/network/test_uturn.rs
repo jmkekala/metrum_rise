@@ -50,7 +50,7 @@ mod tests {
             let edge = &graph.edges[e_idx];
             let is_end = edge.end_node == n1;
 
-            if let Some(lane_ids) = lanes.edge_lanes.get(&(e_idx as usize)) {
+            if let Some(lane_ids) = lanes.edge_lanes.get(&{ e_idx }) {
                 for &l_id in lane_ids {
                     let l = &lanes.lanes[l_id];
                     // Skip footpaths
@@ -126,16 +126,16 @@ mod tests {
         // Check node n1 for any U-turn connections
         let mut uturn_count = 0;
         for &e_idx in &graph.adjacency[n1 as usize] {
-            if let Some(lane_ids) = lanes.edge_lanes.get(&(e_idx as usize)) {
+            if let Some(lane_ids) = lanes.edge_lanes.get(&{ e_idx }) {
                 for &l_id in lane_ids {
                     let l = &lanes.lanes[l_id];
                     // If inbound to n1
                     if l.is_fwd == (graph.edges[e_idx].end_node == n1) {
                         for &next_id in &l.next_lanes {
-                            if let Some(&target_id) = lanes.lanes[next_id].next_lanes.first() {
-                                if lanes.lanes[target_id].edge_id == l.edge_id {
-                                    uturn_count += 1;
-                                }
+                            if let Some(&target_id) = lanes.lanes[next_id].next_lanes.first()
+                                && lanes.lanes[target_id].edge_id == l.edge_id
+                            {
+                                uturn_count += 1;
                             }
                         }
                     }
@@ -194,7 +194,7 @@ mod tests {
                 }
 
                 // Entrance to n1 (end node)
-                if l.is_fwd == true {
+                if l.is_fwd {
                     for &next_id in &l.next_lanes {
                         let next_l = &lanes.lanes[next_id];
                         if let Some(&target_id) = next_l.next_lanes.first() {

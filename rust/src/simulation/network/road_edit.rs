@@ -131,14 +131,13 @@ impl RoadTopologyPlan {
             .enumerate()
             .filter(|(id, node)| node.changed || finalized.affected_nodes.contains(&(*id as u32)))
         {
-            if let Some(id) = node.source {
-                if source
+            if let Some(id) = node.source
+                && source
                     .node_adjacency(id)
                     .iter()
                     .any(|edge| !source.edge(*edge).deleted && !source_edges.contains_key(edge))
-                {
-                    return None;
-                }
+            {
+                return None;
             }
         }
         let mut local_sources = vec![None; local.edge_count()];
@@ -332,7 +331,7 @@ impl TransitNetwork {
     /// Installs a generation-checked solved delta without repeating intersections or profile solves.
     /// Work is O(local profile points + sum(local degree * log(degree))
     /// + changed edges * log(resident edges)),
-    /// plus the existing split-dependent migration cost. No full graph scan/copy is introduced.
+    ///   plus the existing split-dependent migration cost. No full graph scan/copy is introduced.
     pub(crate) fn adopt_road_topology_plan(
         &mut self,
         graph: &mut RegionGraph,

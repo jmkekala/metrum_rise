@@ -428,7 +428,7 @@ impl RoadSurfaceSystem {
         let contours = Self::node_material_partition_contours(polygons);
         let raw_area_m2 = contours
             .iter()
-            .map(|contour| Self::overlay_contour_area(contour).abs() as f32)
+            .map(|contour| Self::overlay_contour_area(contour).abs())
             .sum::<f32>();
         let union_shapes = if contours.is_empty() {
             Vec::new()
@@ -725,7 +725,7 @@ impl RoadSurfaceSystem {
             .iter()
             .map(|point| [point.x, point.y])
             .collect::<NodeOverlayContour>();
-        Self::overlay_contour_area(&contour) as f32
+        Self::overlay_contour_area(&contour)
     }
 
     fn append_road_vec2_bounds_debug_literal(dump: &mut String, points: &[backend::RoadVec2]) {

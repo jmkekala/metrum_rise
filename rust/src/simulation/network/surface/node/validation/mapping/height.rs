@@ -294,7 +294,7 @@ impl NodeGeometryDiagnostic {
                 source_mouth_order_index: *mouth_order_index,
                 source_band_index: *band_index,
                 height_field_id: *height_field_id,
-                source_segment_id: *source_segment_id,
+                source_segment_id: **source_segment_id,
             },
             NodeHeightFieldError::TerminalCapGeneration { error } => {
                 NodeGeometryDiagnosticKind::HeightFieldFailure {
@@ -358,9 +358,9 @@ impl NodeGeometryDiagnostic {
                 kind: *kind,
                 owner: *owner,
                 opposite_owner: *opposite_owner,
-                height_field_id: *height_field_id,
+                height_field_id: height_field_id.as_deref().copied(),
                 incoming_owner: *incoming_owner,
-                incoming_height_field_id: *incoming_height_field_id,
+                incoming_height_field_id: incoming_height_field_id.as_deref().copied(),
                 constraint_index: *constraint_index,
                 existing_authority: *existing_authority,
                 incoming_authority: *incoming_authority,

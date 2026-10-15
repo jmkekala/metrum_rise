@@ -35,6 +35,7 @@ pub(in crate::simulation::network::surface::node::ownership) fn owned_boundary_r
     owner.kind() != opposite_owner.kind()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::simulation::network::surface::node::ownership) fn junctionn_unmaterialized_raised_step_authority_indices_for_edge(
     piece_kind: RoadSurfaceVisualNodePieceKind,
     start: NodeOwnershipPointKey,

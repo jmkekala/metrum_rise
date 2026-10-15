@@ -85,6 +85,12 @@ fn live_fingerprint(
     ]
 }
 
+impl Default for DemandSystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DemandSystem {
     /// Creates a new demand system using the shipped demand tuning file.
     pub fn new() -> Self {
@@ -199,6 +205,7 @@ impl DemandSystem {
     /// With a current live input census, the pass plans directly on the live customer,
     /// business and input books inside one first-touch transaction and restores them before
     /// returning, so its cost follows the rows it touches rather than a copy of every book.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn run_hourly_pass_with_policy(
         &mut self,
         allocator: &BuildingAllocator,

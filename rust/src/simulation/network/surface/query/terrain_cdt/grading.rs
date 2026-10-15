@@ -43,7 +43,7 @@ impl RoadSurfaceSystem {
         let base_margin_m = terrain_cdt_local_sample_margin_m(terrain.terrain(), render_step_m);
         let mut margin_m = base_margin_m;
 
-        for (_, piece) in self.compiled_visual_span_pieces.iter() {
+        for piece in self.compiled_visual_span_pieces.values() {
             for boundary_loop in &piece.terrain_clip_boundary_loops() {
                 margin_m = margin_m.max(Self::terrain_cdt_required_grading_margin_for_clip_loop(
                     terrain,
@@ -350,6 +350,7 @@ impl RoadSurfaceSystem {
         margin_m
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn terrain_cdt_required_grading_margin_for_ray(
         terrain: &impl TerrainVisualSource,
         seam_x: f64,
@@ -396,6 +397,7 @@ impl RoadSurfaceSystem {
         margin_m.min(max_probe_distance_m)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn terrain_cdt_grading_ring_vertices(
         terrain: &impl TerrainVisualSource,
         seam_x: f64,
@@ -436,6 +438,7 @@ impl RoadSurfaceSystem {
         vertices
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn push_terrain_cdt_grading_ring_vertex(
         terrain: &impl TerrainVisualSource,
         seam_x: f64,

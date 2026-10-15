@@ -66,6 +66,7 @@ pub(in crate::nodes::simulation_node) struct TerrainCdtWindowBuildPlan {
 impl SimulationNode {
     /// Assembles planned road and captured site inputs for production CDT/patch compilation.
     /// This is a candidate: fresh ownership/site inputs still govern commit acceptance.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn planned_road_terrain_patch_input(
         terrain: &impl TerrainVisualSource,
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
@@ -299,6 +300,7 @@ impl SimulationNode {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::nodes::simulation_node) fn terrain_cdt_incremental_window_build_inputs(
         terrain: &impl TerrainVisualSource,
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
@@ -607,6 +609,7 @@ impl SimulationNode {
             && previous.site_clip_fingerprints == site_clip_fingerprints
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn terrain_cdt_planned_window_for_tile(
         terrain: &impl TerrainVisualSource,
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
@@ -717,6 +720,7 @@ impl SimulationNode {
 
     // Retain halo grading contributors; the CDT clips ownership to these core bounds.
     // All terrain and site-dependent inputs stay fresh.
+    #[allow(clippy::too_many_arguments)]
     fn terrain_cdt_input_for_bounds_with_guides(
         terrain: &impl TerrainVisualSource,
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
@@ -1665,6 +1669,7 @@ impl SimulationNode {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::nodes::simulation_node) fn append_terrain_cdt_grid_samples(
         terrain: &impl TerrainVisualSource,
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
@@ -1709,6 +1714,7 @@ impl SimulationNode {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::nodes::simulation_node) fn append_terrain_cdt_window_boundary_samples(
         terrain: &impl TerrainVisualSource,
         min_x: f32,

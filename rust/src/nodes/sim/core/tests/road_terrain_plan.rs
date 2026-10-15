@@ -235,8 +235,8 @@ fn commit_ready_with_lanes(
 #[test]
 fn kuopio_third_road_preserves_existing_junction_boundary_owners() {
     for (trunk_end_x, branch_end) in [
-        (2889.749755859375, (3020.0, -8622.830078125)),
-        (2889.74951171875, (3020.73, -8622.6728515625)),
+        (2_889.749_8, (3020.0, -8_622.83)),
+        (2_889.749_5, (3020.73, -8_622.673)),
     ] {
         let mut core = test_core();
         core.load_world_definition_internal(
@@ -250,7 +250,7 @@ fn kuopio_third_road_preserves_existing_junction_boundary_owners() {
         // The first case reproduces road.log's exact missing outer-boundary coordinates;
         // the second exposes the same short-edge deletion in the third road's new junction.
         for (start, end) in [
-            ((2816.8857421875, -8504.609375), (trunk_end_x, -9000.0)),
+            ((2_816.885_7, -8_504.609), (trunk_end_x, -9000.0)),
             ((2839.961, -8661.495), branch_end),
             ((2940.0, -8640.0), (2960.0, -8870.0)),
         ] {

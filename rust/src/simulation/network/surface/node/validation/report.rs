@@ -538,9 +538,8 @@ fn height_conflict_vertex_diagnostic(
             .copied()
             .filter(|record| {
                 record.owner == owner
-                    && height_field_id.map_or(true, |height_field_id| {
-                        record.height_field_id == height_field_id
-                    })
+                    && height_field_id
+                        .is_none_or(|height_field_id| record.height_field_id == height_field_id)
                     && record.point.x_mm() == x_mm
                     && record.point.z_mm() == z_mm
             })

@@ -111,6 +111,7 @@ impl DemandSystem {
     /// external layout/metric/frontage-price revision. Successful appends update scratch incrementally.
     /// Warm checks cost O(ports² + log H + K log K + G + S), for K borders, local door/lane
     /// geometry G and source-query work S. There is no per-project city scan.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare_queued_spawn(
         &mut self,
         action: &DemandSpawnAction,
@@ -303,6 +304,7 @@ impl DemandSystem {
     }
 
     // One census per execution epoch; successful actions keep the books and owner namespace.
+    #[allow(clippy::too_many_arguments)]
     fn prepare_execution_market(
         &mut self,
         current: Epoch,
@@ -479,7 +481,7 @@ impl DemandSystem {
         &self,
         parcel: u64,
         zoning: &ZoningSystem,
-    ) -> Option<(u32, [u64; 2], Vec<(u16, Option<usize>, u64, u32, u32)>)> {
+    ) -> Option<super::supply::ProjectProof> {
         let execution = &self.construction_execution;
         execution.reservations.project_proof_for_test(
             &execution.funding.input_supply,

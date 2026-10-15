@@ -511,18 +511,22 @@ fn reject_unauthorized_arrangement_height_splits(
                 incoming_y_mm,
                 existing_owner_kind: existing_owner.kind(),
                 existing_owner_index: existing_owner.owner_index(),
-                existing_source: NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint {
-                    x_key: key.x_key(),
-                    z_key: key.z_key(),
-                    y_mm: existing_y_mm,
-                },
+                existing_source: Box::new(
+                    NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint {
+                        x_key: key.x_key(),
+                        z_key: key.z_key(),
+                        y_mm: existing_y_mm,
+                    },
+                ),
                 incoming_owner_kind: incoming_owner.kind(),
                 incoming_owner_index: incoming_owner.owner_index(),
-                incoming_source: NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint {
-                    x_key: key.x_key(),
-                    z_key: key.z_key(),
-                    y_mm: incoming_y_mm,
-                },
+                incoming_source: Box::new(
+                    NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint {
+                        x_key: key.x_key(),
+                        z_key: key.z_key(),
+                        y_mm: incoming_y_mm,
+                    },
+                ),
             },
         );
     }

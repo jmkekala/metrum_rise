@@ -55,6 +55,9 @@ impl<T> RawSlice<T> {
     }
 
     #[inline(always)]
+    // Shared `&self` is intentional: workers share one view and the per-index disjointness
+    // invariant above is what makes the returned `&mut` unique.
+    #[allow(clippy::mut_from_ref)]
     /// Returns a mutable reference to one index that must be unique to the current worker.
     pub(super) unsafe fn get_mut(&self, i: usize) -> &mut T {
         debug_assert!(i < self.len);

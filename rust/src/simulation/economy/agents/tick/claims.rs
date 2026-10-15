@@ -215,17 +215,15 @@ fn classify_network_claims(
     if lane.edge_id != usize::MAX
         && agents.transit_mode[i] == MODE_CAR
         && agents.transit[i] == TRANSIT_NETWORK
+        && let Some(target_lane) = agent_lane_change_target(agents, i, preparation)
     {
-        if let Some(target_lane) = agent_lane_change_target(agents, i, preparation) {
-            let target_length = network.lane_system.lanes[target_lane].length;
-            // Winning a move onto a shorter lane must not reach another handoff this tick.
-            if remaining + CLAIM_REACH_EPS_M >= (target_length - lane_d.min(target_length)).max(0.0)
-            {
-                return MovementClaimMode::Dynamic;
-            }
-            preparation.owners[target_lane].fetch_min(i, Ordering::Relaxed);
-            return MovementClaimMode::Lateral;
+        let target_length = network.lane_system.lanes[target_lane].length;
+        // Winning a move onto a shorter lane must not reach another handoff this tick.
+        if remaining + CLAIM_REACH_EPS_M >= (target_length - lane_d.min(target_length)).max(0.0) {
+            return MovementClaimMode::Dynamic;
         }
+        preparation.owners[target_lane].fetch_min(i, Ordering::Relaxed);
+        return MovementClaimMode::Lateral;
     }
     MovementClaimMode::Parallel
 }

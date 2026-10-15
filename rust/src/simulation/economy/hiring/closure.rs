@@ -441,6 +441,7 @@ impl JobFunding {
     /// One failed plan rejects all repairs; the ordinary closure can then resize operations.
     /// Preparation is O(B + output slots); warm repair is O(output slots + affected receipt
     /// chains + A log A + affected input quotes), without allocating inside owner quotation.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn repair_provisional_inputs(
         &mut self,
         allocator: &BuildingAllocator,
@@ -503,6 +504,7 @@ impl JobFunding {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn repair_provisional_buyer(
         &mut self,
         owner: usize,
@@ -648,6 +650,7 @@ impl JobFunding {
 
     /// Provisional operations may depend on one another. Only this complete-set check can
     /// publish them: each business purchase has one staffed buyer and one financing account.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn validate_business_customers(
         &mut self,
         allocator: &BuildingAllocator,
@@ -771,10 +774,9 @@ impl JobFunding {
                                             building.inventory_units(input.resource),
                                             units,
                                             multiplier,
-                                        ) {
-                                            if let Some(source) = source {
-                                                book.seed_for(source, slot);
-                                            }
+                                        ) && let Some(source) = source
+                                        {
+                                            book.seed_for(source, slot);
                                         }
                                     },
                                 );
@@ -989,10 +991,10 @@ impl JobFunding {
                     )
                     .freight
                 };
-                let freight_change = f64::from(freight(true)) - f64::from(freight(false));
+                let freight_change = freight(true) - freight(false);
                 let financed = self.business.financing(index);
                 *headroom = [
-                    financed[0] + f64::from(revenue) - f64::from(old_revenue) - freight_change,
+                    financed[0] + revenue - old_revenue - freight_change,
                     financed[1] + capital_change - freight_change,
                 ];
                 if !exports && demand_activity < self.activities[index] {

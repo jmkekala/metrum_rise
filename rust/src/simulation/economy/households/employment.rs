@@ -172,6 +172,7 @@ impl HouseholdSystem {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn assign_agent_workplaces_with_service_funding(
         &mut self,
         agents: &mut AgentSystem,
@@ -681,6 +682,7 @@ struct JobAssignmentPlan {
     stock_pressure: f32,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn plan_agent_workplace(
     i: usize,
     agents: &AgentSystem,

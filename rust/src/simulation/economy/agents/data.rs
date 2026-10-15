@@ -256,6 +256,12 @@ impl DerefMut for AgentSystem {
     }
 }
 
+impl Default for AgentSystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AgentSystem {
     /// Creates a new, empty agent system.
     pub fn new() -> Self {

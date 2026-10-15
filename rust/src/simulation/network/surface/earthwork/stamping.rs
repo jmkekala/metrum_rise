@@ -140,11 +140,12 @@ impl EarthworkStampTriangle {
             .map(|point| point.z)
             .fold(chunk_min.z, f64::max)
             .min(chunk_max.z + f64::from(conservative_margin_m));
-        let Some((min_grid_x, max_grid_x, min_grid_z, max_grid_z)) = terrain
-            .grid_rect_for_world_bounds(min_x as f32, min_z as f32, max_x as f32, max_z as f32)
-        else {
-            return None;
-        };
+        let (min_grid_x, max_grid_x, min_grid_z, max_grid_z) = terrain.grid_rect_for_world_bounds(
+            min_x as f32,
+            min_z as f32,
+            max_x as f32,
+            max_z as f32,
+        )?;
         let (grid_width, grid_height) = terrain.grid_dimensions();
         if grid_width == 0 || grid_height == 0 {
             return None;

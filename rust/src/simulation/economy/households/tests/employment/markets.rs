@@ -21,6 +21,8 @@ struct MarketFixture {
     logistics: ShipmentSystem,
 }
 
+type DistrictRow = (u32, u32, Vec<(usize, u16, u64)>);
+
 impl MarketFixture {
     fn new(regimes: &[u8]) -> Self {
         let catalog = load_runtime_economy_catalog().unwrap();
@@ -131,7 +133,7 @@ impl MarketFixture {
         );
     }
 
-    fn district(&self, district: usize) -> Vec<(u32, u32, Vec<(usize, u16, u64)>)> {
+    fn district(&self, district: usize) -> Vec<DistrictRow> {
         let first = district * DISTRICT;
         (first + HOMES..first + DISTRICT)
             .map(|source| {
@@ -1679,7 +1681,6 @@ fn benchmark_combined_financing_cascades() {
 #[test]
 #[ignore = "short PERF-01 locality acceptance; setup excluded from timings"]
 fn perf_contract_financing_locality() {
-    use std::hint::black_box;
     use std::time::Instant;
 
     let mut tuning = (*load_runtime_economy_tuning().unwrap()).clone();
@@ -1692,7 +1693,7 @@ fn perf_contract_financing_locality() {
         let setup_ms = setup.elapsed().as_secs_f64() * 1_000.0;
 
         let cold = Instant::now();
-        black_box(market.refresh(&tuning));
+        market.refresh(&tuning);
         let cold_ms = cold.elapsed().as_secs_f64() * 1_000.0;
         let cold_passes = market.funding.closure_passes;
         assert!(
@@ -1703,7 +1704,7 @@ fn perf_contract_financing_locality() {
         let warm_start = Instant::now();
         let mut warm_passes = 0;
         for _ in 0..8 {
-            black_box(market.refresh(&tuning));
+            market.refresh(&tuning);
             warm_passes = warm_passes.max(market.funding.closure_passes);
         }
         let warm_ms = warm_start.elapsed().as_secs_f64() * 1_000.0;

@@ -11,13 +11,15 @@ pub(super) fn enabled() -> bool {
         && std::env::var_os("METRUM_TRACE_FUNDING_INPUTS").is_some()
 }
 
+type ProductionRow = (u16, u32, u32, bool, bool, bool, bool, usize);
+
 // Selected dependencies locate invalidations; equality is not a production reuse proof.
 // Strings keep exact float bits and named fields readable when a row changes. This scan
 // deliberately allocates only in opt-in diagnostic tests, never in gameplay builds.
 /// Selected dependency rows for locating changes, never authorizing census reuse.
 pub(super) struct FundingInputs {
     production_revision: u64,
-    production: Vec<(u16, u32, u32, bool, bool, bool, bool, usize)>,
+    production: Vec<ProductionRow>,
     buildings: Vec<String>,
     households: Vec<String>,
     budgets: Vec<(usize, u16, u64)>,
@@ -28,6 +30,7 @@ pub(super) struct FundingInputs {
 
 impl FundingInputs {
     /// Captures exact scalar bits and ordered consumer budgets outside acceptance timing.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn capture(
         allocator: &BuildingAllocator,
         households: &[Household],
@@ -169,6 +172,7 @@ impl FundingInputs {
 
 impl JobFunding {
     /// Compares selected live-census inputs with execution inputs in opt-in diagnostic tests.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn trace_execution_inputs(
         &self,
         allocator: &BuildingAllocator,

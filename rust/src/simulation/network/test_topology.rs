@@ -139,7 +139,7 @@ mod tests {
         // side road connecting near the end (segment 8 of 9)
         net.add_road(
             &mut graph,
-            vec![Vector3::new(8.0, 0.0, 10.0), Vector3::new(8.0, 0.0, 0.0)].into(),
+            vec![Vector3::new(8.0, 0.0, 10.0), Vector3::new(8.0, 0.0, 0.0)],
             1,
             1,
             crate::simulation::network::types::EdgeClass::Standard,
@@ -147,7 +147,7 @@ mod tests {
             &mut allocator,
         );
 
-        assert!(graph.edges.len() > 0);
+        assert!(!graph.edges.is_empty());
     }
 
     #[test]
@@ -182,7 +182,7 @@ mod tests {
             &mut allocator,
         );
 
-        assert!(graph.edges.len() > 0);
+        assert!(!graph.edges.is_empty());
     }
 
     #[test]
@@ -196,8 +196,8 @@ mod tests {
         net.add_road(
             &mut graph,
             vec![
-                Vector3::new(-71.690018, 0.0, -74.325249),
-                Vector3::new(103.143341, 0.0, 106.812721),
+                Vector3::new(-71.690_02, 0.0, -74.325_25),
+                Vector3::new(103.143_34, 0.0, 106.812_72),
             ],
             1,
             1,
@@ -210,7 +210,7 @@ mod tests {
             &mut graph,
             vec![
                 Vector3::new(105.070206, 0.0, -61.874428),
-                Vector3::new(-46.610786, 0.0, 51.625542),
+                Vector3::new(-46.610786, 0.0, 51.625_54),
             ],
             1,
             1,
@@ -226,7 +226,7 @@ mod tests {
             .find(|(_, node)| {
                 node.node_type == NodeType::Junction
                     && (node.pos.x - 9.413908).abs() < 0.01
-                    && (node.pos.z - 9.703340).abs() < 0.01
+                    && (node.pos.z - 9.703_34).abs() < 0.01
             })
             .map(|(node_id, _)| node_id as u32)
             .unwrap_or_else(|| {

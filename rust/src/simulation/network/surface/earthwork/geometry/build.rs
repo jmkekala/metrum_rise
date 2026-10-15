@@ -4,6 +4,12 @@
 
 use super::*;
 
+// Optional top polygon plus the side faces of one closed earthwork loop.
+type ClosedEarthworkLoopGeometry = (
+    Option<RoadSurfaceVisualPolygon>,
+    Vec<RoadSurfaceEarthworkRenderFace>,
+);
+
 impl RoadSurfaceSystem {
     pub(in crate::simulation::network::surface) fn build_closed_earthwork_geometry_from_boundary_segments(
         &self,
@@ -57,13 +63,7 @@ impl RoadSurfaceSystem {
         boundary_segments: &[RoadSurfaceEarthworkBoundarySegment],
         terrain: &TerrainSystem,
         top_surface_shapes: Option<&NodeOverlayShapes>,
-    ) -> Result<
-        Option<(
-            Option<RoadSurfaceVisualPolygon>,
-            Vec<RoadSurfaceEarthworkRenderFace>,
-        )>,
-        RoadSurfaceEarthworkGeometryError,
-    > {
+    ) -> Result<Option<ClosedEarthworkLoopGeometry>, RoadSurfaceEarthworkGeometryError> {
         if boundary_segments.len() < 3 {
             return Err(RoadSurfaceEarthworkGeometryError::DegenerateBoundaryLoop {
                 point_count: boundary_segments.len(),

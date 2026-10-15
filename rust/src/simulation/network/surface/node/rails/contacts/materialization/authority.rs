@@ -639,6 +639,7 @@ fn generated_same_band_point_contact_has_explicit_roles(
         && generated_same_band_boundary_role_at_contour_vertex(right, constraints, point).is_some()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::simulation::network::surface::node::rails::contacts) fn generated_contact_point_has_explicit_roles(
     left_kind: RoadSurfaceBandKind,
     right_kind: RoadSurfaceBandKind,

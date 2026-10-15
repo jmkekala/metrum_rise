@@ -14,6 +14,7 @@ use direct::*;
 use edge_sources::*;
 use split::*;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn node_earthwork_source_for_boundary_subsegment(
     node_id: u32,
     kind: RoadSurfaceVisualNodePieceKind,

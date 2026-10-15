@@ -65,10 +65,10 @@ impl NodeFootprintBoundaryExportSources {
         &self,
         point_key: ArrangementBoundaryPointKey,
     ) -> Option<NodeFinalOwnedFootprintBoundarySupport> {
-        if let Some(source) = self.direct_vertex_sources.get(&point_key).copied() {
-            if node_footprint_boundary_vertex_source_is_exact(source.source) {
-                return Some(NodeFinalOwnedFootprintBoundarySupport::DirectVertex);
-            }
+        if let Some(source) = self.direct_vertex_sources.get(&point_key).copied()
+            && node_footprint_boundary_vertex_source_is_exact(source.source)
+        {
+            return Some(NodeFinalOwnedFootprintBoundarySupport::DirectVertex);
         }
         if self
             .final_vertex_sources
@@ -145,7 +145,7 @@ impl NodeFootprintBoundaryExportSources {
                     owner_index: support.owner_index,
                 },
             };
-            if !candidates.iter().any(|existing| *existing == candidate) {
+            if !candidates.contains(&candidate) {
                 candidates.push(candidate);
             }
         }

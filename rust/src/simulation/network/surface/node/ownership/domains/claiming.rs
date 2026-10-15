@@ -187,17 +187,16 @@ fn owned_domain_groups<'a>(
                 band_index: domain.source_band_index,
             })?;
         let kind = band_kind(domain).expect("owned domain must be a band contour");
-        if let Some(group) = groups.last_mut() {
-            if group.owner == owner
-                && group.kind == kind
-                && group.claim_priority == domain.claim_priority
-                && group.source_mouth_order_index == domain.source_mouth_order_index
-                && group.source_band_index == domain.source_band_index
-                && domains_may_share_claim_group(group.domains[0], domain)
-            {
-                group.domains.push(*domain);
-                continue;
-            }
+        if let Some(group) = groups.last_mut()
+            && group.owner == owner
+            && group.kind == kind
+            && group.claim_priority == domain.claim_priority
+            && group.source_mouth_order_index == domain.source_mouth_order_index
+            && group.source_band_index == domain.source_band_index
+            && domains_may_share_claim_group(group.domains[0], domain)
+        {
+            group.domains.push(*domain);
+            continue;
         }
         groups.push(OwnedDomainGroup {
             owner,

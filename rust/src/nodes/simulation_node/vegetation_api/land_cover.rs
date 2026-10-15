@@ -181,7 +181,7 @@ impl Coverage {
 /// Captures existing revisions without creating a coverage revision or changing edit ownership.
 pub(super) fn generations(core: &SimCore, key: Vector2i) -> [i64; 18] {
     let mut result = [0; 18];
-    for (i, pair) in result.chunks_exact_mut(2).enumerate() {
+    for (i, pair) in result.as_chunks_mut::<2>().0.iter_mut().enumerate() {
         let x = key.x + i as i32 % 3 - 1;
         let z = key.y + i as i32 / 3 - 1;
         if x >= 0 && z >= 0 {
@@ -238,7 +238,9 @@ mod tests {
                 let base = cover.origin
                     + Vector2::new((i % cover.width) as f32, (i / cover.width) as f32) * 8.0;
                 let local: Vec<_> = products
-                    .chunks_exact(6)
+                    .as_chunks::<6>()
+                    .0
+                    .iter()
                     .filter(|p| {
                         p[5] < 2.0
                             && (p[0] - base.x - 4.0).abs() < 10.0

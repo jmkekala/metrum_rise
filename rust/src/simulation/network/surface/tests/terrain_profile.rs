@@ -24,8 +24,10 @@ fn kuopio_terrain() -> &'static TerrainSystem {
             })
             .unwrap();
         let heights: Vec<f32> = source
-            .chunks_exact(4)
-            .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&bytes| f32::from_le_bytes(bytes))
             .collect();
         let config = WorldConfig::new(18_000.0, 18_000.0, 40.0, 10.0);
         let mut terrain = TerrainSystem::from_world_config(&config);

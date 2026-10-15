@@ -66,6 +66,7 @@ enum SpawnRejection {
     Workforce,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn nonresidential_spawn_rejection(
     allocator: &BuildingAllocator,
     catalog: &RuntimeEconomyCatalog,
@@ -112,6 +113,7 @@ fn nonresidential_spawn_rejection(
 // Shared claims change only after all checks pass. Work is O(P² + log H + C log M + S):
 // recipe ports P, homes H, owner/source claims C, source bucket size M and route-query work S.
 // Receipt release never scans unrelated buildings; quote buffers are reused.
+#[allow(clippy::too_many_arguments)]
 fn reserve_business_level_change(
     candidate: &LevelChangeCandidate,
     allocator: &BuildingAllocator,
@@ -247,6 +249,7 @@ impl ExistingBuildingCandidates {
 }
 
 impl DemandSystem {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn plan_private_building_actions(
         &mut self,
         allocator: &BuildingAllocator,
@@ -334,7 +337,7 @@ impl DemandSystem {
                 allocator,
                 catalog,
                 economy_tuning,
-                &residential_occupants,
+                residential_occupants,
                 zone_type,
             );
             if let Some(begin) = existing_begin {

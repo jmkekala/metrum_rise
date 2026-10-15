@@ -96,6 +96,7 @@ impl SimulationNode {
 
     /// Moves terrain toward a slope defined by two clicked rendered anchor points.
     #[func]
+    #[allow(clippy::too_many_arguments)]
     pub fn slope_terrain(
         &mut self,
         pos: Vector2,
@@ -120,6 +121,7 @@ impl SimulationNode {
 
     /// Applies one batched terrain-slope step during an active editor stroke.
     #[func]
+    #[allow(clippy::too_many_arguments)]
     pub fn slope_terrain_stroke_step(
         &mut self,
         pos: Vector2,
@@ -165,7 +167,9 @@ impl SimulationNode {
     pub fn acknowledge_terrain_patches(&mut self, flat_states: PackedInt64Array) -> bool {
         let acknowledged = flat_states
             .as_slice()
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .filter_map(|state| {
                 Some((
                     usize::try_from(state[0]).ok()?,

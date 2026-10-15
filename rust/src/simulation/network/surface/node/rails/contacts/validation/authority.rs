@@ -36,13 +36,16 @@ struct ExactContactSourceBucket {
 
 type ExactContactSourceBucketSet = Arc<[ExactContactSourceBucket]>;
 
+// Owner plus source mouth-order and band indices.
+type SourcePointKey = (NodeBandOwner, usize, usize);
+
 /// Immutable authority buckets that can affect one generated-contact decision.
 #[derive(Clone, Debug, Default)]
 pub(in crate::simulation::network::surface::node::rails) struct ExactGeneratedSourceAuthorityFingerprint
 {
     owner_points: Arc<[(NodeBandOwner, AuthorityPointSet)]>,
     owner_segments: Arc<[(NodeBandOwner, AuthoritySegmentSet)]>,
-    source_points: Arc<[((NodeBandOwner, usize, usize), AuthorityPointSet)]>,
+    source_points: Arc<[(SourcePointKey, AuthorityPointSet)]>,
     contact_presence: Option<(ExactContactPresenceKey, ExactContactSourceBucketSet)>,
     contact_owner_kinds: Arc<[(ExactContactOwnerKindKey, ExactContactSourceBucketSet)]>,
 }
@@ -62,9 +65,7 @@ fn exact_generated_contact_owner_pair(
     owner: NodeBandOwner,
     opposite_owner: NodeBandOwner,
 ) -> Option<(NodeBandOwner, NodeBandOwner)> {
-    if generated_contact_kind_from_constraint(kind).is_none() {
-        return None;
-    }
+    generated_contact_kind_from_constraint(kind)?;
     if kind == NodeRailConstraintKind::RaisedStepContact {
         let pair = GeneratedRaisedStepOwnerPair::new(owner, opposite_owner)?;
         return Some((pair.owner, pair.opposite_owner));

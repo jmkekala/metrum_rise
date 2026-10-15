@@ -591,13 +591,12 @@ fn load_document(path: &Path) -> Result<VarDictionary, String> {
             .map_err(|_| "Draft sources must contain arrays of file paths")?;
     }
     for key in ["mesh_parts", "anchors", "site_surfaces"] {
-        if let Some(entries) = state["params"].get(key) {
-            if !entries
+        if let Some(entries) = state["params"].get(key)
+            && !entries
                 .as_array()
                 .is_some_and(|values| values.iter().all(Value::is_object))
-            {
-                return Err(format!("Draft {key} must be an array of objects"));
-            }
+        {
+            return Err(format!("Draft {key} must be an array of objects"));
         }
     }
     if let Some(parts) = state["params"]["mesh_parts"].as_array() {

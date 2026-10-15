@@ -109,7 +109,7 @@ impl RoadSurfaceSystem {
     fn debug_overlay_shape_numeric_area_budget_m2(shape: &NodeOverlayShape) -> f32 {
         let perimeter_m = shape
             .iter()
-            .map(|contour| Self::overlay_contour_perimeter_m(contour))
+            .map(Self::overlay_contour_perimeter_m)
             .sum::<f32>();
         let vertex_count = shape.iter().map(Vec::len).sum::<usize>();
         Self::overlay_numeric_area_budget_m2(perimeter_m, vertex_count)

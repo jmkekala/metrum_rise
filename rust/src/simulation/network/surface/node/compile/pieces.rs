@@ -170,6 +170,7 @@ impl RoadSurfaceSystem {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::simulation::network::surface) fn replay_exact_preview_node_piece(
         &self,
         graph: &RegionGraph,

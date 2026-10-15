@@ -65,7 +65,7 @@ impl ExactGeneratedSourceAuthority {
             keys_by_source
                 .entry((owner, contour.source_mouth_order_index, source_band_index))
                 .or_default()
-                .extend(keys.into_iter());
+                .extend(keys);
         }
         for constraint in constraints.iter().take(generated_constraint_start_index) {
             if generated_contact_kind_from_constraint(constraint.kind).is_none() {

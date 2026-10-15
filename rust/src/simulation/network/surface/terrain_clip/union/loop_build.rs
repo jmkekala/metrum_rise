@@ -265,12 +265,12 @@ impl RoadSurfaceSystem {
                 source_loop_count: 0,
             });
         }
-        let first_start = output_edges.first().map(|edge| edge.start).ok_or_else(|| {
+        let first_start = output_edges.first().map(|edge| edge.start).ok_or({
             RoadSurfaceTerrainClipExportError::OverlayUnionFailed {
                 source_loop_count: 0,
             }
         })?;
-        let last_end = output_edges.last().map(|edge| edge.end).ok_or_else(|| {
+        let last_end = output_edges.last().map(|edge| edge.end).ok_or({
             RoadSurfaceTerrainClipExportError::OverlayUnionFailed {
                 source_loop_count: 0,
             }

@@ -64,7 +64,7 @@ fn grid_image_pixels(
         .for_each(|(y, row)| {
             let world_y = (y as f32 + 0.5) * pixel_height_m - world_height_m * 0.5;
             let (_, grid_y) = config.world_to_env_grid(0.0, world_y);
-            for (pixel, &grid_x) in row.chunks_exact_mut(4).zip(&grid_columns) {
+            for (pixel, &grid_x) in row.as_chunks_mut::<4>().0.iter_mut().zip(&grid_columns) {
                 let val = grid.sample_bilinear(grid_x, grid_y);
                 if val <= 0.01 {
                     continue;
@@ -96,13 +96,13 @@ mod tests {
         let expected_alpha = [
             0, 50, 150, 200, 25, 68, 156, 200, 75, 106, 168, 200, 100, 125, 175, 200,
         ];
-        for (pixel, alpha) in pixels.chunks_exact(4).zip(expected_alpha) {
+        for (pixel, alpha) in pixels.as_chunks::<4>().0.iter().zip(expected_alpha) {
             let expected = if alpha == 0 {
                 [0, 0, 0, 0]
             } else {
                 [255, 50, 50, alpha]
             };
-            assert_eq!(pixel, expected);
+            assert_eq!(*pixel, expected);
         }
 
         // Rounded source dimensions must not stretch the 20-metre cells to fit this world.

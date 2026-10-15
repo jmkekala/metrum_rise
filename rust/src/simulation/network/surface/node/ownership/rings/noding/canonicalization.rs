@@ -480,6 +480,7 @@ fn source_numeric_dust_key_units() -> i64 {
     (f64::from(NODE_OVERLAY_NUMERIC_DUST_WIDTH_M) * SURFACE_XZ_KEY_SCALE).round() as i64
 }
 
+#[allow(clippy::too_many_arguments)]
 fn canonicalize_owned_region_contour_to_owner_source_points(
     contour: &mut NodeOverlayContour,
     owner: NodeBandOwner,
@@ -514,10 +515,7 @@ fn canonicalize_owned_region_contour_to_owner_source_points(
             }
             continue;
         }
-        let canonical = match rail_points.canonicalized_point_for_owner(owner, key) {
-            Ok(canonical) => canonical,
-            Err(error) => return Err(error),
-        };
+        let canonical = rail_points.canonicalized_point_for_owner(owner, key)?;
         if canonical == key {
             continue;
         }

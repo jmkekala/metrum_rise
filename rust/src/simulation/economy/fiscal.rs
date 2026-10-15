@@ -354,6 +354,7 @@ pub(crate) struct FiscalPolicyControl {
 }
 
 impl FiscalPolicyControl {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         id: &'static str,
         label: &'static str,

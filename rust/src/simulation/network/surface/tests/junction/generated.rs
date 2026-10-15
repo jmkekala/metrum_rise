@@ -366,6 +366,7 @@ where
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::simulation::network::surface::tests::junction) fn generated_multiway_junction_graph_with_edge_widths<
     P,
     E,
@@ -400,6 +401,7 @@ where
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::simulation::network::surface::tests::junction) fn generated_multiway_junction_graph_with_edge_widths_and_profile_modes<
     P,
     E,
@@ -441,6 +443,7 @@ where
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn generated_multiway_junction_graph_with_edge_length_and_widths<P, E>(
     edge_length_m: f32,
     endpoint_angle_degrees: &[f32],
@@ -468,6 +471,7 @@ where
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn generated_multiway_junction_graph_with_edge_length_widths_and_profile_modes<P, E>(
     edge_length_m: f32,
     endpoint_angle_degrees: &[f32],
@@ -506,6 +510,7 @@ where
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn generated_center_graph<P, E>(
     center_xz: Vector2,
     endpoint_xzs: &[Vector2],
@@ -571,6 +576,7 @@ fn point_at_angle_degrees_with_length(angle_degrees: f32, edge_length_m: f32) ->
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn add_generated_center_edges<E>(
     graph: &mut RegionGraph,
     center: u32,
@@ -618,6 +624,7 @@ fn add_generated_center_edges<E>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn add_generated_center_edge<E>(
     graph: &mut RegionGraph,
     center: u32,

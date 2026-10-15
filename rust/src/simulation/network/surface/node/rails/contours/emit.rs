@@ -10,6 +10,7 @@ use super::paths::{
 };
 use super::*;
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::simulation::network::surface::node::rails) fn push_path_strip_contours(
     kind: NodeGeneratedContourKind,
     purpose: NodeGeneratedContourPurpose,
@@ -68,6 +69,7 @@ pub(in crate::simulation::network::surface::node::rails) fn push_path_strip_cont
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::simulation::network::surface::node::rails) fn push_generated_contour(
     kind: NodeGeneratedContourKind,
     mouth_order_index: usize,
@@ -96,6 +98,7 @@ pub(in crate::simulation::network::surface::node::rails) fn push_generated_conto
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::simulation::network::surface::node::rails) fn push_generated_contour_with_purpose(
     kind: NodeGeneratedContourKind,
     purpose: NodeGeneratedContourPurpose,
@@ -159,6 +162,7 @@ pub(in crate::simulation::network::surface::node::rails) fn default_generated_co
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::simulation::network::surface::node::rails) fn push_path_band_contour(
     kind: NodeGeneratedContourKind,
     purpose: NodeGeneratedContourPurpose,

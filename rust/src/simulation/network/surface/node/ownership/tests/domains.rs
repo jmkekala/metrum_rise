@@ -588,7 +588,7 @@ fn unprotected_numeric_dust_can_still_be_discarded() {
 fn unsupported_asphalt_adjacent_sidewalk_sliver_stays_rejected() {
     let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
     let sidewalk = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 1);
-    let regions = vec![
+    let regions = [
         test_owned_region(
             RoadSurfaceBandKind::Carriageway,
             carriageway,

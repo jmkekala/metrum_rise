@@ -36,9 +36,7 @@ pub(super) unsafe fn try_zero_hop_access_connector(
         }
 
         let detach_lane_id = *slices.planned_detach_lane.get(i) as usize;
-        let Some(detach_origin) = lane_origin_node(detach_lane_id, transit_network, graph) else {
-            return None;
-        };
+        let detach_origin = lane_origin_node(detach_lane_id, transit_network, graph)?;
         if detach_origin != *slices.planned_detach_n.get(i) {
             return None;
         }

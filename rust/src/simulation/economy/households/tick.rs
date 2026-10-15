@@ -15,6 +15,7 @@ use std::time::Instant;
 
 impl HouseholdSystem {
     /// Runs one operational-hour household pass for membership, production, logistics, and labor.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn operational_hour_tick(
         &mut self,
         agents: &mut AgentSystem,
@@ -120,6 +121,7 @@ impl HouseholdSystem {
     ///
     /// Implements the four-step bankruptcy spec from `economy.md § Building Bankruptcy`:
     /// Step 1 — bankruptcy check, Step 2 — wages, Step 3 — utility cost, Step 4 — distress.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn daily_settlement_tick(
         &mut self,
         agents: &mut AgentSystem,

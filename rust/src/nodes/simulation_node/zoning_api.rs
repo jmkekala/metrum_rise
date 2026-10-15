@@ -905,6 +905,7 @@ impl SimulationNode {
 
     /// Returns preview geometry for legal parcels in a road-side parcel drag run.
     #[func]
+    #[allow(clippy::too_many_arguments)]
     pub fn get_zoning_parcel_drag_preview(
         &self,
         start_x: f32,
@@ -1043,6 +1044,7 @@ impl SimulationNode {
 
     /// Returns packed preview geometry for legal parcels in a road-side parcel drag run.
     #[func]
+    #[allow(clippy::too_many_arguments)]
     pub fn get_zoning_parcel_drag_preview_packed(
         &self,
         start_x: f32,
@@ -1117,6 +1119,7 @@ impl SimulationNode {
 
     /// Creates legal parcels in a road-side parcel drag run.
     #[func]
+    #[allow(clippy::too_many_arguments)]
     pub fn apply_zoning_parcel_drag(
         &mut self,
         start_x: f32,

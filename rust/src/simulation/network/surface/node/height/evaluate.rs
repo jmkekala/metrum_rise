@@ -87,6 +87,7 @@ impl NodeResolvedHeightAuthorityMap {
         Ok(map)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn insert(
         &mut self,
         owner: NodeBandOwner,
@@ -120,9 +121,9 @@ impl NodeResolvedHeightAuthorityMap {
                     kind,
                     owner,
                     opposite_owner: None,
-                    height_field_id: Some(height_field_id),
+                    height_field_id: Some(Box::new(height_field_id)),
                     incoming_owner: owner,
-                    incoming_height_field_id: Some(height_field_id),
+                    incoming_height_field_id: Some(Box::new(height_field_id)),
                     constraint_index: None,
                     existing_authority: Some(existing.authority),
                     incoming_authority: Some(height.authority),

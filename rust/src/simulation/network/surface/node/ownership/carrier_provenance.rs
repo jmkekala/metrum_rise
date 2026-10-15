@@ -233,6 +233,7 @@ fn owned_region_support_point_keys(region: &NodeBooleanOwnedRegion) -> Vec<NodeO
     points
 }
 
+#[allow(clippy::too_many_arguments)]
 fn provenance_origin_for_point(
     owner: NodeBandOwner,
     source: NodeCarrierSourceKey,

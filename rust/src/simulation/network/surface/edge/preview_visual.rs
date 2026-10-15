@@ -248,7 +248,7 @@ mod tests {
             assert!(point.y >= ground + DISPLAY_LIFT_M - 0.0001);
         }
         // Check triangle interiors too: endpoints alone missed the hill and the cross-slope.
-        for triangle in mesh.vertices.chunks_exact(3) {
+        for triangle in mesh.vertices.as_chunks::<3>().0 {
             for i in 0..=4 {
                 for j in 0..=4 - i {
                     let u = i as f32 / 4.0;
@@ -311,7 +311,7 @@ mod tests {
         );
         assert!(!mesh.vertices.is_empty());
         assert_eq!(mesh.vertices.len() % 3, 0);
-        for triangle in mesh.uvs.chunks_exact(3) {
+        for triangle in mesh.uvs.as_chunks::<3>().0 {
             assert!(triangle.iter().all(|uv| uv.is_finite()));
             let max_s = triangle
                 .iter()

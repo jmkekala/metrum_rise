@@ -192,6 +192,12 @@ impl RegionGraphUndoDelta {
     }
 }
 
+impl Default for RegionGraph {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RegionGraph {
     /// Creates a new, empty road graph.
     pub fn new() -> Self {

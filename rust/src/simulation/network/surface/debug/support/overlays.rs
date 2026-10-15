@@ -102,7 +102,7 @@ impl RoadSurfaceSystem {
         let area_m2 = Self::overlay_shape_area_m2(shape);
         let perimeter_m = shape
             .iter()
-            .map(|contour| Self::overlay_contour_perimeter_m(contour))
+            .map(Self::overlay_contour_perimeter_m)
             .sum::<f32>();
         if perimeter_m <= f32::EPSILON {
             return 0.0;

@@ -363,7 +363,7 @@ impl SimulationNode {
         export.max_face_slope_ratio = export.max_face_slope_ratio.max(face_slope_ratio);
         export.longest_triangle_edge_m = export.longest_triangle_edge_m.max(face_longest_edge_m);
         for index in triangle {
-            export.normals[index] = export.normals[index] + normal;
+            export.normals[index] += normal;
             export
                 .indices
                 .push(i32::try_from(index).unwrap_or(i32::MAX));

@@ -163,8 +163,7 @@ impl NodeFootprintBoundaryExportSources {
                 .then(a.start_key.cmp(&b.start_key))
                 .then(a.end_key.cmp(&b.end_key))
         });
-        self.final_height_edges
-            .sort_by(|a, b| final_height_edge_ordering(a, b));
+        self.final_height_edges.sort_by(final_height_edge_ordering);
         Ok(())
     }
 }

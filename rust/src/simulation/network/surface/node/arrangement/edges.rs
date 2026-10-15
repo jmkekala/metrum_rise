@@ -101,6 +101,7 @@ impl NodeArrangementEdgeKey {
 }
 
 impl NodeArrangement {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn push_edge(
         &mut self,
         start: NodeArrangementVertexId,
@@ -188,30 +189,30 @@ impl NodeArrangement {
                         opposite_owner,
                     )
                 });
-            if let Some(opposite_owner) = opposite_owner {
-                if owners_require_explicit_boundary_seam(pending.owner, opposite_owner) {
-                    if source_constraints.is_empty()
-                        && endpoint_pair_source_constraint_indices.is_empty()
-                        && !has_source_authorized_side_join_boundary
-                    {
-                        self.diagnostics
-                            .push(NodeArrangementDiagnostic::MissingSeamConstraint {
-                                region_index: pending.region_index,
-                                owner: pending.owner,
-                                opposite_owner,
-                                start: edge.key.start,
-                                end: edge.key.end,
-                            });
-                    } else if seam_constraints_are_ambiguous(&source_constraints) {
-                        self.diagnostics
-                            .push(NodeArrangementDiagnostic::AmbiguousSeamConstraint {
-                                region_index: pending.region_index,
-                                owner: pending.owner,
-                                opposite_owner,
-                                start: edge.key.start,
-                                end: edge.key.end,
-                            });
-                    }
+            if let Some(opposite_owner) = opposite_owner
+                && owners_require_explicit_boundary_seam(pending.owner, opposite_owner)
+            {
+                if source_constraints.is_empty()
+                    && endpoint_pair_source_constraint_indices.is_empty()
+                    && !has_source_authorized_side_join_boundary
+                {
+                    self.diagnostics
+                        .push(NodeArrangementDiagnostic::MissingSeamConstraint {
+                            region_index: pending.region_index,
+                            owner: pending.owner,
+                            opposite_owner,
+                            start: edge.key.start,
+                            end: edge.key.end,
+                        });
+                } else if seam_constraints_are_ambiguous(&source_constraints) {
+                    self.diagnostics
+                        .push(NodeArrangementDiagnostic::AmbiguousSeamConstraint {
+                            region_index: pending.region_index,
+                            owner: pending.owner,
+                            opposite_owner,
+                            start: edge.key.start,
+                            end: edge.key.end,
+                        });
                 }
             }
             let seam_source = selected_source_constraint

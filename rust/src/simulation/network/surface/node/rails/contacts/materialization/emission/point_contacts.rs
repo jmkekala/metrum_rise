@@ -107,11 +107,13 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_mat
     let before_len = constraints.len();
     let authority_index = GeneratedContactAuthorityIndex::new(constraints);
     let summaries = generated_contact_contour_summaries(contours);
-    let mut stats = GeneratedContactEmissionStats::default();
-    stats.pair_tests = summaries
-        .len()
-        .saturating_mul(summaries.len().saturating_sub(1))
-        / 2;
+    let mut stats = GeneratedContactEmissionStats {
+        pair_tests: summaries
+            .len()
+            .saturating_mul(summaries.len().saturating_sub(1))
+            / 2,
+        ..Default::default()
+    };
     let candidate_pairs = generated_contact_candidate_pair_indices(&summaries);
     stats.candidate_pairs = candidate_pairs.len();
     let mut contact_points = Vec::<GeneratedSameBandContactConstraint>::new();

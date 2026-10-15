@@ -140,7 +140,7 @@ impl NodeOwnedRegionArrangement {
                                 edge_key.start,
                                 edge_key.end,
                                 regions,
-                                &refs,
+                                refs,
                                 *edge_ref,
                                 opposite_owner,
                             )
@@ -149,36 +149,37 @@ impl NodeOwnedRegionArrangement {
                 } else {
                     Vec::new()
                 };
-                if let Some(opposite_owner) = opposite_owner {
-                    if owned_boundary_requires_explicit_seam(edge_ref.owner, opposite_owner) {
-                        rail_constraint_index.candidate_indices_for_owned_edge(
+                if let Some(opposite_owner) = opposite_owner
+                    && owned_boundary_requires_explicit_seam(edge_ref.owner, opposite_owner)
+                {
+                    rail_constraint_index.candidate_indices_for_owned_edge(
+                        edge_key.start,
+                        edge_key.end,
+                        edge_ref.owner,
+                        opposite_owner,
+                        &mut rail_candidate_indices,
+                    );
+                    let source_constraint_indices =
+                        junctionn_unmaterialized_raised_step_authority_indices_for_edge(
+                            piece_kind,
                             edge_key.start,
                             edge_key.end,
+                            rail_constraint_index,
+                            &rail_candidate_indices,
+                            &mut rail_coverage_intervals,
                             edge_ref.owner,
                             opposite_owner,
-                            &mut rail_candidate_indices,
                         );
-                        let source_constraint_indices =
-                            junctionn_unmaterialized_raised_step_authority_indices_for_edge(
-                                piece_kind,
-                                edge_key.start,
-                                edge_key.end,
-                                rail_constraint_index,
-                                &rail_candidate_indices,
-                                &mut rail_coverage_intervals,
-                                edge_ref.owner,
-                                opposite_owner,
-                            );
-                        if !source_constraint_indices.is_empty()
-                            && endpoint_pair_source_constraint_indices.is_empty()
-                            && !source_constraints_materialize_raised_step_authority(
-                                &source_constraints,
-                                &source_constraint_indices,
-                                edge_ref.owner,
-                                opposite_owner,
-                            )
-                        {
-                            diagnostics.push(
+                    if !source_constraint_indices.is_empty()
+                        && endpoint_pair_source_constraint_indices.is_empty()
+                        && !source_constraints_materialize_raised_step_authority(
+                            &source_constraints,
+                            &source_constraint_indices,
+                            edge_ref.owner,
+                            opposite_owner,
+                        )
+                    {
+                        diagnostics.push(
                                 NodeOwnedRegionArrangementDiagnostic::UnmaterializedRaisedStepAuthority {
                                     region_index: edge_ref.region_index,
                                     owner: edge_ref.owner,
@@ -188,30 +189,29 @@ impl NodeOwnedRegionArrangement {
                                     source_constraint_indices,
                                 },
                             );
-                        } else if source_constraints.is_empty()
-                            && endpoint_pair_source_constraint_indices.is_empty()
-                            && side_join_asphalt_boundary_indices.is_empty()
-                        {
-                            diagnostics.push(
-                                NodeOwnedRegionArrangementDiagnostic::MissingSeamConstraint {
-                                    region_index: edge_ref.region_index,
-                                    owner: edge_ref.owner,
-                                    opposite_owner,
-                                    start,
-                                    end,
-                                },
-                            );
-                        } else if seam_constraints_are_ambiguous(&source_constraints) {
-                            diagnostics.push(
-                                NodeOwnedRegionArrangementDiagnostic::AmbiguousSeamConstraint {
-                                    region_index: edge_ref.region_index,
-                                    owner: edge_ref.owner,
-                                    opposite_owner,
-                                    start,
-                                    end,
-                                },
-                            );
-                        }
+                    } else if source_constraints.is_empty()
+                        && endpoint_pair_source_constraint_indices.is_empty()
+                        && side_join_asphalt_boundary_indices.is_empty()
+                    {
+                        diagnostics.push(
+                            NodeOwnedRegionArrangementDiagnostic::MissingSeamConstraint {
+                                region_index: edge_ref.region_index,
+                                owner: edge_ref.owner,
+                                opposite_owner,
+                                start,
+                                end,
+                            },
+                        );
+                    } else if seam_constraints_are_ambiguous(&source_constraints) {
+                        diagnostics.push(
+                            NodeOwnedRegionArrangementDiagnostic::AmbiguousSeamConstraint {
+                                region_index: edge_ref.region_index,
+                                owner: edge_ref.owner,
+                                opposite_owner,
+                                start,
+                                end,
+                            },
+                        );
                     }
                 }
                 let seam_source = source_constraints

@@ -102,15 +102,15 @@ fn logged_elevated_bend_with_curb_sidewalk_shared_height_seam_compiles() {
     let terrain = flat_terrain(384, 384);
     let mut graph = RegionGraph::new();
     let west = graph.add_node(
-        Vector3::new(-128.495667, 137.482468, 50.014038),
+        Vector3::new(-128.495_67, 137.482_47, 50.014038),
         NodeType::Junction,
     );
     let bend = graph.add_node(
-        Vector3::new(-62.814247, 138.091599, 47.805443),
+        Vector3::new(-62.814247, 138.091_6, 47.805443),
         NodeType::Junction,
     );
     let northeast = graph.add_node(
-        Vector3::new(-28.634865, 137.346497, 98.009171),
+        Vector3::new(-28.634865, 137.346_5, 98.009_17),
         NodeType::Junction,
     );
 
@@ -118,8 +118,8 @@ fn logged_elevated_bend_with_curb_sidewalk_shared_height_seam_compiles() {
         west,
         bend,
         vec![
-            Vector3::new(-128.495667, 137.482468, 50.014038),
-            Vector3::new(-62.814247, 138.091599, 47.805443),
+            Vector3::new(-128.495_67, 137.482_47, 50.014038),
+            Vector3::new(-62.814247, 138.091_6, 47.805443),
         ],
         7.0,
         EdgeClass::Standard,
@@ -130,8 +130,8 @@ fn logged_elevated_bend_with_curb_sidewalk_shared_height_seam_compiles() {
         bend,
         northeast,
         vec![
-            Vector3::new(-62.814247, 138.091599, 47.805443),
-            Vector3::new(-28.634865, 137.346497, 98.009171),
+            Vector3::new(-62.814247, 138.091_6, 47.805443),
+            Vector3::new(-28.634865, 137.346_5, 98.009_17),
         ],
         7.0,
         EdgeClass::Standard,
@@ -151,15 +151,15 @@ fn logged_elevated_bend_with_conflicting_footprint_boundary_height_compiles() {
     let terrain = flat_terrain(384, 384);
     let mut graph = RegionGraph::new();
     let west = graph.add_node(
-        Vector3::new(-109.914040, 137.423492, 61.868073),
+        Vector3::new(-109.914_04, 137.423_5, 61.868073),
         NodeType::Junction,
     );
     let bend = graph.add_node(
-        Vector3::new(-52.119457, 137.511230, 78.142029),
+        Vector3::new(-52.119457, 137.511_23, 78.142_03),
         NodeType::Junction,
     );
     let northeast = graph.add_node(
-        Vector3::new(-28.145103, 137.416855, 126.829033),
+        Vector3::new(-28.145103, 137.416_85, 126.829_03),
         NodeType::Junction,
     );
 
@@ -167,8 +167,8 @@ fn logged_elevated_bend_with_conflicting_footprint_boundary_height_compiles() {
         west,
         bend,
         vec![
-            Vector3::new(-109.914040, 137.423492, 61.868073),
-            Vector3::new(-52.119457, 137.511230, 78.142029),
+            Vector3::new(-109.914_04, 137.423_5, 61.868073),
+            Vector3::new(-52.119457, 137.511_23, 78.142_03),
         ],
         7.0,
         EdgeClass::Standard,
@@ -179,8 +179,8 @@ fn logged_elevated_bend_with_conflicting_footprint_boundary_height_compiles() {
         bend,
         northeast,
         vec![
-            Vector3::new(-52.119457, 137.511230, 78.142029),
-            Vector3::new(-28.145103, 137.416855, 126.829033),
+            Vector3::new(-52.119457, 137.511_23, 78.142_03),
+            Vector3::new(-28.145103, 137.416_85, 126.829_03),
         ],
         7.0,
         EdgeClass::Standard,
@@ -201,15 +201,15 @@ fn logged_current_elevated_bend_with_curb_sidewalk_boundary_height_conflict_comp
     let terrain = flat_terrain(512, 512);
     let mut graph = RegionGraph::new();
     let west = graph.add_node(
-        Vector3::new(-124.141922, 137.527832, 58.071350),
+        Vector3::new(-124.141_92, 137.527_83, 58.071_35),
         NodeType::Junction,
     );
     let bend = graph.add_node(
-        Vector3::new(-47.562737, 137.724960, 71.863647),
+        Vector3::new(-47.562737, 137.724_96, 71.863_65),
         NodeType::Junction,
     );
     let northeast = graph.add_node(
-        Vector3::new(-5.922226, 137.472488, 144.964676),
+        Vector3::new(-5.922226, 137.472_49, 144.964_68),
         NodeType::Junction,
     );
 
@@ -217,8 +217,8 @@ fn logged_current_elevated_bend_with_curb_sidewalk_boundary_height_conflict_comp
         west,
         bend,
         vec![
-            Vector3::new(-124.141922, 137.527832, 58.071350),
-            Vector3::new(-47.562737, 137.724960, 71.863647),
+            Vector3::new(-124.141_92, 137.527_83, 58.071_35),
+            Vector3::new(-47.562737, 137.724_96, 71.863_65),
         ],
         7.0,
         EdgeClass::Standard,
@@ -229,8 +229,8 @@ fn logged_current_elevated_bend_with_curb_sidewalk_boundary_height_conflict_comp
         bend,
         northeast,
         vec![
-            Vector3::new(-47.562737, 137.724960, 71.863647),
-            Vector3::new(-5.922226, 137.472488, 144.964676),
+            Vector3::new(-47.562737, 137.724_96, 71.863_65),
+            Vector3::new(-5.922226, 137.472_49, 144.964_68),
         ],
         7.0,
         EdgeClass::Standard,
@@ -251,15 +251,15 @@ fn logged_elevated_bend_with_fragmented_curb_sidewalk_side_join_compiles() {
     let terrain = flat_terrain(512, 512);
     let mut graph = RegionGraph::new();
     let west = graph.add_node(
-        Vector3::new(-154.372910, 138.110077, -2.822815),
+        Vector3::new(-154.372_91, 138.110_08, -2.822815),
         NodeType::Junction,
     );
     let bend = graph.add_node(
-        Vector3::new(-85.724274, 137.737137, 49.256790),
+        Vector3::new(-85.724_27, 137.737_14, 49.256_79),
         NodeType::Junction,
     );
     let northeast = graph.add_node(
-        Vector3::new(-52.975925, 137.248505, 114.189369),
+        Vector3::new(-52.975925, 137.248_5, 114.189_37),
         NodeType::Junction,
     );
 
@@ -267,8 +267,8 @@ fn logged_elevated_bend_with_fragmented_curb_sidewalk_side_join_compiles() {
         west,
         bend,
         vec![
-            Vector3::new(-154.372910, 138.110077, -2.822815),
-            Vector3::new(-85.724274, 137.737137, 49.256790),
+            Vector3::new(-154.372_91, 138.110_08, -2.822815),
+            Vector3::new(-85.724_27, 137.737_14, 49.256_79),
         ],
         7.0,
         EdgeClass::Standard,
@@ -279,8 +279,8 @@ fn logged_elevated_bend_with_fragmented_curb_sidewalk_side_join_compiles() {
         bend,
         northeast,
         vec![
-            Vector3::new(-85.724274, 137.737137, 49.256790),
-            Vector3::new(-52.975925, 137.248505, 114.189369),
+            Vector3::new(-85.724_27, 137.737_14, 49.256_79),
+            Vector3::new(-52.975925, 137.248_5, 114.189_37),
         ],
         7.0,
         EdgeClass::Standard,
@@ -301,15 +301,15 @@ fn logged_elevated_bend_does_not_leave_detached_asphalt_mouth_band_islands() {
     let terrain = flat_terrain(512, 512);
     let mut graph = RegionGraph::new();
     let west = graph.add_node(
-        Vector3::new(-65.679413, 137.331345, 74.066315),
+        Vector3::new(-65.679_41, 137.331_34, 74.066315),
         NodeType::Junction,
     );
     let bend = graph.add_node(
-        Vector3::new(68.557236, 138.349731, 139.894348),
+        Vector3::new(68.557236, 138.349_73, 139.894_35),
         NodeType::Junction,
     );
     let northeast = graph.add_node(
-        Vector3::new(76.133392, 137.273651, 219.235001),
+        Vector3::new(76.133_39, 137.273_65, 219.235),
         NodeType::Junction,
     );
 
@@ -317,8 +317,8 @@ fn logged_elevated_bend_does_not_leave_detached_asphalt_mouth_band_islands() {
         west,
         bend,
         vec![
-            Vector3::new(-65.679413, 137.331345, 74.066315),
-            Vector3::new(68.557236, 138.349731, 139.894348),
+            Vector3::new(-65.679_41, 137.331_34, 74.066315),
+            Vector3::new(68.557236, 138.349_73, 139.894_35),
         ],
         7.0,
         EdgeClass::Standard,
@@ -329,8 +329,8 @@ fn logged_elevated_bend_does_not_leave_detached_asphalt_mouth_band_islands() {
         bend,
         northeast,
         vec![
-            Vector3::new(68.557236, 138.349731, 139.894348),
-            Vector3::new(76.133392, 137.273651, 219.235001),
+            Vector3::new(68.557236, 138.349_73, 139.894_35),
+            Vector3::new(76.133_39, 137.273_65, 219.235),
         ],
         7.0,
         EdgeClass::Standard,
@@ -485,18 +485,18 @@ fn logged_current_bend_keeps_inner_sidewalk_side_join_inside_footprint() {
     let terrain = flat_terrain(512, 512);
     let mut graph = RegionGraph::new();
     let west = graph.add_node(
-        Vector3::new(-85.017464, 0.0, -22.491150),
+        Vector3::new(-85.017_46, 0.0, -22.491_15),
         NodeType::Junction,
     );
-    let bend = graph.add_node(Vector3::new(-20.176170, 0.0, 12.873726), NodeType::Junction);
-    let northeast = graph.add_node(Vector3::new(-14.238701, 0.0, 65.644653), NodeType::Junction);
+    let bend = graph.add_node(Vector3::new(-20.176_17, 0.0, 12.873726), NodeType::Junction);
+    let northeast = graph.add_node(Vector3::new(-14.238701, 0.0, 65.644_65), NodeType::Junction);
 
     graph.add_edge(test_edge(
         west,
         bend,
         vec![
-            Vector3::new(-85.017464, 0.0, -22.491150),
-            Vector3::new(-20.176170, 0.0, 12.873726),
+            Vector3::new(-85.017_46, 0.0, -22.491_15),
+            Vector3::new(-20.176_17, 0.0, 12.873726),
         ],
         7.0,
         EdgeClass::Standard,
@@ -507,8 +507,8 @@ fn logged_current_bend_keeps_inner_sidewalk_side_join_inside_footprint() {
         bend,
         northeast,
         vec![
-            Vector3::new(-20.176170, 0.0, 12.873726),
-            Vector3::new(-14.238701, 0.0, 65.644653),
+            Vector3::new(-20.176_17, 0.0, 12.873726),
+            Vector3::new(-14.238701, 0.0, 65.644_65),
         ],
         7.0,
         EdgeClass::Standard,
@@ -529,15 +529,15 @@ fn logged_current_bend_keeps_inner_sidewalk_side_join_inside_footprint() {
 fn logged_current_bend_keeps_curved_curb_side_join_inside_footprint() {
     let terrain = flat_terrain(512, 512);
     let mut graph = RegionGraph::new();
-    let west = graph.add_node(Vector3::new(-95.642860, 0.0, -4.336258), NodeType::Junction);
+    let west = graph.add_node(Vector3::new(-95.642_86, 0.0, -4.336258), NodeType::Junction);
     let bend = graph.add_node(Vector3::new(-23.908737, 0.0, 15.929688), NodeType::Junction);
-    let northeast = graph.add_node(Vector3::new(9.426231, 0.0, 88.333519), NodeType::Junction);
+    let northeast = graph.add_node(Vector3::new(9.426231, 0.0, 88.333_52), NodeType::Junction);
 
     graph.add_edge(test_edge(
         west,
         bend,
         vec![
-            Vector3::new(-95.642860, 0.0, -4.336258),
+            Vector3::new(-95.642_86, 0.0, -4.336258),
             Vector3::new(-23.908737, 0.0, 15.929688),
         ],
         7.0,
@@ -550,7 +550,7 @@ fn logged_current_bend_keeps_curved_curb_side_join_inside_footprint() {
         northeast,
         vec![
             Vector3::new(-23.908737, 0.0, 15.929688),
-            Vector3::new(9.426231, 0.0, 88.333519),
+            Vector3::new(9.426231, 0.0, 88.333_52),
         ],
         7.0,
         EdgeClass::Standard,
@@ -574,15 +574,15 @@ fn logged_inner_bend_orients_fragmented_curb_step_faces_to_lower_asphalt() {
         Vector3::new(-18.243053, 0.0, -35.618744),
         NodeType::Junction,
     );
-    let bend = graph.add_node(Vector3::new(36.906178, 0.0, -21.168159), NodeType::Junction);
-    let southeast = graph.add_node(Vector3::new(67.482918, 0.0, -51.944984), NodeType::Junction);
+    let bend = graph.add_node(Vector3::new(36.906178, 0.0, -21.168_16), NodeType::Junction);
+    let southeast = graph.add_node(Vector3::new(67.482_92, 0.0, -51.944984), NodeType::Junction);
 
     graph.add_edge(test_edge(
         west,
         bend,
         vec![
             Vector3::new(-18.243053, 0.0, -35.618744),
-            Vector3::new(36.906178, 0.0, -21.168159),
+            Vector3::new(36.906178, 0.0, -21.168_16),
         ],
         7.0,
         EdgeClass::Standard,
@@ -593,8 +593,8 @@ fn logged_inner_bend_orients_fragmented_curb_step_faces_to_lower_asphalt() {
         bend,
         southeast,
         vec![
-            Vector3::new(36.906178, 0.0, -21.168159),
-            Vector3::new(67.482918, 0.0, -51.944984),
+            Vector3::new(36.906178, 0.0, -21.168_16),
+            Vector3::new(67.482_92, 0.0, -51.944984),
         ],
         7.0,
         EdgeClass::Standard,
@@ -654,17 +654,17 @@ fn logged_outer_bend_closes_footprint_with_arc_boundary() {
     let terrain = flat_terrain(384, 384);
     let mut graph = RegionGraph::new();
     let west = graph.add_node(
-        Vector3::new(-125.385117, 0.0, -31.426414),
+        Vector3::new(-125.385_12, 0.0, -31.426414),
         NodeType::Junction,
     );
     let bend = graph.add_node(Vector3::new(-6.673889, 0.0, -23.719093), NodeType::Junction);
-    let northeast = graph.add_node(Vector3::new(34.735245, 0.0, 44.360130), NodeType::Junction);
+    let northeast = graph.add_node(Vector3::new(34.735245, 0.0, 44.360_13), NodeType::Junction);
 
     graph.add_edge(test_edge(
         west,
         bend,
         vec![
-            Vector3::new(-125.385117, 0.0, -31.426414),
+            Vector3::new(-125.385_12, 0.0, -31.426414),
             Vector3::new(-6.673889, 0.0, -23.719093),
         ],
         7.0,
@@ -677,7 +677,7 @@ fn logged_outer_bend_closes_footprint_with_arc_boundary() {
         northeast,
         vec![
             Vector3::new(-6.673889, 0.0, -23.719093),
-            Vector3::new(34.735245, 0.0, 44.360130),
+            Vector3::new(34.735245, 0.0, 44.360_13),
         ],
         7.0,
         EdgeClass::Standard,

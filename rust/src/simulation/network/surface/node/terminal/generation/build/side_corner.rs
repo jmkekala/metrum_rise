@@ -4,6 +4,7 @@
 
 use super::*;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn push_terminal_side_corner_cap_band(
     cap_bands: &mut Vec<NodeTerminalCapBand>,
     mouth: &NodeInputMouth,

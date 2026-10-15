@@ -106,6 +106,7 @@ pub(super) fn side_join_owner_by_kind_and_source(
     owner_by_kind_and_source
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn push_grouped_cap_or_join_candidate_contours(
     mouth: &NodeInputMouth,
     key: GeneratedCapOrJoinGroupKey,

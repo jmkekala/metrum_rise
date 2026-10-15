@@ -100,6 +100,7 @@ struct ServiceVisitIndex<'a> {
 }
 
 impl<'a> ServiceVisitIndex<'a> {
+    #[allow(clippy::too_many_arguments)]
     fn build(
         allocator: &BuildingAllocator,
         catalog: &RuntimeEconomyCatalog,
@@ -166,6 +167,7 @@ impl<'a> ServiceVisitIndex<'a> {
         !self.entries.is_empty()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn fill_route_feasible_candidates(
         &self,
         home_idx: usize,
@@ -529,6 +531,7 @@ fn log_service_visit_diagnostics(absolute_hour: u32, diagnostics: &ServiceVisitD
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn visible_service_visit_request(
     household_id: usize,
     household: &Household,

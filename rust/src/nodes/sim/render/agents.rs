@@ -161,14 +161,14 @@ impl SimCore {
                         colors.push(color_direct);
                         colors.push(color_direct);
                     }
-                } else if self.agents.transit[i] == TRANSIT_ACCESS_INGRESS {
-                    if let Some(target) = access_phase_target(self, i, false) {
-                        let target_pos = get_h(target);
-                        points.push(current_pos);
-                        points.push(target_pos);
-                        colors.push(color_direct);
-                        colors.push(color_direct);
-                    }
+                } else if self.agents.transit[i] == TRANSIT_ACCESS_INGRESS
+                    && let Some(target) = access_phase_target(self, i, false)
+                {
+                    let target_pos = get_h(target);
+                    points.push(current_pos);
+                    points.push(target_pos);
+                    colors.push(color_direct);
+                    colors.push(color_direct);
                 }
 
                 if traffic_visual && self.agents.transit_mode[i] == MODE_CAR {
@@ -191,18 +191,16 @@ impl SimCore {
                         if lane.edge_id == usize::MAX {
                             if let Some(target_lane_id) =
                                 connector_target_lane_for_debug(self, current_lane_id)
-                            {
-                                if let Some(target_lane) =
+                                && let Some(target_lane) =
                                     self.transit_network.lane_system.lanes.get(target_lane_id)
-                                {
-                                    append_debug_polyline(
-                                        &mut points,
-                                        &mut colors,
-                                        &target_lane.geometry,
-                                        color_next_lane,
-                                        &get_h,
-                                    );
-                                }
+                            {
+                                append_debug_polyline(
+                                    &mut points,
+                                    &mut colors,
+                                    &target_lane.geometry,
+                                    color_next_lane,
+                                    &get_h,
+                                );
                             }
                         } else {
                             let desired_next_edge =
@@ -218,34 +216,31 @@ impl SimCore {
                                 }
                                 if let Some(connector) =
                                     self.transit_network.lane_system.lanes.get(connector_id)
+                                    && connector.edge_id == usize::MAX
                                 {
-                                    if connector.edge_id == usize::MAX {
+                                    append_debug_polyline(
+                                        &mut points,
+                                        &mut colors,
+                                        &connector.geometry,
+                                        color_connector,
+                                        &get_h,
+                                    );
+                                    drew_connector = true;
+                                    if let Some(target_lane_id) =
+                                        connector_target_lane_for_debug(self, connector_id)
+                                        && let Some(target_lane) = self
+                                            .transit_network
+                                            .lane_system
+                                            .lanes
+                                            .get(target_lane_id)
+                                    {
                                         append_debug_polyline(
                                             &mut points,
                                             &mut colors,
-                                            &connector.geometry,
-                                            color_connector,
+                                            &target_lane.geometry,
+                                            color_next_lane,
                                             &get_h,
                                         );
-                                        drew_connector = true;
-                                        if let Some(target_lane_id) =
-                                            connector_target_lane_for_debug(self, connector_id)
-                                        {
-                                            if let Some(target_lane) = self
-                                                .transit_network
-                                                .lane_system
-                                                .lanes
-                                                .get(target_lane_id)
-                                            {
-                                                append_debug_polyline(
-                                                    &mut points,
-                                                    &mut colors,
-                                                    &target_lane.geometry,
-                                                    color_next_lane,
-                                                    &get_h,
-                                                );
-                                            }
-                                        }
                                     }
                                 }
                             }
@@ -254,16 +249,15 @@ impl SimCore {
                                 for &connector_id in &lane.next_lanes {
                                     if let Some(connector) =
                                         self.transit_network.lane_system.lanes.get(connector_id)
+                                        && connector.edge_id == usize::MAX
                                     {
-                                        if connector.edge_id == usize::MAX {
-                                            append_debug_polyline(
-                                                &mut points,
-                                                &mut colors,
-                                                &connector.geometry,
-                                                color_connector,
-                                                &get_h,
-                                            );
-                                        }
+                                        append_debug_polyline(
+                                            &mut points,
+                                            &mut colors,
+                                            &connector.geometry,
+                                            color_connector,
+                                            &get_h,
+                                        );
                                     }
                                 }
                             }
@@ -329,8 +323,8 @@ impl SimCore {
 
                             // Remaining segments in the path
                             let mut prev_pos = next_node_pos;
-                            for j in (idx + 1)..path.len() {
-                                let n_idx = path[j] as usize;
+                            for &node in &path[idx + 1..] {
+                                let n_idx = node as usize;
                                 if n_idx < self.region_graph.node_count() {
                                     let np = get_h(self.region_graph.node(n_idx as u32).pos);
                                     points.push(prev_pos);

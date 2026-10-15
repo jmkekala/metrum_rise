@@ -283,22 +283,22 @@ pub(crate) fn run_road_preview_worker(
                 }
             };
             if let Some((sites, meshes)) = inputs {
-                if let Some(earthworks) = &earthworks {
-                    if let Some(plan) = &preview.edit_plan {
-                        let plan = pool.install(|| {
-                            plan.with_preview_terrain(
-                                &context.terrain,
-                                &context.region_graph,
-                                &context.road_surface,
-                                earthworks,
-                                sites,
-                            )
-                        });
-                        if let Some(patches) = plan.terrain().and_then(|t| t.preview_patches()) {
-                            preview.terrain_revisions = terrain_revisions.assign(&patches);
-                        }
-                        preview.edit_plan = Some(Arc::new(plan));
+                if let Some(earthworks) = &earthworks
+                    && let Some(plan) = &preview.edit_plan
+                {
+                    let plan = pool.install(|| {
+                        plan.with_preview_terrain(
+                            &context.terrain,
+                            &context.region_graph,
+                            &context.road_surface,
+                            earthworks,
+                            sites,
+                        )
+                    });
+                    if let Some(patches) = plan.terrain().and_then(|t| t.preview_patches()) {
+                        preview.terrain_revisions = terrain_revisions.assign(&patches);
                     }
+                    preview.edit_plan = Some(Arc::new(plan));
                 }
                 if let Some(t) = &mut timing {
                     t.finish_terrain();
@@ -388,23 +388,22 @@ pub(crate) fn compile_road_preview_with_sites(
     core: &SimCore,
 ) -> RoadPreviewSnapshot {
     let mut preview = prepare_road_preview_from_context(context, request);
-    if preview.include_terrain {
-        if let Some(plan) = &preview.edit_plan {
-            if let Some(earthworks) = plan.preview_earthworks(
-                &context.terrain,
-                &context.region_graph,
-                &context.road_surface,
-            ) {
-                let sites = RoadTerrainSiteInputs::capture(core, &earthworks);
-                preview.edit_plan = Some(Arc::new(plan.with_preview_terrain(
-                    &context.terrain,
-                    &context.region_graph,
-                    &context.road_surface,
-                    &earthworks,
-                    sites,
-                )));
-            }
-        }
+    if preview.include_terrain
+        && let Some(plan) = &preview.edit_plan
+        && let Some(earthworks) = plan.preview_earthworks(
+            &context.terrain,
+            &context.region_graph,
+            &context.road_surface,
+        )
+    {
+        let sites = RoadTerrainSiteInputs::capture(core, &earthworks);
+        preview.edit_plan = Some(Arc::new(plan.with_preview_terrain(
+            &context.terrain,
+            &context.region_graph,
+            &context.road_surface,
+            &earthworks,
+            sites,
+        )));
     }
     preview
 }
@@ -494,9 +493,11 @@ fn prepare_road_preview_from_context(
         timing: None,
         include_terrain,
         request_id,
-        surface_generation: generation_matches
-            .then_some(context.surface_generation)
-            .unwrap_or(0),
+        surface_generation: if generation_matches {
+            context.surface_generation
+        } else {
+            0
+        },
         fwd_lanes,
         bkw_lanes,
         prepared_points: preview.prepared_points,

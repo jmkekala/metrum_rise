@@ -1068,6 +1068,7 @@ mod tests {
         assert_eq!(role, RoadSurfaceSpanRegionRole::NonRoad);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn span_handoff_source_edge(
         start: RoadVec3,
         end: RoadVec3,

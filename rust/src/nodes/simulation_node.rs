@@ -545,7 +545,7 @@ impl INode3D for SimulationNode {
             self.benchmark_tick_count += 1;
 
             // Periodic console log every 600 frames.
-            if self.benchmark_tick_count % 600 == 0 {
+            if self.benchmark_tick_count.is_multiple_of(600) {
                 let snap = self.snapshot.read().unwrap();
                 godot_print!(
                     "[bench] frame={} agents={} agent_tick_us={} sim_tick_ms={:.2} pathfinds={} RSS={}MB",

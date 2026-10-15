@@ -150,6 +150,10 @@ pub(super) struct ProjectReservations {
     prepared: bool,
 }
 
+/// Prepared project proof: workers, financing headroom bits and input receipts.
+#[cfg(test)]
+pub(crate) type ProjectProof = (u32, [u64; 2], Vec<(u16, Option<usize>, u64, u32, u32)>);
+
 impl ProjectReservations {
     /// Finds an unplaced operation using the fixed owner namespace retained across appends.
     pub(super) fn project_operation(
@@ -174,7 +178,7 @@ impl ProjectReservations {
         zoning: &ZoningSystem,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
-    ) -> Option<(u32, [u64; 2], Vec<(u16, Option<usize>, u64, u32, u32)>)> {
+    ) -> Option<ProjectProof> {
         let operation = self.project_operation(parcel, zoning)?;
         let owner = self.owner_base + zoning.parcels.storage_index(ParcelId::from_raw(parcel))?;
         let profile = catalog.profile_by_runtime_id(operation.profile)?;
@@ -231,6 +235,7 @@ impl ProjectReservations {
     /// Opens a planning pass on live customer books already moved into this owner, without
     /// copying them. The caller must close it with [`Self::end_live_pass`] before returning
     /// the books. Opening is O(1) amortized beyond the per-pass operation rows.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn begin_live_pass(
         &mut self,
         funding: &crate::simulation::economy::hiring::JobFunding,
@@ -410,6 +415,7 @@ pub(super) struct SiteSupply<'a> {
 
 impl<'a> SiteSupply<'a> {
     /// Borrows the pass's residual book after its border route tables have been prepared.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         book: &'a mut RecurringSupply,
         reservations: &'a mut ProjectReservations,
@@ -769,6 +775,7 @@ impl<'a> SiteSupply<'a> {
     /// project outputs in a private market first prevents each site from seeing only the
     /// final residual demand. The shared caller market keeps every full output commitment.
     /// O(B + queued projects + quoted ports/routes), never a city scan per proposal.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn reserve_projects<'q>(
         &mut self,
         projects: impl Iterator<Item = &'q super::queued::QueuedConstruction> + Clone,
@@ -795,6 +802,7 @@ impl<'a> SiteSupply<'a> {
     /// Execution retains only queue purchases backed by workers from already placed homes.
     /// Both books consume projects in queue order; a labour rejection restores its finances.
     /// Preparation is O(B + (Q + H) log H + quoted ports/routes), once per execution epoch.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn reserve_execution_projects<'q>(
         &mut self,
         projects: impl Iterator<Item = &'q super::queued::QueuedConstruction> + Clone,
@@ -837,6 +845,7 @@ impl<'a> SiteSupply<'a> {
         });
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn prepare_project_market<'q>(
         &mut self,
         projects: impl Iterator<Item = &'q super::queued::QueuedConstruction> + Clone,
@@ -1046,6 +1055,7 @@ impl<'a> SiteSupply<'a> {
 
     // Starts a queued project's probe at its prepared door and checks its operation, with the
     // store crew capped when `crew_cap` is set.
+    #[allow(clippy::too_many_arguments)]
     fn probe_queued(
         &mut self,
         project: &super::queued::QueuedConstruction,

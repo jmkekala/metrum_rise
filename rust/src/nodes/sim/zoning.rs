@@ -219,7 +219,7 @@ impl SimCore {
             self.zoning.prepare_generated_cells(
                 &self.region_graph,
                 bounds.expanded(f64::from(MAX_PARCEL_FRONTAGE_M)),
-                &blocked,
+                blocked,
             );
             let generation_ms = phase.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0);
             let phase = phase.map(|_| std::time::Instant::now());

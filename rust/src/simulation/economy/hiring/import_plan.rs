@@ -72,7 +72,12 @@ impl Proof<'_> {
         shares: &[u32],
         capital: f64,
     ) -> Option<(u32, f32, [f64; 2], f64)> {
-        if self.row.key != key || self.shares != shares || !(capital >= self.row.required) {
+        if self.row.key != key
+            || self.shares != shares
+            || capital
+                .partial_cmp(&self.row.required)
+                .is_none_or(std::cmp::Ordering::is_lt)
+        {
             return None;
         }
         let mut headroom = self.row.headroom;

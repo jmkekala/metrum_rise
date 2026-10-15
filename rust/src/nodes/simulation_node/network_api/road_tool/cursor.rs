@@ -31,6 +31,7 @@ impl SimulationNode {
     /// Returns position, snap node/edge ids (-1 when absent), and the snapshot generation.
     /// Pass the previous result back as `previous_snap` to retain a generation-checked target.
     #[func]
+    #[allow(clippy::too_many_arguments)]
     pub fn get_road_tool_cursor_pos(
         &self,
         ray_origin: Vector3,

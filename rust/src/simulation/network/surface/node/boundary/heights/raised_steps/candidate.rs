@@ -48,10 +48,7 @@ pub(in crate::simulation::network::surface::node::boundary::heights) fn raised_s
             if !explicit_step_authorized && !terminal_source_endpoint_authorized {
                 continue;
             }
-            if !raised_candidates
-                .iter()
-                .any(|candidate: &NodeFootprintBoundaryHeightCandidate| *candidate == raised)
-            {
+            if !raised_candidates.contains(&raised) {
                 raised_candidates.push(raised);
             }
         }

@@ -118,6 +118,12 @@ pub struct LaneSystem {
     revision: u64,
 }
 
+impl Default for LaneSystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LaneSystem {
     /// Creates a new, empty lane system.
     pub fn new() -> Self {

@@ -529,9 +529,11 @@ impl HouseholdSystem {
             let start = self.daily_ledgers.len();
             self.daily_ledgers.reserve(self.households.len() - start);
             for household in &self.households[start..] {
-                let mut ledger = DailyHouseholdLedger::default();
-                ledger.budget_before = household.budget;
-                ledger.budget_after = household.budget;
+                let ledger = DailyHouseholdLedger {
+                    budget_before: household.budget,
+                    budget_after: household.budget,
+                    ..Default::default()
+                };
                 self.daily_ledgers.push(ledger);
             }
         }

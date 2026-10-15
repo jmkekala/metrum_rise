@@ -992,13 +992,13 @@ pub(in crate::simulation::network::surface::tests) fn boundary_export_step_debug
     )
 }
 
-fn exposed_boundary_degree_debug(
-    arrangement: &NodeArrangement,
-) -> (
+type ExposedBoundaryDegree = (
     Vec<((i64, i64), usize)>,
     Vec<((i64, i64, i64), usize)>,
     Vec<((i64, i64, i64), (i64, i64, i64))>,
-) {
+);
+
+fn exposed_boundary_degree_debug(arrangement: &NodeArrangement) -> ExposedBoundaryDegree {
     let mut degree = BTreeMap::<(i64, i64), usize>::new();
     let mut point_degree = BTreeMap::<(i64, i64, i64), usize>::new();
     let mut exposed = Vec::new();

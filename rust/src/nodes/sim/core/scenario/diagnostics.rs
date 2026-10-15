@@ -1139,17 +1139,17 @@ impl fmt::Display for GrowthReport {
                     .get(profile)
                     .map_or(0, |b| b.active)
             };
-            if !self.details.is_empty() && active(self.details.len() - 1) == 0 {
-                if let Some(index) =
+            if !self.details.is_empty()
+                && active(self.details.len() - 1) == 0
+                && let Some(index) =
                     (1..self.details.len()).rfind(|&i| active(i - 1) > 0 && active(i) == 0)
-                {
-                    selected.insert(index);
-                    writeln!(
-                        out,
-                        "event day {}: final loss of active {name} in this run",
-                        self.days[index].day
-                    )?;
-                }
+            {
+                selected.insert(index);
+                writeln!(
+                    out,
+                    "event day {}: final loss of active {name} in this run",
+                    self.days[index].day
+                )?;
             }
         }
         if let Some(last) = self.days.len().checked_sub(1) {

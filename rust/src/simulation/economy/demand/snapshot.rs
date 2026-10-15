@@ -225,6 +225,7 @@ impl DailyDemandSnapshot {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn from_runtime_with_catalog(
         allocator: &BuildingAllocator,
         households: &HouseholdSystem,
@@ -249,6 +250,7 @@ impl DailyDemandSnapshot {
     }
 
     /// Builds jobs and business purchases from the same freshly validated operation book.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn from_runtime_with_funding(
         allocator: &BuildingAllocator,
         households: &HouseholdSystem,
@@ -542,6 +544,7 @@ struct BuildingSnapshotAccumulator {
 }
 
 impl BuildingSnapshotAccumulator {
+    #[allow(clippy::too_many_arguments)]
     fn absorb_building(
         &mut self,
         allocator: &BuildingAllocator,
@@ -565,10 +568,10 @@ impl BuildingSnapshotAccumulator {
         let active_profile = catalog.profile_by_runtime_id(building.economy_profile_runtime_id);
 
         if building.is_under_construction() {
-            if is_private_building {
-                if let Some(index) = super::actions::private_zone_index(building.zone_type) {
-                    self.constructing_by_use[index] += 1;
-                }
+            if is_private_building
+                && let Some(index) = super::actions::private_zone_index(building.zone_type)
+            {
+                self.constructing_by_use[index] += 1;
             }
             self.under_construction_household_slots = self
                 .under_construction_household_slots
@@ -661,18 +664,17 @@ impl BuildingSnapshotAccumulator {
                     output_port.resource_runtime_id,
                     committed_units,
                 );
-                if commercial {
-                    if resource_amount(
+                if commercial
+                    && resource_amount(
                         demand_sink_rates_by_resource,
                         output_port.resource_runtime_id,
                     ) > 0.0
-                    {
-                        add_resource_amount(
-                            &mut self.committed_commercial_output_capacity_by_resource,
-                            output_port.resource_runtime_id,
-                            committed_units,
-                        );
-                    }
+                {
+                    add_resource_amount(
+                        &mut self.committed_commercial_output_capacity_by_resource,
+                        output_port.resource_runtime_id,
+                        committed_units,
+                    );
                 }
             }
             let input_capacity_scale = job_funding.input_demand_scale(

@@ -28,6 +28,11 @@ impl ZoningProfileRegistry {
         self.profiles.len()
     }
 
+    /// Returns whether no non-zero runtime profiles are registered.
+    pub fn is_empty(&self) -> bool {
+        self.profiles.is_empty()
+    }
+
     /// Returns the profile for one dense runtime id.
     pub fn profile_by_runtime_id(&self, runtime_id: u16) -> Option<&ZoneProfileRuntime> {
         if runtime_id == 0 {

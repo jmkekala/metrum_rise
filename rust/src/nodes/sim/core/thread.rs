@@ -229,8 +229,10 @@ pub(crate) fn run_sim_thread(
                     add_road_commands += 1;
                     let road_total = Instant::now();
                     let mut edit_metrics =
-                        crate::nodes::sim::benchmark::road_edit::RoadEditMetrics::default();
-                    edit_metrics.queue_wait_ms = enqueued_at.elapsed().as_secs_f64() * 1000.0;
+                        crate::nodes::sim::benchmark::road_edit::RoadEditMetrics {
+                            queue_wait_ms: enqueued_at.elapsed().as_secs_f64() * 1000.0,
+                            ..Default::default()
+                        };
                     let lock_wait_start = Instant::now();
                     let road_lock_wait_ms;
                     let outcome = {

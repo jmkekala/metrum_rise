@@ -79,6 +79,7 @@ impl SiteRowChanges {
     /// exact owner/key order. `regenerate(owner, previous)` receives the owner's previous
     /// rows under their old numbering. O(rows + changed owners) plus regeneration; unchanged
     /// rows are moved, never regenerated or cloned, and unrowed owners are never visited.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn merge<T>(
         &self,
         previous: Vec<T>,

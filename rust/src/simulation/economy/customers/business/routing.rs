@@ -352,6 +352,7 @@ impl BusinessMarket {
     /// Warm preparation follows account tranches and authored input ports. Spatial membership
     /// belongs to buyer/recipe ports, so financial fragmentation and metric changes cannot
     /// rebuild it. Geometry changes rebuild existing buckets, parallel across resources.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn reset(
         &mut self,
         allocator: &BuildingAllocator,
@@ -600,6 +601,7 @@ impl BusinessMarket {
     /// Weak road components prune candidates; every accepted offer has a directed freight
     /// quote and fits its buyer's shared profit/capital limits at the actual seller price.
     /// Cost follows visited bucket candidates and their route queries, not all businesses.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn claim_reachable(
         &mut self,
         entrance: &BuildingEntrance,
@@ -622,6 +624,7 @@ impl BusinessMarket {
 
     /// Stages a coupled replacement's customer quantities for later joint financing proof.
     /// Uses the same directed routes and prices, while allowing provisional buyer deficits.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn claim_reachable_joint(
         &mut self,
         entrance: &BuildingEntrance,
@@ -652,6 +655,7 @@ impl BusinessMarket {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn claim_reachable_for(
         &mut self,
         entrance: &BuildingEntrance,
@@ -1218,6 +1222,7 @@ impl PortIndices {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn sync_account(
     indices: &mut PortIndices,
     access: Access,

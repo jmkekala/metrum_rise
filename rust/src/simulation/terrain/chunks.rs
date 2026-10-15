@@ -149,12 +149,21 @@ pub struct TerrainChunkManifest {
     pub lods: Vec<TerrainChunkLodManifest>,
 }
 
-impl TerrainChunkManifest {
-    /// Parses and validates a `chunk.toml` document.
-    pub fn from_str(s: &str) -> Result<Self, TerrainChunkManifestError> {
+impl std::str::FromStr for TerrainChunkManifest {
+    type Err = TerrainChunkManifestError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         let manifest: Self = toml::from_str(s)?;
         manifest.validate()?;
         Ok(manifest)
+    }
+}
+
+impl TerrainChunkManifest {
+    /// Parses and validates a `chunk.toml` document.
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(source: &str) -> Result<Self, TerrainChunkManifestError> {
+        source.parse()
     }
 
     /// Validates this chunk manifest against the current internal asset contract.
@@ -537,7 +546,7 @@ fn load_lod_payload(
     }
 
     let mut heights_m = Vec::with_capacity(pixel_count);
-    for sample_bytes in bytes.chunks_exact(FLOAT32_BYTES) {
+    for sample_bytes in bytes.as_chunks::<FLOAT32_BYTES>().0 {
         let value = f32::from_le_bytes([
             sample_bytes[0],
             sample_bytes[1],
@@ -669,6 +678,7 @@ mod tests {
         fs::write(path, bytes).expect("test payload should write");
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn write_test_chunk(
         dir: &Path,
         chunk_x: i32,

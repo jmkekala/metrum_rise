@@ -45,9 +45,7 @@ pub(super) fn generated_same_band_boundary_role_at_contour_vertex(
     constraints: &[NodeRailConstraint],
     key: NodeRailPointKey,
 ) -> Option<GeneratedSameBandBoundaryRole> {
-    let Some(kind) = generated_contour_band_kind(contour) else {
-        return None;
-    };
+    let kind = generated_contour_band_kind(contour)?;
     if !generated_contour_supports_same_band_role(kind) {
         return None;
     }
@@ -125,15 +123,11 @@ fn generated_same_band_boundary_role_at_key(
     constraints: &[NodeRailConstraint],
     key: NodeRailPointKey,
 ) -> Option<GeneratedSameBandBoundaryRole> {
-    let Some(kind) = generated_contour_band_kind(contour) else {
-        return None;
-    };
+    let kind = generated_contour_band_kind(contour)?;
     if !generated_contour_supports_same_band_role(kind) {
         return None;
     }
-    let Some(owner) = contour.owner else {
-        return None;
-    };
+    let owner = contour.owner?;
     let mut has_lower_side = false;
     let mut has_raised_side = false;
     for constraint in constraints

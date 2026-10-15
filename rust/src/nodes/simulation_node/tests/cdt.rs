@@ -1521,6 +1521,8 @@ fn terrain_cdt_road_input_reuse_matches_cold_planning_and_invalidates_exact_chan
 
 #[test]
 #[ignore = "controlled release timing: cargo test --release benchmark_terrain_cdt_road_input_reuse -- --ignored --nocapture"]
+// Runtime guard: the ignored check must still compile in a debug test build.
+#[allow(clippy::assertions_on_constants)]
 fn benchmark_terrain_cdt_road_input_reuse() {
     assert!(
         !cfg!(debug_assertions),

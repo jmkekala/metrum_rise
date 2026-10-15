@@ -68,7 +68,7 @@ impl SimulationNode {
             return result;
         }
         let mut states = PackedInt64Array::new();
-        for chunk in chunks.as_slice().chunks_exact(2) {
+        for chunk in chunks.as_slice().as_chunks::<2>().0 {
             let (revision, generated) = core.zoning.cells.chunk_state((chunk[0], chunk[1]));
             states.extend([
                 revision as i64,
@@ -326,7 +326,7 @@ fn decode_preview(addresses: &[i64], dependencies: &[i64]) -> Option<CellToolPre
         return None;
     }
     let mut cells = Vec::with_capacity(addresses.len() / 3);
-    for address in addresses.chunks_exact(3) {
+    for address in addresses.as_chunks::<3>().0 {
         let grid = u64::try_from(address[0]).ok().filter(|&grid| grid != 0)?;
         cells.push(CellKey {
             grid,

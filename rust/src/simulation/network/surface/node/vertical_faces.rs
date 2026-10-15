@@ -16,6 +16,13 @@ pub(in crate::simulation::network::surface::node) struct RoadSurfaceRaisedStepFa
         (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),
 }
 
+// Lower and raised boundary segments identifying one emitted vertical face.
+#[cfg(test)]
+type VerticalFaceKey = (
+    (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),
+    (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),
+);
+
 impl RoadSurfaceSystem {
     #[cfg(test)]
     pub(super) fn raised_step_face_polygons_from_arrangement(
@@ -75,10 +82,7 @@ impl RoadSurfaceSystem {
         )>,
         step_index: usize,
         segment: NodeExplicitVerticalStepSegment,
-        emitted: &mut BTreeSet<(
-            (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),
-            (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),
-        )>,
+        emitted: &mut BTreeSet<VerticalFaceKey>,
         faces: &mut Vec<RoadSurfaceRaisedStepFace>,
     ) {
         for (lower_interval, raised_interval, start_t, end_t) in shared_intervals {
@@ -143,6 +147,7 @@ impl RoadSurfaceSystem {
     }
 
     #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
     fn arrangement_vertical_step_face_polygon(
         segment_key: (NodeArrangementKey, NodeArrangementKey),
         lower_interval: ArrangementFaceBoundaryInterval,
@@ -154,13 +159,7 @@ impl RoadSurfaceSystem {
         lower_end: RoadVec3,
         raised_start: RoadVec3,
         raised_end: RoadVec3,
-    ) -> Option<(
-        (
-            (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),
-            (ArrangementBoundaryPointKey, ArrangementBoundaryPointKey),
-        ),
-        RoadSurfaceVisualPolygon,
-    )> {
+    ) -> Option<(VerticalFaceKey, RoadSurfaceVisualPolygon)> {
         if lower_start_key.xz_key() == lower_end_key.xz_key()
             || raised_start_key.xz_key() == raised_end_key.xz_key()
         {

@@ -154,6 +154,7 @@ impl BusinessBudgets {
     /// retain separate prices. `input` describes the complete supported operation, so stock
     /// exposure includes both its buffer and retained inventory under supplier substitution.
     /// Returns a financial tranche slot; routing maps it to the buyer's prepared input port.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn push_input(
         &mut self,
         buyer: usize,

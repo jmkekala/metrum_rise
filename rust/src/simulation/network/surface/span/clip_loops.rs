@@ -43,6 +43,8 @@ struct SpanTerrainClipEdge {
     kind: RoadSurfaceBandKind,
 }
 
+type KeyedClipEdges = (Box<[SpanTerrainClipEdge]>, Box<[RoadVec3]>);
+
 impl SpanTerrainClipLoop {
     // Keeps the keyed form only when it rebuilds every edge exactly. O(P log P + E log P).
     pub(super) fn new(
@@ -77,7 +79,7 @@ impl SpanTerrainClipLoop {
         edge_idx: usize,
         edge_class: EdgeClass,
         sections: &[RoadSurfaceSection],
-    ) -> Option<(Box<[SpanTerrainClipEdge]>, Box<[RoadVec3]>)> {
+    ) -> Option<KeyedClipEdges> {
         let point_bits = |point: RoadVec3| [point.x, point.y, point.z].map(f64::to_bits);
         let mut indexed_points = points_world
             .iter()

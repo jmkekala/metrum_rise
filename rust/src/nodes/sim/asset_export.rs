@@ -277,10 +277,10 @@ fn build_asset_toml(p: &ExportParams) -> Result<String, String> {
         out.push_str(&format!("thumbnail = {}\n", toml_string(thumbnail)));
     }
 
-    if let Some(set) = &p.asset_set {
-        if !set.is_empty() {
-            out.push_str(&format!("asset_set = {}\n", toml_string(set)));
-        }
+    if let Some(set) = &p.asset_set
+        && !set.is_empty()
+    {
+        out.push_str(&format!("asset_set = {}\n", toml_string(set)));
     }
 
     if !p.tags.is_empty() {
@@ -329,15 +329,16 @@ fn build_asset_toml(p: &ExportParams) -> Result<String, String> {
             if let Some(f) = p.flat_size_m2 {
                 out.push_str(&format!("flat_size_m2 = {f}\n"));
             }
-            if let Some(sc) = &p.service_class {
-                if !sc.is_empty() && sc != "none" {
-                    out.push_str(&format!("service_class = {}\n", toml_string(sc)));
-                }
+            if let Some(sc) = &p.service_class
+                && !sc.is_empty()
+                && sc != "none"
+            {
+                out.push_str(&format!("service_class = {}\n", toml_string(sc)));
             }
-            if let Some(ep) = &p.economy_profile {
-                if !ep.is_empty() {
-                    out.push_str(&format!("economy_profile = {}\n", toml_string(ep)));
-                }
+            if let Some(ep) = &p.economy_profile
+                && !ep.is_empty()
+            {
+                out.push_str(&format!("economy_profile = {}\n", toml_string(ep)));
             }
             if let Some(resource) = non_empty_optional_string(&p.extractor_resource) {
                 let area_mode =
@@ -420,10 +421,10 @@ fn build_asset_toml(p: &ExportParams) -> Result<String, String> {
         if let Some(length) = anchor.length_m {
             out.push_str(&format!("length_m = {length}\n"));
         }
-        if let Some(vehicle_class) = &anchor.vehicle_class {
-            if !vehicle_class.is_empty() {
-                out.push_str(&format!("vehicle_class = {}\n", toml_string(vehicle_class)));
-            }
+        if let Some(vehicle_class) = &anchor.vehicle_class
+            && !vehicle_class.is_empty()
+        {
+            out.push_str(&format!("vehicle_class = {}\n", toml_string(vehicle_class)));
         }
     }
 
@@ -780,15 +781,15 @@ fn validate_building_export_contract(params: &ExportParams) -> Result<(), String
                         .into(),
                 );
             }
-            if let Some(service_class) = service_class {
-                if is_utility_service_class(service_class) {
-                    let Some(economy_profile) = economy_profile else {
-                        return Err(
-                            "explicit utility service buildings require economy_profile".to_owned()
-                        );
-                    };
-                    validate_utility_profile_matches_service(economy_profile, service_class)?;
-                }
+            if let Some(service_class) = service_class
+                && is_utility_service_class(service_class)
+            {
+                let Some(economy_profile) = economy_profile else {
+                    return Err(
+                        "explicit utility service buildings require economy_profile".to_owned()
+                    );
+                };
+                validate_utility_profile_matches_service(economy_profile, service_class)?;
             }
             if let Some(resource_id) = extractor_resource {
                 if service_class.is_some() {

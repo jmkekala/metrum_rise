@@ -320,6 +320,7 @@ impl JobFunding {
 
     /// Retains one accepted live operation for affected-input repricing during construction.
     /// O(1) apart from authored recipe-port area lookup; callers copy rows once per pass.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn funded_operation(
         &self,
         index: usize,
@@ -545,6 +546,7 @@ impl JobFunding {
     /// through finite component/chunk indices, plus directed route queries for visited buyers.
     /// Freight rounding makes costs non-monotone, so binary
     /// search cannot safely reject smaller operations. Consumers read capacities in O(1).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn refresh(
         &mut self,
         allocator: &BuildingAllocator,
@@ -580,6 +582,7 @@ impl JobFunding {
     /// Rebuilds the same live input market using the caller's authoritative service job limits.
     /// Construction execution uses current funded service capacities after index remaps, while
     /// employment supplies the fiscal funding fractions through `refresh` above.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn refresh_with_service_capacity(
         &mut self,
         allocator: &BuildingAllocator,
@@ -1070,7 +1073,7 @@ impl JobFunding {
             #[cfg(test)]
             {
                 self.import_quote_replays +=
-                    import_replays.load(std::sync::atomic::Ordering::Relaxed) as usize;
+                    import_replays.load(std::sync::atomic::Ordering::Relaxed);
             }
             lap(3);
             for (index, building) in allocator.buildings.iter().enumerate() {
@@ -1490,170 +1493,6 @@ fn log_funding_times(
     );
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn local_business_sales_use_seller_prices_while_exports_use_the_outside_tariff() {
-        use crate::simulation::buildings::allocator::indexed_test_building;
-        use crate::simulation::economy::definitions::load_runtime_economy_catalog;
-        use crate::simulation::zoning::ZoneType;
-
-        let catalog = load_runtime_economy_catalog().unwrap();
-        let mut profile = catalog
-            .profile_for_id("food_processor_basic")
-            .unwrap()
-            .clone();
-        let mut building = indexed_test_building(String::new(), ZoneType::Industrial, 0);
-        building.operating_budget = 1_000_000.0;
-        let physical = profile.worker_capacity;
-        let prices = OperationPrices {
-            utilities: [0.0; 3],
-            property_tax: 0.0,
-            imports: 1.0,
-            carrier_quote: 0.0,
-            truck_payload: 20_000.0,
-        };
-        let mut market = vec![[0.0; 2]; catalog.resource_count() + 1];
-        for output in &profile.outputs {
-            let units = f64::from(profile.net_output_units_per_day(output));
-            market[output.resource_runtime_id as usize] = [units, units];
-        }
-        profile.unit_price_currency = 0.0;
-        let mut headroom = [0.0; 2];
-        assert_eq!(
-            funded_private_operation(
-                &building,
-                &profile,
-                &catalog,
-                physical,
-                prices,
-                &market,
-                None,
-                0.0,
-                None,
-                None,
-                &mut headroom,
-                physical,
-                1.0,
-                None
-            ),
-            (0, 0.0)
-        );
-        assert_eq!(headroom, [0.0; 2]);
-        profile.unit_price_currency = 1_000.0;
-        assert_eq!(
-            funded_private_operation(
-                &building,
-                &profile,
-                &catalog,
-                physical,
-                prices,
-                &market,
-                None,
-                0.0,
-                None,
-                None,
-                &mut headroom,
-                physical,
-                1.0,
-                None
-            ),
-            (physical, 1.0)
-        );
-        assert!(headroom[0] > 0.0 && headroom[1] >= 0.0);
-        market.iter_mut().for_each(|total| total[1] = 0.0);
-        let expensive = funded_private_operation(
-            &building,
-            &profile,
-            &catalog,
-            physical,
-            prices,
-            &market,
-            Some(1.0),
-            0.0,
-            None,
-            None,
-            &mut headroom,
-            physical,
-            1.0,
-            None,
-        );
-        profile.unit_price_currency = 0.0;
-        assert_eq!(
-            funded_private_operation(
-                &building,
-                &profile,
-                &catalog,
-                physical,
-                prices,
-                &market,
-                Some(1.0),
-                0.0,
-                None,
-                None,
-                &mut headroom,
-                physical,
-                1.0,
-                None
-            ),
-            expensive
-        );
-        assert!(expensive.0 > 0);
-    }
-
-    #[test]
-    fn undo_remap_grows_prepared_funding_without_allocating_unprepared_views() {
-        let mapping = [(0, 2)].into();
-        let mut jobs = JobFunding {
-            capacities: vec![7, 3],
-            activities: vec![0.25, 0.4],
-            service_capacities: vec![7, 0],
-            freight_capital: vec![9.0, 2.0],
-            ..Default::default()
-        };
-        jobs.remap_buildings(&mapping);
-        assert_eq!(jobs.capacities, [0, 3, 7]);
-        assert_eq!(jobs.activities, [0.0, 0.4, 0.25]);
-        assert_eq!(jobs.service_capacities, [0, 0, 7]);
-        assert_eq!(jobs.freight_capital, [0.0, 2.0, 9.0]);
-        jobs.clear();
-        jobs.remap_buildings(&mapping);
-        assert!(jobs.capacities.is_empty());
-        assert!(jobs.activities.is_empty());
-        assert!(jobs.service_capacities.is_empty());
-        assert!(jobs.freight_capital.is_empty());
-    }
-
-    #[test]
-    fn funded_jobs_follow_remapped_buildings_and_clear_removed_slots() {
-        let mut jobs = JobFunding {
-            capacities: vec![3, 7, 11],
-            activities: vec![0.25, 0.4, 0.5],
-            service_capacities: vec![0, 7, 0],
-            freight_capital: vec![2.0, 5.0, 9.0],
-            ..Default::default()
-        };
-        jobs.remap_buildings(&[(0, 1), (1, 0)].into());
-        assert_eq!(jobs.capacities, [7, 3, 11]);
-        assert_eq!(jobs.activities, [0.4, 0.25, 0.5]);
-        assert_eq!(jobs.service_capacities, [7, 0, 0]);
-        assert_eq!(jobs.freight_capital, [5.0, 2.0, 9.0]);
-        jobs.invalidate_building(0);
-        jobs.remap_buildings(&[(2, 0)].into());
-        assert_eq!(jobs.capacities, [11, 3, 0]);
-        assert_eq!(jobs.activities, [0.5, 0.25, 0.0]);
-        assert_eq!(jobs.service_capacities, [0, 0, 0]);
-        assert_eq!(jobs.freight_capital, [9.0, 2.0, 0.0]);
-        jobs.clear();
-        assert!(jobs.capacities.is_empty());
-        assert!(jobs.activities.is_empty());
-        assert!(jobs.service_capacities.is_empty());
-        assert!(jobs.freight_capital.is_empty());
-    }
-}
-
 // Public service input invoices draw on the treasury under the existing fiscal policy.
 // They do not require private sales or owner equity. Integer activity probes reuse the same
 // finite quote/retry scratch; worst-case O(funded workers * recipe ports² + source searches).
@@ -1690,6 +1529,7 @@ fn reserve_service_inputs(
 
 // Keep the full reachable net-output reservation through staffing searches. A rejected
 // operation releases every family claim; a cheaper local-input retry can reuse accepted quotas.
+#[allow(clippy::too_many_arguments)]
 fn reserve_consumer_outputs(
     customers: &mut super::customers::ConsumerMarket,
     units: &mut [f64],
@@ -1877,6 +1717,7 @@ struct ImportPlanRecord<'a> {
     previous: Option<import_plan::Proof<'a>>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn funded_private_operation(
     building: &Building,
     profile: &EconomyProfileRuntime,
@@ -1981,16 +1822,19 @@ fn funded_private_operation(
         market_activity: market_activity.to_bits(),
         desired,
     };
-    if let Some(record) = proof.as_mut() {
-        if let Some((workers, activity, surplus, required)) = record.previous.as_ref()
+    if let Some(record) = proof.as_mut()
+        && let Some((workers, activity, surplus, required)) = record
+            .previous
+            .as_ref()
             .and_then(|previous| previous.reuse(key, record.shares, imported_capital))
+    {
+        *headroom = surplus;
+        record.row.remember(key, activity, surplus, required);
+        #[cfg(test)]
         {
-            *headroom = surplus;
-            record.row.remember(key, activity, surplus, required);
-            #[cfg(test)]
-            { record.row.replays += 1; }
-            return (workers, activity);
+            record.row.replays += 1;
         }
+        return (workers, activity);
     }
     let costs = |workers| {
         OperatingCosts::for_plan(
@@ -2064,7 +1908,7 @@ fn funded_private_operation(
         } else {
             imported_capital
         };
-        if f64::from(costs.working_capital) > capital {
+        if costs.working_capital > capital {
             #[cfg(test)]
             if trace.enabled {
                 trace.counts[2] += 1;
@@ -2077,20 +1921,19 @@ fn funded_private_operation(
             #[cfg(test)]
             if let Some(plan) = &mut trace.import_plan {
                 plan.workers = workers;
-                plan.required = f64::from(costs.working_capital).to_bits();
+                plan.required = costs.working_capital.to_bits();
             }
             #[cfg(test)]
             if trace.enabled {
                 trace.counts[5] += 1;
             }
-            *headroom = [
-                f64::from(revenue) - f64::from(costs.total()),
-                capital - f64::from(costs.working_capital),
-            ];
-            if workers == desired {
-                if let Some(record) = proof.as_mut() {
-                    record.row.remember(key, activity, *headroom, costs.working_capital);
-                }
+            *headroom = [revenue - costs.total(), capital - costs.working_capital];
+            if workers == desired
+                && let Some(record) = proof.as_mut()
+            {
+                record
+                    .row
+                    .remember(key, activity, *headroom, costs.working_capital);
             }
             if let Some(context) = supply.as_mut() {
                 context.supply.accept_growing_for(context.buyer);
@@ -2136,4 +1979,168 @@ fn provisional_local_share(
         market.get(resource as usize).map_or(0.0, |total| total[1])
     };
     ((household + business) / capacity).clamp(0.0, 1.0) as f32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_business_sales_use_seller_prices_while_exports_use_the_outside_tariff() {
+        use crate::simulation::buildings::allocator::indexed_test_building;
+        use crate::simulation::economy::definitions::load_runtime_economy_catalog;
+        use crate::simulation::zoning::ZoneType;
+
+        let catalog = load_runtime_economy_catalog().unwrap();
+        let mut profile = catalog
+            .profile_for_id("food_processor_basic")
+            .unwrap()
+            .clone();
+        let mut building = indexed_test_building(String::new(), ZoneType::Industrial, 0);
+        building.operating_budget = 1_000_000.0;
+        let physical = profile.worker_capacity;
+        let prices = OperationPrices {
+            utilities: [0.0; 3],
+            property_tax: 0.0,
+            imports: 1.0,
+            carrier_quote: 0.0,
+            truck_payload: 20_000.0,
+        };
+        let mut market = vec![[0.0; 2]; catalog.resource_count() + 1];
+        for output in &profile.outputs {
+            let units = f64::from(profile.net_output_units_per_day(output));
+            market[output.resource_runtime_id as usize] = [units, units];
+        }
+        profile.unit_price_currency = 0.0;
+        let mut headroom = [0.0; 2];
+        assert_eq!(
+            funded_private_operation(
+                &building,
+                &profile,
+                &catalog,
+                physical,
+                prices,
+                &market,
+                None,
+                0.0,
+                None,
+                None,
+                &mut headroom,
+                physical,
+                1.0,
+                None
+            ),
+            (0, 0.0)
+        );
+        assert_eq!(headroom, [0.0; 2]);
+        profile.unit_price_currency = 1_000.0;
+        assert_eq!(
+            funded_private_operation(
+                &building,
+                &profile,
+                &catalog,
+                physical,
+                prices,
+                &market,
+                None,
+                0.0,
+                None,
+                None,
+                &mut headroom,
+                physical,
+                1.0,
+                None
+            ),
+            (physical, 1.0)
+        );
+        assert!(headroom[0] > 0.0 && headroom[1] >= 0.0);
+        market.iter_mut().for_each(|total| total[1] = 0.0);
+        let expensive = funded_private_operation(
+            &building,
+            &profile,
+            &catalog,
+            physical,
+            prices,
+            &market,
+            Some(1.0),
+            0.0,
+            None,
+            None,
+            &mut headroom,
+            physical,
+            1.0,
+            None,
+        );
+        profile.unit_price_currency = 0.0;
+        assert_eq!(
+            funded_private_operation(
+                &building,
+                &profile,
+                &catalog,
+                physical,
+                prices,
+                &market,
+                Some(1.0),
+                0.0,
+                None,
+                None,
+                &mut headroom,
+                physical,
+                1.0,
+                None
+            ),
+            expensive
+        );
+        assert!(expensive.0 > 0);
+    }
+
+    #[test]
+    fn undo_remap_grows_prepared_funding_without_allocating_unprepared_views() {
+        let mapping = [(0, 2)].into();
+        let mut jobs = JobFunding {
+            capacities: vec![7, 3],
+            activities: vec![0.25, 0.4],
+            service_capacities: vec![7, 0],
+            freight_capital: vec![9.0, 2.0],
+            ..Default::default()
+        };
+        jobs.remap_buildings(&mapping);
+        assert_eq!(jobs.capacities, [0, 3, 7]);
+        assert_eq!(jobs.activities, [0.0, 0.4, 0.25]);
+        assert_eq!(jobs.service_capacities, [0, 0, 7]);
+        assert_eq!(jobs.freight_capital, [0.0, 2.0, 9.0]);
+        jobs.clear();
+        jobs.remap_buildings(&mapping);
+        assert!(jobs.capacities.is_empty());
+        assert!(jobs.activities.is_empty());
+        assert!(jobs.service_capacities.is_empty());
+        assert!(jobs.freight_capital.is_empty());
+    }
+
+    #[test]
+    fn funded_jobs_follow_remapped_buildings_and_clear_removed_slots() {
+        let mut jobs = JobFunding {
+            capacities: vec![3, 7, 11],
+            activities: vec![0.25, 0.4, 0.5],
+            service_capacities: vec![0, 7, 0],
+            freight_capital: vec![2.0, 5.0, 9.0],
+            ..Default::default()
+        };
+        jobs.remap_buildings(&[(0, 1), (1, 0)].into());
+        assert_eq!(jobs.capacities, [7, 3, 11]);
+        assert_eq!(jobs.activities, [0.4, 0.25, 0.5]);
+        assert_eq!(jobs.service_capacities, [7, 0, 0]);
+        assert_eq!(jobs.freight_capital, [5.0, 2.0, 9.0]);
+        jobs.invalidate_building(0);
+        jobs.remap_buildings(&[(2, 0)].into());
+        assert_eq!(jobs.capacities, [11, 3, 0]);
+        assert_eq!(jobs.activities, [0.5, 0.25, 0.0]);
+        assert_eq!(jobs.service_capacities, [0, 0, 0]);
+        assert_eq!(jobs.freight_capital, [9.0, 2.0, 0.0]);
+        jobs.clear();
+        assert!(jobs.capacities.is_empty());
+        assert!(jobs.activities.is_empty());
+        assert!(jobs.service_capacities.is_empty());
+        assert!(jobs.freight_capital.is_empty());
+    }
 }

@@ -17,7 +17,9 @@ impl SimulationNode {
     pub fn acknowledge_water_patches(&mut self, flat_states: PackedInt64Array) -> bool {
         let acknowledged = flat_states
             .as_slice()
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .filter_map(|state| {
                 Some((
                     usize::try_from(state[0]).ok()?,
@@ -305,7 +307,7 @@ impl SimulationNode {
     pub fn clear_water_patch_mesh_cache(&mut self, flat_patch_keys: PackedInt32Array) {
         let values = flat_patch_keys.as_slice();
         let mut patch_keys = Vec::new();
-        for chunk in values.chunks_exact(2) {
+        for chunk in values.as_chunks::<2>().0 {
             let Ok(patch_x) = usize::try_from(chunk[0]) else {
                 continue;
             };

@@ -205,6 +205,7 @@ impl RoadSurfaceSystem {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn append_node_probe_earthwork_matches(
         &self,
         dump: &mut String,

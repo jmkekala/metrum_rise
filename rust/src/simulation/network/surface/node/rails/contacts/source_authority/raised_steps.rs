@@ -623,6 +623,7 @@ fn target_groups_with_reuse(
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_source_group_contacts_with_reuse(
     piece_kind: RoadSurfaceVisualNodePieceKind,
     source_constraints: &[RaisedStepSourceConstraint<'_>],
@@ -911,14 +912,13 @@ struct SourceContactGeometryScratch {
     split_keys: Vec<NodeRailPointKey>,
 }
 
+type EdgeClipCache = BTreeMap<(usize, GeneratedContourEdgeKey), Vec<GeneratedContourEdgeKey>>;
+
 fn collect_source_authorized_contacts_for_source_group(
     piece_kind: RoadSurfaceVisualNodePieceKind,
     source_constraint: &RaisedStepSourceConstraint<'_>,
     target_group: &RaisedStepTargetGroupContributor,
-    mut edge_clip_cache: Option<(
-        &mut BTreeMap<(usize, GeneratedContourEdgeKey), Vec<GeneratedContourEdgeKey>>,
-        usize,
-    )>,
+    mut edge_clip_cache: Option<(&mut EdgeClipCache, usize)>,
     geometry_scratch: &mut SourceContactGeometryScratch,
 ) -> Vec<GeneratedSameBandContactConstraint> {
     let mut contacts = Vec::new();
@@ -1140,7 +1140,7 @@ impl<'a> RaisedStepSourceAuthority<'a> {
                         let source_constraint = self.constraints.get(source_index)?;
                         source_constraint
                             .bounds_contains_key(point)
-                            .then(|| source_constraint)
+                            .then_some(source_constraint)
                     })
                     .filter(|source_constraint| {
                         generated_constraint_touches_key(source_constraint.constraint, point)

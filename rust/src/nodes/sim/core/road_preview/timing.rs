@@ -32,44 +32,6 @@ pub(crate) struct RoadPreviewTiming {
     started_at: Instant,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn disjoint_stages_account_for_the_worker_interval() {
-        let mut timing = RoadPreviewTiming::new(Instant::now(), Instant::now());
-        timing.finish_context();
-        timing.finish_road();
-        timing.finish_earthworks();
-        timing.finish_core_wait();
-        timing.finish_capture();
-        timing.finish_terrain();
-        timing.finish_retained();
-        let sum = timing.context_ms
-            + timing.road_ms
-            + timing.earthworks_ms
-            + timing.core_wait_ms
-            + timing.capture_ms
-            + timing.terrain_ms
-            + timing.retained_ms;
-        assert!((sum - timing.worker_ms).abs() < 1e-9);
-        assert!(timing.completed_at >= timing.started_at);
-    }
-
-    #[test]
-    fn reused_products_leave_skipped_stages_zero() {
-        let mut timing = RoadPreviewTiming::new(Instant::now(), Instant::now());
-        timing.finish_context();
-        timing.finish_road();
-        timing.finish_earthworks();
-        timing.finish_retained();
-        assert_eq!(timing.core_wait_ms, 0.0);
-        assert_eq!(timing.capture_ms, 0.0);
-        assert_eq!(timing.terrain_ms, 0.0);
-    }
-}
-
 impl RoadPreviewTiming {
     pub(super) fn new(enqueued_at: Instant, free_since: Instant) -> Self {
         let now = Instant::now();
@@ -117,5 +79,43 @@ impl RoadPreviewTiming {
     }
     pub(super) fn finish_retained(&mut self) {
         self.retained_ms = self.lap();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disjoint_stages_account_for_the_worker_interval() {
+        let mut timing = RoadPreviewTiming::new(Instant::now(), Instant::now());
+        timing.finish_context();
+        timing.finish_road();
+        timing.finish_earthworks();
+        timing.finish_core_wait();
+        timing.finish_capture();
+        timing.finish_terrain();
+        timing.finish_retained();
+        let sum = timing.context_ms
+            + timing.road_ms
+            + timing.earthworks_ms
+            + timing.core_wait_ms
+            + timing.capture_ms
+            + timing.terrain_ms
+            + timing.retained_ms;
+        assert!((sum - timing.worker_ms).abs() < 1e-9);
+        assert!(timing.completed_at >= timing.started_at);
+    }
+
+    #[test]
+    fn reused_products_leave_skipped_stages_zero() {
+        let mut timing = RoadPreviewTiming::new(Instant::now(), Instant::now());
+        timing.finish_context();
+        timing.finish_road();
+        timing.finish_earthworks();
+        timing.finish_retained();
+        assert_eq!(timing.core_wait_ms, 0.0);
+        assert_eq!(timing.capture_ms, 0.0);
+        assert_eq!(timing.terrain_ms, 0.0);
     }
 }

@@ -35,7 +35,7 @@ impl DesirabilitySystem {
             .par_chunks_mut(w)
             .enumerate()
             .for_each(|(y, row)| {
-                for x in 0..w {
+                for (x, cell) in row.iter_mut().enumerate() {
                     let mut land_value = 50.0_f32;
 
                     let pol = *p_grid.get(x, y).unwrap_or(&0.0);
@@ -44,7 +44,7 @@ impl DesirabilitySystem {
                     land_value -= pol * 2.0;
                     land_value -= nse * 1.5;
 
-                    row[x] = land_value.clamp(0.0, 100.0);
+                    *cell = land_value.clamp(0.0, 100.0);
                 }
             });
     }

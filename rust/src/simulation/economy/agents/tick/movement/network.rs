@@ -38,7 +38,7 @@ pub(super) unsafe fn handle_network_movement(
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
     pathfind_count: &AtomicU32,
-    lane_buckets: &Vec<Vec<(f32, usize)>>,
+    lane_buckets: &[Vec<(f32, usize)>],
     lane_claims: &LaneClaimContext<'_>,
     slices: &MovementSlices,
 ) {

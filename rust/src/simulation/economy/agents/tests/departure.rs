@@ -77,13 +77,7 @@ fn check_departure_side(fwd: u8, bkw: u8, building_side: i8, expected_lane_idx: 
     agents.access_flags[a_id] = ACCESS_PLAN_VALID;
 
     for _ in 0..500 {
-        agents.tick(
-            &mut allocator,
-            &mut network,
-            &mut graph,
-            0.1,
-            &test_clock(0, 0),
-        );
+        agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
         if agents.transit[a_id] == TRANSIT_NETWORK {
             break;
         }

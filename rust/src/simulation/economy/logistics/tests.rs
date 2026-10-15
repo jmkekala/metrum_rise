@@ -3523,7 +3523,13 @@ fn prepared_freight_quotes_stay_exact_after_cache_saturation_and_invalidation() 
                     &graph,
                 );
                 assert_eq!(
-                    cache.from_border(border, destination, &allocator, &network, &graph),
+                    cache.between_border_and_building(
+                        border,
+                        destination,
+                        &allocator,
+                        &network,
+                        &graph
+                    ),
                     expected
                 );
                 for source in 0..allocator.buildings.len() {
@@ -3747,7 +3753,7 @@ fn prepared_freight_access_follows_door_and_building_index_changes() {
                     );
                     assert_eq!(warm.building_cache_counts[1], hits + 1);
                     assert_eq!(
-                        warm.to_site(
+                        warm.building_to_site(
                             source,
                             &allocator.entrances[destination],
                             &allocator,
@@ -3952,7 +3958,7 @@ fn warm_freight_quotes_follow_live_frontage_and_metric_edits() {
                 .between_buildings(0, 1, &allocator, network, graph)
                 .unwrap(),
             cache
-                .from_border(border, 1, &allocator, network, graph)
+                .between_border_and_building(border, 1, &allocator, network, graph)
                 .unwrap(),
         )
     };
@@ -4026,7 +4032,7 @@ fn warm_freight_quotes_follow_live_frontage_and_metric_edits() {
     );
     let changed = logistics
         .freight_route_cache
-        .from_border(border, 1, &allocator, &network, &graph)
+        .between_border_and_building(border, 1, &allocator, &network, &graph)
         .unwrap();
     assert!(changed > before.1);
     assert_eq!(

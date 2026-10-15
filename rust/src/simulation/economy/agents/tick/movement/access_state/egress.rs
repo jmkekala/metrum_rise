@@ -32,7 +32,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
     allocator: &BuildingAllocator,
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
-    lane_buckets: &Vec<Vec<(f32, usize)>>,
+    lane_buckets: &[Vec<(f32, usize)>],
     lane_claims: &LaneClaimContext<'_>,
     slices: &MovementSlices,
 ) {

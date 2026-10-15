@@ -38,8 +38,10 @@ fn zoning_parcel_surface_corners_use_visible_world_surface_height() {
 
 #[test]
 fn zoning_parcel_cell_dimensions_use_world_zone_cell_size() {
-    let mut config = WorldConfig::default();
-    config.zone_cell_m = 10.0;
+    let config = WorldConfig {
+        zone_cell_m: 10.0,
+        ..Default::default()
+    };
 
     assert_eq!(
         zoning_parcel_cell_dimensions(&config, 2, 3),

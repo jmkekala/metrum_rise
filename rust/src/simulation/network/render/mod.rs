@@ -93,6 +93,12 @@ pub struct NetworkMeshData {
     render_payload_validated: bool,
 }
 
+impl Default for NetworkMeshData {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NetworkMeshData {
     /// Creates a new, empty network mesh data container.
     pub fn new() -> Self {

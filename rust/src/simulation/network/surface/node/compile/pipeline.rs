@@ -209,12 +209,8 @@ impl RoadSurfaceSystem {
         let (ownership, ownership_incremental, ownership_reuse_stats) = if reuse_status
             .ownership_reuse_safe
         {
-            let Some(previous_topology) = previous_topology else {
-                return None;
-            };
-            let Some(previous_ownership) = previous_topology.ownership.as_ref() else {
-                return None;
-            };
+            let previous_topology = previous_topology?;
+            let previous_ownership = previous_topology.ownership.as_ref()?;
             let ownership = if previous_ownership.node_id == input.node_id
                 && previous_ownership.piece_kind == input.piece_kind
             {

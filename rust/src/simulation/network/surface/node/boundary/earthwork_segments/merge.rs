@@ -19,8 +19,8 @@ pub(super) fn ambiguous_earthwork_boundary_segment_source_error(
         end_y_mm: end_point_key.y_mm,
         existing_height_field_id: existing.height_field_id,
         incoming_height_field_id: incoming.height_field_id,
-        existing_source: existing.face_source,
-        incoming_source: incoming.face_source,
+        existing_source: Box::new(existing.face_source),
+        incoming_source: Box::new(incoming.face_source),
     }
 }
 
@@ -83,6 +83,7 @@ pub(super) fn merged_node_earthwork_source_candidate(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn merged_node_earthwork_boundary_source(
     piece_kind: RoadSurfaceVisualNodePieceKind,
     start_point_key: ArrangementBoundaryPointKey,

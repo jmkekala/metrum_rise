@@ -267,8 +267,7 @@ pub(in crate::simulation::network::surface::node::rails::contacts::source_author
     }
 
     let mut pairs = [None, None];
-    for source_owner_index in 0..source.owners.len() {
-        let source_owner = source.owners[source_owner_index];
+    for (source_owner_index, &source_owner) in source.owners.iter().enumerate() {
         let replaced_owner = source.owners[1 - source_owner_index];
         if target_owner.kind() != replaced_owner.kind() {
             continue;

@@ -149,6 +149,12 @@ pub struct TransitNetwork {
     pub road_surface: RoadSurfaceSystem,
 }
 
+impl Default for TransitNetwork {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TransitNetwork {
     /// Creates a new, empty transit network.
     pub fn new() -> Self {
@@ -265,6 +271,7 @@ impl TransitNetwork {
     }
 
     /// Adds a new road segment to the network from pre-prepared physical geometry.
+    #[allow(clippy::too_many_arguments)]
     pub fn add_road(
         &mut self,
         graph: &mut RegionGraph,
@@ -316,6 +323,7 @@ impl TransitNetwork {
     }
 
     /// Helper to consistently add a road edge and handle its side effects
+    #[allow(clippy::too_many_arguments)]
     fn create_edge_internal(
         &mut self,
         graph: &mut RegionGraph,
@@ -419,7 +427,7 @@ impl TransitNetwork {
         terrain: &crate::simulation::terrain::TerrainSystem,
     ) -> NetworkMeshData {
         self.try_generate_mesh_data(graph, terrain)
-            .unwrap_or_else(NetworkMeshData::new)
+            .unwrap_or_default()
     }
 
     /// Generates mesh data only when the compiled road surface matches the current source graph.
@@ -736,7 +744,7 @@ fn log_road_connectivity(graph: &RegionGraph) {
     let total_nodes = car_nodes.len();
     let n_components = components.len();
     // Sort largest component first.
-    components.sort_by(|a, b| b.0.cmp(&a.0));
+    components.sort_by_key(|a| std::cmp::Reverse(a.0));
 
     if n_components == 1 {
         println!(

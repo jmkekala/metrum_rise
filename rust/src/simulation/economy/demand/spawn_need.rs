@@ -369,6 +369,7 @@ impl OutputAbsorptionContext {
 }
 
 /// Applies recurring profitability and quoted working-capital valuation to a replacement.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn replacement_market_covers_operation(
     profile: &EconomyProfileRuntime,
     catalog: &RuntimeEconomyCatalog,
@@ -650,6 +651,7 @@ fn industrial_operation_in_market(
 
 /// Reserves a placed explicit producer's full operation using its actual area and capital.
 /// O(recipe ports² + source queries); no per-site storage or citywide lookup is needed.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn constructing_area_covers_operation(
     building: &Building,
     profile: &EconomyProfileRuntime,

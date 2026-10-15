@@ -80,10 +80,10 @@ impl RoadSurfaceSystem {
                     incoming_y_mm: *incoming_y_mm,
                     existing_owner_kind: *existing_owner_kind,
                     existing_owner_index: *existing_owner_index,
-                    existing_source: *existing_source,
+                    existing_source: **existing_source,
                     incoming_owner_kind: *incoming_owner_kind,
                     incoming_owner_index: *incoming_owner_index,
-                    incoming_source: *incoming_source,
+                    incoming_source: **incoming_source,
                 },
             ),
             NodeBoundaryExportError::ConflictingFootprintBoundarySplitHeight {
@@ -120,8 +120,8 @@ impl RoadSurfaceSystem {
                     *end_y_mm,
                     *existing_height_field_id,
                     *incoming_height_field_id,
-                    *existing_source,
-                    *incoming_source,
+                    **existing_source,
+                    **incoming_source,
                 );
                 NodeValidationReport::from_boundary_export_error(
                     arrangement.node_id(),
@@ -146,10 +146,10 @@ impl RoadSurfaceSystem {
                     *y_mm,
                     *existing_owner_kind,
                     *existing_owner_index,
-                    *existing_source,
+                    **existing_source,
                     *incoming_owner_kind,
                     *incoming_owner_index,
-                    *incoming_source,
+                    **incoming_source,
                 );
                 NodeValidationReport::from_boundary_export_error(
                     arrangement.node_id(),

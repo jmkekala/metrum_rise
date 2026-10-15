@@ -202,13 +202,15 @@ impl CchGraph {
         }
         // Whitelist mode: check explicit vehicle turns only.
         for (&(e_from, lane_idx), targets) in &node_data.lane_connections {
-            if lane_idx != 100 && lane_idx != -100 && e_from == in_edge {
-                if targets.iter().any(|&(e_to, _)| e_to == out_edge) {
-                    traffic_log!(
-                        "[TURN_ALLOWED] in_edge={in_edge} out_edge={out_edge} -> TRUE (explicit connection)"
-                    );
-                    return true;
-                }
+            if lane_idx != 100
+                && lane_idx != -100
+                && e_from == in_edge
+                && targets.iter().any(|&(e_to, _)| e_to == out_edge)
+            {
+                traffic_log!(
+                    "[TURN_ALLOWED] in_edge={in_edge} out_edge={out_edge} -> TRUE (explicit connection)"
+                );
+                return true;
             }
         }
         traffic_log!(

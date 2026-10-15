@@ -562,8 +562,8 @@ fn oblique_two_lane_terminal_caps_cover_asphalt_end_edges() {
 fn logged_oblique_one_lane_terminal_caps_cover_both_end_edges() {
     let terrain = flat_terrain(256, 256);
     let mut graph = RegionGraph::new();
-    let start_point = Vector3::new(-101.330_170, 0.0, -27.102_081);
-    let end_point = Vector3::new(21.998_085, 0.0, 27.803_471);
+    let start_point = Vector3::new(-101.330_17, 0.0, -27.102_081);
+    let end_point = Vector3::new(21.998_085, 0.0, 27.803_47);
     let start = graph.add_node(start_point, NodeType::Junction);
     let end = graph.add_node(end_point, NodeType::Junction);
     graph.add_edge(test_edge(

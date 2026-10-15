@@ -15,6 +15,7 @@ pub(crate) trait DemandLevelChangeGuard {
     /// A provisional economic proof retained until the allocator reports placement success.
     type Permit;
     /// Checks one resolved incumbent before any live building mutation.
+    #[allow(clippy::too_many_arguments)]
     fn prepare(
         &mut self,
         owner: usize,
@@ -231,6 +232,7 @@ impl DemandSystem {
     /// Applies immediate actions with a shared economic proof around each business replacement.
     /// A batch prepares live/constructing/queued commitments once; subsequent proposals follow
     /// affected receipt chains and existing route indices. Failed placement consumes no claims.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn execute_building_actions(
         &mut self,
         plan: &DemandBuildingActionPlan,

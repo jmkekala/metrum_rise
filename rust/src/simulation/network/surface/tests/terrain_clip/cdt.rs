@@ -515,7 +515,7 @@ fn terrain_cdt_grading_envelope_ignores_building_site_loops() {
     let mut road_only_keys = HashSet::new();
     RoadSurfaceSystem::append_terrain_cdt_roadbed_grading_envelope(
         &terrain,
-        &[road_loop.clone()],
+        std::slice::from_ref(&road_loop),
         4.0,
         &mut road_only_samples,
         &mut road_only_constraints,

@@ -188,7 +188,7 @@ impl RegionGraph {
         limit_mode: JunctionProfileLimitMode,
     ) -> HashSet<usize> {
         let incidents_by_node = self.build_junction_profile_incidents(affected_nodes);
-        let mut edge_solves: Vec<(
+        type EdgeSolve = (
             usize,
             bool,
             JunctionEndpointProfilePlane,
@@ -196,7 +196,8 @@ impl RegionGraph {
             bool,
             f32,
             Option<JunctionEndpointProfilePlane>,
-        )> = Vec::new();
+        );
+        let mut edge_solves: Vec<EdgeSolve> = Vec::new();
 
         let mut node_ids: Vec<u32> = incidents_by_node.keys().copied().collect();
         node_ids.sort_unstable();
@@ -806,6 +807,7 @@ impl RegionGraph {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn apply_junction_profile_plane_to_edge(
         edge: &mut Edge,
         at_start: bool,

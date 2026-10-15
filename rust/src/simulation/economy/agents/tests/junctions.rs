@@ -17,7 +17,7 @@ fn test_junction_entry_uses_turn_speed_for_remaining_tick() {
     let west_lane = fwd_vehicle_lanes(&network, west_edge)[0];
     let west_lane_len = network.lane_system.lanes[west_lane].length;
 
-    let mut allocator = BuildingAllocator::new();
+    let allocator = BuildingAllocator::new();
     let mut agents = AgentSystem::new();
     let idx = agents.spawn_border_arrival_agent(usize::MAX, west_node, 0.0, 0.0);
     agents.transit[idx] = TRANSIT_NETWORK;
@@ -31,7 +31,7 @@ fn test_junction_entry_uses_turn_speed_for_remaining_tick() {
     agents.current_path_index[idx] = 1;
 
     agents.tick(
-        &mut allocator,
+        &allocator,
         &mut network,
         &mut graph,
         10.0,
@@ -110,7 +110,7 @@ fn test_walking_junction_entry_does_not_skip_connector_with_large_tick() {
     let west_lane = fwd_foot_lane_to_edge(&network, west_edge, north_edge);
     let west_lane_len = network.lane_system.lanes[west_lane].length;
 
-    let mut allocator = BuildingAllocator::new();
+    let allocator = BuildingAllocator::new();
     let mut agents = AgentSystem::new();
     let idx = agents.spawn_border_arrival_agent(usize::MAX, west_node, 0.0, 0.0);
     agents.transit[idx] = TRANSIT_NETWORK;
@@ -124,7 +124,7 @@ fn test_walking_junction_entry_does_not_skip_connector_with_large_tick() {
     agents.current_path_index[idx] = 1;
 
     agents.tick(
-        &mut allocator,
+        &allocator,
         &mut network,
         &mut graph,
         10.0,
@@ -478,13 +478,7 @@ fn test_zero_hop_access_uses_junction_connector() {
     agents.planned_detach_lane_id[idx] = detach_lane as u32;
     agents.planned_detach_lane_d[idx] = 5.0;
 
-    agents.tick(
-        &mut allocator,
-        &mut network,
-        &mut graph,
-        0.1,
-        &test_clock(0, 0),
-    );
+    agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
 
     let lane_id = agents.current_lane_id[idx];
     assert!(lane_id < network.lane_system.lanes.len());
@@ -571,13 +565,7 @@ fn test_zero_hop_access_wait_keeps_path_index_stable() {
     agents.planned_detach_lane_d[waiter] = 5.0;
 
     for _ in 0..2 {
-        agents.tick(
-            &mut allocator,
-            &mut network,
-            &mut graph,
-            0.1,
-            &test_clock(0, 0),
-        );
+        agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
         assert_eq!(agents.transit[waiter], TRANSIT_NETWORK);
         assert_eq!(agents.current_lane_id[waiter], inbound_lane);
         assert_eq!(
@@ -650,13 +638,7 @@ fn test_zero_hop_access_enters_spaced_occupied_connector() {
     agents.planned_detach_lane_id[follower] = detach_lane as u32;
     agents.planned_detach_lane_d[follower] = 5.0;
 
-    agents.tick(
-        &mut allocator,
-        &mut network,
-        &mut graph,
-        0.1,
-        &test_clock(0, 0),
-    );
+    agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
 
     assert_eq!(agents.transit[follower], TRANSIT_INTERSECTION);
     assert_eq!(agents.current_lane_id[follower], connector_lane);

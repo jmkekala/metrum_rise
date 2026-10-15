@@ -95,6 +95,7 @@ impl SimulationNode {
     /// Nonblocking, camera-driven building rendering. Returns only changed chunk groups;
     /// a busy core retains the previous complete frame. Resource loading never occurs here.
     #[func]
+    #[allow(clippy::too_many_arguments)]
     pub fn try_get_building_lod_frame(
         &mut self,
         generation: i64,

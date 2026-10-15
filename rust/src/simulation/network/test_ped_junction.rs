@@ -58,7 +58,7 @@ mod tests {
     fn count_sidewalk_connections_at(graph: &RegionGraph, lanes: &LaneSystem, node: u32) -> usize {
         let mut total = 0;
         for &e_idx in &graph.adjacency[node as usize] {
-            if let Some(lane_ids) = lanes.edge_lanes.get(&(e_idx as usize)) {
+            if let Some(lane_ids) = lanes.edge_lanes.get(&{ e_idx }) {
                 for &l_id in lane_ids {
                     let l = &lanes.lanes[l_id];
                     if l.lane_type != LaneType::Foot {

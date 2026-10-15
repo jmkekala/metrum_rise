@@ -214,7 +214,7 @@ impl SimulationNode {
             return Vec::new();
         }
         let mut requests = Vec::new();
-        for chunk in request_values.chunks_exact(3) {
+        for chunk in request_values.as_chunks::<3>().0 {
             let Ok(patch_x) = usize::try_from(chunk[0]) else {
                 continue;
             };
@@ -235,7 +235,7 @@ impl SimulationNode {
             return Vec::new();
         }
         let mut requests = Vec::new();
-        for chunk in request_values.chunks_exact(3) {
+        for chunk in request_values.as_chunks::<3>().0 {
             let Ok(patch_x) = usize::try_from(chunk[0]) else {
                 continue;
             };
@@ -260,7 +260,7 @@ impl SimulationNode {
             return Vec::new();
         }
         let mut requests = Vec::new();
-        for chunk in request_values.chunks_exact(2) {
+        for chunk in request_values.as_chunks::<2>().0 {
             let Ok(patch_x) = usize::try_from(chunk[0]) else {
                 continue;
             };
@@ -321,22 +321,22 @@ impl SimulationNode {
             patch_z: request.key.patch_z,
             render_step_mm: request.key.render_step_mm,
         };
-        if let Some(cached) = core.refined_terrain_patch_cache.get(&cache_key) {
-            if Self::refined_terrain_patch_cache_entry_is_current(
+        if let Some(cached) = core.refined_terrain_patch_cache.get(&cache_key)
+            && Self::refined_terrain_patch_cache_entry_is_current(
                 cached,
                 request.surface_generation,
-            ) && Self::cached_refined_cdt_failure_label(cached).is_none()
-            {
-                return Some(TerrainPatchPayloadBuildSource::Ready(TerrainPatchPayload {
-                    key: request.key,
-                    request_id: request.request_id,
-                    surface_generation: request.surface_generation,
-                    data: TerrainPatchPayloadData::Refined {
-                        patch: cached.clone(),
-                    },
-                    mask_bytes: Vec::new(),
-                }));
-            }
+            )
+            && Self::cached_refined_cdt_failure_label(cached).is_none()
+        {
+            return Some(TerrainPatchPayloadBuildSource::Ready(TerrainPatchPayload {
+                key: request.key,
+                request_id: request.request_id,
+                surface_generation: request.surface_generation,
+                data: TerrainPatchPayloadData::Refined {
+                    patch: cached.clone(),
+                },
+                mask_bytes: Vec::new(),
+            }));
         }
         let previous = match core.refined_terrain_patch_cache.get(&cache_key) {
             Some(cached) if cached.contract_revision == TERRAIN_CDT_CONTRACT_REVISION => {

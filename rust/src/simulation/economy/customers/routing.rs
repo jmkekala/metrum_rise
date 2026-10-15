@@ -250,6 +250,7 @@ impl ConsumerMarket {
     /// Access changes rebuild the existing bucket structure in O(H*K log H + roads);
     /// unchanged layouts retain it. Neither phase scans the city once per seller.
     #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn reset(
         &mut self,
         households: &[Household],
@@ -271,6 +272,7 @@ impl ConsumerMarket {
     /// Refreshes base budgets and access, retaining claims only when every input is exact.
     /// Returns whether the preceding book survived. Seller entrances, requests and financing
     /// decisions must still match before quantities can be reused. O(H + recipe ports) warm checks.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn refresh(
         &mut self,
         households: &[Household],
@@ -728,6 +730,7 @@ impl ConsumerMarket {
     /// homes appearing in multiple components. Pending reductions keep an upper-bound index;
     /// authoritative balances exclude exhausted accounts until acceptance publishes eligibility.
     /// Cost is visited bucket candidates plus their directed route queries, not all households.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn claim_reachable(
         &mut self,
         entrance: &BuildingEntrance,

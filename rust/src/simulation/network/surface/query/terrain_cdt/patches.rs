@@ -8,6 +8,9 @@ use std::borrow::Cow;
 
 const TERRAIN_CDT_MIN_PATCH_OVERLAP_M: f32 = 0.001;
 
+// (min_x, min_z, max_x, max_z) world bounds.
+type XzBounds = (f32, f32, f32, f32);
+
 impl RoadSurfaceSystem {
     /// Returns render-patch keys covered by visible grounded road plus a seam-safe margin.
     #[cfg(test)]
@@ -261,6 +264,7 @@ impl RoadSurfaceSystem {
 
     // The cache is checked against the loop points; `boundary_loop` builds the full loop only
     // when the loop must be graded, so cache hits never rebuild a compact span loop.
+    #[allow(clippy::too_many_arguments)]
     fn insert_cached_terrain_patch_grading_margins_for_targets<
         'a,
         Owner: Eq + std::hash::Hash + Copy,
@@ -274,14 +278,11 @@ impl RoadSurfaceSystem {
         render_step_m: f32,
         base_margin_m: f32,
         query_margin_m: f32,
-        target_patches: &[((usize, usize), (f32, f32, f32, f32))],
+        target_patches: &[((usize, usize), XzBounds)],
         patch_margins: &mut BTreeMap<(usize, usize), f32>,
     ) -> Option<bool> {
-        let Some((loop_min_x, loop_min_z, loop_max_x, loop_max_z)) =
-            Self::terrain_clip_points_bounds_xz(points_world)
-        else {
-            return None;
-        };
+        let (loop_min_x, loop_min_z, loop_max_x, loop_max_z) =
+            Self::terrain_clip_points_bounds_xz(points_world)?;
         if !target_patches.iter().any(
             |&(_, (patch_min_x, patch_min_z, patch_max_x, patch_max_z))| {
                 loop_min_x <= f64::from(patch_max_x + query_margin_m)
@@ -345,8 +346,8 @@ impl RoadSurfaceSystem {
     }
 
     fn terrain_cdt_exact_target_patch_margin(
-        influence_bounds: Option<(f32, f32, f32, f32)>,
-        target_bounds: (f32, f32, f32, f32),
+        influence_bounds: Option<XzBounds>,
+        target_bounds: XzBounds,
         target_margin_m: Option<f32>,
     ) -> Option<f32> {
         let (influence_min_x, influence_min_z, influence_max_x, influence_max_z) =
@@ -366,8 +367,8 @@ impl RoadSurfaceSystem {
     pub(crate) fn terrain_clip_contributors_match_world_bounds(
         &self,
         graph: &RegionGraph,
-        expected: (f32, f32, f32, f32),
-        actual: (f32, f32, f32, f32),
+        expected: XzBounds,
+        actual: XzBounds,
     ) -> bool {
         expected == actual
             || self.terrain_clip_boundary_loops_for_world_bounds(
@@ -489,7 +490,7 @@ impl RoadSurfaceSystem {
         base_margin_m: f32,
         patch_margins: &mut BTreeMap<(usize, usize), f32>,
         target_patch: Option<(usize, usize)>,
-    ) -> (Option<(f32, f32, f32, f32)>, Option<f32>) {
+    ) -> (Option<XzBounds>, Option<f32>) {
         let vertices = boundary_loop
             .points_world
             .iter()
@@ -638,7 +639,7 @@ impl RoadSurfaceSystem {
     fn terrain_cdt_grading_influence_bounds(
         vertices: &[TerrainCdtVertex],
         margin_m: f32,
-    ) -> Option<(f32, f32, f32, f32)> {
+    ) -> Option<XzBounds> {
         let mut min_x = f64::INFINITY;
         let mut min_z = f64::INFINITY;
         let mut max_x = f64::NEG_INFINITY;
@@ -661,6 +662,7 @@ impl RoadSurfaceSystem {
         ))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn insert_terrain_patch_grading_margins_for_ray(
         terrain: &TerrainSystem,
         seam_x: f64,
@@ -721,6 +723,7 @@ impl RoadSurfaceSystem {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn insert_terrain_patch_grading_margins_for_rect(
         terrain: &TerrainSystem,
         min_x: f32,

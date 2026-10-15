@@ -215,6 +215,7 @@ fn connection_lane_to_lane_unclaimed(
 }
 
 /// Returns the connector lane that should be used after the current road lane.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn planned_next_connector(
     lane_id: usize,
     current_node: u32,
@@ -235,16 +236,10 @@ pub(super) fn planned_next_connector(
     if (access_flags & ACCESS_PLAN_VALID) != 0
         && terminal_node == planned_detach_node
         && planned_detach_lane_id != usize::MAX
-    {
-        if lane_origin_node(planned_detach_lane_id, transit_network, graph)
+        && lane_origin_node(planned_detach_lane_id, transit_network, graph)
             == Some(planned_detach_node)
-        {
-            return connection_lane_to_lane_unclaimed(
-                lane_id,
-                planned_detach_lane_id,
-                transit_network,
-            );
-        }
+    {
+        return connection_lane_to_lane_unclaimed(lane_id, planned_detach_lane_id, transit_network);
     }
 
     let next_idx = if path.get(path_idx).copied() == Some(terminal_node) {

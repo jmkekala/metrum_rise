@@ -515,8 +515,8 @@ fn coal_power_balance_matrix() {
         for workers in [1_u32, 2, 3] {
             let mut scenario = GrowthScenario::starter_town();
             // Add services while housing remains available, so their vacancies can recruit.
-            // Waiting until every home is occupied leaves no labor for a newly placed plant.
-            scenario.run_days(365);
+            // The starter town fills its zoned land within days and cannot grow afterwards,
+            // leaving no labor for a later plant; place it at founding, like `producer_town`.
             if mine {
                 place_producer(&mut scenario, true, 1.0, -900.0);
             }
@@ -705,8 +705,9 @@ fn power_demolition_undo_restores_the_meter_and_refunds_only_its_bill() {
 #[ignore = "physical mid-day save continuation, with and without power-plant demolition"]
 fn electricity_save_continuation_preserves_bills_and_removed_meters() {
     for remove in [false, true] {
+        // Place the plant at founding, while housing remains to recruit its worker: the
+        // starter town fills its zoned land within days and cannot grow afterwards.
         let mut source = GrowthScenario::starter_town();
-        source.run_days(180);
         let plant = source
             .core
             .place_service_building_internal("kenney:building.power.coal_power_plant", -700.0, 8.0)

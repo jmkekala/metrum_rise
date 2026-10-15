@@ -220,11 +220,10 @@ impl BuildingAllocator {
 
                 let last_seg = points.len() - 2;
                 let forward_start = if on_end_vertex { i + 1 } else { i };
-                if forward_start <= last_seg {
-                    if let Some(tangent) = first_projected_tangent(points, forward_start, last_seg)
-                    {
-                        return tangent;
-                    }
+                if forward_start <= last_seg
+                    && let Some(tangent) = first_projected_tangent(points, forward_start, last_seg)
+                {
+                    return tangent;
                 }
                 let backward_end = if on_start_vertex {
                     i.saturating_sub(1)

@@ -152,7 +152,7 @@ fn road_zoning_uses_both_sides_options_and_matches_commit() {
     assert_eq!(preview.len(), 8);
     assert_eq!(zoning.overlay_revision(), revision);
     assert!(zoning.parcels().is_empty());
-    for (station, pair) in preview.chunks_exact(2).enumerate() {
+    for (station, pair) in preview.as_chunks::<2>().0.iter().enumerate() {
         assert_eq!([pair[0].side, pair[1].side], [1, -1]);
         for lot in pair {
             assert_eq!(lot.edge_idx, edge);

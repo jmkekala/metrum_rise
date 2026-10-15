@@ -117,6 +117,7 @@ pub(super) fn assert_production_dem_case(case: ProductionDemCase) -> TerrainCdtM
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn standard_span_dem_case(
     name: &'static str,
     terrain: TerrainSystem,
@@ -148,6 +149,7 @@ pub(super) fn standard_span_dem_case(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn standard_node_dem_case(
     name: &'static str,
     terrain: TerrainSystem,
@@ -280,6 +282,7 @@ pub(super) fn terrain_offset_point(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn assert_production_dem_cdt_contract(
     case_name: &str,
     surface: &RoadSurfaceSystem,
@@ -439,9 +442,9 @@ pub(super) fn assert_production_dem_cdt_contract(
     mesh
 }
 
-pub(super) fn canonical_emitted_face_set(
-    mesh: &TerrainCdtMesh,
-) -> Vec<(i32, [(i64, i64, i64); 3])> {
+pub(super) type CanonicalFace = (i32, [(i64, i64, i64); 3]);
+
+pub(super) fn canonical_emitted_face_set(mesh: &TerrainCdtMesh) -> Vec<CanonicalFace> {
     let mut faces = mesh
         .emitted_faces
         .iter()

@@ -369,13 +369,13 @@ fn select_phases(
             let previous_direction = DVec2::new(values[2] - values[0], values[3] - values[1]);
             let direction = road.points[road.points.len() - 1] - road.points[0];
             let reversed = usize::from(direction.dot(previous_direction) < 0.0);
-            for side in 0..2 {
-                if !raw[&id][side].1 {
+            for (side, (_, fixed)) in raw[&id].iter().enumerate() {
+                if !fixed {
                     phases.insert((id, side), old.frames[side ^ reversed]);
                 }
             }
         }
-        for side in 0..2 {
+        for (side, (raw_frame, _)) in raw[&id].iter().enumerate() {
             if phases.contains_key(&(id, side)) {
                 continue;
             }
@@ -389,7 +389,7 @@ fn select_phases(
                         .flatten()
                 })
                 .flat_map(|&(source, old)| old.frames.into_iter().map(move |frame| (source, frame)))
-                .filter(|(_, frame)| raw[&id][side].0.phase_matches(*frame, road.precision))
+                .filter(|(_, frame)| raw_frame.phase_matches(*frame, road.precision))
                 .min();
             if let Some((_, frame)) = matching {
                 phases.insert((id, side), frame);
@@ -413,11 +413,9 @@ fn select_phases(
                     let Some(road) = roads.get(&neighbor) else {
                         continue;
                     };
-                    for neighbor_side in 0..2 {
+                    for (neighbor_side, (neighbor_frame, _)) in raw[&neighbor].iter().enumerate() {
                         if !phases.contains_key(&(neighbor, neighbor_side))
-                            && raw[&neighbor][neighbor_side]
-                                .0
-                                .phase_matches(frame, road.precision)
+                            && neighbor_frame.phase_matches(frame, road.precision)
                         {
                             phases.insert((neighbor, neighbor_side), frame);
                             queue.push_back((neighbor, neighbor_side));

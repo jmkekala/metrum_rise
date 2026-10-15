@@ -87,10 +87,8 @@ pub(crate) fn cleaned_open_road_polyline(
 ) -> Option<RoadPolyline> {
     let raw = road_points_to_polyline(points_xz, false);
     let mut cleaned = RoadPolyline::create_from_remove_repeat(&raw, point_equal_eps_m);
-    if remove_redundant {
-        if let Some(reduced) = cleaned.remove_redundant(point_equal_eps_m) {
-            cleaned = reduced;
-        }
+    if remove_redundant && let Some(reduced) = cleaned.remove_redundant(point_equal_eps_m) {
+        cleaned = reduced;
     }
     (cleaned.vertex_count() >= 2).then_some(cleaned)
 }

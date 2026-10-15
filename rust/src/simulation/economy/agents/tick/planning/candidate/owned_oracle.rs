@@ -8,6 +8,7 @@ use super::*;
 use std::collections::HashMap;
 
 /// Evaluates the pre-scratch path algorithm for exact regression comparison.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn combine_trip_ends(
     mode: u8,
     origin_rank: u8,
@@ -445,7 +446,7 @@ fn search_pedestrian_lane_connector_path(
         {
             return Some((
                 state.cost,
-                reconstruct_pedestrian_nodes(state_key, &previous),
+                reconstruct_pedestrian_nodes(state_key, previous),
             ));
         }
 

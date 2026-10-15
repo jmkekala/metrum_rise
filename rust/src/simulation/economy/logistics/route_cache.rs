@@ -26,6 +26,9 @@ fn sweep_border(
     costs.pop().expect("one start yields one cost table")
 }
 
+// Generation, sampled revision and ETA of one border-to-building quote.
+type BorderQuote = (u64, u64, Option<f32>);
+
 /// Caches expensive network searches without freezing changing frontage delays.
 #[derive(Clone, Debug, Default)]
 pub(super) struct FreightRouteCache {
@@ -43,7 +46,7 @@ pub(super) struct FreightRouteCache {
     cost_bounds: CchCarCostBounds,
     // Complete quotes also compare their own lane prices after a global traffic revision.
     building_to_building: Vec<[Option<BuildingCost>; 2]>,
-    border_to_building: HashMap<(u32, usize), (u64, u64, Option<f32>), foldhash::fast::FixedState>,
+    border_to_building: HashMap<(u32, usize), BorderQuote, foldhash::fast::FixedState>,
     building_generation: u64,
     access: Vec<Option<BuildingAccess>>,
     // Two current proposal doors, independent of allocator IDs. Repeated buyer/supplier
@@ -447,7 +450,7 @@ impl FreightRouteCache {
     }
 
     /// Quotes a source's directed route to a proposed door without inventing a building ID.
-    pub(super) fn to_site(
+    pub(super) fn building_to_site(
         &mut self,
         source_idx: usize,
         destination: &BuildingEntrance,
@@ -463,7 +466,7 @@ impl FreightRouteCache {
     }
 
     /// Quotes a proposed source to an existing buyer using the buyer's prepared geometry.
-    pub(super) fn from_site(
+    pub(super) fn site_to_building(
         &mut self,
         source: &BuildingEntrance,
         destination_idx: usize,
@@ -514,11 +517,10 @@ impl FreightRouteCache {
         ]
         .into_iter()
         .any(|lane| {
-            network
-                .lane_system
-                .lanes
-                .get(lane)
-                .is_some_and(|lane| !(lane.frontage_delay_penalty_s >= 0.0))
+            network.lane_system.lanes.get(lane).is_some_and(|lane| {
+                let penalty = lane.frontage_delay_penalty_s;
+                penalty.is_nan() || penalty < 0.0
+            })
         }) {
             return None;
         }
@@ -669,7 +671,7 @@ impl FreightRouteCache {
     }
 
     /// Prices a prepared border without allocating a sweep or retaining unbounded pairs.
-    pub(super) fn from_border(
+    pub(super) fn between_border_and_building(
         &mut self,
         border_node: u32,
         destination_idx: usize,
@@ -679,10 +681,11 @@ impl FreightRouteCache {
     ) -> Option<f32> {
         let key = (border_node, destination_idx);
         let revision = transit_network.frontage_delay_revision;
-        if let Some(&(generation, sampled_revision, eta)) = self.border_to_building.get(&key) {
-            if generation == self.building_generation && sampled_revision == revision {
-                return eta;
-            }
+        if let Some(&(generation, sampled_revision, eta)) = self.border_to_building.get(&key)
+            && generation == self.building_generation
+            && sampled_revision == revision
+        {
+            return eta;
         }
         // Traffic changes reprice only requested entrances; network sweeps remain reusable.
         let costs = self.border_costs.get(&border_node)?;

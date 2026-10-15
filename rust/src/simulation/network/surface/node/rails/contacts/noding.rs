@@ -76,9 +76,11 @@ fn node_generated_contact_contours_with_reuse_mode(
         .map(|start| start.elapsed().as_secs_f64() * 1000.0)
         .unwrap_or(0.0);
     let component_start = profile_enabled.then(Instant::now);
-    let component_plans = reuse_final_components
-        .then(|| candidates::generated_contact_noding_component_plans(&initial_preparation))
-        .unwrap_or_default();
+    let component_plans = if reuse_final_components {
+        candidates::generated_contact_noding_component_plans(&initial_preparation)
+    } else {
+        Default::default()
+    };
     let component_ms = component_start
         .map(|start| start.elapsed().as_secs_f64() * 1000.0)
         .unwrap_or(0.0);

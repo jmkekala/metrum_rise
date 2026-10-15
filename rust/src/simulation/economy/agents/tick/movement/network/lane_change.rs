@@ -64,29 +64,29 @@ pub(super) unsafe fn prepare_lane_change_and_overtake(
             lane_buckets,
         );
         let Some(choice) = choice else {
-            if crate::debug::Channel::Traffic.enabled() && has_access_plan {
-                if let Some(target_lane_id) = planned_lane_change_target(
+            if crate::debug::Channel::Traffic.enabled()
+                && has_access_plan
+                && let Some(target_lane_id) = planned_lane_change_target(
                     lane_id,
                     detach_lane_id,
                     lane_d,
                     detach_lane_d,
                     transit_network,
-                ) {
-                    let target_d =
-                        lane_d.min(transit_network.lane_system.lanes[target_lane_id].length);
-                    if !lane_buckets
-                        .get(target_lane_id)
-                        .is_some_and(|bucket| lane_change_gap_clear(bucket, target_d, speed))
-                    {
-                        traffic_log!(
-                            "[LANE_CHANGE_WAIT] agent={} lane={} target_lane={} lane_d={:.2} speed={:.2} reason=target-gap",
-                            i,
-                            lane_id,
-                            target_lane_id,
-                            lane_d,
-                            speed,
-                        );
-                    }
+                )
+            {
+                let target_d = lane_d.min(transit_network.lane_system.lanes[target_lane_id].length);
+                if !lane_buckets
+                    .get(target_lane_id)
+                    .is_some_and(|bucket| lane_change_gap_clear(bucket, target_d, speed))
+                {
+                    traffic_log!(
+                        "[LANE_CHANGE_WAIT] agent={} lane={} target_lane={} lane_d={:.2} speed={:.2} reason=target-gap",
+                        i,
+                        lane_id,
+                        target_lane_id,
+                        lane_d,
+                        speed,
+                    );
                 }
             }
             return lane_id;

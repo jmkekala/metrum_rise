@@ -584,6 +584,7 @@ impl SameBandContactPairResult {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_same_band_pair_batch_contacts(
     contours: &[NodeGeneratedContour],
     summaries: &[GeneratedContactContourSummary],
@@ -616,6 +617,7 @@ fn collect_same_band_pair_batch_contacts(
     batch_result
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_same_band_pair_contacts(
     contours: &[NodeGeneratedContour],
     summaries: &[GeneratedContactContourSummary],
@@ -925,6 +927,7 @@ fn merge_contact_emission_stats(
     stats.same_material_height_split_duplicates += next.same_material_height_split_duplicates;
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_same_material_height_splits_from_edges(
     left: &NodeGeneratedContour,
     right: &NodeGeneratedContour,

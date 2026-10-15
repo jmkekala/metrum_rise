@@ -248,6 +248,7 @@ impl RoadSurfaceSystem {
     }
 
     #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn compile_preview_surface_mesh_only_with_existing_surface_snap(
         &self,
         raw_points: &[Vector3],
@@ -272,6 +273,7 @@ impl RoadSurfaceSystem {
 
     /// Compiles exact validation and returns canonical node topology eligible for one exact commit.
     #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn compile_preview_surface_mesh_only_with_existing_surface_snap_and_topology_reuse(
         &self,
         raw_points: &[Vector3],
@@ -450,6 +452,7 @@ impl RoadSurfaceSystem {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn validate_prepared_road_input_against_graph_with_compile_reason(
         &self,
         prepared_input: &PreparedRoadInput,
@@ -472,6 +475,7 @@ impl RoadSurfaceSystem {
         .0
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn validate_prepared_road_input_against_graph_with_compile_reason_and_topology_reuse(
         &self,
         prepared_input: &PreparedRoadInput,
@@ -782,34 +786,34 @@ impl RoadSurfaceSystem {
                 validation.invalid_reason = PREVIEW_BRIDGE_CLEARANCE_REASON;
                 return validation;
             }
-        } else if prepared_points.len() > 2 {
-            if let Some(mid_section) = compiled_sections.get(compiled_sections.len() / 2) {
-                let terrain_h = Self::preview_terrain_height_m(
-                    terrain,
-                    mid_section.center_xz.x as f32,
-                    mid_section.center_xz.y as f32,
-                );
-                match edge_class {
-                    EdgeClass::Bridge => {
-                        validation.clearance_m = mid_section.center_height_m - terrain_h;
-                        validation.required_clearance_m = PREVIEW_CLEARANCE_M;
-                        if validation.clearance_m < PREVIEW_CLEARANCE_M {
-                            validation.is_valid = false;
-                            validation.invalid_reason = PREVIEW_BRIDGE_CLEARANCE_REASON;
-                            return validation;
-                        }
+        } else if prepared_points.len() > 2
+            && let Some(mid_section) = compiled_sections.get(compiled_sections.len() / 2)
+        {
+            let terrain_h = Self::preview_terrain_height_m(
+                terrain,
+                mid_section.center_xz.x as f32,
+                mid_section.center_xz.y as f32,
+            );
+            match edge_class {
+                EdgeClass::Bridge => {
+                    validation.clearance_m = mid_section.center_height_m - terrain_h;
+                    validation.required_clearance_m = PREVIEW_CLEARANCE_M;
+                    if validation.clearance_m < PREVIEW_CLEARANCE_M {
+                        validation.is_valid = false;
+                        validation.invalid_reason = PREVIEW_BRIDGE_CLEARANCE_REASON;
+                        return validation;
                     }
-                    EdgeClass::Tunnel => {
-                        validation.clearance_m = terrain_h - mid_section.center_height_m;
-                        validation.required_clearance_m = PREVIEW_CLEARANCE_M;
-                        if validation.clearance_m < PREVIEW_CLEARANCE_M {
-                            validation.is_valid = false;
-                            validation.invalid_reason = PREVIEW_TUNNEL_CLEARANCE_REASON;
-                            return validation;
-                        }
-                    }
-                    EdgeClass::Standard => {}
                 }
+                EdgeClass::Tunnel => {
+                    validation.clearance_m = terrain_h - mid_section.center_height_m;
+                    validation.required_clearance_m = PREVIEW_CLEARANCE_M;
+                    if validation.clearance_m < PREVIEW_CLEARANCE_M {
+                        validation.is_valid = false;
+                        validation.invalid_reason = PREVIEW_TUNNEL_CLEARANCE_REASON;
+                        return validation;
+                    }
+                }
+                EdgeClass::Standard => {}
             }
         }
 
@@ -854,6 +858,7 @@ impl RoadSurfaceSystem {
     }
 
     #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
     fn validate_prepared_surface_geometry_against_graph(
         &self,
         prepared_points: &[Vector3],
@@ -879,6 +884,7 @@ impl RoadSurfaceSystem {
     }
 
     #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
     fn validate_prepared_surface_geometry_against_graph_with_extension(
         &self,
         prepared_points: &[Vector3],
@@ -907,6 +913,7 @@ impl RoadSurfaceSystem {
         .0
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn validate_prepared_surface_geometry_against_graph_with_extension_and_topology_reuse(
         &self,
         prepared_points: &[Vector3],
@@ -1011,15 +1018,15 @@ impl RoadSurfaceSystem {
         }
         let mut source_nodes: Vec<_> = source_node_ids.keys().copied().collect();
         source_nodes.sort_unstable();
-        if self.published_generation_matches_source() {
-            if let Some(reuse) = self.local_topology_reuse(
+        if self.published_generation_matches_source()
+            && let Some(reuse) = self.local_topology_reuse(
                 existing_graph,
                 terrain,
                 source_edge_ids.keys().copied(),
                 &source_nodes,
-            ) {
-                validation_surface.enqueue_preview_topology_reuse(reuse);
-            }
+            )
+        {
+            validation_surface.enqueue_preview_topology_reuse(reuse);
         }
         if compile_reason == RoadSurfaceCompileReason::PreviewWorker {
             self.offer_previous_cursor(terrain, &mut validation_surface);
@@ -1488,6 +1495,7 @@ impl RoadSurfaceSystem {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_surface_validation_graph(
         &self,
         prepared_points: &[Vector3],
@@ -1694,6 +1702,7 @@ impl RoadSurfaceSystem {
         copy_incidence(local, nodes, edges, &span_endpoints);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn validation_candidate_existing_edge_ids(
         prepared_points: &[Vector3],
         fwd_lanes: u8,

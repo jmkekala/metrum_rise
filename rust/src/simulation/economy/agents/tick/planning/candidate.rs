@@ -287,6 +287,7 @@ pub(super) enum TripLeg {
 ///
 /// `network_speed_bound_ms` must not be below any speed the route cost uses, or the bound is not
 /// a bound.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn price_trip_without_network(
     mode: u8,
     origin_rank: u8,
@@ -399,6 +400,7 @@ fn direct_frontage_candidate(
 
 /// Prices one trip between two prepared ends, querying the network when the ends do not share a
 /// frontage or a node.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn combine_trip_ends(
     mode: u8,
     origin_rank: u8,
@@ -518,6 +520,7 @@ fn finish_candidate(
 }
 
 #[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 fn evaluate_planned_trip_candidate(
     mode: u8,
     origin_rank: u8,
@@ -766,6 +769,79 @@ impl PartialOrd for PedestrianSearchState {
     }
 }
 
+pub(super) fn entrance_pair_supports_mode(
+    mode: u8,
+    has_car: bool,
+    origin_entrance: &BuildingEntrance,
+    destination_entrance: &BuildingEntrance,
+) -> bool {
+    if mode == MODE_CAR {
+        has_car
+            && (origin_entrance.car_lane_fwd != usize::MAX
+                || origin_entrance.car_lane_bkw != usize::MAX)
+            && (destination_entrance.car_lane_fwd != usize::MAX
+                || destination_entrance.car_lane_bkw != usize::MAX)
+    } else {
+        (origin_entrance.foot_lane_fwd != usize::MAX || origin_entrance.foot_lane_bkw != usize::MAX)
+            && (destination_entrance.foot_lane_fwd != usize::MAX
+                || destination_entrance.foot_lane_bkw != usize::MAX)
+    }
+}
+
+pub(super) fn best_trip_candidate_for_mode(
+    mode: u8,
+    origin_entrance: &BuildingEntrance,
+    destination_entrance: &BuildingEntrance,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    pathfind_count: &AtomicU32,
+) -> Option<PlannedTripCandidate> {
+    for entrance in [origin_entrance, destination_entrance] {
+        if entrance.edge_idx >= graph.edge_count() || graph.edge(entrance.edge_idx).deleted {
+            return None;
+        }
+    }
+    // These four lane ends are immutable throughout the four rank combinations. Keep
+    // the original candidate order and arithmetic while avoiding repeated projection.
+    let origins = NODE_RANKS
+        .map(|rank| TripEnd::new(mode, rank, origin_entrance, true, transit_network, graph));
+    let destinations = NODE_RANKS.map(|rank| {
+        TripEnd::new(
+            mode,
+            rank,
+            destination_entrance,
+            false,
+            transit_network,
+            graph,
+        )
+    });
+    let mut best: Option<PlannedTripCandidate> = None;
+    for (origin_rank, destination_rank) in NODE_RANK_PAIRS {
+        let (Some(origin), Some(destination)) = (
+            &origins[usize::from(origin_rank)],
+            &destinations[usize::from(destination_rank)],
+        ) else {
+            continue;
+        };
+        if let Some(candidate) = combine_trip_ends(
+            mode,
+            origin_rank,
+            destination_rank,
+            origin,
+            destination,
+            transit_network,
+            graph,
+            pathfind_count,
+        ) && best
+            .as_ref()
+            .is_none_or(|best| candidate_better(&candidate, best))
+        {
+            best = Some(candidate);
+        }
+    }
+    best
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -902,79 +978,4 @@ mod tests {
             "the flow field must still reject the disconnected sidewalk"
         );
     }
-}
-
-pub(super) fn entrance_pair_supports_mode(
-    mode: u8,
-    has_car: bool,
-    origin_entrance: &BuildingEntrance,
-    destination_entrance: &BuildingEntrance,
-) -> bool {
-    if mode == MODE_CAR {
-        has_car
-            && (origin_entrance.car_lane_fwd != usize::MAX
-                || origin_entrance.car_lane_bkw != usize::MAX)
-            && (destination_entrance.car_lane_fwd != usize::MAX
-                || destination_entrance.car_lane_bkw != usize::MAX)
-    } else {
-        (origin_entrance.foot_lane_fwd != usize::MAX || origin_entrance.foot_lane_bkw != usize::MAX)
-            && (destination_entrance.foot_lane_fwd != usize::MAX
-                || destination_entrance.foot_lane_bkw != usize::MAX)
-    }
-}
-
-pub(super) fn best_trip_candidate_for_mode(
-    mode: u8,
-    origin_entrance: &BuildingEntrance,
-    destination_entrance: &BuildingEntrance,
-    transit_network: &TransitNetwork,
-    graph: &RegionGraph,
-    pathfind_count: &AtomicU32,
-) -> Option<PlannedTripCandidate> {
-    for entrance in [origin_entrance, destination_entrance] {
-        if entrance.edge_idx >= graph.edge_count() || graph.edge(entrance.edge_idx).deleted {
-            return None;
-        }
-    }
-    // These four lane ends are immutable throughout the four rank combinations. Keep
-    // the original candidate order and arithmetic while avoiding repeated projection.
-    let origins = NODE_RANKS
-        .map(|rank| TripEnd::new(mode, rank, origin_entrance, true, transit_network, graph));
-    let destinations = NODE_RANKS.map(|rank| {
-        TripEnd::new(
-            mode,
-            rank,
-            destination_entrance,
-            false,
-            transit_network,
-            graph,
-        )
-    });
-    let mut best: Option<PlannedTripCandidate> = None;
-    for (origin_rank, destination_rank) in NODE_RANK_PAIRS {
-        let (Some(origin), Some(destination)) = (
-            &origins[usize::from(origin_rank)],
-            &destinations[usize::from(destination_rank)],
-        ) else {
-            continue;
-        };
-        if let Some(candidate) = combine_trip_ends(
-            mode,
-            origin_rank,
-            destination_rank,
-            origin,
-            destination,
-            transit_network,
-            graph,
-            pathfind_count,
-        ) {
-            if best
-                .as_ref()
-                .is_none_or(|best| candidate_better(&candidate, best))
-            {
-                best = Some(candidate);
-            }
-        }
-    }
-    best
 }

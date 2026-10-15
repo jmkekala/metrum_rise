@@ -162,6 +162,7 @@ impl SimulationNode {
             })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::nodes::simulation_node) fn terrain_clip_input_failure_label(
         requires_road_clipping: bool,
         clip_source_count: usize,
@@ -226,6 +227,7 @@ impl SimulationNode {
                 && longest_triangle_edge_m > TERRAIN_CDT_PATHOLOGICAL_TRIANGLE_EDGE_M)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::nodes::simulation_node) fn debug_log_pathological_terrain_cdt_output(
         label: &str,
         patch_x: usize,

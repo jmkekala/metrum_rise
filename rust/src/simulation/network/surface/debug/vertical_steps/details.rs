@@ -258,6 +258,7 @@ impl RoadSurfaceSystem {
         duplicate_count
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::simulation::network::surface::debug) fn append_raised_step_face_detail_literal(
         dump: &mut String,
         piece: &RoadSurfaceVisualNodePiece,

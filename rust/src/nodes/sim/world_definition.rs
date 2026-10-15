@@ -432,35 +432,34 @@ impl SimCore {
                 );
             }
         }
-        if let Some(preview) = self.world_lake_fill_preview {
-            if preview.is_valid() {
-                if let Some((application, lake_depth)) = merge_surface_fill_depth(
-                    &terrain_world,
-                    &water,
-                    &mut baseline_depth,
-                    preview.kind,
-                    preview.seed_world_x,
-                    preview.seed_world_z,
-                    preview.surface_elevation_m,
-                    match preview.kind {
-                        WorldWaterFillKind::Lake => "skip_lake_fill_preview",
-                        WorldWaterFillKind::OpenWater => "skip_open_water_fill_preview",
-                    },
-                ) {
-                    push_authored_water_fill_debug_for_depth(
-                        &mut fill_debug_cache,
-                        &water,
-                        preview.kind,
-                        -1,
-                        true,
-                        preview.seed_world_x,
-                        preview.seed_world_z,
-                        preview.surface_elevation_m,
-                        application,
-                        &lake_depth,
-                    );
-                }
-            }
+        if let Some(preview) = self.world_lake_fill_preview
+            && preview.is_valid()
+            && let Some((application, lake_depth)) = merge_surface_fill_depth(
+                &terrain_world,
+                &water,
+                &mut baseline_depth,
+                preview.kind,
+                preview.seed_world_x,
+                preview.seed_world_z,
+                preview.surface_elevation_m,
+                match preview.kind {
+                    WorldWaterFillKind::Lake => "skip_lake_fill_preview",
+                    WorldWaterFillKind::OpenWater => "skip_open_water_fill_preview",
+                },
+            )
+        {
+            push_authored_water_fill_debug_for_depth(
+                &mut fill_debug_cache,
+                &water,
+                preview.kind,
+                -1,
+                true,
+                preview.seed_world_x,
+                preview.seed_world_z,
+                preview.surface_elevation_m,
+                application,
+                &lake_depth,
+            );
         }
         for contributors in fill_debug_cache.values_mut() {
             sort_authored_water_patch_fill_debug(contributors);
@@ -722,6 +721,7 @@ fn evaluate_world_water_fill_preview(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn merge_surface_fill_depth(
     terrain_world: &[f32],
     water: &WaterSystem,
@@ -777,6 +777,7 @@ fn merge_surface_fill_depth(
     Some((application, lake_depth))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_authored_water_fill_debug_for_depth(
     out: &mut HashMap<(usize, usize), Vec<AuthoredWaterPatchFillDebug>>,
     water: &WaterSystem,
@@ -1066,7 +1067,7 @@ mod tests {
         carve_closed_basin(&mut core);
         let loaded = LoadedWorldDefinition {
             name: "water-test".to_owned(),
-            config: core.config.clone(),
+            config: core.config,
             terrain: core.heightmap.clone(),
             lake_fills: vec![AuthoredLakeFill {
                 world_x: 0.0,
@@ -1116,7 +1117,7 @@ mod tests {
         };
         let loaded = LoadedWorldDefinition {
             name: "vegetation-test".to_owned(),
-            config: core.config.clone(),
+            config: core.config,
             terrain: core.heightmap.clone(),
             lake_fills: Vec::new(),
             open_water_fills: Vec::new(),
@@ -1132,7 +1133,7 @@ mod tests {
         // An out-of-range request is corrected on the way in rather than stored as authored.
         let loaded = LoadedWorldDefinition {
             name: "vegetation-test".to_owned(),
-            config: core.config.clone(),
+            config: core.config,
             terrain: core.heightmap.clone(),
             lake_fills: Vec::new(),
             open_water_fills: Vec::new(),

@@ -331,6 +331,7 @@ impl<T: Copy + PartialEq> SparseChunkGrid<T> {
     /// The destination offsets locate the region's upper-left cell. Chunk rows are copied as
     /// slices, so extracting a render patch performs one hash lookup per touched chunk instead of
     /// one lookup per terrain sample.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn copy_rect_into(
         &self,
         min_x: usize,
@@ -555,7 +556,7 @@ mod tests {
                         for x in (0..size).step_by(CHUNK_SIZE) {
                             let chunk_index =
                                 y / CHUNK_SIZE * size.div_ceil(CHUNK_SIZE) + x / CHUNK_SIZE;
-                            if chunk_index % 64 == 0 {
+                            if chunk_index.is_multiple_of(64) {
                                 let last_x = (x + CHUNK_SIZE - 1).min(size - 1);
                                 let last_y = (y + CHUNK_SIZE - 1).min(size - 1);
                                 dense[last_y * size + last_x] = 7.0;

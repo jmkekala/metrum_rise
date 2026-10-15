@@ -86,11 +86,7 @@ impl SupplierCandidateIndex {
                 {
                     return None;
                 }
-                let Some(profile) =
-                    catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
-                else {
-                    return None;
-                };
+                let profile = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)?;
                 if !building_outputs_can_supply_local_inputs(building, profile) {
                     return None;
                 }

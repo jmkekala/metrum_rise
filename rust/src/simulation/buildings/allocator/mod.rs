@@ -668,6 +668,12 @@ pub(crate) fn zone_type_to_zone_class(zone: ZoneType) -> Option<ZoneClass> {
     }
 }
 
+impl Default for BuildingAllocator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BuildingAllocator {
     fn record_production_site_removal(&mut self, removed: usize, last: usize) {
         if [removed, last].iter().any(|&idx| {
@@ -721,6 +727,7 @@ impl BuildingAllocator {
     ///
     /// Pass one elapsed day for daily settlement, or zero for an edit that does not advance time.
     /// Newly detected incompatible zoning starts its full grace period in either case.
+    #[allow(clippy::too_many_arguments)]
     pub fn maintain(
         &mut self,
         elapsed_days: u8,
@@ -984,10 +991,10 @@ impl BuildingAllocator {
         catalog: &RuntimeEconomyCatalog,
     ) -> Option<u32> {
         if let Some(profile_id) = self.registry.economy_profile(asset_id) {
-            if let Some(profile) = catalog.profile_for_id(profile_id) {
-                if profile.runtime_supported {
-                    return Some(profile.worker_capacity);
-                }
+            if let Some(profile) = catalog.profile_for_id(profile_id)
+                && profile.runtime_supported
+            {
+                return Some(profile.worker_capacity);
             }
             return None;
         }

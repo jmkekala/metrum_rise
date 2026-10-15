@@ -146,6 +146,7 @@ pub(crate) struct MinuteWindow {
 /// Authored arrival and departure windows for one repeated traveler profile.
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(default)]
+#[derive(Default)]
 pub(crate) struct WorkTimingProfile {
     /// Stable id used by the broad zone-type lookup table.
     pub id: String,
@@ -627,17 +628,6 @@ impl RuntimeEconomyCatalog {
             .get(usize::from(resource))
             .copied()
             .unwrap_or(f32::INFINITY)
-    }
-}
-
-impl Default for WorkTimingProfile {
-    fn default() -> Self {
-        Self {
-            id: String::new(),
-            arrival_windows: Vec::new(),
-            departure_windows: Vec::new(),
-            reliability_buffer_minutes: 0,
-        }
     }
 }
 

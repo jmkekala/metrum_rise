@@ -564,6 +564,7 @@ impl TripQueryScratch {
         self.route_revision = self.revision;
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(in super::super) fn combine(
         &mut self,
         mode: u8,
@@ -697,6 +698,7 @@ impl TripQueryScratch {
 
     /// Visits the exact selected CCH/connector path while temporary storage stays borrowed.
     /// Candidate pricing discards the slice; only a stored agent plan copies its final route.
+    #[allow(clippy::too_many_arguments)]
     pub(in super::super) fn network_path<T>(
         &mut self,
         mode: u8,
@@ -988,6 +990,7 @@ impl TripQueryScratch {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn network_seconds(
         &mut self,
         mode: u8,
@@ -1257,6 +1260,7 @@ fn incoming_lanes<'a>(
         })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn path_has_connectors_from(
     mut path: &[u32],
     from: u32,
@@ -1378,7 +1382,7 @@ mod tests {
     fn cache_key(index: usize) -> super::NetworkQuoteKey {
         super::NetworkQuoteKey {
             mode: (index % 2) as u8,
-            from_context: if index % 3 == 0 {
+            from_context: if index.is_multiple_of(3) {
                 usize::MAX
             } else {
                 index % 23
@@ -1390,7 +1394,8 @@ mod tests {
     }
 
     fn cache_value(key: &super::NetworkQuoteKey) -> Option<f32> {
-        (key.from_node % 7 != 0).then_some((key.from_node * 32 + key.to_node) as f32 / 7.0)
+        (!key.from_node.is_multiple_of(7))
+            .then_some((key.from_node * 32 + key.to_node) as f32 / 7.0)
     }
 
     #[test]

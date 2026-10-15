@@ -737,8 +737,8 @@ fn field_cell_cache_edit_scaling() {
         for index in previous_count..background {
             let key = CellKey {
                 grid,
-                x: 200 + (index % 700) as i32,
-                y: 200 + (index / 700) as i32,
+                x: 200 + (index % 700),
+                y: 200 + (index / 700),
             };
             assert!(core.zoning.cells.restore_saved_cell(key, 1));
             let center = frame.world(f64::from(key.x) + 0.5, f64::from(key.y) + 0.5);

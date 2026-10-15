@@ -540,12 +540,8 @@ impl NodeArrangement {
         edge: &NodeArrangementEdge,
         constraint_index: &ExplicitStepConstraintIndex<'_>,
     ) -> Option<NodeBandOwner> {
-        let Some(start) = self.vertices.get(edge.start.0).map(|vertex| vertex.key) else {
-            return None;
-        };
-        let Some(end) = self.vertices.get(edge.end.0).map(|vertex| vertex.key) else {
-            return None;
-        };
+        let start = self.vertices.get(edge.start.0).map(|vertex| vertex.key)?;
+        let end = self.vertices.get(edge.end.0).map(|vertex| vertex.key)?;
         let mut constraints = constraint_index
             .for_edge(edge)
             .filter(|constraint| seam_constraint_authorizes_explicit_height_split(constraint))
@@ -995,12 +991,13 @@ impl ExplicitStepRelevantKeyIndex {
     ) {
         let x_span = start.x_key.abs_diff(end.x_key);
         let z_span = start.z_key.abs_diff(end.z_key);
-        let (keys, start_axis, end_axis, axis_value): (
-            &[NodeArrangementKey],
+        type AxisProjection<'a> = (
+            &'a [NodeArrangementKey],
             i64,
             i64,
             fn(NodeArrangementKey) -> i64,
-        ) = if x_span >= z_span {
+        );
+        let (keys, start_axis, end_axis, axis_value): AxisProjection<'_> = if x_span >= z_span {
             (&self.by_x, start.x_key, end.x_key, |key| key.x_key)
         } else {
             (&self.by_z, start.z_key, end.z_key, |key| key.z_key)

@@ -29,7 +29,7 @@ fn scatter(core: &SimCore, canopy: bool) -> Vec<f32> {
         if canopy { CANOPY_SALT } else { UNDERSTORY_SALT },
         canopy,
     );
-    for record in records.chunks_exact_mut(6) {
+    for record in records.as_chunks_mut::<6>().0 {
         record[0] -= origin.x;
         record[2] -= origin.y;
     }
@@ -108,7 +108,9 @@ fn vegetation_removal_matches_scatter_disc_in_both_layers() {
     let radius = 63.0;
     let expected = before.each_ref().map(|records| {
         records
-            .chunks_exact(6)
+            .as_chunks::<6>()
+            .0
+            .iter()
             .filter(|r| {
                 Vector2::new(r[0] - 255.0, r[2] - 255.0).distance_squared_to(pos) > radius * radius
             })
@@ -172,7 +174,9 @@ fn vegetation_repaint_with_another_species_does_not_regrow_the_cleared_plant() {
         1
     );
     let standing: Vec<_> = scatter(&core, true)
-        .chunks_exact(6)
+        .as_chunks::<6>()
+        .0
+        .iter()
         .filter(|r| r[0] == p.x + 255.0 && r[2] == p.z + 255.0)
         .map(|r| r[5] as u8)
         .collect();
@@ -1038,7 +1042,9 @@ const NORTHERN_DWARF: i64 = 10;
 // Every packed placement of the canopy layer as (species, biased variant, scale).
 fn planted(core: &SimCore) -> Vec<(u8, u8, f32)> {
     scatter(core, true)
-        .chunks_exact(6)
+        .as_chunks::<6>()
+        .0
+        .iter()
         .map(|record| {
             let packed = record[5] as u32;
             ((packed & 3) as u8, (packed >> 2) as u8, record[4])
@@ -1239,7 +1245,12 @@ fn a_hedge_line_lays_facing_modules_once_and_only_along_a_line() {
     // Nine metres close with nine modules, each facing along the row at full size.
     assert_eq!(line_at(&mut core, from, to, 17, 1), 9);
     let records = scatter(&core, true);
-    let hedge: Vec<_> = records.chunks_exact(6).filter(|r| r[5] != 0.0).collect();
+    let hedge: Vec<_> = records
+        .as_chunks::<6>()
+        .0
+        .iter()
+        .filter(|r| r[5] != 0.0)
+        .collect();
     assert_eq!(hedge.len(), 9);
     for record in &hedge {
         // Level ground: no rise along the row.
@@ -1262,7 +1273,7 @@ fn a_hedge_row_ends_flush_and_joins_the_hedge_it_is_drawn_onto() {
     // World centres of every hedge module, so a row is what one stroke added to them.
     let centres = |core: &SimCore| -> Vec<(f32, f32)> {
         let records = scatter(core, true);
-        let hedge = records.chunks_exact(6).filter(|r| r[5] != 0.0);
+        let hedge = records.as_chunks::<6>().0.iter().filter(|r| r[5] != 0.0);
         hedge.map(|r| (r[0] - 255.0, r[2] - 255.0)).collect()
     };
     let mut before = Vec::new();
@@ -1341,7 +1352,7 @@ fn hedge_rows_merge_into_runs_that_stop_at_their_ends_and_at_sixteen_metres() {
         5
     );
     let runs = hedge_runs::hedge_runs(&core, Vector2::new(-64.0, -64.0), 128.0);
-    let mut runs: Vec<_> = runs.chunks_exact(7).map(|r| r.to_vec()).collect();
+    let mut runs: Vec<_> = runs.as_chunks::<7>().0.iter().map(|r| r.to_vec()).collect();
     runs.sort_by(|a, b| a[0].total_cmp(&b[0]));
     // The long row splits at 16 m and the two pieces cover exactly the drawn 20 m.
     assert_eq!(runs.len(), 3, "{runs:?}");
@@ -1360,7 +1371,10 @@ fn hedge_rows_merge_into_runs_that_stop_at_their_ends_and_at_sixteen_metres() {
     );
     // A patch only draws the modules whose centres it contains.
     let left = hedge_runs::hedge_runs(&core, Vector2::new(-64.0, -64.0), 74.0);
-    assert_eq!(left.chunks_exact(7).map(|r| r[4]).sum::<f32>(), 10.0);
+    assert_eq!(
+        left.as_chunks::<7>().0.iter().map(|r| r[4]).sum::<f32>(),
+        10.0
+    );
 }
 
 // Hedge modules standing anywhere in the edit store.

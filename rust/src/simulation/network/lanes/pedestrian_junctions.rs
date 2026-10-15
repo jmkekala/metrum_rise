@@ -211,6 +211,7 @@ fn sidewalk_corner_route(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn append_pedestrian_connection(
     lanes: &mut Vec<Lane>,
     graph: &mut RegionGraph,

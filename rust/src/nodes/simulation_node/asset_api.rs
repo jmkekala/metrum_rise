@@ -392,116 +392,115 @@ impl SimulationNode {
         dict.set("worker_capacity", worker_capacity as i32);
         dict.set("operating_budget", b.operating_budget as f64);
         dict.set("revenue", b.revenue as f64);
-        if b.zone_type != ZoneType::Residential {
-            if let Some(profile) = profile {
-                let factors = building_operation_factors(catalog, b, profile);
-                let inventory_fill = building_inventory_fill_ratio(catalog, b, profile);
-                let profit_today = b.operating_budget - b.profit_tax_budget_baseline;
-                let business_status = if b.broken {
-                    "Asset broken"
-                } else if b.economy_broken {
-                    "Economy broken"
-                } else if b.is_deserted {
-                    "Deserted"
-                } else if b.is_under_construction() {
-                    "Under construction"
-                } else if b.budget_distress || b.operating_budget < 0.0 {
-                    "Distressed"
-                } else if factors.active_worker_capacity > 0 && factors.effective_workers == 0 {
-                    "No workers"
-                } else if factors.input_factor < 0.5 {
-                    "Needs inputs"
-                } else if factors.output_headroom_factor < 0.5 {
-                    "Storage full"
-                } else if factors.active_worker_capacity < profile.worker_capacity
-                    && !profile_kind_uses_explicit_work_area(profile.kind)
-                {
-                    "Demand-limited"
-                } else if factors.throughput_factor >= 0.8 {
-                    "Running"
-                } else if factors.throughput_factor > 0.0 {
-                    "Limited"
-                } else {
-                    "Idle"
-                };
-                dict.set("business_summary", true);
-                dict.set("business_status", GString::from(business_status));
-                dict.set("business_profit_today", profit_today as f64);
-                dict.set("business_profit_yesterday", b.last_day_profit as f64);
-                dict.set(
-                    "business_active_worker_capacity",
-                    factors.active_worker_capacity as i32,
-                );
-                dict.set(
-                    "business_production_ratio",
-                    factors.throughput_factor as f64,
-                );
-                dict.set(
-                    "business_inventory_fill_ratio",
-                    inventory_fill.unwrap_or(0.0) as f64,
-                );
-                dict.set("business_has_inventory_fill", inventory_fill.is_some());
-                if matches!(
-                    profile.kind,
-                    EconomyProfileRuntimeKind::UtilityProducer
-                        | EconomyProfileRuntimeKind::UtilityProcessor
-                ) {
-                    let utility_service = profile.utility_service.as_deref().unwrap_or("");
-                    let utility_active = !b.broken
-                        && !b.economy_broken
-                        && !b.is_deserted
-                        && !b.is_under_construction()
-                        && b.edge_idx != usize::MAX
-                        && b.worker_count > 0
-                        && factors.throughput_factor > 0.0;
-                    dict.set("utility_service", GString::from(utility_service));
-                    if let Some(unit) = profile.utility_quantity_unit {
-                        dict.set("utility_quantity_unit", GString::from(unit.symbol()));
-                    }
-                    dict.set("utility_service_available", utility_active);
-                    dict.set("utility_local_revenue", b.revenue as f64);
-                    if utility_service == "power" {
-                        dict.set("power_capacity_kw", profile.power_capacity_kw as f64);
-                        dict.set(
-                            "power_staffed_capacity_kw",
-                            (profile.power_capacity_kw
-                                * b.worker_count.min(profile.worker_capacity) as f32
-                                / profile.worker_capacity.max(1) as f32)
-                                as f64,
-                        );
-                        dict.set(
-                            "service_funding_effective",
-                            core.effective_electricity_funding_for_building(best_idx) as f64,
-                        );
-                        dict.set(
-                            "service_funding_city",
-                            core.service_policy.electricity_funding as f64,
-                        );
-                        dict.set(
-                            "service_funding_override",
-                            b.service_funding_override >= 0.0,
-                        );
-                    }
-                    let power_production = b.recent_power_service_units.max(0.0);
-                    let power_consumed = b.recent_power_served_units.clamp(0.0, power_production);
-                    let power_unused = (power_production - power_consumed).max(0.0);
-                    let power_consumption_ratio = if power_production > 0.0 {
-                        power_consumed / power_production
-                    } else {
-                        0.0
-                    };
-                    dict.set("utility_power_production_today", power_production as f64);
-                    dict.set("utility_power_consumed_today", power_consumed as f64);
-                    dict.set("utility_power_unused_today", power_unused as f64);
+        if b.zone_type != ZoneType::Residential
+            && let Some(profile) = profile
+        {
+            let factors = building_operation_factors(catalog, b, profile);
+            let inventory_fill = building_inventory_fill_ratio(catalog, b, profile);
+            let profit_today = b.operating_budget - b.profit_tax_budget_baseline;
+            let business_status = if b.broken {
+                "Asset broken"
+            } else if b.economy_broken {
+                "Economy broken"
+            } else if b.is_deserted {
+                "Deserted"
+            } else if b.is_under_construction() {
+                "Under construction"
+            } else if b.budget_distress || b.operating_budget < 0.0 {
+                "Distressed"
+            } else if factors.active_worker_capacity > 0 && factors.effective_workers == 0 {
+                "No workers"
+            } else if factors.input_factor < 0.5 {
+                "Needs inputs"
+            } else if factors.output_headroom_factor < 0.5 {
+                "Storage full"
+            } else if factors.active_worker_capacity < profile.worker_capacity
+                && !profile_kind_uses_explicit_work_area(profile.kind)
+            {
+                "Demand-limited"
+            } else if factors.throughput_factor >= 0.8 {
+                "Running"
+            } else if factors.throughput_factor > 0.0 {
+                "Limited"
+            } else {
+                "Idle"
+            };
+            dict.set("business_summary", true);
+            dict.set("business_status", GString::from(business_status));
+            dict.set("business_profit_today", profit_today as f64);
+            dict.set("business_profit_yesterday", b.last_day_profit as f64);
+            dict.set(
+                "business_active_worker_capacity",
+                factors.active_worker_capacity as i32,
+            );
+            dict.set(
+                "business_production_ratio",
+                factors.throughput_factor as f64,
+            );
+            dict.set(
+                "business_inventory_fill_ratio",
+                inventory_fill.unwrap_or(0.0) as f64,
+            );
+            dict.set("business_has_inventory_fill", inventory_fill.is_some());
+            if matches!(
+                profile.kind,
+                EconomyProfileRuntimeKind::UtilityProducer
+                    | EconomyProfileRuntimeKind::UtilityProcessor
+            ) {
+                let utility_service = profile.utility_service.as_deref().unwrap_or("");
+                let utility_active = !b.broken
+                    && !b.economy_broken
+                    && !b.is_deserted
+                    && !b.is_under_construction()
+                    && b.edge_idx != usize::MAX
+                    && b.worker_count > 0
+                    && factors.throughput_factor > 0.0;
+                dict.set("utility_service", GString::from(utility_service));
+                if let Some(unit) = profile.utility_quantity_unit {
+                    dict.set("utility_quantity_unit", GString::from(unit.symbol()));
+                }
+                dict.set("utility_service_available", utility_active);
+                dict.set("utility_local_revenue", b.revenue as f64);
+                if utility_service == "power" {
+                    dict.set("power_capacity_kw", profile.power_capacity_kw as f64);
                     dict.set(
-                        "utility_power_consumption_ratio",
-                        power_consumption_ratio as f64,
+                        "power_staffed_capacity_kw",
+                        (profile.power_capacity_kw
+                            * b.worker_count.min(profile.worker_capacity) as f32
+                            / profile.worker_capacity.max(1) as f32) as f64,
                     );
                     dict.set(
-                        "city_input_cost_today",
-                        b.daily_city_funded_input_cost as f64,
+                        "service_funding_effective",
+                        core.effective_electricity_funding_for_building(best_idx) as f64,
+                    );
+                    dict.set(
+                        "service_funding_city",
+                        core.service_policy.electricity_funding as f64,
+                    );
+                    dict.set(
+                        "service_funding_override",
+                        b.service_funding_override >= 0.0,
                     );
                 }
+                let power_production = b.recent_power_service_units.max(0.0);
+                let power_consumed = b.recent_power_served_units.clamp(0.0, power_production);
+                let power_unused = (power_production - power_consumed).max(0.0);
+                let power_consumption_ratio = if power_production > 0.0 {
+                    power_consumed / power_production
+                } else {
+                    0.0
+                };
+                dict.set("utility_power_production_today", power_production as f64);
+                dict.set("utility_power_consumed_today", power_consumed as f64);
+                dict.set("utility_power_unused_today", power_unused as f64);
+                dict.set(
+                    "utility_power_consumption_ratio",
+                    power_consumption_ratio as f64,
+                );
+                dict.set(
+                    "city_input_cost_today",
+                    b.daily_city_funded_input_cost as f64,
+                );
             }
         }
         dict.set("budget_distress", b.budget_distress);

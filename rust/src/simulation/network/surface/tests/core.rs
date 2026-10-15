@@ -624,7 +624,7 @@ fn junction_approaches_consume_the_solved_physical_profile_inside_node_ownership
         let t = (z - pair[0].z) / (pair[1].z - pair[0].z);
         let expected = pair[0].lerp(pair[1], t);
         assert!(
-            (section.center_height_m - expected.y as f32).abs() < 0.0001,
+            (section.center_height_m - expected.y).abs() < 0.0001,
             "surface re-solved the physical profile at {} m: {} != {}",
             section.s_m,
             section.center_height_m,

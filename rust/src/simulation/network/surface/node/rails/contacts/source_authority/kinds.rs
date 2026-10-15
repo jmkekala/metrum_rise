@@ -49,9 +49,7 @@ pub(in crate::simulation::network::surface::node::rails::contacts) fn generated_
 pub(in crate::simulation::network::surface::node::rails::contacts) fn generated_same_band_contact_constraint(
     constraint: &NodeRailConstraint,
 ) -> Option<GeneratedSameBandContactConstraint> {
-    let Some(kind) = generated_contact_kind_from_constraint(constraint.kind) else {
-        return None;
-    };
+    let kind = generated_contact_kind_from_constraint(constraint.kind)?;
     let owner = constraint.owner?;
     let opposite_owner = constraint.opposite_owner?;
     if owner == opposite_owner {

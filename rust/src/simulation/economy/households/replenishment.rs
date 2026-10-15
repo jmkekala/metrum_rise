@@ -205,6 +205,7 @@ struct StoreSupplyIndex {
 }
 
 impl StoreSupplyIndex {
+    #[allow(clippy::too_many_arguments)]
     fn build(
         allocator: &BuildingAllocator,
         catalog: &crate::simulation::economy::definitions::RuntimeEconomyCatalog,
@@ -279,6 +280,7 @@ impl StoreSupplyIndex {
         !self.entries.is_empty()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn fill_route_feasible_candidates(
         &self,
         home_idx: usize,
@@ -367,6 +369,7 @@ impl StoreSupplyIndex {
         shortlist.write_to(candidates);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn scan_candidate_bucket(
         &self,
         buckets: &ReachableBucketIndex,
@@ -855,6 +858,7 @@ impl HouseholdSystem {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn plan_and_apply_household_replenishment(
         &mut self,
         agents: &mut AgentSystem,
@@ -1051,6 +1055,7 @@ impl HouseholdSystem {
             .collect()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn process_active_household_shopping(
         &mut self,
         agents: &mut AgentSystem,
@@ -1097,6 +1102,7 @@ impl HouseholdSystem {
         household_vat_collected
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn process_shopping_to_store(
         &mut self,
         hid: usize,
@@ -1328,6 +1334,7 @@ fn record_household_utility_cost(ledger: &mut DailyHouseholdLedger, total_cost: 
     ledger.sewage_consumption_cost += service_cost;
 }
 
+#[allow(clippy::too_many_arguments)]
 fn plan_household_replenishment(
     hid: usize,
     household: &Household,
@@ -1449,6 +1456,7 @@ fn apply_starvation_happiness_loss(households: &[Household], agents: &mut AgentS
         });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_replenishment_plan(
     plan: ReplenishmentCandidatePlan,
     households: &mut [Household],
@@ -1710,6 +1718,7 @@ fn valid_store_for_pickup(
 
 // The authored timeout is delay allowance beyond the route's physical travel time.
 // One bounded route-cost query per accepted leg; no per-frame queries or stored paths.
+#[allow(clippy::too_many_arguments)]
 fn shopping_leg_budget_hours(
     origin: usize,
     destination: usize,

@@ -4,6 +4,7 @@
 
 use super::*;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn push_arrangement_constraint_loop(
     node_id: u32,
     region_index: usize,
@@ -231,7 +232,7 @@ fn constraint_loop_backtrack_area_budget_m2(
     next: &NodeTriangulatedVertex,
 ) -> f64 {
     let dust_width_m =
-        NODE_TRIANGULATION_CONSTRAINT_LOOP_DUST_KEY_UNITS as f64 / SURFACE_XZ_KEY_SCALE as f64;
+        NODE_TRIANGULATION_CONSTRAINT_LOOP_DUST_KEY_UNITS as f64 / SURFACE_XZ_KEY_SCALE;
     let previous_length_m = xz_distance_m(previous.point_world, current.point_world);
     let next_length_m = xz_distance_m(current.point_world, next.point_world);
     previous_length_m.max(next_length_m) * dust_width_m

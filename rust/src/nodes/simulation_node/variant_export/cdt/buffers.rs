@@ -547,8 +547,8 @@ impl SimulationNode {
         if vertices.len() < 3
             || normals.len() != vertices.len()
             || uvs.len() != vertices.len()
-            || (indices.is_empty() && vertices.len() % 3 != 0)
-            || (!indices.is_empty() && indices.len() % 3 != 0)
+            || (indices.is_empty() && !vertices.len().is_multiple_of(3))
+            || (!indices.is_empty() && !indices.len().is_multiple_of(3))
         {
             return false;
         }
@@ -775,7 +775,7 @@ impl SimulationNode {
                             .clamp(0.0, 1.0),
                     ));
                 }
-                normals[export_index] = normals[export_index] + normal;
+                normals[export_index] += normal;
                 indices.push(i32::try_from(export_index).unwrap_or(i32::MAX));
             }
         }
@@ -940,7 +940,7 @@ impl SimulationNode {
                     .or_insert(Vector3::ZERO) += *normal * *sum_length;
             }
         } else {
-            for triangle in export.indices.chunks_exact(3) {
+            for triangle in export.indices.as_chunks::<3>().0 {
                 let Ok(i0) = usize::try_from(triangle[0]) else {
                     continue;
                 };
@@ -989,7 +989,9 @@ impl SimulationNode {
 // Godot front faces are clockwise: reverse only the exported indices, not cached geometry.
 fn godot_terrain_indices(indices: &[i32]) -> impl Iterator<Item = i32> + '_ {
     indices
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .flat_map(|face| [face[0], face[2], face[1]])
 }
 

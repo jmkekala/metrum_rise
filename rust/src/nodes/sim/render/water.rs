@@ -824,10 +824,8 @@ fn segments_intersect(a: Vector2, b: Vector2, c: Vector2, d: Vector2) -> bool {
     }
     let t = cross_2d(ca, cd) / denom;
     let u = cross_2d(ca, ab) / denom;
-    t >= -WATER_SEGMENT_EPSILON
-        && t <= 1.0 + WATER_SEGMENT_EPSILON
-        && u >= -WATER_SEGMENT_EPSILON
-        && u <= 1.0 + WATER_SEGMENT_EPSILON
+    (-WATER_SEGMENT_EPSILON..=1.0 + WATER_SEGMENT_EPSILON).contains(&t)
+        && (-WATER_SEGMENT_EPSILON..=1.0 + WATER_SEGMENT_EPSILON).contains(&u)
 }
 
 fn point_on_segment(point: Vector2, a: Vector2, b: Vector2) -> bool {

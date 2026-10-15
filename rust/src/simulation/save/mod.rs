@@ -411,7 +411,7 @@ fn write_snapshot(
             view.vegetation.canopy_stems_per_ha
         ],
     )?;
-    vegetation::save(&tx, view.vegetation_edits)?;
+    vegetation::save(tx, view.vegetation_edits)?;
     tx.execute("INSERT INTO time_state(time_elapsed, speed_multiplier, day_index, minute_of_day, seconds_per_day, agent_sim_time) VALUES (?1, ?2, ?3, ?4, ?5, ?6)", params![view.time.time_elapsed, view.time.speed_multiplier, i64::from(view.time.day_index), i64::from(view.time.minute_of_day), view.time.seconds_per_day, view.agents.sim_time])?;
     tx.execute(
         "INSERT INTO city_treasury(balance, lifetime_build_cost, lifetime_tax_revenue, last_daily_upkeep, last_daily_income_tax, last_daily_household_vat, last_daily_business_profit_tax, last_daily_property_tax, last_daily_residential_property_tax, last_daily_commercial_property_tax, last_daily_industrial_property_tax, pending_income_tax, pending_household_vat, pending_business_profit_tax, pending_property_tax, pending_residential_property_tax, pending_commercial_property_tax, pending_industrial_property_tax) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
@@ -592,9 +592,27 @@ pub(crate) fn load_from_sqlite(
         world::load_resource_extraction(&conn, allocator.buildings.len(), version)?;
     let mut agriculture = world::load_agriculture(&conn, allocator.buildings.len())?;
     let mut agents = agents::load_agents(&conn, time_r.5, version)?;
-    let treasury_row: (
-        f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64,
-    ) = conn.query_row(
+    type TreasuryRow = (
+        f64,
+        f64,
+        f64,
+        f64,
+        f64,
+        f64,
+        f64,
+        f64,
+        f64,
+        f64,
+        f64,
+        f64,
+        f64,
+        f64,
+        f64,
+        f64,
+        f64,
+        f64,
+    );
+    let treasury_row: TreasuryRow = conn.query_row(
         "SELECT balance, lifetime_build_cost, lifetime_tax_revenue, last_daily_upkeep, last_daily_income_tax, last_daily_household_vat, last_daily_business_profit_tax, last_daily_property_tax, last_daily_residential_property_tax, last_daily_commercial_property_tax, last_daily_industrial_property_tax, pending_income_tax, pending_household_vat, pending_business_profit_tax, pending_property_tax, pending_residential_property_tax, pending_commercial_property_tax, pending_industrial_property_tax FROM city_treasury LIMIT 1",
         [],
         |r| {
@@ -900,7 +918,7 @@ pub(super) fn unpack_f32_blob(b: &[u8], len: usize) -> SaveLoadResult<Vec<f32>> 
         return Err(SaveLoadError::custom("f32 blob size mismatch"));
     }
     let mut v = Vec::with_capacity(len);
-    for c in b.chunks_exact(4) {
+    for c in b.as_chunks::<4>().0 {
         v.push(f32::from_le_bytes([c[0], c[1], c[2], c[3]]));
     }
     Ok(v)
@@ -917,7 +935,7 @@ pub(super) fn unpack_u16_blob(b: &[u8], len: usize) -> SaveLoadResult<Vec<u16>> 
         return Err(SaveLoadError::custom("u16 blob size mismatch"));
     }
     let mut v = Vec::with_capacity(len);
-    for c in b.chunks_exact(2) {
+    for c in b.as_chunks::<2>().0 {
         v.push(u16::from_le_bytes([c[0], c[1]]));
     }
     Ok(v)

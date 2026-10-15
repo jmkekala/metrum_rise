@@ -249,6 +249,30 @@ fn xz_distance(start: RoadVec3, end: RoadVec3) -> f64 {
     (dx * dx + dz * dz).sqrt()
 }
 
+fn arrangement_vertex_canonical_xz(
+    vertex: &arrangement::NodeArrangementVertex,
+) -> backend::RoadVec2 {
+    let key = vertex.key();
+    keys::SurfaceXzKey::from_raw_keys(key.x_key(), key.z_key()).to_road_xz()
+}
+
+fn arrangement_face_signed_area_xz_m2(
+    arrangement: &NodeArrangement,
+    vertices: [arrangement::NodeArrangementVertexId; 3],
+) -> Option<f64> {
+    let points = [
+        arrangement_vertex_canonical_xz(arrangement.vertices().get(vertices[0].index())?),
+        arrangement_vertex_canonical_xz(arrangement.vertices().get(vertices[1].index())?),
+        arrangement_vertex_canonical_xz(arrangement.vertices().get(vertices[2].index())?),
+    ];
+    Some(
+        ((points[0].x * points[1].y - points[1].x * points[0].y)
+            + (points[1].x * points[2].y - points[2].x * points[1].y)
+            + (points[2].x * points[0].y - points[0].x * points[2].y))
+            * 0.5,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,28 +307,4 @@ mod tests {
             "millimeter-scale triangles are small, but not collapsed overlay dust"
         );
     }
-}
-
-fn arrangement_vertex_canonical_xz(
-    vertex: &arrangement::NodeArrangementVertex,
-) -> backend::RoadVec2 {
-    let key = vertex.key();
-    keys::SurfaceXzKey::from_raw_keys(key.x_key(), key.z_key()).to_road_xz()
-}
-
-fn arrangement_face_signed_area_xz_m2(
-    arrangement: &NodeArrangement,
-    vertices: [arrangement::NodeArrangementVertexId; 3],
-) -> Option<f64> {
-    let points = [
-        arrangement_vertex_canonical_xz(arrangement.vertices().get(vertices[0].index())?),
-        arrangement_vertex_canonical_xz(arrangement.vertices().get(vertices[1].index())?),
-        arrangement_vertex_canonical_xz(arrangement.vertices().get(vertices[2].index())?),
-    ];
-    Some(
-        ((points[0].x * points[1].y - points[1].x * points[0].y)
-            + (points[1].x * points[2].y - points[2].x * points[1].y)
-            + (points[2].x * points[0].y - points[0].x * points[2].y))
-            * 0.5,
-    )
 }

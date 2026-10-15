@@ -246,6 +246,7 @@ impl RecurringSupply {
     /// Household quantities are already reserved by the caller. Zero activity withdraws old
     /// output; negative remaining quantities identify commitments that must be revalidated.
     /// O(source ports + changed bucket eligibility); outer rejection restores exact balances.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn replace_source_output(
         &mut self,
         source: usize,
@@ -366,6 +367,7 @@ impl RecurringSupply {
     }
 
     /// Live pairs keep their complete-route cache; proposed doors use prepared node-cost scratch.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn source_route(
         &self,
         source: usize,
@@ -380,7 +382,7 @@ impl RecurringSupply {
             if let Some(buyer) = buyer {
                 routes.between_buildings(source, buyer, allocator, network, graph)
             } else {
-                routes.to_site(source, entrance, allocator, network, graph)
+                routes.building_to_site(source, entrance, allocator, network, graph)
             }
         } else {
             routes.between_entrances(

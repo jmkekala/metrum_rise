@@ -182,10 +182,11 @@ impl AgricultureSystem {
         self.bump_visual_revision();
         let area_scale = explicit_work_area_scale(area_m2);
         allocator.set_work_area_scale(building_idx, area_scale);
-        if let Some(building) = allocator.buildings.get_mut(building_idx) {
-            if !had_site && let Ok(catalog) = load_runtime_economy_catalog() {
-                top_up_explicit_work_area_startup_budget(building, catalog.as_ref(), area_scale);
-            }
+        if let Some(building) = allocator.buildings.get_mut(building_idx)
+            && !had_site
+            && let Ok(catalog) = load_runtime_economy_catalog()
+        {
+            top_up_explicit_work_area_startup_budget(building, catalog.as_ref(), area_scale);
         }
 
         Ok(FieldSiteSummary { area_m2 })

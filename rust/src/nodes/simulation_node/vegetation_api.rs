@@ -698,13 +698,13 @@ fn generated_candidate(
     }
     let in_stand = generator.in_stand(x, z);
     let (species, density) = if canopy {
-        let species = if hash(cx, cz, salt.wrapping_add(5)) % 2 == 0 {
+        let species = if hash(cx, cz, salt.wrapping_add(5)).is_multiple_of(2) {
             SPECIES_CONIFER
         } else {
             SPECIES_BROADLEAF
         };
         (species, generator.canopy_accept(in_stand))
-    } else if hash(cx, cz, salt.wrapping_add(5)) % 8 == 0 {
+    } else if hash(cx, cz, salt.wrapping_add(5)).is_multiple_of(8) {
         // Rocks are an accent, not ground cover: at bush density they read as
         // scattered debris across every open field. They are geology rather than
         // forest, so the density dial does not move them.

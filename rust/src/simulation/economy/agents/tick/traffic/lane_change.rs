@@ -89,32 +89,31 @@ pub(in crate::simulation::economy::agents::tick) fn choose_lane_change(
     lane_buckets: &[Vec<(f32, usize)>],
 ) -> Option<LaneChange> {
     let source = transit_network.lane_system.lanes.get(params.lane_id)?;
-    if params.has_access_plan {
-        if let Some(target_lane_id) = planned_lane_change_target(
+    if params.has_access_plan
+        && let Some(target_lane_id) = planned_lane_change_target(
             params.lane_id,
             params.detach_lane_id,
             params.lane_d,
             params.detach_lane_d,
             transit_network,
-        ) {
-            let target = &transit_network.lane_system.lanes[target_lane_id];
-            let lane_d = params.lane_d.min(target.length);
-            let available =
-                (source.length - params.lane_d).min(params.detach_lane_d - params.lane_d);
-            let length = lane_change_length_for_speed(params.speed)
-                .min((available - LANE_CHANGE_FINISH_EPS_M).max(LANE_CHANGE_MIN_LENGTH_M));
-            let gap_clear = lane_buckets
-                .get(target_lane_id)
-                .is_some_and(|bucket| lane_change_gap_clear(bucket, lane_d, params.speed));
-            // A pending frontage maneuver takes priority even while its gap is blocked.
-            return (available > LANE_CHANGE_MIN_LENGTH_M && gap_clear).then_some(LaneChange {
-                target_lane_id,
-                length,
-                kind: LaneChangeKind::Planned,
-            });
-        }
+        )
+    {
+        let target = &transit_network.lane_system.lanes[target_lane_id];
+        let lane_d = params.lane_d.min(target.length);
+        let available = (source.length - params.lane_d).min(params.detach_lane_d - params.lane_d);
+        let length = lane_change_length_for_speed(params.speed)
+            .min((available - LANE_CHANGE_FINISH_EPS_M).max(LANE_CHANGE_MIN_LENGTH_M));
+        let gap_clear = lane_buckets
+            .get(target_lane_id)
+            .is_some_and(|bucket| lane_change_gap_clear(bucket, lane_d, params.speed));
+        // A pending frontage maneuver takes priority even while its gap is blocked.
+        return (available > LANE_CHANGE_MIN_LENGTH_M && gap_clear).then_some(LaneChange {
+            target_lane_id,
+            length,
+            kind: LaneChangeKind::Planned,
+        });
     }
-    if !(params.cooldown <= 0.0) || source.edge_id == usize::MAX {
+    if params.cooldown.is_nan() || params.cooldown > 0.0 || source.edge_id == usize::MAX {
         return None;
     }
     let length = lane_change_length_for_speed(params.speed);
@@ -148,7 +147,9 @@ pub(in crate::simulation::economy::agents::tick) fn choose_lane_change(
         .get(params.lane_id)
         .map(|bucket| idm_gap_bucket(bucket, params.lane_d))
         .unwrap_or(f32::MAX);
-    if kind == LaneChangeKind::Return && !(current_gap > OVERTAKE_TARGET_AHEAD_GAP_M) {
+    if kind == LaneChangeKind::Return
+        && (current_gap.is_nan() || current_gap <= OVERTAKE_TARGET_AHEAD_GAP_M)
+    {
         return None;
     }
     let target = &transit_network.lane_system.lanes[target_lane_id];

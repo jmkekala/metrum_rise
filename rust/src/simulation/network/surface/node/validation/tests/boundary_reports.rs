@@ -101,10 +101,7 @@ fn accepts_exposed_triangle_edges_split_by_topology_dust_boundary_vertex() {
 fn reports_duplicate_exposed_edge_even_for_tiny_canonical_sliver() {
     let start = RoadVec3::new(0.0, 0.0, 0.0);
     let end = RoadVec3::new(0.005, 0.0, 0.0);
-    let tiny_edge = key_edge(
-        [f64::from(start.x), f64::from(start.z)],
-        [f64::from(end.x), f64::from(end.z)],
-    );
+    let tiny_edge = key_edge([start.x, start.z], [end.x, end.z]);
     let regions = [
         (
             RoadSurfaceBandKind::Carriageway,

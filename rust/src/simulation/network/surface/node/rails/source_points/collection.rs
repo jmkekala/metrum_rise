@@ -26,11 +26,9 @@ pub(in crate::simulation::network::surface::node::rails) fn push_band_height_car
         if let Some(existing) = points
             .iter()
             .find(|existing| road_point_key(xz(**existing)) == point_key)
+            && SurfaceHeightMmKey::from_m_f64(existing.y) == SurfaceHeightMmKey::from_m_f64(point.y)
         {
-            if SurfaceHeightMmKey::from_m_f64(existing.y) == SurfaceHeightMmKey::from_m_f64(point.y)
-            {
-                continue;
-            }
+            continue;
         }
         points.push(point);
     }

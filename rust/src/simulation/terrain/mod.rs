@@ -540,6 +540,7 @@ impl TerrainSystem {
     ///
     /// The target height for each touched sample is the linear interpolation between the two
     /// anchor heights, projected onto the anchor segment and clamped to the segment endpoints.
+    #[allow(clippy::too_many_arguments)]
     pub fn slope_to_segment(
         &mut self,
         center_x: f32,
@@ -1049,11 +1050,11 @@ impl TerrainSystem {
         patch_count: usize,
     ) -> (usize, usize) {
         let mut patch_min = min_sample / self.render_patch_interval_cells;
-        if min_sample > 0 && min_sample % self.render_patch_interval_cells == 0 {
+        if min_sample > 0 && min_sample.is_multiple_of(self.render_patch_interval_cells) {
             patch_min = patch_min.saturating_sub(1);
         }
         let mut patch_max = max_sample / self.render_patch_interval_cells;
-        if max_sample > 0 && max_sample % self.render_patch_interval_cells == 0 {
+        if max_sample > 0 && max_sample.is_multiple_of(self.render_patch_interval_cells) {
             patch_max = patch_max.min(patch_count.saturating_sub(1));
         }
         (

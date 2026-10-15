@@ -95,10 +95,10 @@ impl NodeTriangulationSolution {
             }
         }
 
-        if regions.is_empty() {
-            if let Some(error) = first_discarded_error {
-                return Err(error);
-            }
+        if regions.is_empty()
+            && let Some(error) = first_discarded_error
+        {
+            return Err(error);
         }
 
         Ok(Self {

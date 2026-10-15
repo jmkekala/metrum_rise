@@ -1055,7 +1055,6 @@ fn replacement_prices_revalidate_downstream_buyers_and_restore_failed_joint_proo
             } else {
                 supply.reject();
             }
-            drop(supply);
             if let Some(capacity) = forced_capacity {
                 assert!(
                     if household_output {
@@ -1582,7 +1581,6 @@ fn cyclic_replacement_preserves_both_financing_proofs_and_exact_rejection() {
                     "cycle price={price}, reverse={reverse}"
                 );
                 supply.reject();
-                drop(supply);
                 assert_eq!(finance(&reservations), before);
                 assert_eq!(input_sources(&book), receipts);
                 assert_eq!(
@@ -1875,7 +1873,7 @@ fn live_local_inputs_can_fund_only_their_incumbents_upgrade() {
         snapshot
             .output_absorption
             .set_export_expansion_available(true);
-        let mut test_policy = policy.clone();
+        let mut test_policy = policy;
         if reject {
             test_policy.property_tax_level_multiplier = 1_000_000.0;
         }
@@ -4256,11 +4254,16 @@ fn an_available_lower_tier_cannot_hide_a_viable_upgrade() {
 #[test]
 #[ignore = "manual release scaling of active business and residential level-change planning"]
 fn benchmark_active_level_change_planning() {
-    use crate::simulation::economy::households::local_utility_service_costs;
+    use crate::simulation::economy::demand::workforce::resident_store_labor;
+    use crate::simulation::economy::households::{
+        applicant_places_and_members, local_utility_service_costs,
+    };
     use crate::simulation::economy::operation::{OperatingCosts, OperationPlan};
     use std::hint::black_box;
     use std::time::Instant;
 
+    // Workers each downgraded level-1 factory claims from ready arrivals.
+    const CREW: u32 = 4;
     let catalog = load_runtime_economy_catalog().unwrap();
     let tuning = load_runtime_economy_tuning().unwrap();
     let profile = catalog.profile_for_id("machinery_factory_basic").unwrap();
@@ -4276,7 +4279,7 @@ fn benchmark_active_level_change_planning() {
         profile,
         &catalog,
         OperationPlan {
-            workers: 4,
+            workers: CREW,
             activity: 1.0,
             area: 1.0,
         },
@@ -4367,6 +4370,28 @@ fn benchmark_active_level_change_planning() {
             .set_export_expansion_available(true);
         let occupants =
             ResidentialOccupantSnapshot::from_runtime(&allocator, &HouseholdSystem::new());
+        // Each home keeps places 0..8 after retiring 8..16. Places count by their applicants'
+        // adults; claims take the factories' crews plus the store labor of every applicant
+        // (`DEM-02-C`) from the fewest-adult worker places first.
+        let mut kept = [0_u32; 3];
+        let mut members = 0;
+        for idx in (0..pairs * 2).step_by(2) {
+            let flat = allocator.flat_size_m2(idx);
+            let (places, _) = applicant_places_and_members(flat, idx, 0..8);
+            members += applicant_places_and_members(flat, idx, 0..16).1;
+            for (kept, places) in kept.iter_mut().zip(places) {
+                *kept += places;
+            }
+        }
+        let [idle, singles, couples] = kept;
+        let store = (f64::from(members) * resident_store_labor(&catalog)).ceil() as u32;
+        let claimed = (pairs as u32 * CREW + store).min(singles + 2 * couples);
+        let needed = if claimed <= singles {
+            claimed
+        } else {
+            singles + (claimed - singles).div_ceil(2)
+        };
+        let ready_homes = idle + singles + couples - needed;
         let mut demand = DemandSystem::new();
         let mut plan_once = || {
             demand.building_actions = Default::default();
@@ -4393,7 +4418,7 @@ fn benchmark_active_level_change_planning() {
             assert_eq!(demand.building_actions.industrial.downgrades.len(), pairs);
             assert_eq!(
                 demand.workforce_reservations.unreserved_ready_homes(),
-                pairs as u32 * 4
+                ready_homes
             );
         };
         for _ in 0..3 {
@@ -4733,6 +4758,7 @@ fn benchmark_active_construction_queue() {
                 snapshot.move_in_job_slots, 0,
                 "future jobs cannot fund arrivals"
             );
+            let supply = demand.workforce_reservations.available(duration);
             let start = Instant::now();
             for _ in 0..pairs {
                 assert!(black_box(
@@ -4754,8 +4780,9 @@ fn benchmark_active_construction_queue() {
             }
             // All remaining supply must be finite and usable exactly once after the queued
             // homes finish. Drain outside timing to verify that warm claims really consume it.
-            let remaining =
-                (background + pairs) as u32 * capacity - pairs as u32 * profile.worker_capacity * 2;
+            // Supply counts arrivals' adults net of their store labor (`DEM-02-C`), not places.
+            let remaining = supply - pairs as u32 * profile.worker_capacity;
+            assert_eq!(demand.workforce_reservations.available(duration), remaining);
             assert!(demand.workforce_reservations.claim(duration, remaining));
             assert!(!demand.workforce_reservations.claim(duration, 1));
             if round >= 3 {

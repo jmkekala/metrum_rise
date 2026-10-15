@@ -338,15 +338,13 @@ impl AgentSystem {
                         transit_network,
                         graph,
                         &self.pathfind_count,
+                    ) && self.start_building_origin_plan_on_network(
+                        agent_idx,
+                        plan,
+                        transit_network,
+                        graph,
                     ) {
-                        if self.start_building_origin_plan_on_network(
-                            agent_idx,
-                            plan,
-                            transit_network,
-                            graph,
-                        ) {
-                            continue;
-                        }
+                        continue;
                     }
                     self.place_agent_at_building_street_handoff(
                         agent_idx,
@@ -534,6 +532,7 @@ impl AgentSystem {
         true
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn place_agent_at_building_street_handoff(
         &mut self,
         agent_idx: usize,

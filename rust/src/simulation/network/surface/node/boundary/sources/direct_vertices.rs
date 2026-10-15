@@ -4,17 +4,17 @@
 
 use super::*;
 
+// Final direct vertex per point, every candidate per point, and per-point conflicts.
+type DirectVertexSources = (
+    BTreeMap<ArrangementBoundaryPointKey, NodeFootprintBoundaryDirectVertex>,
+    BTreeMap<ArrangementBoundaryPointKey, Vec<NodeFootprintBoundaryDirectVertex>>,
+    BTreeMap<ArrangementBoundaryPointKey, NodeFootprintBoundaryDirectVertexConflict>,
+);
+
 pub(super) fn node_footprint_boundary_direct_vertex_sources(
     owned_regions: &[NodeOwnedRegion],
     node_top_surface_sources: &[NodeTopSurfacePolygonSource],
-) -> Result<
-    (
-        BTreeMap<ArrangementBoundaryPointKey, NodeFootprintBoundaryDirectVertex>,
-        BTreeMap<ArrangementBoundaryPointKey, Vec<NodeFootprintBoundaryDirectVertex>>,
-        BTreeMap<ArrangementBoundaryPointKey, NodeFootprintBoundaryDirectVertexConflict>,
-    ),
-    NodeBoundaryExportError,
-> {
+) -> Result<DirectVertexSources, NodeBoundaryExportError> {
     if owned_regions.len() != node_top_surface_sources.len() {
         return Err(NodeBoundaryExportError::MissingNodeTopSurfaceGradeAuthority);
     }

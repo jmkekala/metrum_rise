@@ -62,6 +62,7 @@ pub(in crate::simulation::network::surface::node::rails) fn push_terminal_cap_ba
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::simulation::network::surface::node::rails) fn push_side_join_band_contours(
     piece_kind: RoadSurfaceVisualNodePieceKind,
     mouth: &NodeInputMouth,

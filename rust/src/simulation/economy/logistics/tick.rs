@@ -16,6 +16,7 @@ use super::planning::FreightPlanningContext;
 
 impl ShipmentSystem {
     /// Advances freight deliveries and opens new bounded restock jobs on one operational hour.
+    #[allow(clippy::too_many_arguments)]
     pub fn hourly_tick(
         &mut self,
         allocator: &mut BuildingAllocator,

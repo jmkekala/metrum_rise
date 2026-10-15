@@ -161,15 +161,15 @@ impl AssetRegistry {
                     self.upgrade_index.resize_with(level + 1, HashMap::new);
                 }
                 let families = &mut self.upgrade_index[level];
-                if let Some(prev) = families.get(set) {
-                    if prev != &qid {
-                        // Two assets claim the same family slot — last registration wins.
-                        eprintln!(
-                            "asset registry: conflict in family '{}' at level {}: \
+                if let Some(prev) = families.get(set)
+                    && prev != &qid
+                {
+                    // Two assets claim the same family slot — last registration wins.
+                    eprintln!(
+                        "asset registry: conflict in family '{}' at level {}: \
                              '{}' replaced by '{}'",
-                            set, bd.level, prev, qid
-                        );
-                    }
+                        set, bd.level, prev, qid
+                    );
                 }
                 families.insert(set.clone(), qid.clone());
             } else {
@@ -368,10 +368,10 @@ impl AssetRegistry {
     ///
     /// Falls back to `(1, 1)` if the asset is unknown or is not a building.
     pub fn lot_size(&self, qualified_id: &str) -> (usize, usize) {
-        if let Some(entry) = self.entries.get(qualified_id) {
-            if let Some(bd) = &entry.manifest.building {
-                return (bd.lot_width_cells as usize, bd.lot_depth_cells as usize);
-            }
+        if let Some(entry) = self.entries.get(qualified_id)
+            && let Some(bd) = &entry.manifest.building
+        {
+            return (bd.lot_width_cells as usize, bd.lot_depth_cells as usize);
         }
         (1, 1)
     }

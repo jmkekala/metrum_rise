@@ -44,6 +44,7 @@ impl AgentSystem {
     /// Core agent movement logic (FSM and physics).
     /// Safety: Caller must ensure disjoint access to agent SoA via `MovementSlices`.
     #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
     pub(super) unsafe fn process_agent_movement(
         i: usize,
         delta: f32,
@@ -53,7 +54,7 @@ impl AgentSystem {
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
         pathfind_count: &AtomicU32,
-        lane_buckets: &Vec<Vec<(f32, usize)>>,
+        lane_buckets: &[Vec<(f32, usize)>],
         lane_claims: &LaneClaimContext<'_>,
         operational_clock: &OperationalClockRuntimeTuning,
         economy_catalog: &RuntimeEconomyCatalog,

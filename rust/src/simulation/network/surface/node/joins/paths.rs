@@ -724,8 +724,7 @@ fn clean_side_join_path_world(
             let axis = xz_from_road_vec3(segment[1]) - xz_from_road_vec3(segment[0]);
             let t = (xz_from_road_vec3(*point) - xz_from_road_vec3(segment[0])).dot(axis)
                 / axis.length_squared();
-            t >= 0.0
-                && t <= 1.0
+            (0.0..=1.0).contains(&t)
                 && xz_from_road_vec3(*point).distance(xz_from_road_vec3(segment[0]) + axis * t)
                     <= SIDE_JOIN_POLYLINE_POINT_EQUAL_EPS_M
                 && (point.y - (segment[0].y + (segment[1].y - segment[0].y) * t)).abs()

@@ -267,11 +267,8 @@ impl RoadSurfaceSystem {
 
         let ray_origin_road = godot_vec3_to_road(ray_origin);
         let ray_dir_road = godot_vec3_to_road(ray_dir);
-        let Some((min_chunk, max_chunk)) =
-            self.raycast_visible_query_chunk_bounds(terrain, ray_origin_road, ray_dir_road, None)
-        else {
-            return None;
-        };
+        let (min_chunk, max_chunk) =
+            self.raycast_visible_query_chunk_bounds(terrain, ray_origin_road, ray_dir_road, None)?;
         let (edge_indices, node_ids) = self.collect_query_contributors(min_chunk, max_chunk);
 
         let mut best_t = f64::INFINITY;
@@ -350,7 +347,7 @@ impl RoadSurfaceSystem {
             graph,
             graph.get_valid_node(edge.end_node),
         );
-        let Some((start_handoff, end_handoff)) = self
+        let (start_handoff, end_handoff) = self
             .visual_edge_mouth_policy_for_edge(
                 graph,
                 edge_idx,
@@ -361,10 +358,7 @@ impl RoadSurfaceSystem {
                 false,
                 false,
             )
-            .ownership_range
-        else {
-            return None;
-        };
+            .ownership_range?;
 
         Self::section_index_range_for_s_bounds(sections, start_handoff, end_handoff)
     }

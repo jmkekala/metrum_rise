@@ -176,6 +176,7 @@ pub(super) struct WorkforceReservations {
 
 impl WorkforceReservations {
     /// Collects already committed housing and workplaces once, in parallel.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn reset(
         &mut self,
         allocator: &BuildingAllocator,

@@ -214,14 +214,11 @@ impl HouseholdSystem {
                         }
                         if let Some(building) =
                             allocator.buildings.get(agents.work_building[member])
-                        {
-                            if let Some(profile) =
+                            && let Some(profile) =
                                 super::employment::active_work_profile(&catalog, building)
-                            {
-                                if agents.consecutive_unpaid_days[member] == 0 {
-                                    wages += f64::from(profile.average_daily_wage());
-                                }
-                            }
+                            && agents.consecutive_unpaid_days[member] == 0
+                        {
+                            wages += f64::from(profile.average_daily_wage());
                         }
                     }
                     member = next[member];

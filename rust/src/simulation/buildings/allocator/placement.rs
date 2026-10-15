@@ -286,6 +286,7 @@ impl BuildingAllocator {
 
     /// Finds a legal alternative on the same lot after the preferred project is rejected.
     /// The caller checks current customers and workforce without reserving either here.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn select_demand_spawn_alternative(
         &self,
         preferred: &DemandSpawnAction,
@@ -389,6 +390,7 @@ impl BuildingAllocator {
         best.map(|(_, resolved)| resolved)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn select_deterministic_fresh_commercial_spawn_asset(
         &self,
         profile_candidates: &SpawnProfileAssetCandidates,
@@ -565,6 +567,7 @@ impl BuildingAllocator {
         building_idx
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn execute_demand_spawn_action(
         &mut self,
         action: &DemandSpawnAction,
@@ -590,6 +593,7 @@ impl BuildingAllocator {
         Ok(self.commit_resolved_slot(resolved, zoning, catalog, tuning))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn preview_explicit_service_placement(
         &self,
         asset_id: &str,
@@ -653,6 +657,7 @@ impl BuildingAllocator {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn execute_explicit_service_placement(
         &mut self,
         asset_id: &str,
@@ -683,6 +688,7 @@ impl BuildingAllocator {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn preview_explicit_industry_placement(
         &self,
         asset_id: &str,
@@ -704,6 +710,7 @@ impl BuildingAllocator {
         self.preview_resolved_site(placement, graph, road_surface, terrain, zoning)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn execute_explicit_industry_placement(
         &mut self,
         asset_id: &str,
@@ -734,6 +741,7 @@ impl BuildingAllocator {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn commit_explicit_site(
         &mut self,
         mut placement: ResolvedPlacement,
@@ -1732,16 +1740,16 @@ impl BuildingAllocator {
         // This lets stores open with stock already on shelves before the first freight
         // delivery arrives, which is critical during the startup phase.
         let mut resource_inventory = vec![0.0f32; resource_count];
-        if let Some(profile) = catalog.profile_by_runtime_id(economy_binding.runtime_id) {
-            if profile.starting_inventory_days > 0.0 {
-                for output in &profile.outputs {
-                    let cap = profile.output_buffer_capacity_units_for(output);
-                    let seed = (output.units_per_day * profile.starting_inventory_days).min(cap);
-                    // resource_inventory is 0-indexed; runtime_id is 1-based.
-                    let slot = output.resource_runtime_id as usize;
-                    if slot > 0 && slot <= resource_count {
-                        resource_inventory[slot - 1] = seed;
-                    }
+        if let Some(profile) = catalog.profile_by_runtime_id(economy_binding.runtime_id)
+            && profile.starting_inventory_days > 0.0
+        {
+            for output in &profile.outputs {
+                let cap = profile.output_buffer_capacity_units_for(output);
+                let seed = (output.units_per_day * profile.starting_inventory_days).min(cap);
+                // resource_inventory is 0-indexed; runtime_id is 1-based.
+                let slot = output.resource_runtime_id as usize;
+                if slot > 0 && slot <= resource_count {
+                    resource_inventory[slot - 1] = seed;
                 }
             }
         }
@@ -2255,7 +2263,7 @@ impl DemandSpawnCandidateSortBuckets {
 fn sort_demand_spawn_candidates(
     candidates: &mut [(DemandSpawnCandidateSortKey, DemandSpawnCandidate)],
 ) {
-    candidates.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+    candidates.sort_unstable_by_key(|left| left.0);
 }
 
 fn spawn_side_order(side: i8) -> u8 {

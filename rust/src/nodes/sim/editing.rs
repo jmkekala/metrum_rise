@@ -261,14 +261,14 @@ impl SimCore {
         // not repeatedly observe a newer source generation paired with the previous mesh.
         self.precompute_road_mesh_data();
         self.rebuild_building_entrances_internal();
-        if self.has_authored_water_internal() {
-            if let Err(err) = self.rebuild_authored_water_preview_internal() {
-                debug_log!(
-                    "world-editor",
-                    "rebuild_authored_water_after_sculpt failed: {}",
-                    err
-                );
-            }
+        if self.has_authored_water_internal()
+            && let Err(err) = self.rebuild_authored_water_preview_internal()
+        {
+            debug_log!(
+                "world-editor",
+                "rebuild_authored_water_after_sculpt failed: {}",
+                err
+            );
         }
     }
 
@@ -799,6 +799,7 @@ impl SimCore {
     }
 
     /// Moves terrain toward a slope defined by two clicked world-space anchor points.
+    #[allow(clippy::too_many_arguments)]
     pub fn slope_terrain_internal(
         &mut self,
         pos: Vector2,
@@ -877,6 +878,7 @@ impl SimCore {
     }
 
     /// Applies one batched terrain-slope step without running deferred rebuild work yet.
+    #[allow(clippy::too_many_arguments)]
     pub fn slope_terrain_stroke_step_internal(
         &mut self,
         pos: Vector2,
@@ -1543,12 +1545,12 @@ impl SimCore {
 
         self.register_service_input_capacity(building_idx);
 
-        if !self.benchmark_mode {
-            if let Some(building) = self.allocator.buildings.get(building_idx) {
-                let lot_cells = f64::from(building.width_cells) * f64::from(building.depth_cells);
-                self.treasury
-                    .deduct_build_cost(lot_cells * SERVICE_BUILD_COST_PER_LOT_CELL);
-            }
+        if !self.benchmark_mode
+            && let Some(building) = self.allocator.buildings.get(building_idx)
+        {
+            let lot_cells = f64::from(building.width_cells) * f64::from(building.depth_cells);
+            self.treasury
+                .deduct_build_cost(lot_cells * SERVICE_BUILD_COST_PER_LOT_CELL);
         }
         self.rebuild_building_entrances_internal();
         self.publish_pending_building_site_changes();
@@ -1597,12 +1599,12 @@ impl SimCore {
             &tuning,
         )?;
 
-        if !self.benchmark_mode {
-            if let Some(building) = self.allocator.buildings.get(building_idx) {
-                let lot_cells = f64::from(building.width_cells) * f64::from(building.depth_cells);
-                self.treasury
-                    .deduct_build_cost(lot_cells * SERVICE_BUILD_COST_PER_LOT_CELL);
-            }
+        if !self.benchmark_mode
+            && let Some(building) = self.allocator.buildings.get(building_idx)
+        {
+            let lot_cells = f64::from(building.width_cells) * f64::from(building.depth_cells);
+            self.treasury
+                .deduct_build_cost(lot_cells * SERVICE_BUILD_COST_PER_LOT_CELL);
         }
         self.rebuild_building_entrances_internal();
         self.publish_pending_building_site_changes();
@@ -1948,7 +1950,7 @@ impl SimCore {
                 .node(node_id)
                 .lane_connections
                 .get(&key)
-                .map_or(false, |v| v.contains(&target));
+                .is_some_and(|v| v.contains(&target));
             if !already {
                 self.region_graph
                     .add_lane_connection(node_id, key.0, key.1, target.0, target.1);
@@ -1974,18 +1976,18 @@ impl SimCore {
             &self.region_graph,
         );
         self.rebuild_building_entrances_internal();
-        if crate::debug::Channel::Traffic.enabled() {
-            if (node_id as usize) < self.region_graph.node_count() {
-                let conns = &self.region_graph.node(node_id).lane_connections;
-                let mut entries: Vec<_> = conns
-                    .iter()
-                    .map(|(&(e, l), targets)| format!("  (edge={e},lane={l}) -> {:?}", targets))
-                    .collect();
-                entries.sort();
-                eprintln!("[LANE_EDIT] node={node_id} lane_connections after rebuild:");
-                for s in &entries {
-                    eprintln!("{s}");
-                }
+        if crate::debug::Channel::Traffic.enabled()
+            && (node_id as usize) < self.region_graph.node_count()
+        {
+            let conns = &self.region_graph.node(node_id).lane_connections;
+            let mut entries: Vec<_> = conns
+                .iter()
+                .map(|(&(e, l), targets)| format!("  (edge={e},lane={l}) -> {:?}", targets))
+                .collect();
+            entries.sort();
+            eprintln!("[LANE_EDIT] node={node_id} lane_connections after rebuild:");
+            for s in &entries {
+                eprintln!("{s}");
             }
         }
         self.transit_network

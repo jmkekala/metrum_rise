@@ -141,6 +141,7 @@ impl ZoningSystem {
         Ok(Some(valid))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn project_road_fill(
         &self,
         mut spans: Vec<RoadFillSpan>,

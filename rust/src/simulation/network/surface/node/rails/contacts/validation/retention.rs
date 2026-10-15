@@ -654,7 +654,11 @@ mod tests {
             RoadVec2::new(11.0, 0.0),
         );
 
-        assert_unrelated_authority_change_reuses_decisions(&[source.clone()], &[source, unrelated]);
+        let constraints = [source, unrelated];
+        assert_unrelated_authority_change_reuses_decisions(
+            std::slice::from_ref(&constraints[0]),
+            &constraints,
+        );
     }
 
     #[test]

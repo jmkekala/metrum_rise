@@ -272,7 +272,9 @@ mod tests {
         let outside = mesh.preview_partition(&HashSet::new(), &bounded, &bounds, origin, false);
         let area = |mesh: &NetworkMeshData| {
             mesh.road_vertices
-                .chunks_exact(3)
+                .as_chunks::<3>()
+                .0
+                .iter()
                 .map(|t| {
                     ((t[1].x - t[0].x) * (t[2].z - t[0].z) - (t[1].z - t[0].z) * (t[2].x - t[0].x))
                         .abs()
