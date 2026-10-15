@@ -149,8 +149,14 @@ impl ShipmentSystem {
                     allocator.buildings[src_idx].revenue += shipment.total_cost;
                     allocator.buildings[src_idx].operating_budget +=
                         shipment.total_cost - shipment.freight_cost;
+                    crate::debug::money::record_change(
+                        crate::debug::money::MoneyFlow::OutsideSales,
+                        shipment.freight_cost,
+                        shipment.total_cost,
+                    );
 
                     on_delivery(&shipment, allocator);
+                    crate::debug::work::add(crate::debug::work::Work::FreightDeliveries, 1);
 
                     debug_log!(
                         "economy",
@@ -255,10 +261,17 @@ impl ShipmentSystem {
                         shipment.total_cost - shipment.freight_cost;
                     allocator.buildings[src_idx].operating_budget +=
                         shipment.total_cost - shipment.freight_cost;
+                    // The buyer's escrow pays the seller; the carrier fee leaves the city.
+                    crate::debug::money::record_change(
+                        crate::debug::money::MoneyFlow::FreightPurchases,
+                        shipment.freight_cost,
+                        0.0,
+                    );
                     allocator.buildings[dest_idx]
                         .add_inventory_units(shipment.resource_runtime_id, shipment.amount);
                     allocator.buildings[dest_idx].daily_local_input_value += shipment.total_cost;
                     on_delivery(&shipment, allocator);
+                    crate::debug::work::add(crate::debug::work::Work::FreightDeliveries, 1);
                     debug_log!(
                         "economy",
                         "freight input fulfilled shipment_id={} source=local src_idx={} src_asset={} dest_idx={} dest_asset={} resource={} amount={:.1} cost={:.1} dest_inventory={:.1}",
@@ -312,7 +325,14 @@ impl ShipmentSystem {
                     allocator.buildings[dest_idx]
                         .add_inventory_units(shipment.resource_runtime_id, shipment.amount);
                     allocator.buildings[dest_idx].daily_owa_input_value += shipment.total_cost;
+                    // The buyer's escrow pays the outside seller and carrier.
+                    crate::debug::money::record_change(
+                        crate::debug::money::MoneyFlow::FreightPurchases,
+                        shipment.total_cost,
+                        0.0,
+                    );
                     on_delivery(&shipment, allocator);
+                    crate::debug::work::add(crate::debug::work::Work::FreightDeliveries, 1);
                     debug_log!(
                         "economy",
                         "freight input fulfilled shipment_id={} source=owa border_node={} dest_idx={} dest_asset={} resource={} amount={:.1} cost={:.1} dest_inventory={:.1}",
@@ -422,6 +442,7 @@ impl ShipmentSystem {
             }
             self.shipments[idx].carrier_agent_id = carrier_agent_id;
             self.shipments[idx].queued_hours = 0;
+            crate::debug::work::add(crate::debug::work::Work::FreightDispatches, 1);
         }
     }
 

@@ -214,18 +214,21 @@ impl CityTreasury {
     /// Deducts an infrastructure build cost from the treasury. Balance may go negative.
     pub(crate) fn deduct_build_cost(&mut self, amount: f64) {
         self.balance -= amount;
+        crate::debug::money::record(crate::debug::money::MoneyFlow::Construction, -amount);
         self.lifetime_build_cost += amount;
     }
 
     /// Reverses an infrastructure build cost for a placement cancelled before final commitment.
     pub(crate) fn refund_build_cost(&mut self, amount: f64) {
         self.balance += amount;
+        crate::debug::money::record(crate::debug::money::MoneyFlow::Construction, amount);
         self.lifetime_build_cost = (self.lifetime_build_cost - amount).max(0.0);
     }
 
     /// Settles one day's infrastructure upkeep cost. Balance may go negative.
     pub(crate) fn settle_daily_upkeep(&mut self, amount: f64) {
         self.balance -= amount;
+        crate::debug::money::record(crate::debug::money::MoneyFlow::RoadUpkeep, -amount);
         self.last_daily_upkeep = amount;
     }
 

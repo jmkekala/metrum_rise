@@ -51,6 +51,11 @@ impl HouseholdSystem {
         let member_count = member_count.max(1);
         let starting_budget =
             tuning.households.immigrant_starting_budget_per_member * member_count as f32;
+        crate::debug::money::record_change(
+            crate::debug::money::MoneyFlow::ImmigrantCash,
+            0.0,
+            starting_budget,
+        );
         self.households.push(Household {
             home_building_id,
             power_arrears: Default::default(),

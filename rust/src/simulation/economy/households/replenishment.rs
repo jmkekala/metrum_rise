@@ -700,6 +700,11 @@ impl HouseholdSystem {
                     // Record the debit at the account's precision. Fractional hourly fees
                     // otherwise drift from the ledger as household savings grow.
                     let paid_utility_cost = (cash_before - household.budget).max(0.0);
+                    crate::debug::money::record_change(
+                        crate::debug::money::MoneyFlow::OutsideUtilities,
+                        cash_before,
+                        household.budget,
+                    );
                     let hourly_supply_cost = hourly_consumption * household_supply_unit_price;
                     ledger.household_supply_consumption_cost += hourly_supply_cost;
                     record_household_utility_cost(ledger, paid_utility_cost);
@@ -1586,6 +1591,7 @@ fn apply_replenishment_plan(
         }
         agents.planned_target_building[plan.shopper_agent_id] = store_idx;
         agents.planned_activity[plan.shopper_agent_id] = ACTIVITY_SHOPPING;
+        crate::debug::work::add(crate::debug::work::Work::ShopperDispatches, 1);
         diagnostics.successes += 1;
         diagnostics.reserved_amount += amount;
         diagnostics.reserved_cost += total_cost;

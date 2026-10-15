@@ -196,6 +196,20 @@ impl HouseholdSystem {
         }
 
         let last_household_id = self.households.len() - 1;
+        #[cfg(test)]
+        {
+            let departing = &self.households[household_id];
+            let escrow = if departing.replenishment_state == REPLENISHMENT_SHOPPING_TO_STORE {
+                departing.reserved_total_cost
+            } else {
+                0.0
+            };
+            let leaving = f64::from(departing.budget) + f64::from(escrow);
+            crate::debug::money::record(
+                crate::debug::money::MoneyFlow::DepartedHouseholdCash,
+                -leaving,
+            );
+        }
         self.households.swap_remove(household_id);
         if household_id < self.daily_ledgers.len() {
             self.daily_ledgers.swap_remove(household_id);

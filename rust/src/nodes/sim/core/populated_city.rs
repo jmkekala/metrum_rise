@@ -13,6 +13,10 @@
 #[cfg(test)]
 mod contract;
 #[cfg(test)]
+mod envelope;
+#[cfg(test)]
+mod frame_budget;
+#[cfg(test)]
 mod routing_benchmark;
 #[cfg(test)]
 mod snapshot;

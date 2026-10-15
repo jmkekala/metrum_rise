@@ -152,6 +152,14 @@ impl HouseholdSystem {
         let counts_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
         self.begin_daily_ledger_settlement();
+        crate::debug::work::add(
+            crate::debug::work::Work::BuildingSettlements,
+            allocator.buildings.len() as u64,
+        );
+        crate::debug::work::add(
+            crate::debug::work::Work::HouseholdSettlements,
+            self.households.len() as u64,
+        );
         // Advance per-agent job-lock countdown once per day.
         agents.job_lock_days.par_iter_mut().for_each(|lock_days| {
             *lock_days = lock_days.saturating_sub(1);

@@ -311,11 +311,14 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
 
 ## Current Priorities
 
-- **Simulation scheduler refactor (`SIM-02`, planned)**: hourly and midnight work moves from
+- **Simulation scheduler refactor (`SIM-02`, in progress)**: hourly and midnight work moves from
   calendar boundaries to per-entity phases, timed events, rolling snapshots and request queues.
   Old saves break; continuous income and per-entity settlement windows are accepted gameplay
   changes; GPU compute is deferred. See the [engine contract and migration](simulation.md#sim-02-scheduler-refactor)
-  and the [`PERF-07` frame budget](simulation.md#frame-budget-perf-07).
+  and the [`PERF-07` frame budget](simulation.md#frame-budget-perf-07). `SIM-02-A` (2026-10-15) added
+  the guards every step must pass (`tools/sim02_gate.py`: behaviour envelope, burst shares,
+  money conservation, reference invariants, determinism, worst sim frame) and recorded the
+  pre-refactor baseline: the worst frame is 637 ms at 30k and 2.5 s at 100k.
 
 - **Starting treasury**: new games begin with 500,000, increased from 100,000. See
   [money source](economy.md#money-source); earlier balance runs retain their original starting capital.

@@ -84,6 +84,7 @@ impl AgentSystem {
         init_y: f32,
     ) -> usize {
         let agent_idx = self.spawn_border_arrival_agent(home, border_node, init_x, init_y);
+        crate::debug::work::add(crate::debug::work::Work::ArrivalLaunches, 1);
         self.agents.pending_household_size[agent_idx] = household_size.max(1);
         let composition = super::household_age_composition(home, household_seed, household_size);
         self.agents.pending_household_adults[agent_idx] = composition.adult_count;

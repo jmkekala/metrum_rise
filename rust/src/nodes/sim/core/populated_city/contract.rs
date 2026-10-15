@@ -7,13 +7,13 @@ use crate::debug::work::{WORK_COUNT, WORK_NAMES, phases, snapshot as work_snapsh
 use std::path::PathBuf;
 use std::time::Instant;
 
-fn cache_dir() -> PathBuf {
+pub(super) fn cache_dir() -> PathBuf {
     std::env::var_os("METRUM_PERF_CACHE")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/perf-contract"))
 }
 
-fn residents() -> u32 {
+pub(super) fn residents() -> u32 {
     std::env::var("METRUM_PERF_RESIDENTS")
         .unwrap_or_else(|_| "10000".into())
         .parse()
@@ -32,7 +32,7 @@ fn counts_since(before: [u64; WORK_COUNT]) -> serde_json::Value {
 
 // Runtime guard: the ignored check must still compile in a debug test build.
 #[allow(clippy::assertions_on_constants)]
-fn timing_mode() {
+pub(super) fn timing_mode() {
     assert!(
         !cfg!(debug_assertions),
         "performance contracts require --release"

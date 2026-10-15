@@ -439,4 +439,14 @@ fn loaded_network_retry_preserves_backoff_without_repairing_to_home() {
     assert_eq!(agents.current_path_index[i], 0);
     assert_eq!(agents.target_building[i], 0);
     assert_eq!(agents.next_replan_time[i], 0.0);
+
+    // A car saved at a node before its first edge replans there and keeps its next plan, so a
+    // loaded game continues exactly (`SIM-02-A`).
+    agents.transit_mode[i] = MODE_CAR;
+    agents.current_edge[i] = usize::MAX;
+    agents.planned_target_building[i] = 0;
+    validate_loaded_agents(&mut agents, &graph, &allocator).unwrap();
+    assert_eq!(agents.transit[i], TRANSIT_NETWORK);
+    assert_eq!(agents.target_building[i], 0);
+    assert_eq!(agents.planned_target_building[i], 0);
 }

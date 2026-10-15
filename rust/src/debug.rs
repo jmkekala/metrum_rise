@@ -25,6 +25,7 @@
 //! throughout the codebase. A disabled call is one relaxed atomic load and never allocates.
 
 mod crash;
+pub(crate) mod money;
 pub(crate) mod work;
 
 pub mod channel;

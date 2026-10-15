@@ -622,7 +622,6 @@ fn repair_orphaned_loaded_network_agent(
     agents.current_path[i].clear();
     agents.current_path_index[i] = 0;
     agents.target_building[i] = target;
-    agents.planned_target_building[i] = usize::MAX;
     agents.next_replan_time[i] = 0.0;
     agents.network_replan_failures[i] = 0;
     agents.speed[i] = 0.0;
@@ -635,11 +634,14 @@ fn repair_orphaned_loaded_network_agent(
     let has_replan_edge =
         agents.current_edge[i] < graph.edge_count() && !graph.edge(agents.current_edge[i]).deleted;
     if has_replan_node && (agents.transit_mode[i] == MODE_CAR || has_replan_edge) {
+        // The movement pass replans from the node and keeps the economy's next plan, as it
+        // does for the same state in a running game.
         agents.current_building[i] = usize::MAX;
         agents.transit[i] = TRANSIT_NETWORK;
     } else {
         agents.current_building[i] = target;
         agents.target_building[i] = usize::MAX;
+        agents.planned_target_building[i] = usize::MAX;
         if let Some(entrance) = allocator.entrances.get(target) {
             agents.pos_x[i] = entrance.door_pos.x;
             agents.pos_y[i] = entrance.door_pos.y;

@@ -187,9 +187,17 @@ impl HouseholdSystem {
                     utility_settlements[service_idx].city_service_local_cost;
                 *treasury_balance -=
                     utility_settlements[service_idx].city_service_local_cost as f64;
+                crate::debug::money::record(
+                    crate::debug::money::MoneyFlow::OutsideUtilities,
+                    -(utility_settlements[service_idx].city_service_local_cost as f64),
+                );
             }
             if utility_settlements[service_idx].city_service_owa_cost > 0.0 {
                 *treasury_balance -= utility_settlements[service_idx].city_service_owa_cost as f64;
+                crate::debug::money::record(
+                    crate::debug::money::MoneyFlow::OutsideUtilities,
+                    -(utility_settlements[service_idx].city_service_owa_cost as f64),
+                );
             }
         }
         for building in &mut allocator.buildings {
@@ -219,7 +227,13 @@ impl HouseholdSystem {
                 settlement.private_local_revenue += local_cost;
                 settlement.private_owa_cost += owa_cost;
             }
+            let before = building.operating_budget;
             building.operating_budget -= daily_cost;
+            crate::debug::money::record_change(
+                crate::debug::money::MoneyFlow::OutsideUtilities,
+                before,
+                building.operating_budget,
+            );
         }
 
         // Phase 3: local utility fees go to the city treasury; provider `revenue`
@@ -237,6 +251,10 @@ impl HouseholdSystem {
             }
         }
         *treasury_balance += local_utility_revenue_total as f64;
+        crate::debug::money::record(
+            crate::debug::money::MoneyFlow::OutsideUtilities,
+            local_utility_revenue_total as f64,
+        );
         let city_service_utility_local_cost_total = utility_settlements
             .iter()
             .map(|settlement| settlement.city_service_local_cost.max(0.0))
@@ -648,8 +666,14 @@ impl HouseholdSystem {
             if surcharge <= 0.0 {
                 continue;
             }
+            let before = self.households[household_id].budget;
             self.households[household_id].budget =
                 (self.households[household_id].budget - surcharge).max(0.0);
+            crate::debug::money::record_change(
+                crate::debug::money::MoneyFlow::OutsideUtilities,
+                before,
+                self.households[household_id].budget,
+            );
             let ledger = &mut self.daily_ledgers[household_id];
             add_household_utility_cost_for_service(ledger, service_idx, surcharge);
             surcharge_total += surcharge;
@@ -774,7 +798,13 @@ pub(super) fn liquidate_outputs_until_budget(
             continue;
         }
         let revenue = sold_units * unit_price;
+        let before = building.operating_budget;
         building.operating_budget += revenue;
+        crate::debug::money::record_change(
+            crate::debug::money::MoneyFlow::OutsideSales,
+            before,
+            building.operating_budget,
+        );
         building.revenue += revenue;
         building.remove_inventory_units(output_port.resource_runtime_id, sold_units);
     }

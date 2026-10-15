@@ -296,6 +296,11 @@ impl BuildingAllocator {
                 self.field_clearance.remove_and_remap(i, last_idx);
                 self.record_production_site_removal(i, last_idx);
                 self.queue_yard_removal(i);
+                crate::debug::money::record_change(
+                    crate::debug::money::MoneyFlow::RemovedBuildingCash,
+                    self.buildings[i].operating_budget,
+                    0.0,
+                );
                 self.buildings.swap_remove(i);
                 crate::debug::work::add(crate::debug::work::Work::BuildingsRemoved, 1);
                 self.remove_building_site_client(i);
@@ -1259,6 +1264,11 @@ impl BuildingAllocator {
             .remove_and_remap(building_idx, last_idx);
         self.record_production_site_removal(building_idx, last_idx);
         self.queue_yard_removal(building_idx);
+        crate::debug::money::record_change(
+            crate::debug::money::MoneyFlow::RemovedBuildingCash,
+            self.buildings[building_idx].operating_budget,
+            0.0,
+        );
         self.buildings.swap_remove(building_idx);
         crate::debug::work::add(crate::debug::work::Work::BuildingsRemoved, 1);
         self.remove_building_site_client(building_idx);

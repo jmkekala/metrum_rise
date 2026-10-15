@@ -107,8 +107,10 @@ impl HouseholdSystem {
             );
             removed.settlement.utility_local_revenue = removed.settlement.private_local_revenue
                 + removed.settlement.city_service_local_cost;
-            *treasury +=
+            let receipts =
                 f64::from(removed.settlement.utility_local_revenue) - f64::from(previous_receipts);
+            *treasury += receipts;
+            crate::debug::money::record(crate::debug::money::MoneyFlow::OutsideUtilities, receipts);
         }
         removed.city_input_cost += f64::from(building.daily_city_funded_input_cost);
         if let Some(profile) = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
@@ -329,7 +331,13 @@ impl HouseholdSystem {
                 let bill = ledger.electricity.bill(price, imports);
                 household.power_arrears.local += bill.local;
                 household.power_arrears.imported += bill.imported;
+                let before = household.budget;
                 let paid = household.power_arrears.pay(&mut household.budget);
+                crate::debug::money::record_change(
+                    crate::debug::money::MoneyFlow::OutsideUtilities,
+                    before,
+                    household.budget,
+                );
                 ledger.power_consumption_cost += paid.total();
                 ledger.power_local_payment = paid.local;
                 ledger.power_unpaid_cost = household.power_arrears.total();
@@ -361,8 +369,10 @@ impl HouseholdSystem {
             + summary.private_local_revenue
             + summary.city_service_local_cost;
         summary.city_service_utility_local_cost = summary.city_service_local_cost;
-        *treasury += f64::from(summary.utility_local_revenue)
+        let receipts = f64::from(summary.utility_local_revenue)
             - f64::from(self.removed_electricity.settlement.utility_local_revenue);
+        *treasury += receipts;
+        crate::debug::money::record(crate::debug::money::MoneyFlow::OutsideUtilities, receipts);
         if summary.supply_units > 0.0 {
             allocator.buildings.par_iter_mut().for_each(|building| {
                 building.revenue += (summary.utility_local_revenue
@@ -393,6 +403,10 @@ fn settle_building_electricity(
     let bill = use_.workplace.bill(price, imports);
     if city_owned {
         *treasury -= f64::from(bill.total());
+        crate::debug::money::record(
+            crate::debug::money::MoneyFlow::OutsideUtilities,
+            -f64::from(bill.total()),
+        );
         summary.city_service_local_cost += bill.local;
         summary.city_service_utility_owa_cost += bill.imported;
         if catalog
@@ -410,6 +424,12 @@ fn settle_building_electricity(
         };
         summary.private_local_revenue += bill.local * paid_fraction;
         // Unpaid business costs become the existing operating deficit/distress signal.
+        let before = building.operating_budget;
         building.operating_budget -= bill.total();
+        crate::debug::money::record_change(
+            crate::debug::money::MoneyFlow::OutsideUtilities,
+            before,
+            building.operating_budget,
+        );
     }
 }

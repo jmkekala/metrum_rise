@@ -190,7 +190,13 @@ pub(crate) fn top_up_explicit_work_area_startup_budget(
         return;
     }
     let top_up = target - building.operating_budget;
+    let before = building.operating_budget;
     building.operating_budget += top_up;
+    crate::debug::money::record_change(
+        crate::debug::money::MoneyFlow::OwnerCapital,
+        before,
+        building.operating_budget,
+    );
     building.profit_tax_budget_baseline += top_up;
 }
 

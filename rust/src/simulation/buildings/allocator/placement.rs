@@ -1809,6 +1809,11 @@ impl BuildingAllocator {
         let zone_cell_m = placement.zone_cell_m;
 
         crate::debug::work::add(crate::debug::work::Work::BuildingsPlaced, 1);
+        crate::debug::money::record_change(
+            crate::debug::money::MoneyFlow::OwnerCapital,
+            0.0,
+            startup_budget,
+        );
         self.buildings.push(Building {
             zone_profile_runtime_id: placement.zone_profile_runtime_id,
             parcel_id: placement.parcel_id,

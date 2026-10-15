@@ -179,6 +179,7 @@ impl BuildingAllocator {
     pub(crate) fn mark_building_deserted(&mut self, building_idx: usize) {
         if !self.buildings[building_idx].is_deserted {
             self.record_production_change(building_idx);
+            crate::debug::work::add(crate::debug::work::Work::Desertions, 1);
         }
         self.buildings[building_idx].is_deserted = true;
         self.building_visual_revision = self.building_visual_revision.wrapping_add(1);

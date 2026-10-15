@@ -55,11 +55,27 @@ pub(crate) enum Work {
     StaffingOperations,
     /// Worker counts tried by those searches.
     StaffingTrials,
+    /// Freight carriers dispatched onto the road (`SIM-02` burst envelope).
+    FreightDispatches,
+    /// Household arrival carriers launched from the border.
+    ArrivalLaunches,
+    /// Household shoppers sent to a store with a reserved purchase.
+    ShopperDispatches,
+    /// Buildings passed through daily settlement.
+    BuildingSettlements,
+    /// Households passed through daily settlement.
+    HouseholdSettlements,
+    /// Buildings newly marked deserted.
+    Desertions,
+    /// Freight loads delivered to a building or the border.
+    FreightDeliveries,
+    /// Trip failures recorded by the movement pass.
+    TripFailures,
 }
 
 /// Number of [`Work`] counters.
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) const WORK_COUNT: usize = Work::StaffingTrials as usize + 1;
+pub(crate) const WORK_COUNT: usize = Work::TripFailures as usize + 1;
 
 #[cfg(test)]
 static COUNTS: [std::sync::atomic::AtomicU64; WORK_COUNT] =
@@ -107,6 +123,14 @@ pub(crate) const WORK_NAMES: [&str; WORK_COUNT] = [
     "cch_bucket_sources",
     "staffing_operations",
     "staffing_trials",
+    "freight_dispatches",
+    "arrival_launches",
+    "shopper_dispatches",
+    "building_settlements",
+    "household_settlements",
+    "desertions",
+    "freight_deliveries",
+    "trip_failures",
 ];
 
 /// Hashes a value's `Debug` rendering without building the string. Test-only exact state
