@@ -16,15 +16,6 @@ use crate::simulation::economy::definitions::{
     load_runtime_economy_tuning,
 };
 
-/// Summary of household carriers materialized during one economy pass.
-#[derive(Clone, Copy, Debug, Default)]
-pub(super) struct MaterializedHouseholdCarriers {
-    /// Count of border-origin household carriers converted into resident households this pass.
-    pub(super) households: usize,
-    /// Count of total residents created or converted from those carriers.
-    pub(super) residents: usize,
-}
-
 impl HouseholdSystem {
     /// Publishes a successfully admitted carrier's claim before the next hourly recount.
     pub(crate) fn record_pending_arrival(&mut self, composition: HouseholdAgeComposition) {
@@ -98,84 +89,96 @@ impl HouseholdSystem {
         self.households.len() - 1
     }
 
-    pub(super) fn materialize_arrived_household_carriers(
+    /// Recounts the households still on their way in from [`AgentSystem::arrival_carriers`],
+    /// dropping carriers that arrived or left. O(carriers in flight); replaces the scan of
+    /// every agent (`SIM-02-E`).
+    pub(crate) fn recount_pending_arrivals(&mut self, agents: &mut AgentSystem) {
+        self.pending_arrivals = Default::default();
+        let mut carriers = std::mem::take(&mut agents.arrival_carriers);
+        carriers.retain(|&carrier| {
+            let Some(agent_idx) = agents
+                .resolve_agent(carrier)
+                .filter(|&agent_idx| agents.pending_household_size[agent_idx] > 0)
+            else {
+                return false;
+            };
+            self.record_pending_arrival(agents.pending_household_composition(agent_idx));
+            true
+        });
+        agents.arrival_carriers = carriers;
+    }
+
+    /// Turns an arrival carrier that reached its home into a resident household; false while
+    /// it is still on its way or once it carries no household. O(household size).
+    pub(crate) fn materialize_arrival_carrier(
+        &mut self,
+        agent_idx: usize,
+        agents: &mut AgentSystem,
+        allocator: &BuildingAllocator,
+    ) -> bool {
+        let pending_size = agents.pending_household_size[agent_idx];
+        let home = agents.home_building[agent_idx];
+        if pending_size == 0
+            || home >= allocator.buildings.len()
+            || agents.transit[agent_idx] != TRANSIT_IN_BUILDING
+            || agents.current_building[agent_idx] != home
+        {
+            return false;
+        }
+        let catalog = load_runtime_economy_catalog().unwrap_or_else(|err| {
+            panic!("could not load built-in economy catalog during carrier arrival: {err}")
+        });
+        let tuning = load_runtime_economy_tuning().unwrap_or_else(|err| {
+            panic!("could not load built-in economy tuning during carrier arrival: {err}")
+        });
+        let composition = agents.pending_household_composition(agent_idx);
+        let household_id =
+            self.admit_immigrant_household(&catalog, &tuning, home, pending_size, composition);
+        let home_door = allocator
+            .entrances
+            .get(home)
+            .map(|entrance| entrance.door_pos);
+        let carrier_age_group = composition.member_age_group(0);
+        agents.materialize_household_carrier(agent_idx, household_id, carrier_age_group, home_door);
+        for member_index in 1..pending_size {
+            let (x, y) = home_door
+                .map(|door| (door.x, door.y))
+                .unwrap_or((agents.pos_x[agent_idx], agents.pos_y[agent_idx]));
+            let age_group = composition.member_age_group(member_index);
+            let resident_idx = agents.spawn_housed_agent_with_age_group(home, x, y, age_group);
+            agents.assign_household_id(resident_idx, household_id);
+        }
+        for category in [crate::debug::Channel::Economy, crate::debug::Channel::Spawn] {
+            debug_log!(
+                category,
+                "household arrival carrier materialized household_id={} size={} home_building={} carrier_agent={}",
+                household_id,
+                pending_size,
+                home,
+                agent_idx,
+            );
+        }
+        true
+    }
+
+    /// Test driver: materializes every carrier at its home in dense order, then recounts.
+    /// Returns the households and residents created.
+    #[cfg(test)]
+    pub(crate) fn materialize_arrived_household_carriers(
         &mut self,
         agents: &mut AgentSystem,
         allocator: &BuildingAllocator,
-    ) -> MaterializedHouseholdCarriers {
-        let mut materialized = MaterializedHouseholdCarriers::default();
-        self.pending_arrivals = Default::default();
-        let mut catalog = None;
-        let mut tuning = None;
-        let mut i = 0;
-        while i < agents.len() {
-            let pending_size = agents.pending_household_size[i];
-            if pending_size == 0 {
-                i += 1;
-                continue;
+    ) -> (usize, usize) {
+        let mut materialized = (0, 0);
+        for agent_idx in 0..agents.len() {
+            let members = usize::from(agents.pending_household_size[agent_idx]);
+            if self.materialize_arrival_carrier(agent_idx, agents, allocator) {
+                materialized.0 += 1;
+                materialized.1 += members;
             }
-            let home = agents.home_building[i];
-            if home >= allocator.buildings.len() {
-                i += 1;
-                continue;
-            }
-            let composition = agents.pending_household_composition(i);
-            if agents.transit[i] != TRANSIT_IN_BUILDING || agents.current_building[i] != home {
-                // Reuse this pass: pending adults cannot back another admission's wages.
-                self.record_pending_arrival(composition);
-                i += 1;
-                continue;
-            }
-            if catalog.is_none() {
-                catalog = Some(load_runtime_economy_catalog().unwrap_or_else(|err| {
-                    panic!("could not load built-in economy catalog during carrier arrival: {err}")
-                }));
-            }
-            if tuning.is_none() {
-                tuning = Some(load_runtime_economy_tuning().unwrap_or_else(|err| {
-                    panic!("could not load built-in economy tuning during carrier arrival: {err}")
-                }));
-            }
-            let catalog_ref = catalog.as_ref().expect("catalog loaded above");
-            let tuning_ref = tuning.as_ref().expect("tuning loaded above");
-            let household_id = self.admit_immigrant_household(
-                catalog_ref,
-                tuning_ref,
-                home,
-                pending_size,
-                composition,
-            );
-            let home_door = allocator
-                .entrances
-                .get(home)
-                .map(|entrance| entrance.door_pos);
-
-            let carrier_age_group = composition.member_age_group(0);
-            agents.materialize_household_carrier(i, household_id, carrier_age_group, home_door);
-
-            for member_index in 1..pending_size {
-                let (x, y) = home_door
-                    .map(|door| (door.x, door.y))
-                    .unwrap_or((agents.pos_x[i], agents.pos_y[i]));
-                let age_group = composition.member_age_group(member_index);
-                let resident_idx = agents.spawn_housed_agent_with_age_group(home, x, y, age_group);
-                agents.assign_household_id(resident_idx, household_id);
-            }
-
-            for category in [crate::debug::Channel::Economy, crate::debug::Channel::Spawn] {
-                debug_log!(
-                    category,
-                    "household arrival carrier materialized household_id={} size={} home_building={} carrier_agent={}",
-                    household_id,
-                    pending_size,
-                    home,
-                    i,
-                );
-            }
-            materialized.households += 1;
-            materialized.residents += usize::from(pending_size);
-            i += 1;
         }
+        agents.rebuild_arrival_carriers();
+        self.recount_pending_arrivals(agents);
         materialized
     }
 }

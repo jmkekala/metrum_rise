@@ -24,7 +24,6 @@ use crate::simulation::economy::agents::tick::{BuildingWalkingAccess, Pedestrian
 use crate::simulation::economy::agents::{
     ACTIVITY_HOME, ACTIVITY_SHOPPING, AgentSystem, TRANSIT_IN_BUILDING,
 };
-#[cfg(test)]
 use crate::simulation::economy::definitions::load_runtime_economy_catalog;
 use crate::simulation::economy::definitions::{
     EconomyProfileRuntimeKind, ResourceRuntimeId, RuntimeEconomyCatalog,
@@ -317,43 +316,38 @@ impl<'a> ServiceVisitIndex<'a> {
 }
 
 impl HouseholdSystem {
-    pub(super) fn process_visible_service_visit_returns(
-        &mut self,
+    /// Ends visitor `agent_idx`'s service visit (`SIM-02-E`): one at the service building heads
+    /// home. Returns whether the visit goes on, while the visitor is still on its way. O(1).
+    pub(crate) fn end_service_visit(
+        &self,
+        agent_idx: usize,
         agents: &mut AgentSystem,
         allocator: &BuildingAllocator,
-        catalog: &RuntimeEconomyCatalog,
-        absolute_hour: u32,
-    ) {
+    ) -> bool {
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let Some(personal_services) =
             catalog.resource_runtime_id_for_id(PERSONAL_SERVICE_RESOURCE_ID)
         else {
-            return;
+            return false;
         };
-        let mut diagnostics = ServiceVisitDiagnostics::default();
-        for agent_idx in 0..agents.len() {
-            if !agent_can_be_returned_from_visible_service_visit(
-                agent_idx,
-                agents,
-                &self.households,
-                allocator,
-                catalog,
-                personal_services,
-            ) {
-                continue;
-            }
+        if agent_can_be_returned_from_visible_service_visit(
+            agent_idx,
+            agents,
+            &self.households,
+            allocator,
+            &catalog,
+            personal_services,
+        ) {
             let home_idx = agents.home_building[agent_idx];
             agents.planned_target_building[agent_idx] = home_idx;
             agents.planned_activity[agent_idx] = ACTIVITY_HOME;
-            diagnostics.returns_scheduled += 1;
+            return false;
         }
-        if diagnostics.has_signal() {
-            debug_log!(
-                "economy",
-                "visible service visit diagnostics: hour={} attempts=0 success=0 returns={} candidates=0 no_service_candidates=0 no_shopper=0 rejected_unreachable=0",
-                absolute_hour,
-                diagnostics.returns_scheduled
-            );
-        }
+        // Still on its way to the service building.
+        agents.activity[agent_idx] == ACTIVITY_SHOPPING
+            && agents.transit[agent_idx] != TRANSIT_IN_BUILDING
+            && agents.current_building[agent_idx] != agents.home_building[agent_idx]
     }
 
     pub(super) fn plan_and_apply_visible_service_visits(
@@ -484,6 +478,10 @@ impl HouseholdSystem {
             }
             agents.planned_target_building[plan.visitor_agent_id] = plan.service_building_id;
             agents.planned_activity[plan.visitor_agent_id] = ACTIVITY_SHOPPING;
+            // The visitor waits at home for its paced departure (`SIM-02-E`).
+            agents.hold_departure(plan.visitor_agent_id);
+            self.held_visitors
+                .push(agents.agent_handle(plan.visitor_agent_id));
             diagnostics.successes += 1;
         }
 
@@ -503,7 +501,10 @@ impl HouseholdSystem {
     ) {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
-        self.process_visible_service_visit_returns(agents, allocator, &catalog, absolute_hour);
+        // One hour: visits end, new visitors leave at once.
+        for agent_idx in 0..agents.len() {
+            self.end_service_visit(agent_idx, agents, allocator);
+        }
         self.plan_and_apply_visible_service_visits(
             agents,
             allocator,
@@ -512,6 +513,11 @@ impl HouseholdSystem {
             absolute_hour,
             &catalog,
         );
+        for visitor in std::mem::take(&mut self.held_visitors) {
+            if let Some(agent_idx) = agents.resolve_agent(visitor) {
+                agents.release_departure(agent_idx);
+            }
+        }
     }
 }
 

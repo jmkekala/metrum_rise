@@ -395,3 +395,27 @@ fn loaded_network_retry_preserves_backoff_without_repairing_to_home() {
     assert_eq!(agents.target_building[i], 0);
     assert_eq!(agents.planned_target_building[i], 0);
 }
+
+#[test]
+fn departure_holds_survive_loaded_plan_repair() {
+    let (graph, network) = fixture();
+    let mut allocator = BuildingAllocator::new();
+    for index in 0..2 {
+        allocator.buildings.push(crate::simulation::buildings::allocator::indexed_test_building(
+            "test:held_trip".into(),
+            crate::simulation::zoning::ZoneType::Residential,
+            index,
+        ));
+    }
+    let mut agents = AgentSystem::new();
+    let i = agents.spawn_housed_agent(0, 0.0, 0.0);
+    agents.planned_target_building[i] = 1;
+    // A shopper reserved on the hour waits at home for its paced departure (`SIM-02-E`).
+    agents.hold_departure(i);
+    validate_loaded_planned_lane_ids(&mut agents, network.lane_system.lanes.len());
+    validate_loaded_agents(&mut agents, &graph, &allocator).unwrap();
+    assert!(agents.departure_held(i), "loading must not release a held trip early");
+    assert_eq!(agents.planned_target_building[i], 1);
+    assert!(agents.release_departure(i));
+    assert!(!agents.departure_held(i));
+}

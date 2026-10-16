@@ -256,10 +256,11 @@ same applicant stream (`DEM-02-C`). For each physically launchable offer:
 an adult. Families without workers use only unreserved ready homes, so they cannot take housing
 promised to a new employer's staff.
 
-**Arrival.** An accepted family launches an arrival carrier from the border to its home. Its
-approved adult, elder and child composition travels with the carrier, survives arrival
-reordering and save/load, and materializes on arrival. Pending adults count as labor supply in
-the next forecast.
+**Arrival.** An accepted family launches an arrival carrier from the border to its home. The
+carrier waits at the border for a departure slot paced over the following hour (`SIM-02-E`).
+Its approved adult, elder and child composition travels with the carrier, survives arrival
+reordering and save/load, and materializes when the carrier reaches its home. Pending adults count as labor supply in the next forecast; each hour recounts them from
+the carriers still on their way.
 
 The **empty-town bootstrap** offers the first home when the city has a border and no households.
 

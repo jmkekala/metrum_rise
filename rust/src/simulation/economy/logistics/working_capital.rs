@@ -287,7 +287,7 @@ impl ShipmentSystem {
                 *value += goods_value;
             }
             if shipment.status == ShipmentStatus::InTransit
-                && !shipment.carrier.is_none()
+                && shipment.cargo_loaded
                 && let ShipmentEndpoint::Building(source) = shipment.source
                 && let Some(value) = capital.get_mut(source)
             {
@@ -316,6 +316,7 @@ mod tests {
             freight_cost: 8.0,
             eta_hours: 1,
             queued_hours: 0,
+            cargo_loaded: false,
         }
     }
 
@@ -331,8 +332,9 @@ mod tests {
         assert_eq!(
             capital,
             [0.0, 100.0],
-            "source stock still exists before carrier dispatch"
+            "source stock still exists before its cargo is loaded"
         );
+        logistics.shipments[0].cargo_loaded = true;
         logistics.shipments[0].carrier = crate::simulation::economy::agents::AgentHandle::from_parts(7, 0);
         logistics.write_freight_working_capital(&mut capital);
         assert_eq!(
@@ -364,6 +366,7 @@ mod tests {
             ShipmentEndpoint::OwaBorder(1),
         );
         export.status = ShipmentStatus::InTransit;
+        export.cargo_loaded = true;
         export.carrier = crate::simulation::economy::agents::AgentHandle::from_parts(7, 0);
         logistics.shipments.push(export);
         let mut capital = [0.0];

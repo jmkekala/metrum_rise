@@ -152,6 +152,7 @@ fn returning_shipments_close_without_changing_settled_cargo_or_unrelated_agents(
             freight_cost: 0.0,
             eta_hours: 1,
             queued_hours: 5,
+            cargo_loaded: true,
         });
         for _ in 0..2 {
             progress_shipments_for_test(
@@ -213,6 +214,7 @@ fn stale_shipment_carrier_cannot_remove_an_unrelated_agent() {
                 freight_cost: 0.0,
                 eta_hours: 1,
                 queued_hours: 0,
+                cargo_loaded: true,
             });
             if removal {
                 shipments.invalidate_building(
@@ -259,6 +261,7 @@ fn returning_carrier_fixture(count: usize) -> (ShipmentSystem, AgentSystem) {
             freight_cost: 0.0,
             eta_hours: u16::MAX,
             queued_hours: 0,
+            cargo_loaded: true,
         });
     }
     (shipments, agents)
@@ -359,14 +362,13 @@ macro_rules! logistics_tick {
     ($shipments:expr, $allocator:expr, $network:expr, $graph:expr, $minute:expr) => {{
         let mut agents = AgentSystem::new();
         let mut treasury_balance = 0.0;
-        $shipments.hourly_tick(
+        $shipments.hourly_tick_with_trips(
             $allocator,
             &mut agents,
             $network,
             $graph,
             $minute,
             &mut treasury_balance,
-            |_, _| {},
         )
     }};
 }
@@ -4582,14 +4584,13 @@ fn owa_border_fallback_creates_import_shipment() {
     let mut shipments = ShipmentSystem::new();
     let mut agents = AgentSystem::new();
     let mut treasury_balance = 0.0;
-    shipments.hourly_tick(
+    shipments.hourly_tick_with_trips(
         &mut allocator,
         &mut agents,
         &network,
         &graph,
         480,
         &mut treasury_balance,
-        |_, _| {},
     );
 
     assert_eq!(shipments.shipments.len(), 1);
@@ -4660,14 +4661,13 @@ fn city_service_owa_fuel_import_debits_treasury_not_building_budget() {
     let mut shipments = ShipmentSystem::new();
     let mut agents = AgentSystem::new();
     let mut treasury_balance = 1_000.0;
-    shipments.hourly_tick(
+    shipments.hourly_tick_with_trips(
         &mut allocator,
         &mut agents,
         &network,
         &graph,
         480,
         &mut treasury_balance,
-        |_, _| {},
     );
 
     assert_eq!(shipments.shipments.len(), 2);
@@ -5132,6 +5132,7 @@ fn supplier_index_lists_only_suppliers_with_an_unreserved_batch() {
         freight_cost: 0.0,
         eta_hours: 1,
         queued_hours: 0,
+        cargo_loaded: false,
     });
     let planning = super::planning::FreightPlanningContext::build(
         &mut shipments,
@@ -5341,6 +5342,7 @@ fn deserted_destination_rejects_inbound_delivery() {
         freight_cost: 0.0,
         eta_hours: 1,
         queued_hours: 0,
+        cargo_loaded: false,
     });
 
     logistics_tick!(&mut shipments, &mut allocator, &network, &graph, 480);
@@ -5393,6 +5395,7 @@ fn under_construction_destination_rejects_inbound_delivery() {
         freight_cost: 0.0,
         eta_hours: 1,
         queued_hours: 0,
+        cargo_loaded: false,
     });
 
     logistics_tick!(&mut shipments, &mut allocator, &network, &graph, 480);
@@ -5458,6 +5461,7 @@ fn deserted_local_source_releases_reserved_delivery() {
         freight_cost: 0.0,
         eta_hours: 1,
         queued_hours: 0,
+        cargo_loaded: false,
     });
 
     logistics_tick!(&mut shipments, &mut allocator, &network, &graph, 480);
@@ -5764,6 +5768,7 @@ fn building_removal_refunds_unsettled_city_freight_to_its_payer() {
             freight_cost: 0.0,
             eta_hours: 1,
             queued_hours: 0,
+            cargo_loaded: false,
         });
         assert_eq!(treasury, 1_200.0);
         assert_eq!(allocator.buildings[1].daily_city_funded_input_cost, 800.0);
@@ -6385,14 +6390,13 @@ fn incoming_machinery_factory_can_start_on_paid_owa_deliveries() {
     let mut shipments = ShipmentSystem::new();
     let mut agents = AgentSystem::new();
     let mut treasury = 10_000.0;
-    shipments.hourly_tick(
+    shipments.hourly_tick_with_trips(
         &mut allocator,
         &mut agents,
         &network,
         &graph,
         480,
         &mut treasury,
-        |_, _| {},
     );
     assert_eq!(shipments.shipments.len(), 3);
     assert_eq!(treasury, 10_000.0, "private imports use the factory budget");

@@ -14,6 +14,7 @@ use std::time::Instant;
 
 impl HouseholdSystem {
     /// Runs one operational-hour household pass for membership, production, logistics, and labor.
+    /// Trips started here leave at paced slots and settle when they arrive (`SIM-02-E`).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn operational_hour_tick(
         &mut self,
@@ -27,8 +28,7 @@ impl HouseholdSystem {
         treasury_balance: &mut f64,
         service_funding_by_building: &[f32],
         fiscal_policy: &CityFiscalPolicy,
-        on_delivery: impl FnMut(&crate::simulation::economy::logistics::Shipment, &BuildingAllocator),
-    ) -> FiscalRevenue {
+    ) {
         let timing_category = if debug::Channel::EconomyPhases.enabled() {
             debug::Channel::EconomyPhases
         } else {
@@ -37,8 +37,9 @@ impl HouseholdSystem {
         let timing_enabled = timing_category.enabled();
         let total_start = Instant::now();
         let mut phase_start = total_start;
-        let materialized = self.materialize_arrived_household_carriers(agents, allocator);
-        let materialize_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        // Carriers become households when they arrive (`SIM-02-E`); count those still coming.
+        self.recount_pending_arrivals(agents);
+        let pending_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
         self.debug_validate_agent_household_refs(agents);
         let validate_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
@@ -58,11 +59,10 @@ impl HouseholdSystem {
             graph,
             minute_of_day,
             treasury_balance,
-            on_delivery,
         );
         let logistics_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
-        let household_vat = self.run_household_operational_hour(
+        self.run_household_operational_hour(
             agents,
             allocator,
             transit_network,
@@ -90,15 +90,15 @@ impl HouseholdSystem {
         if timing_enabled {
             debug_log!(
                 timing_category,
-                "operational_hour_detail absolute_hour={} minute={} materialized_households={} materialized_residents={} agents={} buildings={} households={} materialize_ms={:.3} validate_ms={:.3} counts_ms={:.3} building_economy_ms={:.3} logistics_ms={:.3} household_hour_ms={:.3} workplace_ms={:.3} money_sync_ms={:.3} total_ms={:.3}",
+                "operational_hour_detail absolute_hour={} minute={} pending_households={} pending_adults={} agents={} buildings={} households={} pending_ms={:.3} validate_ms={:.3} counts_ms={:.3} building_economy_ms={:.3} logistics_ms={:.3} household_hour_ms={:.3} workplace_ms={:.3} money_sync_ms={:.3} total_ms={:.3}",
                 absolute_hour,
                 minute_of_day,
-                materialized.households,
-                materialized.residents,
+                self.pending_arrivals.households,
+                self.pending_arrivals.adults,
                 agents.len(),
                 allocator.buildings.len(),
                 self.households.len(),
-                materialize_ms,
+                pending_ms,
                 validate_ms,
                 counts_ms,
                 building_economy_ms,
@@ -108,10 +108,6 @@ impl HouseholdSystem {
                 money_sync_ms,
                 total_start.elapsed().as_secs_f64() * 1000.0,
             );
-        }
-        FiscalRevenue {
-            household_vat,
-            ..FiscalRevenue::default()
         }
     }
 
@@ -140,8 +136,9 @@ impl HouseholdSystem {
         let timing_enabled = timing_category.enabled();
         let total_start = Instant::now();
         let mut phase_start = total_start;
-        let materialized = self.materialize_arrived_household_carriers(agents, allocator);
-        let materialize_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        // Carriers become households when they arrive (`SIM-02-E`); count those still coming.
+        self.recount_pending_arrivals(agents);
+        let pending_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
         self.debug_validate_agent_household_refs(agents);
         let validate_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
@@ -226,13 +223,13 @@ impl HouseholdSystem {
         if timing_enabled {
             debug_log!(
                 timing_category,
-                "daily_settlement_detail materialized_households={} materialized_residents={} agents={} buildings={} households={} materialize_ms={:.3} validate_ms={:.3} counts_ms={:.3} ledger_and_locks_ms={:.3} bankruptcy_ms={:.3} wages_ms={:.3} benefits_ms={:.3} property_tax_ms={:.3} utilities_ms={:.3} profit_tax_ms={:.3} housing_ms={:.3} workplace_ms={:.3} sync_and_finish_ms={:.3} total_ms={:.3}",
-                materialized.households,
-                materialized.residents,
+                "daily_settlement_detail pending_households={} pending_adults={} agents={} buildings={} households={} pending_ms={:.3} validate_ms={:.3} counts_ms={:.3} ledger_and_locks_ms={:.3} bankruptcy_ms={:.3} wages_ms={:.3} benefits_ms={:.3} property_tax_ms={:.3} utilities_ms={:.3} profit_tax_ms={:.3} housing_ms={:.3} workplace_ms={:.3} sync_and_finish_ms={:.3} total_ms={:.3}",
+                self.pending_arrivals.households,
+                self.pending_arrivals.adults,
                 agents.len(),
                 allocator.buildings.len(),
                 self.households.len(),
-                materialize_ms,
+                pending_ms,
                 validate_ms,
                 counts_ms,
                 ledger_and_locks_ms,

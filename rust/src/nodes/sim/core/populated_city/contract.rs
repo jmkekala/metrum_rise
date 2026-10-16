@@ -325,7 +325,6 @@ fn perf_contract_phase() {
             &core.region_graph,
             60,
             &mut core.treasury.balance,
-            |_, _| {},
         ),
         "lots" => {
             std::hint::black_box(core.prepare_cell_lots_internal());

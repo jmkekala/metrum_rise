@@ -22,7 +22,7 @@ use crate::simulation::agriculture::AgricultureSystem;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::handles::HandleTable;
-use crate::simulation::core::scheduler::{SLOTS_PER_MINUTE, Schedule};
+use crate::simulation::core::scheduler::{SLOTS_PER_MINUTE, Schedule, absolute_slot};
 use crate::simulation::core::time::TimeSystem;
 use crate::simulation::core::timing_wheel::{TimedEvent, TimingWheel};
 use crate::simulation::economy::agents::AgentSystem;
@@ -105,6 +105,20 @@ fn reschedule_construction_completions(
                 },
             );
         }
+    }
+}
+
+// Trip events of a wheel about to restart, in firing order.
+fn pending_trips(events: &TimingWheel<SimEvent>) -> Vec<TimedEvent<SimEvent>> {
+    let mut trips = events.pending();
+    trips.retain(|timed| matches!(timed.event, SimEvent::Trip(_)));
+    trips
+}
+
+// Puts trips back into a restarted wheel in their firing order; past slots fire next.
+fn reschedule_trips(events: &mut TimingWheel<SimEvent>, trips: Vec<TimedEvent<SimEvent>>) {
+    for timed in trips {
+        events.schedule(timed.slot, timed.event);
     }
 }
 
@@ -567,7 +581,7 @@ impl SimCore {
         self.resource_extraction
             .produce_hourly(&mut self.allocator, &catalog);
         let service_funding_by_building = self.electricity_funding_by_building();
-        let fiscal_revenue = self.households.operational_hour_tick(
+        self.households.operational_hour_tick(
             &mut self.agents,
             &mut self.allocator,
             &mut self.logistics,
@@ -578,15 +592,31 @@ impl SimCore {
             &mut self.treasury.balance,
             &service_funding_by_building,
             &self.fiscal_policy,
-            |shipment, allocator| observer.freight_delivered(shipment, allocator),
         );
-        self.collect_fiscal_revenue(fiscal_revenue);
         // Capture receipts before demand can remove or replace their building.
         observer.hourly_economy(self);
         if minute_of_day != 0 {
             self.execute_hourly_demand_pass(day_index, minute_of_day);
             observer.buildings_changed(self);
         }
+        self.schedule_trip_departures(absolute_slot(day_index, minute_of_day, 0));
+    }
+
+    /// Fits every lane to the compiled road surface, for setups that build roads and borders
+    /// through internal calls without the render preparation that fits connector heights.
+    /// Agents must not run on unfitted lanes: loading the save fits them, which would change
+    /// lane lengths and therefore arrival times. One-time O(lane geometry vertices).
+    pub(crate) fn fit_lanes_to_road_surface(&mut self) {
+        self.transit_network
+            .road_surface
+            .compile_dirty(&self.region_graph, &self.heightmap);
+        self.transit_network
+            .lane_system
+            .sync_heights_to_visible_surface(
+                &self.region_graph,
+                &self.heightmap,
+                &self.transit_network.road_surface,
+            );
     }
 
     /// Rebuilds derived queue promises after planning or loading persisted pending actions.
@@ -723,6 +753,7 @@ impl SimCore {
             return std::borrow::Cow::Owned(events);
         }
         let mut events = self.events.clone();
+        let trips = pending_trips(&events);
         events.reset(next_slot);
         reschedule_construction_starts(
             &mut events,
@@ -732,17 +763,20 @@ impl SimCore {
         let mut handles = self.allocator.building_handles.clone();
         handles.register_appended(self.allocator.buildings.len());
         reschedule_construction_completions(&mut events, &self.allocator, &handles);
+        reschedule_trips(&mut events, trips);
         std::borrow::Cow::Owned(events)
     }
 
     /// Re-aligns the timing wheel when the clock was set directly instead of advanced (tests,
     /// tools): the wheel restarts after the current slot, construction starts are rescheduled
-    /// from the queue and completions from each site's deadline. A clock advanced by frames, a
-    /// load or a new world is already aligned, so this costs one comparison per frame.
+    /// from the queue, completions from each site's deadline, and trips in progress keep their
+    /// slots, those already past at the next one. A clock advanced by frames, a load or a new
+    /// world is already aligned, so this costs one comparison per frame.
     pub(super) fn align_events_to_clock(&mut self) {
         let next_slot = self.time.absolute_slot() + 1;
         self.allocator.now_slot = next_slot - 1;
         if self.events.next_slot() != next_slot {
+            let trips = pending_trips(&self.events);
             self.events.reset(next_slot);
             self.reschedule_construction_events();
             self.allocator.pending_construction.clear();
@@ -754,6 +788,7 @@ impl SimCore {
                 &self.allocator,
                 &self.allocator.building_handles,
             );
+            reschedule_trips(&mut self.events, trips);
         }
     }
 
@@ -965,6 +1000,7 @@ impl SimCore {
         self.demand
             .log_daily_household_action_diagnostics(day_index);
         self.execute_hourly_demand_pass(day_index, 0);
+        self.schedule_trip_departures(absolute_slot(day_index, 0, 0));
         // Minute 0 is the deterministic closing boundary: operational-hour work,
         // daily settlement, and midnight demand all post before the daily tax
         // buckets roll into the report.

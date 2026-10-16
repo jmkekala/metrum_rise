@@ -176,6 +176,11 @@ pub struct AgentSystem {
     pub(crate) handles: HandleTable<Agent>,
     /// Daily settlements run so far: the clock of job locks (`job_lock_until_day`). Saved.
     pub(crate) settlement_days: u32,
+    /// Household arrival carriers that may still be on their way in (`SIM-02-E`); pending
+    /// arrivals are recounted from it. Derived: rebuilt from the carriers on load.
+    pub(crate) arrival_carriers: Vec<AgentHandle>,
+    /// Arrival carriers spawned since SimCore last paced their departures, in spawn order.
+    pub(crate) held_arrivals: Vec<AgentHandle>,
     /// Global simulation time for this system.
     pub sim_time: f32,
     /// Running count of pathfinding calls this session, used for benchmark logging.
@@ -278,6 +283,8 @@ impl AgentSystem {
             agents: AgentVec::new(),
             handles: HandleTable::default(),
             settlement_days: 0,
+            arrival_carriers: Vec::new(),
+            held_arrivals: Vec::new(),
             sim_time: 0.0,
             pathfind_count: AtomicU32::new(0),
             lane_buckets: Vec::new(),

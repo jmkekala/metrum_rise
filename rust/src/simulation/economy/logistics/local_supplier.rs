@@ -127,6 +127,7 @@ impl ShipmentSystem {
                 freight_cost: choice.freight_cost,
                 eta_hours,
                 queued_hours: 0,
+                cargo_loaded: false,
             });
             reservations.record_local_shipment(
                 choice.supplier_idx,

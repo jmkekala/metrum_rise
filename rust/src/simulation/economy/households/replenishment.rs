@@ -601,7 +601,7 @@ impl HouseholdSystem {
         graph: &RegionGraph,
         absolute_hour: u32,
         household_vat_rate: f32,
-    ) -> f32 {
+    ) {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let tuning = load_runtime_economy_tuning()
@@ -613,9 +613,6 @@ impl HouseholdSystem {
         let terminal_failure_count = tuning
             .operational_clock
             .household_replenishment_terminal_failure_count;
-        let shopping_leg_timeout_hours = tuning
-            .operational_clock
-            .household_shopping_leg_timeout_hours;
         let profile = household_demand_profile(&catalog);
         let trigger_days = profile.reorder_threshold_days;
         let household_supply_unit_price = household_supply_unit_price(&catalog);
@@ -630,20 +627,14 @@ impl HouseholdSystem {
             apply_starvation_happiness_loss(&self.households, agents);
         }
 
-        let household_vat_collected = self.process_active_household_shopping(
+        self.process_active_household_shopping(
             agents,
             allocator,
-            transit_network,
-            graph,
-            tuning.operational_clock.seconds_per_day,
             &catalog,
             household_supply_resource,
             retry_cooldown_hours,
             terminal_failure_count,
-            shopping_leg_timeout_hours,
-            household_vat_rate,
         );
-        self.process_visible_service_visit_returns(agents, allocator, &catalog, absolute_hour);
 
         self.plan_and_apply_household_replenishment(
             agents,
@@ -666,7 +657,6 @@ impl HouseholdSystem {
             absolute_hour,
             &catalog,
         );
-        household_vat_collected
     }
 
     fn progress_households_for_operational_hour(
@@ -808,22 +798,22 @@ impl HouseholdSystem {
         let terminal_failure_count = tuning
             .operational_clock
             .household_replenishment_terminal_failure_count;
-        let shopping_leg_timeout_hours = tuning
-            .operational_clock
-            .household_shopping_leg_timeout_hours;
 
-        self.process_active_household_shopping(
+        // One hour: trips arrive, legs still under way time out, new trips leave at once.
+        self.advance_shopping_trips_for_test(
             agents,
             allocator,
             transit_network,
             graph,
-            tuning.operational_clock.seconds_per_day,
+            tuning.fiscal.household_vat_rate,
+        );
+        self.process_active_household_shopping(
+            agents,
+            allocator,
             &catalog,
             household_supply_resource,
             retry_cooldown_hours,
             terminal_failure_count,
-            shopping_leg_timeout_hours,
-            tuning.fiscal.household_vat_rate,
         );
 
         let profile = household_demand_profile(&catalog);
@@ -862,6 +852,11 @@ impl HouseholdSystem {
             restock_candidate_exists,
             urgent_restock_candidate_exists,
         );
+        for household in std::mem::take(&mut self.held_shoppers) {
+            if let Some(hid) = self.handles.resolve(household) {
+                self.release_shopper(hid, agents, allocator);
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -957,8 +952,10 @@ impl HouseholdSystem {
             );
         plans.sort_unstable_by_key(|plan| plan.household_id);
         self.ensure_daily_ledger_len();
+        self.handles.register_appended(self.households.len());
         for plan in plans {
-            apply_replenishment_plan(
+            let household_id = plan.household_id;
+            let reserved = apply_replenishment_plan(
                 plan,
                 &mut self.households,
                 &mut self.daily_ledgers,
@@ -981,6 +978,9 @@ impl HouseholdSystem {
                 household_vat_rate,
                 &mut diagnostics,
             );
+            if reserved {
+                self.held_shoppers.push(self.handles.handle(household_id));
+            }
         }
 
         if diagnostics.has_signal() {
@@ -1062,54 +1062,180 @@ impl HouseholdSystem {
     }
 
     #[allow(clippy::too_many_arguments)]
+    // Hourly: legs still under way count down their timeout. Arrivals are taken by each trip's
+    // own checks (`SIM-02-E`), so an arrived shopper is left for its next check.
+    #[allow(clippy::too_many_arguments)]
     fn process_active_household_shopping(
         &mut self,
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
-        transit_network: &TransitNetwork,
-        graph: &RegionGraph,
-        seconds_per_day: f64,
         catalog: &RuntimeEconomyCatalog,
         household_supply_resource: u16,
         retry_cooldown_hours: u16,
         terminal_failure_count: u16,
-        shopping_leg_timeout_hours: u16,
-        household_vat_rate: f32,
-    ) -> f32 {
+    ) {
         self.ensure_daily_ledger_len();
-        let mut household_vat_collected = 0.0;
         for hid in 0..self.households.len() {
-            match self.households[hid].replenishment_state {
-                REPLENISHMENT_SHOPPING_TO_STORE => {
-                    household_vat_collected += self.process_shopping_to_store(
+            let state = self.households[hid].replenishment_state;
+            if !matches!(
+                state,
+                REPLENISHMENT_SHOPPING_TO_STORE | REPLENISHMENT_SHOPPING_RETURNING
+            ) || self.shopping_leg_arrived(hid, agents)
+            {
+                continue;
+            }
+            if state == REPLENISHMENT_SHOPPING_TO_STORE {
+                let store_idx = self.households[hid].reserved_store_building_id;
+                if shopping_carrier(&self.households[hid], hid, agents).is_none()
+                    || !valid_store_for_pickup(allocator, catalog, household_supply_resource, store_idx)
+                    || shopping_leg_timed_out(&mut self.households[hid])
+                {
+                    self.cancel_replenishment_before_pickup_with_ledger(
                         hid,
                         agents,
                         allocator,
-                        transit_network,
-                        graph,
-                        seconds_per_day,
-                        catalog,
                         household_supply_resource,
                         retry_cooldown_hours,
                         terminal_failure_count,
-                        shopping_leg_timeout_hours,
-                        household_vat_rate,
                     );
                 }
-                REPLENISHMENT_SHOPPING_RETURNING => self.process_shopping_returning(
+            } else if shopping_carrier(&self.households[hid], hid, agents).is_none()
+                || self.households[hid].home_building_id == usize::MAX
+                || shopping_leg_timed_out(&mut self.households[hid])
+            {
+                self.cancel_replenishment_after_pickup_with_ledger(
                     hid,
                     agents,
                     retry_cooldown_hours,
                     terminal_failure_count,
-                ),
-                _ => {}
+                );
+            } else {
+                // Re-issues the trip home if a failed route dropped it.
+                schedule_shopper_home(&self.households[hid], agents, ACTIVITY_SHOPPING);
             }
         }
-        household_vat_collected
     }
 
+    // Whether household `hid`'s shopper stands where its current leg ends.
+    fn shopping_leg_arrived(&self, hid: usize, agents: &AgentSystem) -> bool {
+        let household = &self.households[hid];
+        let destination = match household.replenishment_state {
+            REPLENISHMENT_SHOPPING_TO_STORE => household.reserved_store_building_id,
+            REPLENISHMENT_SHOPPING_RETURNING => household.home_building_id,
+            _ => return false,
+        };
+        shopping_carrier(household, hid, agents).is_some_and(|agent_idx| {
+            agents.transit[agent_idx] == TRANSIT_IN_BUILDING
+                && agents.current_building[agent_idx] == destination
+        })
+    }
+
+    /// Starts household `hid`'s held shopper towards its reserved store at its paced departure
+    /// slot (`SIM-02-E`). True while the trip goes on; a shopper that left is refunded.
+    pub(crate) fn release_shopper(
+        &mut self,
+        hid: usize,
+        agents: &mut AgentSystem,
+        allocator: &mut BuildingAllocator,
+    ) -> bool {
+        if self.households[hid].replenishment_state != REPLENISHMENT_SHOPPING_TO_STORE {
+            return false;
+        }
+        let Some(agent_idx) = shopping_carrier(&self.households[hid], hid, agents) else {
+            let catalog = load_runtime_economy_catalog().unwrap_or_else(|err| {
+                panic!("could not load built-in runtime economy catalog: {err}")
+            });
+            let tuning = load_runtime_economy_tuning().unwrap_or_else(|err| {
+                panic!("could not load built-in economy runtime tuning: {err}")
+            });
+            self.ensure_daily_ledger_len();
+            self.cancel_replenishment_before_pickup_with_ledger(
+                hid,
+                agents,
+                allocator,
+                household_supply_resource_runtime_id(&catalog),
+                tuning
+                    .operational_clock
+                    .household_replenishment_retry_cooldown_hours,
+                tuning
+                    .operational_clock
+                    .household_replenishment_terminal_failure_count,
+            );
+            return false;
+        };
+        if agents.release_departure(agent_idx) {
+            crate::debug::work::add(crate::debug::work::Work::ShopperDispatches, 1);
+        }
+        true
+    }
+
+    /// One check of household `hid`'s shopping trip (`SIM-02-E`): a shopper at the store picks
+    /// up and heads home, one at home delivers. Returns whether the trip goes on and the
+    /// household VAT collected at pickup. O(1) plus one route-cost query at pickup.
     #[allow(clippy::too_many_arguments)]
-    fn process_shopping_to_store(
+    pub(crate) fn check_shopping_trip(
+        &mut self,
+        hid: usize,
+        agents: &mut AgentSystem,
+        allocator: &mut BuildingAllocator,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+        household_vat_rate: f32,
+    ) -> (bool, f32) {
+        let state = self.households[hid].replenishment_state;
+        if !matches!(
+            state,
+            REPLENISHMENT_SHOPPING_TO_STORE | REPLENISHMENT_SHOPPING_RETURNING
+        ) {
+            return (false, 0.0);
+        }
+        if !self.shopping_leg_arrived(hid, agents) {
+            return (true, 0.0);
+        }
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        let tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        let household_supply_resource = household_supply_resource_runtime_id(&catalog);
+        let retry_cooldown_hours = tuning
+            .operational_clock
+            .household_replenishment_retry_cooldown_hours;
+        let terminal_failure_count = tuning
+            .operational_clock
+            .household_replenishment_terminal_failure_count;
+        self.ensure_daily_ledger_len();
+        if state == REPLENISHMENT_SHOPPING_TO_STORE {
+            let store_idx = self.households[hid].reserved_store_building_id;
+            if !valid_store_for_pickup(allocator, &catalog, household_supply_resource, store_idx) {
+                self.cancel_replenishment_before_pickup_with_ledger(
+                    hid,
+                    agents,
+                    allocator,
+                    household_supply_resource,
+                    retry_cooldown_hours,
+                    terminal_failure_count,
+                );
+                return (false, 0.0);
+            }
+            let vat = self.pick_up_shopping(
+                hid,
+                agents,
+                allocator,
+                transit_network,
+                graph,
+                tuning.operational_clock.seconds_per_day,
+                tuning.operational_clock.household_shopping_leg_timeout_hours,
+                household_vat_rate,
+            );
+            return (true, vat);
+        }
+        self.deliver_shopping(hid, agents);
+        (false, 0.0)
+    }
+
+    // The shopper reached the reserved store: the store is paid and the shopper heads home.
+    #[allow(clippy::too_many_arguments)]
+    fn pick_up_shopping(
         &mut self,
         hid: usize,
         agents: &mut AgentSystem,
@@ -1117,130 +1243,81 @@ impl HouseholdSystem {
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
         seconds_per_day: f64,
-        catalog: &RuntimeEconomyCatalog,
-        household_supply_resource: u16,
-        retry_cooldown_hours: u16,
-        terminal_failure_count: u16,
         shopping_leg_timeout_hours: u16,
         household_vat_rate: f32,
     ) -> f32 {
         let Some(agent_idx) = shopping_carrier(&self.households[hid], hid, agents) else {
-            self.cancel_replenishment_before_pickup_with_ledger(
-                hid,
-                agents,
-                allocator,
-                household_supply_resource,
-                retry_cooldown_hours,
-                terminal_failure_count,
-            );
             return 0.0;
         };
         let store_idx = self.households[hid].reserved_store_building_id;
-        if !valid_store_for_pickup(allocator, catalog, household_supply_resource, store_idx) {
-            self.cancel_replenishment_before_pickup_with_ledger(
-                hid,
-                agents,
-                allocator,
-                household_supply_resource,
-                retry_cooldown_hours,
-                terminal_failure_count,
-            );
-            return 0.0;
-        }
-        if agents.transit[agent_idx] == TRANSIT_IN_BUILDING
-            && agents.current_building[agent_idx] == store_idx
-        {
-            let gross_total_cost = self.households[hid].reserved_total_cost;
-            let (store_revenue, household_vat_collected) =
-                split_gross_tax(gross_total_cost, household_vat_rate);
-            let store = &mut allocator.buildings[store_idx];
-            store.revenue += store_revenue;
-            store.operating_budget += store_revenue;
-            store.daily_household_sales_value += store_revenue;
-            self.households[hid].replenishment_state = REPLENISHMENT_SHOPPING_RETURNING;
-            self.households[hid].shopping_timeout_hours_remaining = shopping_leg_budget_hours(
-                store_idx,
-                self.households[hid].home_building_id,
-                agents.has_car[agent_idx],
-                allocator,
-                transit_network,
-                graph,
-                &agents.pathfind_count,
-                seconds_per_day,
-                shopping_leg_timeout_hours,
-            );
-            schedule_shopper_home(&self.households[hid], agents, ACTIVITY_SHOPPING);
-            return household_vat_collected;
-        } else if shopping_leg_timed_out(&mut self.households[hid]) {
-            self.cancel_replenishment_before_pickup_with_ledger(
-                hid,
-                agents,
-                allocator,
-                household_supply_resource,
-                retry_cooldown_hours,
-                terminal_failure_count,
-            );
-        }
-        0.0
+        let gross_total_cost = self.households[hid].reserved_total_cost;
+        let (store_revenue, household_vat_collected) =
+            split_gross_tax(gross_total_cost, household_vat_rate);
+        let store = &mut allocator.buildings[store_idx];
+        store.revenue += store_revenue;
+        store.operating_budget += store_revenue;
+        store.daily_household_sales_value += store_revenue;
+        self.households[hid].replenishment_state = REPLENISHMENT_SHOPPING_RETURNING;
+        self.households[hid].shopping_timeout_hours_remaining = shopping_leg_budget_hours(
+            store_idx,
+            self.households[hid].home_building_id,
+            agents.has_car[agent_idx],
+            allocator,
+            transit_network,
+            graph,
+            &agents.pathfind_count,
+            seconds_per_day,
+            shopping_leg_timeout_hours,
+        );
+        schedule_shopper_home(&self.households[hid], agents, ACTIVITY_SHOPPING);
+        household_vat_collected
     }
 
-    fn process_shopping_returning(
+    // The shopper is home with the purchase: stock rises and the task ends.
+    fn deliver_shopping(&mut self, hid: usize, agents: &mut AgentSystem) {
+        let household = &mut self.households[hid];
+        // Release the owned task only after its cargo reaches this household. This also
+        // clears a home plan reissued while the carrier was still returning.
+        schedule_shopper_home(household, agents, ACTIVITY_HOME);
+        household.stock += household.reserved_amount;
+        household.stock_days = stock_days(
+            household.stock,
+            household.member_count,
+            household.consumption_rate,
+        );
+        clear_replenishment_request(household);
+        household.replenishment_failure_count = 0;
+        household.replenishment_search_cursor = 0;
+        household.replenishment_state = REPLENISHMENT_FULFILLED;
+        household.cooldown_hours = 1;
+        if let Some(ledger) = self.daily_ledgers.get_mut(hid) {
+            ledger.shopper_trips_completed = ledger.shopper_trips_completed.saturating_add(1);
+        }
+    }
+
+    /// Test driver of the shopping trips: releases every held shopper and checks every trip
+    /// once, as the paced events would within the hour. Returns the VAT collected.
+    #[cfg(test)]
+    pub(super) fn advance_shopping_trips_for_test(
         &mut self,
-        hid: usize,
         agents: &mut AgentSystem,
-        retry_cooldown_hours: u16,
-        terminal_failure_count: u16,
-    ) {
-        let Some(agent_idx) = shopping_carrier(&self.households[hid], hid, agents) else {
-            self.cancel_replenishment_after_pickup_with_ledger(
-                hid,
-                agents,
-                retry_cooldown_hours,
-                terminal_failure_count,
-            );
-            return;
-        };
-        let home_idx = self.households[hid].home_building_id;
-        if home_idx == usize::MAX {
-            self.cancel_replenishment_after_pickup_with_ledger(
-                hid,
-                agents,
-                retry_cooldown_hours,
-                terminal_failure_count,
-            );
-            return;
-        }
-        if agents.transit[agent_idx] == TRANSIT_IN_BUILDING
-            && agents.current_building[agent_idx] == home_idx
-        {
-            let household = &mut self.households[hid];
-            // Release the owned task only after its cargo reaches this household. This
-            // also clears a home plan reissued while the carrier was still returning.
-            schedule_shopper_home(household, agents, ACTIVITY_HOME);
-            household.stock += household.reserved_amount;
-            household.stock_days = stock_days(
-                household.stock,
-                household.member_count,
-                household.consumption_rate,
-            );
-            clear_replenishment_request(household);
-            household.replenishment_failure_count = 0;
-            household.replenishment_search_cursor = 0;
-            household.replenishment_state = REPLENISHMENT_FULFILLED;
-            household.cooldown_hours = 1;
-            if let Some(ledger) = self.daily_ledgers.get_mut(hid) {
-                ledger.shopper_trips_completed = ledger.shopper_trips_completed.saturating_add(1);
+        allocator: &mut BuildingAllocator,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+        household_vat_rate: f32,
+    ) -> f32 {
+        let mut vat = 0.0;
+        for household in std::mem::take(&mut self.held_shoppers) {
+            if let Some(hid) = self.handles.resolve(household) {
+                self.release_shopper(hid, agents, allocator);
             }
-        } else if shopping_leg_timed_out(&mut self.households[hid]) {
-            self.cancel_replenishment_after_pickup_with_ledger(
-                hid,
-                agents,
-                retry_cooldown_hours,
-                terminal_failure_count,
-            );
-        } else {
-            schedule_shopper_home(&self.households[hid], agents, ACTIVITY_SHOPPING);
         }
+        for hid in 0..self.households.len() {
+            vat += self
+                .check_shopping_trip(hid, agents, allocator, transit_network, graph, household_vat_rate)
+                .1;
+        }
+        vat
     }
 
     /// Cancels an evicted household's shopping task through the normal refund and ledger path.
@@ -1460,6 +1537,7 @@ fn apply_starvation_happiness_loss(households: &[Household], agents: &mut AgentS
         });
 }
 
+// Reserves the purchase and holds the shopper for its paced departure; true when it did.
 #[allow(clippy::too_many_arguments)]
 fn apply_replenishment_plan(
     plan: ReplenishmentCandidatePlan,
@@ -1477,14 +1555,14 @@ fn apply_replenishment_plan(
     catalog: &crate::simulation::economy::definitions::RuntimeEconomyCatalog,
     household_vat_rate: f32,
     diagnostics: &mut ReplenishmentDiagnostics,
-) {
+) -> bool {
     let Some(household) = households.get(plan.household_id) else {
-        return;
+        return false;
     };
     if household.replenishment_state == REPLENISHMENT_SHOPPING_TO_STORE
         || household.replenishment_state == REPLENISHMENT_SHOPPING_RETURNING
     {
-        return;
+        return false;
     }
     if !eligible_shopper_for_household(agents, plan.shopper_agent_id, plan.household_id, household)
     {
@@ -1492,7 +1570,7 @@ fn apply_replenishment_plan(
         household.replenishment_state = REPLENISHMENT_WAITING_FOR_SHOPPER;
         household.shopping_agent = AgentHandle::NONE;
         diagnostics.failed_no_shopper += 1;
-        return;
+        return false;
     }
 
     let mut desired_amount = plan.desired_amount;
@@ -1588,13 +1666,16 @@ fn apply_replenishment_plan(
         }
         agents.planned_target_building[plan.shopper_agent_id] = store_idx;
         agents.planned_activity[plan.shopper_agent_id] = ACTIVITY_SHOPPING;
-        crate::debug::work::add(crate::debug::work::Work::ShopperDispatches, 1);
+        // The shopper waits at home for its paced departure (`SIM-02-E`).
+        agents.hold_departure(plan.shopper_agent_id);
         diagnostics.successes += 1;
         diagnostics.reserved_amount += amount;
         diagnostics.reserved_cost += total_cost;
+        true
     } else {
         register_replenishment_failure(household, retry_cooldown_hours, terminal_failure_count);
         diagnostics.failed_no_sale += 1;
+        false
     }
 }
 

@@ -546,6 +546,7 @@ fn demand_household_removal_remaps_moved_freight_carrier() {
         freight_cost: 0.0,
         eta_hours: 1,
         queued_hours: 0,
+        cargo_loaded: true,
     });
 
     // The home has failed before departure; retain the agent and shipment remapping fixture.

@@ -55,6 +55,16 @@ impl<K> Handle<K> {
     pub(crate) fn is_none(self) -> bool {
         self.index == NONE_INDEX
     }
+
+    /// Packs the handle into one integer, `index << 32 | generation`, for saved event rows.
+    pub(crate) fn to_bits(self) -> u64 {
+        u64::from(self.index) << 32 | u64::from(self.generation)
+    }
+
+    /// Inverse of [`Self::to_bits`].
+    pub(crate) fn from_bits(bits: u64) -> Self {
+        Self::from_parts((bits >> 32) as u32, bits as u32)
+    }
 }
 
 // Manual impls: derives would require the marker type itself to implement each trait.

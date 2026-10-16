@@ -3099,6 +3099,7 @@ mod tests {
                 freight_cost: 0.0,
                 eta_hours: 1,
                 queued_hours: 0,
+                cargo_loaded: false,
             });
 
             assert!(core.bulldoze_building(removed));
@@ -3157,6 +3158,7 @@ mod tests {
             freight_cost: 0.0,
             eta_hours: 1,
             queued_hours: 0,
+            cargo_loaded: true,
         });
 
         assert!(core.bulldoze_building(1));

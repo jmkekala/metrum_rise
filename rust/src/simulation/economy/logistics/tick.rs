@@ -4,6 +4,9 @@
 
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::AgentSystem;
+use crate::simulation::economy::definitions::{
+    load_runtime_economy_catalog, load_runtime_economy_tuning,
+};
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::{debug, debug_log};
@@ -13,8 +16,9 @@ use super::data::ShipmentSystem;
 use super::planning::FreightPlanningContext;
 
 impl ShipmentSystem {
-    /// Advances freight deliveries and opens new bounded restock jobs on one operational hour.
-    #[allow(clippy::too_many_arguments)]
+    /// Opens new bounded restock jobs on one operational hour, loads their cargo for paced
+    /// departures and ages the carriers under way. Deliveries happen when carriers arrive
+    /// (`SIM-02-E`).
     pub fn hourly_tick(
         &mut self,
         allocator: &mut BuildingAllocator,
@@ -23,7 +27,6 @@ impl ShipmentSystem {
         graph: &RegionGraph,
         minute_of_day: u16,
         treasury_balance: &mut f64,
-        on_delivery: impl FnMut(&super::data::Shipment, &BuildingAllocator),
     ) {
         #[cfg(test)]
         let _contract_phase = crate::debug::work::phases::enter("logistics");
@@ -69,13 +72,19 @@ impl ShipmentSystem {
         planning.finish(self);
         let finish_planning_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
-        self.progress_shipments(
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        let retry_cooldown_hours = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"))
+            .operational_clock
+            .shipment_retry_cooldown_hours;
+        self.load_ready_shipments(allocator, treasury_balance, retry_cooldown_hours, &catalog);
+        self.expire_overdue_shipments(
             allocator,
             agents,
-            transit_network,
-            graph,
             treasury_balance,
-            on_delivery,
+            retry_cooldown_hours,
+            &catalog,
         );
         let progress_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();

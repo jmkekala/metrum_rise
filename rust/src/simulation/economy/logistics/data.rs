@@ -138,6 +138,9 @@ pub struct Shipment {
     pub eta_hours: u16,
     /// Operational hours spent in the current active logistics state.
     pub queued_hours: u16,
+    /// Whether the cargo has left the source building's stock: loaded on the planning hour,
+    /// carried from the carrier's paced departure on (`SIM-02-E`).
+    pub(crate) cargo_loaded: bool,
 }
 
 /// Stable key for unresolved input-freight request failure tracking.
@@ -169,6 +172,8 @@ pub struct ShipmentSystem {
     /// Hourly logistics passes run so far; the clock of building freight cooldowns
     /// (`Building::shipment_cooldown_until_tick`). Saved.
     pub(crate) hour_ticks: u32,
+    /// Shipments loaded since SimCore last paced their carriers' departures, in id order.
+    pub(crate) held_dispatches: Vec<u64>,
     /// Consecutive request failures keyed by destination building and resource, including terminal unresolved requests.
     pub request_failures: BTreeMap<FreightRequestKey, FreightRequestFailure>,
     /// Freight ETA cache reused while topology revisions remain unchanged.
@@ -198,6 +203,7 @@ impl ShipmentSystem {
             shipments: Vec::new(),
             next_shipment_id: 0,
             hour_ticks: 0,
+            held_dispatches: Vec::new(),
             request_failures: BTreeMap::new(),
             freight_route_cache: FreightRouteCache::default(),
             freight_route_cache_building_revision: u64::MAX,
@@ -235,7 +241,7 @@ impl ShipmentSystem {
             }
             if shipment.destination.touches_building(removed_building)
                 && shipment.status == ShipmentStatus::InTransit
-                && !shipment.carrier.is_none()
+                && shipment.cargo_loaded
                 && let Some(source_id) = shipment.source.building_id()
                 && source_id != removed_building
             {
@@ -369,7 +375,7 @@ impl ShipmentSystem {
             }
             if shipment.destination.touches_building(removed_building)
                 && shipment.status == ShipmentStatus::InTransit
-                && !shipment.carrier.is_none()
+                && shipment.cargo_loaded
                 && let ShipmentEndpoint::Building(source_id) = shipment.source
                 && source_id < allocator.buildings.len()
                 && source_id != removed_building

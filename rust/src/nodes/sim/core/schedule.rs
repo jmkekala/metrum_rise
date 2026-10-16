@@ -18,6 +18,7 @@ use crate::simulation::core::scheduler::{
     Cost, Declaration, Period, SLOTS_PER_DAY, SLOTS_PER_MINUTE, Schedule, SystemKind, Tier, state,
 };
 use crate::simulation::core::timing_wheel::TimedEvent;
+use super::trips::TripEvent;
 
 /// One system the dispatcher can run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,17 +38,17 @@ pub(crate) enum SimEvent {
     ConstructionStart { id: u64 },
     /// Finishes `building`'s construction; a building that left or already finished is skipped.
     ConstructionComplete { building: Handle<Building> },
+    /// A step of one trip in progress.
+    Trip(TripEvent),
 }
 
 impl SimEvent {
-    /// Saved `(kind, a)` columns; a handle saves as `index << 32 | generation`.
+    /// Saved `(kind, a)` columns; a handle saves as [`Handle::to_bits`].
     pub(crate) fn to_saved(self) -> (u16, u64) {
         match self {
             Self::ConstructionStart { id } => (0, id),
-            Self::ConstructionComplete { building } => (
-                1,
-                u64::from(building.index()) << 32 | u64::from(building.generation()),
-            ),
+            Self::ConstructionComplete { building } => (1, building.to_bits()),
+            Self::Trip(trip) => trip.to_saved(),
         }
     }
 
@@ -56,9 +57,9 @@ impl SimEvent {
         match kind {
             0 => Some(Self::ConstructionStart { id: a }),
             1 => Some(Self::ConstructionComplete {
-                building: Handle::from_parts((a >> 32) as u32, a as u32),
+                building: Handle::from_bits(a),
             }),
-            _ => None,
+            _ => TripEvent::from_saved(kind, a).map(Self::Trip),
         }
     }
 }
@@ -131,6 +132,7 @@ impl SimCore {
     ) {
         let (day_index, minute_of_day) = slot_calendar(slot);
         self.allocator.now_slot = slot;
+        crate::debug::work::set_clock_minute(slot / SLOTS_PER_MINUTE);
         for index in 0..self.schedule.declarations().len() {
             let declaration = self.schedule.declarations()[index];
             if !declaration.kind.due(slot) {
@@ -198,6 +200,7 @@ impl SimCore {
                         observer.buildings_changed(self);
                     }
                 }
+                SimEvent::Trip(trip) => self.run_trip_event(trip, slot, observer),
             }
         }
         self.due_events = due;

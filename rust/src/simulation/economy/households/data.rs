@@ -11,7 +11,7 @@ use super::replenishment::{
     register_replenishment_failure,
 };
 use crate::simulation::buildings::allocator::BuildingAllocator;
-use crate::simulation::core::handles::HandleTable;
+use crate::simulation::core::handles::{Handle, HandleTable};
 use crate::simulation::economy::agents::AgentHandle;
 use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
@@ -186,6 +186,10 @@ pub struct HouseholdSystem {
     pub(crate) handles: HandleTable<Household>,
     /// Derived before each hourly demand pass; rebuilt from persisted arrival carriers.
     pub(crate) pending_arrivals: PendingHouseholdArrivals,
+    /// Households whose shopper was reserved and held since SimCore last paced departures.
+    pub(crate) held_shoppers: Vec<Handle<Household>>,
+    /// Service visitors held since SimCore last paced departures.
+    pub(crate) held_visitors: Vec<AgentHandle>,
     pub(crate) job_funding: crate::simulation::economy::hiring::JobFunding,
     pub(super) member_count_scratch: Vec<AtomicU32>,
     pub(super) child_count_scratch: Vec<AtomicU32>,
@@ -233,6 +237,8 @@ impl HouseholdSystem {
             households: Vec::new(),
             handles: HandleTable::default(),
             pending_arrivals: PendingHouseholdArrivals::default(),
+            held_shoppers: Vec::new(),
+            held_visitors: Vec::new(),
             job_funding: Default::default(),
             member_count_scratch: Vec::new(),
             child_count_scratch: Vec::new(),
@@ -358,6 +364,8 @@ impl HouseholdSystem {
         self.households.clear();
         self.job_funding.clear();
         self.pending_arrivals = PendingHouseholdArrivals::default();
+        self.held_shoppers.clear();
+        self.held_visitors.clear();
         self.member_count_scratch.clear();
         self.child_count_scratch.clear();
         self.adult_count_scratch.clear();

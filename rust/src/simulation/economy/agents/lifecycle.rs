@@ -18,6 +18,9 @@ use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use godot::prelude::Vector2;
 
+/// Replan time of an agent held for a paced departure; no simulation time reaches it.
+const DEPARTURE_HOLD: f32 = f32::MAX;
+
 impl AgentSystem {
     /// Spawns one agent already housed inside a building.
     pub fn spawn_housed_agent(&mut self, home: usize, init_x: f32, init_y: f32) -> usize {
@@ -83,12 +86,47 @@ impl AgentSystem {
         init_y: f32,
     ) -> usize {
         let agent_idx = self.spawn_border_arrival_agent(home, border_node, init_x, init_y);
-        crate::debug::work::add(crate::debug::work::Work::ArrivalLaunches, 1);
         self.agents.pending_household_size[agent_idx] = household_size.max(1);
         let composition = super::household_age_composition(home, household_seed, household_size);
         self.agents.pending_household_adults[agent_idx] = composition.adult_count;
         self.agents.pending_household_elders[agent_idx] = composition.elder_count;
+        // The carrier waits at the border for its paced departure (`SIM-02-E`).
+        self.hold_departure(agent_idx);
+        let handle = self.agent_handle(agent_idx);
+        self.arrival_carriers.push(handle);
+        self.held_arrivals.push(handle);
         agent_idx
+    }
+
+    /// Keeps an agent where it is until [`Self::release_departure`]: its next trip waits for a
+    /// paced departure slot (`SIM-02-E`). Uses the replan gate every departure already obeys.
+    pub(crate) fn hold_departure(&mut self, agent_idx: usize) {
+        self.agents.next_replan_time[agent_idx] = DEPARTURE_HOLD;
+    }
+
+    /// Whether the agent waits for a paced departure.
+    pub(crate) fn departure_held(&self, agent_idx: usize) -> bool {
+        self.agents.next_replan_time[agent_idx] == DEPARTURE_HOLD
+    }
+
+    /// Lets a held agent start its trip on the next frame; false when it was not held.
+    pub(crate) fn release_departure(&mut self, agent_idx: usize) -> bool {
+        let held = self.departure_held(agent_idx);
+        if held {
+            self.agents.next_replan_time[agent_idx] = 0.0;
+        }
+        held
+    }
+
+    /// Rebuilds [`Self::arrival_carriers`] from the carriers' pending households, in dense
+    /// order, after a load replaced the store. O(agents).
+    pub(crate) fn rebuild_arrival_carriers(&mut self) {
+        self.handles.register_appended(self.agents.len());
+        self.arrival_carriers = (0..self.agents.len())
+            .filter(|&agent_idx| self.agents.pending_household_size[agent_idx] > 0)
+            .map(|agent_idx| self.handles.handle(agent_idx))
+            .collect();
+        self.held_arrivals.clear();
     }
 
     /// Reads an arrival carrier's approved composition without depending on remapped home ids.

@@ -185,7 +185,7 @@ impl ShipmentSystem {
 
 fn source_reservation_slot(shipment: &Shipment, resource_count: usize) -> Option<usize> {
     let reserves_source =
-        shipment.status == ShipmentStatus::InTransit && shipment.carrier.is_none();
+        shipment.status == ShipmentStatus::InTransit && !shipment.cargo_loaded;
     if !reserves_source {
         return None;
     }
@@ -235,6 +235,7 @@ mod tests {
             freight_cost: 0.0,
             eta_hours: 1,
             queued_hours: 0,
+            cargo_loaded: false,
         }
     }
 
@@ -267,6 +268,7 @@ mod tests {
         {
             let mut shipment = reservation_shipment(idx, 100, 2, 12.0);
             shipment.status = status;
+            shipment.cargo_loaded = !carrier.is_none();
             shipment.carrier = carrier;
             shipments.shipments.push(shipment);
         }

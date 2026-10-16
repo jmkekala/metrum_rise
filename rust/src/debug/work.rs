@@ -81,16 +81,60 @@ pub(crate) const WORK_COUNT: usize = Work::TripFailures as usize + 1;
 static COUNTS: [std::sync::atomic::AtomicU64; WORK_COUNT] =
     [const { std::sync::atomic::AtomicU64::new(0) }; WORK_COUNT];
 
+// Departures of the burst kinds by the absolute minute the clock was processing, so the burst
+// envelope counts each in its own minute rather than the frame that ran it (`SIM-02-E`).
+#[cfg(test)]
+static CLOCK_MINUTE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(test)]
+static LOG_DEPARTURES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+static DEPARTURES: std::sync::Mutex<Vec<(Work, u64)>> = std::sync::Mutex::new(Vec::new());
+
 /// Adds `amount` to one counter. Test builds only; otherwise compiled out.
 #[cfg(test)]
 pub(crate) fn add(work: Work, amount: u64) {
     COUNTS[work as usize].fetch_add(amount, std::sync::atomic::Ordering::Relaxed);
+    if matches!(
+        work,
+        Work::FreightDispatches | Work::ArrivalLaunches | Work::ShopperDispatches
+    ) && LOG_DEPARTURES.load(std::sync::atomic::Ordering::Relaxed)
+    {
+        let minute = CLOCK_MINUTE.load(std::sync::atomic::Ordering::Relaxed);
+        DEPARTURES
+            .lock()
+            .unwrap()
+            .extend(std::iter::repeat_n((work, minute), amount as usize));
+    }
 }
 
 /// Adds `amount` to one counter. Test builds only; otherwise compiled out.
 #[cfg(not(test))]
 #[inline(always)]
 pub(crate) fn add(_work: Work, _amount: u64) {}
+
+/// Records the absolute minute the simulation clock is processing. Test builds only.
+#[cfg(test)]
+pub(crate) fn set_clock_minute(minute: u64) {
+    CLOCK_MINUTE.store(minute, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Records the absolute minute the simulation clock is processing. Test builds only.
+#[cfg(not(test))]
+#[inline(always)]
+pub(crate) fn set_clock_minute(_minute: u64) {}
+
+/// Starts or stops logging departures with their minute, for one burst-envelope run.
+#[cfg(test)]
+pub(crate) fn log_departures(enabled: bool) {
+    LOG_DEPARTURES.store(enabled, std::sync::atomic::Ordering::Relaxed);
+    DEPARTURES.lock().unwrap().clear();
+}
+
+/// Departures logged since the last call, each with the minute it left in.
+#[cfg(test)]
+pub(crate) fn take_departures() -> Vec<(Work, u64)> {
+    std::mem::take(&mut DEPARTURES.lock().unwrap())
+}
 
 /// Cumulative counter values, for subtraction across a measured interval.
 #[cfg(test)]

@@ -21,7 +21,244 @@ enum CarrierProgress {
 }
 
 impl ShipmentSystem {
+    /// Shipment `id`'s index in the id-ordered list. O(log S).
+    pub(crate) fn shipment_index(&self, id: u64) -> Option<usize> {
+        self.shipments.binary_search_by_key(&id, |job| job.id).ok()
+    }
+
+    /// Loads every new shipment's cargo at its source and lists it for a paced carrier
+    /// departure (`SIM-02-E`); a shipment whose endpoints are no longer ready fails at once.
+    /// O(open shipments).
+    pub(super) fn load_ready_shipments(
+        &mut self,
+        allocator: &mut BuildingAllocator,
+        treasury_balance: &mut f64,
+        retry_cooldown_hours: u16,
+        catalog: &RuntimeEconomyCatalog,
+    ) {
+        for idx in 0..self.shipments.len() {
+            let shipment = &self.shipments[idx];
+            if shipment.status != ShipmentStatus::InTransit || shipment.cargo_loaded {
+                continue;
+            }
+            if !shipment_endpoints_ready(shipment, allocator, catalog) {
+                fail_shipment_before_dispatch(
+                    &mut self.shipments[idx],
+                    allocator,
+                    treasury_balance,
+                    self.hour_ticks + u32::from(retry_cooldown_hours),
+                );
+                continue;
+            }
+            if let ShipmentEndpoint::Building(source_idx) = shipment.source {
+                allocator.buildings[source_idx]
+                    .remove_inventory_units(shipment.resource_runtime_id, shipment.amount);
+            }
+            self.shipments[idx].cargo_loaded = true;
+            self.held_dispatches.push(self.shipments[idx].id);
+        }
+    }
+
+    /// Sends loaded shipment `id`'s carrier on its way at its paced slot (`SIM-02-E`). True when
+    /// a carrier left; one that cannot route fails the shipment and returns its cargo.
+    /// O(log S) plus one route.
+    pub(crate) fn dispatch_shipment(
+        &mut self,
+        id: u64,
+        allocator: &mut BuildingAllocator,
+        agents: &mut AgentSystem,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+        treasury_balance: &mut f64,
+    ) -> bool {
+        let Some(idx) = self.shipment_index(id) else {
+            return false;
+        };
+        let shipment = self.shipments[idx].clone();
+        if shipment.status != ShipmentStatus::InTransit
+            || !shipment.cargo_loaded
+            || !shipment.carrier.is_none()
+        {
+            return false;
+        }
+        let carrier = match (shipment.source, shipment.destination) {
+            (ShipmentEndpoint::Building(source), ShipmentEndpoint::Building(destination)) => agents
+                .spawn_city_freight_carrier(
+                    shipment.id,
+                    source,
+                    destination,
+                    allocator,
+                    transit_network,
+                    graph,
+                ),
+            (ShipmentEndpoint::OwaBorder(border_node), ShipmentEndpoint::Building(destination)) => {
+                agents.spawn_import_freight_carrier(
+                    shipment.id,
+                    border_node,
+                    destination,
+                    allocator,
+                    transit_network,
+                    graph,
+                )
+            }
+            (ShipmentEndpoint::Building(source), ShipmentEndpoint::OwaBorder(border_node)) => agents
+                .spawn_export_freight_carrier(
+                    shipment.id,
+                    source,
+                    border_node,
+                    allocator,
+                    transit_network,
+                    graph,
+                ),
+            _ => None,
+        };
+        let Some(carrier_agent_id) = carrier else {
+            let retry_cooldown_hours = load_runtime_economy_tuning()
+                .unwrap_or_else(|err| {
+                    panic!("could not load built-in economy runtime tuning: {err}")
+                })
+                .operational_clock
+                .shipment_retry_cooldown_hours;
+            return_loaded_cargo(&shipment, allocator);
+            fail_shipment_before_dispatch(
+                &mut self.shipments[idx],
+                allocator,
+                treasury_balance,
+                self.hour_ticks + u32::from(retry_cooldown_hours),
+            );
+            return false;
+        };
+        self.shipments[idx].carrier = agents.agent_handle(carrier_agent_id);
+        self.shipments[idx].queued_hours = 0;
+        crate::debug::work::add(crate::debug::work::Work::FreightDispatches, 1);
+        true
+    }
+
+    /// One check of shipment `id`'s carrier (`SIM-02-E`): a carrier at its destination delivers
+    /// and turns back, one back at its source finishes. True while the carrier is under way.
+    /// O(log S) plus the delivery.
     #[allow(clippy::too_many_arguments)]
+    pub(crate) fn check_shipment(
+        &mut self,
+        id: u64,
+        allocator: &mut BuildingAllocator,
+        agents: &mut AgentSystem,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+        treasury_balance: &mut f64,
+        on_delivery: &mut impl FnMut(&Shipment, &BuildingAllocator),
+    ) -> bool {
+        let Some(idx) = self.shipment_index(id) else {
+            return false;
+        };
+        let shipment = self.shipments[idx].clone();
+        match shipment.status {
+            ShipmentStatus::Returning => {
+                match shipment_carrier_progress_to_endpoint(&shipment, agents, shipment.source) {
+                    CarrierProgress::Traveling => true,
+                    CarrierProgress::Arrived | CarrierProgress::Missing => {
+                        self.finish_delivered_shipment(idx, &shipment, agents);
+                        false
+                    }
+                }
+            }
+            ShipmentStatus::InTransit if !shipment.carrier.is_none() => {
+                let catalog = load_runtime_economy_catalog().unwrap_or_else(|err| {
+                    panic!("could not load built-in runtime economy catalog: {err}")
+                });
+                let retry_cooldown_hours = load_runtime_economy_tuning()
+                    .unwrap_or_else(|err| {
+                        panic!("could not load built-in economy runtime tuning: {err}")
+                    })
+                    .operational_clock
+                    .shipment_retry_cooldown_hours;
+                match shipment_carrier_progress_to_endpoint(&shipment, agents, shipment.destination)
+                {
+                    CarrierProgress::Traveling => true,
+                    CarrierProgress::Missing => {
+                        self.fail_in_transit_shipment(
+                            idx,
+                            allocator,
+                            agents,
+                            treasury_balance,
+                            retry_cooldown_hours,
+                            &catalog,
+                            ShipmentStatus::Failed,
+                            "carrier_missing",
+                        );
+                        false
+                    }
+                    CarrierProgress::Arrived => {
+                        self.deliver_shipment(
+                            idx,
+                            &shipment,
+                            allocator,
+                            agents,
+                            transit_network,
+                            graph,
+                            treasury_balance,
+                            retry_cooldown_hours,
+                            &catalog,
+                            on_delivery,
+                        );
+                        self.shipments[idx].status == ShipmentStatus::Returning
+                    }
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// Hourly: carriers still under way age by one hour and time out; arrived ones are left to
+    /// their checks (`SIM-02-E`). O(open shipments).
+    pub(super) fn expire_overdue_shipments(
+        &mut self,
+        allocator: &mut BuildingAllocator,
+        agents: &mut AgentSystem,
+        treasury_balance: &mut f64,
+        retry_cooldown_hours: u16,
+        catalog: &RuntimeEconomyCatalog,
+    ) {
+        for idx in 0..self.shipments.len() {
+            let shipment = &self.shipments[idx];
+            let endpoint = match shipment.status {
+                ShipmentStatus::Returning => shipment.source,
+                ShipmentStatus::InTransit => shipment.destination,
+                _ => continue,
+            };
+            if shipment.carrier.is_none()
+                || !matches!(
+                    shipment_carrier_progress_to_endpoint(shipment, agents, endpoint),
+                    CarrierProgress::Traveling
+                )
+            {
+                continue;
+            }
+            self.shipments[idx].queued_hours = self.shipments[idx].queued_hours.saturating_add(1);
+            let shipment = self.shipments[idx].clone();
+            if shipment.queued_hours < in_transit_timeout_hours(&shipment) {
+                continue;
+            }
+            if shipment.status == ShipmentStatus::Returning {
+                self.finish_delivered_shipment(idx, &shipment, agents);
+            } else {
+                self.fail_in_transit_shipment(
+                    idx,
+                    allocator,
+                    agents,
+                    treasury_balance,
+                    retry_cooldown_hours,
+                    catalog,
+                    ShipmentStatus::Expired,
+                    "carrier_timeout",
+                );
+            }
+        }
+    }
+
+    /// Test driver of one logistics hour's trips: loads and dispatches every ready shipment at
+    /// once, ages the carriers under way, then checks every carrier once.
+    #[cfg(test)]
     pub(super) fn progress_shipments(
         &mut self,
         allocator: &mut BuildingAllocator,
@@ -33,403 +270,308 @@ impl ShipmentSystem {
     ) {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
-        let tuning = load_runtime_economy_tuning()
-            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
-        let retry_cooldown_hours = tuning.operational_clock.shipment_retry_cooldown_hours;
-
-        self.dispatch_ready_carriers(
+        let retry_cooldown_hours = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"))
+            .operational_clock
+            .shipment_retry_cooldown_hours;
+        self.load_ready_shipments(allocator, treasury_balance, retry_cooldown_hours, &catalog);
+        for id in std::mem::take(&mut self.held_dispatches) {
+            self.dispatch_shipment(id, allocator, agents, transit_network, graph, treasury_balance);
+        }
+        self.expire_overdue_shipments(
             allocator,
             agents,
-            transit_network,
-            graph,
-            &catalog,
-            retry_cooldown_hours,
             treasury_balance,
+            retry_cooldown_hours,
+            &catalog,
         );
-
-        let mut idx = 0;
-        while idx < self.shipments.len() {
-            if self.shipments[idx].carrier.is_none()
-                && self.shipments[idx].status != ShipmentStatus::Returning
-            {
-                idx += 1;
-                continue;
-            }
-
-            let status = self.shipments[idx].status;
-            let shipment = self.shipments[idx].clone();
-            if status == ShipmentStatus::Returning {
-                match shipment_carrier_progress_to_endpoint(&shipment, agents, shipment.source) {
-                    CarrierProgress::Arrived | CarrierProgress::Missing => {
-                        self.finish_delivered_shipment(idx, &shipment, agents);
-                    }
-                    CarrierProgress::Traveling => {
-                        self.shipments[idx].queued_hours =
-                            self.shipments[idx].queued_hours.saturating_add(1);
-                        if self.shipments[idx].queued_hours >= in_transit_timeout_hours(&shipment) {
-                            self.finish_delivered_shipment(idx, &shipment, agents);
-                        }
-                    }
-                }
-                idx += 1;
-                continue;
-            }
-
-            if status != ShipmentStatus::InTransit {
-                idx += 1;
-                continue;
-            }
-
-            match shipment_carrier_progress_to_endpoint(&shipment, agents, shipment.destination) {
-                CarrierProgress::Arrived => {}
-                CarrierProgress::Traveling => {
-                    self.shipments[idx].queued_hours =
-                        self.shipments[idx].queued_hours.saturating_add(1);
-                    if self.shipments[idx].queued_hours
-                        >= in_transit_timeout_hours(&self.shipments[idx])
-                    {
-                        self.fail_in_transit_shipment(
-                            idx,
-                            allocator,
-                            agents,
-                            treasury_balance,
-                            retry_cooldown_hours,
-                            &catalog,
-                            ShipmentStatus::Expired,
-                            "carrier_timeout",
-                        );
-                    }
-                    idx += 1;
-                    continue;
-                }
-                CarrierProgress::Missing => {
-                    self.fail_in_transit_shipment(
-                        idx,
-                        allocator,
-                        agents,
-                        treasury_balance,
-                        retry_cooldown_hours,
-                        &catalog,
-                        ShipmentStatus::Failed,
-                        "carrier_missing",
-                    );
-                    idx += 1;
-                    continue;
-                }
-            }
-
-            // OWA export: goods travel from source building to border terminal; no local
-            // destination building receives them. Credit revenue to the source on arrival.
-            if let ShipmentEndpoint::OwaBorder(_) = shipment.destination {
-                let ShipmentEndpoint::Building(src_idx) = shipment.source else {
-                    self.fail_in_transit_shipment(
-                        idx,
-                        allocator,
-                        agents,
-                        treasury_balance,
-                        retry_cooldown_hours,
-                        &catalog,
-                        ShipmentStatus::Failed,
-                        "bad_export_source",
-                    );
-                    idx += 1;
-                    continue;
-                };
-                if src_idx < allocator.buildings.len()
-                    && !allocator.buildings[src_idx].broken
-                    && !allocator.buildings[src_idx].economy_broken
-                    && !allocator.buildings[src_idx].is_deserted
-                    && !allocator.buildings[src_idx].is_under_construction()
-                {
-                    allocator.buildings[src_idx].revenue += shipment.total_cost;
-                    allocator.buildings[src_idx].operating_budget +=
-                        shipment.total_cost - shipment.freight_cost;
-                    crate::debug::money::record_change(
-                        crate::debug::money::MoneyFlow::OutsideSales,
-                        shipment.freight_cost,
-                        shipment.total_cost,
-                    );
-
-                    on_delivery(&shipment, allocator);
-                    crate::debug::work::add(crate::debug::work::Work::FreightDeliveries, 1);
-
-                    debug_log!(
-                        "economy",
-                        "OWA export fulfilled index={} resource={} amount={:.1} revenue={:.1}",
-                        src_idx,
-                        catalog
-                            .resource_id_for_runtime_id(shipment.resource_runtime_id)
-                            .unwrap_or("unknown"),
-                        shipment.amount,
-                        shipment.total_cost
-                    );
-                    self.start_return_or_finish(
-                        idx,
-                        &shipment,
-                        allocator,
-                        agents,
-                        transit_network,
-                        graph,
-                    );
-                } else {
-                    self.fail_in_transit_shipment(
-                        idx,
-                        allocator,
-                        agents,
-                        treasury_balance,
-                        retry_cooldown_hours,
-                        &catalog,
-                        ShipmentStatus::Failed,
-                        "source_unavailable",
-                    );
-                }
-                idx += 1;
-                continue;
-            }
-
-            let ShipmentEndpoint::Building(dest_idx) = shipment.destination else {
-                self.fail_in_transit_shipment(
-                    idx,
-                    allocator,
-                    agents,
-                    treasury_balance,
-                    retry_cooldown_hours,
-                    &catalog,
-                    ShipmentStatus::Failed,
-                    "bad_destination",
-                );
-                idx += 1;
-                continue;
-            };
-            if dest_idx >= allocator.buildings.len() {
-                self.fail_in_transit_shipment(
-                    idx,
-                    allocator,
-                    agents,
-                    treasury_balance,
-                    retry_cooldown_hours,
-                    &catalog,
-                    ShipmentStatus::Failed,
-                    "destination_missing",
-                );
-                idx += 1;
-                continue;
-            }
-
-            match shipment.source {
-                ShipmentEndpoint::Building(src_idx) => {
-                    if src_idx >= allocator.buildings.len()
-                        || allocator.buildings[src_idx].broken
-                        || allocator.buildings[src_idx].economy_broken
-                        || allocator.buildings[src_idx].is_deserted
-                        || allocator.buildings[src_idx].is_under_construction()
-                        || allocator.buildings[dest_idx].broken
-                        || allocator.buildings[dest_idx].economy_broken
-                        || allocator.buildings[dest_idx].is_deserted
-                        || allocator.buildings[dest_idx].is_under_construction()
-                        || !building_accepts_input_resource(
-                            &catalog,
-                            &allocator.buildings[dest_idx],
-                            shipment.resource_runtime_id,
-                        )
-                    {
-                        self.fail_in_transit_shipment(
-                            idx,
-                            allocator,
-                            agents,
-                            treasury_balance,
-                            retry_cooldown_hours,
-                            &catalog,
-                            ShipmentStatus::Failed,
-                            "endpoint_unavailable",
-                        );
-                        idx += 1;
-                        continue;
-                    }
-
-                    allocator.buildings[src_idx].revenue +=
-                        shipment.total_cost - shipment.freight_cost;
-                    allocator.buildings[src_idx].operating_budget +=
-                        shipment.total_cost - shipment.freight_cost;
-                    // The buyer's escrow pays the seller; the carrier fee leaves the city.
-                    crate::debug::money::record_change(
-                        crate::debug::money::MoneyFlow::FreightPurchases,
-                        shipment.freight_cost,
-                        0.0,
-                    );
-                    allocator.buildings[dest_idx]
-                        .add_inventory_units(shipment.resource_runtime_id, shipment.amount);
-                    allocator.buildings[dest_idx].daily_local_input_value += shipment.total_cost;
-                    on_delivery(&shipment, allocator);
-                    crate::debug::work::add(crate::debug::work::Work::FreightDeliveries, 1);
-                    debug_log!(
-                        "economy",
-                        "freight input fulfilled shipment_id={} source=local src_idx={} src_asset={} dest_idx={} dest_asset={} resource={} amount={:.1} cost={:.1} dest_inventory={:.1}",
-                        shipment.id,
-                        src_idx,
-                        allocator.buildings[src_idx].asset_id,
-                        dest_idx,
-                        allocator.buildings[dest_idx].asset_id,
-                        catalog
-                            .resource_id_for_runtime_id(shipment.resource_runtime_id)
-                            .unwrap_or("unknown"),
-                        shipment.amount,
-                        shipment.total_cost,
-                        allocator.buildings[dest_idx].inventory_units(shipment.resource_runtime_id)
-                    );
-                    self.start_return_or_finish(
-                        idx,
-                        &shipment,
-                        allocator,
-                        agents,
-                        transit_network,
-                        graph,
-                    );
-                }
-                ShipmentEndpoint::OwaBorder(border_node) => {
-                    if allocator.buildings[dest_idx].broken
-                        || allocator.buildings[dest_idx].economy_broken
-                        || allocator.buildings[dest_idx].is_deserted
-                        || allocator.buildings[dest_idx].is_under_construction()
-                        || !building_accepts_input_resource(
-                            &catalog,
-                            &allocator.buildings[dest_idx],
-                            shipment.resource_runtime_id,
-                        )
-                    {
-                        self.fail_in_transit_shipment(
-                            idx,
-                            allocator,
-                            agents,
-                            treasury_balance,
-                            retry_cooldown_hours,
-                            &catalog,
-                            ShipmentStatus::Failed,
-                            "destination_unavailable",
-                        );
-                        idx += 1;
-                        continue;
-                    }
-                    allocator.buildings[dest_idx]
-                        .add_inventory_units(shipment.resource_runtime_id, shipment.amount);
-                    allocator.buildings[dest_idx].daily_owa_input_value += shipment.total_cost;
-                    // The buyer's escrow pays the outside seller and carrier.
-                    crate::debug::money::record_change(
-                        crate::debug::money::MoneyFlow::FreightPurchases,
-                        shipment.total_cost,
-                        0.0,
-                    );
-                    on_delivery(&shipment, allocator);
-                    crate::debug::work::add(crate::debug::work::Work::FreightDeliveries, 1);
-                    debug_log!(
-                        "economy",
-                        "freight input fulfilled shipment_id={} source=owa border_node={} dest_idx={} dest_asset={} resource={} amount={:.1} cost={:.1} dest_inventory={:.1}",
-                        shipment.id,
-                        border_node,
-                        dest_idx,
-                        allocator.buildings[dest_idx].asset_id,
-                        catalog
-                            .resource_id_for_runtime_id(shipment.resource_runtime_id)
-                            .unwrap_or("unknown"),
-                        shipment.amount,
-                        shipment.total_cost,
-                        allocator.buildings[dest_idx].inventory_units(shipment.resource_runtime_id)
-                    );
-                    self.start_return_or_finish(
-                        idx,
-                        &shipment,
-                        allocator,
-                        agents,
-                        transit_network,
-                        graph,
-                    );
-                }
-            }
-            idx += 1;
+        let ids: Vec<u64> = self.shipments.iter().map(|shipment| shipment.id).collect();
+        for id in ids {
+            self.check_shipment(
+                id,
+                allocator,
+                agents,
+                transit_network,
+                graph,
+                treasury_balance,
+                &mut on_delivery,
+            );
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn dispatch_ready_carriers(
+    /// Test driver of one logistics hour with its trips taken at once: the hourly pass, then
+    /// every held carrier dispatched and every carrier checked, then closed shipments dropped.
+    #[cfg(test)]
+    pub(crate) fn hourly_tick_with_trips(
         &mut self,
         allocator: &mut BuildingAllocator,
         agents: &mut AgentSystem,
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
-        catalog: &RuntimeEconomyCatalog,
-        retry_cooldown_hours: u16,
+        minute_of_day: u16,
         treasury_balance: &mut f64,
     ) {
-        for idx in 0..self.shipments.len() {
-            if self.shipments[idx].status != ShipmentStatus::InTransit
-                || !self.shipments[idx].carrier.is_none()
-            {
-                continue;
-            }
+        self.hourly_tick(
+            allocator,
+            agents,
+            transit_network,
+            graph,
+            minute_of_day,
+            treasury_balance,
+        );
+        for id in std::mem::take(&mut self.held_dispatches) {
+            self.dispatch_shipment(id, allocator, agents, transit_network, graph, treasury_balance);
+        }
+        let ids: Vec<u64> = self.shipments.iter().map(|shipment| shipment.id).collect();
+        for id in ids {
+            self.check_shipment(
+                id,
+                allocator,
+                agents,
+                transit_network,
+                graph,
+                treasury_balance,
+                &mut |_, _| {},
+            );
+        }
+        self.shipments.retain(|shipment| shipment.status.is_open());
+    }
 
-            let shipment = self.shipments[idx].clone();
-            if !shipment_endpoints_ready(&shipment, allocator, catalog) {
-                fail_shipment_before_dispatch(
-                    &mut self.shipments[idx],
+    // The carrier reached its destination: settle the cargo, then return or finish.
+    #[allow(clippy::too_many_arguments)]
+    fn deliver_shipment(
+        &mut self,
+        idx: usize,
+        shipment: &Shipment,
+        allocator: &mut BuildingAllocator,
+        agents: &mut AgentSystem,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+        treasury_balance: &mut f64,
+        retry_cooldown_hours: u16,
+        catalog: &RuntimeEconomyCatalog,
+        on_delivery: &mut impl FnMut(&Shipment, &BuildingAllocator),
+    ) {
+        // OWA export: goods travel from source building to border terminal; no local
+        // destination building receives them. Credit revenue to the source on arrival.
+        if let ShipmentEndpoint::OwaBorder(_) = shipment.destination {
+            let ShipmentEndpoint::Building(src_idx) = shipment.source else {
+                self.fail_in_transit_shipment(
+                    idx,
                     allocator,
+                    agents,
                     treasury_balance,
-                    self.hour_ticks + u32::from(retry_cooldown_hours),
+                    retry_cooldown_hours,
+                    catalog,
+                    ShipmentStatus::Failed,
+                    "bad_export_source",
                 );
-                continue;
-            }
+                return;
+            };
+            if src_idx < allocator.buildings.len()
+                && !allocator.buildings[src_idx].broken
+                && !allocator.buildings[src_idx].economy_broken
+                && !allocator.buildings[src_idx].is_deserted
+                && !allocator.buildings[src_idx].is_under_construction()
+            {
+                allocator.buildings[src_idx].revenue += shipment.total_cost;
+                allocator.buildings[src_idx].operating_budget +=
+                    shipment.total_cost - shipment.freight_cost;
+                crate::debug::money::record_change(
+                    crate::debug::money::MoneyFlow::OutsideSales,
+                    shipment.freight_cost,
+                    shipment.total_cost,
+                );
 
-            let carrier = match (shipment.source, shipment.destination) {
-                (ShipmentEndpoint::Building(source), ShipmentEndpoint::Building(destination)) => {
-                    agents.spawn_city_freight_carrier(
-                        shipment.id,
-                        source,
-                        destination,
-                        allocator,
-                        transit_network,
-                        graph,
-                    )
-                }
-                (
-                    ShipmentEndpoint::OwaBorder(border_node),
-                    ShipmentEndpoint::Building(destination),
-                ) => agents.spawn_import_freight_carrier(
-                    shipment.id,
-                    border_node,
-                    destination,
+                on_delivery(shipment, allocator);
+                crate::debug::work::add(crate::debug::work::Work::FreightDeliveries, 1);
+
+                debug_log!(
+                    "economy",
+                    "OWA export fulfilled index={} resource={} amount={:.1} revenue={:.1}",
+                    src_idx,
+                    catalog
+                        .resource_id_for_runtime_id(shipment.resource_runtime_id)
+                        .unwrap_or("unknown"),
+                    shipment.amount,
+                    shipment.total_cost
+                );
+                self.start_return_or_finish(
+                    idx,
+                    shipment,
                     allocator,
+                    agents,
                     transit_network,
                     graph,
-                ),
-                (ShipmentEndpoint::Building(source), ShipmentEndpoint::OwaBorder(border_node)) => {
-                    agents.spawn_export_freight_carrier(
-                        shipment.id,
-                        source,
-                        border_node,
-                        allocator,
-                        transit_network,
-                        graph,
-                    )
-                }
-                _ => None,
-            };
-
-            let Some(carrier_agent_id) = carrier else {
-                fail_shipment_before_dispatch(
-                    &mut self.shipments[idx],
-                    allocator,
-                    treasury_balance,
-                    self.hour_ticks + u32::from(retry_cooldown_hours),
                 );
-                continue;
-            };
-
-            if let ShipmentEndpoint::Building(source_idx) = shipment.source {
-                allocator.buildings[source_idx]
-                    .remove_inventory_units(shipment.resource_runtime_id, shipment.amount);
+            } else {
+                self.fail_in_transit_shipment(
+                    idx,
+                    allocator,
+                    agents,
+                    treasury_balance,
+                    retry_cooldown_hours,
+                    catalog,
+                    ShipmentStatus::Failed,
+                    "source_unavailable",
+                );
             }
-            self.shipments[idx].carrier = agents.agent_handle(carrier_agent_id);
-            self.shipments[idx].queued_hours = 0;
-            crate::debug::work::add(crate::debug::work::Work::FreightDispatches, 1);
+            return;
+        }
+
+        let ShipmentEndpoint::Building(dest_idx) = shipment.destination else {
+            self.fail_in_transit_shipment(
+                idx,
+                allocator,
+                agents,
+                treasury_balance,
+                retry_cooldown_hours,
+                catalog,
+                ShipmentStatus::Failed,
+                "bad_destination",
+            );
+            return;
+        };
+        if dest_idx >= allocator.buildings.len() {
+            self.fail_in_transit_shipment(
+                idx,
+                allocator,
+                agents,
+                treasury_balance,
+                retry_cooldown_hours,
+                catalog,
+                ShipmentStatus::Failed,
+                "destination_missing",
+            );
+            return;
+        }
+
+        match shipment.source {
+            ShipmentEndpoint::Building(src_idx) => {
+                if src_idx >= allocator.buildings.len()
+                    || allocator.buildings[src_idx].broken
+                    || allocator.buildings[src_idx].economy_broken
+                    || allocator.buildings[src_idx].is_deserted
+                    || allocator.buildings[src_idx].is_under_construction()
+                    || allocator.buildings[dest_idx].broken
+                    || allocator.buildings[dest_idx].economy_broken
+                    || allocator.buildings[dest_idx].is_deserted
+                    || allocator.buildings[dest_idx].is_under_construction()
+                    || !building_accepts_input_resource(
+                        catalog,
+                        &allocator.buildings[dest_idx],
+                        shipment.resource_runtime_id,
+                    )
+                {
+                    self.fail_in_transit_shipment(
+                        idx,
+                        allocator,
+                        agents,
+                        treasury_balance,
+                        retry_cooldown_hours,
+                        catalog,
+                        ShipmentStatus::Failed,
+                        "endpoint_unavailable",
+                    );
+                    return;
+                }
+
+                allocator.buildings[src_idx].revenue +=
+                    shipment.total_cost - shipment.freight_cost;
+                allocator.buildings[src_idx].operating_budget +=
+                    shipment.total_cost - shipment.freight_cost;
+                // The buyer's escrow pays the seller; the carrier fee leaves the city.
+                crate::debug::money::record_change(
+                    crate::debug::money::MoneyFlow::FreightPurchases,
+                    shipment.freight_cost,
+                    0.0,
+                );
+                allocator.buildings[dest_idx]
+                    .add_inventory_units(shipment.resource_runtime_id, shipment.amount);
+                allocator.buildings[dest_idx].daily_local_input_value += shipment.total_cost;
+                on_delivery(shipment, allocator);
+                crate::debug::work::add(crate::debug::work::Work::FreightDeliveries, 1);
+                debug_log!(
+                    "economy",
+                    "freight input fulfilled shipment_id={} source=local src_idx={} src_asset={} dest_idx={} dest_asset={} resource={} amount={:.1} cost={:.1} dest_inventory={:.1}",
+                    shipment.id,
+                    src_idx,
+                    allocator.buildings[src_idx].asset_id,
+                    dest_idx,
+                    allocator.buildings[dest_idx].asset_id,
+                    catalog
+                        .resource_id_for_runtime_id(shipment.resource_runtime_id)
+                        .unwrap_or("unknown"),
+                    shipment.amount,
+                    shipment.total_cost,
+                    allocator.buildings[dest_idx].inventory_units(shipment.resource_runtime_id)
+                );
+                self.start_return_or_finish(
+                    idx,
+                    shipment,
+                    allocator,
+                    agents,
+                    transit_network,
+                    graph,
+                );
+            }
+            ShipmentEndpoint::OwaBorder(border_node) => {
+                if allocator.buildings[dest_idx].broken
+                    || allocator.buildings[dest_idx].economy_broken
+                    || allocator.buildings[dest_idx].is_deserted
+                    || allocator.buildings[dest_idx].is_under_construction()
+                    || !building_accepts_input_resource(
+                        catalog,
+                        &allocator.buildings[dest_idx],
+                        shipment.resource_runtime_id,
+                    )
+                {
+                    self.fail_in_transit_shipment(
+                        idx,
+                        allocator,
+                        agents,
+                        treasury_balance,
+                        retry_cooldown_hours,
+                        catalog,
+                        ShipmentStatus::Failed,
+                        "destination_unavailable",
+                    );
+                    return;
+                }
+                allocator.buildings[dest_idx]
+                    .add_inventory_units(shipment.resource_runtime_id, shipment.amount);
+                allocator.buildings[dest_idx].daily_owa_input_value += shipment.total_cost;
+                // The buyer's escrow pays the outside seller and carrier.
+                crate::debug::money::record_change(
+                    crate::debug::money::MoneyFlow::FreightPurchases,
+                    shipment.total_cost,
+                    0.0,
+                );
+                on_delivery(shipment, allocator);
+                crate::debug::work::add(crate::debug::work::Work::FreightDeliveries, 1);
+                debug_log!(
+                    "economy",
+                    "freight input fulfilled shipment_id={} source=owa border_node={} dest_idx={} dest_asset={} resource={} amount={:.1} cost={:.1} dest_inventory={:.1}",
+                    shipment.id,
+                    border_node,
+                    dest_idx,
+                    allocator.buildings[dest_idx].asset_id,
+                    catalog
+                        .resource_id_for_runtime_id(shipment.resource_runtime_id)
+                        .unwrap_or("unknown"),
+                    shipment.amount,
+                    shipment.total_cost,
+                    allocator.buildings[dest_idx].inventory_units(shipment.resource_runtime_id)
+                );
+                self.start_return_or_finish(
+                    idx,
+                    shipment,
+                    allocator,
+                    agents,
+                    transit_network,
+                    graph,
+                );
+            }
         }
     }
 
@@ -553,7 +695,7 @@ impl ShipmentSystem {
             allocator.buildings[destination_idx].shipment_cooldown_until_tick =
                 self.hour_ticks + u32::from(retry_cooldown_hours);
         }
-        if !shipment.carrier.is_none()
+        if shipment.cargo_loaded
             && let ShipmentEndpoint::Building(source_idx) = shipment.source
             && source_idx < allocator.buildings.len()
         {
@@ -633,6 +775,16 @@ fn shipment_endpoints_ready(
     }
 
     true
+}
+
+// Puts a loaded shipment's cargo back into its source building, if it has one.
+fn return_loaded_cargo(shipment: &Shipment, allocator: &mut BuildingAllocator) {
+    if let ShipmentEndpoint::Building(source_idx) = shipment.source
+        && source_idx < allocator.buildings.len()
+    {
+        allocator.buildings[source_idx]
+            .add_inventory_units(shipment.resource_runtime_id, shipment.amount);
+    }
 }
 
 fn building_can_participate_in_freight(allocator: &BuildingAllocator, building_idx: usize) -> bool {

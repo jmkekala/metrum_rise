@@ -63,7 +63,6 @@ impl HouseholdSystem {
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let tuning = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
-        let household_supply_resource = household_supply_resource_runtime_id(&catalog);
         // Independent eligibility checks use the same policy as the demand snapshot. Only
         // eligible candidates are ranked; housed and recently displaced households never fill
         // an unused departure slot. Reuse the candidate buffer across daily passes.
@@ -105,11 +104,31 @@ impl HouseholdSystem {
             candidates.len()
         );
 
-        let removed_count = candidates.len() as u32;
+        let mut ids: Vec<usize> = candidates.iter().map(|candidate| candidate.0).collect();
+        self.removal_candidates_scratch = candidates;
+        self.remove_households(&mut ids, agents, allocator)
+    }
+
+    /// Removes households `ids` with their members and releases their homes; returns how many
+    /// left. The ids are sorted descending first, so swap-removal cannot move one still to
+    /// remove. O(agents + removed households).
+    pub(crate) fn remove_households(
+        &mut self,
+        ids: &mut Vec<usize>,
+        agents: &mut AgentSystem,
+        allocator: &mut BuildingAllocator,
+    ) -> u32 {
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        let household_supply_resource = household_supply_resource_runtime_id(&catalog);
+        ids.sort_unstable_by(|a, b| b.cmp(a));
+        ids.dedup();
+        ids.retain(|&id| id < self.households.len());
+        let removed_count = ids.len() as u32;
         let mut selected_flags = std::mem::take(&mut self.removal_selected_flags_scratch);
         selected_flags.clear();
         selected_flags.resize(self.households.len(), false);
-        for &(household_id, _, _) in &candidates {
+        for &household_id in ids.iter() {
             selected_flags[household_id] = true;
         }
 
@@ -129,8 +148,8 @@ impl HouseholdSystem {
 
         // Track current slot -> original household while descending removals can move the
         // same survivor more than once. Repair surviving agents once after the whole batch.
-        let mut moved_households = HashMap::with_capacity(candidates.len());
-        for &(household_id, _, _) in &candidates {
+        let mut moved_households = HashMap::with_capacity(ids.len());
+        for &household_id in ids.iter() {
             if let Some(last_household_id) = self.remove_household_record_at_index(
                 household_id,
                 allocator,
@@ -147,7 +166,6 @@ impl HouseholdSystem {
             .map(|(current, original)| (original, current))
             .collect();
         agents.remap_household_indices(&mapping);
-        self.removal_candidates_scratch = candidates;
         self.removal_selected_flags_scratch = selected_flags;
         self.removal_agent_indices_scratch = agent_indices;
         removed_count

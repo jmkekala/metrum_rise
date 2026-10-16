@@ -29,6 +29,10 @@ BASELINE = ROOT / "tools/sim02_envelope_baseline.json"
 
 TIERS = (10000, 30000)
 WORKLOADS = ("baseline", "fiscal_stress")
+# Every tenth household leaves after the build, so admission launches enough carriers for the
+# arrival burst limit (from SIM-02-E). No pre-refactor band exists; it is checked for invariants,
+# money conservation and bursts only.
+ARRIVAL_WORKLOAD = ("arrivals", 30000)
 # Fixture variants: neighbouring city sizes give the natural spread of every metric.
 VARIANTS = (0.97, 1.0, 1.03)
 PERF07_TIERS = (10000, 30000, 100000)
@@ -66,9 +70,11 @@ def variant_residents(tier, variant):
     return int(round(tier * variant))
 
 
-def run_envelope(binary, output, variants, jobs, threads):
+def run_envelope(binary, output, variants, jobs, threads, arrivals=False):
     runs = [(tier, workload, variant) for tier in TIERS for workload in WORKLOADS
             for variant in variants]
+    if arrivals:
+        runs.append((ARRIVAL_WORKLOAD[1], ARRIVAL_WORKLOAD[0], 1.0))
 
     def one(run):
         tier, workload, variant = run
@@ -183,22 +189,23 @@ def check_envelope(runs, baseline, identical, bursts_required):
                             f"{summary['violation_examples'][:3]}")
         # f32 tax accumulators already leak about 1e-4 of daily tax at 30k (SIM-02-A), so the
         # limit follows the pre-refactor residual of the same workload.
+        residual_workload = "baseline" if run["workload"] == ARRIVAL_WORKLOAD[0] else run["workload"]
         baseline_residual = max(value["max_hour_money_residual"]
                                 for name, value in baseline["summaries"].items()
-                                if name.startswith(run["workload"] + "-")
+                                if name.startswith(residual_workload + "-")
                                 and abs(int(name.rsplit("-", 1)[1]) - run["tier"]) <= 0.05 * run["tier"])
         limit = MONEY_RESIDUAL_SLACK * baseline_residual + MONEY_RESIDUAL_LIMIT
         if summary["max_hour_money_residual"] > limit:
             failures.append(f"{key}: money residual {summary['max_hour_money_residual']:.3f} "
                             f"> {limit:.3f}")
         current = metrics(run)
-        for name, band in baseline["bands"][key].items():
+        for name, band in baseline["bands"].get(key, {}).items():
             value = current[name]
             low = -float("inf") if name in UPPER_ONLY else band["low"]
             if not low <= value <= band["high"]:
                 notes.append(f"{key}: {name} {value:.6g} outside [{band['low']:.6g}, "
                              f"{band['high']:.6g}] (base {band['base']:.6g})")
-        if identical:
+        if identical and key in baseline["fingerprints"]:
             expected = baseline["fingerprints"][key]
             got = [day["fingerprint"] for day in run["days"]]
             if got != expected:
@@ -211,6 +218,9 @@ def check_envelope(runs, baseline, identical, bursts_required):
                 share = kind["worst_minute_share"]
                 if share is not None and share > BURST_MINUTE_LIMIT:
                     failures.append(f"{key}: {name} busiest minute {share:.3f}")
+            if run["workload"] == ARRIVAL_WORKLOAD[0] \
+                    and not summary_bursts["kinds"]["arrival"]["qualifying_days"]:
+                failures.append(f"{key}: no hour with enough arrivals to check")
         share = summary_bursts["worst_settlement_hour_share"]
         if "settlements" in bursts_required and share is not None \
                 and share > BURST_SETTLEMENT_LIMIT:
@@ -321,7 +331,8 @@ def main():
         report["baseline"] = str(BASELINE.relative_to(ROOT))
     if "envelope" in args.checks:
         baseline = json.loads(BASELINE.read_text())
-        runs = run_envelope(binary, output, (1.0,), args.jobs, 6)
+        runs = run_envelope(binary, output, (1.0,), args.jobs, 6,
+                            arrivals="departures" in bursts)
         (output / "envelope.json").write_text(json.dumps(runs) + "\n")
         failures, notes = check_envelope(runs, baseline, args.identical, bursts)
         report["failures"] += failures

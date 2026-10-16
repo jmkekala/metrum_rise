@@ -322,7 +322,10 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   (2026-10-16) moved saves to format 87: **saves from earlier builds no longer load.** Each
   step since bumps the format again (90 after `SIM-02-D`). `SIM-02-D` (2026-10-16): a
   construction site now completes exactly its authored duration after it starts, at its own
-  slot, instead of on the next hour (up to an hour later than before).
+  slot, instead of on the next hour (up to an hour later than before). `SIM-02-E`
+  (2026-10-16): trucks, shoppers, service visitors and arriving families no longer all leave on
+  the hour. Each kind leaves at slots spread over the hour, and deliveries, store pickups, returns
+  home and move-ins settle when the agent arrives instead of at the next hour (save format 91).
 
 - **Starting treasury**: new games begin with 500,000, increased from 100,000. See
   [money source](economy.md#money-source); earlier balance runs retain their original starting capital.

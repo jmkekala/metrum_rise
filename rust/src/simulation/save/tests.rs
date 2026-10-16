@@ -504,6 +504,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         freight_cost: 16.0,
         eta_hours: 1,
         queued_hours: 0,
+        cargo_loaded: false,
     });
     logistics.request_failures.insert(
         FreightRequestKey {

@@ -1748,6 +1748,7 @@ fn live_hiring_and_admission_keep_jobs_after_paid_stock_and_payroll() {
         freight_cost: 8.0,
         eta_hours: 1,
         queued_hours: 0,
+        cargo_loaded: true,
     });
     check(&allocator, &mut logistics, profile.worker_capacity);
     allocator.buildings[0].operating_budget -= payroll;
@@ -2748,7 +2749,6 @@ fn operational_hour_tick_rebuilds_household_and_worker_counts_together() {
         &mut treasury_balance,
         &[],
         &crate::simulation::economy::fiscal::CityFiscalPolicy::default(),
-        |_, _| {},
     );
 
     assert_eq!(households.households[0].member_count, 1);

@@ -129,6 +129,7 @@ impl ShipmentSystem {
             freight_cost,
             eta_hours,
             queued_hours: 0,
+            cargo_loaded: false,
         });
         reservations.record_owa_import(dest_idx, resource_runtime_id, amount);
         crate::debug_log!(

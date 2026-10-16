@@ -411,7 +411,7 @@ pub(super) fn save_world(
         ])?;
     }
 
-    let mut shipment_stmt = tx.prepare("INSERT INTO shipments(shipment_id, resource_runtime_id, amount, source_endpoint_kind, source_building_id, source_border_node, destination_endpoint_kind, destination_building_id, destination_border_node, carrier_class, status, carrier_slot, total_cost, eta_hours, queued_hours, freight_cost, carrier_generation) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)")?;
+    let mut shipment_stmt = tx.prepare("INSERT INTO shipments(shipment_id, resource_runtime_id, amount, source_endpoint_kind, source_building_id, source_border_node, destination_endpoint_kind, destination_building_id, destination_border_node, carrier_class, status, carrier_slot, total_cost, eta_hours, queued_hours, freight_cost, carrier_generation, cargo_loaded) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)")?;
     for shipment in &logistics.shipments {
         let (source_kind, source_building_id, source_border_node) =
             shipment_endpoint_to_db(shipment.source, maps)?;
@@ -435,6 +435,7 @@ pub(super) fn save_world(
             i64::from(shipment.queued_hours),
             shipment.freight_cost,
             handle_to_db(shipment.carrier).1,
+            i64::from(shipment.cargo_loaded),
         ])?;
     }
     let mut request_failure_stmt = tx.prepare("INSERT INTO freight_request_failures(destination_building_id, resource_runtime_id, failures, terminal) VALUES (?1, ?2, ?3, ?4)")?;
@@ -1181,7 +1182,7 @@ pub(super) fn load_shipments(conn: &Connection) -> SaveLoadResult<ShipmentSystem
         .map_err(SaveLoadError::custom)?
         .logistics
         .truck_payload_kg;
-    let mut stmt = conn.prepare("SELECT shipment_id, resource_runtime_id, amount, source_endpoint_kind, source_building_id, source_border_node, destination_endpoint_kind, destination_building_id, destination_border_node, carrier_class, status, carrier_slot, total_cost, eta_hours, queued_hours, freight_cost, carrier_generation FROM shipments ORDER BY shipment_id")?;
+    let mut stmt = conn.prepare("SELECT shipment_id, resource_runtime_id, amount, source_endpoint_kind, source_building_id, source_border_node, destination_endpoint_kind, destination_building_id, destination_border_node, carrier_class, status, carrier_slot, total_cost, eta_hours, queued_hours, freight_cost, carrier_generation, cargo_loaded FROM shipments ORDER BY shipment_id")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let resource = i64_to_u16(row.get(1)?)?;
@@ -1222,6 +1223,7 @@ pub(super) fn load_shipments(conn: &Connection) -> SaveLoadResult<ShipmentSystem
             freight_cost,
             eta_hours: i64_to_u16(row.get(13)?)?,
             queued_hours: i64_to_u16(row.get(14)?)?,
+            cargo_loaded: row.get::<_, i64>(17)? != 0,
         });
     }
     logistics.rebuild_next_shipment_id();

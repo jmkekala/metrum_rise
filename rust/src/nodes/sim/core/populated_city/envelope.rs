@@ -58,6 +58,15 @@ fn release_only() {
 }
 
 /// Raises commercial and industrial property tax to the fiscal-stress fixture's level.
+// Every tenth household leaves at once: its home and jobs open, so demand admits newcomers
+// over the next days and the arrival burst limit has hours to check (`SIM-02-E`).
+fn apply_arrival_wave(city: &mut PopulatedCity) {
+    let core = &mut city.core;
+    let mut leaving: Vec<usize> = (0..core.households.households.len()).step_by(10).collect();
+    core.households
+        .remove_households(&mut leaving, &mut core.agents, &mut core.allocator);
+}
+
 fn apply_fiscal_stress(city: &mut PopulatedCity) {
     for policy in [
         crate::simulation::economy::fiscal::POLICY_COMMERCIAL_PROPERTY_TAX,
@@ -462,6 +471,7 @@ struct BurstTracker {
 impl BurstTracker {
     fn new(core: &SimCore) -> Self {
         let minute = absolute_minute(core);
+        crate::debug::work::log_departures(true);
         Self {
             work: work_snapshot(),
             hour: minute / MINUTES_PER_HOUR,
@@ -487,19 +497,25 @@ impl BurstTracker {
         }
     }
 
-    /// Attributes counter changes to the minute the frame ended in.
+    /// Counts each departure in the minute it left in, and settlements in the hour the frame
+    /// ended in.
     fn after_frame(&mut self, core: &SimCore) {
+        for (work, minute) in crate::debug::work::take_departures() {
+            let Some(kind) = BURST_KINDS.iter().position(|(counter, _)| *counter == work) else {
+                continue;
+            };
+            if minute / MINUTES_PER_HOUR > self.hour {
+                self.close_hour();
+                self.hour = minute / MINUTES_PER_HOUR;
+            }
+            self.minutes[kind][(minute % MINUTES_PER_HOUR) as usize] += 1;
+        }
         let minute = absolute_minute(core);
         if minute / MINUTES_PER_HOUR != self.hour {
             self.close_hour();
             self.hour = minute / MINUTES_PER_HOUR;
         }
         let work = work_snapshot();
-        for (kind, (counter, _)) in BURST_KINDS.iter().enumerate() {
-            let index = *counter as usize;
-            self.minutes[kind][(minute % MINUTES_PER_HOUR) as usize] +=
-                work[index] - self.work[index];
-        }
         let settled = |work: &[u64]| {
             work[Work::BuildingSettlements as usize] + work[Work::HouseholdSettlements as usize]
         };
@@ -553,17 +569,18 @@ fn out_of_stock_households(core: &SimCore) -> u32 {
 fn sim02_envelope() {
     release_only();
     let residents = env_u32("METRUM_SIM02_RESIDENTS", 10_000);
-    let fiscal_stress = match std::env::var("METRUM_SIM02_WORKLOAD").as_deref() {
-        Ok("fiscal_stress") => true,
-        Ok("baseline") | Err(_) => false,
-        Ok(other) => panic!("unknown METRUM_SIM02_WORKLOAD {other}"),
-    };
+    let workload = std::env::var("METRUM_SIM02_WORKLOAD").unwrap_or_else(|_| "baseline".into());
+    if !matches!(workload.as_str(), "baseline" | "fiscal_stress" | "arrivals") {
+        panic!("unknown METRUM_SIM02_WORKLOAD {workload}");
+    }
     let days = env_u32("METRUM_SIM02_DAYS", ENVELOPE_DAYS);
     let started = std::time::Instant::now();
     let mut city = PopulatedCity::build(residents);
     let build_s = started.elapsed().as_secs_f64();
-    if fiscal_stress {
-        apply_fiscal_stress(&mut city);
+    match workload.as_str() {
+        "fiscal_stress" => apply_fiscal_stress(&mut city),
+        "arrivals" => apply_arrival_wave(&mut city),
+        _ => {}
     }
     let mut bursts = BurstTracker::new(&city.core);
     let mut money = MoneyCheck::new(&city.core);
@@ -617,7 +634,7 @@ fn sim02_envelope() {
             "SIM02_DAY {}",
             serde_json::json!({
                 "residents":residents,
-                "workload":if fiscal_stress { "fiscal_stress" } else { "baseline" },
+                "workload":workload,
                 "sample":sampled, "day":record.day,
                 "households":record.households, "residents_now":record.residents,
                 "employed":record.employed, "jobs":record.jobs, "buildings":record.buildings,
@@ -647,7 +664,7 @@ fn sim02_envelope() {
         "SIM02_ENVELOPE {}",
         serde_json::json!({
             "residents":residents,
-            "workload":if fiscal_stress { "fiscal_stress" } else { "baseline" },
+            "workload":workload,
             "days":days, "build_s":build_s, "total_s":started.elapsed().as_secs_f64(),
             "max_hour_money_residual":max_hour_money_residual,
             "violations":violations, "violation_examples":examples,

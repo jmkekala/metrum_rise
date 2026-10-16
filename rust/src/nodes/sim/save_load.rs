@@ -119,6 +119,7 @@ impl SimCore {
         self.agriculture = loaded.agriculture;
         self.agents = loaded.agents;
         self.agents.settlement_days = loaded.scheduler.agent_settlement_days;
+        self.agents.rebuild_arrival_carriers();
         self.treasury = loaded.treasury;
         self.service_policy = loaded.service_policy;
         self.fiscal_policy = loaded.fiscal_policy;

@@ -92,10 +92,17 @@ crossed:
    settlement (below), road upkeep, the daily demand pass, household removals, then the minute-0
    hourly demand pass. Daily tax buckets roll into the report only after all of these.
 
-Household hour (`households/tick.rs`): materialize arrived households; rebuild membership and
-worker counts; rehouse unhoused households; building production and electricity dispatch;
+Household hour (`households/tick.rs`): count the households still arriving; rebuild membership
+and worker counts; rehouse unhoused households; building production and electricity dispatch;
 logistics; household consumption, replenishment and service sales; the workplace pass (funding
 census plus job search); agent money synchronization.
+
+Trips decided on the hour do not leave on it (`SIM-02-E`,
+[`simulation.md`](simulation.md#deadlines-and-timed-events)). Freight carriers, shoppers,
+service visitors and household arrival carriers wait for a departure slot; each kind is spaced
+evenly over the following hour. Each trip is then checked as it travels (every one to eight
+minutes, growing with its time on the road) and settles when it arrives: a delivery, a store pickup, a shopper's return or a household moving in no longer
+waits for the next hour. Leg timeouts still count operational hours.
 
 Daily settlement, in fixed order:
 
@@ -380,7 +387,8 @@ freight_cost = dispatch_fee (4) + round_trip_vehicle_hours × vehicle_hour_cost 
 - An unaffordable full refill becomes the largest affordable partial basket.
 - The reservation moves stock and money; supplies rise only when the shopper returns home.
   Shopping owns both legs and the wait for pickup and delivery acknowledgement; the work
-  scheduler skips it.
+  scheduler skips it. The shopper waits at home for its paced departure slot, picks up as soon as
+  it reaches the store (VAT is collected then) and delivers as soon as it is home (`SIM-02-E`).
 - Each leg's deadline is its travel estimate plus the authored allowance. A timeout before pickup
   refunds; one after pickup records a failure. After 3 failures the household enters
   `failed_terminal` and retries only on its normal cadence.
@@ -616,12 +624,14 @@ freight.
   review is not hourly trucks.
 - **Reservations:**
   - creating a shipment reserves source stock and buyer demand;
-  - dispatch moves stock into the shipment, and the seller is paid only on delivery;
+  - the planning hour loads the stock into the shipment; the carrier leaves at a slot paced over
+    the following hour (`SIM-02-E`), and the seller is paid only on delivery;
   - failure, expiry, cancellation or building removal releases both sides deterministically,
     refunding buyers (or the treasury for city services);
   - a delivered shipment stays settled when an endpoint is removed.
 - **Carriers:** one truck agent per shipment. It goes source → destination, then returns empty
-  to its origin; the return leg holds no reservation. Travelling legs time out after
+  to its origin; the return leg holds no reservation. Delivery and return are settled when the
+  truck arrives. Travelling legs time out after
   `max(6, 4 × eta_hours + 2)` operational hours.
 - **Supplier search:** `SupplierCandidateIndex` lists a supplier under a resource only while its
   unreserved stock fills one batch. Searches scan chunk rings outward from the buyer and stop at

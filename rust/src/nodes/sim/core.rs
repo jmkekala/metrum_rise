@@ -22,6 +22,7 @@ mod snapshot;
 mod state;
 mod terrain_payloads;
 mod thread;
+mod trips;
 mod water_preview;
 
 pub(crate) use budget::CityServicePolicy;

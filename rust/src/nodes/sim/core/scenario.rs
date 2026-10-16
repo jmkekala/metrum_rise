@@ -115,6 +115,7 @@ impl GrowthScenario {
         let border = core.check_border_candidate_internal(Vector3::new(border_x, border_y, 0.0));
         assert!(border >= 0, "the trunk must end at the world edge");
         core.set_border_connection_internal(border as i32);
+        core.fit_lanes_to_road_surface();
 
         let [residential_west, residential_center, industrial_east] =
             CROSS_STREET_X_M.map(f64::from);

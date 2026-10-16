@@ -149,11 +149,11 @@ fn farm_carrier_materializes_one_normal_household_once() {
     agents.current_building[carrier] = 0;
     agents.transit[carrier] = TRANSIT_IN_BUILDING;
     let arrival = households.materialize_arrived_household_carriers(&mut agents, &allocator);
-    assert_eq!((arrival.households, arrival.residents), (1, 6));
+    assert_eq!(arrival, (1, 6));
     assert_eq!(
         households
             .materialize_arrived_household_carriers(&mut agents, &allocator)
-            .households,
+            .0,
         0
     );
     households.rebuild_household_and_worker_counts(&agents, &mut allocator);

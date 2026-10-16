@@ -642,7 +642,10 @@ fn clear_agent_travel_state(agents: &mut AgentSystem, i: usize) {
 
 fn clear_agent_access_plan(agents: &mut AgentSystem, i: usize) {
     clear_loaded_access_plan_fields(agents, i);
-    agents.next_replan_time[i] = 0.0;
+    // A departure hold is not a retry delay: the agent still waits for its saved event.
+    if !agents.departure_held(i) {
+        agents.next_replan_time[i] = 0.0;
+    }
     agents.network_replan_failures[i] = 0;
 }
 

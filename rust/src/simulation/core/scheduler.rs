@@ -20,6 +20,19 @@ pub(crate) fn absolute_slot(day_index: u32, minute_of_day: u16, slot_in_minute: 
         + slot_in_minute
 }
 
+/// Shortest wait before checking a trip in progress again: one authored minute.
+pub(crate) const TRIP_CHECK_SLOTS: u64 = SLOTS_PER_MINUTE;
+/// Longest wait between two checks of one trip: eight authored minutes.
+pub(crate) const TRIP_CHECK_MAX_SLOTS: u64 = 8 * SLOTS_PER_MINUTE;
+
+/// Departure slot of the `index`-th of `count` trips released together at `slot`: evenly
+/// spaced over the following hour, so the busiest minute holds at most `count / 60 + 2` of them
+/// (`docs/simulation.md#behaviour-envelope-sim-02-a`). O(1).
+pub(crate) fn paced_slot(slot: u64, index: usize, count: usize) -> u64 {
+    debug_assert!(index < count);
+    slot + 1 + (index as u64 * (SLOTS_PER_HOUR - 1)) / count as u64
+}
+
 /// Calendar period of a periodic declaration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Period {
@@ -213,6 +226,20 @@ impl<S: Copy> Schedule<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paced_departures_fill_the_next_hour_without_a_busy_minute() {
+        for count in [1, 7, 40, 59, 60, 61, 333, 959, 960, 4_000] {
+            let mut per_minute = [0_usize; 60];
+            for index in 0..count {
+                let slot = paced_slot(5 * SLOTS_PER_HOUR, index, count);
+                assert!(slot > 5 * SLOTS_PER_HOUR && slot < 6 * SLOTS_PER_HOUR);
+                per_minute[((slot % SLOTS_PER_HOUR) / SLOTS_PER_MINUTE) as usize] += 1;
+            }
+            let busiest = *per_minute.iter().max().unwrap();
+            assert!(busiest <= count / 60 + 2, "{count}: busiest minute {busiest}");
+        }
+    }
 
     fn declaration(system: u8, kind: SystemKind) -> Declaration<u8> {
         Declaration {

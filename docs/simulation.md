@@ -6,8 +6,9 @@ simulation tiers. Economy and growth rules stay in [`economy.md`](economy.md) an
 [`demand.md`](demand.md); traffic movement stays in [`traffic.md`](traffic.md).
 
 **Status:** `SIM-02` in progress. `SIM-02-A` (guards and pre-refactor baseline), `SIM-02-B`
-(save cutover and handles), `SIM-02-C` (slot clock, scheduler, timing wheel and phases) and
-`SIM-02-D` (passive deadlines and construction completion) are done; see the
+(save cutover and handles), `SIM-02-C` (slot clock, scheduler, timing wheel and phases),
+`SIM-02-D` (passive deadlines and construction completion) and `SIM-02-E` (trips as timed
+events) are done; see the
 [`SIM-02-A` baseline](#sim-02-a-guards-and-pre-refactor-baseline) and the
 [step results](#step-results). Until each migration step lands,
 the current cadence in
@@ -222,6 +223,33 @@ unchanged. The `sim` debug channel prints the list with costs, tiers, reads and 
   - The demand workforce calendar counts every site as ready at the first hour boundary at or
     after its completion, whether placed (`Building::construction_hours_left`), queued or
     proposed, so a project's promise matches the hour its building actually opens.
+- **Implemented in `SIM-02-E`** (`nodes/sim/core/trips.rs`): trips are timed events. The hourly
+  passes still choose who sets out: the logistics hour loads each new shipment's cargo, the
+  household hour reserves purchases and service visits, and admission launches arrival carriers.
+  Nobody leaves on the hour. Each pass holds its trips and lists them; at the end of the pass
+  `SimCore::schedule_trip_departures` spaces every kind evenly over the following hour
+  (`paced_slot`: the k-th of n leaves at `slot + 1 + k·959/n`, so no minute holds more than
+  n/60 + 2). The events are `FreightDispatch`, `ShopperDeparture`, `VisitDeparture` and
+  `ArrivalDeparture`, saved as kinds 2, 4, 6 and 8.
+  - A held agent keeps its planned trip and waits behind the replan gate every departure
+    already obeys (`next_replan_time` = `f32::MAX`), so neither the work schedule nor another
+    planner takes it. Loading keeps the hold. A freight carrier is spawned only at its slot;
+    its cargo already left the source on the hour (`Shipment::cargo_loaded`).
+  - From departure on, a trip is checked until it arrives: a minute after it sets out, then
+    after a quarter of the agent's time on the road, from one to eight minutes
+    (`TRIP_CHECK_SLOTS`, `TRIP_CHECK_MAX_SLOTS`):
+    `FreightCheck` delivers at the destination and finishes back at the source; `ShopperCheck`
+    picks up at the store, collecting VAT then, and delivers at home; `ArrivalCheck` turns the
+    carrier into a household. A service visit ends an hour after the visitor set out
+    (`VisitReturn`), as visits that all left on the hour ended at the next one.
+  - Removed hourly scans: `materialize_arrived_household_carriers` (every agent),
+    `process_visible_service_visit_returns` (every agent) and the arrival half of
+    `progress_shipments` and `process_active_household_shopping`. Pending arrivals are
+    recounted from `AgentSystem::arrival_carriers`, O(carriers in flight).
+  - Leg timeouts still count operational hours in the hourly passes; they move with the systems
+    that own them (`SIM-02-F` for households, `SIM-02-J` for freight).
+  - A wheel restarted because the clock was set directly keeps its trips: an overdue one fires
+    at the next slot.
 
 ### Snapshots
 
@@ -379,7 +407,10 @@ allowed: a step that leaves it is investigated before it lands.
   separately in hours with at least 40 departures of that kind; a perfectly even spread is 1.7%.
   Within each game day, the busiest game hour may hold at most 10% of that day's building and
   household settlements; a perfectly even spread is 4.2%. Before `SIM-02` both shares are 100%.
-  Work commutes are excluded, because their morning and evening peaks are authored.
+  Work commutes are excluded, because their morning and evening peaks are authored. From
+  `SIM-02-E` each departure counts in the minute its trip event ran, and an `arrivals`
+  workload (30k, every tenth household leaves after the build) supplies the hours with 40
+  arrivals that the full fixtures never reach.
 - **Later:** traffic jams, commute times and RCI demand exist in rough form and join the envelope
   when they mature.
 
@@ -544,6 +575,41 @@ on a fresh `$ARTIFACTS` directory.
   queued deadlines count hour boundaries to the start; a completed home rehouses its residents
   in the next hour.
 
+#### `SIM-02-E` — trips as timed events (2026-10-16)
+
+- **Save format 91:** `shipments.cargo_loaded` and the trip event kinds 2–9. The Kuopio fixture
+  gained the empty column and its hash in `placements.json`.
+- **Envelope and bursts** (`tools/sim02_gate.py envelope determinism --bursts departures
+  --binary "$TEST_BINARY"`): busiest-minute departure shares are 2.1–3.3% for freight, shopping
+  and arrivals on every workload (limit 5%; 100% before). The arrivals workload has 2 days with
+  qualifying arrival hours, worst 3.2%. Settlements still fall in one hour until `SIM-02-G`.
+  Every band holds except one near-zero value: fiscal stress at 10k ends with 0.52% of residents
+  employed against a band of 0.36–0.39%, about 55 instead of 40 people in the collapsed city.
+  The largest in-band shift is the 30k baseline out-of-stock rate, 0.229 → 0.262 (+0.92 of a
+  half-band). Money residuals are unchanged and no invariant is violated.
+- **Determinism:** repeat run, 1 and 3 workers and save/reload continuation are identical.
+- **`PERF-07`**, pinned against the pinned `SIM-02-A` reference. Max / p99 / mean in ms: 10k 1×
+  199.3 / 6.13 / 2.42, 10k 32× 197.7 / 8.65 / 2.85, 30k 1× 495.0 / 7.31 / 3.26, 30k 32× 500.8 /
+  24.57 / 4.97, 100k 1× 1,928.7 / 18.04 / 12.12, 100k 32× 1,944.7 / 173.57 / 22.09. Every
+  maximum is at or below `SIM-02-A`, and the largest movement step halves at 30k and 100k
+  (100k 32×: 86.7 → 38.9 ms) because departures no longer arrive together. The 32× means rose
+  6–13%: the 100k fixture is gridlocked, and trip checks plus changed traffic timing touch most
+  of the city (phase inventory). Checking every minute had cost 23.6 ms at 100k 32× before the
+  back-off.
+- **`PERF-01`**, two pinned runs alternating with `SIM-02-A` (hour / day means in ms, `SIM-02-A`
+  first): baseline 10k 17.0–17.2 / 7.5–8.1 against 16.7–16.7 / 8.8–8.8; baseline 30k 61.8–62.3 /
+  46.8–47.5 against 52.6–52.7 / 41.7–44.9; fiscal 10k 27.5–27.7 / 22.3–22.8 against 27.8–28.2 /
+  22.2–23.0; fiscal 30k 78.6–78.9 / 68.2–68.6 against 79.1–80.1 / 74.6–75.0. Eight limits fail
+  against ten on `SIM-02-A`, all of them failing before. The fiscal 30k day rose 6 ms. Its
+  household settlement is unchanged (17.4 against 18.1 ms), and the minute-0 demand pass's
+  cell-lot preparation took 13.8 against 8.6 ms. That work follows the regions dirtied by the
+  day's building removals in the collapsing city, the spike `SIM-02-H` queues.
+- **Tests:** 2,434 release library tests, the integration tests and `./run.sh --test` pass;
+  clippy is clean. The first `./run.sh --test` run failed `road_junction_preview_test` on
+  asynchronous preview refetching; the unchanged rerun passed. New: paced departure spread,
+  trip event save round trip, departure spacing in the wheel, trips surviving a clock set
+  directly, and departure holds surviving the load repair.
+
 ### Phase inventory
 
 Every phase of today's operational hour, hourly demand pass and daily tick, and where it goes.
@@ -554,7 +620,7 @@ Every phase of today's operational hour, hourly demand pass and daily tick, and 
 | `advance_construction_hour` | O(buildings); a completion rebuilds the zone index | Completion event; incremental zone-index update | D (done) |
 | Farm and mine `produce_hourly` | O(sites) | `EntityPhase` hourly | F |
 | `electricity_funding_by_building` | O(buildings) | Rolling snapshot | I |
-| `materialize_arrived_household_carriers` | O(agents) scan | Carrier-arrival event | E |
+| `materialize_arrived_household_carriers` | O(agents) scan | Carrier-arrival event | E (done) |
 | `rebuild_household_and_worker_counts` | O(agents + households + buildings) | Incremental counters | I |
 | `rehouse_unhoused_before_growth` | O(households) when any unhoused | Housing queue | J |
 | `run_building_economy` production, `refresh_commercial_activity_floor` | O(buildings) | `EntityPhase` hourly | F |
@@ -563,11 +629,11 @@ Every phase of today's operational hour, hourly demand pass and daily tick, and 
 | `decrement_building_cooldowns` | O(buildings) | Passive deadline | D (done) |
 | `FreightPlanningContext::build` | O(nodes + edges + buildings), rebuilt hourly | Rolling snapshot; component indices cached by routing revision | I |
 | `create_profile_input_shipments`, `create_profile_output_exports` | O(buildings), serial reservations | Freight request queue at buyer phase | J |
-| `progress_shipments`, `dispatch_ready_carriers` | O(open shipments); all trucks leave on the hour | Dispatch and arrival events | E |
+| `progress_shipments`, `dispatch_ready_carriers` | O(open shipments); all trucks leave on the hour | Dispatch and arrival events; hourly timeouts until J | E (done), J |
 | `progress_households_for_operational_hour` | O(households) | `EntityPhase` hourly | F |
 | `apply_starvation_happiness_loss` | O(agents) | At household phase | F |
-| `process_active_household_shopping` | O(households) scan | Shopper events | E |
-| `process_visible_service_visit_returns` | O(agents) scan | Visit-end event | E |
+| `process_active_household_shopping` | O(households) scan | Shopper events; hourly leg timeouts until F | E (done), F |
+| `process_visible_service_visit_returns` | O(agents) scan | Visit-end event | E (done) |
 | `plan_and_apply_household_replenishment` | Indices rebuilt hourly when needed | Restock queue; indices from rolling snapshots | J |
 | `plan_and_apply_visible_service_visits` | Capped at 64 per hour | Visit queue with per-slot quota | J |
 | Funding census (`job_funding.refresh`) | Superlinear (`PERF-03`/`PERF-04`) | Incremental totals plus rolling snapshot | I |
@@ -576,7 +642,7 @@ Every phase of today's operational hour, hourly demand pass and daily tick, and 
 | `prepare_cell_lots_internal` | O(dirty regions), can spike | Dirty-region queue with quota | H |
 | Demand snapshot (`from_runtime_with_funding`) | O(households + buildings + nodes) hourly | Rolling snapshot | I |
 | Demand planning (`plan_private_building_actions`) | Scans all parcels hourly | Open question 1 | I |
-| Household admission | Bounded; all carriers leave on the hour | Admission queue with credit; departure events | E, J |
+| Household admission | Bounded; all carriers leave on the hour | Admission queue with credit; departure events | E (departures done), J |
 | Construction queue | One start per minute | Timed events | C (done) |
 | `execute_building_actions` | Plan-bounded | Level-change queue with quota | J |
 | `allocator.maintain`, `cleanup_stale_buildings` | O(buildings), serial | Compatibility check at building phase; removals queued | G, J |
@@ -600,6 +666,7 @@ Per-frame costs found by the `SIM-02-A` `PERF-07` baseline, outside the boundary
 | Agent movement in departure frames | Up to 4 ms at 10k and 17 ms at 30k (32×) | Departures spread by events; `PERF-06` limits | E, K |
 | One queued construction start | 14–21 ms for a single placement | Placement split across slots | K |
 | First boundary after loading | About 10× an ordinary hour: derived economy caches rebuild | Rebuilt during loading | K |
+| 100k fixture traffic (found in `SIM-02-E`) | About 45,000 of 145,000 agents moving at any time (30,000 on lanes, 15,000 in junctions) and 15,000 shopping trips in flight around the clock, on `SIM-02-D` too: the network is saturated, so movement and trip checks run for most of the city | Find why trips stall at 100k (junction throughput, routing); movement within `PERF-06` limits | K |
 
 ### Open questions
 
@@ -710,3 +777,53 @@ alternatives and the evidence. The user reviews these on return.
   means within 4% of each other. `SIM-02-A` was re-measured pinned as the reference for
   later steps. Alternative: widen the p99 allowance; rejected, because it would hide real
   per-frame regressions.
+- **`SIM-02-E` — departures paced, not phased.** The step names a slot-granular replenishment
+  phase. Random per-entity phases do not meet the burst limit near its 40-departure floor: 50
+  freight departures in an hour, hashed over 60 minutes, put 3 or 4 in the busiest minute
+  (6–8%) in almost every hour. The hourly passes still decide
+  who sets out; their trips leave at evenly spaced slots over the following hour, in the order
+  the pass listed them. Measured busiest-minute shares: 2.1–3.3% for freight, shopping and
+  arrivals. The per-household decision moves to phases with the rest of the hourly economy
+  (`SIM-02-F`).
+- **`SIM-02-E` — arrival found by checks that back off.** The movement pass works on raw slices
+  under `PERF-06`; reporting arrivals from it would mean new `unsafe` code. Each trip is checked
+  from its departure on, O(1) per check. Checking every minute cost too much at 100k, where the
+  fixture is gridlocked: about 23,000 trips are in flight at any time, most of them stuck. That
+  was 1,450 checks a slot and raised the 32× mean frame from 20.4 to 23.6 ms. The wait now grows
+  with the agent's time on the road (a quarter of it, from one to eight minutes), so an on-time
+  arrival settles within minutes and a stuck trip is checked every eight. Alternatives: a callback
+  from the movement pass (new `unsafe`), or checks at the estimated arrival (congestion moves it,
+  so it still needs polling).
+- **`SIM-02-E` — timeouts stay hourly.** Freight `queued_hours` and the shopping leg allowance
+  still count operational hours in the hourly passes, so timeouts and their tests keep their
+  meaning. A trip that leaves later in the hour gets up to one hour more allowance than one that
+  left on the hour.
+- **`SIM-02-E` — a hold is the replan gate.** A held agent keeps its planned trip with
+  `next_replan_time = f32::MAX`, which every departure already checks, so no new agent column
+  is needed. Loading reset that gate for every agent inside a building, which released held
+  trips early after a reload. The load repair now keeps a hold.
+- **`SIM-02-E` — freight cargo loads on the hour.** The planning hour still takes the cargo from
+  the source, as dispatch at the hour did; only the truck waits for its slot. Leaving the cargo
+  at the source until the slot would let shoppers or production consume reserved stock first.
+  "Dispatched" is now an explicit `cargo_loaded` flag instead of a set carrier handle.
+- **`SIM-02-E` — a service visit ends an hour after departure.** Visits used to end at the next
+  hourly scan after leaving on the hour; now they end at the same distance from their own
+  departure.
+- **`SIM-02-E` — pending arrivals from a carrier registry.** The hourly scan of every agent also
+  rebuilt the pending-arrival counts. Those now come from the carriers launched and not yet
+  arrived, recounted each hour in O(carriers in flight). Incremental counting was rejected:
+  eviction and home removal clear a carrier's household on several paths.
+- **`SIM-02-E` — starter-town lane heights.** With arrivals settled within a minute, the starter
+  town's save/reload balance check diverged: its lanes were never fitted to the road surface,
+  while loading fits them, which changed lane lengths and arrival times. This is the same
+  incomplete fixture setup found earlier for the populated city. Both fixtures now call one
+  `SimCore::fit_lanes_to_road_surface`. Live road commits fit lanes through render preparation
+  on the simulation thread.
+- **`SIM-02-E` — departures counted in their own minute.** The burst tracker attributed every
+  counter change in a frame to the minute the frame ended in, so a frame crossing an hour moved
+  the previous hour's last departures into the next hour's first minute (7.4% at 30k).
+  Departure counters now record the minute the clock was processing.
+- **`SIM-02-E` — arrival workload.** Every tenth household leaves after the build; at 30k the
+  following day has 13 hours with at least 40 arrivals. At 10k no hour reaches 40, because
+  admission spreads the newcomers over the day. The workload is checked for invariants, money
+  conservation and bursts; it has no pre-refactor band.

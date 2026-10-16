@@ -207,6 +207,7 @@ impl ShipmentSystem {
                     ),
                     eta_hours,
                     queued_hours: 0,
+                    cargo_loaded: false,
                 });
                 planning.reservations.record_owa_export(
                     src_idx,

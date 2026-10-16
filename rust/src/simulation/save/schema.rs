@@ -6,7 +6,7 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version, also the only one that loads (`SIM-02` broke older saves).
-pub const SAVE_VERSION: i64 = 90;
+pub const SAVE_VERSION: i64 = 91;
 
 /// Sentinel for an absent reference column.
 pub const NONE_REF: i64 = -1;
@@ -422,7 +422,8 @@ CREATE TABLE shipments(
     eta_hours INTEGER NOT NULL,
     queued_hours INTEGER NOT NULL,
     freight_cost REAL NOT NULL,
-    carrier_generation INTEGER NOT NULL
+    carrier_generation INTEGER NOT NULL,
+    cargo_loaded INTEGER NOT NULL
 );
 CREATE TABLE entity_handle_slots(
     kind INTEGER NOT NULL,

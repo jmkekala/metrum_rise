@@ -205,13 +205,15 @@ impl PopulatedCity {
                     // This fixture explicitly prepopulates a city outside demand admission.
                     |_, _, _| true,
                 );
-            // Carriers arrive at once instead of driving in from the border; the next hour
-            // materializes them as households.
-            let agents = &mut core.agents.agents;
-            for i in 0..agents.len() {
-                if agents.pending_household_size[i] > 0 {
-                    agents.transit[i] = TRANSIT_IN_BUILDING;
-                    agents.current_building[i] = agents.home_building[i];
+            // Carriers arrive at once instead of driving in from the border, and move in.
+            core.agents.held_arrivals.clear();
+            for i in 0..core.agents.len() {
+                if core.agents.pending_household_size[i] > 0 {
+                    core.agents.transit[i] = TRANSIT_IN_BUILDING;
+                    core.agents.current_building[i] = core.agents.home_building[i];
+                    core.agents.release_departure(i);
+                    core.households
+                        .materialize_arrival_carrier(i, &mut core.agents, &core.allocator);
                 }
             }
             self.advance_hour();
@@ -319,19 +321,7 @@ pub(super) fn street_grid(side_m: f32) -> (SimCore, Vec<f32>, f32) {
         assert!(border >= 0, "trunk {k} must end at the world edge");
         core.set_border_connection_internal(border as i32);
     }
-    // Bulk benchmark setup skips render preparation, which normally fits connector heights
-    // to the road surface. Finalize the same movement geometry before any agents run; otherwise
-    // loading the ordinary save changes connector lengths and therefore arrival times.
-    core.transit_network
-        .road_surface
-        .compile_dirty(&core.region_graph, &core.heightmap);
-    core.transit_network
-        .lane_system
-        .sync_heights_to_visible_surface(
-            &core.region_graph,
-            &core.heightmap,
-            &core.transit_network.road_surface,
-        );
+    core.fit_lanes_to_road_surface();
     (core, row_z, half_x)
 }
 

@@ -240,6 +240,7 @@ fn forced_liquidation_sells_only_unreserved_inventory() {
         freight_cost: 0.0,
         eta_hours: 1,
         queued_hours: 0,
+        cargo_loaded: false,
     });
 
     let mut households = HouseholdSystem::new();
