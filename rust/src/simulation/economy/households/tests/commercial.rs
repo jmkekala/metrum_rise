@@ -377,7 +377,7 @@ fn grain_farm_density_preserves_area_yield_and_startup_runway() {
         farm.operating_budget = 500.0;
         farm.profit_tax_budget_baseline = 500.0;
         allocator.buildings.push(farm);
-        let mut agriculture = AgricultureSystem::from_sites(vec![FieldSite {
+        let agriculture = AgricultureSystem::from_sites(vec![FieldSite {
             building_idx: 0,
             resource_id: "grain".to_owned(),
             polygon_world: Vec::new(),
@@ -471,7 +471,7 @@ fn one_worker_commercial_production_uses_hourly_input_need() {
     households
         .job_funding
         .set_activity(0, 1.0 / profile.worker_capacity as f32);
-    households.run_building_economy(&mut allocator);
+    households.run_building_hour_for_test(&mut allocator);
 
     let output_units = allocator.buildings[0].inventory_units(household_supply_resource);
     let expected_units = profile.outputs[0].units_per_day / 24.0 / profile.worker_capacity as f32;

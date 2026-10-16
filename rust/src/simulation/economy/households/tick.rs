@@ -48,6 +48,20 @@ impl HouseholdSystem {
         self.rehouse_unhoused_before_growth(agents, allocator);
         let counts_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
+        // The census comes first, so the activity floor, store sales, restock and visit
+        // planning and hiring all read a census of this hour's state (`SIM-02-F`).
+        self.refresh_funding_census(
+            allocator,
+            logistics,
+            transit_network,
+            graph,
+            service_funding_by_building,
+            fiscal_policy,
+            *treasury_balance,
+            minute_of_day,
+        );
+        let census_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        phase_start = Instant::now();
         self.run_building_economy(allocator);
         self.run_electricity_hour(allocator);
         let building_economy_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
@@ -72,25 +86,21 @@ impl HouseholdSystem {
         );
         let household_hour_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
-        self.assign_agent_workplaces_with_service_funding(
+        self.assign_agent_workplaces_from_census(
             agents,
             allocator,
             transit_network,
             graph,
-            service_funding_by_building,
-            logistics,
-            fiscal_policy,
-            *treasury_balance,
             minute_of_day,
         );
         let workplace_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
-        self.sync_agent_money_from_households(agents);
+        self.count_employed_adults(agents);
         let money_sync_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         if timing_enabled {
             debug_log!(
                 timing_category,
-                "operational_hour_detail absolute_hour={} minute={} pending_households={} pending_adults={} agents={} buildings={} households={} pending_ms={:.3} validate_ms={:.3} counts_ms={:.3} building_economy_ms={:.3} logistics_ms={:.3} household_hour_ms={:.3} workplace_ms={:.3} money_sync_ms={:.3} total_ms={:.3}",
+                "operational_hour_detail absolute_hour={} minute={} pending_households={} pending_adults={} agents={} buildings={} households={} pending_ms={:.3} validate_ms={:.3} counts_ms={:.3} census_ms={:.3} building_economy_ms={:.3} logistics_ms={:.3} household_hour_ms={:.3} workplace_ms={:.3} money_sync_ms={:.3} total_ms={:.3}",
                 absolute_hour,
                 minute_of_day,
                 self.pending_arrivals.households,
@@ -101,6 +111,7 @@ impl HouseholdSystem {
                 pending_ms,
                 validate_ms,
                 counts_ms,
+                census_ms,
                 building_economy_ms,
                 logistics_ms,
                 household_hour_ms,
@@ -217,7 +228,7 @@ impl HouseholdSystem {
         );
         let workplace_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
-        self.sync_agent_money_from_households(agents);
+        self.count_employed_adults(agents);
         self.finish_daily_ledger_settlement();
         let sync_and_finish_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         if timing_enabled {

@@ -10,6 +10,7 @@ use super::metrics::{
 };
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
+use crate::simulation::core::handles::Handle;
 use crate::simulation::economy::accessibility::{
     BuildingModeComponents, ModeComponentIndex, ReachableBucketIndex, ReachableBucketScanEvent,
     chunk_for_point,
@@ -19,8 +20,8 @@ use crate::simulation::economy::agents::tick::{
     estimate_building_origin_trip_seconds,
 };
 use crate::simulation::economy::agents::{
-    AgentHandle,
-    ACTIVITY_HOME, ACTIVITY_SHOPPING, AgentSystem, TRANSIT_IN_BUILDING, age_group_can_shop,
+    ACTIVITY_HOME, ACTIVITY_SHOPPING, AgentHandle, AgentSystem, TRANSIT_IN_BUILDING,
+    age_group_can_shop,
 };
 use crate::simulation::economy::definitions::{
     RuntimeEconomyCatalog, RuntimeEconomyTuning, load_runtime_economy_catalog,
@@ -111,18 +112,22 @@ struct ReplenishmentCandidatePlan {
     candidates: [usize; GROCERY_SEARCH_CANDIDATES],
 }
 
-#[derive(Default)]
-struct HouseholdHourProgress {
-    any_zero_stock: bool,
-    restock_candidate_exists: bool,
-    urgent_restock_candidate_exists: bool,
+/// Tuning of one household hour, loaded once per phase batch.
+struct HouseholdHourTuning {
+    trigger_days: f32,
+    water_sewage_cost_per_member_per_day: f32,
+    household_supply_unit_price: f32,
 }
 
-impl HouseholdHourProgress {
-    fn merge(&mut self, other: Self) {
-        self.any_zero_stock |= other.any_zero_stock;
-        self.restock_candidate_exists |= other.restock_candidate_exists;
-        self.urgent_restock_candidate_exists |= other.urgent_restock_candidate_exists;
+impl HouseholdHourTuning {
+    fn load(catalog: &RuntimeEconomyCatalog, tuning: &RuntimeEconomyTuning) -> Self {
+        Self {
+            trigger_days: household_demand_profile(catalog).reorder_threshold_days,
+            water_sewage_cost_per_member_per_day: tuning
+                .households
+                .water_sewage_cost_per_member_per_day,
+            household_supply_unit_price: household_supply_unit_price(catalog),
+        }
     }
 }
 
@@ -607,34 +612,11 @@ impl HouseholdSystem {
         let tuning = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
         let household_supply_resource = household_supply_resource_runtime_id(&catalog);
-        let retry_cooldown_hours = tuning
-            .operational_clock
-            .household_replenishment_retry_cooldown_hours;
-        let terminal_failure_count = tuning
-            .operational_clock
-            .household_replenishment_terminal_failure_count;
-        let profile = household_demand_profile(&catalog);
-        let trigger_days = profile.reorder_threshold_days;
-        let household_supply_unit_price = household_supply_unit_price(&catalog);
-
-        let progress = self.progress_households_for_operational_hour(
-            allocator.buildings.len(),
-            trigger_days,
-            tuning.households.water_sewage_cost_per_member_per_day,
-            household_supply_unit_price,
-        );
-        if progress.any_zero_stock {
-            apply_starvation_happiness_loss(&self.households, agents);
-        }
-
-        self.process_active_household_shopping(
-            agents,
-            allocator,
-            &catalog,
-            household_supply_resource,
-            retry_cooldown_hours,
-            terminal_failure_count,
-        );
+        // Consumption, utilities and leg timeouts run at each household's hourly phase
+        // (`SIM-02-F`); this pass only plans the hour's purchases and visits.
+        let trigger_days = household_demand_profile(&catalog).reorder_threshold_days;
+        let (restock_candidate_exists, urgent_restock_candidate_exists) =
+            self.restock_candidates(allocator.buildings.len(), trigger_days);
 
         self.plan_and_apply_household_replenishment(
             agents,
@@ -646,8 +628,8 @@ impl HouseholdSystem {
             &tuning,
             household_supply_resource,
             household_vat_rate,
-            progress.restock_candidate_exists,
-            progress.urgent_restock_candidate_exists,
+            restock_candidate_exists,
+            urgent_restock_candidate_exists,
         );
         self.plan_and_apply_visible_service_visits(
             agents,
@@ -659,104 +641,67 @@ impl HouseholdSystem {
         );
     }
 
-    fn progress_households_for_operational_hour(
+    /// Runs the hour of every household whose hourly phase falls in this slot (`SIM-02-F`):
+    /// consumption, utilities, the replenishment state's hourly transitions and the timeout of
+    /// a shopping leg still under way. O(households in the phase).
+    pub(crate) fn run_household_phase(
         &mut self,
-        building_count: usize,
-        trigger_days: f32,
-        water_sewage_cost_per_member_per_day: f32,
-        household_supply_unit_price: f32,
-    ) -> HouseholdHourProgress {
+        phase_households: &[Handle<Household>],
+        agents: &mut AgentSystem,
+        allocator: &mut BuildingAllocator,
+    ) {
+        if phase_households.is_empty() {
+            return;
+        }
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        let tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        let hour = HouseholdHourTuning::load(&catalog, &tuning);
+        let household_supply_resource = household_supply_resource_runtime_id(&catalog);
+        let retry_cooldown_hours = tuning
+            .operational_clock
+            .household_replenishment_retry_cooldown_hours;
+        let terminal_failure_count = tuning
+            .operational_clock
+            .household_replenishment_terminal_failure_count;
         self.ensure_daily_ledger_len();
-        let households = &mut self.households;
-        let daily_ledgers = &mut self.daily_ledgers;
-        households
-            .par_iter_mut()
-            .zip(daily_ledgers.par_iter_mut())
-            .fold(
-                HouseholdHourProgress::default,
-                |mut progress, (household, ledger)| {
-                    if household.member_count == 0 {
-                        return progress;
-                    }
+        for &handle in phase_households {
+            let Some(hid) = self.handles.resolve(handle) else {
+                continue;
+            };
+            progress_household_hour(
+                &mut self.households[hid],
+                &mut self.daily_ledgers[hid],
+                &hour,
+            );
+            self.time_out_shopping_leg(
+                hid,
+                agents,
+                allocator,
+                &catalog,
+                household_supply_resource,
+                retry_cooldown_hours,
+                terminal_failure_count,
+            );
+        }
+    }
 
-                    let hourly_consumption = household.member_count as f32
-                        * household.consumption_rate
-                        / OPERATIONAL_HOURS_PER_DAY;
-                    household.stock = (household.stock - hourly_consumption).max(0.0);
-                    let hourly_utility_cost = household.member_count as f32
-                        * water_sewage_cost_per_member_per_day
-                        / OPERATIONAL_HOURS_PER_DAY;
-                    let cash_before = household.budget;
-                    household.budget = (household.budget - hourly_utility_cost).max(0.0);
-                    // Record the debit at the account's precision. Fractional hourly fees
-                    // otherwise drift from the ledger as household savings grow.
-                    let paid_utility_cost = (cash_before - household.budget).max(0.0);
-                    crate::debug::money::record_change(
-                        crate::debug::money::MoneyFlow::OutsideUtilities,
-                        cash_before,
-                        household.budget,
-                    );
-                    let hourly_supply_cost = hourly_consumption * household_supply_unit_price;
-                    ledger.household_supply_consumption_cost += hourly_supply_cost;
-                    record_household_utility_cost(ledger, paid_utility_cost);
-                    household.stock_days = stock_days(
-                        household.stock,
-                        household.member_count,
-                        household.consumption_rate,
-                    );
-
-                    if matches!(
+    // Whether any household could restock this hour, and whether one of them has run out.
+    fn restock_candidates(&self, building_count: usize, trigger_days: f32) -> (bool, bool) {
+        self.households
+            .par_iter()
+            .filter(|household| {
+                household.member_count > 0
+                    && household.stock_days < trigger_days
+                    && household.home_building_id < building_count
+                    && !matches!(
                         household.replenishment_state,
                         REPLENISHMENT_SHOPPING_TO_STORE | REPLENISHMENT_SHOPPING_RETURNING
-                    ) {
-                    } else if household.replenishment_state == REPLENISHMENT_FULFILLED {
-                        if household.cooldown_hours > 0 {
-                            household.cooldown_hours -= 1;
-                        }
-                        household.replenishment_failure_count = 0;
-                        household.replenishment_state = REPLENISHMENT_COOLDOWN;
-                    } else if matches!(
-                        household.replenishment_state,
-                        REPLENISHMENT_WAITING_FOR_SHOPPER | REPLENISHMENT_FAILED_TERMINAL
-                    ) {
-                        if household.stock_days >= trigger_days {
-                            household.replenishment_failure_count = 0;
-                            household.replenishment_search_cursor = 0;
-                            household.replenishment_state = REPLENISHMENT_STABLE;
-                        }
-                    } else if household.cooldown_hours > 0 {
-                        household.cooldown_hours -= 1;
-                        household.replenishment_state = REPLENISHMENT_COOLDOWN;
-                    } else if household.stock_days < trigger_days {
-                        household.replenishment_state = REPLENISHMENT_NEEDS;
-                    } else {
-                        household.replenishment_failure_count = 0;
-                        household.replenishment_search_cursor = 0;
-                        household.replenishment_state = REPLENISHMENT_STABLE;
-                    }
-
-                    if household.stock_days == 0.0 {
-                        progress.any_zero_stock = true;
-                    }
-                    if household.stock_days < trigger_days
-                        && household.home_building_id < building_count
-                        && !matches!(
-                            household.replenishment_state,
-                            REPLENISHMENT_SHOPPING_TO_STORE | REPLENISHMENT_SHOPPING_RETURNING
-                        )
-                    {
-                        progress.restock_candidate_exists = true;
-                        if household.stock_days == 0.0 {
-                            progress.urgent_restock_candidate_exists = true;
-                        }
-                    }
-                    progress
-                },
-            )
-            .reduce(HouseholdHourProgress::default, |mut left, right| {
-                left.merge(right);
-                left
+                    )
             })
+            .map(|household| (true, household.stock_days == 0.0))
+            .reduce(|| (false, false), |a, b| (a.0 || b.0, a.1 || b.1))
     }
 
     #[cfg(test)]
@@ -765,17 +710,13 @@ impl HouseholdSystem {
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let tuning = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
-        let trigger_days = household_demand_profile(&catalog).reorder_threshold_days;
-        let supply_unit_price = household_supply_unit_price(&catalog);
-        let progress = self.progress_households_for_operational_hour(
-            0,
-            trigger_days,
-            tuning.households.water_sewage_cost_per_member_per_day,
-            supply_unit_price,
-        );
-        if progress.any_zero_stock {
-            apply_starvation_happiness_loss(&self.households, agents);
+        let hour = HouseholdHourTuning::load(&catalog, &tuning);
+        self.ensure_daily_ledger_len();
+        for (household, ledger) in self.households.iter_mut().zip(&mut self.daily_ledgers) {
+            progress_household_hour(household, ledger, &hour);
         }
+        let all_agents: Vec<_> = (0..agents.len()).map(|i| agents.agent_handle(i)).collect();
+        self.starve_phase_agents(&all_agents, agents);
     }
 
     #[cfg(test)]
@@ -807,14 +748,18 @@ impl HouseholdSystem {
             graph,
             tuning.fiscal.household_vat_rate,
         );
-        self.process_active_household_shopping(
-            agents,
-            allocator,
-            &catalog,
-            household_supply_resource,
-            retry_cooldown_hours,
-            terminal_failure_count,
-        );
+        self.ensure_daily_ledger_len();
+        for hid in 0..self.households.len() {
+            self.time_out_shopping_leg(
+                hid,
+                agents,
+                allocator,
+                &catalog,
+                household_supply_resource,
+                retry_cooldown_hours,
+                terminal_failure_count,
+            );
+        }
 
         let profile = household_demand_profile(&catalog);
         let trigger_days = profile.reorder_threshold_days;
@@ -1062,11 +1007,13 @@ impl HouseholdSystem {
     }
 
     #[allow(clippy::too_many_arguments)]
-    // Hourly: legs still under way count down their timeout. Arrivals are taken by each trip's
-    // own checks (`SIM-02-E`), so an arrived shopper is left for its next check.
+    // A leg still under way counts one hour down its timeout, at the household's hourly phase.
+    // Arrivals are taken by the trip's own checks (`SIM-02-E`), so an arrived shopper is left
+    // for its next check.
     #[allow(clippy::too_many_arguments)]
-    fn process_active_household_shopping(
+    fn time_out_shopping_leg(
         &mut self,
+        hid: usize,
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
         catalog: &RuntimeEconomyCatalog,
@@ -1074,45 +1021,42 @@ impl HouseholdSystem {
         retry_cooldown_hours: u16,
         terminal_failure_count: u16,
     ) {
-        self.ensure_daily_ledger_len();
-        for hid in 0..self.households.len() {
-            let state = self.households[hid].replenishment_state;
-            if !matches!(
-                state,
-                REPLENISHMENT_SHOPPING_TO_STORE | REPLENISHMENT_SHOPPING_RETURNING
-            ) || self.shopping_leg_arrived(hid, agents)
-            {
-                continue;
-            }
-            if state == REPLENISHMENT_SHOPPING_TO_STORE {
-                let store_idx = self.households[hid].reserved_store_building_id;
-                if shopping_carrier(&self.households[hid], hid, agents).is_none()
-                    || !valid_store_for_pickup(allocator, catalog, household_supply_resource, store_idx)
-                    || shopping_leg_timed_out(&mut self.households[hid])
-                {
-                    self.cancel_replenishment_before_pickup_with_ledger(
-                        hid,
-                        agents,
-                        allocator,
-                        household_supply_resource,
-                        retry_cooldown_hours,
-                        terminal_failure_count,
-                    );
-                }
-            } else if shopping_carrier(&self.households[hid], hid, agents).is_none()
-                || self.households[hid].home_building_id == usize::MAX
+        let state = self.households[hid].replenishment_state;
+        if !matches!(
+            state,
+            REPLENISHMENT_SHOPPING_TO_STORE | REPLENISHMENT_SHOPPING_RETURNING
+        ) || self.shopping_leg_arrived(hid, agents)
+        {
+            return;
+        }
+        if state == REPLENISHMENT_SHOPPING_TO_STORE {
+            let store_idx = self.households[hid].reserved_store_building_id;
+            if shopping_carrier(&self.households[hid], hid, agents).is_none()
+                || !valid_store_for_pickup(allocator, catalog, household_supply_resource, store_idx)
                 || shopping_leg_timed_out(&mut self.households[hid])
             {
-                self.cancel_replenishment_after_pickup_with_ledger(
+                self.cancel_replenishment_before_pickup_with_ledger(
                     hid,
                     agents,
+                    allocator,
+                    household_supply_resource,
                     retry_cooldown_hours,
                     terminal_failure_count,
                 );
-            } else {
-                // Re-issues the trip home if a failed route dropped it.
-                schedule_shopper_home(&self.households[hid], agents, ACTIVITY_SHOPPING);
             }
+        } else if shopping_carrier(&self.households[hid], hid, agents).is_none()
+            || self.households[hid].home_building_id == usize::MAX
+            || shopping_leg_timed_out(&mut self.households[hid])
+        {
+            self.cancel_replenishment_after_pickup_with_ledger(
+                hid,
+                agents,
+                retry_cooldown_hours,
+                terminal_failure_count,
+            );
+        } else {
+            // Re-issues the trip home if a failed route dropped it.
+            schedule_shopper_home(&self.households[hid], agents, ACTIVITY_SHOPPING);
         }
     }
 
@@ -1522,19 +1466,91 @@ fn plan_household_replenishment(
     })
 }
 
-fn apply_starvation_happiness_loss(households: &[Household], agents: &mut AgentSystem) {
-    let household_id = &agents.agents.household_id;
-    agents
-        .agents
-        .happiness
-        .par_iter_mut()
-        .enumerate()
-        .for_each(|(i, happiness)| {
-            let hid = household_id[i];
-            if hid < households.len() && households[hid].stock_days == 0.0 {
+// One operational hour of `household`: consumption, utilities and the replenishment state's
+// hourly transitions. O(1).
+fn progress_household_hour(
+    household: &mut Household,
+    ledger: &mut DailyHouseholdLedger,
+    hour: &HouseholdHourTuning,
+) {
+    if household.member_count == 0 {
+        return;
+    }
+    let hourly_consumption =
+        household.member_count as f32 * household.consumption_rate / OPERATIONAL_HOURS_PER_DAY;
+    household.stock = (household.stock - hourly_consumption).max(0.0);
+    let hourly_utility_cost = household.member_count as f32
+        * hour.water_sewage_cost_per_member_per_day
+        / OPERATIONAL_HOURS_PER_DAY;
+    let cash_before = household.budget;
+    household.budget = (household.budget - hourly_utility_cost).max(0.0);
+    // Record the debit at the account's precision. Fractional hourly fees otherwise drift from
+    // the ledger as household savings grow.
+    let paid_utility_cost = (cash_before - household.budget).max(0.0);
+    crate::debug::money::record_change(
+        crate::debug::money::MoneyFlow::OutsideUtilities,
+        cash_before,
+        household.budget,
+    );
+    ledger.household_supply_consumption_cost +=
+        hourly_consumption * hour.household_supply_unit_price;
+    record_household_utility_cost(ledger, paid_utility_cost);
+    household.stock_days = stock_days(
+        household.stock,
+        household.member_count,
+        household.consumption_rate,
+    );
+
+    if matches!(
+        household.replenishment_state,
+        REPLENISHMENT_SHOPPING_TO_STORE | REPLENISHMENT_SHOPPING_RETURNING
+    ) {
+    } else if household.replenishment_state == REPLENISHMENT_FULFILLED {
+        if household.cooldown_hours > 0 {
+            household.cooldown_hours -= 1;
+        }
+        household.replenishment_failure_count = 0;
+        household.replenishment_state = REPLENISHMENT_COOLDOWN;
+    } else if matches!(
+        household.replenishment_state,
+        REPLENISHMENT_WAITING_FOR_SHOPPER | REPLENISHMENT_FAILED_TERMINAL
+    ) {
+        if household.stock_days >= hour.trigger_days {
+            household.replenishment_failure_count = 0;
+            household.replenishment_search_cursor = 0;
+            household.replenishment_state = REPLENISHMENT_STABLE;
+        }
+    } else if household.cooldown_hours > 0 {
+        household.cooldown_hours -= 1;
+        household.replenishment_state = REPLENISHMENT_COOLDOWN;
+    } else if household.stock_days < hour.trigger_days {
+        household.replenishment_state = REPLENISHMENT_NEEDS;
+    } else {
+        household.replenishment_failure_count = 0;
+        household.replenishment_search_cursor = 0;
+        household.replenishment_state = REPLENISHMENT_STABLE;
+    }
+}
+
+impl HouseholdSystem {
+    /// An hour without supplies costs each member of an empty household some happiness, at the
+    /// member's own hourly phase (`SIM-02-F`). O(agents in the phase).
+    pub(crate) fn starve_phase_agents(
+        &self,
+        phase_agents: &[AgentHandle],
+        agents: &mut AgentSystem,
+    ) {
+        for &handle in phase_agents {
+            let Some(agent_idx) = agents.resolve_agent(handle) else {
+                continue;
+            };
+            let hid = agents.household_id[agent_idx];
+            if hid < self.households.len() && self.households[hid].stock_days == 0.0 {
+                let happiness = &mut agents.agents.happiness[agent_idx];
                 *happiness = (*happiness - 4.0).clamp(0.0, 100.0);
             }
-        });
+        }
+    }
 }
 
 // Reserves the purchase and holds the shopper for its paced departure; true when it did.

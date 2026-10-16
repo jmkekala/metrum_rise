@@ -6,7 +6,7 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version, also the only one that loads (`SIM-02` broke older saves).
-pub const SAVE_VERSION: i64 = 91;
+pub const SAVE_VERSION: i64 = 92;
 
 /// Sentinel for an absent reference column.
 pub const NONE_REF: i64 = -1;
@@ -261,7 +261,9 @@ CREATE TABLE buildings(
     recent_household_sales_value REAL NOT NULL,
     support_height_m REAL NOT NULL,
     build_generation INTEGER NOT NULL DEFAULT 0,
-    electricity_usage TEXT NOT NULL
+    electricity_usage TEXT NOT NULL,
+    hourly_economy_activity REAL NOT NULL,
+    commercial_activity_floor_scale REAL NOT NULL
 );
 CREATE TABLE building_inventories(
     building_id INTEGER NOT NULL,
@@ -476,7 +478,6 @@ CREATE TABLE agents(
     transit INTEGER NOT NULL,
     transit_mode INTEGER NOT NULL,
     happiness REAL NOT NULL,
-    money REAL NOT NULL,
     journey_start_time REAL NOT NULL,
     schedule_seed INTEGER NOT NULL,
     cached_commute_minutes INTEGER NOT NULL,

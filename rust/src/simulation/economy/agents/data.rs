@@ -52,8 +52,6 @@ pub struct Agent {
     pub transit: u8,
     /// Agent wellbeing in `[0, 100]`.
     pub happiness: f32,
-    /// Per-agent view of household money. Synced from the shared household budget.
-    pub money: f32,
     /// Internal clock for journey duration calculation.
     pub journey_start_time: f32,
     /// Stable authored schedule seed used for repeatable departure offsets.

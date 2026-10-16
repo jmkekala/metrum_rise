@@ -126,7 +126,6 @@ pub(super) fn semantic_fingerprint(city: &PopulatedCity) -> Vec<(&'static str, u
                 a.age_group[i],
                 a.pending_household_size[i],
                 a.freight_shipment_id[i],
-                a.money[i].to_bits(),
                 a.happiness[i].to_bits(),
             )
                 .hash(h);

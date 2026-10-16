@@ -57,21 +57,31 @@ pub(crate) enum SystemKind {
     /// One call at slot `offset` of every `period`. Only for work with a stated O(1), O(zones)
     /// or O(dirty) bound, and for passes re-hosted unchanged during the migration.
     FixedSlot { period: Period, offset: u64 },
+    /// One call per slot for the entities whose `period` phase falls in it, so each entity is
+    /// visited once per period (`docs/simulation.md#phases`).
+    EntityPhase { period: Period },
 }
 
 impl SystemKind {
-    // Per-slot order: events first, then fixed-slot systems in declaration order.
+    // Per-slot order: events, fixed-slot systems, then hourly before daily entity phases;
+    // declaration order within a kind.
     fn order(self) -> u8 {
         match self {
             Self::Events => 0,
             Self::FixedSlot { .. } => 1,
+            Self::EntityPhase {
+                period: Period::Hour,
+            } => 2,
+            Self::EntityPhase {
+                period: Period::Day,
+            } => 3,
         }
     }
 
     /// Whether a declaration of this kind runs in `slot`.
     pub(crate) fn due(self, slot: u64) -> bool {
         match self {
-            Self::Events => true,
+            Self::Events | Self::EntityPhase { .. } => true,
             Self::FixedSlot { period, offset } => slot % period.slots() == offset,
         }
     }
@@ -84,6 +94,8 @@ pub(crate) enum Cost {
     Events,
     /// A pass over the whole city re-hosted unchanged; removed by `SIM-02-K`.
     LegacyBoundary,
+    /// Proportional to the entities whose phase falls in the slot: O(N / slots per period).
+    Phase,
 }
 
 /// Simulation tier a declaration serves.
@@ -164,8 +176,8 @@ pub(crate) struct Schedule<S> {
 impl<S: Copy> Schedule<S> {
     /// Orders `declarations` by kind, keeping declaration order within a kind. Panics on a
     /// declaration that breaks the scheduling contract: a fixed-slot offset outside its period,
-    /// a fixed-slot system without a bounded cost or legacy status, or an events system whose
-    /// cost is not its events.
+    /// a fixed-slot system without a bounded cost or legacy status, or an events or entity-phase
+    /// system whose cost is not its events or its phase's entities.
     pub(crate) fn new(mut declarations: Vec<Declaration<S>>) -> Self {
         for declaration in &declarations {
             match declaration.kind {
@@ -185,6 +197,12 @@ impl<S: Copy> Schedule<S> {
                     declaration.cost,
                     Cost::Events,
                     "{} must cost its events",
+                    declaration.name
+                ),
+                SystemKind::EntityPhase { .. } => assert_eq!(
+                    declaration.cost,
+                    Cost::Phase,
+                    "{} must cost its phase's entities",
                     declaration.name
                 ),
             }

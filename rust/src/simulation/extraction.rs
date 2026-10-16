@@ -246,78 +246,101 @@ impl ResourceExtractionSystem {
         }
     }
 
-    /// Produces resource output from active extractor sites for one operational hour.
+    /// Produces extractor output of every active site for one operational hour; test driver of
+    /// [`Self::produce_for_building`].
+    #[cfg(test)]
     pub(crate) fn produce_hourly(
         &mut self,
         allocator: &mut BuildingAllocator,
         catalog: &RuntimeEconomyCatalog,
     ) {
         for site in &mut self.sites {
-            let remaining_reserve = site.remaining_reserve_units();
-            if remaining_reserve <= 0.0 {
-                continue;
-            }
-            let Some(resource_runtime_id) = catalog.resource_runtime_id_for_id(&site.resource_id)
-            else {
-                continue;
-            };
-            let Some(building) = allocator.buildings.get_mut(site.building_idx) else {
-                continue;
-            };
-            if building.broken
-                || building.economy_broken
-                || building.is_deserted
-                || building.is_under_construction()
-            {
-                continue;
-            }
-            let Some(profile) = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
-            else {
-                continue;
-            };
-            if profile.kind != EconomyProfileRuntimeKind::Extractor {
-                continue;
-            }
-            let Some(output_port) = profile.output_port(resource_runtime_id) else {
-                continue;
-            };
-            let factors = building_operation_factors(catalog, building, profile);
-            if factors.throughput_factor <= 0.0 {
-                continue;
-            }
-            let area_factor = explicit_work_area_scale(site.area_m2);
-            if area_factor <= 0.0 {
-                continue;
-            }
-            let hourly_units = output_port.units_per_day * area_factor / OPERATIONAL_HOURS_PER_DAY
-                * factors.throughput_factor;
-            if hourly_units <= 0.0 {
-                continue;
-            }
-            let current = building.inventory_units(output_port.resource_runtime_id);
-            let capacity =
-                scaled_output_buffer_capacity_units_for_building(building, profile, output_port);
-            let output_headroom = (capacity - current).max(0.0);
-            let produced = hourly_units.min(remaining_reserve).min(output_headroom);
-            if produced <= 0.0 {
-                continue;
-            }
-            consume_hourly_production_inputs(
-                building,
-                profile,
-                area_factor * factors.throughput_factor * (produced / hourly_units),
-            );
-            building.hourly_economy_activity =
-                factors.throughput_factor * (produced / hourly_units);
-            building.add_inventory_units(output_port.resource_runtime_id, produced);
-            site.extracted_units += produced;
-            allocator.set_work_area_scale(site.building_idx, site.productive_area_scale());
+            produce_site_hour(site, allocator, catalog);
+        }
+    }
+
+    /// Produces the extractor output of `building_idx`'s site for one operational hour, at the
+    /// building's hourly phase (`SIM-02-F`). O(log sites).
+    pub(crate) fn produce_for_building(
+        &mut self,
+        building_idx: usize,
+        allocator: &mut BuildingAllocator,
+        catalog: &RuntimeEconomyCatalog,
+    ) {
+        if let Ok(index) = self
+            .sites
+            .binary_search_by_key(&building_idx, |site| site.building_idx)
+        {
+            produce_site_hour(&mut self.sites[index], allocator, catalog);
         }
     }
 
     fn bump_visual_revision(&mut self) {
         self.visual_revision = self.visual_revision.wrapping_add(1);
     }
+}
+
+// One operational hour of production at one site.
+fn produce_site_hour(
+    site: &mut ExtractorSite,
+    allocator: &mut BuildingAllocator,
+    catalog: &RuntimeEconomyCatalog,
+) {
+    let remaining_reserve = site.remaining_reserve_units();
+    if remaining_reserve <= 0.0 {
+        return;
+    }
+    let Some(resource_runtime_id) = catalog.resource_runtime_id_for_id(&site.resource_id) else {
+        return;
+    };
+    let Some(building) = allocator.buildings.get_mut(site.building_idx) else {
+        return;
+    };
+    if building.broken
+        || building.economy_broken
+        || building.is_deserted
+        || building.is_under_construction()
+    {
+        return;
+    }
+    let Some(profile) = catalog.profile_by_runtime_id(building.economy_profile_runtime_id) else {
+        return;
+    };
+    if profile.kind != EconomyProfileRuntimeKind::Extractor {
+        return;
+    }
+    let Some(output_port) = profile.output_port(resource_runtime_id) else {
+        return;
+    };
+    let factors = building_operation_factors(catalog, building, profile);
+    if factors.throughput_factor <= 0.0 {
+        return;
+    }
+    let area_factor = explicit_work_area_scale(site.area_m2);
+    if area_factor <= 0.0 {
+        return;
+    }
+    let hourly_units = output_port.units_per_day * area_factor / OPERATIONAL_HOURS_PER_DAY
+        * factors.throughput_factor;
+    if hourly_units <= 0.0 {
+        return;
+    }
+    let current = building.inventory_units(output_port.resource_runtime_id);
+    let capacity = scaled_output_buffer_capacity_units_for_building(building, profile, output_port);
+    let output_headroom = (capacity - current).max(0.0);
+    let produced = hourly_units.min(remaining_reserve).min(output_headroom);
+    if produced <= 0.0 {
+        return;
+    }
+    consume_hourly_production_inputs(
+        building,
+        profile,
+        area_factor * factors.throughput_factor * (produced / hourly_units),
+    );
+    building.hourly_economy_activity = factors.throughput_factor * (produced / hourly_units);
+    building.add_inventory_units(output_port.resource_runtime_id, produced);
+    site.extracted_units += produced;
+    allocator.set_work_area_scale(site.building_idx, site.productive_area_scale());
 }
 
 /// Validates authoritative reserve/depletion values before area commit, persistence or restore.

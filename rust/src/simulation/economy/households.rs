@@ -19,6 +19,7 @@ mod service_visits;
 mod tests;
 mod tick;
 
+pub(crate) use building_economy::produce_building_hour;
 pub(crate) use data::{DailyPowerSettlementSummary, HouseholdBuildingUndo};
 pub use data::{Household, HouseholdSystem};
 pub(crate) use removal::HouseholdExitPolicy;

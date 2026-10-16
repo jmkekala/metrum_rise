@@ -12,8 +12,7 @@ use super::data::{Household, HouseholdSystem};
 use super::metrics::{
     UTILITY_SERVICE_POWER, demand_sink_cash_cost_per_resident_excluding_resource,
     household_demand_profile, household_supply_resource_runtime_id, household_supply_unit_price,
-    physical_worker_capacity_for_profile, refresh_commercial_activity_floor,
-    service_funded_worker_capacity,
+    physical_worker_capacity_for_profile, service_funded_worker_capacity,
 };
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::economy::accessibility::{
@@ -172,6 +171,7 @@ impl HouseholdSystem {
         );
     }
 
+    /// Funding census, then job search against it.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn assign_agent_workplaces_with_service_funding(
         &mut self,
@@ -183,6 +183,70 @@ impl HouseholdSystem {
         logistics: &mut ShipmentSystem,
         fiscal_policy: &CityFiscalPolicy,
         treasury_balance: f64,
+        minute_of_day: u16,
+    ) {
+        self.refresh_funding_census(
+            allocator,
+            logistics,
+            transit_network,
+            graph,
+            service_funding_by_building,
+            fiscal_policy,
+            treasury_balance,
+            minute_of_day,
+        );
+        self.assign_agent_workplaces_from_census(
+            agents,
+            allocator,
+            transit_network,
+            graph,
+            minute_of_day,
+        );
+    }
+
+    /// Recomputes the funding census (`ECON-17`) from the current state. The hour runs it first,
+    /// so every reader that hour sees a census of the state the previous hour's phases left, and a
+    /// census rebuilt on load never feeds the simulation (`SIM-02-F`).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn refresh_funding_census(
+        &mut self,
+        allocator: &mut BuildingAllocator,
+        logistics: &mut ShipmentSystem,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+        service_funding_by_building: &[f32],
+        fiscal_policy: &CityFiscalPolicy,
+        treasury_balance: f64,
+        minute_of_day: u16,
+    ) {
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        let tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        allocator.prepare_production_changes();
+        crate::debug::work::add(crate::debug::work::Work::LiveCensuses, 1);
+        self.job_funding.refresh(
+            allocator,
+            &self.households,
+            logistics,
+            transit_network,
+            graph,
+            &catalog,
+            &tuning,
+            fiscal_policy,
+            service_funding_by_building,
+            treasury_balance,
+            minute_of_day,
+        );
+    }
+
+    /// Job search against the latest funding census.
+    pub(crate) fn assign_agent_workplaces_from_census(
+        &mut self,
+        agents: &mut AgentSystem,
+        allocator: &mut BuildingAllocator,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
         minute_of_day: u16,
     ) {
         let timing_category = if debug::Channel::EconomyWorkplace.enabled() {
@@ -208,22 +272,6 @@ impl HouseholdSystem {
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
         let load_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
-        refresh_commercial_activity_floor(&catalog, allocator, self.job_funding.activities());
-        allocator.prepare_production_changes();
-        crate::debug::work::add(crate::debug::work::Work::LiveCensuses, 1);
-        self.job_funding.refresh(
-            allocator,
-            &self.households,
-            logistics,
-            transit_network,
-            graph,
-            &catalog,
-            &tuning,
-            fiscal_policy,
-            service_funding_by_building,
-            treasury_balance,
-            minute_of_day,
-        );
         let profile = household_demand_profile(&catalog);
         let target_days = profile.stock_target_days;
 
@@ -475,7 +523,8 @@ impl HouseholdSystem {
         }
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
-        refresh_commercial_activity_floor(&catalog, allocator, self.job_funding.activities());
+        // The activity floor stays as the hour pass set it: production at each building's phase
+        // reads it until the next hour, and a load restores it.
         let funded_capacity_by_building: Vec<Option<u32>> = allocator
             .buildings
             .par_iter()
@@ -515,7 +564,7 @@ impl HouseholdSystem {
             treasury_balance,
             &empty_logistics,
         );
-        self.sync_agent_money_from_households(agents);
+        self.count_employed_adults(agents);
         tax
     }
 

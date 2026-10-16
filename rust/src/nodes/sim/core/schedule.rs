@@ -29,6 +29,12 @@ pub(crate) enum SimSystem {
     OperationalHour,
     /// Today's daily settlement, with the midnight demand pass.
     DailySettlement,
+    /// Production of the buildings in the slot's hourly phase.
+    BuildingHours,
+    /// Consumption, utilities and leg timeouts of the households in the slot's hourly phase.
+    HouseholdHours,
+    /// Happiness of the agents in the slot's hourly phase.
+    AgentHours,
 }
 
 /// Something that must happen at a given slot.
@@ -112,6 +118,39 @@ pub(crate) fn simulation_schedule() -> Schedule<SimSystem> {
             cost: Cost::LegacyBoundary,
             tier: Tier::Full,
         },
+        Declaration {
+            system: SimSystem::BuildingHours,
+            name: "building hours",
+            kind: SystemKind::EntityPhase {
+                period: Period::Hour,
+            },
+            reads: state::BUILDINGS,
+            writes: state::BUILDINGS,
+            cost: Cost::Phase,
+            tier: Tier::Full,
+        },
+        Declaration {
+            system: SimSystem::HouseholdHours,
+            name: "household hours",
+            kind: SystemKind::EntityPhase {
+                period: Period::Hour,
+            },
+            reads: state::HOUSEHOLDS | state::AGENTS | state::BUILDINGS,
+            writes: state::HOUSEHOLDS | state::AGENTS | state::BUILDINGS,
+            cost: Cost::Phase,
+            tier: Tier::Full,
+        },
+        Declaration {
+            system: SimSystem::AgentHours,
+            name: "agent hours",
+            kind: SystemKind::EntityPhase {
+                period: Period::Hour,
+            },
+            reads: state::HOUSEHOLDS,
+            writes: state::AGENTS,
+            cost: Cost::Phase,
+            tier: Tier::Full,
+        },
     ])
 }
 
@@ -164,6 +203,9 @@ impl SimCore {
                         self.print_sim_console_summary(day_index, minute_of_day);
                     }
                 }
+                SimSystem::BuildingHours => self.run_building_hours(slot),
+                SimSystem::HouseholdHours => self.run_household_hours(slot),
+                SimSystem::AgentHours => self.run_agent_hours(slot),
             }
         }
         self.schedule_construction_completions();

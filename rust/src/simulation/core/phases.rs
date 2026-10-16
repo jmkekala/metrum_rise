@@ -14,8 +14,6 @@ use super::stable_hash64;
 /// Daily phases: one per slot of a game day at 16 slots per minute.
 pub(crate) const PHASES_PER_DAY: u32 = 24 * 60 * 16;
 /// Hourly phases: one per slot of a game hour.
-// Read by `EntityPhase` systems from `SIM-02-F`.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const PHASES_PER_HOUR: u32 = 60 * 16;
 
 // Marks a handle slot that holds no bucket entry.

@@ -274,8 +274,8 @@ pub struct Building {
     /// Runtime-only activity cap of a store, service store or explicit work area: its funded
     /// share of full output from the latest job-funding census (`DEM-02`).
     ///
-    /// This is rebuilt by the household economy before production, hiring, and demand accounting;
-    /// it is not persisted because the census is rebuilt from live city state.
+    /// Each hour sets it from that hour's census, and production at the building's hourly phase
+    /// reads it until the next, so it is saved (`SIM-02-F`).
     pub commercial_activity_floor_scale: f32,
     /// Cached scale from an explicit player-drawn production area to authored full-area capacity.
     ///

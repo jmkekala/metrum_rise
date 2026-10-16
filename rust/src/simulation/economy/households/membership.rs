@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Agent-to-household membership rebuilds and money synchronization.
+//! Agent-to-household membership rebuilds and employed-adult counts.
 
 use std::sync::atomic::Ordering;
 
@@ -217,36 +217,25 @@ impl HouseholdSystem {
         self.household_member_next_scratch = next;
     }
 
-    pub(super) fn sync_agent_money_from_households(&mut self, agents: &mut AgentSystem) {
+    /// Counts each household's employed adults after the hour's job allocation; demand reads
+    /// the count. O(agents) until the census becomes incremental (`SIM-02-I`).
+    pub(super) fn count_employed_adults(&mut self, agents: &AgentSystem) {
         // Job allocation ran after the income census and freight may have remapped agents.
         // Reuse the census counters in this existing agent pass; member links are stale here.
         self.reset_adult_count_scratch();
         let employed = &self.adult_count_scratch;
-        let households = &self.households;
         let household_id = &agents.agents.household_id;
         let work_building = &agents.agents.work_building;
         let age_group = &agents.agents.age_group;
-        agents
-            .agents
-            .money
-            .par_iter_mut()
-            .enumerate()
-            .for_each(|(i, money)| {
-                let hid = household_id[i];
-                if hid == usize::MAX || hid >= households.len() {
-                    return;
-                }
-                let household = &households[hid];
-                if age_group_can_work(age_group[i]) && work_building[i] != usize::MAX {
-                    employed[hid].fetch_add(1, Ordering::Relaxed);
-                }
-                let per_member = if household.member_count > 0 {
-                    household.budget / household.member_count as f32
-                } else {
-                    0.0
-                };
-                *money = per_member.max(0.0);
-            });
+        (0..agents.len()).into_par_iter().for_each(|i| {
+            let hid = household_id[i];
+            if hid < employed.len()
+                && age_group_can_work(age_group[i])
+                && work_building[i] != usize::MAX
+            {
+                employed[hid].fetch_add(1, Ordering::Relaxed);
+            }
+        });
         self.households
             .par_iter_mut()
             .enumerate()

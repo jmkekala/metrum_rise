@@ -17,7 +17,6 @@ impl AgentSystem {
         let agents = &mut self.agents;
         (
             &mut agents.happiness,
-            &mut agents.money,
             &agents.pos_x,
             &agents.pos_y,
             &agents.transit,
@@ -26,7 +25,7 @@ impl AgentSystem {
             .into_par_iter()
             // Daily work per agent is small; keep contiguous runs large enough to amortize dispatch.
             .with_min_len(8_192)
-            .for_each(|(happiness, money, &x, &z, &transit, &activity)| {
+            .for_each(|(happiness, &x, &z, &transit, &activity)| {
                 if transit == TRANSIT_IN_BUILDING && activity == 0 {
                     *happiness += 1.0;
                 }
@@ -42,7 +41,6 @@ impl AgentSystem {
                 }
 
                 *happiness = happiness.clamp(0.0, 100.0);
-                *money = money.max(0.0);
             });
     }
 }
@@ -67,30 +65,28 @@ mod tests {
             .data
             .copy_from_slice(&[10.0, 20.0, 30.0, 40.0]);
         let cases = [
-            (-20.0, -20.0, TRANSIT_IN_BUILDING, 0, 50.0, 5.0, 50.0, 5.0),
-            (20.0, -20.0, TRANSIT_IN_BUILDING, 1, 50.0, 5.0, 48.0, 5.0),
-            (-20.0, 20.0, TRANSIT_NETWORK, 0, 50.0, 5.0, 47.0, 5.0),
-            (20.0, 20.0, TRANSIT_IN_BUILDING, 0, 1.0, -4.0, 0.0, 0.0),
-            (-60.0, -20.0, TRANSIT_IN_BUILDING, 0, 100.0, 5.0, 100.0, 5.0),
-            (40.0, -20.0, TRANSIT_IN_BUILDING, 0, 50.0, 5.0, 51.0, 5.0),
-            (-40.0, -20.0, TRANSIT_IN_BUILDING, 1, 10.0, 5.0, 10.0, 5.0),
-            (20.0, 60.0, TRANSIT_IN_BUILDING, 0, -5.0, -4.0, 0.0, 0.0),
+            (-20.0, -20.0, TRANSIT_IN_BUILDING, 0, 50.0, 50.0),
+            (20.0, -20.0, TRANSIT_IN_BUILDING, 1, 50.0, 48.0),
+            (-20.0, 20.0, TRANSIT_NETWORK, 0, 50.0, 47.0),
+            (20.0, 20.0, TRANSIT_IN_BUILDING, 0, 1.0, 0.0),
+            (-60.0, -20.0, TRANSIT_IN_BUILDING, 0, 100.0, 100.0),
+            (40.0, -20.0, TRANSIT_IN_BUILDING, 0, 50.0, 51.0),
+            (-40.0, -20.0, TRANSIT_IN_BUILDING, 1, 10.0, 10.0),
+            (20.0, 60.0, TRANSIT_IN_BUILDING, 0, -5.0, 0.0),
         ];
         for count in [cases.len(), 32_768] {
             let mut agents = AgentSystem::new();
             for i in 0..count {
-                let (x, z, transit, activity, happiness, money, _, _) = cases[i % cases.len()];
+                let (x, z, transit, activity, happiness, _) = cases[i % cases.len()];
                 let id = agents.spawn_housed_agent(0, x, z);
                 agents.transit[id] = transit;
                 agents.activity[id] = activity;
                 agents.happiness[id] = happiness;
-                agents.money[id] = money;
             }
             agents.daily_update(&pollution, &config);
             for i in 0..count {
-                let (_, _, _, _, _, _, happiness, money) = cases[i % cases.len()];
+                let (_, _, _, _, _, happiness) = cases[i % cases.len()];
                 assert_eq!(agents.happiness[i], happiness, "agent {i}");
-                assert_eq!(agents.money[i], money, "agent {i}");
             }
         }
     }

@@ -84,18 +84,27 @@ crossed:
 1. Each minute: the next queued private construction start, at most one per minute, and any
    construction site whose deadline falls in that slot completes
    ([`simulation.md`](simulation.md#deadlines-and-timed-events)).
-2. Each whole hour: the **operational hour**: farm and mine production, then the household hour
-   (below).
+2. Each whole hour: the **operational hour**, the pooled household hour (below).
 3. At minutes other than 0, the **hourly demand pass**: project planning, household admission and
    immediate building actions ([`demand.md`](demand.md#cadence-and-handoff)).
 4. At minute 0, after the operational hour: the **daily tick**: allocator maintenance, the daily
    settlement (below), road upkeep, the daily demand pass, household removals, then the minute-0
    hourly demand pass. Daily tax buckets roll into the report only after all of these.
+5. Each slot, after everything above: the **hourly phases** of the buildings, households and
+   agents whose phase falls in it (`SIM-02-F`, [`simulation.md`](simulation.md#phases)). Each
+   entity has one per hour, about 1/960 of the city per slot.
 
 Household hour (`households/tick.rs`): count the households still arriving; rebuild membership
-and worker counts; rehouse unhoused households; building production and electricity dispatch;
-logistics; household consumption, replenishment and service sales; the workplace pass (funding
-census plus job search); agent money synchronization.
+and worker counts; rehouse unhoused households; the funding census; the activity floor and
+service-store sales; electricity dispatch; logistics; replenishment and service-visit planning;
+job search against the census; the employed-adult counts. Every reader that hour sees a census
+of the state the previous hour's phases left.
+
+Hourly phases (`nodes/sim/core/entity_phases.rs`): a building produces and consumes its recipe
+inputs, and a farm or mine adds its output; a household consumes supplies, pays utilities and
+times out a stalled shopping leg; an agent whose household pantry is empty loses happiness.
+Electricity dispatch on the hour bills the activity each building recorded at its phase in the
+previous hour.
 
 Trips decided on the hour do not leave on it (`SIM-02-E`,
 [`simulation.md`](simulation.md#deadlines-and-timed-events)). Freight carriers, shoppers,

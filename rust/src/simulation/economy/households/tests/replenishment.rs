@@ -7,6 +7,40 @@ use super::*;
 use crate::simulation::economy::agents::{ACTIVITY_HOME, ACTIVITY_SHOPPING};
 
 #[test]
+fn each_household_runs_one_hour_per_hour_at_its_own_phase() {
+    use crate::simulation::core::phases::PHASES_PER_HOUR;
+
+    let mut households = HouseholdSystem::new();
+    for _ in 0..64 {
+        households
+            .households
+            .push(make_household(usize::MAX, 2, 5.0, 3.0));
+    }
+    households
+        .handles
+        .register_appended(households.households.len());
+    let mut allocator = BuildingAllocator::new();
+    let mut agents = AgentSystem::new();
+    let mut runs = vec![0_u32; households.households.len()];
+    let mut phase = Vec::new();
+    for slot in 0..PHASES_PER_HOUR {
+        households.handles.phases().hourly(slot, &mut phase);
+        let before: Vec<f32> = households.households.iter().map(|h| h.stock).collect();
+        households.run_household_phase(&phase, &mut agents, &mut allocator);
+        for (hid, household) in households.households.iter().enumerate() {
+            let in_phase = phase.contains(&households.handles.handle(hid));
+            assert_eq!(
+                household.stock != before[hid],
+                in_phase,
+                "household {hid} slot {slot}"
+            );
+            runs[hid] += u32::from(in_phase);
+        }
+    }
+    assert!(runs.iter().all(|&count| count == 1), "{runs:?}");
+}
+
+#[test]
 fn household_replenishment_uses_one_visible_shopper_trip() {
     let household = Household {
         home_building_id: 0,

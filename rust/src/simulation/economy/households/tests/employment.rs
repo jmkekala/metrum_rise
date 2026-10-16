@@ -651,13 +651,13 @@ fn post_assignment_sync_refreshes_employment_without_census_member_links() {
     // The census predates these job assignments. No membership links are available here.
     agents.assign_work_building(0, 1, 0);
     agents.assign_work_building(3, 1, 0);
-    households.sync_agent_money_from_households(&mut agents);
+    households.count_employed_adults(&agents);
     assert_eq!(households.households[0].employed_adults, 1);
     assert_eq!(households.households[1].employed_adults, 1);
     agents.assign_work_building(0, usize::MAX, 0);
     agents.assign_work_building(1, 2, 0);
     agents.assign_work_building(2, 2, 0);
-    households.sync_agent_money_from_households(&mut agents);
+    households.count_employed_adults(&agents);
     assert_eq!(households.households[0].employed_adults, 2);
 }
 
@@ -2004,7 +2004,7 @@ fn benchmark_payroll_phase() {
                 &mut treasury,
                 &logistics,
             ));
-            households.sync_agent_money_from_households(&mut agents);
+            households.count_employed_adults(&agents);
         };
         phase();
         let mut samples = [0.0; 11];
@@ -2016,13 +2016,6 @@ fn benchmark_payroll_phase() {
             *sample = start.elapsed().as_secs_f64() * 1_000.0 / 4.0;
         }
         assert!(agents.work_building.iter().all(|&work| work != usize::MAX));
-        assert!(
-            agents
-                .money
-                .iter()
-                .zip(&households.households)
-                .all(|(&money, home)| money == home.budget)
-        );
         samples.sort_by(f64::total_cmp);
         eprintln!("payroll_phase workers={count} median_ms={:.3}", samples[5]);
     }

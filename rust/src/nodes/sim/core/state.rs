@@ -21,12 +21,11 @@ use crate::debug_log;
 use crate::simulation::agriculture::AgricultureSystem;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::core::config::WorldConfig;
-use crate::simulation::core::handles::HandleTable;
+use crate::simulation::core::handles::{Handle, HandleTable};
 use crate::simulation::core::scheduler::{SLOTS_PER_MINUTE, Schedule, absolute_slot};
 use crate::simulation::core::time::TimeSystem;
 use crate::simulation::core::timing_wheel::{TimedEvent, TimingWheel};
 use crate::simulation::economy::agents::AgentSystem;
-use crate::simulation::economy::definitions::load_runtime_economy_catalog;
 use crate::simulation::economy::demand::{
     DemandBuildingActionPlan, DemandSpawnAction, DemandSystem,
 };
@@ -182,6 +181,11 @@ pub struct SimCore {
     pub(crate) events: TimingWheel<SimEvent>,
     /// Reused buffer for the events of the slot being dispatched.
     pub(crate) due_events: Vec<TimedEvent<SimEvent>>,
+    /// Reused lists of the entities of one hourly phase (`SIM-02-F`).
+    pub(crate) building_phase_scratch: Vec<Handle<Building>>,
+    pub(crate) household_phase_scratch:
+        Vec<Handle<crate::simulation::economy::households::Household>>,
+    pub(crate) agent_phase_scratch: Vec<crate::simulation::economy::agents::AgentHandle>,
     /// Building placement and vacancy index.
     pub allocator: BuildingAllocator,
     /// Agent FSM in Structure-of-Arrays layout.
@@ -328,6 +332,9 @@ impl SimCore {
             schedule,
             events: TimingWheel::new(next_slot),
             due_events: Vec::new(),
+            building_phase_scratch: Vec::new(),
+            household_phase_scratch: Vec::new(),
+            agent_phase_scratch: Vec::new(),
             allocator: BuildingAllocator::new_at_slot(next_slot - 1),
             agents: AgentSystem::new(),
             households: HouseholdSystem::new(),
@@ -558,8 +565,10 @@ impl SimCore {
 
 impl SimCore {
     /// Executes one coarse operational-hour economy step before the daily settlement boundary.
+    /// Every entity's hour runs at once after the pass, as the slots of the hour would.
     pub fn simulate_operational_hour_internal(&mut self, day_index: u32, minute_of_day: u16) {
         self.simulate_operational_hour_observed(day_index, minute_of_day, &mut ());
+        self.run_every_hour_phase();
     }
 
     pub(super) fn simulate_operational_hour_observed(
@@ -573,13 +582,9 @@ impl SimCore {
             .saturating_mul(24)
             .saturating_add(u32::from(minute_of_day / 60));
         // Every economy consumer this hour prices the same frontage delays (`ECON-13-D`).
+        // Production, farms, mines and household consumption run at each entity's hourly
+        // phase (`SIM-02-F`).
         self.transit_network.publish_frontage_prices();
-        let catalog = load_runtime_economy_catalog()
-            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
-        self.agriculture
-            .produce_hourly(&mut self.allocator, &catalog);
-        self.resource_extraction
-            .produce_hourly(&mut self.allocator, &catalog);
         let service_funding_by_building = self.electricity_funding_by_building();
         self.households.operational_hour_tick(
             &mut self.agents,

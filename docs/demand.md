@@ -190,7 +190,9 @@ This section describes the current cadence. Its replacement is planned in
   each start a timed event (`SIM-02-C`). A site completes at its own slot, its duration after the
   start (`SIM-02-D`). The workforce calendar counts every site, placed, queued or proposed, as
   ready at the first hour boundary at or after its completion.
-- **Frozen inputs:** a pass's inputs are fixed. Its changes affect the next operational hour.
+- **Frozen inputs:** a pass's inputs are fixed. Its changes affect the next operational hour and
+  each entity's next hourly phase. The pass runs before the phases of its slot, so it sees every
+  building and household exactly one hour on (`SIM-02-F`).
   Hourly admissions are never eligible for removals already selected from that day's settlement.
 
 ## Authored tuning

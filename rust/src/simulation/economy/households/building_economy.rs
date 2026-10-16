@@ -450,55 +450,21 @@ impl HouseholdSystem {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         refresh_commercial_activity_floor(&catalog, allocator, self.job_funding.activities());
+        // Service stores sell from one citywide pool until it becomes a rolling snapshot
+        // (`SIM-02-I`); every other producer runs its hour at its own phase (`SIM-02-F`).
         self.settle_hourly_service_store_sales(allocator, &catalog);
-        allocator.buildings.par_iter_mut().for_each(|building| {
-            let zone = building.zone_type;
-            if building.broken
-                || building.economy_broken
-                || building.is_deserted
-                || building.is_under_construction()
-            {
-                return;
-            }
-            let Some(profile) = economy_profile_for_building(&catalog, building) else {
-                return;
-            };
-            if crate::simulation::work_area::profile_kind_uses_explicit_work_area(profile.kind) {
-                return;
-            }
-            if profile.utility_service.as_deref() == Some(UTILITY_SERVICE_POWER) {
-                // Electricity dispatch consumes fuel only for generation demanded this hour.
-                return;
-            }
-            let factors = building_operation_factors(&catalog, building, profile);
-            let throughput_factor = factors.throughput_factor;
-            if profile.kind != EconomyProfileRuntimeKind::ServiceStore {
-                building.hourly_economy_activity = throughput_factor;
-            }
+    }
 
-            consume_hourly_production_inputs(building, profile, throughput_factor);
-            if matches!(zone, ZoneType::Commercial | ZoneType::Industrial)
-                && profile.kind != EconomyProfileRuntimeKind::ServiceStore
-            {
-                for output_port in &profile.outputs {
-                    let hourly_output_units =
-                        output_port.units_per_day / OPERATIONAL_HOURS_PER_DAY * throughput_factor;
-                    if hourly_output_units <= 0.0 {
-                        continue;
-                    }
-                    let current = building.inventory_units(output_port.resource_runtime_id);
-                    let capacity = scaled_output_buffer_capacity_units_for_building(
-                        building,
-                        profile,
-                        output_port,
-                    );
-                    building.set_inventory_units(
-                        output_port.resource_runtime_id,
-                        (current + hourly_output_units).min(capacity),
-                    );
-                }
-            }
-        });
+    /// Test driver of one building hour: the hourly pass, then every building's production
+    /// hour in dense order, as their phases would run it.
+    #[cfg(test)]
+    pub(super) fn run_building_hour_for_test(&mut self, allocator: &mut BuildingAllocator) {
+        self.run_building_economy(allocator);
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        for building in &mut allocator.buildings {
+            produce_building_hour(&catalog, building);
+        }
     }
 
     fn settle_hourly_service_store_sales(
@@ -679,6 +645,56 @@ impl HouseholdSystem {
             surcharge_total += surcharge;
         }
         surcharge_total
+    }
+}
+
+/// One operational hour of production at `building`, run at its hourly phase (`SIM-02-F`):
+/// inputs consumed and outputs stocked up to the output buffer. Power plants run in the hourly
+/// dispatch, explicit work areas through their sites and service stores in the citywide sale.
+/// O(ports).
+pub(crate) fn produce_building_hour(catalog: &RuntimeEconomyCatalog, building: &mut Building) {
+    let zone = building.zone_type;
+    if building.broken
+        || building.economy_broken
+        || building.is_deserted
+        || building.is_under_construction()
+    {
+        return;
+    }
+    let Some(profile) = economy_profile_for_building(catalog, building) else {
+        return;
+    };
+    if crate::simulation::work_area::profile_kind_uses_explicit_work_area(profile.kind) {
+        return;
+    }
+    if profile.utility_service.as_deref() == Some(UTILITY_SERVICE_POWER) {
+        // Electricity dispatch consumes fuel only for generation demanded this hour.
+        return;
+    }
+    let factors = building_operation_factors(catalog, building, profile);
+    let throughput_factor = factors.throughput_factor;
+    if profile.kind != EconomyProfileRuntimeKind::ServiceStore {
+        building.hourly_economy_activity = throughput_factor;
+    }
+
+    consume_hourly_production_inputs(building, profile, throughput_factor);
+    if matches!(zone, ZoneType::Commercial | ZoneType::Industrial)
+        && profile.kind != EconomyProfileRuntimeKind::ServiceStore
+    {
+        for output_port in &profile.outputs {
+            let hourly_output_units =
+                output_port.units_per_day / OPERATIONAL_HOURS_PER_DAY * throughput_factor;
+            if hourly_output_units <= 0.0 {
+                continue;
+            }
+            let current = building.inventory_units(output_port.resource_runtime_id);
+            let capacity =
+                scaled_output_buffer_capacity_units_for_building(building, profile, output_port);
+            building.set_inventory_units(
+                output_port.resource_runtime_id,
+                (current + hourly_output_units).min(capacity),
+            );
+        }
     }
 }
 

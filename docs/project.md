@@ -326,6 +326,10 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   (2026-10-16): trucks, shoppers, service visitors and arriving families no longer all leave on
   the hour. Each kind leaves at slots spread over the hour, and deliveries, store pickups, returns
   home and move-ins settle when the agent arrives instead of at the next hour (save format 91).
+  `SIM-02-F` (2026-10-16): each building produces, each household eats and uses its utilities,
+  and each resident feels hunger at its own minute of the hour, not all at :00. City-wide
+  store sales and electricity dispatch still settle on the hour, and electricity bills the
+  activity of the hour before (save format 92).
 
 - **Starting treasury**: new games begin with 500,000, increased from 100,000. See
   [money source](economy.md#money-source); earlier balance runs retain their original starting capital.

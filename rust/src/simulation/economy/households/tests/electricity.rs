@@ -70,18 +70,12 @@ fn power_input_buffers_follow_staffing_and_preserve_minimum_freight_batches() {
 fn fractional_hourly_utility_charges_reconcile_with_household_cash() {
     let mut household = make_household(0, 2, 0.0, 100.0);
     household.budget = 100_000.0;
-    let (mut households, mut allocator, mut agents, network, graph) =
+    let (mut households, _, mut agents, _, _) =
         setup_replenishment_world(household, "utility_home", "utility_store", 50.0, 20.0);
     let before = households.households[0].budget;
+    // Utilities are charged in each household's own hour (`SIM-02-F`).
     for _ in 0..24 {
-        households.run_household_operational_hour(
-            &mut agents,
-            &mut allocator,
-            &network,
-            &graph,
-            0,
-            0.0,
-        );
+        households.consume_household_stock(&mut agents);
     }
     let ledger = &households.daily_ledgers()[0];
     assert_eq!(

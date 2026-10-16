@@ -176,7 +176,6 @@ impl SimCore {
                 activity: 0,
                 transit: TRANSIT_NETWORK,
                 happiness: 50.0,
-                money: 100.0,
                 journey_start_time: 0.0,
                 current_building: usize::MAX,
                 target_building: usize::MAX,

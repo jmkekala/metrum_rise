@@ -7,8 +7,8 @@ simulation tiers. Economy and growth rules stay in [`economy.md`](economy.md) an
 
 **Status:** `SIM-02` in progress. `SIM-02-A` (guards and pre-refactor baseline), `SIM-02-B`
 (save cutover and handles), `SIM-02-C` (slot clock, scheduler, timing wheel and phases),
-`SIM-02-D` (passive deadlines and construction completion) and `SIM-02-E` (trips as timed
-events) are done; see the
+`SIM-02-D` (passive deadlines and construction completion), `SIM-02-E` (trips as timed
+events) and `SIM-02-F` (per-entity hourly economy) are done; see the
 [`SIM-02-A` baseline](#sim-02-a-guards-and-pre-refactor-baseline) and the
 [step results](#step-results). Until each migration step lands,
 the current cadence in
@@ -164,6 +164,12 @@ are in `nodes/sim/core/schedule.rs`: timed events; then the operational hour (`F
 hour, offset 0) and the daily settlement (`FixedSlot`, day, offset 0), both re-hosted
 unchanged. The `sim` debug channel prints the list with costs, tiers, reads and writes.
 
+**Implemented in `SIM-02-F`.** `EntityPhase { period }` systems cost `Phase`, the entities of
+one phase, and the schedule rejects any other cost for them. Three hourly ones follow the
+re-hosted hour in every slot (`nodes/sim/core/entity_phases.rs`): `building_hours`,
+`household_hours` and `agent_hours`. A caller that steps a whole operational hour without the
+slot clock (tests and tools) runs the pooled hour and then every phase in order.
+
 ### Phases
 
 - Each building and household has a daily phase `d` in `0..23,040`, a stable hash of its seed:
@@ -182,8 +188,23 @@ unchanged. The `sim` debug channel prints the list with costs, tiers, reads and 
   daily phase is `stable_hash64(index << 32 | generation) mod 23,040`
   (`simulation/core/phases.rs`). Each `HandleTable` buckets its live handles, so the buckets
   change exactly when a handle is allocated or freed, including for entities a test or loader
-  appended directly; a restored table rebuilds them. Nothing reads them yet: the first
-  `EntityPhase` system arrives in `SIM-02-F`.
+  appended directly; a restored table rebuilds them.
+- **Implemented in `SIM-02-F`:** slot `s` visits the handles of hourly phase `s mod 960`.
+  - **Buildings:** recipe production and its input consumption, and farm and mine output.
+  - **Households:** consumption, utilities and the hour's ledger entries, and the shopping-leg
+    timeout.
+  - **Agents:** the happiness cost of an empty household's pantry.
+  - **Kept at the hour:** the passes that decide over a city-wide pool or census, which
+    `SIM-02-I` turns into rolling snapshots. These are the funding census and the activity
+    floor it sets, service-store sales, electricity dispatch, the employed-adult counts, and
+    restock and visit planning (`SIM-02-J` queues).
+  - **Pooled reads:** a pooled pass reads what the phases of the previous hour left. The hourly
+    electricity pass bills each building's activity from its own phase, and production reads
+    the activity floor the last hour set. Both values are now saved.
+  - **Census first:** the funding census now opens the hour, right after the membership
+    counts, so the activity floor, store sales, restock and visit planning and hiring all read
+    a census of the state the previous hour's phases left. A census rebuilt on load therefore
+    never feeds the simulation.
 
 ### Deadlines and timed events
 
@@ -610,6 +631,47 @@ on a fresh `$ARTIFACTS` directory.
   trip event save round trip, departure spacing in the wheel, trips surviving a clock set
   directly, and departure holds surviving the load repair.
 
+#### `SIM-02-F` — per-entity hourly economy (2026-10-16)
+
+- **Save format 92:** the agent `money` column is gone, and buildings save
+  `hourly_economy_activity` and `commercial_activity_floor_scale`. The Kuopio fixture gained
+  the two columns (no buildings) and its hash in `placements.json`.
+- **Envelope and bursts** (`tools/sim02_gate.py envelope determinism --bursts departures
+  --binary "$TEST_BINARY"`, `RAYON_NUM_THREADS=8`): busiest-minute departure shares are
+  2.0–3.3% for freight, shopping and arrivals on every workload (limit 5%). The arrivals
+  workload has 2 days with qualifying arrival hours, worst 3.2%. Settlements still fall in one
+  hour until `SIM-02-G`. Every band holds except the one near-zero value `SIM-02-E` also left:
+  fiscal stress at 10k ends with 0.24% of residents employed against a band of 0.36–0.39%,
+  about 25 instead of 40 people in the collapsed city (55 on `SIM-02-E`). The values closest
+  to a band edge are fiscal stress at 10k, deliveries 14.42 → 13.12 per 1,000 buildings a day
+  (0.95 of the way to the lower edge; 0.81 on `SIM-02-E`), and the 30k baseline out-of-stock
+  rate, 0.229 → 0.256 (0.50 of the way; 0.61 on `SIM-02-E`). Money residuals are unchanged
+  (30k baseline 40.6) and no invariant is violated.
+- **Determinism:** repeat run, 1 and 3 workers and save/reload continuation are identical
+  (10k, three days), and the 100k snapshot continues identically after loading. Two reload
+  divergences were found and fixed on the way; see
+  [Decided while unattended](#decided-while-unattended).
+- **`PERF-07`** (`tools/sim02_gate.py perf07 --cpus 0,2,4,6,8,10,12,14 --binary "$TEST_BINARY"`,
+  `RAYON_NUM_THREADS=8`), pinned against the pinned `SIM-02-A` reference. Max / p99 / mean in
+  ms: 10k 1× 196.1 / 6.09 / 2.38, 10k 32× 203.5 / 8.19 / 2.90, 30k 1× 527.4 / 7.73 / 3.34, 30k
+  32× 532.6 / 27.47 / 5.22, 100k 1× 1,952.5 / 18.68 / 12.06, 100k 32× 1,932.6 / 181.94 / 23.35.
+  Every maximum is still an hour boundary and within the gate's noise of `SIM-02-A` (30k 32×
+  +4.9%); both 100k maxima are below it. The worst frame away from a boundary is the
+  construction start one minute after it (30k 1×: 65.8 ms, 60.8 of it the placement; 48.5 on
+  `SIM-02-A`), which `SIM-02-K` splits. The 32× means rose 1–6% over `SIM-02-E` (100k 22.09 →
+  23.35): an entity's hour now runs in its own slot, about N / 960 entities, too few to split
+  across workers, where the pooled passes ran in parallel. The 1× means are unchanged.
+- **`PERF-01`** (`tools/perf_contract.py --binary "$TEST_BINARY"` under `taskset -c
+  0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`), two runs alternating with `SIM-02-A` (hour / day
+  means in ms, `SIM-02-A` first): baseline 10k 17.1–17.5 / 7.6–8.2 against 16.6–17.3 / 7.4–8.0;
+  baseline 30k 63.5–63.9 / 47.2–48.4 against 56.5–58.6 / 45.8–48.9; fiscal 10k 27.9–28.1 /
+  22.9–23.7 against 27.4–30.0 / 22.3–25.3; fiscal 30k 80.0–80.3 / 69.2–70.9 against 78.1–80.2 /
+  76.4–76.5. Eight limits fail against ten on `SIM-02-A`, all of them failing before. The
+  fiscal 30k day stays about 6 ms above `SIM-02-A`, as on `SIM-02-E`.
+- **Tests:** 2,435 release library tests, the integration tests and `./run.sh --test` pass;
+  clippy is clean. New: each household's hour runs once per hour, at its own phase and no
+  other. The save/reload continuation test covers the two new building columns.
+
 ### Phase inventory
 
 Every phase of today's operational hour, hourly demand pass and daily tick, and where it goes.
@@ -618,27 +680,27 @@ Every phase of today's operational hour, hourly demand pass and daily tick, and 
 | --- | --- | --- | --- |
 | `publish_frontage_prices` | O(lanes), par | `FixedSlot` hourly | C |
 | `advance_construction_hour` | O(buildings); a completion rebuilds the zone index | Completion event; incremental zone-index update | D (done) |
-| Farm and mine `produce_hourly` | O(sites) | `EntityPhase` hourly | F |
+| Farm and mine `produce_hourly` | O(sites) | `EntityPhase` hourly, at the site's building | F (done) |
 | `electricity_funding_by_building` | O(buildings) | Rolling snapshot | I |
 | `materialize_arrived_household_carriers` | O(agents) scan | Carrier-arrival event | E (done) |
 | `rebuild_household_and_worker_counts` | O(agents + households + buildings) | Incremental counters | I |
+| `sync_agent_money_from_households` | O(agents) | Agent `money` mirror deleted (never read); the employed-adult count it carried stays hourly | F (done), I |
 | `rehouse_unhoused_before_growth` | O(households) when any unhoused | Housing queue | J |
-| `run_building_economy` production, `refresh_commercial_activity_floor` | O(buildings) | `EntityPhase` hourly | F |
-| `settle_hourly_service_store_sales`, `charge_households_for_aggregate_service_sales` | O(households + buildings), global pool | Pool as rolling snapshot; each household charged at its phase | F, I |
-| `run_electricity_hour` | O(households + buildings), one city-wide coverage | Coverage as rolling snapshot; billing at phase | F, I |
+| `run_building_economy` production, `refresh_commercial_activity_floor` | O(buildings) | Production at the building phase; the floor follows the funding census | F (done), I |
+| `settle_hourly_service_store_sales`, `charge_households_for_aggregate_service_sales` | O(households + buildings), global pool | Pool as rolling snapshot; each household charged at its phase | I |
+| `run_electricity_hour` | O(households + buildings), one city-wide coverage | Coverage as rolling snapshot; billing at phase. Since F it bills the activity of each building's phase | I |
 | `decrement_building_cooldowns` | O(buildings) | Passive deadline | D (done) |
 | `FreightPlanningContext::build` | O(nodes + edges + buildings), rebuilt hourly | Rolling snapshot; component indices cached by routing revision | I |
 | `create_profile_input_shipments`, `create_profile_output_exports` | O(buildings), serial reservations | Freight request queue at buyer phase | J |
 | `progress_shipments`, `dispatch_ready_carriers` | O(open shipments); all trucks leave on the hour | Dispatch and arrival events; hourly timeouts until J | E (done), J |
-| `progress_households_for_operational_hour` | O(households) | `EntityPhase` hourly | F |
-| `apply_starvation_happiness_loss` | O(agents) | At household phase | F |
-| `process_active_household_shopping` | O(households) scan | Shopper events; hourly leg timeouts until F | E (done), F |
+| `progress_households_for_operational_hour` | O(households) | `EntityPhase` hourly | F (done) |
+| `apply_starvation_happiness_loss` | O(agents) | At the agent phase | F (done) |
+| `process_active_household_shopping` | O(households) scan | Shopper events; leg timeouts at the household phase | E (done), F (done) |
 | `process_visible_service_visit_returns` | O(agents) scan | Visit-end event | E (done) |
-| `plan_and_apply_household_replenishment` | Indices rebuilt hourly when needed | Restock queue; indices from rolling snapshots | J |
+| `plan_and_apply_household_replenishment` | Indices rebuilt hourly when needed; since F a parallel O(households) scan finds whether any household can restock | Restock queue; indices from rolling snapshots | J |
 | `plan_and_apply_visible_service_visits` | Capped at 64 per hour | Visit queue with per-slot quota | J |
 | Funding census (`job_funding.refresh`) | Superlinear (`PERF-03`/`PERF-04`) | Incremental totals plus rolling snapshot | I |
 | Job search | Gated by the job lock (`job_lock_until_day`) | Job queue on lock deadline | J |
-| `sync_agent_money_from_households` | O(agents + households) | At phase, or remove the duplicated field | F |
 | `prepare_cell_lots_internal` | O(dirty regions), can spike | Dirty-region queue with quota | H |
 | Demand snapshot (`from_runtime_with_funding`) | O(households + buildings + nodes) hourly | Rolling snapshot | I |
 | Demand planning (`plan_private_building_actions`) | Scans all parcels hourly | Open question 1 | I |
@@ -678,8 +740,11 @@ Per-frame costs found by the `SIM-02-A` `PERF-07` baseline, outside the boundary
 3. **Pure-job latency and pool size** per job.
 4. **Behaviour envelope.** Resolved 2026-10-15; see
    [Behaviour envelope](#behaviour-envelope-sim-02-a).
-5. **Electricity stability.** Dispatch against coverage one period old may oscillate; check in
-   `SIM-02-F`.
+5. **Electricity stability.** Dispatch against coverage one period old may oscillate. Checked in
+   `SIM-02-F`: no loop exists yet. Coverage is still computed in one hourly pass from the
+   activity of the previous hour's phases, and production never reads coverage, only billing
+   and the daily meters do. The question returns in `SIM-02-I`, when coverage becomes a
+   rolling snapshot.
 
 ### Decided while unattended
 
@@ -827,3 +892,42 @@ alternatives and the evidence. The user reviews these on return.
   following day has 13 hours with at least 40 arrivals. At 10k no hour reaches 40, because
   admission spreads the newcomers over the day. The workload is checked for invariants, money
   conservation and bursts; it has no pre-refactor band.
+- **`SIM-02-F` — pooled passes stay on the hour.** Service-store sales and electricity dispatch
+  divide one city-wide supply among all buyers each hour. Splitting them by phase would sell
+  or dispatch against a pool that later phases have not reached yet. They stay in the hourly
+  pass until `SIM-02-I` gives them rolling snapshots. The same holds for the activity floor,
+  which the funding census sets, and the employed-adult counts. Alternative: per-phase slices
+  of each pool, which changes who is served first and belongs with the snapshot design.
+- **`SIM-02-F` — the hour boundary keeps whole hours.** The pooled pass runs before phase 0
+  in its slot, so at every :00 each entity has finished exactly one phase since the previous
+  :00. The hourly demand pass therefore never sees one household two hours on and another
+  none. Electricity at :00 bills the activity that production recorded at each building's phase
+  in the hour before, instead of the activity of the same pass.
+- **`SIM-02-F` — starvation at the agent phase.** The inventory names the household phase.
+  Households hold no list of their members: the old pass scanned every agent. At the agent
+  phase each agent reads its own household's pantry in O(1). Alternative: a member index on
+  households, maintained on every join, leave, eviction and remap.
+- **`SIM-02-F` — agent `money` deleted.** The hourly agent pass copied each household's budget
+  share into an agent column that nothing read (save, clamp, envelope fingerprint only). The
+  column and the copy are gone (save format 92); the pass now only counts employed adults, which
+  the census still reads hourly. Alternative: move the copy to the agent phase, keeping
+  O(agents) of dead work per hour.
+- **`SIM-02-F` — the activity floor and hourly activity are saved.** Production at a phase
+  reads the floor the last hour set, and the electricity pass reads the activity recorded at
+  the phases. Both used to be set and read inside one pass, so loading reset them to zero. The
+  save/reload continuation test caught the difference (a store's stock after reload). The
+  service staffing policy also re-derived the floor from the census, and on load it runs
+  before any census, so it set every floor to zero. Its own staffing limits never read the
+  floor, and it no longer touches it. Alternative: recompute both on load; rejected
+  because the load-time census is not the census that set them.
+- **`SIM-02-F` — the funding census opens the hour.** The census ran late in the hour, and
+  the next hour's floor refresh and its restock and visit planning (the customer book) read
+  it before the next census. Loading rebuilds the census from the saved state, but the phases
+  now change that state between the census and any save, so a reloaded city read different
+  census results. The 100k `PERF-07` snapshot check caught it: a store's stock differed
+  13 hours after reloading, and the treasury differed by 1.1. Moving the census to the start
+  of the hour, before every reader, makes the reloaded and straight runs identical (a
+  diagnostic run from reloads at an hour boundary and mid-hour matched for 1,200 frames). The floor
+  production reads during an hour now comes from that hour's census, one hour fresher.
+  Alternative: save the census results, including the customer book; rejected as a large
+  new save surface for state that is derived each hour.

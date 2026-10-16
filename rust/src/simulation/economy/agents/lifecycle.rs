@@ -399,7 +399,6 @@ impl AgentSystem {
             activity: 0,
             transit: TRANSIT_IN_BUILDING,
             happiness: 50.0,
-            money: 100.0,
             journey_start_time: self.sim_time,
             schedule_seed,
             cached_commute_minutes: 0,
@@ -462,7 +461,6 @@ impl AgentSystem {
         agent.age_group = AGE_CHILD;
         agent.freight_shipment_id = shipment_id;
         agent.activity = 2;
-        agent.money = 0.0;
         agent.transit_mode = MODE_CAR;
         agent.vehicle_type = VEHICLE_FREIGHT_DELIVERY;
         self.insert_agent(agent)
