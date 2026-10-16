@@ -4,8 +4,12 @@
 
 use crate::debug_log;
 use crate::nodes::sim::core::SimCore;
+use crate::nodes::sim::core::SimEvent;
+use crate::simulation::core::time::TimeSystem;
+use crate::simulation::core::timing_wheel::{TimedEvent, TimingWheel};
 use crate::simulation::save::{
-    LoadedSimulation, SaveGameView, SavedCameraState, load_from_sqlite, save_to_sqlite,
+    LoadedSimulation, SaveGameView, SavedCameraState, SavedScheduler, load_from_sqlite,
+    save_to_sqlite,
 };
 use crate::simulation::vegetation::VegetationGenerator;
 use std::path::PathBuf;
@@ -18,6 +22,7 @@ impl SimCore {
         camera: Option<SavedCameraState>,
     ) -> Result<(), String> {
         let path = PathBuf::from(path);
+        let events = self.aligned_events();
         save_to_sqlite(
             &path,
             SaveGameView {
@@ -35,6 +40,19 @@ impl SimCore {
                 noise: &self.noise,
                 demand: &self.demand,
                 pending_demand_spawns: &self.pending_demand_spawns,
+                scheduler: SavedScheduler {
+                    next_slot: events.next_slot(),
+                    next_event_seq: events.next_seq(),
+                    next_spawn_id: self.next_spawn_id,
+                    events: events
+                        .pending()
+                        .into_iter()
+                        .map(|timed| {
+                            let (kind, a) = timed.event.to_saved();
+                            (timed.slot, timed.seq, kind, a)
+                        })
+                        .collect(),
+                },
                 allocator: &self.allocator,
                 households: &self.households,
                 logistics: &self.logistics,
@@ -58,12 +76,13 @@ impl SimCore {
     ) -> Result<Option<SavedCameraState>, String> {
         let loaded = load_from_sqlite(&PathBuf::from(path), &self.allocator.registry)
             .map_err(|err| err.to_string())?;
+        let events = restore_events(&loaded.scheduler, &loaded.time)?;
         let camera = loaded.camera;
-        self.apply_loaded_simulation(loaded);
+        self.apply_loaded_simulation(loaded, events);
         Ok(camera)
     }
 
-    fn apply_loaded_simulation(&mut self, loaded: LoadedSimulation) {
+    fn apply_loaded_simulation(&mut self, loaded: LoadedSimulation, events: TimingWheel<SimEvent>) {
         self.config = loaded.config;
         self.vegetation = VegetationGenerator::resolve(loaded.vegetation, &self.config);
         self.vegetation_edits = loaded.vegetation_edits;
@@ -79,6 +98,8 @@ impl SimCore {
         self.desirability = loaded.desirability;
         self.demand = loaded.demand;
         self.pending_demand_spawns = loaded.pending_demand_spawns;
+        self.next_spawn_id = loaded.scheduler.next_spawn_id;
+        self.events = events;
         let mut new_allocator = loaded.allocator;
         std::mem::swap(&mut new_allocator.registry, &mut self.allocator.registry);
         self.allocator = new_allocator;
@@ -149,4 +170,25 @@ impl SimCore {
             admission.incoming_household_need,
         );
     }
+}
+
+// The saved wheel resumes at the slot after the saved clock: a game saves between frames, with
+// the slot in progress already processed.
+fn restore_events(
+    scheduler: &SavedScheduler,
+    time: &TimeSystem,
+) -> Result<TimingWheel<SimEvent>, String> {
+    if scheduler.next_slot != time.absolute_slot() + 1 {
+        return Err("saved timing wheel does not match the saved clock".into());
+    }
+    let events = scheduler
+        .events
+        .iter()
+        .map(|&(slot, seq, kind, a)| {
+            SimEvent::from_saved(kind, a)
+                .map(|event| TimedEvent { slot, seq, event })
+                .ok_or_else(|| format!("unknown timed event kind {kind}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    TimingWheel::restore(scheduler.next_slot, scheduler.next_event_seq, events)
 }

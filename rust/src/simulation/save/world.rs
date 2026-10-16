@@ -203,7 +203,7 @@ pub(super) fn save_world(
         ],
     )?;
     let mut pending_spawn_stmt = tx.prepare(
-        "INSERT INTO pending_demand_spawns(sequence, due_minute, zone_type, parcel_id, asset_id, planned_day_index, planned_minute_of_day) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO pending_demand_spawns(sequence, due_minute, zone_type, parcel_id, asset_id, planned_day_index, planned_minute_of_day, spawn_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
     )?;
     for (sequence, pending) in pending_demand_spawns.iter().enumerate() {
         pending_spawn_stmt.execute(params![
@@ -214,6 +214,7 @@ pub(super) fn save_world(
             &pending.action.asset_id,
             i64::from(pending.planned_day_index),
             i64::from(pending.planned_minute_of_day),
+            u64_to_i64(pending.id)?,
         ])?;
     }
 
@@ -695,7 +696,7 @@ pub(super) fn load_pending_demand_spawns(
     conn: &Connection,
 ) -> SaveLoadResult<VecDeque<PendingDemandSpawnAction>> {
     let mut stmt = conn.prepare(
-        "SELECT due_minute, zone_type, parcel_id, asset_id, planned_day_index, planned_minute_of_day FROM pending_demand_spawns ORDER BY sequence ASC",
+        "SELECT due_minute, zone_type, parcel_id, asset_id, planned_day_index, planned_minute_of_day, spawn_id FROM pending_demand_spawns ORDER BY sequence ASC",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok((
@@ -705,12 +706,14 @@ pub(super) fn load_pending_demand_spawns(
             row.get::<_, String>(3)?,
             row.get::<_, i64>(4)?,
             row.get::<_, i64>(5)?,
+            row.get::<_, i64>(6)?,
         ))
     })?;
     let mut pending = VecDeque::new();
     for row in rows {
-        let (due_minute, zone_type, parcel_id, asset_id, planned_day, planned_minute) = row?;
+        let (due_minute, zone_type, parcel_id, asset_id, planned_day, planned_minute, id) = row?;
         pending.push_back(PendingDemandSpawnAction {
+            id: i64_to_u64(id)?,
             due_minute: i64_to_u64(due_minute)?,
             zone_type: demand_spawn_zone_from_db(zone_type)?,
             action: DemandSpawnAction {

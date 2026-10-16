@@ -327,6 +327,7 @@ fn queued_asymmetric_houses_publish_graded_terrain() {
                         .unwrap();
                     core.pending_demand_spawns
                         .push_back(PendingDemandSpawnAction {
+                            id: 0,
                             due_minute: 1,
                             zone_type: ZoneType::Residential,
                             action: DemandSpawnAction {

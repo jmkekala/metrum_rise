@@ -11,11 +11,14 @@
 //! Stores append entities through their own lifecycle helpers and may also be filled directly
 //! (loading, tests). [`HandleTable::register_appended`] gives every untracked trailing entity a
 //! handle in dense order, so a table is always brought up to date before it is read or before
-//! an entity leaves.
+//! an entity leaves. The table also buckets live handles by daily phase ([`PhaseBuckets`]), so
+//! phase membership changes exactly when a handle is allocated or freed.
 
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
+
+use super::phases::PhaseBuckets;
 
 // Marks a free slot in `Slot::dense` and the absent handle's index.
 const NONE_INDEX: u32 = u32::MAX;
@@ -111,6 +114,8 @@ pub(crate) struct HandleTable<K> {
     dense_slots: Vec<u32>,
     // Freed slots, reused last first.
     free: Vec<u32>,
+    // Live handles by daily phase; derived, rebuilt on restore.
+    phases: PhaseBuckets<K>,
     kind: PhantomData<fn() -> K>,
 }
 
@@ -120,6 +125,7 @@ impl<K> Clone for HandleTable<K> {
             slots: self.slots.clone(),
             dense_slots: self.dense_slots.clone(),
             free: self.free.clone(),
+            phases: self.phases.clone(),
             kind: PhantomData,
         }
     }
@@ -131,6 +137,7 @@ impl<K> fmt::Debug for HandleTable<K> {
             .field("slots", &self.slots)
             .field("dense_slots", &self.dense_slots)
             .field("free", &self.free)
+            .field("phases", &self.phases)
             .finish()
     }
 }
@@ -141,6 +148,7 @@ impl<K> Default for HandleTable<K> {
             slots: Vec::new(),
             dense_slots: Vec::new(),
             free: Vec::new(),
+            phases: PhaseBuckets::default(),
             kind: PhantomData,
         }
     }
@@ -155,25 +163,41 @@ pub(crate) struct SavedHandleTable {
 }
 
 impl<K> HandleTable<K> {
+    // Takes the last freed slot, or a new one, for an entity at `dense`.
+    fn allocate(&mut self, dense: u32) -> u32 {
+        let slot = match self.free.pop() {
+            Some(slot) => {
+                self.slots[slot as usize].dense = dense;
+                slot
+            }
+            None => {
+                self.slots.push(Slot {
+                    generation: 0,
+                    dense,
+                });
+                (self.slots.len() - 1) as u32
+            }
+        };
+        self.phases.insert(Handle::from_parts(
+            slot,
+            self.slots[slot as usize].generation,
+        ));
+        slot
+    }
+
     /// Gives each entity at dense index `self.len()..len` a handle, in dense order.
     pub(crate) fn register_appended(&mut self, len: usize) {
         while self.dense_slots.len() < len {
-            let dense = self.dense_slots.len() as u32;
-            let slot = match self.free.pop() {
-                Some(slot) => {
-                    self.slots[slot as usize].dense = dense;
-                    slot
-                }
-                None => {
-                    self.slots.push(Slot {
-                        generation: 0,
-                        dense,
-                    });
-                    (self.slots.len() - 1) as u32
-                }
-            };
+            let slot = self.allocate(self.dense_slots.len() as u32);
             self.dense_slots.push(slot);
         }
+    }
+
+    /// Live handles by daily phase.
+    // Maintained from `SIM-02-C`; the first `EntityPhase` system reads it in `SIM-02-F`.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn phases(&self) -> &PhaseBuckets<K> {
+        &self.phases
     }
 
     /// Mirrors `store.swap_remove(dense)` on a store of `len` entities before the removal:
@@ -183,6 +207,7 @@ impl<K> HandleTable<K> {
         let slot = self.dense_slots.swap_remove(dense);
         let removed = &mut self.slots[slot as usize];
         let handle = Handle::from_parts(slot, removed.generation);
+        self.phases.remove(handle);
         removed.generation = removed.generation.wrapping_add(1);
         removed.dense = NONE_INDEX;
         self.free.push(slot);
@@ -204,19 +229,7 @@ impl<K> HandleTable<K> {
         let occupant = self.dense_slots[dense];
         self.dense_slots.push(occupant);
         self.slots[occupant as usize].dense = len as u32;
-        let slot = match self.free.pop() {
-            Some(slot) => {
-                self.slots[slot as usize].dense = dense as u32;
-                slot
-            }
-            None => {
-                self.slots.push(Slot {
-                    generation: 0,
-                    dense: dense as u32,
-                });
-                (self.slots.len() - 1) as u32
-            }
-        };
+        let slot = self.allocate(dense as u32);
         self.dense_slots[dense] = slot;
         self.handle(dense)
     }
@@ -226,6 +239,7 @@ impl<K> HandleTable<K> {
         self.slots.clear();
         self.dense_slots.clear();
         self.free.clear();
+        self.phases.clear();
     }
 
     /// Handle of the entity at `dense`, or [`Handle::NONE`] when it has none yet.
@@ -300,6 +314,13 @@ impl<K> HandleTable<K> {
             return Err("free handle list does not name every free slot".into());
         }
         table.free = saved.free.clone();
+        for (index, slot) in table.slots.iter().enumerate() {
+            if slot.dense != NONE_INDEX {
+                table
+                    .phases
+                    .insert(Handle::from_parts(index as u32, slot.generation));
+            }
+        }
         Ok(table)
     }
 }
@@ -339,6 +360,13 @@ mod tests {
         assert_ne!(reused, handles[1]);
         assert_eq!(table.resolve(handles[1]), None);
         assert_eq!(store[table.resolve(reused).unwrap()], 9);
+        // Phase buckets follow allocation and release.
+        assert_eq!(table.phases().len(), store.len());
+        let mut bucket = Vec::new();
+        table
+            .phases()
+            .daily(crate::simulation::core::phases::daily_phase(reused), &mut bucket);
+        assert!(bucket.contains(&reused));
     }
 
     #[test]

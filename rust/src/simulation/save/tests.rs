@@ -685,6 +685,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     });
     let mut pending_demand_spawns = VecDeque::new();
     pending_demand_spawns.push_back(PendingDemandSpawnAction {
+        id: 0,
         due_minute: 1234,
         zone_type: ZoneType::Residential,
         action: DemandSpawnAction {
@@ -749,6 +750,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
                 noise: &noise,
                 demand: &demand,
                 pending_demand_spawns: &pending_demand_spawns,
+                scheduler: crate::simulation::save::SavedScheduler::default(),
                 allocator,
                 households: &households,
                 logistics: &logistics,
@@ -1334,6 +1336,7 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
     let budget_history = VecDeque::new();
     let mut pending_demand_spawns = VecDeque::new();
     pending_demand_spawns.push_back(PendingDemandSpawnAction {
+        id: 0,
         due_minute: 10,
         zone_type: ZoneType::Residential,
         action: DemandSpawnAction {
@@ -1344,6 +1347,7 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
         planned_minute_of_day: 10,
     });
     pending_demand_spawns.push_back(PendingDemandSpawnAction {
+        id: 0,
         due_minute: 20,
         zone_type: ZoneType::Residential,
         action: DemandSpawnAction {
@@ -1372,6 +1376,7 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
             noise: &noise,
             demand: &demand,
             pending_demand_spawns: &pending_demand_spawns,
+            scheduler: crate::simulation::save::SavedScheduler::default(),
             allocator: &allocator,
             households: &households,
             logistics: &logistics,

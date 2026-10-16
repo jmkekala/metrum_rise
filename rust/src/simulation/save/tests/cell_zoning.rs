@@ -109,6 +109,7 @@ fn write_snapshot(
             noise: &NoiseSystem::new(config),
             demand: &DemandSystem::new(),
             pending_demand_spawns: &VecDeque::new(),
+            scheduler: crate::simulation::save::SavedScheduler::default(),
             households: &HouseholdSystem::new(),
             logistics: &ShipmentSystem::new(),
             resource_extraction: &ResourceExtractionSystem::new(),

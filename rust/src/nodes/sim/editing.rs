@@ -2755,6 +2755,7 @@ mod tests {
         let mut core = test_core();
         core.pending_demand_spawns
             .push_back(PendingDemandSpawnAction {
+                id: 0,
                 due_minute: 42,
                 zone_type: ZoneType::Residential,
                 action: DemandSpawnAction {

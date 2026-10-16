@@ -10,6 +10,7 @@ use super::budget::{
     CityServicePolicy, CityTreasury, DailyBudgetLedgerEntry, ROAD_UPKEEP_PER_METER_PER_DAY,
 };
 use super::frame::EconomyObserver;
+use super::schedule::{SimEvent, SimSystem, simulation_schedule};
 use super::snapshot::SimulationSnapshot;
 use super::terrain_payloads::{
     CachedRefinedTerrainPatch, ROAD_LOCKED_TERRAIN_RENDER_STEP_M, RefinedTerrainAssemblyLedger,
@@ -20,6 +21,8 @@ use crate::debug_log;
 use crate::simulation::agriculture::AgricultureSystem;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::WorldConfig;
+use crate::simulation::core::scheduler::{SLOTS_PER_MINUTE, Schedule};
+use crate::simulation::core::timing_wheel::{TimedEvent, TimingWheel};
 use crate::simulation::core::time::TimeSystem;
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::definitions::load_runtime_economy_catalog;
@@ -51,6 +54,8 @@ const DEMAND_SPAWN_ACTIONS_PER_MINUTE: usize = 1;
 /// Demand-planned private building spawn delayed to a later authored minute.
 #[derive(Clone, Debug)]
 pub(crate) struct PendingDemandSpawnAction {
+    /// Stable id named by the spawn's construction-start event.
+    pub(crate) id: u64,
     /// Absolute authored minute when this spawn may be released.
     pub(crate) due_minute: u64,
     /// Demand bucket that selected this spawn.
@@ -61,6 +66,25 @@ pub(crate) struct PendingDemandSpawnAction {
     pub(crate) planned_day_index: u32,
     /// Minute of day when demand originally planned the spawn.
     pub(crate) planned_minute_of_day: u16,
+}
+
+// Construction starts of `pending`, in queue order, at their due minute and at most one per
+// minute after `current_minute`.
+fn reschedule_construction_starts(
+    events: &mut TimingWheel<SimEvent>,
+    pending: &VecDeque<PendingDemandSpawnAction>,
+    current_minute: u64,
+) {
+    events.retain(|event| !matches!(event, SimEvent::ConstructionStart { .. }));
+    let mut previous = current_minute;
+    for spawn in pending {
+        let minute = spawn.due_minute.max(previous + 1);
+        events.schedule(
+            minute * SLOTS_PER_MINUTE,
+            SimEvent::ConstructionStart { id: spawn.id },
+        );
+        previous = minute;
+    }
 }
 
 pub(super) fn absolute_operational_minute(day_index: u32, minute_of_day: u16) -> u64 {
@@ -115,6 +139,14 @@ pub struct SimCore {
     pub demand: DemandSystem,
     /// Demand building spawns scheduled across authored minutes to avoid hourly bursts.
     pub(crate) pending_demand_spawns: VecDeque<PendingDemandSpawnAction>,
+    /// Next [`PendingDemandSpawnAction::id`]; saved.
+    pub(crate) next_spawn_id: u64,
+    /// System declarations in dispatch order (`SIM-02`); fixed, not saved.
+    pub(crate) schedule: Schedule<SimSystem>,
+    /// Timed events keyed by absolute slot; saved.
+    pub(crate) events: TimingWheel<SimEvent>,
+    /// Reused buffer for the events of the slot being dispatched.
+    pub(crate) due_events: Vec<TimedEvent<SimEvent>>,
     /// Building placement and vacancy index.
     pub allocator: BuildingAllocator,
     /// Agent FSM in Structure-of-Arrays layout.
@@ -241,8 +273,12 @@ impl SimCore {
     ///
     /// Terrain and water start dirty so the first render snapshot uploads every patch.
     pub fn new(config: WorldConfig) -> Self {
+        let time = TimeSystem::new();
+        let next_slot = time.absolute_slot() + 1;
+        let schedule = simulation_schedule();
+        debug_log!("sim", "schedule: {}", schedule.describe());
         Self {
-            time: TimeSystem::new(),
+            time,
             heightmap: TerrainSystem::from_world_config(&config),
             watermap: WaterSystem::from_world_config(&config),
             region_graph: crate::simulation::network::graph::RegionGraph::new(),
@@ -253,6 +289,10 @@ impl SimCore {
             desirability: DesirabilitySystem::new(&config),
             demand: DemandSystem::new(),
             pending_demand_spawns: VecDeque::new(),
+            next_spawn_id: 0,
+            schedule,
+            events: TimingWheel::new(next_slot),
+            due_events: Vec::new(),
             allocator: BuildingAllocator::new(),
             agents: AgentSystem::new(),
             households: HouseholdSystem::new(),
@@ -578,8 +618,15 @@ impl SimCore {
             for action in spawns {
                 let due_minute = first_due_minute
                     .saturating_add((queued / DEMAND_SPAWN_ACTIONS_PER_MINUTE) as u64);
+                let id = self.next_spawn_id;
+                self.next_spawn_id += 1;
+                self.events.schedule(
+                    due_minute * SLOTS_PER_MINUTE,
+                    SimEvent::ConstructionStart { id },
+                );
                 self.pending_demand_spawns
                     .push_back(PendingDemandSpawnAction {
+                        id,
                         due_minute,
                         zone_type,
                         action: action.clone(),
@@ -607,6 +654,70 @@ impl SimCore {
         queued
     }
 
+    /// Starts queued spawn `id` when it is next in the queue; its event names it, so a spawn
+    /// dropped from the queue (loading repairs, undo) is skipped. Returns whether it started.
+    pub(super) fn start_pending_demand_spawn(
+        &mut self,
+        id: u64,
+        day_index: u32,
+        minute_of_day: u16,
+    ) -> bool {
+        if self
+            .pending_demand_spawns
+            .front()
+            .is_none_or(|pending| pending.id != id)
+        {
+            return false;
+        }
+        let Some(pending) = self.pending_demand_spawns.pop_front() else {
+            return false;
+        };
+        self.execute_pending_demand_spawn(pending, day_index, minute_of_day);
+        true
+    }
+
+    /// Replaces every construction-start event after the queue was replaced wholesale (loading,
+    /// undo, a new world). Each spawn starts at its due minute, one per minute from the next
+    /// minute on, as the per-minute queue check did before `SIM-02-C`.
+    pub(crate) fn reschedule_construction_events(&mut self) {
+        reschedule_construction_starts(
+            &mut self.events,
+            &self.pending_demand_spawns,
+            absolute_operational_minute(self.time.day_index, self.time.minute_of_day),
+        );
+    }
+
+    /// The timing wheel as the next frame will see it; a copy re-aligned to the clock when the
+    /// clock was set directly ([`Self::align_events_to_clock`]).
+    pub(crate) fn aligned_events(&self) -> std::borrow::Cow<'_, TimingWheel<SimEvent>> {
+        let next_slot = self.time.absolute_slot() + 1;
+        if self.events.next_slot() == next_slot {
+            return std::borrow::Cow::Borrowed(&self.events);
+        }
+        let mut events = self.events.clone();
+        events.reset(next_slot);
+        reschedule_construction_starts(
+            &mut events,
+            &self.pending_demand_spawns,
+            absolute_operational_minute(self.time.day_index, self.time.minute_of_day),
+        );
+        std::borrow::Cow::Owned(events)
+    }
+
+    /// Re-aligns the timing wheel when the clock was set directly instead of advanced (tests,
+    /// tools): the wheel restarts after the current slot and construction starts are
+    /// rescheduled from the queue. A clock advanced by frames, a load or a new world is already
+    /// aligned, so this costs one comparison per frame.
+    pub(super) fn align_events_to_clock(&mut self) {
+        let next_slot = self.time.absolute_slot() + 1;
+        if self.events.next_slot() != next_slot {
+            self.events.reset(next_slot);
+            self.reschedule_construction_events();
+        }
+    }
+
+    /// Test driver of the queue: starts at most one due spawn at this minute.
+    #[cfg(test)]
     pub(super) fn execute_pending_demand_spawns_for_minute(
         &mut self,
         day_index: u32,

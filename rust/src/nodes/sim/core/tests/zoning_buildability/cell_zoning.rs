@@ -700,6 +700,7 @@ fn queued_cell_growth_reloads_and_revalidates_erased_or_disabled_lots() {
             let action = candidates.residential[0].action.clone();
             core.pending_demand_spawns
                 .push_back(PendingDemandSpawnAction {
+                    id: 0,
                     due_minute: absolute_operational_minute(0, 1),
                     zone_type: ZoneType::Residential,
                     action: action.clone(),

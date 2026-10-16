@@ -461,6 +461,7 @@ impl SimCore {
                     }
                     SimulationRuntimeSnapshot::PendingDemandSpawns(pending) => {
                         self.pending_demand_spawns = pending;
+                        self.reschedule_construction_events();
                     }
                     SimulationRuntimeSnapshot::BuildingRemoval(removal) => {
                         self.restore_building_removal_undo(*removal);

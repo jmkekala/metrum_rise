@@ -549,6 +549,8 @@ impl SimCore {
         self.desirability = DesirabilitySystem::new(&self.config);
         self.demand = DemandSystem::new();
         self.pending_demand_spawns.clear();
+        self.next_spawn_id = 0;
+        self.events.reset(self.time.absolute_slot() + 1);
         self.agents = AgentSystem::new();
         self.households = HouseholdSystem::new();
         self.logistics = ShipmentSystem::new();

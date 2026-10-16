@@ -5,8 +5,9 @@ each system runs, entity handles, timed events, snapshot rules, the sim-frame bu
 simulation tiers. Economy and growth rules stay in [`economy.md`](economy.md) and
 [`demand.md`](demand.md); traffic movement stays in [`traffic.md`](traffic.md).
 
-**Status:** `SIM-02` in progress. `SIM-02-A` (guards and pre-refactor baseline) and `SIM-02-B`
-(save cutover and handles) are done; see the
+**Status:** `SIM-02` in progress. `SIM-02-A` (guards and pre-refactor baseline), `SIM-02-B`
+(save cutover and handles) and `SIM-02-C` (slot clock, scheduler, timing wheel and phases) are
+done; see the
 [`SIM-02-A` baseline](#sim-02-a-guards-and-pre-refactor-baseline) and the
 [step results](#step-results). Until each migration step lands,
 the current cadence in
@@ -69,6 +70,12 @@ even at 32×. The cost problem is the peak, not the total, at today's sizes.
   use absolute slots.
 - **No wall-clock budgets.** No system decides how much to do from elapsed real time. Work per
   slot is fixed by game state alone.
+
+**Implemented in `SIM-02-C`** (`simulation/core/scheduler.rs`, `simulation/core/time.rs`): the
+slot in progress is `floor(time_elapsed × 16 / seconds_per_minute)` within the current minute,
+so it is derived from the saved clock. `TimeSystem::process_delta` reports the crossed range
+`start_slot + 1..=end_slot`; the slot in progress has already been processed. A minute's first
+slot is crossed exactly when the minute is.
 
 ## Entity handles
 
@@ -137,14 +144,24 @@ A declaration names:
 Per-slot order:
 
 1. Timed events due in this slot.
-2. `EntityPhase` systems, hourly before daily.
-3. `Queue` matchers.
-4. `Rolling` chunks, then swaps for periods that ended.
-5. `PureJob` launches and due results.
-6. On a day boundary only: the calendar close (budget report window), O(zones).
+2. `FixedSlot` systems, in declaration order. Until `SIM-02-K` these include the re-hosted
+   operational hour and daily settlement.
+3. `EntityPhase` systems, hourly before daily.
+4. `Queue` matchers.
+5. `Rolling` chunks, then swaps for periods that ended.
+6. `PureJob` launches and due results.
+7. On a day boundary only: the calendar close (budget report window), O(zones).
 
 Slices above a size threshold use Rayon with fixed chunks and ordered merges; smaller slices run
 serially and give the same result.
+
+**Implemented in `SIM-02-C`.** `Schedule` (`simulation/core/scheduler.rs`) holds the
+declarations in dispatch order and rejects one that breaks the contract: a fixed-slot offset
+outside its period, a fixed-slot system with neither a bounded cost nor legacy status, or an
+events system that does not cost its events. The simulation's list and its per-slot dispatch
+are in `nodes/sim/core/schedule.rs`: timed events; then the operational hour (`FixedSlot`,
+hour, offset 0) and the daily settlement (`FixedSlot`, day, offset 0), both re-hosted
+unchanged. The `sim` debug channel prints the list with costs, tiers, reads and writes.
 
 ### Phases
 
@@ -160,6 +177,12 @@ serially and give the same result.
   not on removal history.
 - Cost per slot: O(N/960) for hourly work and O(N/23,040) for daily work. At 1M residents that is
   about 1,000 and 43 households.
+- **Implemented in `SIM-02-C`** with one change: the seed of every entity is its handle. The
+  daily phase is `stable_hash64(index << 32 | generation) mod 23,040`
+  (`simulation/core/phases.rs`). Each `HandleTable` buckets its live handles, so the buckets
+  change exactly when a handle is allocated or freed, including for entities a test or loader
+  appended directly; a restored table rebuilds them. Nothing reads them yet: the first
+  `EntityPhase` system arrives in `SIM-02-F`.
 
 ### Deadlines and timed events
 
@@ -171,6 +194,17 @@ serially and give the same result.
   with O(1) amortized insert and pop. Events in one slot fire in insertion-sequence order; the
   sequence counter is saved with the wheel.
 - An event whose handle no longer resolves is dropped.
+- **Implemented in `SIM-02-C`** (`simulation/core/timing_wheel.rs`): a ring with one bucket per
+  slot for the next game day, plus an ordered overflow map for later events, which move into the
+  ring as it advances. Saved as `timed_events (slot, seq, kind, a)` with `scheduler_state`
+  (next slot, next sequence, next spawn id). The construction queue's events are
+  `ConstructionStart { id }`. The queue keeps the spawn payloads in order, so demand planning
+  still reads it, and each queued spawn carries the id its event names. A spawn dropped from the
+  queue (a loading repair) leaves an event that fires and does nothing. When the queue is
+  replaced wholesale (undo, a new world) or the clock is set directly (tests, tools), its events
+  are rescheduled: each spawn at its due minute, at most one per minute after the current one,
+  as the per-minute queue check started them. A save stores the wheel as the next frame will see
+  it.
 
 ### Snapshots
 
@@ -422,6 +456,25 @@ on a fresh `$ARTIFACTS` directory.
   handle table (stale handles, displacing undo inserts, save round trip) and a bulldoze undo
   that re-binds a restored carrier.
 
+#### `SIM-02-C` — slot clock, scheduler, timing wheel and phases (2026-10-16)
+
+- **Save format 88**: `scheduler_state`, `timed_events` and a `spawn_id` per queued spawn. The
+  Kuopio fixture gained the empty tables (no queued spawns) and its hash in `placements.json`.
+- **Identical:** all four envelope workloads reproduce the `SIM-02-A` fingerprints for every
+  day; determinism checks pass.
+- **`PERF-07`** against `SIM-02-A`, within noise on every tier. Max / p99 in ms: 10k 1× 263.1 /
+  7.86, 10k 32× 215.1 / 11.67, 30k 1× 663.6 / 9.29, 30k 32× 581.9 / 30.05, 100k 1× 2,433 /
+  19.87, 100k 32× 2,594 / 176.94. Iterating slots costs nothing measurable: the frames that
+  dominate are unchanged.
+- **`PERF-01`**, two runs (hour / day means in ms): baseline 10k 21.1–23.4 / 11.8–13.0,
+  baseline 30k 71.9–74.1 / 62.0–62.8, fiscal 10k 34.5–37.3 / 29.3–37.9, fiscal 30k 96.1–106.3 /
+  81.3–90.6. Two daily means lie slightly above the `SIM-02-A` spread in one run each; they time
+  the daily settlement alone, which this step re-hosts without change.
+- **Tests:** 2,430 release library tests and `./run.sh --test` pass; clippy is clean. New: the
+  timing wheel (order across both levels, save round trip), phase buckets (each live handle
+  once per day and per hour, in handle order), declarations (dispatch order) and the slot clock
+  (contiguous slots, minute starts).
+
 ### Phase inventory
 
 Every phase of today's operational hour, hourly demand pass and daily tick, and where it goes.
@@ -536,3 +589,19 @@ alternatives and the evidence. The user reviews these on return.
   road tables restored (a plain re-save stores the load-time junction repair, which one test
   exists to exercise), two columns renamed and empty handle tables added. It has no buildings,
   households, agents or shipments.
+- **`SIM-02-C` — phase seeds are handles.** The spec named `parcel_id` + `build_generation` for
+  buildings and the admission seed for households. Explicit sites have no parcel (id 0), and
+  the household admission seed is not saved, so both would need new fields or fallbacks. A
+  handle is unique among live entities, lasts the entity's life and is saved, so one hash
+  covers every kind. Agents may still use `schedule_seed` when they get phases.
+- **`SIM-02-C` — wheel shape.** One ring bucket per slot for a game day plus an ordered overflow
+  map, instead of several power-of-two levels: almost every event (trips, returns, dispatches)
+  is due within a day; later ones (construction completion) are few, and moving them costs
+  O(log F).
+- **`SIM-02-C` — construction queue.** The spawn payloads stay in the ordered queue that
+  demand planning reads; the wheel holds `ConstructionStart { id }`. Alternative: payloads in
+  the wheel, which would make demand planning iterate the ring every hour.
+- **`SIM-02-C` — clock set directly.** Many tests set `SimCore::time` by hand. The frame
+  re-aligns the wheel when its next slot does not follow the clock, and a save stores the
+  aligned wheel, which reproduces the per-minute queue check exactly. A live game never takes
+  this path.

@@ -17,6 +17,7 @@ mod road_preview;
 mod road_rejection;
 mod road_terrain_plan;
 mod scenario;
+mod schedule;
 mod snapshot;
 mod state;
 mod terrain_payloads;
@@ -34,6 +35,7 @@ pub use scenario::{
     GrowthBusinessCashFlow, GrowthBusinessOutcome, GrowthDayRecord, GrowthReport, GrowthScenario,
 };
 pub use snapshot::RenderSnapshot;
+pub(crate) use schedule::SimEvent;
 pub use state::SimCore;
 pub(crate) use thread::SimCommand;
 

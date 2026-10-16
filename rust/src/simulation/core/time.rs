@@ -2,6 +2,7 @@
 
 //! Operational day-clock and simulation speed control.
 
+use super::scheduler::{SLOTS_PER_MINUTE, absolute_slot};
 use crate::simulation::economy::definitions::load_runtime_economy_tuning;
 
 /// Operational minutes in one day, independent of the authored real-time day duration.
@@ -42,6 +43,10 @@ pub struct TimeAdvance {
     pub start_minute_of_day: u16,
     /// Number of whole authored minutes crossed by the processed delta.
     pub elapsed_minutes: u16,
+    /// Absolute slot in progress before the processed delta (`SIM-02` slot clock).
+    pub start_slot: u64,
+    /// Absolute slot in progress after it; slots `start_slot + 1..=end_slot` were crossed.
+    pub end_slot: u64,
 }
 
 impl TimeAdvance {
@@ -54,6 +59,11 @@ impl TimeAdvance {
     pub fn crossed_day_boundary(&self) -> bool {
         u32::from(self.start_minute_of_day) + u32::from(self.elapsed_minutes)
             >= u32::from(MINUTES_PER_DAY)
+    }
+
+    /// The absolute slots this advancement crossed, in order.
+    pub(crate) fn crossed_slots(&self) -> std::ops::RangeInclusive<u64> {
+        self.start_slot + 1..=self.end_slot
     }
 
     /// Iterates the exact minute marks crossed by this advancement, in order.
@@ -156,12 +166,30 @@ impl TimeSystem {
             + self.time_elapsed
     }
 
+    /// Slot of the current authored minute that is in progress, in `0..SLOTS_PER_MINUTE`.
+    pub(crate) fn slot_in_minute(&self) -> u64 {
+        let seconds_per_minute = self.seconds_per_minute();
+        if seconds_per_minute <= 0.0 {
+            return 0;
+        }
+        ((self.time_elapsed / seconds_per_minute * SLOTS_PER_MINUTE as f64) as u64)
+            .min(SLOTS_PER_MINUTE - 1)
+    }
+
+    /// Absolute slot in progress, counted from day 1, 00:00. Its start has been processed.
+    pub(crate) fn absolute_slot(&self) -> u64 {
+        absolute_slot(self.day_index, self.minute_of_day, self.slot_in_minute())
+    }
+
     /// Processes real delta seconds and returns any authored minute boundaries crossed.
     pub fn process_delta(&mut self, delta: f64) -> TimeAdvance {
+        let start_slot = self.absolute_slot();
         let mut advance = TimeAdvance {
             start_day_index: self.day_index,
             start_minute_of_day: self.minute_of_day,
             elapsed_minutes: 0,
+            start_slot,
+            end_slot: start_slot,
         };
         if self.speed_multiplier <= 0.0 {
             return advance;
@@ -178,6 +206,7 @@ impl TimeSystem {
             }
             advance.elapsed_minutes = advance.elapsed_minutes.saturating_add(1);
         }
+        advance.end_slot = self.absolute_slot();
         advance
     }
 }
@@ -197,6 +226,30 @@ pub(crate) const fn test_clock(day_index: u32, minute_of_day: u16) -> TimeSystem
 #[cfg(test)]
 mod tests {
     use super::{DEFAULT_SECONDS_PER_DAY, MINUTES_PER_DAY, TimeSystem, test_clock};
+
+    #[test]
+    fn crossed_slots_are_contiguous_and_minute_starts_match_crossed_minutes() {
+        use crate::simulation::core::scheduler::SLOTS_PER_MINUTE;
+        for speed in [1.0, 7.0, 32.0] {
+            let mut time = test_clock(1, 0);
+            time.speed_multiplier = speed;
+            let mut next = time.absolute_slot() + 1;
+            let mut minutes = 0_u64;
+            let mut minute_starts = 0_u64;
+            for _ in 0..20_000 {
+                let advance = time.process_delta(1.0 / 60.0);
+                for slot in advance.crossed_slots() {
+                    assert_eq!(slot, next);
+                    next += 1;
+                    minute_starts += u64::from(slot.is_multiple_of(SLOTS_PER_MINUTE));
+                }
+                minutes += u64::from(advance.elapsed_minutes);
+                assert_eq!(advance.end_slot, time.absolute_slot());
+            }
+            assert_eq!(minute_starts, minutes);
+            assert!(minutes > 0);
+        }
+    }
 
     #[test]
     fn process_delta_advances_exact_minutes() {

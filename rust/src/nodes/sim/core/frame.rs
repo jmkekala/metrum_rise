@@ -112,9 +112,8 @@ impl SimCore {
     /// Advances the simulation by one frame of `frame_dt_s` real seconds at the current speed.
     ///
     /// A paused clock (`speed_multiplier <= 0`) leaves all state untouched. Otherwise agents move
-    /// `frame_dt_s × speed` seconds and every authored minute the clock crosses runs in order:
-    /// queued demand spawns, the operational hour on whole hours, and daily settlement at
-    /// midnight. Results depend only on the core state and `frame_dt_s`.
+    /// `frame_dt_s × speed` seconds and every slot the clock crosses runs its due systems in
+    /// order ([`SimCore::step_slot`]). Results depend only on the core state and `frame_dt_s`.
     pub(crate) fn step_frame(&mut self, frame_dt_s: f64) -> FrameStepReport {
         self.step_frame_observed(frame_dt_s, &mut ())
     }
@@ -163,55 +162,13 @@ impl SimCore {
 
         let minute_start = Instant::now();
         record_crash_phase_for_core(self, "time advance");
+        self.align_events_to_clock();
         let time_advance = self.time.process_delta(frame_dt_s);
         report.elapsed_minutes = time_advance.elapsed_minutes;
-        for (step_day_index, step_minute_of_day) in time_advance.iter_elapsed_minutes() {
-            self.step_authored_minute(step_day_index, step_minute_of_day, &mut report, observer);
+        for slot in time_advance.crossed_slots() {
+            self.step_slot(slot, &mut report, observer);
         }
         report.minute_ms = minute_start.elapsed().as_secs_f64() * 1000.0;
         report
-    }
-
-    fn step_authored_minute(
-        &mut self,
-        day_index: u32,
-        minute_of_day: u16,
-        report: &mut FrameStepReport,
-        observer: &mut impl EconomyObserver,
-    ) {
-        let pending_spawn_start = Instant::now();
-        record_crash_phase_for_core(self, "demand spawn tick");
-        let spawned = run_sim_phase("demand spawn tick", || {
-            self.execute_pending_demand_spawns_for_minute(day_index, minute_of_day)
-        });
-        report.pending_spawns_executed += spawned;
-        if spawned > 0 {
-            observer.buildings_changed(self);
-        }
-        report.pending_spawn_ms += pending_spawn_start.elapsed().as_secs_f64() * 1000.0;
-        if minute_of_day.is_multiple_of(60) {
-            let hourly_start = Instant::now();
-            record_crash_phase_for_core(self, "operational hour tick");
-            run_sim_phase("operational hour tick", || {
-                self.simulate_operational_hour_observed(day_index, minute_of_day, observer)
-            });
-            report.hourly_ms += hourly_start.elapsed().as_secs_f64() * 1000.0;
-            report.hourly_ticks += 1;
-            if minute_of_day != 0 && crate::debug::Channel::Sim.enabled() {
-                self.print_sim_console_summary(day_index, minute_of_day);
-            }
-        }
-        if minute_of_day == 0 {
-            let daily_start = Instant::now();
-            record_crash_phase_for_core(self, "daily tick");
-            run_sim_phase("daily tick", || {
-                self.simulate_tick_observed(day_index, observer)
-            });
-            report.daily_ms += daily_start.elapsed().as_secs_f64() * 1000.0;
-            report.daily_ticks += 1;
-            if crate::debug::Channel::Sim.enabled() {
-                self.print_sim_console_summary(day_index, minute_of_day);
-            }
-        }
     }
 }

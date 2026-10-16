@@ -1494,6 +1494,7 @@ fn execute_test_construction(
 ) {
     core.pending_demand_spawns
         .push_back(super::state::PendingDemandSpawnAction {
+            id: 0,
             due_minute: u64::from(minute),
             zone_type: zone,
             action: action.clone(),
@@ -1670,6 +1671,7 @@ fn queued_customer_reservations_rebuild_before_post_load_minute_execution() {
         for (index, action) in factories.iter().take(2).enumerate() {
             core.pending_demand_spawns
                 .push_back(super::state::PendingDemandSpawnAction {
+                    id: 0,
                     due_minute: 3 + index as u64,
                     zone_type: ZoneType::Industrial,
                     action: action.clone(),
@@ -1819,6 +1821,7 @@ fn queued_projects_revalidate_future_doors_and_prices_through_placement_and_relo
             for (index, action) in factories.iter().take(3).enumerate() {
                 core.pending_demand_spawns
                     .push_back(super::state::PendingDemandSpawnAction {
+                        id: 0,
                         due_minute: 5 + index as u64,
                         zone_type: ZoneType::Industrial,
                         action: action.clone(),
@@ -2868,6 +2871,7 @@ fn queued_buyers_and_supplier_replacement_survive_reload_at_every_step() {
         for (index, action) in shops.iter().enumerate() {
             core.pending_demand_spawns
                 .push_back(super::state::PendingDemandSpawnAction {
+                    id: 0,
                     due_minute: 8 + index as u64,
                     zone_type: ZoneType::Commercial,
                     action: action.clone(),

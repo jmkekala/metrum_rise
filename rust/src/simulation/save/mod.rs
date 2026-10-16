@@ -39,6 +39,7 @@ pub mod agents;
 mod camera;
 mod cell_zoning;
 mod handles;
+mod scheduler;
 pub mod network;
 pub mod schema;
 pub(crate) mod sqlite;
@@ -69,6 +70,8 @@ pub(crate) struct SaveGameView<'a> {
     pub noise: &'a NoiseSystem,
     pub demand: &'a DemandSystem,
     pub pending_demand_spawns: &'a VecDeque<PendingDemandSpawnAction>,
+    /// Timing wheel and counters (`SIM-02`).
+    pub scheduler: SavedScheduler,
     pub allocator: &'a BuildingAllocator,
     pub households: &'a HouseholdSystem,
     pub logistics: &'a ShipmentSystem,
@@ -81,6 +84,8 @@ pub(crate) struct SaveGameView<'a> {
     pub fiscal_policy: &'a CityFiscalPolicy,
     pub budget_history: &'a VecDeque<DailyBudgetLedgerEntry>,
 }
+
+pub(crate) use scheduler::SavedScheduler;
 
 /// Fully hydrated simulation state after loading from disk.
 pub(crate) struct LoadedSimulation {
@@ -103,6 +108,8 @@ pub(crate) struct LoadedSimulation {
     pub desirability: DesirabilitySystem,
     pub demand: DemandSystem,
     pub pending_demand_spawns: VecDeque<PendingDemandSpawnAction>,
+    /// Timing wheel and counters (`SIM-02`).
+    pub scheduler: SavedScheduler,
     pub allocator: BuildingAllocator,
     pub households: HouseholdSystem,
     pub logistics: ShipmentSystem,
@@ -457,6 +464,7 @@ fn write_snapshot(
     network::save_network(tx, view.graph, maps)?;
     agents::save_agents(tx, view.agents, view.graph, view.network, maps)?;
     workplace_quotes::save(tx, view.households, view.allocator, view.network, maps)?;
+    scheduler::save(tx, &view.scheduler)?;
     handles::save(
         tx,
         handles::HandleKind::Buildings,
@@ -566,6 +574,7 @@ pub(crate) fn load_from_sqlite(
         demand_row.cheat_max_demands_enabled,
     );
     let mut pending_demand_spawns = world::load_pending_demand_spawns(&conn)?;
+    let scheduler = scheduler::load(&conn)?;
     let pollution = world::load_grid_system::<PollutionSystem>(&conn, &config, "pollution_state")?;
     let noise = world::load_grid_system::<NoiseSystem>(&conn, &config, "noise_state")?;
 
@@ -738,6 +747,7 @@ pub(crate) fn load_from_sqlite(
         desirability,
         demand,
         pending_demand_spawns,
+        scheduler,
         allocator,
         households,
         logistics,
