@@ -1866,6 +1866,8 @@ impl BuildingAllocator {
             is_deserted: false,
             budget_distress: false,
         });
+        self.building_handles
+            .register_appended(self.buildings.len());
         let building_idx = self.buildings.len() - 1;
         self.push_building_site_client(building_idx, zone_cell_m);
         self.queue_yard(building_idx, zone_cell_m);

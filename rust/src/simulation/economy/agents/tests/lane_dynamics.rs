@@ -348,7 +348,6 @@ fn test_overlap_correction_stable_over_many_ticks() {
 /// Both arrival and final-agent removal clear retained occupancy and congestion.
 #[test]
 fn test_lane_bucket_cleared_after_agent_leaves_edge() {
-    use crate::simulation::economy::households::HouseholdSystem;
 
     for remove_last_agent in [false, true] {
         let mut graph = RegionGraph::new();
@@ -367,7 +366,7 @@ fn test_lane_bucket_cleared_after_agent_leaves_edge() {
         assert!(graph.edge(edge_idx).current_congestion > 0.0);
 
         if remove_last_agent {
-            agents.kill_agent(i, &mut allocator, &mut HouseholdSystem::new());
+            agents.kill_agent(i, &mut allocator);
         } else {
             // Isolate the already-completed arrival, without running a new trip plan.
             agents.transit[i] = TRANSIT_IN_BUILDING;

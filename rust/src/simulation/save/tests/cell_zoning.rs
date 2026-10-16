@@ -176,30 +176,6 @@ fn mixed_workflows_round_trip_canonical_cells_lots_buildings_and_rezone_grace() 
 }
 
 #[test]
-fn old_parcel_save_loads_without_cell_tables_or_conversion() {
-    let (graph, _, allocator) = fixture(0.0, false);
-    let mut zoning = ZoningSystem::new(&WorldConfig::new(400.0, 400.0, 10.0, 10.0));
-    let id = zoning
-        .place_or_rezone_parcel_at(0.0, -20.0, 1, 30.0, 30.0, &graph)
-        .unwrap();
-    let path = temp_path("pre_cell_zoning");
-    write_snapshot(&path, &graph, &zoning, &BuildingAllocator::new());
-    let conn = Connection::open(&path).unwrap();
-    conn.execute_batch(
-        "UPDATE save_meta SET version = 64;
-        DROP TABLE zoning_cell_frames; DROP TABLE zoning_cells; DROP TABLE zoning_cell_lots;",
-    )
-    .unwrap();
-    drop(conn);
-    let loaded = load_from_sqlite(&path, &allocator.registry).unwrap();
-    fs::remove_file(path).unwrap();
-    assert_eq!(loaded.zoning.parcels().len(), 1);
-    assert!(loaded.zoning.parcels()[0].cell_lot().is_none());
-    assert_eq!(loaded.zoning.parcels()[0].id(), id);
-    assert!(loaded.zoning.cells.saved_frames().next().is_none());
-}
-
-#[test]
 fn corrupted_cell_authority_is_rejected_before_publishing_the_loaded_world() {
     let (graph, zoning, allocator) = fixture(0.35, true);
     let path = temp_path("invalid_cell_zoning");
@@ -227,7 +203,7 @@ fn corrupted_cell_authority_is_rejected_before_publishing_the_loaded_world() {
 }
 
 #[test]
-fn saved_road_frames_validate_sources_and_legacy_saves_initialize_them() {
+fn saved_road_frames_validate_sources() {
     let (graph, mut zoning, allocator) = fixture(0.35, false);
     zoning
         .cells
@@ -255,19 +231,6 @@ fn saved_road_frames_validate_sources_and_legacy_saves_initialize_them() {
             "accepted {sql}"
         );
     }
-    fs::write(&path, &valid).unwrap();
-    let conn = Connection::open(&path).unwrap();
-    conn.execute_batch(
-        "UPDATE save_meta SET version = 66; DROP TABLE zoning_cell_road_alignments;",
-    )
-    .unwrap();
-    drop(conn);
-    let restored = load_from_sqlite(&path, &allocator.registry).unwrap();
-    assert_eq!(
-        restored.zoning.cells.saved_cells(),
-        zoning.cells.saved_cells()
-    );
-    assert_eq!(restored.zoning.cells.saved_road_alignments().len(), 1);
     fs::remove_file(path).unwrap();
 }
 
@@ -378,6 +341,7 @@ fn load_checks_explicit_sites_and_compiled_roads_against_cell_reservations() {
         ),
         (
             "DELETE FROM building_inventories; DELETE FROM buildings;
+             DELETE FROM entity_handle_slots WHERE kind = 0;
              DELETE FROM zoning_cell_lots; DELETE FROM zoning_parcels;
              UPDATE network_edges SET width = width + 10",
             "saved road overlaps reserved zoning cells",

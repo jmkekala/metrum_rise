@@ -4,11 +4,10 @@
 
 use crate::debug_log;
 use crate::simulation::buildings::allocator::BuildingAllocator;
-use crate::simulation::economy::agents::{AgentSystem, TRANSIT_IN_BUILDING};
+use crate::simulation::economy::agents::{AgentHandle, AgentSystem, TRANSIT_IN_BUILDING};
 use crate::simulation::economy::definitions::{
     RuntimeEconomyCatalog, load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
-use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 
@@ -27,7 +26,6 @@ impl ShipmentSystem {
         &mut self,
         allocator: &mut BuildingAllocator,
         agents: &mut AgentSystem,
-        households: &mut HouseholdSystem,
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
         treasury_balance: &mut f64,
@@ -51,7 +49,7 @@ impl ShipmentSystem {
 
         let mut idx = 0;
         while idx < self.shipments.len() {
-            if self.shipments[idx].carrier_agent_id == usize::MAX
+            if self.shipments[idx].carrier.is_none()
                 && self.shipments[idx].status != ShipmentStatus::Returning
             {
                 idx += 1;
@@ -63,13 +61,13 @@ impl ShipmentSystem {
             if status == ShipmentStatus::Returning {
                 match shipment_carrier_progress_to_endpoint(&shipment, agents, shipment.source) {
                     CarrierProgress::Arrived | CarrierProgress::Missing => {
-                        self.finish_delivered_shipment(idx, &shipment, agents, households);
+                        self.finish_delivered_shipment(idx, &shipment, agents);
                     }
                     CarrierProgress::Traveling => {
                         self.shipments[idx].queued_hours =
                             self.shipments[idx].queued_hours.saturating_add(1);
                         if self.shipments[idx].queued_hours >= in_transit_timeout_hours(&shipment) {
-                            self.finish_delivered_shipment(idx, &shipment, agents, households);
+                            self.finish_delivered_shipment(idx, &shipment, agents);
                         }
                     }
                 }
@@ -94,7 +92,6 @@ impl ShipmentSystem {
                             idx,
                             allocator,
                             agents,
-                            households,
                             treasury_balance,
                             retry_cooldown_hours,
                             &catalog,
@@ -110,7 +107,6 @@ impl ShipmentSystem {
                         idx,
                         allocator,
                         agents,
-                        households,
                         treasury_balance,
                         retry_cooldown_hours,
                         &catalog,
@@ -130,7 +126,6 @@ impl ShipmentSystem {
                         idx,
                         allocator,
                         agents,
-                        households,
                         treasury_balance,
                         retry_cooldown_hours,
                         &catalog,
@@ -173,7 +168,6 @@ impl ShipmentSystem {
                         &shipment,
                         allocator,
                         agents,
-                        households,
                         transit_network,
                         graph,
                     );
@@ -182,7 +176,6 @@ impl ShipmentSystem {
                         idx,
                         allocator,
                         agents,
-                        households,
                         treasury_balance,
                         retry_cooldown_hours,
                         &catalog,
@@ -199,7 +192,6 @@ impl ShipmentSystem {
                     idx,
                     allocator,
                     agents,
-                    households,
                     treasury_balance,
                     retry_cooldown_hours,
                     &catalog,
@@ -214,7 +206,6 @@ impl ShipmentSystem {
                     idx,
                     allocator,
                     agents,
-                    households,
                     treasury_balance,
                     retry_cooldown_hours,
                     &catalog,
@@ -246,7 +237,6 @@ impl ShipmentSystem {
                             idx,
                             allocator,
                             agents,
-                            households,
                             treasury_balance,
                             retry_cooldown_hours,
                             &catalog,
@@ -292,7 +282,6 @@ impl ShipmentSystem {
                         &shipment,
                         allocator,
                         agents,
-                        households,
                         transit_network,
                         graph,
                     );
@@ -312,7 +301,6 @@ impl ShipmentSystem {
                             idx,
                             allocator,
                             agents,
-                            households,
                             treasury_balance,
                             retry_cooldown_hours,
                             &catalog,
@@ -352,7 +340,6 @@ impl ShipmentSystem {
                         &shipment,
                         allocator,
                         agents,
-                        households,
                         transit_network,
                         graph,
                     );
@@ -375,7 +362,7 @@ impl ShipmentSystem {
     ) {
         for idx in 0..self.shipments.len() {
             if self.shipments[idx].status != ShipmentStatus::InTransit
-                || self.shipments[idx].carrier_agent_id != usize::MAX
+                || !self.shipments[idx].carrier.is_none()
             {
                 continue;
             }
@@ -440,7 +427,7 @@ impl ShipmentSystem {
                 allocator.buildings[source_idx]
                     .remove_inventory_units(shipment.resource_runtime_id, shipment.amount);
             }
-            self.shipments[idx].carrier_agent_id = carrier_agent_id;
+            self.shipments[idx].carrier = agents.agent_handle(carrier_agent_id);
             self.shipments[idx].queued_hours = 0;
             crate::debug::work::add(crate::debug::work::Work::FreightDispatches, 1);
         }
@@ -453,7 +440,6 @@ impl ShipmentSystem {
         shipment: &Shipment,
         allocator: &BuildingAllocator,
         agents: &mut AgentSystem,
-        households: &mut HouseholdSystem,
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
     ) {
@@ -461,7 +447,7 @@ impl ShipmentSystem {
             self.shipments[shipment_idx].status = ShipmentStatus::Returning;
             self.shipments[shipment_idx].queued_hours = 0;
         } else {
-            self.finish_delivered_shipment(shipment_idx, shipment, agents, households);
+            self.finish_delivered_shipment(shipment_idx, shipment, agents);
         }
     }
 
@@ -470,12 +456,11 @@ impl ShipmentSystem {
         shipment_idx: usize,
         shipment: &Shipment,
         agents: &mut AgentSystem,
-        households: &mut HouseholdSystem,
     ) {
         // Cargo already settled; retiring an empty carrier must not reverse the sale.
         self.shipments[shipment_idx].status = ShipmentStatus::Fulfilled;
-        self.shipments[shipment_idx].carrier_agent_id = usize::MAX;
-        self.remove_carrier_agent(agents, households, shipment.carrier_agent_id, shipment.id);
+        self.shipments[shipment_idx].carrier = AgentHandle::NONE;
+        self.remove_carrier_agent(agents, shipment.carrier, shipment.id);
     }
 
     fn start_return_trip(
@@ -486,6 +471,9 @@ impl ShipmentSystem {
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
     ) -> bool {
+        let Some(carrier) = agents.resolve_agent(shipment.carrier) else {
+            return false;
+        };
         match (shipment.source, shipment.destination) {
             (ShipmentEndpoint::Building(source), ShipmentEndpoint::Building(destination)) => {
                 source < allocator.buildings.len()
@@ -493,7 +481,7 @@ impl ShipmentSystem {
                     && building_can_participate_in_freight(allocator, source)
                     && building_can_participate_in_freight(allocator, destination)
                     && agents.route_freight_carrier_building_to_building(
-                        shipment.carrier_agent_id,
+                        carrier,
                         destination,
                         source,
                         allocator,
@@ -505,7 +493,7 @@ impl ShipmentSystem {
                 destination < allocator.buildings.len()
                     && building_can_participate_in_freight(allocator, destination)
                     && agents.route_freight_carrier_building_to_border(
-                        shipment.carrier_agent_id,
+                        carrier,
                         destination,
                         border_node,
                         allocator,
@@ -517,7 +505,7 @@ impl ShipmentSystem {
                 source < allocator.buildings.len()
                     && building_can_participate_in_freight(allocator, source)
                     && agents.route_freight_carrier_border_to_building(
-                        shipment.carrier_agent_id,
+                        carrier,
                         border_node,
                         source,
                         allocator,
@@ -532,14 +520,11 @@ impl ShipmentSystem {
     pub(super) fn remove_carrier_agent(
         &mut self,
         agents: &mut AgentSystem,
-        households: &mut HouseholdSystem,
-        carrier_agent_id: usize,
+        carrier: AgentHandle,
         shipment_id: u64,
     ) {
-        if let Some((old_idx, new_idx)) =
-            agents.remove_freight_carrier(carrier_agent_id, shipment_id, households)
-        {
-            self.remap_carrier_agent_index(old_idx, new_idx, agents);
+        if let Some(carrier) = agents.resolve_agent(carrier) {
+            agents.remove_freight_carrier(carrier, shipment_id);
         }
     }
 
@@ -549,7 +534,6 @@ impl ShipmentSystem {
         shipment_idx: usize,
         allocator: &mut BuildingAllocator,
         agents: &mut AgentSystem,
-        households: &mut HouseholdSystem,
         treasury_balance: &mut f64,
         retry_cooldown_hours: u16,
         catalog: &RuntimeEconomyCatalog,
@@ -568,7 +552,7 @@ impl ShipmentSystem {
             );
             allocator.buildings[destination_idx].shipment_cooldown_hours = retry_cooldown_hours;
         }
-        if shipment.carrier_agent_id != usize::MAX
+        if !shipment.carrier.is_none()
             && let ShipmentEndpoint::Building(source_idx) = shipment.source
             && source_idx < allocator.buildings.len()
         {
@@ -600,10 +584,8 @@ impl ShipmentSystem {
         );
 
         self.shipments[shipment_idx].status = final_status;
-        self.shipments[shipment_idx].carrier_agent_id = usize::MAX;
-        if shipment.carrier_agent_id != usize::MAX {
-            self.remove_carrier_agent(agents, households, shipment.carrier_agent_id, shipment.id);
-        }
+        self.shipments[shipment_idx].carrier = AgentHandle::NONE;
+        self.remove_carrier_agent(agents, shipment.carrier, shipment.id);
     }
 }
 
@@ -689,10 +671,12 @@ fn shipment_carrier_progress_to_endpoint(
     agents: &AgentSystem,
     endpoint: ShipmentEndpoint,
 ) -> CarrierProgress {
-    let carrier_idx = shipment.carrier_agent_id;
-    if !agents.freight_carrier_matches(carrier_idx, shipment.id) {
+    let Some(carrier_idx) = agents
+        .resolve_agent(shipment.carrier)
+        .filter(|&carrier| agents.freight_carrier_matches(carrier, shipment.id))
+    else {
         return CarrierProgress::Missing;
-    }
+    };
 
     let arrived = match endpoint {
         ShipmentEndpoint::Building(destination_idx) => {

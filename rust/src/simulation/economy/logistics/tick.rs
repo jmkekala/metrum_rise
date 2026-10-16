@@ -4,7 +4,6 @@
 
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::AgentSystem;
-use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::{debug, debug_log};
@@ -21,7 +20,6 @@ impl ShipmentSystem {
         &mut self,
         allocator: &mut BuildingAllocator,
         agents: &mut AgentSystem,
-        households: &mut HouseholdSystem,
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
         minute_of_day: u16,
@@ -74,7 +72,6 @@ impl ShipmentSystem {
         self.progress_shipments(
             allocator,
             agents,
-            households,
             transit_network,
             graph,
             treasury_balance,

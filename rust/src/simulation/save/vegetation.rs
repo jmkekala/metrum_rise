@@ -2,9 +2,6 @@
 
 //! Deterministic serialization of the sparse vegetation delta; revisions are runtime-only.
 
-use super::schema::{
-    VEGETATION_VARIANT_SAVE_VERSION, YARD_HEDGE_SAVE_VERSION, YARD_PLANTING_SAVE_VERSION,
-};
 use super::{SaveLoadError, SaveLoadResult};
 use crate::simulation::vegetation::edits::{
     AuthoredPlant, VegetationCell, VegetationEdits, VegetationLayer, variant_in_range,
@@ -78,7 +75,7 @@ fn layer(value: i64) -> SaveLoadResult<VegetationLayer> {
 }
 
 /// Restores the authoritative delta with fresh runtime patch generations.
-pub(super) fn load(conn: &Connection, version: i64) -> SaveLoadResult<VegetationEdits> {
+pub(super) fn load(conn: &Connection) -> SaveLoadResult<VegetationEdits> {
     let mut edits = VegetationEdits::default();
     let mut stmt = conn.prepare(
         "SELECT layer, cell_x, cell_z FROM vegetation_removals ORDER BY layer, cell_z, cell_x",
@@ -94,17 +91,10 @@ pub(super) fn load(conn: &Connection, version: i64) -> SaveLoadResult<Vegetation
             true,
         );
     }
-    // A save written before the pin has no such column, so it selects a literal zero in its
-    // place, which is the unpinned value every plant in it was authored with.
-    let variant = if version >= VEGETATION_VARIANT_SAVE_VERSION {
-        "variant"
-    } else {
-        "0"
-    };
-    let mut stmt = conn.prepare(&format!(
-        "SELECT layer, cell_x, cell_z, x, z, yaw, scale, species, {variant} \
-         FROM vegetation_additions ORDER BY layer, cell_z, cell_x, rowid"
-    ))?;
+    let mut stmt = conn.prepare(
+        "SELECT layer, cell_x, cell_z, x, z, yaw, scale, species, variant \
+         FROM vegetation_additions ORDER BY layer, cell_z, cell_x, rowid",
+    )?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let cell = VegetationCell {
@@ -131,13 +121,10 @@ pub(super) fn load(conn: &Connection, version: i64) -> SaveLoadResult<Vegetation
         }
         edits.add(cell, plant);
     }
-    for (table, since, planting) in [
-        ("yard_hedge_modules", YARD_HEDGE_SAVE_VERSION, false),
-        ("yard_planting_plants", YARD_PLANTING_SAVE_VERSION, true),
+    for (table, planting) in [
+        ("yard_hedge_modules", false),
+        ("yard_planting_plants", true),
     ] {
-        if version < since {
-            continue;
-        }
         let mut stmt = conn.prepare(&format!(
             "SELECT parcel_id, build_generation, layer, cell_x, cell_z, x, z, yaw, scale, species, \
              variant FROM {table} ORDER BY rowid"
@@ -172,7 +159,7 @@ pub(super) fn load(conn: &Connection, version: i64) -> SaveLoadResult<Vegetation
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::simulation::save::schema::{SCHEMA, VEGETATION_VARIANT_SAVE_VERSION};
+    use crate::simulation::save::schema::SCHEMA;
     use crate::simulation::vegetation::edits::VARIANT_FROM_SEED;
 
     fn cell(x: i32) -> VegetationCell {
@@ -200,7 +187,7 @@ mod tests {
         let tx = conn.transaction().unwrap();
         save(&tx, edits).unwrap();
         tx.commit().unwrap();
-        load(&conn, VEGETATION_VARIANT_SAVE_VERSION).unwrap()
+        load(&conn).unwrap()
     }
 
     #[test]
@@ -227,25 +214,6 @@ mod tests {
         let tx = conn.transaction().unwrap();
         save(&tx, &edits).unwrap();
         tx.commit().unwrap();
-        assert!(load(&conn, VEGETATION_VARIANT_SAVE_VERSION).is_err());
-    }
-
-    #[test]
-    fn a_save_written_before_the_pin_loads_every_plant_unpinned() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(SCHEMA).unwrap();
-        // The column the older schema lacks, so the load must not read it back.
-        conn.execute(
-            "INSERT INTO vegetation_additions VALUES (0, 4, -3, 1.0, 2.0, 0.5, 1.25, 1, NULL)",
-            [],
-        )
-        .unwrap();
-        let loaded = load(&conn, VEGETATION_VARIANT_SAVE_VERSION - 1).unwrap();
-        let (_, added) = loaded.cell(cell(4));
-        assert_eq!(added.len(), 1);
-        assert_eq!(
-            added[0].variant, VARIANT_FROM_SEED,
-            "a plant authored before the pin existed keeps the renderer's own choice"
-        );
+        assert!(load(&conn).is_err());
     }
 }

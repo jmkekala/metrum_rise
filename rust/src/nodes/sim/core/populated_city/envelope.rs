@@ -349,13 +349,17 @@ fn reference_violations(core: &SimCore, jobs: bool) -> (BTreeMap<&'static str, u
         let shipment_id = agents.freight_shipment_id[i];
         if shipment_id != u64::MAX {
             match shipments.binary_search_by_key(&shipment_id, |s| s.id) {
-                Ok(position) if shipments[position].carrier_agent_id != i => fail(
-                    "carrier_shipment",
-                    format!(
-                        "agent {i} carries shipment {shipment_id} assigned to agent {}",
-                        shipments[position].carrier_agent_id
-                    ),
-                ),
+                Ok(position)
+                    if core.agents.resolve_agent(shipments[position].carrier) != Some(i) =>
+                {
+                    fail(
+                        "carrier_shipment",
+                        format!(
+                            "agent {i} carries shipment {shipment_id} assigned to {:?}",
+                            shipments[position].carrier
+                        ),
+                    )
+                }
                 Ok(_) => {}
                 Err(_) => fail(
                     "carrier_shipment_missing",
@@ -397,13 +401,15 @@ fn reference_violations(core: &SimCore, jobs: bool) -> (BTreeMap<&'static str, u
                 );
             }
         }
-        let carrier = shipment.carrier_agent_id;
-        if carrier != usize::MAX
-            && (carrier >= agents.len() || agents.freight_shipment_id[carrier] != shipment.id)
+        if !shipment.carrier.is_none()
+            && core
+                .agents
+                .resolve_agent(shipment.carrier)
+                .is_none_or(|carrier| agents.freight_shipment_id[carrier] != shipment.id)
         {
             fail(
                 "shipment_carrier",
-                format!("shipment {} -> agent {carrier}", shipment.id),
+                format!("shipment {} -> {:?}", shipment.id, shipment.carrier),
             );
         }
     }

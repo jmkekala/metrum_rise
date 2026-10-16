@@ -680,8 +680,7 @@ fn active_household_replenishment_carrier(
     let Some(household) = households.get(household_id) else {
         return false;
     };
-    household.shopping_agent_id == agent_idx
-        && household.shopping_agent_schedule_seed == agents.schedule_seed[agent_idx]
+    agents.resolve_agent(household.shopping_agent) == Some(agent_idx)
         && matches!(
             household.replenishment_state,
             REPLENISHMENT_SHOPPING_TO_STORE | REPLENISHMENT_SHOPPING_RETURNING

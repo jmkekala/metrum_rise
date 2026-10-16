@@ -8,6 +8,7 @@ use crate::nodes::sim::core::{
 use crate::simulation::agriculture::AgricultureSystem;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::WorldConfig;
+use crate::simulation::core::handles::Handle;
 use crate::simulation::core::time::{
     MINUTES_PER_DAY, TimeSystem, validate_day_duration, validated_simulation_speed,
 };
@@ -37,6 +38,7 @@ use std::path::Path;
 pub mod agents;
 mod camera;
 mod cell_zoning;
+mod handles;
 pub mod network;
 pub mod schema;
 pub(crate) mod sqlite;
@@ -85,9 +87,9 @@ pub(crate) struct LoadedSimulation {
     /// Saved presentation state, absent from older or simulation-only snapshots.
     pub camera: Option<SavedCameraState>,
     pub config: WorldConfig,
-    /// Authored vegetation parameters, defaulted for saves written before version 60.
+    /// Authored vegetation parameters.
     pub vegetation: VegetationConfig,
-    /// Sparse player delta, empty for saves before version 61.
+    /// Sparse player delta.
     pub vegetation_edits: VegetationEdits,
     pub time: TimeSystem,
     pub terrain: TerrainSystem,
@@ -180,23 +182,15 @@ fn save_budget_history(
     Ok(())
 }
 
-fn load_budget_history(
-    conn: &Connection,
-    version: i64,
-) -> SaveLoadResult<VecDeque<DailyBudgetLedgerEntry>> {
+fn load_budget_history(conn: &Connection) -> SaveLoadResult<VecDeque<DailyBudgetLedgerEntry>> {
     let mut history = VecDeque::new();
     if !sqlite_table_exists(conn, "city_budget_history")? {
         return Ok(history);
     }
 
-    let cost_column = if version >= ELECTRICITY_KWH_SAVE_VERSION {
-        "electricity_consumption_cost"
-    } else {
-        "power_consumed * 3.0 + power_unmet * 3.75"
-    };
-    let mut stmt = conn.prepare(&format!(
-        "SELECT day_index, income, expenses, net, treasury, tax_income, income_tax, household_vat, business_profit_tax, property_tax, residential_property_tax, commercial_property_tax, industrial_property_tax, utility_service_revenue, benefits, unemployment_benefits, pensions, child_support, city_wages, fuel_input_purchases, imports_owa, construction_service_costs, power_produced, power_consumed, power_unmet, power_coverage, coal_inventory, coal_consumed, electricity_fuel_cost, electricity_wage_cost, electricity_revenue, electricity_net, {cost_column} FROM city_budget_history ORDER BY sequence",
-    ))?;
+    let mut stmt = conn.prepare(
+        "SELECT day_index, income, expenses, net, treasury, tax_income, income_tax, household_vat, business_profit_tax, property_tax, residential_property_tax, commercial_property_tax, industrial_property_tax, utility_service_revenue, benefits, unemployment_benefits, pensions, child_support, city_wages, fuel_input_purchases, imports_owa, construction_service_costs, power_produced, power_consumed, power_unmet, power_coverage, coal_inventory, coal_consumed, electricity_fuel_cost, electricity_wage_cost, electricity_revenue, electricity_net, electricity_consumption_cost FROM city_budget_history ORDER BY sequence",
+    )?;
     let rows = stmt.query_map([], |row| {
         Ok((
             row.get::<_, i64>(0)?,
@@ -293,24 +287,9 @@ fn load_budget_history(
             fuel_input_purchases,
             imports_owa,
             construction_service_costs,
-            power_produced: power_produced
-                * if version >= ELECTRICITY_KWH_SAVE_VERSION {
-                    1.0
-                } else {
-                    1.0 / 3.6
-                },
-            power_consumed: power_consumed
-                * if version >= ELECTRICITY_KWH_SAVE_VERSION {
-                    1.0
-                } else {
-                    1.0 / 3.6
-                },
-            power_unmet: power_unmet
-                * if version >= ELECTRICITY_KWH_SAVE_VERSION {
-                    1.0
-                } else {
-                    1.0 / 3.6
-                },
+            power_produced,
+            power_consumed,
+            power_unmet,
             power_coverage,
             coal_inventory,
             coal_consumed,
@@ -478,6 +457,24 @@ fn write_snapshot(
     network::save_network(tx, view.graph, maps)?;
     agents::save_agents(tx, view.agents, view.graph, view.network, maps)?;
     workplace_quotes::save(tx, view.households, view.allocator, view.network, maps)?;
+    handles::save(
+        tx,
+        handles::HandleKind::Buildings,
+        &view.allocator.building_handles,
+        view.allocator.buildings.len(),
+    )?;
+    handles::save(
+        tx,
+        handles::HandleKind::Households,
+        &view.households.handles,
+        view.households.households.len(),
+    )?;
+    handles::save(
+        tx,
+        handles::HandleKind::Agents,
+        &view.agents.handles,
+        view.agents.len(),
+    )?;
 
     Ok(())
 }
@@ -500,14 +497,11 @@ pub(crate) fn load_from_sqlite(
     let version: i64 = conn.query_row("SELECT version FROM save_meta LIMIT 1", [], |row| {
         row.get(0)
     })?;
-    if !(57..=SAVE_VERSION).contains(&version) {
+    // `SIM-02` cut over the save format: only the current version loads.
+    if version != SAVE_VERSION {
         return Err(SaveLoadError::custom("version mismatch"));
     }
-    let camera = if version >= 59 {
-        camera::load_camera_state(&conn)?
-    } else {
-        None
-    };
+    let camera = camera::load_camera_state(&conn)?;
     let config = conn.query_row(
         "SELECT width_m, height_m, terrain_cell_m, terrain_chunk_m, terrain_base_elevation_m, env_cell_m, zone_cell_m FROM world_config LIMIT 1",
         [],
@@ -520,9 +514,7 @@ pub(crate) fn load_from_sqlite(
         },
     )?;
     config.validate()?;
-    // Saves older than the parameterised generator carry the values it shipped with, so an
-    // existing city keeps the forest it was built in rather than regenerating a different one.
-    let vegetation = if version >= VEGETATION_SAVE_VERSION {
+    let vegetation = {
         let row: (i64, i64, f32, f32) = conn.query_row(
             "SELECT enabled, seed, coverage, canopy_stems_per_ha FROM vegetation_config LIMIT 1",
             [],
@@ -534,14 +526,8 @@ pub(crate) fn load_from_sqlite(
             coverage: row.2,
             canopy_stems_per_ha: row.3,
         }
-    } else {
-        VegetationConfig::default()
     };
-    let vegetation_edits = if version >= VEGETATION_SAVE_VERSION {
-        vegetation::load(&conn, version)?
-    } else {
-        VegetationEdits::default()
-    };
+    let vegetation_edits = vegetation::load(&conn)?;
     let time_r: (f64, f32, i64, i64, f64, f32) = conn.query_row("SELECT time_elapsed, speed_multiplier, day_index, minute_of_day, seconds_per_day, agent_sim_time FROM time_state LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?;
     let time = TimeSystem {
         time_elapsed: time_r.0,
@@ -584,14 +570,19 @@ pub(crate) fn load_from_sqlite(
     let noise = world::load_grid_system::<NoiseSystem>(&conn, &config, "noise_state")?;
 
     let mut graph = network::load_graph(&conn)?;
-    let (mut zoning, quarantined_parcels) = world::load_zoning(&conn, &config, &graph, version)?;
-    let mut allocator = world::load_buildings(&conn, registry, &zoning.profiles, version)?;
-    let mut households = world::load_households(&conn, version)?;
-    let mut logistics = world::load_shipments(&conn, version)?;
+    let (mut zoning, quarantined_parcels) = world::load_zoning(&conn, &config, &graph)?;
+    let mut allocator = world::load_buildings(&conn, registry, &zoning.profiles)?;
+    let mut households = world::load_households(&conn)?;
+    let mut logistics = world::load_shipments(&conn)?;
     let mut resource_extraction =
-        world::load_resource_extraction(&conn, allocator.buildings.len(), version)?;
+        world::load_resource_extraction(&conn, allocator.buildings.len())?;
     let mut agriculture = world::load_agriculture(&conn, allocator.buildings.len())?;
-    let mut agents = agents::load_agents(&conn, time_r.5, version)?;
+    let mut agents = agents::load_agents(&conn, time_r.5)?;
+    allocator.building_handles =
+        handles::load(&conn, handles::HandleKind::Buildings, allocator.buildings.len())?;
+    households.handles =
+        handles::load(&conn, handles::HandleKind::Households, households.households.len())?;
+    agents.handles = handles::load(&conn, handles::HandleKind::Agents, agents.len())?;
     type TreasuryRow = (
         f64,
         f64,
@@ -685,14 +676,7 @@ pub(crate) fn load_from_sqlite(
 
     allocator.recompute_derived_transforms(&graph, &zoning)?;
     allocator.rebuild_loaded_entrance_cache(&graph, &transit_network.lane_system, registry);
-    agents::restore_lane_references(
-        &conn,
-        version,
-        &mut agents,
-        &graph,
-        &mut transit_network,
-        &allocator,
-    )?;
+    agents::restore_lane_references(&conn, &mut agents, &graph, &mut transit_network)?;
     world::repaint_building_occupancy(&mut zoning, &allocator)?;
     cell_zoning::validate_reservations(
         &zoning,
@@ -707,7 +691,6 @@ pub(crate) fn load_from_sqlite(
     agents.clear_routes_with_illegal_turns(&transit_network.lane_system, &graph);
     workplace_quotes::load(
         &conn,
-        version,
         &mut households,
         &allocator,
         &transit_network,
@@ -735,7 +718,7 @@ pub(crate) fn load_from_sqlite(
         CityServicePolicy::default()
     };
     let fiscal_policy = load_fiscal_policy(&conn)?;
-    let budget_history = load_budget_history(&conn, version)?;
+    let budget_history = load_budget_history(&conn)?;
     households.rebuild_household_shopping_access(&agents);
 
     Ok(LoadedSimulation {
@@ -1010,6 +993,24 @@ pub(super) fn usize_to_i64(v: usize) -> SaveLoadResult<i64> {
 }
 pub(super) fn u64_to_i64(v: u64) -> SaveLoadResult<i64> {
     i64::try_from(v).map_err(|_| SaveLoadError::custom("u64 overflow"))
+}
+/// Saved `(slot, generation)` columns of an entity handle; the absent handle is `(-1, 0)`.
+pub(super) fn handle_to_db<K>(handle: Handle<K>) -> (i64, i64) {
+    if handle.is_none() {
+        (NONE_REF, 0)
+    } else {
+        (i64::from(handle.index()), i64::from(handle.generation()))
+    }
+}
+pub(super) fn handle_from_db<K>(slot: i64, generation: i64) -> SaveLoadResult<Handle<K>> {
+    if slot == NONE_REF {
+        return Ok(Handle::NONE);
+    }
+    let slot = i64_to_u32(slot)?;
+    if slot == u32::MAX {
+        return Err(SaveLoadError::custom("entity handle slot out of range"));
+    }
+    Ok(Handle::from_parts(slot, i64_to_u32(generation)?))
 }
 pub(super) fn i64_to_u64(v: i64) -> SaveLoadResult<u64> {
     u64::try_from(v).map_err(|_| SaveLoadError::custom("u64 underflow"))

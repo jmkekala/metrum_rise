@@ -925,7 +925,7 @@ impl EconomyObserver for GrowthReport {
                 writeln!(self.stranded_members, "Shortage household {hid}: budget {:.2} wages {:.2} transfers {:.2} shopping {:.2} home {} state {} failed {} shopper {} store {} amount {:.2} reserved-cost {:.2} cooldown {}",
                     household.budget, ledger.wage_income, ledger.transfer_income(), ledger.shopping_spend,
                     household.home_building_id, household.replenishment_state, household.replenishment_failure_count,
-                    household.shopping_agent_id, household.reserved_store_building_id, household.reserved_amount,
+                    core.agents.resolve_agent(household.shopping_agent).unwrap_or(usize::MAX), household.reserved_store_building_id, household.reserved_amount,
                     household.reserved_total_cost, household.cooldown_hours).unwrap();
             }
             h.zero_cash +=

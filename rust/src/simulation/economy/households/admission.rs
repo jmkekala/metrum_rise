@@ -8,6 +8,7 @@ use super::replenishment::{REPLENISHMENT_STABLE, stable_replenishment_offset_hou
 use crate::debug_log;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::{
+    AgentHandle,
     AgentSystem, HouseholdAgeComposition, TRANSIT_IN_BUILDING,
 };
 use crate::simulation::economy::definitions::{
@@ -76,8 +77,7 @@ impl HouseholdSystem {
             reserved_store_building_id: usize::MAX,
             reserved_amount: 0.0,
             reserved_total_cost: 0.0,
-            shopping_agent_id: usize::MAX,
-            shopping_agent_schedule_seed: 0,
+            shopping_agent: AgentHandle::NONE,
             shopping_timeout_hours_remaining: 0,
             replenishment_search_cursor: 0,
             stay_failure_days: 0,
@@ -88,6 +88,7 @@ impl HouseholdSystem {
                 self.households.len() as u32,
             ),
         });
+        self.handles.register_appended(self.households.len());
         let ledger = DailyHouseholdLedger {
             budget_before: starting_budget,
             budget_after: starting_budget,

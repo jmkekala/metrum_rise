@@ -271,7 +271,7 @@ impl BuildingAllocator {
 
                 agents.evict_building(i);
                 households.invalidate_building(i, self);
-                logistics.invalidate_building(i, self, agents, households, treasury_balance);
+                logistics.invalidate_building(i, self, agents, treasury_balance);
                 let city_owned = self.is_city_service_building(&self.buildings[i]);
                 households.close_building_electricity(
                     &mut self.buildings[i],
@@ -301,6 +301,7 @@ impl BuildingAllocator {
                     self.buildings[i].operating_budget,
                     0.0,
                 );
+                self.building_handles.swap_remove(i, self.buildings.len());
                 self.buildings.swap_remove(i);
                 crate::debug::work::add(crate::debug::work::Work::BuildingsRemoved, 1);
                 self.remove_building_site_client(i);
@@ -1235,7 +1236,7 @@ impl BuildingAllocator {
 
         agents.evict_building(building_idx);
         households.invalidate_building(building_idx, self);
-        logistics.invalidate_building(building_idx, self, agents, households, treasury_balance);
+        logistics.invalidate_building(building_idx, self, agents, treasury_balance);
         let city_owned = self.is_city_service_building(&self.buildings[building_idx]);
         households.close_building_electricity(
             &mut self.buildings[building_idx],
@@ -1269,6 +1270,8 @@ impl BuildingAllocator {
             self.buildings[building_idx].operating_budget,
             0.0,
         );
+        self.building_handles
+            .swap_remove(building_idx, self.buildings.len());
         self.buildings.swap_remove(building_idx);
         crate::debug::work::add(crate::debug::work::Work::BuildingsRemoved, 1);
         self.remove_building_site_client(building_idx);

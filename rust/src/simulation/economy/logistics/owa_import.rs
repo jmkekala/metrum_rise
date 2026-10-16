@@ -124,7 +124,7 @@ impl ShipmentSystem {
             destination: ShipmentEndpoint::Building(dest_idx),
             carrier_class: CarrierClass::Truck,
             status: ShipmentStatus::InTransit,
-            carrier_agent_id: usize::MAX,
+            carrier: crate::simulation::economy::agents::AgentHandle::NONE,
             total_cost,
             freight_cost,
             eta_hours,

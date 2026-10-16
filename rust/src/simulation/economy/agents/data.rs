@@ -9,9 +9,13 @@
 
 use super::inspection::{EndedInspection, InspectedAgent};
 use super::tick::{TripFailureLog, TripQueryScratch};
+use crate::simulation::core::handles::{Handle, HandleTable};
 use soa_derive::StructOfArray;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicU32, AtomicUsize};
+
+/// Stable reference to one agent (`docs/simulation.md#entity-handles`).
+pub(crate) type AgentHandle = Handle<Agent>;
 
 /// Single agent data structure used for SoA generation.
 #[derive(StructOfArray)]
@@ -167,6 +171,8 @@ pub(crate) enum MovementClaimMode {
 pub struct AgentSystem {
     /// The backing SoA storage.
     pub agents: AgentVec,
+    /// Stable [`AgentHandle`]s of the dense agents; saved with the store.
+    pub(crate) handles: HandleTable<Agent>,
     /// Global simulation time for this system.
     pub sim_time: f32,
     /// Running count of pathfinding calls this session, used for benchmark logging.
@@ -267,6 +273,7 @@ impl AgentSystem {
     pub fn new() -> Self {
         Self {
             agents: AgentVec::new(),
+            handles: HandleTable::default(),
             sim_time: 0.0,
             pathfind_count: AtomicU32::new(0),
             lane_buckets: Vec::new(),
@@ -299,6 +306,19 @@ impl AgentSystem {
             movement_query_shards: Vec::new(),
             movement_serial_query: TripQueryScratch::default(),
         }
+    }
+
+    /// Stable handle of agent `index`; agents appended to the store directly get theirs first.
+    pub(crate) fn agent_handle(&mut self, index: usize) -> AgentHandle {
+        self.handles.register_appended(self.agents.len());
+        self.handles.handle(index)
+    }
+
+    /// Current dense index of `handle`'s agent, or `None` once it has left the city.
+    pub(crate) fn resolve_agent(&self, handle: AgentHandle) -> Option<usize> {
+        self.handles
+            .resolve(handle)
+            .filter(|&index| index < self.agents.len())
     }
 
     /// Allocates a runtime-stable render ID for one newly inserted agent.

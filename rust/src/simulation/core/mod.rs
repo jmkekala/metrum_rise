@@ -4,6 +4,7 @@
 
 pub(crate) mod change_log;
 pub mod config;
+pub(crate) mod handles;
 pub(crate) mod sparse_chunk_grid;
 pub mod time;
 

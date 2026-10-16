@@ -197,7 +197,7 @@ impl ShipmentSystem {
                     destination: ShipmentEndpoint::OwaBorder(best_border),
                     carrier_class: CarrierClass::Truck,
                     status: ShipmentStatus::InTransit,
-                    carrier_agent_id: usize::MAX,
+                    carrier: crate::simulation::economy::agents::AgentHandle::NONE,
                     total_cost: total_revenue,
                     freight_cost: freight_cost(
                         best_eta,

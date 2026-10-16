@@ -11,6 +11,8 @@ use super::replenishment::{
     register_replenishment_failure,
 };
 use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::core::handles::HandleTable;
+use crate::simulation::economy::agents::AgentHandle;
 use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
@@ -144,10 +146,8 @@ pub struct Household {
     pub reserved_amount: f32,
     /// Reserved budget waiting to be transferred to the supplying store.
     pub reserved_total_cost: f32,
-    /// Selected household member carrying the active shopping request.
-    pub shopping_agent_id: usize,
-    /// Stable guard for `shopping_agent_id`, used to reject stale agent swap-remove slots.
-    pub shopping_agent_schedule_seed: u32,
+    /// Selected household member carrying the active shopping request; stale once it leaves.
+    pub(crate) shopping_agent: AgentHandle,
     /// Remaining operational-hour budget for the current shopping leg.
     pub shopping_timeout_hours_remaining: u16,
     /// Deterministic store-search continuation cursor used after failed replenishment attempts.
@@ -182,6 +182,8 @@ pub(crate) struct PendingHouseholdArrivals {
 pub struct HouseholdSystem {
     /// All known households. Agents reference these by index.
     pub households: Vec<Household>,
+    /// Stable handles of the dense households; saved with the store.
+    pub(crate) handles: HandleTable<Household>,
     /// Derived before each hourly demand pass; rebuilt from persisted arrival carriers.
     pub(crate) pending_arrivals: PendingHouseholdArrivals,
     pub(crate) job_funding: crate::simulation::economy::hiring::JobFunding,
@@ -229,6 +231,7 @@ impl HouseholdSystem {
     pub fn new() -> Self {
         Self {
             households: Vec::new(),
+            handles: HandleTable::default(),
             pending_arrivals: PendingHouseholdArrivals::default(),
             job_funding: Default::default(),
             member_count_scratch: Vec::new(),

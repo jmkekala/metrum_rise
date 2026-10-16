@@ -805,7 +805,6 @@ impl SimCore {
             self.demand.household_exit_policy(),
             &mut self.agents,
             &mut self.allocator,
-            &mut self.logistics,
         );
         self.demand
             .record_household_removal_execution(removed_households);

@@ -321,7 +321,6 @@ fn perf_contract_phase() {
         "logistics" => core.logistics.hourly_tick(
             &mut core.allocator,
             &mut core.agents,
-            &mut core.households,
             &core.transit_network,
             &core.region_graph,
             60,

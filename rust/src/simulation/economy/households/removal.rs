@@ -16,7 +16,6 @@ use crate::simulation::economy::definitions::{
     RuntimeEconomyCatalog, RuntimeEconomyTuning, load_runtime_economy_catalog,
     load_runtime_economy_tuning,
 };
-use crate::simulation::economy::logistics::ShipmentSystem;
 use rayon::prelude::*;
 
 /// Household-specific conditions for leaving after an unsuccessful rehousing period.
@@ -55,7 +54,6 @@ impl HouseholdSystem {
         exit_policy: HouseholdExitPolicy,
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
-        logistics: &mut ShipmentSystem,
     ) -> u32 {
         if households_to_remove_today == 0 || self.households.is_empty() {
             return 0;
@@ -126,9 +124,7 @@ impl HouseholdSystem {
         // The collection pass already visits agent indices in ascending order.
         agent_indices.reverse();
         for agent_idx in agent_indices.iter().copied() {
-            if let Some((old_idx, new_idx)) = agents.kill_agent(agent_idx, allocator, self) {
-                logistics.remap_carrier_agent_index(old_idx, new_idx, agents);
-            }
+            agents.kill_agent(agent_idx, allocator);
         }
 
         // Track current slot -> original household while descending removals can move the
@@ -210,6 +206,8 @@ impl HouseholdSystem {
                 -leaving,
             );
         }
+        self.handles
+            .swap_remove(household_id, self.households.len());
         self.households.swap_remove(household_id);
         if household_id < self.daily_ledgers.len() {
             self.daily_ledgers.swap_remove(household_id);

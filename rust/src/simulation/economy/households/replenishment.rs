@@ -19,6 +19,7 @@ use crate::simulation::economy::agents::tick::{
     estimate_building_origin_trip_seconds,
 };
 use crate::simulation::economy::agents::{
+    AgentHandle,
     ACTIVITY_HOME, ACTIVITY_SHOPPING, AgentSystem, TRANSIT_IN_BUILDING, age_group_can_shop,
 };
 use crate::simulation::economy::definitions::{
@@ -1123,7 +1124,7 @@ impl HouseholdSystem {
         shopping_leg_timeout_hours: u16,
         household_vat_rate: f32,
     ) -> f32 {
-        if !shopping_carrier_matches(&self.households[hid], hid, agents) {
+        let Some(agent_idx) = shopping_carrier(&self.households[hid], hid, agents) else {
             self.cancel_replenishment_before_pickup_with_ledger(
                 hid,
                 agents,
@@ -1133,7 +1134,7 @@ impl HouseholdSystem {
                 terminal_failure_count,
             );
             return 0.0;
-        }
+        };
         let store_idx = self.households[hid].reserved_store_building_id;
         if !valid_store_for_pickup(allocator, catalog, household_supply_resource, store_idx) {
             self.cancel_replenishment_before_pickup_with_ledger(
@@ -1146,7 +1147,6 @@ impl HouseholdSystem {
             );
             return 0.0;
         }
-        let agent_idx = self.households[hid].shopping_agent_id;
         if agents.transit[agent_idx] == TRANSIT_IN_BUILDING
             && agents.current_building[agent_idx] == store_idx
         {
@@ -1191,7 +1191,7 @@ impl HouseholdSystem {
         retry_cooldown_hours: u16,
         terminal_failure_count: u16,
     ) {
-        if !shopping_carrier_matches(&self.households[hid], hid, agents) {
+        let Some(agent_idx) = shopping_carrier(&self.households[hid], hid, agents) else {
             self.cancel_replenishment_after_pickup_with_ledger(
                 hid,
                 agents,
@@ -1199,8 +1199,7 @@ impl HouseholdSystem {
                 terminal_failure_count,
             );
             return;
-        }
-        let agent_idx = self.households[hid].shopping_agent_id;
+        };
         let home_idx = self.households[hid].home_building_id;
         if home_idx == usize::MAX {
             self.cancel_replenishment_after_pickup_with_ledger(
@@ -1491,8 +1490,7 @@ fn apply_replenishment_plan(
     {
         let household = &mut households[plan.household_id];
         household.replenishment_state = REPLENISHMENT_WAITING_FOR_SHOPPER;
-        household.shopping_agent_id = usize::MAX;
-        household.shopping_agent_schedule_seed = 0;
+        household.shopping_agent = AgentHandle::NONE;
         diagnostics.failed_no_shopper += 1;
         return;
     }
@@ -1581,8 +1579,7 @@ fn apply_replenishment_plan(
         household.reserved_store_building_id = store_idx;
         household.reserved_amount = amount;
         household.reserved_total_cost = total_cost;
-        household.shopping_agent_id = plan.shopper_agent_id;
-        household.shopping_agent_schedule_seed = agents.schedule_seed[plan.shopper_agent_id];
+        household.shopping_agent = agents.agent_handle(plan.shopper_agent_id);
         household.shopping_timeout_hours_remaining = leg_budget;
         household.replenishment_search_cursor = 0;
         household.replenishment_state = REPLENISHMENT_SHOPPING_TO_STORE;
@@ -1607,8 +1604,7 @@ pub(super) fn clear_replenishment_request(household: &mut Household) {
     household.reserved_store_building_id = usize::MAX;
     household.reserved_amount = 0.0;
     household.reserved_total_cost = 0.0;
-    household.shopping_agent_id = usize::MAX;
-    household.shopping_agent_schedule_seed = 0;
+    household.shopping_agent = AgentHandle::NONE;
     household.shopping_timeout_hours_remaining = 0;
 }
 
@@ -1694,15 +1690,11 @@ fn eligible_shopper_for_household(
         && agents.planned_target_building[agent_idx] == usize::MAX
 }
 
-fn shopping_carrier_matches(
-    household: &Household,
-    household_id: usize,
-    agents: &AgentSystem,
-) -> bool {
-    let agent_idx = household.shopping_agent_id;
-    agent_idx < agents.len()
-        && agents.household_id[agent_idx] == household_id
-        && agents.schedule_seed[agent_idx] == household.shopping_agent_schedule_seed
+// The household's live shopper, or `None` when it left the city or the household.
+fn shopping_carrier(household: &Household, household_id: usize, agents: &AgentSystem) -> Option<usize> {
+    agents
+        .resolve_agent(household.shopping_agent)
+        .filter(|&agent_idx| agents.household_id[agent_idx] == household_id)
 }
 
 fn valid_store_for_pickup(
@@ -1783,11 +1775,10 @@ pub(super) fn shopping_route_is_feasible(
 }
 
 fn schedule_shopper_home(household: &Household, agents: &mut AgentSystem, activity: u8) {
-    let agent_idx = household.shopping_agent_id;
-    if agent_idx >= agents.len()
-        || agents.schedule_seed[agent_idx] != household.shopping_agent_schedule_seed
-        || household.home_building_id == usize::MAX
-    {
+    let Some(agent_idx) = agents.resolve_agent(household.shopping_agent) else {
+        return;
+    };
+    if household.home_building_id == usize::MAX {
         return;
     }
     if agents.transit[agent_idx] == TRANSIT_IN_BUILDING

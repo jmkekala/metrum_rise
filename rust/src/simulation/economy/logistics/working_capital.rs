@@ -287,7 +287,7 @@ impl ShipmentSystem {
                 *value += goods_value;
             }
             if shipment.status == ShipmentStatus::InTransit
-                && shipment.carrier_agent_id != usize::MAX
+                && !shipment.carrier.is_none()
                 && let ShipmentEndpoint::Building(source) = shipment.source
                 && let Some(value) = capital.get_mut(source)
             {
@@ -311,7 +311,7 @@ mod tests {
             destination,
             carrier_class: CarrierClass::Truck,
             status: ShipmentStatus::InTransit,
-            carrier_agent_id: usize::MAX,
+            carrier: crate::simulation::economy::agents::AgentHandle::NONE,
             total_cost: 108.0,
             freight_cost: 8.0,
             eta_hours: 1,
@@ -333,7 +333,7 @@ mod tests {
             [0.0, 100.0],
             "source stock still exists before carrier dispatch"
         );
-        logistics.shipments[0].carrier_agent_id = 7;
+        logistics.shipments[0].carrier = crate::simulation::economy::agents::AgentHandle::from_parts(7, 0);
         logistics.write_freight_working_capital(&mut capital);
         assert_eq!(
             capital,
@@ -364,7 +364,7 @@ mod tests {
             ShipmentEndpoint::OwaBorder(1),
         );
         export.status = ShipmentStatus::InTransit;
-        export.carrier_agent_id = 7;
+        export.carrier = crate::simulation::economy::agents::AgentHandle::from_parts(7, 0);
         logistics.shipments.push(export);
         let mut capital = [0.0];
         logistics.write_freight_working_capital(&mut capital);

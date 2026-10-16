@@ -5,8 +5,10 @@ each system runs, entity handles, timed events, snapshot rules, the sim-frame bu
 simulation tiers. Economy and growth rules stay in [`economy.md`](economy.md) and
 [`demand.md`](demand.md); traffic movement stays in [`traffic.md`](traffic.md).
 
-**Status:** `SIM-02` in progress. `SIM-02-A` (guards and pre-refactor baseline) is done; see
-[its results](#sim-02-a-guards-and-pre-refactor-baseline). Until each migration step lands,
+**Status:** `SIM-02` in progress. `SIM-02-A` (guards and pre-refactor baseline) and `SIM-02-B`
+(save cutover and handles) are done; see the
+[`SIM-02-A` baseline](#sim-02-a-guards-and-pre-refactor-baseline) and the
+[step results](#step-results). Until each migration step lands,
 the current cadence in
 [economy.md § Time and cadence](economy.md#time-and-cadence) and
 [demand.md § Cadence and handoff](demand.md#cadence-and-handoff) remains authoritative for the
@@ -82,6 +84,34 @@ even at 32×. The cost problem is the peak, not the total, at today's sizes.
   indirection. Each such field keeps the existing remap path and is listed here when decided.
 - Saves store handles and the handle tables, so a loaded game resolves the same handles to the
   same entities.
+
+**Implemented in `SIM-02-B`** (`simulation/core/handles.rs`):
+
+- `HandleTable<K>` lives beside each store: `BuildingAllocator::building_handles`,
+  `HouseholdSystem::handles` and `AgentSystem::handles`. Lifecycle helpers update it on every
+  push and swap-remove. A store filled directly (loading, tests) gets handles for its untracked
+  trailing entities in dense order the next time the table is read or written, so the ~450
+  direct pushes in tests need no change. Freed slots are reused last-freed first. Saves write
+  every table to `entity_handle_slots` and `entity_handle_free`.
+- **Shipments** keep their stable `u64` id as the handle. Ids are never reused and shipments
+  are never swap-removed (`Vec` in id order, `retain` only), so a lookup by id is the
+  generation check.
+- **References moved to handles:** `Household::shopping_agent` and `Shipment::carrier`, the two
+  references other systems hold into the agent store. They replace the dense index plus
+  `schedule_seed` guard and the two manual remaps (`remap_shopper_agent_index`,
+  `remap_carrier_agent_index`). Undo re-inserts a removed carrier at its old dense index with a
+  new handle and re-binds its shipment.
+- **Fields that keep dense indices** (open question 2), each with its existing remap path:
+  - every agent SoA column (`home_building`, `work_building`, `current_building`,
+    `target_building`, `planned_target_building`, `household_id`, the departure and schedule
+    caches), because the per-frame movement and schedule passes read them (`PERF-06`);
+  - building references held by households (`home_building_id`, `reserved_store_building_id`),
+    shipments (endpoints, request-failure keys) and production sites. They move to handles
+    when their owning system moves to phases and queues (`SIM-02-E`–`SIM-02-J`);
+  - allocator indexes (`zone_index`, vacancy and admission order, chunks, entrances, sites)
+    and caches keyed by dense index that are dropped or remapped on every building-reference
+    revision (`JobFunding` books, route and workplace caches). These are the owning store's
+    own derived state.
 
 ## Scheduler
 
@@ -361,6 +391,37 @@ RAYON_NUM_THREADS=8 python3 tools/sim02_gate.py envelope determinism perf07 \
   reloaded city diverged within an hour. The load repair now keeps the plan when the agent
   replans from the node, as the running game does.
 
+### Step results
+
+Each step's gate, run with the commands of [`SIM-02-A`](#sim-02-a-guards-and-pre-refactor-baseline)
+on a fresh `$ARTIFACTS` directory.
+
+#### `SIM-02-B` — save cutover and handles (2026-10-16)
+
+- **Save format 87**, the only version that loads. Every legacy `version` branch and the
+  version-57 lane restore are deleted. The one committed save fixture
+  (`benchmarks/fixtures/kuopio-terrain`, version 59, roads and terrain only) was re-saved with
+  the `SIM-02-A` build; its original road tables (nodes, edges, edge geometry, lane connections
+  and saved lanes, with zero frontage delays as the old loader assumed) were copied back so
+  loading still repairs its rejected junction, and the two renamed reference columns and the
+  handle tables were added by hand. `placements.json` pins the new file hash.
+- **Identical:** all four envelope workloads reproduce the `SIM-02-A` fingerprints for every
+  one of the 14 days (`tools/sim02_gate.py envelope --identical`); determinism checks pass.
+- **`PERF-07`** (release `$TEST_BINARY`, `RAYON_NUM_THREADS=8`, `--perf07-baseline` against
+  `SIM-02-A`): every tier within noise. Max / p99 in ms, `SIM-02-A` in parentheses: 10k 1×
+  264.8 / 7.59 (214.1 / 7.81), 10k 32× 264.6 / 10.92 (266.7 / 10.28), 30k 1× 540.0 / 8.93
+  (636.3 / 8.94), 30k 32× 600.4 / 32.04 (637.4 / 33.71), 100k 1× 2,646 / 19.70 (2,547 / 20.30),
+  100k 32× 2,043 / 178.51 (2,343 / 178.89).
+- **`PERF-01`**, two alternating runs per build (hour / day means in ms, `SIM-02-A` first):
+  baseline 10k 22.1–25.0 / 8.0–12.2 against 19.6–22.0 / 8.0–8.5; baseline 30k 68.5–78.0 /
+  54.0–62.1 against 71.8–75.7 / 59.0–67.3; fiscal 10k 34.0–41.8 / 23.6–32.4 against
+  39.0–41.7 / 27.2; fiscal 30k 85.6–105.6 / 70.2–88.4 against 94.0–102.0 / 73.6–77.3. One
+  build varies by up to 50% between runs, so `SIM-02-B` is inside the `SIM-02-A` spread on
+  every workload.
+- **Tests:** 2,425 release library tests and `./run.sh --test` pass; clippy is clean. New: the
+  handle table (stale handles, displacing undo inserts, save round trip) and a bulldoze undo
+  that re-binds a restored carrier.
+
 ### Phase inventory
 
 Every phase of today's operational hour, hourly demand pass and daily tick, and where it goes.
@@ -423,8 +484,8 @@ Per-frame costs found by the `SIM-02-A` `PERF-07` baseline, outside the boundary
 1. **Demand planning slicing.** The planner works directly on the live books and rolls them back
    through journals. Options: separate slots per zone type, or per-district planning against the
    rolling snapshot. Decide in `SIM-02-I` with `PERF-07` data.
-2. **Hot dense references.** Which agent fields keep dense indices; decide in `SIM-02-B` from the
-   `PERF-06` contract.
+2. **Hot dense references.** Resolved in `SIM-02-B`; see
+   [Entity handles](#entity-handles).
 3. **Pure-job latency and pool size** per job.
 4. **Behaviour envelope.** Resolved 2026-10-15; see
    [Behaviour envelope](#behaviour-envelope-sim-02-a).
@@ -460,3 +521,18 @@ alternatives and the evidence. The user reviews these on return.
   400 m cross-street spacing leaves too few lots).
 - **`SIM-02-A` — save repair fix.** Fixed in this step rather than worked around: the `PERF-07`
   benchmark needs the 100k snapshot, and the determinism contract requires exact continuation.
+- **`SIM-02-B` — which references became handles.** Converted: the shopper and carrier
+  references, the only ones other systems keep into the agent store. They needed a seed guard
+  and two hand-written remaps. Kept dense, with their remap paths: agent SoA columns (read
+  by the per-frame movement pass, `PERF-06`), and the building references of households,
+  shipments and sites. Alternative: convert those building references now (about 500 lines in
+  50 files, half of them tests) at a step that must stay identical, with no behavioural gain;
+  they move when `SIM-02-E`–`SIM-02-J` rewrite the systems that own them.
+- **`SIM-02-B` — direct store pushes.** Tests push about 450 entities straight into the
+  stores. The handle table registers untracked trailing entities in dense order instead of
+  requiring every push to go through a helper; the order is the one the helpers would give.
+- **`SIM-02-B` — fixture conversion.** The version-59 Kuopio terrain fixture was converted once
+  rather than keeping any legacy loader: re-saved with the `SIM-02-A` build, with the original
+  road tables restored (a plain re-save stores the load-time junction repair, which one test
+  exists to exercise), two columns renamed and empty handle tables added. It has no buildings,
+  households, agents or shipments.

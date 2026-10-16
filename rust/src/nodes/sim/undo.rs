@@ -249,7 +249,9 @@ impl SimCore {
         }
 
         let households = self.households.capture_building_undo(building_idx);
-        let logistics = self.logistics.capture_building_undo(building_idx);
+        let logistics = self
+            .logistics
+            .capture_building_undo(building_idx, &self.agents);
         let rehoused_household_count = households
             .records
             .iter()
@@ -783,8 +785,13 @@ impl SimCore {
             self.invalidate_vegetation_over(bounds);
         }
 
+        // Each carrier returns to its old dense slot with a new handle; the agent it displaces
+        // keeps its handle at the end of the store.
+        let mut restored_carriers = Vec::with_capacity(undo.removed_carriers.len());
         for (carrier_idx, carrier) in undo.removed_carriers {
             let current_len = self.agents.agents.len();
+            let handle = self.agents.handles.insert_displacing(carrier_idx, current_len);
+            restored_carriers.push((carrier.freight_shipment_id, handle));
             if carrier_idx == current_len {
                 self.agents.agents.push(carrier);
                 continue;
@@ -796,8 +803,6 @@ impl SimCore {
                 .expect("restored carrier slot")
                 .to_owned();
             self.agents.agents.push(moved);
-            self.logistics
-                .remap_carrier_agent_index(carrier_idx, current_len, &self.agents);
             self.agents.agents.replace(carrier_idx, carrier);
         }
         for (agent_idx, agent) in undo.agents {
@@ -807,6 +812,9 @@ impl SimCore {
 
         self.households.restore_building_undo(undo.households);
         self.logistics.restore_building_undo(undo.logistics);
+        for (shipment_id, handle) in restored_carriers {
+            self.logistics.rebind_carrier(shipment_id, handle);
+        }
         self.register_service_input_capacity(building_idx);
         if let Some(lot) = undo.cell_lot {
             self.zoning.restore_cell_lot_removal_undo(lot);

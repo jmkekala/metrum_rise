@@ -177,21 +177,3 @@ fn malformed_or_duplicate_curve_sources_are_rejected() {
         fs::remove_file(path).unwrap();
     }
 }
-
-#[test]
-fn version_65_cell_save_loads_without_curve_source_table() {
-    let (graph, zoning, allocator) = fixture(0.0, false);
-    let path = temp_path("pre_curve_source");
-    write_snapshot(&path, &graph, &zoning, &allocator);
-    let conn = Connection::open(&path).unwrap();
-    conn.execute_batch("UPDATE save_meta SET version = 65; DROP TABLE zoning_cell_curve_sources;")
-        .unwrap();
-    drop(conn);
-    let loaded = load_from_sqlite(&path, &allocator.registry).unwrap();
-    fs::remove_file(path).unwrap();
-    assert_eq!(
-        loaded.zoning.cells.saved_cells(),
-        zoning.cells.saved_cells()
-    );
-    assert_eq!(loaded.zoning.parcels().len(), zoning.parcels().len());
-}

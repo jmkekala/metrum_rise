@@ -38,22 +38,6 @@ impl HouseholdSystem {
             });
     }
 
-    /// Repairs the moved resident's active shopper reference in O(1) after an agent swap-remove.
-    pub(crate) fn remap_shopper_agent_index(
-        &mut self,
-        old_idx: usize,
-        new_idx: usize,
-        agents: &AgentSystem,
-    ) {
-        let household_id = agents.household_id[new_idx];
-        if let Some(household) = self.households.get_mut(household_id)
-            && household.shopping_agent_id == old_idx
-            && household.shopping_agent_schedule_seed == agents.schedule_seed[new_idx]
-        {
-            household.shopping_agent_id = new_idx;
-        }
-    }
-
     pub(super) fn debug_validate_agent_household_refs(&self, _agents: &AgentSystem) {
         #[cfg(debug_assertions)]
         {

@@ -35,6 +35,7 @@ pub(crate) use site::{BuildingSiteSurfaceClient, SitePavingPartition};
 use crate::assets::{AssetRegistry, ZoneClass};
 use crate::debug_log;
 use crate::simulation::agriculture::FieldClearanceIndex;
+use crate::simulation::core::handles::HandleTable;
 use crate::simulation::economy::definitions::{
     EconomyProfileRuntime, ResourceRuntimeId, RuntimeEconomyCatalog, load_runtime_economy_catalog,
 };
@@ -324,6 +325,8 @@ impl Default for BuildingEntrance {
 pub struct BuildingAllocator {
     /// All currently placed buildings.
     pub buildings: Vec<Building>,
+    /// Stable handles of the dense buildings; saved with the store.
+    pub(crate) building_handles: HandleTable<Building>,
     /// Set to `true` when the building list changes, signalling renderers to refresh.
     pub dirty: bool,
     /// Per-edge frontage occupancy tracker.
@@ -688,6 +691,7 @@ impl BuildingAllocator {
     pub fn new() -> Self {
         Self {
             buildings: Vec::new(),
+            building_handles: HandleTable::default(),
             dirty: false,
             edge_occupancy: HashMap::new(),
             zone_index: [const { Vec::new() }; 3],
@@ -856,6 +860,7 @@ impl BuildingAllocator {
         let had_sites = !self.building_sites.is_empty();
         self.site_feasibility = placement::SiteFeasibilityCache::default();
         self.buildings.clear();
+        self.building_handles.clear();
         self.field_clearance.clear();
         self.pending_production_site_removals.clear();
         self.pending_yards.clear();

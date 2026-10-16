@@ -392,7 +392,7 @@ fn vegetation_invalid_inputs_store_nothing_and_empty_removal_is_sparse() {
 }
 
 #[test]
-fn vegetation_save_round_trip_reproduces_scatter_and_v60_loads_empty_delta() {
+fn vegetation_save_round_trip_reproduces_scatter() {
     let mut core = core();
     // Full world setup belongs here because this test exercises the actual save bridge.
     core.create_blank_world_internal(2560.0, 2560.0, 10.0, 640.0, 20.0)
@@ -434,9 +434,6 @@ fn vegetation_save_round_trip_reproduces_scatter_and_v60_loads_empty_delta() {
     }
     core.load_game_internal(path.to_str().unwrap()).unwrap();
     assert_eq!([scatter(&core, true), scatter(&core, false)], before);
-    conn.execute_batch("UPDATE save_meta SET version = 60; DROP TABLE vegetation_removals; DROP TABLE vegetation_additions;").unwrap();
-    core.load_game_internal(path.to_str().unwrap()).unwrap();
-    assert_eq!(core.vegetation_edits.len(), 0);
     drop(conn);
     std::fs::remove_file(path).unwrap();
 }

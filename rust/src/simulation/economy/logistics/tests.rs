@@ -143,7 +143,11 @@ fn returning_shipments_close_without_changing_settled_cargo_or_unrelated_agents(
             destination: ShipmentEndpoint::Building(0),
             carrier_class: CarrierClass::Truck,
             status: ShipmentStatus::Returning,
-            carrier_agent_id: carrier_id,
+            carrier: if carrier_id == usize::MAX {
+                crate::simulation::economy::agents::AgentHandle::NONE
+            } else {
+                agents.agent_handle(carrier_id)
+            },
             total_cost: 200.0,
             freight_cost: 0.0,
             eta_hours: 1,
@@ -158,7 +162,7 @@ fn returning_shipments_close_without_changing_settled_cargo_or_unrelated_agents(
                 &RegionGraph::new(),
             );
             assert_eq!(shipments.shipments[0].status, ShipmentStatus::Fulfilled);
-            assert_eq!(shipments.shipments[0].carrier_agent_id, usize::MAX);
+            assert!(shipments.shipments[0].carrier.is_none());
             assert_eq!(agents.len(), expected_agents);
             assert_eq!(allocator.buildings[0].operating_budget, 800.0);
             assert_eq!(allocator.buildings[0].inventory_units(resource), 40.0);
@@ -204,7 +208,7 @@ fn stale_shipment_carrier_cannot_remove_an_unrelated_agent() {
                 destination: ShipmentEndpoint::Building(0),
                 carrier_class: CarrierClass::Truck,
                 status: ShipmentStatus::InTransit,
-                carrier_agent_id: unrelated,
+                carrier: agents.agent_handle(unrelated),
                 total_cost: 200.0,
                 freight_cost: 0.0,
                 eta_hours: 1,
@@ -215,7 +219,6 @@ fn stale_shipment_carrier_cannot_remove_an_unrelated_agent() {
                     0,
                     &mut allocator,
                     &mut agents,
-                    &mut crate::simulation::economy::households::HouseholdSystem::new(),
                     &mut 0.0,
                 );
             } else {
@@ -251,7 +254,7 @@ fn returning_carrier_fixture(count: usize) -> (ShipmentSystem, AgentSystem) {
             destination: ShipmentEndpoint::Building(0),
             carrier_class: CarrierClass::Truck,
             status: ShipmentStatus::Returning,
-            carrier_agent_id: agent,
+            carrier: agents.agent_handle(agent),
             total_cost: 200.0,
             freight_cost: 0.0,
             eta_hours: u16::MAX,
@@ -319,58 +322,26 @@ fn carrier_cleanup_preserves_surviving_links_across_swaps() {
         assert_eq!(agents.len(), 59 + usize::from(resident_at_end));
         for shipment in &shipments.shipments {
             if shipment.status == ShipmentStatus::Returning {
-                assert!(agents.freight_carrier_matches(shipment.carrier_agent_id, shipment.id));
+                assert!(
+                    agents
+                        .resolve_agent(shipment.carrier)
+                        .is_some_and(|carrier| agents.freight_carrier_matches(carrier, shipment.id))
+                );
             } else {
                 assert_eq!(shipment.status, ShipmentStatus::Fulfilled);
-                assert_eq!(shipment.carrier_agent_id, usize::MAX);
+                assert!(shipment.carrier.is_none());
             }
         }
-    }
-}
-
-#[test]
-#[ignore = "manual matched release timing of carrier reference remapping"]
-fn benchmark_carrier_swap_remap() {
-    use std::{hint::black_box, time::Instant};
-    for count in [1_024, 8_192, 65_536] {
-        let (mut shipments, mut agents) = returning_carrier_fixture(count);
-        let spare = agents.spawn_housed_agent(usize::MAX, 0.0, 0.0);
-        let last = count - 1;
-        let mut samples = [0.0; 11];
-        for sample in &mut samples {
-            let start = Instant::now();
-            for _ in 0..128 {
-                // Isolate reference repair from the SoA record-removal/setup cost.
-                for (old, new) in [(last, spare), (spare, last)] {
-                    agents.freight_shipment_id.swap(old, new);
-                    agents.vehicle_type.swap(old, new);
-                    shipments.remap_carrier_agent_index(black_box(old), black_box(new), &agents);
-                }
-            }
-            *sample = start.elapsed().as_secs_f64() * 1_000.0;
-        }
-        assert!(
-            shipments
-                .shipments
-                .iter()
-                .enumerate()
-                .all(|(idx, shipment)| shipment.carrier_agent_id == idx)
-        );
-        samples.sort_by(f64::total_cmp);
-        eprintln!(
-            "carrier_swap_remap shipments={count} swaps=256 median_ms={:.3}",
-            samples[5]
-        );
     }
 }
 
 #[test]
 fn restoring_freight_undo_preserves_shipment_id_order_after_other_jobs_close() {
-    let (mut shipments, _) = returning_carrier_fixture(8);
+    let (mut shipments, agents) = returning_carrier_fixture(8);
     for (idx, shipment) in shipments.shipments.iter_mut().enumerate() {
         shipment.destination = ShipmentEndpoint::Building(idx % 2);
     }
-    let undo = shipments.capture_building_undo(1);
+    let undo = shipments.capture_building_undo(1, &agents);
     shipments
         .shipments
         .retain(|s| s.destination == ShipmentEndpoint::Building(0) && s.id != 1);
@@ -391,7 +362,6 @@ macro_rules! logistics_tick {
         $shipments.hourly_tick(
             $allocator,
             &mut agents,
-            &mut crate::simulation::economy::households::HouseholdSystem::new(),
             $network,
             $graph,
             $minute,
@@ -452,7 +422,6 @@ fn progress_shipments_for_test(
     shipments.progress_shipments(
         allocator,
         agents,
-        &mut crate::simulation::economy::households::HouseholdSystem::new(),
         network,
         graph,
         &mut treasury_balance,
@@ -462,7 +431,8 @@ fn progress_shipments_for_test(
 
 fn mark_carrier_arrived(shipments: &ShipmentSystem, agents: &mut AgentSystem, shipment_idx: usize) {
     let shipment = &shipments.shipments[shipment_idx];
-    mark_carrier_at_endpoint(agents, shipment.carrier_agent_id, shipment.destination);
+    let carrier = agents.resolve_agent(shipment.carrier).unwrap_or(usize::MAX);
+    mark_carrier_at_endpoint(agents, carrier, shipment.destination);
 }
 
 fn mark_carrier_returned(
@@ -471,7 +441,8 @@ fn mark_carrier_returned(
     shipment_idx: usize,
 ) {
     let shipment = &shipments.shipments[shipment_idx];
-    mark_carrier_at_endpoint(agents, shipment.carrier_agent_id, shipment.source);
+    let carrier = agents.resolve_agent(shipment.carrier).unwrap_or(usize::MAX);
+    mark_carrier_at_endpoint(agents, carrier, shipment.source);
 }
 
 fn mark_carrier_at_endpoint(
@@ -4614,7 +4585,6 @@ fn owa_border_fallback_creates_import_shipment() {
     shipments.hourly_tick(
         &mut allocator,
         &mut agents,
-        &mut crate::simulation::economy::households::HouseholdSystem::new(),
         &network,
         &graph,
         480,
@@ -4693,7 +4663,6 @@ fn city_service_owa_fuel_import_debits_treasury_not_building_budget() {
     shipments.hourly_tick(
         &mut allocator,
         &mut agents,
-        &mut crate::simulation::economy::households::HouseholdSystem::new(),
         &network,
         &graph,
         480,
@@ -4733,7 +4702,6 @@ fn city_service_owa_fuel_import_debits_treasury_not_building_budget() {
     shipments.progress_shipments(
         &mut allocator,
         &mut agents,
-        &mut crate::simulation::economy::households::HouseholdSystem::new(),
         &network,
         &graph,
         &mut treasury_balance,
@@ -5159,7 +5127,7 @@ fn supplier_index_lists_only_suppliers_with_an_unreserved_batch() {
         destination: ShipmentEndpoint::Building(3),
         carrier_class: CarrierClass::Truck,
         status: ShipmentStatus::InTransit,
-        carrier_agent_id: usize::MAX,
+        carrier: crate::simulation::economy::agents::AgentHandle::NONE,
         total_cost: 0.0,
         freight_cost: 0.0,
         eta_hours: 1,
@@ -5368,7 +5336,7 @@ fn deserted_destination_rejects_inbound_delivery() {
         destination: ShipmentEndpoint::Building(0),
         carrier_class: CarrierClass::Truck,
         status: ShipmentStatus::InTransit,
-        carrier_agent_id: usize::MAX,
+        carrier: crate::simulation::economy::agents::AgentHandle::NONE,
         total_cost: 600.0,
         freight_cost: 0.0,
         eta_hours: 1,
@@ -5420,7 +5388,7 @@ fn under_construction_destination_rejects_inbound_delivery() {
         destination: ShipmentEndpoint::Building(0),
         carrier_class: CarrierClass::Truck,
         status: ShipmentStatus::InTransit,
-        carrier_agent_id: usize::MAX,
+        carrier: crate::simulation::economy::agents::AgentHandle::NONE,
         total_cost: 600.0,
         freight_cost: 0.0,
         eta_hours: 1,
@@ -5485,7 +5453,7 @@ fn deserted_local_source_releases_reserved_delivery() {
         destination: ShipmentEndpoint::Building(1),
         carrier_class: CarrierClass::Truck,
         status: ShipmentStatus::InTransit,
-        carrier_agent_id: usize::MAX,
+        carrier: crate::simulation::economy::agents::AgentHandle::NONE,
         total_cost: 600.0,
         freight_cost: 0.0,
         eta_hours: 1,
@@ -5634,7 +5602,6 @@ fn destination_removal_restores_dispatched_local_source_stock() {
         1,
         &mut allocator,
         &mut agents,
-        &mut crate::simulation::economy::households::HouseholdSystem::new(),
         &mut 0.0,
     );
 
@@ -5723,7 +5690,6 @@ fn endpoint_removal_does_not_reverse_already_settled_sale() {
             removed,
             &mut allocator,
             &mut agents,
-            &mut crate::simulation::economy::households::HouseholdSystem::new(),
             &mut 0.0,
         );
         assert_eq!(allocator.buildings[1].operating_budget, buyer_budget);
@@ -5793,7 +5759,7 @@ fn building_removal_refunds_unsettled_city_freight_to_its_payer() {
             destination: ShipmentEndpoint::Building(1),
             carrier_class: CarrierClass::Truck,
             status: ShipmentStatus::InTransit,
-            carrier_agent_id: usize::MAX,
+            carrier: crate::simulation::economy::agents::AgentHandle::NONE,
             total_cost: 800.0,
             freight_cost: 0.0,
             eta_hours: 1,
@@ -5807,7 +5773,6 @@ fn building_removal_refunds_unsettled_city_freight_to_its_payer() {
             removed,
             &mut allocator,
             &mut agents,
-            &mut crate::simulation::economy::households::HouseholdSystem::new(),
             &mut treasury,
         );
 
@@ -5819,7 +5784,6 @@ fn building_removal_refunds_unsettled_city_freight_to_its_payer() {
             removed,
             &mut allocator,
             &mut agents,
-            &mut crate::simulation::economy::households::HouseholdSystem::new(),
             &mut treasury,
         );
         assert_eq!(treasury, 2_000.0);
@@ -6424,7 +6388,6 @@ fn incoming_machinery_factory_can_start_on_paid_owa_deliveries() {
     shipments.hourly_tick(
         &mut allocator,
         &mut agents,
-        &mut crate::simulation::economy::households::HouseholdSystem::new(),
         &network,
         &graph,
         480,
@@ -6446,7 +6409,6 @@ fn incoming_machinery_factory_can_start_on_paid_owa_deliveries() {
     shipments.progress_shipments(
         &mut allocator,
         &mut agents,
-        &mut crate::simulation::economy::households::HouseholdSystem::new(),
         &network,
         &graph,
         &mut treasury,

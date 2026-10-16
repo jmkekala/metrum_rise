@@ -271,7 +271,7 @@ fn snapshot_test_building(
 }
 
 #[test]
-fn pending_household_composition_survives_save_and_migrates_legacy_carriers() {
+fn pending_household_composition_survives_save() {
     let (graph, edge) = snapshot_test_graph();
     let mut allocator = BuildingAllocator::new();
     let asset = register_test_asset(
@@ -292,21 +292,11 @@ fn pending_household_composition_survives_save_and_migrates_legacy_carriers() {
     let tx = conn.transaction().unwrap();
     agents::save_agents(&tx, &agents, &graph, &TransitNetwork::new(), &maps).unwrap();
     tx.commit().unwrap();
-    let restored = agents::load_agents(&conn, 0.0, SAVE_VERSION).unwrap();
+    let restored = agents::load_agents(&conn, 0.0).unwrap();
     assert_eq!(restored.pending_household_composition(carrier), approved);
     conn.execute("UPDATE agents SET pending_household_adults = 7", [])
         .unwrap();
-    assert!(agents::load_agents(&conn, 0.0, SAVE_VERSION).is_err());
-    conn.execute_batch(
-        "ALTER TABLE agents DROP COLUMN pending_household_adults;
-        ALTER TABLE agents DROP COLUMN pending_household_elders;",
-    )
-    .unwrap();
-    let legacy = agents::load_agents(&conn, 0.0, 71).unwrap();
-    assert_eq!(
-        legacy.pending_household_composition(carrier),
-        crate::simulation::economy::agents::household_age_composition(0, carrier, 6)
-    );
+    assert!(agents::load_agents(&conn, 0.0).is_err());
 }
 
 #[test]
@@ -343,7 +333,7 @@ fn extractor_load_rejects_invalid_depletion_without_clamping() {
             params![total, extracted],
         )
         .unwrap();
-        let result = world::load_resource_extraction(&conn, 1, SAVE_VERSION);
+        let result = world::load_resource_extraction(&conn, 1);
         assert_eq!(
             result.is_ok(),
             valid,
@@ -472,8 +462,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         reserved_store_building_id: 0,
         reserved_amount: 2.5,
         reserved_total_cost: 15.0,
-        shopping_agent_id: 0,
-        shopping_agent_schedule_seed: 1,
+        shopping_agent: crate::simulation::economy::agents::AgentHandle::from_parts(0, 1),
         shopping_timeout_hours_remaining: 4,
         replenishment_search_cursor: 24,
         stay_failure_days: 1,
@@ -510,7 +499,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         destination: ShipmentEndpoint::Building(0),
         carrier_class: CarrierClass::Truck,
         status: ShipmentStatus::InTransit,
-        carrier_agent_id: usize::MAX,
+        carrier: crate::simulation::economy::agents::AgentHandle::NONE,
         total_cost: 640.0,
         freight_cost: 16.0,
         eta_hours: 1,
@@ -908,7 +897,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         [],
     )
     .unwrap();
-    if agents::load_agents(&conn, 0.0, SAVE_VERSION).is_ok() {
+    if agents::load_agents(&conn, 0.0).is_ok() {
         accepted_corruptions.push("agent path sequence gap".to_owned());
     }
     conn.execute(
@@ -963,18 +952,6 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     }
     conn.execute("UPDATE shipments SET freight_cost = 16", [])
         .unwrap();
-    // A border job saved while queued for gateway capacity dispatches on load.
-    conn.execute("UPDATE shipments SET status = 0, queued_hours = 5", [])
-        .unwrap();
-    let dispatched = load_from_sqlite(&path, &allocator.registry).expect("load queued border job");
-    assert_eq!(
-        dispatched.logistics.shipments[0].status,
-        ShipmentStatus::InTransit
-    );
-    assert_eq!(dispatched.logistics.shipments[0].queued_hours, 0);
-    conn.execute("UPDATE shipments SET status = 1, queued_hours = 0", [])
-        .unwrap();
-    // Offsets saved before version 84 cluster in alternate hours and are recomputed (`ECON-19`).
     conn.execute("UPDATE households SET replenishment_offset_hours = 23", [])
         .unwrap();
     let current = load_from_sqlite(&path, &allocator.registry).expect("load current offsets");
@@ -982,139 +959,13 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         current.households.households[0].replenishment_offset_hours,
         23
     );
-    conn.execute("UPDATE save_meta SET version = 83", [])
-        .unwrap();
-    let migrated = load_from_sqlite(&path, &allocator.registry).expect("load old offsets");
-    assert_eq!(
-        migrated.households.households[0].replenishment_offset_hours,
-        crate::simulation::economy::households::stable_replenishment_offset_hours(0, 0)
-    );
-    conn.execute("UPDATE save_meta SET version = ?1", [SAVE_VERSION])
-        .unwrap();
-    // Version 69 stores food/grain bundles and larger raw-metal bundles. Convert quantities
-    // once at the read boundary, retaining all money and unchanged household supply quantities.
-    conn.execute("UPDATE save_meta SET version = 69", [])
-        .unwrap();
-    conn.execute("ALTER TABLE buildings DROP COLUMN electricity_usage", [])
-        .unwrap();
-    conn.execute("ALTER TABLE households DROP COLUMN electricity_account", [])
-        .unwrap();
-    conn.execute("DROP TABLE electricity_day_state", [])
-        .unwrap();
-    conn.execute(
-        "ALTER TABLE city_budget_history DROP COLUMN electricity_consumption_cost",
-        [],
-    )
-    .unwrap();
-    let old_power = load_from_sqlite(&path, &allocator.registry).unwrap();
-    assert_eq!(
-        old_power.resource_extraction.sites()[0].reserve_density_kg_per_m2,
-        6.0
-    );
-    assert!(
-        (old_power.allocator.buildings[0].daily_power_service_units - 78.0 / 3.6).abs() < 0.001
-    );
-    assert!((old_power.budget_history[0].power_produced - 70.0 / 3.6).abs() < 0.001);
-    assert_eq!(
-        old_power.households.households[0].power_arrears.total(),
-        0.0
-    );
-    assert_eq!(
-        old_power.households.daily_ledgers()[0]
-            .electricity
-            .consumed_kwh,
-        0.0
-    );
-    conn.execute("UPDATE shipments SET resource_runtime_id = 2", [])
-        .unwrap();
-    conn.execute("INSERT INTO building_inventories(building_id, resource_runtime_id, amount) VALUES (0, 8, 12)", []).unwrap();
-    // Older quota ledgers are ignored; old jobs keep their already agreed zero carrier fee.
-    conn.execute_batch(
-        "CREATE TABLE owa_export_saturation(resource_runtime_id INTEGER, units REAL);
-        INSERT INTO owa_export_saturation VALUES (2, 120);
-        ALTER TABLE shipments DROP COLUMN freight_cost;",
-    )
-    .unwrap();
-    let kg_save = load_from_sqlite(&path, &allocator.registry).unwrap();
-    assert_eq!(kg_save.allocator.buildings[0].inventory_units(2), 52.5);
-    assert_eq!(kg_save.allocator.buildings[0].inventory_units(8), 30.0);
-    assert_eq!(kg_save.logistics.shipments[0].amount, 100.0);
-    assert_eq!(
-        kg_save.logistics.shipments[0].total_cost,
-        loaded.logistics.shipments[0].total_cost
-    );
-    assert_eq!(kg_save.logistics.shipments[0].freight_cost, 0.0);
-    assert_eq!(
-        kg_save.households.households[0].stock,
-        loaded.households.households[0].stock
-    );
-    assert_eq!(kg_save.treasury.balance, loaded.treasury.balance);
-    conn.execute("UPDATE shipments SET amount = 30000", [])
+    // `SIM-02` cut over the format: a save of any other version must not load.
+    conn.execute("UPDATE save_meta SET version = ?1", [SAVE_VERSION - 1])
         .unwrap();
     assert!(
         load_from_sqlite(&path, &allocator.registry).is_err(),
-        "one carrier cannot restore an oversized load"
+        "an older save must not load"
     );
-    conn.execute(
-        "UPDATE shipments SET resource_runtime_id = 1, amount = 80",
-        [],
-    )
-    .unwrap();
-    conn.execute(
-        "DELETE FROM building_inventories WHERE resource_runtime_id = 8",
-        [],
-    )
-    .unwrap();
-    conn.execute(
-        "DELETE FROM owa_export_saturation WHERE resource_runtime_id = 2",
-        [],
-    )
-    .unwrap();
-
-    // A save written before the pin has no `variant` column at all. Reading one must not name
-    // it, or every existing city fails to open on the format that added it.
-    conn.execute("UPDATE save_meta SET version = 62", [])
-        .unwrap();
-    conn.execute("ALTER TABLE vegetation_additions DROP COLUMN variant", [])
-        .unwrap();
-    let legacy = load_from_sqlite(&path, &allocator.registry).expect("load a pre-pin save");
-    let (_, added) = legacy.vegetation_edits.cell(planted);
-    assert_eq!(
-        added,
-        [authored(VARIANT_FROM_SEED), authored(VARIANT_FROM_SEED)],
-        "a plant authored before the pin existed keeps the renderer's own choice"
-    );
-
-    for (column, _) in payment_fields {
-        conn.execute(&format!("ALTER TABLE households DROP COLUMN {column}"), [])
-            .unwrap();
-    }
-    // Older files still carry retired pedestrian storage; the current reader ignores it.
-    conn.execute(
-        "ALTER TABLE agents ADD COLUMN pedestrian_side INTEGER NOT NULL DEFAULT 0",
-        [],
-    )
-    .unwrap();
-    conn.execute("CREATE TABLE agent_ped_steps(agent_id INTEGER, step_index INTEGER, edge_id INTEGER, forward INTEGER, side INTEGER)", []).unwrap();
-    // Older saves contain no unsettled-payment fields; only pre-59 saves lack a camera.
-    for version in [60, 59, 58, 57] {
-        if version == 58 {
-            conn.execute("DROP TABLE camera_state", []).unwrap();
-        }
-        conn.execute("UPDATE save_meta SET version = ?1", [version])
-            .unwrap();
-        let legacy = load_from_sqlite(&path, &allocator.registry).unwrap();
-        assert_eq!(legacy.camera, (version >= 59).then_some(camera));
-        let ledger = legacy.households.daily_ledgers().first().unwrap();
-        assert_eq!(ledger.power_consumption_cost, 0.0);
-        assert_eq!(ledger.water_consumption_cost, 0.0);
-        assert_eq!(ledger.sewage_consumption_cost, 0.0);
-    }
-    // A save written before the generator was parameterised carries no table, so it keeps the
-    // forest it was built in rather than regenerating a different one under an existing city.
-    conn.execute("DROP TABLE vegetation_config", []).unwrap();
-    let legacy = load_from_sqlite(&path, &allocator.registry).expect("load without vegetation");
-    assert_eq!(legacy.vegetation, VegetationConfig::default());
     drop(conn);
     fs::remove_file(&path).ok();
 
@@ -1206,10 +1057,9 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         loaded.households.households[0].replenishment_failure_count,
         1
     );
-    assert_eq!(loaded.households.households[0].shopping_agent_id, 0);
     assert_eq!(
-        loaded.households.households[0].shopping_agent_schedule_seed,
-        1
+        loaded.households.households[0].shopping_agent,
+        crate::simulation::economy::agents::AgentHandle::from_parts(0, 1)
     );
     assert_eq!(
         loaded.households.households[0].shopping_timeout_hours_remaining,

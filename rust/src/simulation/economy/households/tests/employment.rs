@@ -1743,7 +1743,7 @@ fn live_hiring_and_admission_keep_jobs_after_paid_stock_and_payroll() {
         destination: ShipmentEndpoint::Building(0),
         carrier_class: CarrierClass::Truck,
         status: ShipmentStatus::InTransit,
-        carrier_agent_id: 7,
+        carrier: crate::simulation::economy::agents::AgentHandle::from_parts(7, 0),
         total_cost: paid_goods + 8.0,
         freight_cost: 8.0,
         eta_hours: 1,

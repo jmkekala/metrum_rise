@@ -14,7 +14,6 @@ use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::tick::{
     plan_building_origin_trip, plan_building_to_border_trip, plan_immigration_trip,
 };
-use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use godot::prelude::Vector2;
@@ -294,23 +293,20 @@ impl AgentSystem {
         &mut self,
         index: usize,
         shipment_id: u64,
-        households: &mut HouseholdSystem,
     ) -> Option<(usize, usize)> {
         if !self.freight_carrier_matches(index, shipment_id) {
             return None;
         }
-        self.remove_agent_record(index, households, "finished its freight trip")
+        self.remove_agent_record(index, "finished its freight trip")
     }
 
     /// Permanently removes an agent from the simulation using O(1) swap-remove.
     ///
-    /// Repairs an active shopper reference immediately. Returns `(old_idx, new_idx)` when another
-    /// agent moved and freight index owners must remap.
+    /// Returns `(old_idx, new_idx)` when another agent moved; handles follow it automatically.
     pub fn kill_agent(
         &mut self,
         index: usize,
         allocator: &mut BuildingAllocator,
-        households: &mut HouseholdSystem,
     ) -> Option<(usize, usize)> {
         if index >= self.agents.len() {
             return None;
@@ -326,22 +322,17 @@ impl AgentSystem {
             allocator.set_worker_count(work, allocator.buildings[work].worker_count.saturating_sub(1));
         }
 
-        self.remove_agent_record(index, households, "left the city with its household")
+        self.remove_agent_record(index, "left the city with its household")
     }
 
     // `reason` explains the removal when it ends an inspection.
-    fn remove_agent_record(
-        &mut self,
-        index: usize,
-        households: &mut HouseholdSystem,
-        reason: &'static str,
-    ) -> Option<(usize, usize)> {
+    fn remove_agent_record(&mut self, index: usize, reason: &'static str) -> Option<(usize, usize)> {
         let last = self.agents.len() - 1;
+        self.handles.swap_remove(index, self.agents.len());
         self.agents.swap_remove(index);
         self.invalidate_lane_bucket_snapshot();
         self.repair_inspection_after_remove(index, last, reason);
         if index != last {
-            households.remap_shopper_agent_index(last, index, self);
             Some((last, index))
         } else {
             None
@@ -421,6 +412,7 @@ impl AgentSystem {
     fn insert_agent(&mut self, agent: Agent) -> usize {
         let index = self.agents.len();
         self.agents.push(agent);
+        self.handles.register_appended(self.agents.len());
         self.invalidate_lane_bucket_snapshot();
         index
     }

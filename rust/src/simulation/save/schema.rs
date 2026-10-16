@@ -5,72 +5,10 @@
 use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
-/// Current save format version.
-pub const SAVE_VERSION: i64 = 86;
+/// Current save format version, also the only one that loads (`SIM-02` broke older saves).
+pub const SAVE_VERSION: i64 = 87;
 
-/// First version retaining complete workplace commute quotes for exact continuation.
-pub const WORKPLACE_ROUTE_CACHE_SAVE_VERSION: i64 = 86;
-
-/// Lanes persist the live frontage delay apart from the hourly published economy price
-/// (`ECON-13-D`). Older continuation saves load both from the single saved delay.
-pub const LIVE_FRONTAGE_DELAY_SAVE_VERSION: i64 = 85;
-
-/// Household stock-check offsets are well mixed; older saves recompute theirs on load (`ECON-19`).
-pub const REPLENISHMENT_OFFSET_SAVE_VERSION: i64 = 84;
-
-/// Traffic smoothing and live agent decisions survive save/load.
-pub const CONTINUATION_SAVE_VERSION: i64 = 75;
-
-/// Electricity uses kWh and persists physical meters plus unpaid consumer bills.
-pub const ELECTRICITY_KWH_SAVE_VERSION: i64 = 73;
-
-/// Arrival carriers persist their approved adult/elder composition.
-pub const HOUSEHOLD_ARRIVAL_SAVE_VERSION: i64 = 72;
-
-/// Freight contract fees are persisted; obsolete outside buyer quotas are removed.
-pub const FREIGHT_COST_SAVE_VERSION: i64 = 71;
-
-/// First version using kg for all physical economy inventories, recipes and freight cargo.
-pub const ECONOMY_SI_SAVE_VERSION: i64 = 70;
-
-/// First version recording the plants each building's yard planting areas planted.
-///
-/// A save below this one has no planting records; no asset could author planting areas then.
-pub const YARD_PLANTING_SAVE_VERSION: i64 = 69;
-
-/// First version recording the hedge modules each building's yard laid.
-///
-/// A save below this one has no yard records, so its hedges, if any, are all player-drawn and
-/// stay when a building is removed.
-pub const YARD_HEDGE_SAVE_VERSION: i64 = 68;
-
-/// First version retaining straight road grid choices independently of visible cell caches.
-pub const CELL_ROAD_ALIGNMENT_SAVE_VERSION: i64 = 67;
-
-/// First version retaining the original centreline guides of painted curved cell groups.
-pub const CELL_CURVE_SOURCE_SAVE_VERSION: i64 = 66;
-
-/// First version containing persistent cell frames, paint and derived parcel coverage.
-pub const CELL_ZONING_SAVE_VERSION: i64 = 65;
-
-/// First version whose parcels and buildings carry the redevelopment generation.
-///
-/// A save below this one reads back at generation `0`, which reproduces the asset and
-/// colour choices it was written under instead of shuffling an existing city on load.
-pub const REDEVELOPMENT_SAVE_VERSION: i64 = 64;
-
-/// First version whose schema carries the vegetation generator parameters and authored edits.
-///
-/// The fork and upstream both reached 61 with unrelated schemas, so the vegetation tables sit
-/// above that collision rather than at the number they were first written under. A save below
-/// this version has no vegetation tables and restores the shipped generator defaults.
-pub const VEGETATION_SAVE_VERSION: i64 = 62;
-/// First version whose authored plants carry a pinned renderer mesh variant.
-///
-/// A save below this one has no `variant` column, and every authored plant in it reads back
-/// unpinned, which is the behaviour it was written under.
-pub const VEGETATION_VARIANT_SAVE_VERSION: i64 = 63;
-/// Sentinel for missing integer references in SQLite.
+/// Sentinel for an absent reference column.
 pub const NONE_REF: i64 = -1;
 
 /// The SQL schema string.
@@ -364,8 +302,8 @@ CREATE TABLE households(
     reserved_store_building_id INTEGER NOT NULL,
     reserved_amount REAL NOT NULL,
     reserved_total_cost REAL NOT NULL,
-    shopping_agent_id INTEGER NOT NULL,
-    shopping_agent_schedule_seed INTEGER NOT NULL,
+    shopping_agent_slot INTEGER NOT NULL,
+    shopping_agent_generation INTEGER NOT NULL,
     shopping_timeout_hours_remaining INTEGER NOT NULL,
     replenishment_search_cursor INTEGER NOT NULL,
     stay_failure_days INTEGER NOT NULL,
@@ -463,11 +401,25 @@ CREATE TABLE shipments(
     destination_border_node INTEGER NOT NULL,
     carrier_class INTEGER NOT NULL,
     status INTEGER NOT NULL,
-    carrier_agent_id INTEGER NOT NULL,
+    carrier_slot INTEGER NOT NULL,
     total_cost REAL NOT NULL,
     eta_hours INTEGER NOT NULL,
     queued_hours INTEGER NOT NULL,
-    freight_cost REAL NOT NULL
+    freight_cost REAL NOT NULL,
+    carrier_generation INTEGER NOT NULL
+);
+CREATE TABLE entity_handle_slots(
+    kind INTEGER NOT NULL,
+    slot INTEGER NOT NULL,
+    generation INTEGER NOT NULL,
+    dense INTEGER NOT NULL,
+    PRIMARY KEY(kind, slot)
+);
+CREATE TABLE entity_handle_free(
+    kind INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    slot INTEGER NOT NULL,
+    PRIMARY KEY(kind, position)
 );
 CREATE TABLE freight_request_failures(
     destination_building_id INTEGER NOT NULL,

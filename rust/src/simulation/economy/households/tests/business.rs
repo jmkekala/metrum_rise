@@ -235,7 +235,7 @@ fn forced_liquidation_sells_only_unreserved_inventory() {
         destination: ShipmentEndpoint::OwaBorder(0),
         carrier_class: CarrierClass::Truck,
         status: ShipmentStatus::InTransit,
-        carrier_agent_id: usize::MAX,
+        carrier: crate::simulation::economy::agents::AgentHandle::NONE,
         total_cost: 0.0,
         freight_cost: 0.0,
         eta_hours: 1,

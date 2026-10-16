@@ -221,8 +221,7 @@ fn removing_an_agent_preserves_a_moved_shoppers_active_trip() {
         let mut households = HouseholdSystem::new();
         let mut household = make_household(0, 1, 100.0, 0.0);
         household.replenishment_state = REPLENISHMENT_SHOPPING_RETURNING;
-        household.shopping_agent_id = shopper;
-        household.shopping_agent_schedule_seed = agents.schedule_seed[shopper];
+        household.shopping_agent = agents.agent_handle(shopper);
         household.reserved_amount = 10.0;
         household.shopping_timeout_hours_remaining = 24;
         households.households.push(household);
@@ -230,12 +229,15 @@ fn removing_an_agent_preserves_a_moved_shoppers_active_trip() {
         if remove_freight {
             agents.freight_shipment_id[removed] = 1;
             agents.vehicle_type[removed] = VEHICLE_FREIGHT_DELIVERY;
-            agents.remove_freight_carrier(removed, 1, &mut households);
+            agents.remove_freight_carrier(removed, 1);
         } else {
-            agents.kill_agent(removed, &mut allocator, &mut households);
+            agents.kill_agent(removed, &mut allocator);
         }
 
-        assert_eq!(households.households[0].shopping_agent_id, 0);
+        assert_eq!(
+        agents.resolve_agent(households.households[0].shopping_agent),
+        Some(0)
+    );
         households.run_household_replenishment(
             &mut agents,
             &mut allocator,
@@ -262,7 +264,6 @@ fn benchmark_household_removal() {
             let mut households = HouseholdSystem::new();
             let mut agents = AgentSystem::new();
             let mut allocator = BuildingAllocator::new();
-            let mut logistics = ShipmentSystem::new();
             for idx in 0..count {
                 households
                     .households
@@ -279,7 +280,6 @@ fn benchmark_household_removal() {
                 policy,
                 &mut agents,
                 &mut allocator,
-                &mut logistics,
             ));
             samples.push(start.elapsed().as_secs_f64() * 1_000.0);
             assert_eq!(removed, 256);
@@ -299,7 +299,6 @@ fn batched_removal_preserves_surviving_members_and_ledgers() {
     let mut households = HouseholdSystem::new();
     let mut agents = AgentSystem::new();
     let mut allocator = BuildingAllocator::new();
-    let mut logistics = ShipmentSystem::new();
     let removed = [1, 3, 8, 9];
     let mut original_household_by_seed = std::collections::HashMap::new();
     for idx in 0..12 {
@@ -328,7 +327,6 @@ fn batched_removal_preserves_surviving_members_and_ledgers() {
             exit_policy(),
             &mut agents,
             &mut allocator,
-            &mut logistics
         ),
         4
     );
@@ -448,13 +446,11 @@ fn demand_household_removal_prioritizes_unhoused_households() {
     allocator.claim_vacancy(1);
 
     households.households[1].unhoused_days_elapsed = exit_policy().max_unhoused_days;
-    let mut logistics = ShipmentSystem::new();
     households.execute_demand_household_removal(
         1,
         exit_policy(),
         &mut agents,
         &mut allocator,
-        &mut logistics,
     );
 
     assert_eq!(households.households.len(), 2);
@@ -473,7 +469,6 @@ fn departure_execution_protects_recently_displaced_and_recovered_households() {
     let mut households = HouseholdSystem::new();
     let mut agents = AgentSystem::new();
     let mut allocator = BuildingAllocator::new();
-    let mut logistics = ShipmentSystem::new();
     // The poorest household has just lost its home. The next has recovered its resources
     // during the rehousing period. Only the destitute/expired households may leave.
     for (days, reserve_days, stock_days) in [
@@ -496,7 +491,6 @@ fn departure_execution_protects_recently_displaced_and_recovered_households() {
             exit_policy(),
             &mut agents,
             &mut allocator,
-            &mut logistics,
         ),
         2
     );
@@ -538,7 +532,6 @@ fn demand_household_removal_remaps_moved_freight_carrier() {
     agents.freight_shipment_id[freight] = 77;
     agents.vehicle_type[freight] = VEHICLE_FREIGHT_DELIVERY;
     allocator.claim_vacancy(0);
-
     let mut logistics = ShipmentSystem::new();
     logistics.shipments.push(Shipment {
         id: 77,
@@ -548,7 +541,7 @@ fn demand_household_removal_remaps_moved_freight_carrier() {
         destination: ShipmentEndpoint::OwaBorder(0),
         carrier_class: CarrierClass::Truck,
         status: ShipmentStatus::InTransit,
-        carrier_agent_id: freight,
+        carrier: agents.agent_handle(freight),
         total_cost: 0.0,
         freight_cost: 0.0,
         eta_hours: 1,
@@ -563,12 +556,14 @@ fn demand_household_removal_remaps_moved_freight_carrier() {
         exit_policy(),
         &mut agents,
         &mut allocator,
-        &mut logistics,
     );
 
     assert_eq!(agents.len(), 1);
     assert_eq!(agents.freight_shipment_id[0], 77);
-    assert_eq!(logistics.shipments[0].carrier_agent_id, 0);
+    assert_eq!(
+        agents.resolve_agent(logistics.shipments[0].carrier),
+        Some(0)
+    );
 }
 
 #[test]
@@ -614,13 +609,11 @@ fn demand_household_removal_never_fills_unused_slots_with_housed_households() {
     allocator.claim_vacancy(1);
 
     households.households[2].unhoused_days_elapsed = exit_policy().max_unhoused_days;
-    let mut logistics = ShipmentSystem::new();
     households.execute_demand_household_removal(
         2,
         exit_policy(),
         &mut agents,
         &mut allocator,
-        &mut logistics,
     );
 
     assert_eq!(households.households.len(), 2);
@@ -872,15 +865,12 @@ fn evicted_unhoused_household_keeps_membership_until_demand_removal() {
     assert_eq!(households.households[0].member_count, 2);
     assert_eq!(agents.household_id[a0], 0);
     assert_eq!(agents.household_id[a1], 0);
-
-    let mut logistics = ShipmentSystem::new();
     households.households[0].unhoused_days_elapsed = exit_policy().max_unhoused_days;
     households.execute_demand_household_removal(
         1,
         exit_policy(),
         &mut agents,
         &mut allocator,
-        &mut logistics,
     );
 
     assert_eq!(households.households.len(), 0);
@@ -926,7 +916,7 @@ fn eviction_settles_active_shopping_reservations_once() {
 
         assert_eq!(households.households[0].home_building_id, usize::MAX);
         assert_eq!(households.households[0].reserved_amount, 0.0);
-        assert_eq!(households.households[0].shopping_agent_id, usize::MAX);
+        assert_eq!(households.households[0].shopping_agent, crate::simulation::economy::agents::AgentHandle::NONE);
         assert_eq!(
             households.households[0].budget,
             if picked_up { 0.0 } else { reserved_cost }

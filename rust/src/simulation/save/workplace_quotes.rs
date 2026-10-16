@@ -62,13 +62,12 @@ pub(super) fn save(
 /// Loads complete workplace quotes after the graph and entrance caches are rebuilt.
 pub(super) fn load(
     conn: &Connection,
-    version: i64,
     households: &mut HouseholdSystem,
     allocator: &BuildingAllocator,
     network: &TransitNetwork,
     preserve: bool,
 ) -> SaveLoadResult<()> {
-    if !preserve || version < super::schema::WORKPLACE_ROUTE_CACHE_SAVE_VERSION {
+    if !preserve {
         return Ok(());
     }
     let row = conn.query_row(
@@ -305,7 +304,6 @@ mod tests {
         let mut restored = HouseholdSystem::new();
         load(
             &conn,
-            super::super::schema::SAVE_VERSION,
             &mut restored,
             &restored_allocator,
             &restored_network,
@@ -361,7 +359,6 @@ mod tests {
         let mut unrelated_households = HouseholdSystem::new();
         load(
             &conn,
-            super::super::schema::SAVE_VERSION,
             &mut unrelated_households,
             &unrelated_change,
             &unrelated_network,
@@ -381,7 +378,6 @@ mod tests {
         let mut changed_households = HouseholdSystem::new();
         load(
             &conn,
-            super::super::schema::SAVE_VERSION,
             &mut changed_households,
             &changed_entrance,
             &changed_network,
@@ -441,7 +437,6 @@ mod tests {
         assert!(
             load(
                 &conn,
-                super::super::schema::SAVE_VERSION,
                 &mut households,
                 &allocator,
                 &network,

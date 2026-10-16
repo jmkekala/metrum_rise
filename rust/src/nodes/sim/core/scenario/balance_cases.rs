@@ -1099,7 +1099,10 @@ fn producer_household_shopping_trace() {
         let step = scenario.core.step_frame(FRAME_DT_S);
         let core = &scenario.core;
         let h = &core.households.households[hid];
-        let shopper = h.shopping_agent_id;
+        let shopper = core
+            .agents
+            .resolve_agent(h.shopping_agent)
+            .unwrap_or(usize::MAX);
         let a = &core.agents;
         let state = (
             h.replenishment_state,

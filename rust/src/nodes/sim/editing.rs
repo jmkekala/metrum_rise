@@ -3075,7 +3075,7 @@ mod tests {
                 destination: ShipmentEndpoint::Building(1),
                 carrier_class: CarrierClass::Truck,
                 status: ShipmentStatus::InTransit,
-                carrier_agent_id: usize::MAX,
+                carrier: crate::simulation::economy::agents::AgentHandle::NONE,
                 total_cost: 800.0,
                 freight_cost: 0.0,
                 eta_hours: 1,
@@ -3100,6 +3100,59 @@ mod tests {
                 ShipmentEndpoint::Building(1)
             );
         }
+    }
+
+    #[test]
+    fn building_bulldoze_undo_rebinds_the_restored_carrier_handle() {
+        use crate::simulation::economy::agents::VEHICLE_FREIGHT_DELIVERY;
+        use crate::simulation::economy::logistics::{
+            CarrierClass, Shipment, ShipmentEndpoint, ShipmentStatus,
+        };
+
+        let mut core = test_core();
+        core.allocator.buildings = vec![
+            test_building("supplier", -20.0, 3.0),
+            test_building("buyer", 20.0, 7.0),
+        ];
+        core.allocator
+            .rebuild_building_site_clients(core.config.zone_cell_m);
+        core.allocator.rebuild_zone_index();
+        let carrier = core.agents.spawn_housed_agent(usize::MAX, 0.0, 0.0);
+        core.agents.vehicle_type[carrier] = VEHICLE_FREIGHT_DELIVERY;
+        core.agents.freight_shipment_id[carrier] = 0;
+        // Removing the carrier moves this agent into its slot; undo moves it to the end.
+        let other = core.agents.spawn_housed_agent(usize::MAX, 0.0, 0.0);
+        let other_handle = core.agents.agent_handle(other);
+        let other_seed = core.agents.schedule_seed[other];
+        let carrier_handle = core.agents.agent_handle(carrier);
+        core.logistics.shipments.push(Shipment {
+            id: 0,
+            resource_runtime_id: 1,
+            amount: 40.0,
+            source: ShipmentEndpoint::Building(0),
+            destination: ShipmentEndpoint::Building(1),
+            carrier_class: CarrierClass::Truck,
+            status: ShipmentStatus::InTransit,
+            carrier: carrier_handle,
+            total_cost: 0.0,
+            freight_cost: 0.0,
+            eta_hours: 1,
+            queued_hours: 0,
+        });
+
+        assert!(core.bulldoze_building(1));
+        assert_eq!(core.agents.len(), 1);
+        assert!(core.undo_action_internal());
+
+        let restored = core
+            .agents
+            .resolve_agent(core.logistics.shipments[0].carrier)
+            .expect("undo rebinds the shipment to its restored carrier");
+        assert_eq!(restored, carrier);
+        assert_eq!(core.agents.freight_shipment_id[restored], 0);
+        assert_eq!(core.agents.resolve_agent(carrier_handle), None);
+        let moved = core.agents.resolve_agent(other_handle).unwrap();
+        assert_eq!(core.agents.schedule_seed[moved], other_seed);
     }
 
     #[test]

@@ -185,7 +185,7 @@ impl ShipmentSystem {
 
 fn source_reservation_slot(shipment: &Shipment, resource_count: usize) -> Option<usize> {
     let reserves_source =
-        shipment.status == ShipmentStatus::InTransit && shipment.carrier_agent_id == usize::MAX;
+        shipment.status == ShipmentStatus::InTransit && shipment.carrier.is_none();
     if !reserves_source {
         return None;
     }
@@ -230,7 +230,7 @@ mod tests {
             destination: ShipmentEndpoint::Building(destination),
             carrier_class: CarrierClass::Truck,
             status: ShipmentStatus::InTransit,
-            carrier_agent_id: usize::MAX,
+            carrier: crate::simulation::economy::agents::AgentHandle::NONE,
             total_cost: 0.0,
             freight_cost: 0.0,
             eta_hours: 1,
@@ -257,17 +257,17 @@ mod tests {
     fn outbound_projection_matches_full_reservations_across_cargo_states() {
         let mut shipments = ShipmentSystem::new();
         for (idx, (status, carrier)) in [
-            (ShipmentStatus::InTransit, usize::MAX),
-            (ShipmentStatus::InTransit, 3),
-            (ShipmentStatus::Returning, 4),
-            (ShipmentStatus::Fulfilled, usize::MAX),
+            (ShipmentStatus::InTransit, crate::simulation::economy::agents::AgentHandle::NONE),
+            (ShipmentStatus::InTransit, crate::simulation::economy::agents::AgentHandle::from_parts(3, 0)),
+            (ShipmentStatus::Returning, crate::simulation::economy::agents::AgentHandle::from_parts(4, 0)),
+            (ShipmentStatus::Fulfilled, crate::simulation::economy::agents::AgentHandle::NONE),
         ]
         .into_iter()
         .enumerate()
         {
             let mut shipment = reservation_shipment(idx, 100, 2, 12.0);
             shipment.status = status;
-            shipment.carrier_agent_id = carrier;
+            shipment.carrier = carrier;
             shipments.shipments.push(shipment);
         }
         let full = shipments.build_reservation_views(2);

@@ -16,6 +16,7 @@ mod tests;
 pub mod tick;
 
 pub use data::{Agent, AgentSystem, AgentVec};
+pub(crate) use data::AgentHandle;
 
 use determinism::stable_index;
 

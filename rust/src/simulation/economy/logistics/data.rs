@@ -5,9 +5,8 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::simulation::buildings::allocator::BuildingAllocator;
-use crate::simulation::economy::agents::{AgentSystem, VEHICLE_FREIGHT_DELIVERY};
+use crate::simulation::economy::agents::{AgentHandle, AgentSystem};
 use crate::simulation::economy::definitions::{ResourceRuntimeId, load_runtime_economy_tuning};
-use crate::simulation::economy::households::HouseholdSystem;
 
 use super::resource::refund_input_payment;
 use super::route_cache::FreightRouteCache;
@@ -127,8 +126,9 @@ pub struct Shipment {
     pub carrier_class: CarrierClass,
     /// Current shipment state.
     pub status: ShipmentStatus,
-    /// Agent index for the active physical carrier; `usize::MAX` means not dispatched yet.
-    pub carrier_agent_id: usize,
+    /// Physical carrier agent; [`AgentHandle::NONE`] until dispatched. It stays set after the
+    /// carrier leaves, so "dispatched" never depends on the agent store.
+    pub(crate) carrier: AgentHandle,
     /// Input buyer's reserved goods-plus-freight payment, or gross OWA export sale value.
     pub total_cost: f32,
     /// Fixed carrier quote. Settled once on delivery; included in input reservations,
@@ -204,7 +204,11 @@ impl ShipmentSystem {
     }
 
     /// Captures only freight state that building invalidation removes or refunds.
-    pub(crate) fn capture_building_undo(&self, removed_building: usize) -> ShipmentBuildingUndo {
+    pub(crate) fn capture_building_undo(
+        &self,
+        removed_building: usize,
+        agents: &AgentSystem,
+    ) -> ShipmentBuildingUndo {
         let mut shipments = Vec::new();
         let mut carrier_agent_ids = Vec::new();
         let mut mutated_building_ids = Vec::new();
@@ -215,8 +219,8 @@ impl ShipmentSystem {
                 continue;
             }
             shipments.push(shipment.clone());
-            if shipment.carrier_agent_id != usize::MAX {
-                carrier_agent_ids.push(shipment.carrier_agent_id);
+            if let Some(carrier) = agents.resolve_agent(shipment.carrier) {
+                carrier_agent_ids.push(carrier);
             }
             if shipment.status.reserves_cargo()
                 && shipment.source.touches_building(removed_building)
@@ -227,7 +231,7 @@ impl ShipmentSystem {
             }
             if shipment.destination.touches_building(removed_building)
                 && shipment.status == ShipmentStatus::InTransit
-                && shipment.carrier_agent_id != usize::MAX
+                && !shipment.carrier.is_none()
                 && let Some(source_id) = shipment.source.building_id()
                 && source_id != removed_building
             {
@@ -315,24 +319,13 @@ impl ShipmentSystem {
         self.invalidate_route_cache();
     }
 
-    /// Repairs the moved agent's shipment in O(log S), or O(1) for a non-freight agent.
-    /// The caller must first move the agent record to `new_idx`.
-    pub(crate) fn remap_carrier_agent_index(
-        &mut self,
-        old_idx: usize,
-        new_idx: usize,
-        agents: &AgentSystem,
-    ) {
-        if agents.vehicle_type[new_idx] != VEHICLE_FREIGHT_DELIVERY {
-            return;
-        }
-        let shipment_id = agents.freight_shipment_id[new_idx];
+    /// Points shipment `shipment_id` at its carrier restored with a new handle by undo. O(log S).
+    pub(crate) fn rebind_carrier(&mut self, shipment_id: u64, carrier: AgentHandle) {
         if let Ok(idx) = self
             .shipments
             .binary_search_by_key(&shipment_id, |job| job.id)
-            && self.shipments[idx].carrier_agent_id == old_idx
         {
-            self.shipments[idx].carrier_agent_id = new_idx;
+            self.shipments[idx].carrier = carrier;
         }
     }
 
@@ -342,7 +335,6 @@ impl ShipmentSystem {
         removed_building: usize,
         allocator: &mut BuildingAllocator,
         agents: &mut AgentSystem,
-        households: &mut HouseholdSystem,
         treasury_balance: &mut f64,
     ) {
         let mut carriers_to_remove = Vec::new();
@@ -372,7 +364,7 @@ impl ShipmentSystem {
             }
             if shipment.destination.touches_building(removed_building)
                 && shipment.status == ShipmentStatus::InTransit
-                && shipment.carrier_agent_id != usize::MAX
+                && !shipment.carrier.is_none()
                 && let ShipmentEndpoint::Building(source_id) = shipment.source
                 && source_id < allocator.buildings.len()
                 && source_id != removed_building
@@ -382,15 +374,18 @@ impl ShipmentSystem {
                 allocator.buildings[source_id].shipment_cooldown_hours = retry_cooldown_hours;
             }
 
-            if agents.freight_carrier_matches(shipment.carrier_agent_id, shipment.id) {
-                carriers_to_remove.push((shipment.carrier_agent_id, shipment.id));
+            if let Some(carrier) = agents.resolve_agent(shipment.carrier)
+                && agents.freight_carrier_matches(carrier, shipment.id)
+            {
+                carriers_to_remove.push((carrier, shipment.id));
             }
             false
         });
         carriers_to_remove.sort_unstable();
         carriers_to_remove.dedup();
-        for (carrier_agent_id, shipment_id) in carriers_to_remove.into_iter().rev() {
-            self.remove_carrier_agent(agents, households, carrier_agent_id, shipment_id);
+        // Descending dense order keeps the indices still to remove valid.
+        for (carrier, shipment_id) in carriers_to_remove.into_iter().rev() {
+            agents.remove_freight_carrier(carrier, shipment_id);
         }
 
         self.request_failures

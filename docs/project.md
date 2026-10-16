@@ -318,7 +318,8 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   and the [`PERF-07` frame budget](simulation.md#frame-budget-perf-07). `SIM-02-A` (2026-10-15) added
   the guards every step must pass (`tools/sim02_gate.py`: behaviour envelope, burst shares,
   money conservation, reference invariants, determinism, worst sim frame) and recorded the
-  pre-refactor baseline: the worst frame is 637 ms at 30k and 2.5 s at 100k.
+  pre-refactor baseline: the worst frame is 637 ms at 30k and 2.5 s at 100k. `SIM-02-B`
+  (2026-10-16) moved saves to format 87: **saves from earlier builds no longer load.**
 
 - **Starting treasury**: new games begin with 500,000, increased from 100,000. See
   [money source](economy.md#money-source); earlier balance runs retain their original starting capital.

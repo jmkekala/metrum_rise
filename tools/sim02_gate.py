@@ -38,8 +38,11 @@ BURST_SETTLEMENT_LIMIT = 0.10
 # Rounding of the funded fixture treasury (ulp 0.125 at 1e15) bounds honest residuals.
 MONEY_RESIDUAL_LIMIT = 5.0
 MONEY_RESIDUAL_SLACK = 1.5
-# Wall-clock noise allowance for "no worse" timing comparisons.
-TIMING_SLACK = (1.10, 0.5)
+# Run-to-run noise of one build (docs/simulation.md#frame-budget-perf-07): the worst frame
+# varies by about 20%, the p99 by about 10%; "no worse" allows a little more.
+MAX_SLACK = 1.25
+P99_SLACK = 1.10
+TIMING_FLOOR_MS = 0.5
 
 
 def run_test(binary, name, env, log_path, tags):
@@ -246,6 +249,22 @@ def portable_command(argv):
     return command
 
 
+def compare_perf07(rows, baseline_rows):
+    """Failures where a tier and speed got worse than the baseline report beyond noise."""
+    baseline = {(row["residents"], row["speed"]): row for row in baseline_rows}
+    failures = []
+    for row in rows:
+        before = baseline.get((row["residents"], row["speed"]))
+        if before is None:
+            continue
+        for key, slack in (("max_ms", MAX_SLACK), ("p99_ms", P99_SLACK)):
+            limit = before[key] * slack + TIMING_FLOOR_MS
+            if row[key] > limit:
+                failures.append(f"PERF-07 {row['residents']} {row['speed']:g}x {key} "
+                                f"{row[key]:.2f} > {limit:.2f} (baseline {before[key]:.2f})")
+    return failures
+
+
 def identity(binary, command):
     return {
         "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
@@ -269,6 +288,8 @@ def main():
     parser.add_argument("--jobs", type=int, default=4, help="parallel envelope processes")
     parser.add_argument("--perf07-tiers", default=",".join(map(str, PERF07_TIERS)))
     parser.add_argument("--perf07-speeds", default=",".join(map(str, PERF07_SPEEDS)))
+    parser.add_argument("--perf07-baseline", type=Path,
+                        help="report.json of an earlier perf07 run to compare against")
     args = parser.parse_args()
     output = args.artifacts.resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -316,6 +337,9 @@ def main():
         tiers = [int(value) for value in args.perf07_tiers.split(",")]
         speeds = [int(value) for value in args.perf07_speeds.split(",")]
         report["perf07"] = run_perf07(binary, output, tiers, speeds)
+        if args.perf07_baseline:
+            baseline_rows = json.loads(args.perf07_baseline.read_text())["perf07"]
+            report["failures"] += compare_perf07(report["perf07"], baseline_rows)
     report["runtime_s"] = time.monotonic() - started
     (output / "report.json").write_text(json.dumps(report, indent=1) + "\n")
     for note in report["notes"]:
