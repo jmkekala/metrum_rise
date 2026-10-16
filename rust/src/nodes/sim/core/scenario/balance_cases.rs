@@ -277,10 +277,7 @@ fn assert_growth_continues_after_reload(mut source: GrowthScenario) {
                 b.operating_budget
             );
             assert_eq!(a.resource_inventory, b.resource_inventory);
-            assert_eq!(
-                a.construction_remaining_hours,
-                b.construction_remaining_hours
-            );
+            assert_eq!(a.construction_complete_slot, b.construction_complete_slot);
         }
     }
     std::fs::remove_file(path).unwrap();
@@ -649,7 +646,7 @@ fn power_demolition_undo_restores_the_meter_and_refunds_only_its_bill() {
     let plant = core
         .place_service_building_internal("kenney:building.power.coal_power_plant", -700.0, 8.0)
         .unwrap();
-    core.allocator.buildings[plant].construction_remaining_hours = 0;
+    core.allocator.buildings[plant].construction_complete_slot = 0;
     core.allocator.buildings[plant]
         .daily_electricity
         .workplace

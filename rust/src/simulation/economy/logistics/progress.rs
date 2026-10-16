@@ -373,7 +373,7 @@ impl ShipmentSystem {
                     &mut self.shipments[idx],
                     allocator,
                     treasury_balance,
-                    retry_cooldown_hours,
+                    self.hour_ticks + u32::from(retry_cooldown_hours),
                 );
                 continue;
             }
@@ -418,7 +418,7 @@ impl ShipmentSystem {
                     &mut self.shipments[idx],
                     allocator,
                     treasury_balance,
-                    retry_cooldown_hours,
+                    self.hour_ticks + u32::from(retry_cooldown_hours),
                 );
                 continue;
             };
@@ -550,7 +550,8 @@ impl ShipmentSystem {
                 destination_idx,
                 shipment.total_cost,
             );
-            allocator.buildings[destination_idx].shipment_cooldown_hours = retry_cooldown_hours;
+            allocator.buildings[destination_idx].shipment_cooldown_until_tick =
+                self.hour_ticks + u32::from(retry_cooldown_hours);
         }
         if !shipment.carrier.is_none()
             && let ShipmentEndpoint::Building(source_idx) = shipment.source
@@ -558,7 +559,8 @@ impl ShipmentSystem {
         {
             allocator.buildings[source_idx]
                 .add_inventory_units(shipment.resource_runtime_id, shipment.amount);
-            allocator.buildings[source_idx].shipment_cooldown_hours = retry_cooldown_hours;
+            allocator.buildings[source_idx].shipment_cooldown_until_tick =
+                self.hour_ticks + u32::from(retry_cooldown_hours);
         }
 
         let (source_kind, source_id) = shipment_endpoint_log_fields(shipment.source);
@@ -641,11 +643,12 @@ fn building_can_participate_in_freight(allocator: &BuildingAllocator, building_i
         && !building.is_under_construction()
 }
 
+// `cooldown_until_tick` is the logistics hour tick from which both endpoints may request again.
 fn fail_shipment_before_dispatch(
     shipment: &mut Shipment,
     allocator: &mut BuildingAllocator,
     treasury_balance: &mut f64,
-    retry_cooldown_hours: u16,
+    cooldown_until_tick: u32,
 ) {
     if let ShipmentEndpoint::Building(destination_idx) = shipment.destination
         && destination_idx < allocator.buildings.len()
@@ -656,12 +659,12 @@ fn fail_shipment_before_dispatch(
             destination_idx,
             shipment.total_cost,
         );
-        allocator.buildings[destination_idx].shipment_cooldown_hours = retry_cooldown_hours;
+        allocator.buildings[destination_idx].shipment_cooldown_until_tick = cooldown_until_tick;
     }
     if let ShipmentEndpoint::Building(source_idx) = shipment.source
         && source_idx < allocator.buildings.len()
     {
-        allocator.buildings[source_idx].shipment_cooldown_hours = retry_cooldown_hours;
+        allocator.buildings[source_idx].shipment_cooldown_until_tick = cooldown_until_tick;
     }
     shipment.status = ShipmentStatus::Failed;
 }

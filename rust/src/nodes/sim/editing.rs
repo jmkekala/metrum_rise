@@ -2991,6 +2991,14 @@ mod tests {
             .rebuild_building_site_clients(core.zoning.config.zone_cell_m);
         core.allocator.rebuild_zone_index();
         let original_sites = core.allocator.building_sites.clone();
+        // The removed building is still a construction site.
+        let complete_slot =
+            core.allocator.now_slot + 4 * crate::simulation::core::scheduler::SLOTS_PER_HOUR;
+        core.allocator.buildings[0].construction_total_hours = 4;
+        core.allocator.buildings[0].construction_complete_slot = complete_slot;
+        core.allocator.building_handles.register_appended(2);
+        let removed = core.allocator.building_handles.handle(0);
+        let moved = core.allocator.building_handles.handle(1);
 
         assert!(core.bulldoze_building(0));
         assert_eq!(core.allocator.buildings.len(), 1);
@@ -3014,6 +3022,16 @@ mod tests {
         assert_eq!(core.allocator.buildings.len(), 2);
         assert_eq!(core.allocator.buildings[0].asset_id, "building.removed");
         assert_eq!(core.allocator.buildings[1].asset_id, "building.moved");
+        // The moved building keeps its handle; the restored one takes a new handle and lists
+        // its construction deadline again.
+        let handles = &core.allocator.building_handles;
+        assert_eq!(handles.resolve(moved), Some(1));
+        assert_eq!(handles.resolve(removed), None);
+        assert_eq!(handles.resolve(handles.handle(0)), Some(0));
+        assert_eq!(
+            core.allocator.pending_construction,
+            [(handles.handle(0), complete_slot)]
+        );
         for (idx, id) in parcel_ids.into_iter().enumerate() {
             assert_eq!(
                 core.zoning

@@ -701,7 +701,7 @@ fn make_building(
         asset_id: asset_id.to_owned(),
         level: 1,
         construction_total_hours: 0,
-        construction_remaining_hours: 0,
+        construction_complete_slot: 0,
         broken: false,
         economy_profile_runtime_id: economy_binding.runtime_id,
         economy_broken: economy_binding.economy_broken,
@@ -710,7 +710,7 @@ fn make_building(
         operating_budget: budget,
         profit_tax_budget_baseline: budget,
         last_day_profit: 0.0,
-        shipment_cooldown_hours: 0,
+        shipment_cooldown_until_tick: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
         daily_city_funded_input_cost: 0.0,
@@ -4275,7 +4275,7 @@ fn minimum_input_order_must_afford_the_carrier_as_well_as_the_goods() {
         assert!(shipments.shipments.is_empty());
         assert_eq!(allocator.buildings[buyer].operating_budget, goods_budget);
         allocator.buildings[buyer].operating_budget += 100.0;
-        allocator.buildings[buyer].shipment_cooldown_hours = 0;
+        allocator.buildings[buyer].shipment_cooldown_until_tick = 0;
         create_profile_input_shipments_for_test(
             &mut shipments,
             &mut allocator,
@@ -4853,7 +4853,7 @@ fn factory_batches_input_orders_and_daily_exports_instead_of_hourly_trucks() {
     }
     assert_eq!(shipments.shipments[0].amount, 200.0);
     assert_eq!(shipments.shipments[0].resource_runtime_id, food);
-    allocator.buildings[0].shipment_cooldown_hours = 0;
+    allocator.buildings[0].shipment_cooldown_until_tick = 0;
     allocator.buildings[0].set_inventory_units(grain, 399.0);
     create_profile_input_shipments_for_test(&mut shipments, &mut allocator, &network, &graph, 0);
     assert_eq!(shipments.shipments.len(), 2);
@@ -5371,7 +5371,7 @@ fn under_construction_destination_rejects_inbound_delivery() {
         100.0,
     ));
     allocator.buildings[0].construction_total_hours = 3;
-    allocator.buildings[0].construction_remaining_hours = 2;
+    allocator.buildings[0].set_construction_hours_left(2);
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
     allocator.rebuild_zone_index();
 
@@ -5609,8 +5609,8 @@ fn destination_removal_restores_dispatched_local_source_stock() {
     assert_eq!(agents.len(), 0);
     assert!((allocator.buildings[0].inventory_units(packaged_food) - 300.0).abs() < 0.01);
     assert_eq!(
-        allocator.buildings[0].shipment_cooldown_hours,
-        tuning.operational_clock.shipment_retry_cooldown_hours
+        allocator.buildings[0].shipment_cooldown_until_tick,
+        shipments.hour_ticks + u32::from(tuning.operational_clock.shipment_retry_cooldown_hours)
     );
 }
 
@@ -5891,7 +5891,7 @@ fn terminal_input_request_retries_after_budget_recovers() {
     );
 
     allocator.buildings[0].operating_budget = 5_000.0;
-    allocator.buildings[0].shipment_cooldown_hours = 0;
+    allocator.buildings[0].shipment_cooldown_until_tick = 0;
     logistics_tick!(&mut shipments, &mut allocator, &network, &graph, 480);
 
     assert!(!shipments.shipments.is_empty());
@@ -6046,7 +6046,7 @@ fn delivered_exports_pay_freight_without_depressing_the_bid() {
     );
 
     shipments.shipments.clear();
-    allocator.buildings[0].shipment_cooldown_hours = 0;
+    allocator.buildings[0].shipment_cooldown_until_tick = 0;
     allocator.buildings[0].add_inventory_units(resource_runtime_id, 500.0);
     create_profile_output_exports_for_test(&mut shipments, &mut allocator, &network, &graph, 480);
 
@@ -6091,7 +6091,7 @@ fn exports_have_no_shared_buying_quota_but_reserve_real_stock() {
             .all(|s| s.freight_cost > 0.0 && s.total_cost > s.freight_cost)
     );
     for building in &mut allocator.buildings {
-        building.shipment_cooldown_hours = 0;
+        building.shipment_cooldown_until_tick = 0;
     }
     create_profile_output_exports_for_test(&mut shipments, &mut allocator, &network, &graph, 480);
     assert_eq!(

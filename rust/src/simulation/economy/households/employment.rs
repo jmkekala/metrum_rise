@@ -715,7 +715,7 @@ fn plan_agent_workplace(
     let old_job = agents.work_building[i];
     let can_switch = old_job == usize::MAX
         || old_job >= building_count
-        || agents.job_lock_days[i] == 0
+        || agents.job_lock_until_day[i] <= agents.settlement_days
         || agents.consecutive_unpaid_days[i] >= JOB_UNPAID_ABANDON_DAYS;
     if !can_switch {
         return None;
@@ -806,6 +806,7 @@ fn relock_settled_workers(
     household_count: usize,
     planned_agents: &[usize],
 ) {
+    let today = agents.settlement_days;
     let soa = &mut agents.agents;
     let (transit, age_group, home, household, work, unpaid) = (
         &soa.transit,
@@ -815,11 +816,11 @@ fn relock_settled_workers(
         &soa.work_building,
         &soa.consecutive_unpaid_days,
     );
-    soa.job_lock_days
+    soa.job_lock_until_day
         .par_iter_mut()
         .enumerate()
-        .for_each(|(i, lock_days)| {
-            if *lock_days == 0
+        .for_each(|(i, lock_until)| {
+            if *lock_until <= today
                 && work[i] < building_count
                 && transit[i] == TRANSIT_IN_BUILDING
                 && age_group_can_work(age_group[i])
@@ -828,7 +829,7 @@ fn relock_settled_workers(
                 && unpaid[i] < JOB_UNPAID_ABANDON_DAYS
                 && planned_agents.binary_search(&i).is_err()
             {
-                *lock_days = job_lock_days(i, work[i]);
+                *lock_until = today + u32::from(job_lock_days(i, work[i]));
             }
         });
 }
@@ -876,7 +877,7 @@ fn apply_workplace_plan(
 
     let can_switch = plan.old_job == usize::MAX
         || plan.old_job >= allocator.buildings.len()
-        || agents.job_lock_days[plan.agent_idx] == 0
+        || agents.job_lock_until_day[plan.agent_idx] <= agents.settlement_days
         || agents.consecutive_unpaid_days[plan.agent_idx] >= JOB_UNPAID_ABANDON_DAYS;
     if !can_switch {
         return;
@@ -1256,7 +1257,7 @@ fn collect_home_job_option_keys(
             let old_job = agents.work_building[i];
             let can_switch = old_job == usize::MAX
                 || old_job >= building_count
-                || agents.job_lock_days[i] == 0
+                || agents.job_lock_until_day[i] <= agents.settlement_days
                 || agents.consecutive_unpaid_days[i] >= JOB_UNPAID_ABANDON_DAYS;
             if !can_switch {
                 return None;

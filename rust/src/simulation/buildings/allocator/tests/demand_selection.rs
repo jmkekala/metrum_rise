@@ -64,7 +64,7 @@ fn startup_residential_selection(mut allocator: BuildingAllocator) -> (String, u
     factory.operating_budget =
         profile.zoned_startup_budget(&catalog, tuning.owa_import_price_multiplier);
     factory.construction_total_hours = 12;
-    factory.construction_remaining_hours = 12;
+    factory.set_construction_hours_left(12);
     allocator.buildings.push(factory);
     allocator.rebuild_zone_index();
 

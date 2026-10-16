@@ -166,6 +166,9 @@ pub struct ShipmentSystem {
     pub shipments: Vec<Shipment>,
     /// Next stable shipment id to assign.
     pub next_shipment_id: u64,
+    /// Hourly logistics passes run so far; the clock of building freight cooldowns
+    /// (`Building::shipment_cooldown_until_tick`). Saved.
+    pub(crate) hour_ticks: u32,
     /// Consecutive request failures keyed by destination building and resource, including terminal unresolved requests.
     pub request_failures: BTreeMap<FreightRequestKey, FreightRequestFailure>,
     /// Freight ETA cache reused while topology revisions remain unchanged.
@@ -194,6 +197,7 @@ impl ShipmentSystem {
         Self {
             shipments: Vec::new(),
             next_shipment_id: 0,
+            hour_ticks: 0,
             request_failures: BTreeMap::new(),
             freight_route_cache: FreightRouteCache::default(),
             freight_route_cache_building_revision: u64::MAX,
@@ -360,7 +364,8 @@ impl ShipmentSystem {
                     destination_id,
                     shipment.total_cost,
                 );
-                allocator.buildings[destination_id].shipment_cooldown_hours = retry_cooldown_hours;
+                allocator.buildings[destination_id].shipment_cooldown_until_tick =
+                    self.hour_ticks + u32::from(retry_cooldown_hours);
             }
             if shipment.destination.touches_building(removed_building)
                 && shipment.status == ShipmentStatus::InTransit
@@ -371,7 +376,8 @@ impl ShipmentSystem {
             {
                 allocator.buildings[source_id]
                     .add_inventory_units(shipment.resource_runtime_id, shipment.amount);
-                allocator.buildings[source_id].shipment_cooldown_hours = retry_cooldown_hours;
+                allocator.buildings[source_id].shipment_cooldown_until_tick =
+                    self.hour_ticks + u32::from(retry_cooldown_hours);
             }
 
             if let Some(carrier) = agents.resolve_agent(shipment.carrier)

@@ -271,6 +271,7 @@ def identity(binary, command):
         "git_head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
         "diff_sha256": hashlib.sha256(subprocess.check_output(["git", "diff", "HEAD"], cwd=ROOT)).hexdigest(),
         "workers": os.environ.get("RAYON_NUM_THREADS", "8"),
+        "cpu_affinity": sorted(os.sched_getaffinity(0)),
         "command": command,
     }
 
@@ -290,7 +291,12 @@ def main():
     parser.add_argument("--perf07-speeds", default=",".join(map(str, PERF07_SPEEDS)))
     parser.add_argument("--perf07-baseline", type=Path,
                         help="report.json of an earlier perf07 run to compare against")
+    parser.add_argument("--cpus", default="",
+                        help="comma list of CPUs to pin this run and its tests to, e.g. one "
+                             "thread per performance core on a hybrid CPU")
     args = parser.parse_args()
+    if args.cpus:
+        os.sched_setaffinity(0, {int(cpu) for cpu in args.cpus.split(",")})
     output = args.artifacts.resolve()
     output.mkdir(parents=True, exist_ok=True)
     binary = args.binary.resolve() if args.binary else build_binary(output)

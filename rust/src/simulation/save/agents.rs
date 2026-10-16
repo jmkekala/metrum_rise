@@ -84,7 +84,7 @@ pub(super) fn save_agents(
     maps: &SnapshotMaps,
 ) -> SaveLoadResult<()> {
     lanes::save_lane_references(tx, graph, network, maps)?;
-    let mut stmt = tx.prepare("INSERT INTO agents(agent_id, home_building, household_id, age_group, pending_household_size, freight_shipment_id, work_building, current_building, target_building, freight_target_border_node, current_node, planned_attach_node, planned_detach_node, planned_attach_lane_id, planned_detach_lane_id, planned_attach_lane_d, planned_detach_lane_d, access_flags, next_replan_time, current_edge, current_lane_id, lane_distance, pos_x, pos_y, activity, transit, transit_mode, happiness, money, journey_start_time, schedule_seed, cached_commute_minutes, next_commute_refresh_time, next_departure_day, next_departure_minute, next_departure_origin_building, next_departure_target_building, next_departure_activity, cached_schedule_work_building, cached_work_profile_index, has_car, vehicle_type, current_path_index, pending_household_adults, pending_household_elders, speed, planned_target_building, planned_activity, network_replan_failures, lane_change_from_lane_id, lane_change_start_d, lane_change_length_m, overtake_blocked_time_s, overtake_cooldown_s, job_lock_days, consecutive_unpaid_days) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50, ?51, ?52, ?53, ?54, ?55, ?56)")?;
+    let mut stmt = tx.prepare("INSERT INTO agents(agent_id, home_building, household_id, age_group, pending_household_size, freight_shipment_id, work_building, current_building, target_building, freight_target_border_node, current_node, planned_attach_node, planned_detach_node, planned_attach_lane_id, planned_detach_lane_id, planned_attach_lane_d, planned_detach_lane_d, access_flags, next_replan_time, current_edge, current_lane_id, lane_distance, pos_x, pos_y, activity, transit, transit_mode, happiness, money, journey_start_time, schedule_seed, cached_commute_minutes, next_commute_refresh_time, next_departure_day, next_departure_minute, next_departure_origin_building, next_departure_target_building, next_departure_activity, cached_schedule_work_building, cached_work_profile_index, has_car, vehicle_type, current_path_index, pending_household_adults, pending_household_elders, speed, planned_target_building, planned_activity, network_replan_failures, lane_change_from_lane_id, lane_change_start_d, lane_change_length_m, overtake_blocked_time_s, overtake_cooldown_s, job_lock_until_day, consecutive_unpaid_days) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50, ?51, ?52, ?53, ?54, ?55, ?56)")?;
     let mut path_stmt = tx.prepare(
         "INSERT INTO agent_path_nodes(agent_id, step_index, node_id) VALUES (?1, ?2, ?3)",
     )?;
@@ -183,7 +183,7 @@ pub(super) fn save_agents(
             agents.lane_change_length_m[i],
             agents.overtake_blocked_time_s[i],
             agents.overtake_cooldown_s[i],
-            i64::from(agents.job_lock_days[i]),
+            i64::from(agents.job_lock_until_day[i]),
             i64::from(agents.consecutive_unpaid_days[i])
         ])?;
 
@@ -225,7 +225,7 @@ pub(super) fn load_agents(
     let mut agents = AgentSystem::new();
     agents.sim_time = sim_time;
     {
-        let mut stmt = conn.prepare("SELECT agent_id, home_building, household_id, age_group, pending_household_size, freight_shipment_id, work_building, current_building, target_building, freight_target_border_node, current_node, planned_attach_node, planned_detach_node, planned_attach_lane_id, planned_detach_lane_id, planned_attach_lane_d, planned_detach_lane_d, access_flags, next_replan_time, current_edge, current_lane_id, lane_distance, pos_x, pos_y, activity, transit, transit_mode, happiness, money, journey_start_time, schedule_seed, cached_commute_minutes, next_commute_refresh_time, next_departure_day, next_departure_minute, next_departure_origin_building, next_departure_target_building, next_departure_activity, cached_schedule_work_building, cached_work_profile_index, has_car, vehicle_type, current_path_index, pending_household_adults, pending_household_elders, speed, planned_target_building, planned_activity, network_replan_failures, lane_change_from_lane_id, lane_change_start_d, lane_change_length_m, overtake_blocked_time_s, overtake_cooldown_s, job_lock_days, consecutive_unpaid_days FROM agents ORDER BY agent_id")?;
+        let mut stmt = conn.prepare("SELECT agent_id, home_building, household_id, age_group, pending_household_size, freight_shipment_id, work_building, current_building, target_building, freight_target_border_node, current_node, planned_attach_node, planned_detach_node, planned_attach_lane_id, planned_detach_lane_id, planned_attach_lane_d, planned_detach_lane_d, access_flags, next_replan_time, current_edge, current_lane_id, lane_distance, pos_x, pos_y, activity, transit, transit_mode, happiness, money, journey_start_time, schedule_seed, cached_commute_minutes, next_commute_refresh_time, next_departure_day, next_departure_minute, next_departure_origin_building, next_departure_target_building, next_departure_activity, cached_schedule_work_building, cached_work_profile_index, has_car, vehicle_type, current_path_index, pending_household_adults, pending_household_elders, speed, planned_target_building, planned_activity, network_replan_failures, lane_change_from_lane_id, lane_change_start_d, lane_change_length_m, overtake_blocked_time_s, overtake_cooldown_s, job_lock_until_day, consecutive_unpaid_days FROM agents ORDER BY agent_id")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let aid = i64_to_usize(row.get(0)?)?;
@@ -308,7 +308,7 @@ pub(super) fn load_agents(
             agents.lane_change_length_m[aid] = row.get(51)?;
             agents.overtake_blocked_time_s[aid] = row.get(52)?;
             agents.overtake_cooldown_s[aid] = row.get(53)?;
-            agents.job_lock_days[aid] = i64_to_u8(row.get(54)?)?;
+            agents.job_lock_until_day[aid] = i64_to_u32(row.get(54)?)?;
             agents.consecutive_unpaid_days[aid] = i64_to_u8(row.get(55)?)?;
             for value in [
                 agents.speed[aid],
@@ -394,7 +394,7 @@ pub(super) fn push_loaded_agent(agents: &mut AgentSystem, rec: LoadedAgentRecord
         pedestrian_type: rec.pedestrian_type,
         walk_phase: rec.walk_phase,
         // Legacy saves lack these counters; current-format rows restore them after insertion.
-        job_lock_days: 0,
+        job_lock_until_day: 0,
         consecutive_unpaid_days: 0,
     });
 }

@@ -1040,7 +1040,7 @@ fn add_test_complete_building(core: &mut SimCore, asset_id: String, zone_type: Z
         asset_id,
         level: 1,
         construction_total_hours: 0,
-        construction_remaining_hours: 0,
+        construction_complete_slot: 0,
         broken: false,
         economy_profile_runtime_id: 0,
         economy_broken: false,
@@ -1049,7 +1049,7 @@ fn add_test_complete_building(core: &mut SimCore, asset_id: String, zone_type: Z
         operating_budget: 0.0,
         profit_tax_budget_baseline: 0.0,
         last_day_profit: 0.0,
-        shipment_cooldown_hours: 0,
+        shipment_cooldown_until_tick: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
         daily_city_funded_input_cost: 0.0,
@@ -1515,7 +1515,7 @@ fn completed_homes_rehouse_existing_residents_before_hourly_arrivals() {
         .allocator
         .registry
         .household_capacity(&homes[0].asset_id);
-    core.allocator.buildings[0].construction_remaining_hours = 1;
+    core.allocator.buildings[0].set_construction_hours_left(1);
     let catalog = load_runtime_economy_catalog().unwrap();
     let tuning = load_runtime_economy_tuning().unwrap();
     for _ in 0..slots {
@@ -1537,6 +1537,8 @@ fn completed_homes_rehouse_existing_residents_before_hourly_arrivals() {
             .spawn_housed_agent_with_age_group(usize::MAX, 0.0, 0.0, AGE_ADULT);
         core.agents.assign_household_id(agent, household);
     }
+    // The home completes at its slot, before the hour that rehouses its residents.
+    core.allocator.complete_construction(0);
     core.simulate_operational_hour_internal(1, 60);
     assert!(!core.allocator.buildings[0].is_under_construction());
     assert_eq!(core.allocator.buildings[0].occupancy, slots);
@@ -1717,7 +1719,7 @@ fn queued_customer_reservations_rebuild_before_post_load_minute_execution() {
             firm.parcel_id,
             firm.asset_id.clone(),
             firm.operating_budget.to_bits(),
-            firm.construction_remaining_hours,
+            firm.construction_complete_slot,
             core.treasury.balance.to_bits(),
         ));
     }
@@ -1927,7 +1929,7 @@ fn queued_projects_revalidate_future_doors_and_prices_through_placement_and_relo
                                 building.parcel_id,
                                 building.asset_id.clone(),
                                 building.operating_budget.to_bits(),
-                                building.construction_remaining_hours,
+                                building.construction_complete_slot,
                                 building.worker_count,
                             )
                         })
@@ -2842,7 +2844,7 @@ fn queued_buyers_and_supplier_replacement_survive_reload_at_every_step() {
         execute_test_construction(&mut core, &factories[0], ZoneType::Industrial, 5);
         let supplier = core.allocator.buildings.len() - 1;
         for building in &mut core.allocator.buildings {
-            building.construction_remaining_hours = 0;
+            building.construction_complete_slot = 0;
         }
         core.allocator.buildings[supplier].worker_count = 4;
         core.allocator.buildings[supplier].operating_budget = 1_000_000.0;
@@ -2954,7 +2956,7 @@ fn queued_buyers_and_supplier_replacement_survive_reload_at_every_step() {
                             building.parcel_id,
                             building.asset_id.clone(),
                             building.operating_budget.to_bits(),
-                            building.construction_remaining_hours,
+                            building.construction_complete_slot,
                             building.worker_count,
                         )
                     })

@@ -118,10 +118,9 @@ mod tests {
         allocator.mark_building_deserted(0);
         assert_eq!(allocator.production_revision(), revision);
 
-        allocator.buildings[0].construction_remaining_hours = 2;
-        allocator.advance_construction_hour();
-        assert_eq!(allocator.production_revision(), revision);
-        allocator.advance_construction_hour();
-        assert!(!allocator.production_changes_since(revision, &mut changed));
+        allocator.buildings[0].set_construction_hours_left(2);
+        allocator.complete_construction(0);
+        assert!(allocator.production_changes_since(revision, &mut changed));
+        assert_eq!(changed, [0]);
     }
 }

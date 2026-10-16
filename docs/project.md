@@ -319,7 +319,10 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   the guards every step must pass (`tools/sim02_gate.py`: behaviour envelope, burst shares,
   money conservation, reference invariants, determinism, worst sim frame) and recorded the
   pre-refactor baseline: the worst frame is 637 ms at 30k and 2.5 s at 100k. `SIM-02-B`
-  (2026-10-16) moved saves to format 87: **saves from earlier builds no longer load.**
+  (2026-10-16) moved saves to format 87: **saves from earlier builds no longer load.** Each
+  step since bumps the format again (90 after `SIM-02-D`). `SIM-02-D` (2026-10-16): a
+  construction site now completes exactly its authored duration after it starts, at its own
+  slot, instead of on the next hour (up to an hour later than before).
 
 - **Starting treasury**: new games begin with 500,000, increased from 100,000. See
   [money source](economy.md#money-source); earlier balance runs retain their original starting capital.

@@ -684,7 +684,7 @@ fn replacement_prices_revalidate_downstream_buyers_and_restore_failed_joint_proo
             &tuning,
         );
         assert_eq!(placed.industrial.spawn_executed, 1);
-        allocator.buildings[0].construction_remaining_hours = 0;
+        allocator.buildings[0].construction_complete_slot = 0;
         allocator.buildings[0].worker_count = 10;
         allocator.buildings[0].operating_budget = 100_000.0;
         let shop_asset = register_family_asset_with_economy_profile(
@@ -713,7 +713,7 @@ fn replacement_prices_revalidate_downstream_buyers_and_restore_failed_joint_proo
                     catalog.profile_for_id("grocery_basic").unwrap().runtime_id;
                 if constructing {
                     site.worker_count = 0;
-                    site.construction_remaining_hours = 12;
+                    site.set_construction_hours_left(12);
                     site.construction_total_hours = 12;
                 }
             }
@@ -1409,7 +1409,7 @@ fn cyclic_replacement_preserves_both_financing_proofs_and_exact_rejection() {
                 );
                 assert_eq!(execution.industrial.spawn_executed, 1);
                 let building = allocator.buildings.last_mut().unwrap();
-                building.construction_remaining_hours = 0;
+                building.construction_complete_slot = 0;
                 building.worker_count = 1;
                 building.operating_budget = 1_000_000.0;
             }
@@ -1690,7 +1690,7 @@ fn cyclic_replacement_preserves_both_financing_proofs_and_exact_rejection() {
                             (
                                 building.asset_id.clone(),
                                 building.operating_budget.to_bits(),
-                                building.construction_remaining_hours,
+                                building.construction_complete_slot,
                             )
                         })
                         .collect::<Vec<_>>(),
@@ -1804,7 +1804,7 @@ fn live_local_inputs_can_fund_only_their_incumbents_upgrade() {
         );
         assert_eq!(placed.industrial.spawn_executed, 1);
         let factory = allocator.buildings.last_mut().unwrap();
-        factory.construction_remaining_hours = 0;
+        factory.construction_complete_slot = 0;
         factory.worker_count = 10;
         factory.operating_budget = 100_000.0;
         for input in &catalog
@@ -1966,8 +1966,8 @@ fn constructing_areas_and_services_share_finite_inputs_with_actual_capital() {
         site.center_y = if index == 0 { 20.0 } else { -20.0 };
         site.frontage_t = site.center_x / 50.0;
         site.parcel_id = 10_000 + index as u64;
-        site.construction_remaining_hours = if index == 0 { 0 } else { 10 };
-        site.construction_total_hours = site.construction_remaining_hours;
+        site.construction_total_hours = if index == 0 { 0 } else { 10 };
+        site.set_construction_hours_left(site.construction_total_hours);
         allocator.buildings.push(site);
     }
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
@@ -2144,8 +2144,8 @@ fn constructing_shops_replay_inputs_in_admission_order() {
         site.center_y = if constructing { -20.0 } else { 20.0 };
         site.frontage_t = site.center_x / 50.0;
         site.parcel_id = 10_000 + index as u64;
-        site.construction_remaining_hours = if constructing { 10 } else { 0 };
-        site.construction_total_hours = site.construction_remaining_hours;
+        site.construction_total_hours = if constructing { 10 } else { 0 };
+        site.set_construction_hours_left(site.construction_total_hours);
         site.operating_budget = 100_000.0;
         allocator.buildings.push(site);
     }
@@ -2600,7 +2600,7 @@ fn business_projects_share_financed_customers_through_replay_and_rollback() {
     constructing.center_y = 20.0;
     constructing.frontage_t = 0.9;
     constructing.operating_budget = 100_000.0;
-    constructing.construction_remaining_hours = 12;
+    constructing.set_construction_hours_left(12);
     constructing.construction_total_hours = 12;
     allocator.buildings.push(constructing);
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
@@ -2739,7 +2739,7 @@ fn service_projects_share_live_customers_and_replacement_rollback() {
             site.economy_profile_runtime_id = profile.runtime_id;
         }
         if index == 2 {
-            site.construction_remaining_hours = 12;
+            site.set_construction_hours_left(12);
             site.construction_total_hours = 12;
         }
         allocator.buildings.push(site);
@@ -3588,7 +3588,7 @@ fn upgrades_share_ready_workers_and_preserve_incumbent_job_reservations() {
         if future_home {
             let home = register_test_asset(&mut allocator, "future_home", ZoneType::Residential);
             let mut home = building(ZoneType::Residential, 0.0, 0, 0, home);
-            home.construction_remaining_hours = 1;
+            home.set_construction_hours_left(1);
             home.construction_total_hours = 1;
             allocator.buildings.push(home);
         }
@@ -3949,7 +3949,7 @@ fn business_downgrades_require_recovery_and_share_workers_and_customers() {
         if future_home {
             let asset = register_test_asset(&mut allocator, "future_home", ZoneType::Residential);
             let mut home = building(ZoneType::Residential, 0.0, 0, 0, asset);
-            home.construction_remaining_hours = 1;
+            home.set_construction_hours_left(1);
             home.construction_total_hours = 1;
             allocator.buildings.push(home);
         }
@@ -4073,7 +4073,7 @@ fn residential_downgrades_preserve_worker_housing_and_share_surplus() {
                 plant.economy_profile_runtime_id = factory_profile.runtime_id;
                 plant.parcel_id = 2000 + index;
                 plant.cell_x = 120 + index as usize * 2;
-                plant.construction_remaining_hours = 5;
+                plant.set_construction_hours_left(5);
                 plant.construction_total_hours = 5;
                 allocator.buildings.push(plant);
             }

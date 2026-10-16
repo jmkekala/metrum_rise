@@ -124,6 +124,8 @@ impl SimCore {
         observer: &mut impl EconomyObserver,
     ) -> FrameStepReport {
         let mut report = FrameStepReport::default();
+        // Sites placed by tools since the last frame; demand places its own during slots.
+        self.schedule_construction_completions();
         let speed = self.time.speed_multiplier;
         if speed <= 0.0 {
             return report;

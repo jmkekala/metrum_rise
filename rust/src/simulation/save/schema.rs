@@ -6,7 +6,7 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version, also the only one that loads (`SIM-02` broke older saves).
-pub const SAVE_VERSION: i64 = 88;
+pub const SAVE_VERSION: i64 = 90;
 
 /// Sentinel for an absent reference column.
 pub const NONE_REF: i64 = -1;
@@ -129,7 +129,9 @@ CREATE TABLE scheduler_state(
     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
     next_slot INTEGER NOT NULL,
     next_event_seq INTEGER NOT NULL,
-    next_spawn_id INTEGER NOT NULL
+    next_spawn_id INTEGER NOT NULL,
+    logistics_hour_ticks INTEGER NOT NULL,
+    agent_settlement_days INTEGER NOT NULL
 );
 CREATE TABLE timed_events(
     slot INTEGER NOT NULL,
@@ -239,13 +241,13 @@ CREATE TABLE buildings(
     operating_budget REAL NOT NULL,
     profit_tax_budget_baseline REAL NOT NULL,
     last_day_profit REAL NOT NULL,
-    shipment_cooldown_hours INTEGER NOT NULL,
+    shipment_cooldown_until_tick INTEGER NOT NULL,
     width INTEGER NOT NULL,
     depth INTEGER NOT NULL,
     asset_id TEXT NOT NULL,
     level INTEGER NOT NULL,
     construction_total_hours INTEGER NOT NULL,
-    construction_remaining_hours INTEGER NOT NULL,
+    construction_complete_slot INTEGER NOT NULL,
     broken INTEGER NOT NULL DEFAULT 0,
     pending_redevelopment INTEGER NOT NULL DEFAULT 0,
     rezone_grace_days_remaining INTEGER NOT NULL DEFAULT 0,
@@ -497,7 +499,7 @@ CREATE TABLE agents(
     lane_change_length_m REAL NOT NULL,
     overtake_blocked_time_s REAL NOT NULL,
     overtake_cooldown_s REAL NOT NULL,
-    job_lock_days INTEGER NOT NULL,
+    job_lock_until_day INTEGER NOT NULL,
     consecutive_unpaid_days INTEGER NOT NULL
 );
 CREATE TABLE agent_path_nodes(

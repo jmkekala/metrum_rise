@@ -1806,6 +1806,8 @@ impl BuildingAllocator {
 
         let construction_duration_hours =
             construction_duration_hours(placement.zone_type, placement.initial_level, tuning);
+        let construction_complete_slot =
+            self.construction_complete_slot_after(construction_duration_hours);
         let zone_cell_m = placement.zone_cell_m;
 
         crate::debug::work::add(crate::debug::work::Work::BuildingsPlaced, 1);
@@ -1837,7 +1839,7 @@ impl BuildingAllocator {
             asset_id: placement.asset_id,
             level: placement.initial_level,
             construction_total_hours: construction_duration_hours,
-            construction_remaining_hours: construction_duration_hours,
+            construction_complete_slot,
             broken: false,
             economy_profile_runtime_id: economy_binding.runtime_id,
             economy_broken: economy_binding.economy_broken,
@@ -1846,7 +1848,7 @@ impl BuildingAllocator {
             operating_budget: startup_budget,
             profit_tax_budget_baseline: startup_budget,
             last_day_profit: 0.0,
-            shipment_cooldown_hours: 0,
+            shipment_cooldown_until_tick: 0,
             daily_owa_input_value: 0.0,
             daily_local_input_value: 0.0,
             daily_city_funded_input_cost: 0.0,
@@ -1869,6 +1871,12 @@ impl BuildingAllocator {
         self.building_handles
             .register_appended(self.buildings.len());
         let building_idx = self.buildings.len() - 1;
+        if construction_complete_slot != 0 {
+            self.pending_construction.push((
+                self.building_handles.handle(building_idx),
+                construction_complete_slot,
+            ));
+        }
         self.push_building_site_client(building_idx, zone_cell_m);
         self.queue_yard(building_idx, zone_cell_m);
         // Site publication belongs to placement, not to demand/service/industry callers.

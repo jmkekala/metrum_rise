@@ -186,8 +186,10 @@ This section describes the current cadence. Its replacement is planned in
 - **Daily pass:** runs at minute 0, after the daily economy settlement. It plans household
   departures from the settled snapshot; removals execute at once. The minute-0 hourly demand pass
   then runs, so each day has 24 hourly slices without reading pre-settlement state.
-- **Construction queue:** new construction is queued and started one project per authored minute
-  (`execute_pending_demand_spawns_for_minute`).
+- **Construction queue:** new construction is queued and started one project per authored minute,
+  each start a timed event (`SIM-02-C`). A site completes at its own slot, its duration after the
+  start (`SIM-02-D`). The workforce calendar counts every site, placed, queued or proposed, as
+  ready at the first hour boundary at or after its completion.
 - **Frozen inputs:** a pass's inputs are fixed. Its changes affect the next operational hour.
   Hourly admissions are never eligible for removals already selected from that day's settlement.
 

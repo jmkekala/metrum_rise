@@ -7,7 +7,6 @@ use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::{debug, debug_log};
-use rayon::prelude::*;
 use std::time::Instant;
 
 use super::data::ShipmentSystem;
@@ -41,7 +40,8 @@ impl ShipmentSystem {
         self.refresh_freight_route_cache(allocator, transit_network);
         let route_cache_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
-        self.decrement_building_cooldowns(allocator);
+        // Cooldowns are deadlines in these ticks; nothing scans the buildings (`SIM-02-D`).
+        self.hour_ticks += 1;
         let cooldowns_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
         let mut planning = FreightPlanningContext::build(self, allocator, transit_network, graph);
@@ -102,14 +102,6 @@ impl ShipmentSystem {
                 total_start.elapsed().as_secs_f64() * 1000.0,
             );
         }
-    }
-
-    pub(super) fn decrement_building_cooldowns(&self, allocator: &mut BuildingAllocator) {
-        allocator.buildings.par_iter_mut().for_each(|building| {
-            if building.shipment_cooldown_hours > 0 {
-                building.shipment_cooldown_hours -= 1;
-            }
-        });
     }
 
     /// Invalidates dispatch and forecast route tables together after topology changes.

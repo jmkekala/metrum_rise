@@ -95,7 +95,7 @@ fn building_lod_spatial_queries_ignore_background_population_and_idle_clock() {
 fn building_lod_lifecycle_updates_construction_desertion_removal_and_world_replacement() {
     let (mut allocator, mut renderer) = setup(0);
     allocator.buildings[0].construction_total_hours = 4;
-    allocator.buildings[0].construction_remaining_hours = 4;
+    allocator.buildings[0].set_construction_hours_left(4);
     renderer.update(&allocator, [0, 0, 0, 0], camera(64.0), 0.0, Instant::now());
     let initial_y = output(&renderer)[0].1[0][7];
     assert_eq!(
@@ -104,12 +104,21 @@ fn building_lod_lifecycle_updates_construction_desertion_removal_and_world_repla
         "construction has no lights"
     );
     renderer.acknowledge();
-    assert!(renderer.update(&allocator, [0, 0, 0, 0], camera(64.0), 0.5, Instant::now()));
+    // Half an hour of slots into four hours of construction started at slot 0.
+    assert!(renderer.update(
+        &allocator,
+        [0, 0, 0, 0],
+        camera(64.0),
+        SLOTS_PER_HOUR as f64 * 0.5,
+        Instant::now()
+    ));
     assert!(output(&renderer)[0].1[0][7] > initial_y);
+    assert_eq!(
+        allocator.buildings[0].construction_progress(SLOTS_PER_HOUR as f64 * 0.5),
+        0.125
+    );
     renderer.acknowledge();
-    for _ in 0..4 {
-        allocator.advance_construction_hour();
-    }
+    allocator.complete_construction(0);
     renderer.update(&allocator, [0, 0, 0, 0], camera(64.0), 0.0, Instant::now());
     assert_eq!(output(&renderer)[0].1[0][7], 0.0);
     assert!(

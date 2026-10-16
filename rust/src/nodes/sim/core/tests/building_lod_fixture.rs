@@ -4,6 +4,7 @@
 //! benchmarks. World/road/save preparation is deliberately outside all measured paths.
 
 use super::*;
+use crate::simulation::core::scheduler::SLOTS_PER_HOUR;
 
 #[test]
 #[ignore = "writes generated gameplay LOD saves to METRUM_BUILDING_LOD_FIXTURE_DIR"]
@@ -66,10 +67,19 @@ fn generate_building_lod_fixtures() {
             .unwrap();
     };
     save(&core, "complete.sqlite");
+    // Halfway through four hours of construction, with its completion event saved.
+    let complete_slot = core.time.absolute_slot() + 2 * SLOTS_PER_HOUR;
     core.allocator.buildings[0].construction_total_hours = 4;
-    core.allocator.buildings[0].construction_remaining_hours = 2;
+    core.allocator.buildings[0].construction_complete_slot = complete_slot;
+    let len = core.allocator.buildings.len();
+    core.allocator.building_handles.register_appended(len);
+    let handle = core.allocator.building_handles.handle(0);
+    core.allocator
+        .pending_construction
+        .push((handle, complete_slot));
     core.allocator.mark_building_deserted(1);
     save(&core, "lifecycle.sqlite");
+    core.allocator.building_handles.swap_remove(0, len);
     core.allocator.buildings.swap_remove(0);
     save(&core, "removed.sqlite");
     eprintln!("building LOD fixtures: {directory}; buildings=2048; assets=3; variants=3");

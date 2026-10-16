@@ -135,6 +135,33 @@ impl BuildingAllocator {
         true
     }
 
+    /// Adds a building that just finished construction to clean indices: a sorted insert into
+    /// its zone list, which a rebuild keeps in dense order, and a vacancy push. Its chunk entry
+    /// already exists. Returns false for a stale index. O(log B) plus the insert.
+    pub(super) fn index_completed_building(&mut self, building_idx: usize) -> bool {
+        if self.dirty_index || self.vacancy_pos.len() != self.buildings.len() {
+            return false;
+        }
+        let zone_type = self.buildings[building_idx].zone_type;
+        if let Some(zi) = baseline_private_zone_slot(zone_type) {
+            let list = &mut self.zone_index[zi];
+            let position = list.partition_point(|&idx| idx < building_idx);
+            list.insert(position, building_idx);
+        }
+        if let Some(zi) = self.housing_vacancy_slot(building_idx) {
+            let resident_cap = self.household_capacity(building_idx);
+            if resident_cap > 0
+                && self.buildings[building_idx].occupancy < resident_cap
+                && self.vacancy_pos[building_idx] == usize::MAX
+            {
+                self.vacancy_pos[building_idx] = self.vacancy_index[zi].len();
+                self.vacancy_index[zi].push(building_idx);
+                self.admission_vacancy_pushed(zi, building_idx);
+            }
+        }
+        true
+    }
+
     /// Increments occupancy for a building and updates vacancy index if it becomes full.
     /// O(log V) for the admission order.
     pub fn claim_vacancy(&mut self, building_idx: usize) {

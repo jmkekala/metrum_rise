@@ -216,7 +216,8 @@ impl AgentSystem {
                 }
             }
         }
-        self.agents.job_lock_days[agent_idx] = job_lock_days;
+        self.agents.job_lock_until_day[agent_idx] =
+            self.settlement_days + u32::from(job_lock_days);
         self.agents.consecutive_unpaid_days[agent_idx] = 0;
     }
 
@@ -323,7 +324,7 @@ impl AgentSystem {
 
             if self.agents.work_building[agent_idx] == building_id {
                 self.agents.work_building[agent_idx] = usize::MAX;
-                self.agents.job_lock_days[agent_idx] = 0;
+                self.agents.job_lock_until_day[agent_idx] = 0;
                 self.clear_schedule_building_cache(agent_idx);
             }
 
@@ -774,7 +775,7 @@ mod tests {
             asset_id: asset_id.to_owned(),
             level: 1,
             construction_total_hours: 0,
-            construction_remaining_hours: 0,
+            construction_complete_slot: 0,
             broken: false,
             economy_profile_runtime_id: 0,
             economy_broken: false,
@@ -783,7 +784,7 @@ mod tests {
             operating_budget: 500.0,
             profit_tax_budget_baseline: 500.0,
             last_day_profit: 0.0,
-            shipment_cooldown_hours: 0,
+            shipment_cooldown_until_tick: 0,
             daily_owa_input_value: 0.0,
             daily_local_input_value: 0.0,
             daily_city_funded_input_cost: 0.0,
@@ -925,7 +926,7 @@ mod tests {
         sys.assign_work_building(agent_idx, 3, 7);
 
         assert_eq!(sys.agents.work_building[agent_idx], 3);
-        assert_eq!(sys.agents.job_lock_days[agent_idx], 7);
+        assert_eq!(sys.agents.job_lock_until_day[agent_idx], 7);
         assert_eq!(sys.agents.target_building[agent_idx], usize::MAX);
         assert_eq!(sys.agents.planned_target_building[agent_idx], usize::MAX);
         assert_eq!(sys.agents.access_flags[agent_idx], 0);

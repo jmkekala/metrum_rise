@@ -152,7 +152,7 @@ impl SimulationNode {
             &core.allocator,
             bounds,
             view,
-            core.operational_hour_fraction(),
+            core.construction_clock_slots(),
             std::time::Instant::now(),
         );
         result.set("busy", false);

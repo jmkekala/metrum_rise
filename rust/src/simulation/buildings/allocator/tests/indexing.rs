@@ -17,7 +17,7 @@ fn explicit_cell_site_summary_tracks_append_rebuild_and_clear() {
     allocator.rebuild_zone_index();
     assert!(!allocator.has_explicit_cell_sites());
     let mut explicit = indexed_test_building(String::new(), ZoneType::None, 0);
-    explicit.construction_remaining_hours = 8;
+    explicit.set_construction_hours_left(8);
     allocator.buildings.push(explicit);
     allocator.rebuild_building_site_clients(10.0);
     assert!(allocator.index_appended_building(1));
@@ -51,7 +51,7 @@ fn nearest_building_pick_preserves_radius_ties_and_index_refresh() {
         }
         // The lower ID lies in the later-visited chunk; broken/unfinished buildings are pickable.
         allocator.buildings[0].broken = true;
-        allocator.buildings[0].construction_remaining_hours = 1;
+        allocator.buildings[0].set_construction_hours_left(1);
         assert_eq!(allocator.nearest_building_idx_at(boundary, 0.0), Some(0));
         assert_eq!(
             allocator.nearest_building_idx_at(boundary + 31.0, 0.0),
@@ -322,7 +322,7 @@ fn test_construction_completion_enables_capacity_and_vacancy_indexing() {
 
     let mut building = indexed_test_building(residential_asset, ZoneType::Residential, 0);
     building.construction_total_hours = 2;
-    building.construction_remaining_hours = 2;
+    building.set_construction_hours_left(2);
     allocator.buildings.push(building);
     allocator.rebuild_zone_index();
 
@@ -336,11 +336,23 @@ fn test_construction_completion_enables_capacity_and_vacancy_indexing() {
         0
     );
 
-    allocator.advance_construction_hour();
-    assert_eq!(allocator.buildings[0].construction_remaining_hours, 1);
+    assert_eq!(allocator.buildings[0].construction_hours_left(0), 2);
+    assert_eq!(
+        allocator.buildings[0].construction_hours_left(SLOTS_PER_HOUR + 1),
+        1
+    );
     assert_eq!(allocator.household_capacity(0), 0);
 
-    allocator.advance_construction_hour();
+    allocator.complete_construction(0);
+    assert!(
+        !allocator.dirty_index,
+        "completion updates a clean index in place"
+    );
+    let mut expected = allocator.clone();
+    expected.rebuild_zone_index();
+    assert_eq!(allocator.zone_index, expected.zone_index);
+    assert_eq!(allocator.vacancy_index, expected.vacancy_index);
+    assert_eq!(allocator.vacancy_pos, expected.vacancy_pos);
     assert!(!allocator.buildings[0].is_under_construction());
     assert_eq!(allocator.buildings[0].construction_total_hours, 0);
     assert_eq!(allocator.household_capacity(0), 6);

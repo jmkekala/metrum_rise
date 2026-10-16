@@ -23,6 +23,7 @@ impl ShipmentSystem {
     ) {
         let catalog = planning.catalog.clone();
         let tuning = planning.tuning.clone();
+        let hour_ticks = self.hour_ticks;
         let mut eligible_destinations: Vec<usize> = allocator
             .buildings
             .par_iter()
@@ -33,7 +34,7 @@ impl ShipmentSystem {
                     || building.is_deserted
                     || building.is_under_construction()
                     || building.edge_idx == usize::MAX
-                    || building.shipment_cooldown_hours > 0
+                    || building.shipment_cooldown_until_tick > hour_ticks
                 {
                     return None;
                 }
@@ -54,7 +55,7 @@ impl ShipmentSystem {
                 || building.is_deserted
                 || building.is_under_construction()
                 || building.edge_idx == usize::MAX
-                || building.shipment_cooldown_hours > 0
+                || building.shipment_cooldown_until_tick > hour_ticks
             {
                 continue;
             }
@@ -167,8 +168,8 @@ impl ShipmentSystem {
             }
 
             if failed_any_request {
-                allocator.buildings[dest_idx].shipment_cooldown_hours =
-                    tuning.operational_clock.shipment_retry_cooldown_hours;
+                allocator.buildings[dest_idx].shipment_cooldown_until_tick =
+                    hour_ticks + u32::from(tuning.operational_clock.shipment_retry_cooldown_hours);
             }
         }
     }

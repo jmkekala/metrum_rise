@@ -219,7 +219,7 @@ impl SimCore {
                 next_departure_activity: 0,
                 cached_schedule_work_building: usize::MAX,
                 cached_work_profile_index: u16::MAX,
-                job_lock_days: 0,
+                job_lock_until_day: 0,
                 consecutive_unpaid_days: 0,
             });
         }

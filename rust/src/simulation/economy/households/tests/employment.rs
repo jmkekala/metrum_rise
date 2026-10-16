@@ -473,7 +473,7 @@ fn unfinished_service_keeps_fiscal_ceiling_without_advertising_live_jobs() {
     let profile = catalog.profile_for_id("power_plant_basic").unwrap();
     let mut plant = make_building(40.0, ZoneType::None, &asset, 0.0);
     plant.economy_profile_runtime_id = profile.runtime_id;
-    plant.construction_remaining_hours = 24;
+    plant.set_construction_hours_left(24);
     plant.construction_total_hours = 24;
     allocator.buildings.push(plant);
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
@@ -504,7 +504,7 @@ fn unfinished_service_keeps_fiscal_ceiling_without_advertising_live_jobs() {
             )]
         );
     }
-    allocator.buildings[0].construction_remaining_hours = 0;
+    allocator.buildings[0].construction_complete_slot = 0;
     funding.refresh(
         &allocator,
         &[],
@@ -1821,7 +1821,7 @@ fn owner_money_and_unprofitable_exports_do_not_create_live_jobs() {
         "profitable sales still need working capital"
     );
     allocator.buildings[0].operating_budget = 1_000_000.0;
-    allocator.buildings[0].construction_remaining_hours = 1;
+    allocator.buildings[0].set_construction_hours_left(1);
     households.job_funding.refresh(
         &allocator,
         &[],
@@ -1839,7 +1839,7 @@ fn owner_money_and_unprofitable_exports_do_not_create_live_jobs() {
         households.job_funding.capacities[0], 0,
         "future production cannot pay arrivals"
     );
-    allocator.buildings[0].construction_remaining_hours = 0;
+    allocator.buildings[0].construction_complete_slot = 0;
     for (role, expected) in [
         (NodeType::Border, 10),
         (NodeType::Junction, 0),
@@ -2618,7 +2618,7 @@ fn full_current_workplace_is_scored_before_switching() {
     agents.current_building[agent] = 0;
     agents.has_car[agent] = true;
     agents.assign_work_building(agent, 1, 0);
-    agents.job_lock_days[agent] = 0;
+    agents.job_lock_until_day[agent] = 0;
 
     households.assign_agent_workplaces(&mut agents, &mut allocator, &network, &graph);
 
@@ -3546,7 +3546,7 @@ fn household_wage_snapshot_counts_only_active_paid_adult_assignments() {
         households.households[0].gross_daily_wages,
         profile.average_daily_wage()
     );
-    allocator.buildings[1].construction_remaining_hours = 1;
+    allocator.buildings[1].set_construction_hours_left(1);
     households.rebuild_household_and_worker_counts(&agents, &mut allocator);
     assert_eq!(households.households[0].gross_daily_wages, 0.0);
     assert_eq!(households.households[0].employed_adults, 2);

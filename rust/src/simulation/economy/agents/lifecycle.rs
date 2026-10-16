@@ -404,7 +404,7 @@ impl AgentSystem {
             vehicle_type: stable_index(visual_seed ^ 0xA11C_EC7A, 4) as u8,
             pedestrian_type: stable_index(visual_seed ^ 0x51DE_CAFE, 4) as u8,
             walk_phase: stable_unit_f32(visual_seed ^ 0xBEE5_100D),
-            job_lock_days: 0,
+            job_lock_until_day: 0,
             consecutive_unpaid_days: 0,
         }
     }

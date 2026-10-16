@@ -190,7 +190,7 @@ impl WorkforceReservations {
         self.horizon = allocator
             .buildings
             .par_iter()
-            .map(|building| usize::from(building.construction_remaining_hours))
+            .map(|building| usize::from(building.construction_hours_left(allocator.now_slot)))
             .max()
             .unwrap_or(0)
             .max(
@@ -269,7 +269,7 @@ impl WorkforceReservations {
                     {
                         return None;
                     }
-                    let hour = usize::from(building.construction_remaining_hours);
+                    let hour = usize::from(building.construction_hours_left(allocator.now_slot));
                     if building.is_under_construction()
                         && matches!(
                             building.zone_type,

@@ -147,7 +147,7 @@ fn snapshot_remaps_all_lane_roles_after_incremental_rebuild_and_edge_compaction(
         agents.lane_change_length_m[i] = 8.0;
         agents.overtake_blocked_time_s[i] = 0.75;
         agents.overtake_cooldown_s[i] = 1.25;
-        agents.job_lock_days[i] = 2;
+        agents.job_lock_until_day[i] = 2;
         agents.consecutive_unpaid_days[i] = 1;
         network.lane_system.lanes[id].frontage_delay_penalty_s = id as f32 * 0.125;
         network.lane_system.lanes[id].live_frontage_delay_s = id as f32 * 0.25;
@@ -219,7 +219,7 @@ fn snapshot_remaps_all_lane_roles_after_incremental_rebuild_and_edge_compaction(
                 agents.lane_change_length_m[i],
                 agents.overtake_blocked_time_s[i],
                 agents.overtake_cooldown_s[i],
-                agents.job_lock_days[i],
+                agents.job_lock_until_day[i],
                 agents.consecutive_unpaid_days[i]
             ),
             (
@@ -230,7 +230,7 @@ fn snapshot_remaps_all_lane_roles_after_incremental_rebuild_and_edge_compaction(
                 restored.lane_change_length_m[i],
                 restored.overtake_blocked_time_s[i],
                 restored.overtake_cooldown_s[i],
-                restored.job_lock_days[i],
+                restored.job_lock_until_day[i],
                 restored.consecutive_unpaid_days[i]
             ),
         );

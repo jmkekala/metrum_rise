@@ -709,6 +709,18 @@ impl SimCore {
             .remove(&building_idx)
             .expect("building undo journal was prevalidated");
         let removed_parcel_id = removed_building.parcel_id;
+        // The building returns to its old dense slot with a new handle; the building it
+        // displaces keeps its handle at the end of the store. A site still under construction
+        // completes at its saved deadline, or at the next slot once that has passed.
+        let handle = self
+            .allocator
+            .building_handles
+            .insert_displacing(building_idx, self.allocator.buildings.len());
+        if removed_building.is_under_construction() {
+            self.allocator
+                .pending_construction
+                .push((handle, removed_building.construction_complete_slot));
+        }
         if building_idx < last_idx {
             let moved_building = buildings
                 .remove(&last_idx)
@@ -791,7 +803,10 @@ impl SimCore {
         let mut restored_carriers = Vec::with_capacity(undo.removed_carriers.len());
         for (carrier_idx, carrier) in undo.removed_carriers {
             let current_len = self.agents.agents.len();
-            let handle = self.agents.handles.insert_displacing(carrier_idx, current_len);
+            let handle = self
+                .agents
+                .handles
+                .insert_displacing(carrier_idx, current_len);
             restored_carriers.push((carrier.freight_shipment_id, handle));
             if carrier_idx == current_len {
                 self.agents.agents.push(carrier);

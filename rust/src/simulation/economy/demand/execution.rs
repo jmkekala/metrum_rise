@@ -181,8 +181,10 @@ impl DemandSystem {
                     project.profile_runtime_id = profile_id;
                     project.level = level;
                     project.commercial = zone == ZoneType::Commercial;
-                    project.completion_hour = current
-                        .0
+                    // Started now, the project is ready `duration` boundaries after the
+                    // first one at or after this minute (`SIM-02-D`).
+                    project.completion_hour = now
+                        .div_ceil(60)
                         .saturating_add(u64::from(duration))
                         .saturating_sub(self.queued_reference_hour);
                     self.construction_execution.epoch = None;
@@ -425,7 +427,8 @@ impl DemandSystem {
                 &execution.funding.service_capacities,
                 &execution.funding.freight_capital,
                 &mut execution.workforce,
-                current.0.saturating_sub(self.queued_reference_hour),
+                // Placed sites count their deadlines from this minute's hour.
+                (now / 60).saturating_sub(self.queued_reference_hour),
             );
             execution.market = Some(snapshot.output_absorption);
             execution.epoch = Some(current);

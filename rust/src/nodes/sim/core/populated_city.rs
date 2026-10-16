@@ -399,12 +399,5 @@ fn fill_lots(core: &mut SimCore) {
             break;
         }
     }
-    while core
-        .allocator
-        .buildings
-        .iter()
-        .any(|building| building.construction_remaining_hours > 0)
-    {
-        core.allocator.advance_construction_hour();
-    }
+    core.allocator.complete_all_construction();
 }

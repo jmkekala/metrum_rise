@@ -10,6 +10,7 @@ use crate::nodes::sim::core::SimCore;
 use crate::simulation::buildings::allocator::{
     Building, BuildingAllocator, building_local_xz_basis,
 };
+use crate::simulation::core::scheduler::{SLOTS_PER_DAY, SLOTS_PER_MINUTE};
 use crate::simulation::network::graph::Edge;
 use crate::simulation::network::types::{TransitFlags, TransitType};
 use crate::simulation::zoning::ZoneType;
@@ -296,11 +297,13 @@ impl SimCore {
         PackedFloat32Array::from_iter(buffer)
     }
 
-    /// Fraction within the current discrete operational hour, for presentation interpolation.
-    pub(crate) fn operational_hour_fraction(&self) -> f32 {
+    /// Continuous absolute slot clock, for presentation interpolation between slots.
+    pub(crate) fn construction_clock_slots(&self) -> f64 {
         let seconds_per_minute = self.time.seconds_per_minute().max(f64::EPSILON);
         let minute_fraction = (self.time.time_elapsed / seconds_per_minute).clamp(0.0, 1.0);
-        (f64::from(self.time.minute_of_day % 60) + minute_fraction) as f32 / 60.0
+        let minute_start = u64::from(self.time.day_index.saturating_sub(1)) * SLOTS_PER_DAY
+            + u64::from(self.time.minute_of_day) * SLOTS_PER_MINUTE;
+        minute_start as f64 + minute_fraction * SLOTS_PER_MINUTE as f64
     }
 
     fn building_site_debug_sites(&self) -> VarArray {
@@ -1107,30 +1110,10 @@ fn construction_initial_rise_offset_for_height_m(scaffold_height_m: f32) -> f32 
         )
 }
 
-/// Continuous presentation progress without changing discrete construction simulation state.
-pub(super) fn construction_visual_progress(
-    building: &Building,
-    operational_hour_fraction: f32,
-) -> f32 {
-    construction_visual_progress_from_hours(
-        building.construction_total_hours,
-        building.construction_remaining_hours,
-        operational_hour_fraction,
-    )
-}
-
-fn construction_visual_progress_from_hours(
-    total_hours: u16,
-    remaining_hours: u16,
-    operational_hour_fraction: f32,
-) -> f32 {
-    if total_hours == 0 {
-        return 1.0;
-    }
-    let total = f32::from(total_hours);
-    let remaining = f32::from(remaining_hours.min(total_hours));
-    let completed_whole_hours = (total - remaining).max(0.0);
-    ((completed_whole_hours + operational_hour_fraction.clamp(0.0, 1.0)) / total).clamp(0.0, 1.0)
+/// Continuous presentation progress at the slot clock `clock_slots`, without changing
+/// construction simulation state.
+pub(super) fn construction_visual_progress(building: &Building, clock_slots: f64) -> f32 {
+    building.construction_progress(clock_slots)
 }
 
 fn construction_scaffold_height_m(building: &Building) -> f32 {
@@ -1215,14 +1198,6 @@ mod tests {
 
         let (basis_x, basis_z) = building_local_xz_basis(world_front, [0.0, 0.0, -1.0]);
         assert_vec2_close(basis_x * 0.0 + basis_z * -1.0, world_front);
-    }
-
-    #[test]
-    fn construction_visual_progress_interpolates_between_hour_ticks() {
-        assert!((construction_visual_progress_from_hours(4, 4, 0.0) - 0.0).abs() < 1e-6);
-        assert!((construction_visual_progress_from_hours(4, 4, 0.5) - 0.125).abs() < 1e-6);
-        assert!((construction_visual_progress_from_hours(4, 3, 0.5) - 0.375).abs() < 1e-6);
-        assert!((construction_visual_progress_from_hours(4, 1, 1.0) - 1.0).abs() < 1e-6);
     }
 
     #[test]

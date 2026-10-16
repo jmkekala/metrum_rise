@@ -6,8 +6,8 @@ simulation tiers. Economy and growth rules stay in [`economy.md`](economy.md) an
 [`demand.md`](demand.md); traffic movement stays in [`traffic.md`](traffic.md).
 
 **Status:** `SIM-02` in progress. `SIM-02-A` (guards and pre-refactor baseline), `SIM-02-B`
-(save cutover and handles) and `SIM-02-C` (slot clock, scheduler, timing wheel and phases) are
-done; see the
+(save cutover and handles), `SIM-02-C` (slot clock, scheduler, timing wheel and phases) and
+`SIM-02-D` (passive deadlines and construction completion) are done; see the
 [`SIM-02-A` baseline](#sim-02-a-guards-and-pre-refactor-baseline) and the
 [step results](#step-results). Until each migration step lands,
 the current cadence in
@@ -205,6 +205,23 @@ unchanged. The `sim` debug channel prints the list with costs, tiers, reads and 
   are rescheduled: each spawn at its due minute, at most one per minute after the current one,
   as the per-minute queue check started them. A save stores the wheel as the next frame will see
   it.
+- **Implemented in `SIM-02-D`:**
+  - Passive deadlines: a building's freight cooldown is `shipment_cooldown_until_tick`, compared
+    with `ShipmentSystem::hour_ticks`, and an agent's job lock is `job_lock_until_day`, compared
+    with `AgentSystem::settlement_days`. Each counter advances where the old decrement scan ran,
+    so results are unchanged. Both counters are saved in `scheduler_state`. The fields become
+    slots when their systems move to phases (`SIM-02-E`, `SIM-02-J`).
+  - Construction completes at `construction_complete_slot`: its start slot plus its duration ×
+    960. Placement stamps the deadline from `BuildingAllocator::now_slot` (the slot in progress)
+    and lists `(handle, slot)`. The simulation turns that list into `ConstructionComplete
+    { building }` events after each slot and before each frame; a save includes any not yet
+    turned. The event finishes the building in place, with no zone-index rebuild: when the
+    indices are clean, a sorted insert into its zone list, a vacancy push and one recorded
+    production change. Undoing a bulldoze re-inserts the building with a new handle and
+    re-lists its deadline.
+  - The demand workforce calendar counts every site as ready at the first hour boundary at or
+    after its completion, whether placed (`Building::construction_hours_left`), queued or
+    proposed, so a project's promise matches the hour its building actually opens.
 
 ### Snapshots
 
@@ -260,7 +277,8 @@ moves its entities between the tiers' phase buckets.
 - Matched, unprofiled release runs, recorded here, as for the economy contract. The
   [`PERF-01`–`PERF-05`](economy.md#performance-contract-perf-01perf-05) mean limits still apply.
 - **Benchmark:** `frame_budget::perf07_frame_budget`, run for every tier and speed by
-  `tools/sim02_gate.py perf07`; see [`SIM-02-A`](#sim-02-a-guards-and-pre-refactor-baseline).
+  `tools/sim02_gate.py perf07`, pinned with `--cpus` to one thread per performance core; see
+  [`SIM-02-A`](#sim-02-a-guards-and-pre-refactor-baseline).
   The maximum varies by about 20% between runs of one build, the p99 by about 10%, so "no
   worse" allows 25% on the maximum and 10% on the p99.
 
@@ -281,6 +299,21 @@ The largest frame of every run is the first operational hour after loading the s
 the per-frame rows of the [phase inventory](#phase-inventory)). At 100k even an ordinary frame
 exceeds the budget: about 5 ms of movement plus about 9 ms of render snapshot at 1×. Meeting
 `PERF-07` therefore needs the movement and snapshot work listed there, not only the scheduler.
+
+**Pinned reference** (2026-10-16, the same `SIM-02-A` `$TEST_BINARY` run with
+`tools/sim02_gate.py perf07 --cpus 0,2,4,6,8,10,12,14`, one thread per performance core,
+`RAYON_NUM_THREADS=8`). Unpinned, the mean frame of one behaviour at 10k 32× ranged from 2.89
+to 3.22 ms between runs on this hybrid CPU, as threads move to efficiency cores; pinned runs of
+three builds stayed within 2.60–2.75 ms. Steps from `SIM-02-D` on compare against this:
+
+| Tier | Speed | Max | p99 | p99.9 | Mean |
+| --- | --- | --- | --- | --- | --- |
+| 10k | 1× | 200.2 | 6.74 | 8.70 | 2.36 |
+| 10k | 32× | 197.7 | 9.95 | 19.44 | 2.69 |
+| 30k | 1× | 514.8 | 7.42 | 9.35 | 3.19 |
+| 30k | 32× | 507.8 | 29.13 | 57.03 | 4.49 |
+| 100k | 1× | 2,019.2 | 16.91 | 30.00 | 11.49 |
+| 100k | 32× | 2,020.5 | 174.06 | 418.32 | 19.59 |
 
 `PERF-01` on the same build (`tools/perf_contract.py --binary "$TEST_BINARY"`, 70.6 s): mean
 hour / day 22.13 / 7.96 ms at 10k and 78.04 / 62.12 ms at 30k; fiscal stress 41.84 / 23.55 ms
@@ -475,6 +508,42 @@ on a fresh `$ARTIFACTS` directory.
   once per day and per hour, in handle order), declarations (dispatch order) and the slot clock
   (contiguous slots, minute starts).
 
+#### `SIM-02-D` — passive deadlines and construction completion (2026-10-16)
+
+- **Part 1, identical:** freight cooldowns and job locks become passive deadlines (save format
+  89). All four envelope workloads reproduce the `SIM-02-C` fingerprints every day;
+  determinism checks pass.
+- **Part 2:** construction completes at its own slot (save format 90; the Kuopio fixture gained
+  the renamed column and its hash in `placements.json`).
+- **Envelope** (`tools/sim02_gate.py envelope determinism --binary "$TEST_BINARY"`): within the
+  bands on every workload. The largest shift is 0.07 of a half-band (30k final employment rate
+  0.6522 → 0.6510); fiscal stress at 10k is unchanged. Money residuals are as before (30k
+  baseline 39.8, the `f32` tax sums of `SIM-02-A`). The populated fixtures are full, so the
+  measured days build few sites. Burst shares are unchanged: freight and shopping still leave
+  in one minute and settlements fall in one hour, until `SIM-02-E` and `SIM-02-G`.
+- **Determinism:** repeat run, 1 and 3 workers and save/reload continuation are identical (10k,
+  three days).
+- **`PERF-07`**, pinned (`--cpus 0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`) against the
+  [pinned `SIM-02-A` reference](#frame-budget-perf-07). Max / p99 / mean in ms: 10k 1× 193.9 /
+  6.90 / 2.42, 10k 32× 198.8 / 11.22 / 2.73, 30k 1× 501.6 / 7.45 / 3.19, 30k 32× 504.4 / 26.60
+  / 4.53, 100k 1× 1,985.6 / 16.87 / 11.44, 100k 32× 2,008.2 / 158.80 / 19.99. Means are within
+  3% of `SIM-02-A` on every tier, and every maximum is lower except 10k 32× (+0.6%). The first,
+  unpinned run failed the 10k 32× p99; see
+  [Decided while unattended](#decided-while-unattended).
+- **`PERF-01`**, two pinned runs alternating with `SIM-02-A` (hour / day means in ms, `SIM-02-A`
+  first): baseline 10k 16.9–17.1 / 7.6–8.2 against 17.3–17.4 / 9.0–9.3; baseline 30k
+  62.1–62.6 / 47.3–48.2 against 62.2–62.2 / 43.3–43.6; fiscal 10k 27.6–28.0 / 22.3–22.9 against
+  27.7–28.0 / 22.1–22.2; fiscal 30k 78.5–78.5 / 67.7–68.4 against 78.3–78.9 / 68.0–69.9. The
+  same ten limits fail as on `SIM-02-A` and nothing new fails. The 10k baseline day rose 1.1 ms
+  but stays inside its 10 ms limit: its fixture city, grown with the new construction timing,
+  runs 48% more supplier searches in the funding census (`PERF-03`/`PERF-04`), while the 30k
+  city runs fewer (day −9%).
+- **Tests:** 2,429 release library tests, the integration tests and `./run.sh --test` pass;
+  clippy is clean. New or changed: completion updates a clean index in place and matches a
+  rebuild; completion records one production change; render progress follows the slot clock;
+  queued deadlines count hour boundaries to the start; a completed home rehouses its residents
+  in the next hour.
+
 ### Phase inventory
 
 Every phase of today's operational hour, hourly demand pass and daily tick, and where it goes.
@@ -482,7 +551,7 @@ Every phase of today's operational hour, hourly demand pass and daily tick, and 
 | Today | Cost today | Target | Step |
 | --- | --- | --- | --- |
 | `publish_frontage_prices` | O(lanes), par | `FixedSlot` hourly | C |
-| `advance_construction_hour` | O(buildings); a completion rebuilds the zone index | Completion event; incremental zone-index update | D |
+| `advance_construction_hour` | O(buildings); a completion rebuilds the zone index | Completion event; incremental zone-index update | D (done) |
 | Farm and mine `produce_hourly` | O(sites) | `EntityPhase` hourly | F |
 | `electricity_funding_by_building` | O(buildings) | Rolling snapshot | I |
 | `materialize_arrived_household_carriers` | O(agents) scan | Carrier-arrival event | E |
@@ -491,7 +560,7 @@ Every phase of today's operational hour, hourly demand pass and daily tick, and 
 | `run_building_economy` production, `refresh_commercial_activity_floor` | O(buildings) | `EntityPhase` hourly | F |
 | `settle_hourly_service_store_sales`, `charge_households_for_aggregate_service_sales` | O(households + buildings), global pool | Pool as rolling snapshot; each household charged at its phase | F, I |
 | `run_electricity_hour` | O(households + buildings), one city-wide coverage | Coverage as rolling snapshot; billing at phase | F, I |
-| `decrement_building_cooldowns` | O(buildings) | Passive deadline | D |
+| `decrement_building_cooldowns` | O(buildings) | Passive deadline | D (done) |
 | `FreightPlanningContext::build` | O(nodes + edges + buildings), rebuilt hourly | Rolling snapshot; component indices cached by routing revision | I |
 | `create_profile_input_shipments`, `create_profile_output_exports` | O(buildings), serial reservations | Freight request queue at buyer phase | J |
 | `progress_shipments`, `dispatch_ready_carriers` | O(open shipments); all trucks leave on the hour | Dispatch and arrival events | E |
@@ -502,18 +571,18 @@ Every phase of today's operational hour, hourly demand pass and daily tick, and 
 | `plan_and_apply_household_replenishment` | Indices rebuilt hourly when needed | Restock queue; indices from rolling snapshots | J |
 | `plan_and_apply_visible_service_visits` | Capped at 64 per hour | Visit queue with per-slot quota | J |
 | Funding census (`job_funding.refresh`) | Superlinear (`PERF-03`/`PERF-04`) | Incremental totals plus rolling snapshot | I |
-| Job search | Gated by `job_lock_days` | Job queue on lock deadline | J |
+| Job search | Gated by the job lock (`job_lock_until_day`) | Job queue on lock deadline | J |
 | `sync_agent_money_from_households` | O(agents + households) | At phase, or remove the duplicated field | F |
 | `prepare_cell_lots_internal` | O(dirty regions), can spike | Dirty-region queue with quota | H |
 | Demand snapshot (`from_runtime_with_funding`) | O(households + buildings + nodes) hourly | Rolling snapshot | I |
 | Demand planning (`plan_private_building_actions`) | Scans all parcels hourly | Open question 1 | I |
 | Household admission | Bounded; all carriers leave on the hour | Admission queue with credit; departure events | E, J |
-| Construction queue | One start per minute | Timed events | C |
+| Construction queue | One start per minute | Timed events | C (done) |
 | `execute_building_actions` | Plan-bounded | Level-change queue with quota | J |
 | `allocator.maintain`, `cleanup_stale_buildings` | O(buildings), serial | Compatibility check at building phase; removals queued | G, J |
 | Pollution, noise, desirability | O(grid) plus O(buildings + edges) emission | Rolling grid sweeps | H |
 | Daily ledger begin and finish, `reset_daily_ledgers`, `reset_daily_input_accumulators` | O(households), O(buildings) | Each entity rolls its own window at its phase | G |
-| `job_lock_days` decrement | O(agents) | Passive deadline | D |
+| `job_lock_days` decrement | O(agents) | Passive deadline | D (done) |
 | Bankruptcy, wages, property tax, utilities, profit tax | Serial over buildings and agents | Per building at its daily phase, same internal order | G |
 | `pay_household_transfers` | Serial over households until the treasury runs out | Per household at its phase; slot order decides who is paid | G |
 | `resolve_household_housing` | Serial over households | Check at phase enqueues housing requests | G, J |
@@ -605,3 +674,39 @@ alternatives and the evidence. The user reviews these on return.
   re-aligns the wheel when its next slot does not follow the clock, and a save stores the
   aligned wheel, which reproduces the per-minute queue check exactly. A live game never takes
   this path.
+- **`SIM-02-D` — deadlines against boundary counters.** The spec names `*_until_slot` fields.
+  The freight cooldown counts operational hours and the job lock counts settlements; tests
+  and tools call the hour and day passes directly without moving the clock, so a slot
+  deadline would change results at a step that must stay identical. The deadlines compare
+  with counters that advance exactly where the decrement scans ran. They become slot
+  deadlines when `SIM-02-E` and `SIM-02-J` move their systems off the boundaries.
+- **`SIM-02-D` — a completion updates the indices in place.** Alternatives: rebuild the zone
+  index on every completion (O(buildings) per event instead of once an hour), or mark it stale
+  (the next construction start pays the rebuild, and the hourly demand pass reads candidate
+  lots instead of vacancies while it is stale). The zone list takes a sorted insert, so it
+  matches a rebuild; the vacancy list takes a push at the end, as a spawned building does.
+- **`SIM-02-D` — one production change per completion** instead of discarding the change
+  history, which forced every production-input consumer into a full rebuild.
+- **`SIM-02-D` — workforce calendar basis.** Construction now takes exactly its duration. The
+  hour-boundary countdown it replaces counted the start hour as a whole hour, so sites
+  finished up to an hour early (half an hour on average). Queued and proposed projects kept
+  the old start offset while placed sites read their true deadline, so the calendar dated
+  them one hour earlier than the buildings they become. With that mismatch, one balance case
+  (`many_new_industrial_lots_respect_scarce_labor_and_earn_their_owner_capital`) funded a
+  factory whose fourth worker never arrived. Every site now counts as ready at the first hour
+  boundary at or after its completion, and the case passes. Alternative: keep durations one hour shorter to reproduce the old timing;
+  rejected because the authored durations are what the player sees.
+- **`SIM-02-D` — bulldoze undo kept stale building handles** (latent since `SIM-02-B`, when
+  nothing yet held a building handle across ticks). The restored building now takes a new
+  handle through `insert_displacing`, as carriers already did, and re-lists its construction
+  deadline.
+- **`SIM-02-D` — `PERF-07` runs pinned to performance cores.** The unpinned `SIM-02-D` gate run
+  failed one limit, the 10k 32× p99, at 12.20 ms against 11.81 ms. Alternating unpinned
+  runs of `SIM-02-D` part 1 and part 2 gave 11.24–11.74 and 12.19–12.34 ms. A profile showed
+  even load-only work 32% slower in one run, with samples on efficiency cores: on the hybrid
+  i9-12900K the scheduler moves threads between core types. Pinned to one thread per
+  performance core (`--cpus 0,2,4,6,8,10,12,14`), three alternating runs each gave
+  9.58–9.88 ms for part 1, 10.23–10.80 ms for part 2 and 9.89–10.28 ms for `SIM-02-A`, with
+  means within 4% of each other. `SIM-02-A` was re-measured pinned as the reference for
+  later steps. Alternative: widen the p99 allowance; rejected, because it would hide real
+  per-frame regressions.

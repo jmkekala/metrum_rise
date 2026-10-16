@@ -397,7 +397,7 @@ fn under_construction_home_does_not_count_as_housed() {
     );
     let mut home = make_building(0.0, ZoneType::Residential, &residential_asset, 0.0);
     home.construction_total_hours = 6;
-    home.construction_remaining_hours = 6;
+    home.set_construction_hours_left(6);
     allocator.buildings.push(home);
 
     assert!(!household_is_housed(&household, &allocator));

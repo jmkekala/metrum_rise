@@ -81,9 +81,11 @@ This section describes the current cadence. Its replacement is planned in
 `SimCore::step_frame` advances agents by one frame, then runs every authored minute the clock
 crossed:
 
-1. Each minute: the next queued private construction start, at most one per minute.
-2. Each whole hour: the **operational hour**: construction progress, farm and mine production,
-   then the household hour (below).
+1. Each minute: the next queued private construction start, at most one per minute, and any
+   construction site whose deadline falls in that slot completes
+   ([`simulation.md`](simulation.md#deadlines-and-timed-events)).
+2. Each whole hour: the **operational hour**: farm and mine production, then the household hour
+   (below).
 3. At minutes other than 0, the **hourly demand pass**: project planning, household admission and
    immediate building actions ([`demand.md`](demand.md#cadence-and-handoff)).
 4. At minute 0, after the operational hour: the **daily tick**: allocator maintenance, the daily
@@ -643,12 +645,13 @@ once, so the parcel is claimed and the site renders, but it supplies no homes, j
 shopping or utilities until completion.
 
 - **Durations** (`runtime_tuning.construction`): 6/12/18 hours for residential, 8/16/24 for
-  commercial, 12/24/36 for industrial, by level. Progress is checked hourly.
+  commercial, 12/24/36 for industrial, by level. A site completes exactly its duration after it
+  starts, at its own slot (`SIM-02-D`), not on the hour.
 - **Committed capacity:** demand counts constructing and queued projects as committed, so no
   duplicate is started.
 - **Instant changes:** upgrades and downgrades are instant replacements; only fresh spawns build.
 - **Visuals:** MultiMesh site pad, foundation and scaffold, with the full-scale final asset rising
-  through the hour. It never scales, flattens or recolors.
+  continuously with construction progress. It never scales, flattens or recolors.
 
 ## Building Bankruptcy
 
@@ -1110,8 +1113,7 @@ are baseline **16.85/6.74 ms**, **52.16/35.22 ms**, fiscal **27.85/26.96 ms**,
 five growth reports have not been rerun for this intermediate integration stage.
 
 The journal now covers **production inputs**, not only worker counts: allocator-owned
-work-area updates and abandonment record affected owners; construction completion invalidates
-history conservatively. Positive construction-hour decrements do not change eligibility.
+work-area updates, abandonment and construction completion record affected owners.
 Agriculture and extraction use the allocator setter, retaining sanitized scales, startup
 capital and missing-owner behavior. Road/entrance and catalog revisions remain separate
 required cache guards. The module is `allocator/production_changes.rs`; the mutation path

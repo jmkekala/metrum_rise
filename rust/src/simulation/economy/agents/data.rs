@@ -138,8 +138,9 @@ pub struct Agent {
     /// `true` if the agent owns a car and drove to their current location.
     pub has_car: bool,
     /// Remaining days the agent is locked to their current job after a voluntary switch.
-    /// Zero means the agent may freely seek a better position.
-    pub job_lock_days: u8,
+    /// Settlement day from which the agent may look for a new job
+    /// ([`AgentSystem::settlement_days`]); a passive deadline, never decremented.
+    pub job_lock_until_day: u32,
     /// Consecutive days the agent has gone without receiving wages from their employer.
     /// Resets to zero when wages are paid. Rises above `JOB_UNPAID_ABANDON_DAYS` to
     /// allow breaking the lock early at a failing employer.
@@ -173,6 +174,8 @@ pub struct AgentSystem {
     pub agents: AgentVec,
     /// Stable [`AgentHandle`]s of the dense agents; saved with the store.
     pub(crate) handles: HandleTable<Agent>,
+    /// Daily settlements run so far: the clock of job locks (`job_lock_until_day`). Saved.
+    pub(crate) settlement_days: u32,
     /// Global simulation time for this system.
     pub sim_time: f32,
     /// Running count of pathfinding calls this session, used for benchmark logging.
@@ -274,6 +277,7 @@ impl AgentSystem {
         Self {
             agents: AgentVec::new(),
             handles: HandleTable::default(),
+            settlement_days: 0,
             sim_time: 0.0,
             pathfind_count: AtomicU32::new(0),
             lane_buckets: Vec::new(),

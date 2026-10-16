@@ -45,7 +45,7 @@ impl FundingInputs {
         let buildings = allocator.buildings.iter().map(|b| format!(
             "profile={} level={} workers={} occupancy={} inactive={:?} construction={} budget={} inventory={:?} area={} activity={} sales={} geometry={:?}",
             b.economy_profile_runtime_id, b.level, b.worker_count, b.occupancy,
-            (b.broken, b.economy_broken, b.is_deserted), b.construction_remaining_hours,
+            (b.broken, b.economy_broken, b.is_deserted), b.construction_complete_slot,
             b.operating_budget.to_bits(),
             b.resource_inventory.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
             b.work_area_scale.to_bits(), b.commercial_activity_floor_scale.to_bits(),

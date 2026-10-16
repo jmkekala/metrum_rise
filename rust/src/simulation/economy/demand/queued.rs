@@ -36,10 +36,11 @@ pub(super) struct QueuedConstruction {
     sequence: usize,
 }
 
-/// Operational ticks before the first construction tick, relative to the current hour.
-/// Placement runs before the economy tick at an exact hourly boundary.
+/// Hour boundaries from the current hour to the first one at or after the start minute, which
+/// is at least the next minute. A project of `D` hours started then is ready `D` boundaries
+/// later, as `Building::construction_hours_left` counts placed sites (`SIM-02-D`).
 fn start_hour_delay(now: u64, due_minute: u64) -> u64 {
-    due_minute.div_ceil(60).saturating_sub(now / 60 + 1)
+    due_minute.max(now + 1).div_ceil(60) - now / 60
 }
 
 impl DemandSystem {
@@ -201,12 +202,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn queued_deadlines_follow_boundary_tick_order() {
-        assert_eq!(start_hour_delay(0, 1), 0);
-        assert_eq!(start_hour_delay(0, 60), 0);
-        assert_eq!(start_hour_delay(0, 61), 1);
-        assert_eq!(start_hour_delay(60, 120), 0);
-        assert_eq!(start_hour_delay(60, 121), 1);
-        assert_eq!(start_hour_delay(1440, 1500), 0);
+    fn queued_deadlines_count_boundaries_to_the_start() {
+        assert_eq!(start_hour_delay(0, 1), 1);
+        assert_eq!(start_hour_delay(0, 60), 1);
+        assert_eq!(start_hour_delay(0, 61), 2);
+        assert_eq!(start_hour_delay(60, 120), 1);
+        assert_eq!(start_hour_delay(60, 121), 2);
+        assert_eq!(start_hour_delay(1440, 1500), 1);
+        // An overdue start runs at the next minute.
+        assert_eq!(start_hour_delay(90, 30), 1);
     }
 }

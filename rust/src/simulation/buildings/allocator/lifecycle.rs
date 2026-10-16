@@ -1327,7 +1327,7 @@ mod clearance_tests {
         allocator.buildings[0].worker_count = 1;
         assert!(!allocator.can_demand_despawn(0));
         allocator.buildings[0].worker_count = 0;
-        allocator.buildings[0].construction_remaining_hours = 1;
+        allocator.buildings[0].set_construction_hours_left(1);
         assert!(!allocator.can_demand_despawn(0));
     }
 }

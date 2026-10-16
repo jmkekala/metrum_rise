@@ -106,7 +106,7 @@ pub(crate) struct SpatialBatches {
     last_view: Option<View>,
     last_bounds: Option<[i32; 4]>,
     last_revision: Option<(u64, u64)>,
-    last_hour: f32,
+    last_clock_slots: f64,
     construction: bool,
     // Level-change log total already consumed; `None` until first seen, so a new renderer or
     // world never replays changes it did not witness.
@@ -227,7 +227,7 @@ impl SpatialBatches {
         allocator: &BuildingAllocator,
         bounds: [i32; 4],
         view: View,
-        hour: f32,
+        clock_slots: f64,
         now: Instant,
     ) -> bool {
         self.evaluated_parts = 0;
@@ -254,7 +254,7 @@ impl SpatialBatches {
         if self.last_view == Some(view)
             && self.last_bounds == Some(bounds)
             && self.last_revision == Some(revision)
-            && (!self.construction || self.last_hour == hour)
+            && (!self.construction || self.last_clock_slots == clock_slots)
             && !animating
             && !settling
         {
@@ -268,7 +268,7 @@ impl SpatialBatches {
         self.last_view = Some(view);
         self.last_bounds = Some(bounds);
         self.last_revision = Some(revision);
-        self.last_hour = hour;
+        self.last_clock_slots = clock_slots;
         for &(x, z) in &self.ordered_chunks {
             if x < bounds[0] || z < bounds[1] || x > bounds[2] || z > bounds[3] {
                 let chunk = self.chunks.remove(&(x, z)).unwrap();
@@ -358,7 +358,7 @@ impl SpatialBatches {
                             if building.is_under_construction() {
                                 y -= construction_rise_offset_m(
                                     building,
-                                    construction_visual_progress(building, hour),
+                                    construction_visual_progress(building, clock_slots),
                                 );
                             } else if !rising.is_empty()
                                 && let Some(start) =

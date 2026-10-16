@@ -12,6 +12,8 @@ use std::time::Instant;
 
 use super::frame::{EconomyObserver, FrameStepReport, record_crash_phase_for_core, run_sim_phase};
 use super::state::SimCore;
+use crate::simulation::buildings::allocator::Building;
+use crate::simulation::core::handles::Handle;
 use crate::simulation::core::scheduler::{
     Cost, Declaration, Period, SLOTS_PER_DAY, SLOTS_PER_MINUTE, Schedule, SystemKind, Tier, state,
 };
@@ -33,13 +35,19 @@ pub(crate) enum SimSystem {
 pub(crate) enum SimEvent {
     /// Starts the queued demand spawn `id` (`PendingDemandSpawnAction::id`).
     ConstructionStart { id: u64 },
+    /// Finishes `building`'s construction; a building that left or already finished is skipped.
+    ConstructionComplete { building: Handle<Building> },
 }
 
 impl SimEvent {
-    /// Saved `(kind, a)` columns.
+    /// Saved `(kind, a)` columns; a handle saves as `index << 32 | generation`.
     pub(crate) fn to_saved(self) -> (u16, u64) {
         match self {
             Self::ConstructionStart { id } => (0, id),
+            Self::ConstructionComplete { building } => (
+                1,
+                u64::from(building.index()) << 32 | u64::from(building.generation()),
+            ),
         }
     }
 
@@ -47,6 +55,9 @@ impl SimEvent {
     pub(crate) fn from_saved(kind: u16, a: u64) -> Option<Self> {
         match kind {
             0 => Some(Self::ConstructionStart { id: a }),
+            1 => Some(Self::ConstructionComplete {
+                building: Handle::from_parts((a >> 32) as u32, a as u32),
+            }),
             _ => None,
         }
     }
@@ -119,6 +130,7 @@ impl SimCore {
         observer: &mut impl EconomyObserver,
     ) {
         let (day_index, minute_of_day) = slot_calendar(slot);
+        self.allocator.now_slot = slot;
         for index in 0..self.schedule.declarations().len() {
             let declaration = self.schedule.declarations()[index];
             if !declaration.kind.due(slot) {
@@ -152,6 +164,7 @@ impl SimCore {
                 }
             }
         }
+        self.schedule_construction_completions();
     }
 
     fn fire_timed_events(
@@ -177,8 +190,25 @@ impl SimCore {
                     }
                     report.pending_spawn_ms += start.elapsed().as_secs_f64() * 1000.0;
                 }
+                SimEvent::ConstructionComplete { building } => {
+                    if let Some(building_idx) = self.allocator.building_handles.resolve(building)
+                        && self.allocator.buildings[building_idx].is_under_construction()
+                    {
+                        self.allocator.complete_construction(building_idx);
+                        observer.buildings_changed(self);
+                    }
+                }
             }
         }
         self.due_events = due;
+    }
+
+    /// Schedules the completion of every construction site placed since the last call, in
+    /// placement order. O(new sites).
+    pub(crate) fn schedule_construction_completions(&mut self) {
+        for (building, slot) in self.allocator.pending_construction.drain(..) {
+            self.events
+                .schedule(slot, SimEvent::ConstructionComplete { building });
+        }
     }
 }

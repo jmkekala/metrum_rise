@@ -40,6 +40,7 @@ impl ShipmentSystem {
     ) {
         let catalog = planning.catalog.clone();
         let tuning = planning.tuning.clone();
+        let hour_ticks = self.hour_ticks;
         let border_nodes = planning.border_nodes.clone();
         if border_nodes.is_empty() {
             return;
@@ -60,7 +61,7 @@ impl ShipmentSystem {
                 if building.broken
                     || building.economy_broken
                     || building.edge_idx == usize::MAX
-                    || building.shipment_cooldown_hours > 0
+                    || building.shipment_cooldown_until_tick > hour_ticks
                     || building.is_deserted
                     || building.is_under_construction()
                 {
@@ -79,7 +80,7 @@ impl ShipmentSystem {
             if building.broken
                 || building.economy_broken
                 || building.edge_idx == usize::MAX
-                || building.shipment_cooldown_hours > 0
+                || building.shipment_cooldown_until_tick > hour_ticks
                 || building.is_deserted
                 || building.is_under_construction()
             {
@@ -213,8 +214,8 @@ impl ShipmentSystem {
                     export_amount,
                 );
 
-                allocator.buildings[src_idx].shipment_cooldown_hours =
-                    tuning.operational_clock.shipment_retry_cooldown_hours;
+                allocator.buildings[src_idx].shipment_cooldown_until_tick =
+                    hour_ticks + u32::from(tuning.operational_clock.shipment_retry_cooldown_hours);
 
                 debug_log!(
                     "economy",

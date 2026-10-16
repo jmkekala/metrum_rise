@@ -19,11 +19,12 @@ use super::terrain_payloads::{
 use super::water_preview::{AuthoredWaterPatchFillDebug, WorldLakeFillPreview};
 use crate::debug_log;
 use crate::simulation::agriculture::AgricultureSystem;
-use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::core::config::WorldConfig;
+use crate::simulation::core::handles::HandleTable;
 use crate::simulation::core::scheduler::{SLOTS_PER_MINUTE, Schedule};
-use crate::simulation::core::timing_wheel::{TimedEvent, TimingWheel};
 use crate::simulation::core::time::TimeSystem;
+use crate::simulation::core::timing_wheel::{TimedEvent, TimingWheel};
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::definitions::load_runtime_economy_catalog;
 use crate::simulation::economy::demand::{
@@ -84,6 +85,26 @@ fn reschedule_construction_starts(
             SimEvent::ConstructionStart { id: spawn.id },
         );
         previous = minute;
+    }
+}
+
+// Completion events of every construction site in dense order, for a wheel restarted
+// wholesale; replaces any completion events and makes the pending list redundant.
+fn reschedule_construction_completions(
+    events: &mut TimingWheel<SimEvent>,
+    allocator: &BuildingAllocator,
+    handles: &HandleTable<Building>,
+) {
+    events.retain(|event| !matches!(event, SimEvent::ConstructionComplete { .. }));
+    for (building_idx, building) in allocator.buildings.iter().enumerate() {
+        if building.is_under_construction() {
+            events.schedule(
+                building.construction_complete_slot,
+                SimEvent::ConstructionComplete {
+                    building: handles.handle(building_idx),
+                },
+            );
+        }
     }
 }
 
@@ -293,7 +314,7 @@ impl SimCore {
             schedule,
             events: TimingWheel::new(next_slot),
             due_events: Vec::new(),
-            allocator: BuildingAllocator::new(),
+            allocator: BuildingAllocator::new_at_slot(next_slot - 1),
             agents: AgentSystem::new(),
             households: HouseholdSystem::new(),
             logistics: ShipmentSystem::new(),
@@ -539,7 +560,6 @@ impl SimCore {
             .saturating_add(u32::from(minute_of_day / 60));
         // Every economy consumer this hour prices the same frontage delays (`ECON-13-D`).
         self.transit_network.publish_frontage_prices();
-        self.allocator.advance_construction_hour();
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         self.agriculture
@@ -687,12 +707,20 @@ impl SimCore {
         );
     }
 
-    /// The timing wheel as the next frame will see it; a copy re-aligned to the clock when the
-    /// clock was set directly ([`Self::align_events_to_clock`]).
+    /// The timing wheel as the next frame will see it: a copy with the construction sites
+    /// placed since the last slot scheduled, or re-aligned to the clock when the clock was set
+    /// directly ([`Self::align_events_to_clock`]).
     pub(crate) fn aligned_events(&self) -> std::borrow::Cow<'_, TimingWheel<SimEvent>> {
         let next_slot = self.time.absolute_slot() + 1;
         if self.events.next_slot() == next_slot {
-            return std::borrow::Cow::Borrowed(&self.events);
+            if self.allocator.pending_construction.is_empty() {
+                return std::borrow::Cow::Borrowed(&self.events);
+            }
+            let mut events = self.events.clone();
+            for &(building, slot) in &self.allocator.pending_construction {
+                events.schedule(slot, SimEvent::ConstructionComplete { building });
+            }
+            return std::borrow::Cow::Owned(events);
         }
         let mut events = self.events.clone();
         events.reset(next_slot);
@@ -701,18 +729,31 @@ impl SimCore {
             &self.pending_demand_spawns,
             absolute_operational_minute(self.time.day_index, self.time.minute_of_day),
         );
+        let mut handles = self.allocator.building_handles.clone();
+        handles.register_appended(self.allocator.buildings.len());
+        reschedule_construction_completions(&mut events, &self.allocator, &handles);
         std::borrow::Cow::Owned(events)
     }
 
     /// Re-aligns the timing wheel when the clock was set directly instead of advanced (tests,
-    /// tools): the wheel restarts after the current slot and construction starts are
-    /// rescheduled from the queue. A clock advanced by frames, a load or a new world is already
-    /// aligned, so this costs one comparison per frame.
+    /// tools): the wheel restarts after the current slot, construction starts are rescheduled
+    /// from the queue and completions from each site's deadline. A clock advanced by frames, a
+    /// load or a new world is already aligned, so this costs one comparison per frame.
     pub(super) fn align_events_to_clock(&mut self) {
         let next_slot = self.time.absolute_slot() + 1;
+        self.allocator.now_slot = next_slot - 1;
         if self.events.next_slot() != next_slot {
             self.events.reset(next_slot);
             self.reschedule_construction_events();
+            self.allocator.pending_construction.clear();
+            self.allocator
+                .building_handles
+                .register_appended(self.allocator.buildings.len());
+            reschedule_construction_completions(
+                &mut self.events,
+                &self.allocator,
+                &self.allocator.building_handles,
+            );
         }
     }
 
@@ -724,6 +765,8 @@ impl SimCore {
         minute_of_day: u16,
     ) -> usize {
         let now = absolute_operational_minute(day_index, minute_of_day);
+        // As the minute's start event would see the clock.
+        self.allocator.now_slot = now * SLOTS_PER_MINUTE;
         let mut executed_this_minute = 0_usize;
         while executed_this_minute < DEMAND_SPAWN_ACTIONS_PER_MINUTE {
             let Some(pending) = self.pending_demand_spawns.front() else {

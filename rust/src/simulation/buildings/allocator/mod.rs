@@ -35,7 +35,8 @@ pub(crate) use site::{BuildingSiteSurfaceClient, SitePavingPartition};
 use crate::assets::{AssetRegistry, ZoneClass};
 use crate::debug_log;
 use crate::simulation::agriculture::FieldClearanceIndex;
-use crate::simulation::core::handles::HandleTable;
+use crate::simulation::core::handles::{Handle, HandleTable};
+use crate::simulation::core::scheduler::SLOTS_PER_HOUR;
 use crate::simulation::economy::definitions::{
     EconomyProfileRuntime, ResourceRuntimeId, RuntimeEconomyCatalog, load_runtime_economy_catalog,
 };
@@ -194,8 +195,9 @@ pub struct Building {
     ///
     /// `0` means this building was placed complete or has already finished construction.
     pub construction_total_hours: u16,
-    /// Remaining operational hours before this building becomes live economy capacity.
-    pub construction_remaining_hours: u16,
+    /// Absolute slot at which construction completes and the building becomes live economy
+    /// capacity (`SIM-02-D`); `0` once complete.
+    pub construction_complete_slot: u64,
     /// If true, the asset was missing from the registry during load.
     pub broken: bool,
     /// Compact runtime economy-profile id resolved from the asset's authored profile reference.
@@ -216,8 +218,9 @@ pub struct Building {
     pub profit_tax_budget_baseline: f32,
     /// Completed previous-day operating-budget delta captured before the daily baseline reset.
     pub last_day_profit: f32,
-    /// Remaining hourly cooldown steps before this building may open another freight request.
-    pub shipment_cooldown_hours: u16,
+    /// Logistics hour tick from which this building may open another freight request
+    /// (`ShipmentSystem::hour_ticks`); a passive deadline, never decremented.
+    pub shipment_cooldown_until_tick: u32,
     /// Currency value of input shipments received from OWA during the current day.
     ///
     /// Reset once per day after the demand snapshot is taken. Read by the demand system to
@@ -349,6 +352,12 @@ pub struct BuildingAllocator {
     pub(crate) field_clearance: FieldClearanceIndex,
     /// Ordered swap removals awaiting production-site owner remapping in SimCore.
     pub(crate) pending_production_site_removals: Vec<(usize, usize)>,
+    /// Slot in progress on the simulation clock, set by SimCore; construction deadlines count
+    /// from it.
+    pub(crate) now_slot: u64,
+    /// Construction deadlines set since SimCore last scheduled their completion events, in
+    /// placement order.
+    pub(crate) pending_construction: Vec<(Handle<Building>, u64)>,
     /// Yard hedges to lay and remove, in the order the buildings were placed and removed.
     pub(crate) pending_yards: Vec<yard::YardEvent>,
     /// Recent in-place level changes, read by the renderer to animate the replacement.
@@ -481,7 +490,7 @@ impl Building {
 
     /// Returns true while the building exists only as a construction site.
     pub(crate) fn is_under_construction(&self) -> bool {
-        self.construction_remaining_hours > 0
+        self.construction_complete_slot != 0
     }
 
     /// Returns true when the building can participate in household, labor, and economy flows.
@@ -494,15 +503,28 @@ impl Building {
         self.work_area_scale = crate::simulation::work_area::sanitize_work_area_scale(scale);
     }
 
-    /// Returns deterministic `0.0..=1.0` construction progress for rendering and diagnostics.
-    pub(crate) fn construction_progress(&self) -> f32 {
-        if self.construction_total_hours == 0 {
+    /// Returns `0.0..=1.0` construction progress at the continuous slot clock `now_slot`.
+    pub(crate) fn construction_progress(&self, now_slot: f64) -> f32 {
+        if !self.is_under_construction() || self.construction_total_hours == 0 {
             return 1.0;
         }
-        let remaining = self
-            .construction_remaining_hours
-            .min(self.construction_total_hours);
-        1.0 - remaining as f32 / self.construction_total_hours as f32
+        let duration = f64::from(self.construction_total_hours) * SLOTS_PER_HOUR as f64;
+        let start = self.construction_complete_slot as f64 - duration;
+        ((now_slot - start) / duration).clamp(0.0, 1.0) as f32
+    }
+
+    /// Puts the building under construction with `hours` left at slot 0; `0` completes it.
+    #[cfg(test)]
+    pub(crate) fn set_construction_hours_left(&mut self, hours: u16) {
+        self.construction_complete_slot = u64::from(hours) * SLOTS_PER_HOUR;
+    }
+
+    /// Hour boundaries from the hour holding `now_slot` to the first one at or after
+    /// completion: the hour by which the building is ready, as the workforce calendar counts
+    /// it. At an hour boundary this is the time left rounded up; `0` once complete.
+    pub(crate) fn construction_hours_left(&self, now_slot: u64) -> u16 {
+        let ready_hour = self.construction_complete_slot.div_ceil(SLOTS_PER_HOUR);
+        u16::try_from(ready_hour.saturating_sub(now_slot / SLOTS_PER_HOUR)).unwrap_or(u16::MAX)
     }
 
     /// Returns the current inventory amount for one runtime resource.
@@ -687,6 +709,14 @@ impl BuildingAllocator {
         }
     }
 
+    /// Creates an empty allocator whose clock is at `now_slot`.
+    pub(crate) fn new_at_slot(now_slot: u64) -> Self {
+        Self {
+            now_slot,
+            ..Self::new()
+        }
+    }
+
     /// Creates an empty allocator.
     pub fn new() -> Self {
         Self {
@@ -703,6 +733,8 @@ impl BuildingAllocator {
             max_building_support_m: f32::NEG_INFINITY,
             field_clearance: FieldClearanceIndex::default(),
             pending_production_site_removals: Vec::new(),
+            now_slot: 0,
+            pending_construction: Vec::new(),
             pending_yards: Vec::new(),
             level_changes: LevelChangeLog::default(),
             max_lot_radius_cells: 0.0,
@@ -813,44 +845,61 @@ impl BuildingAllocator {
         ) as u32
     }
 
-    /// Advances private construction sites by one operational hour.
-    pub(crate) fn advance_construction_hour(&mut self) {
-        let mut completed_any = false;
-        let mut progressed = false;
-        let mut completed_zone_dirty = [false; BASELINE_PRIVATE_ZONES.len()];
+    /// Slot at which construction of `hours` operational hours started now completes; `0`
+    /// (complete) for none.
+    pub(crate) fn construction_complete_slot_after(&self, hours: u16) -> u64 {
+        if hours == 0 {
+            0
+        } else {
+            self.now_slot + u64::from(hours) * SLOTS_PER_HOUR
+        }
+    }
+
+    /// Finishes construction at its deadline (`SIM-02-D`): the building becomes live economy
+    /// capacity and joins clean indices in place. O(log B) plus one sorted insert; a stale
+    /// index is left for its next reader to rebuild.
+    pub(crate) fn complete_construction(&mut self, building_idx: usize) {
+        let building = &mut self.buildings[building_idx];
+        if !building.is_under_construction() {
+            return;
+        }
+        building.construction_complete_slot = 0;
+        building.construction_total_hours = 0;
+        debug_log!(
+            "economy",
+            "building construction complete: asset={} zone={:?} level={}",
+            building.asset_id,
+            building.zone_type,
+            building.level
+        );
+        if let Some(zone_idx) = baseline_private_zone_slot(building.zone_type) {
+            self.dirty_zones[zone_idx] = true;
+        }
+        self.building_visual_revision = self.building_visual_revision.wrapping_add(1);
+        self.record_production_change(building_idx);
+        self.dirty = true;
+        if !self.index_completed_building(building_idx) {
+            self.dirty_index = true;
+        }
+    }
+
+    /// Completes every construction site at once and rebuilds the indices, for fixtures that
+    /// need a finished city. O(B).
+    pub(crate) fn complete_all_construction(&mut self) {
         for building in &mut self.buildings {
-            if building.construction_remaining_hours == 0 {
-                continue;
-            }
-            building.construction_remaining_hours -= 1;
-            progressed = true;
-            if building.construction_remaining_hours == 0 {
-                completed_any = true;
+            if building.is_under_construction() {
+                building.construction_complete_slot = 0;
                 building.construction_total_hours = 0;
                 if let Some(zone_idx) = baseline_private_zone_slot(building.zone_type) {
-                    completed_zone_dirty[zone_idx] = true;
+                    self.dirty_zones[zone_idx] = true;
                 }
-                debug_log!(
-                    "economy",
-                    "building construction complete: asset={} zone={:?} level={}",
-                    building.asset_id,
-                    building.zone_type,
-                    building.level
-                );
             }
         }
-        if progressed {
-            self.building_visual_revision = self.building_visual_revision.wrapping_add(1);
-        }
-        if completed_any {
-            self.invalidate_production_changes();
-            self.dirty = true;
-            self.dirty_index = true;
-            for (zone_idx, dirty) in completed_zone_dirty.into_iter().enumerate() {
-                self.dirty_zones[zone_idx] |= dirty;
-            }
-            self.rebuild_zone_index();
-        }
+        self.pending_construction.clear();
+        self.building_visual_revision = self.building_visual_revision.wrapping_add(1);
+        self.invalidate_production_changes();
+        self.dirty = true;
+        self.rebuild_zone_index();
     }
 
     /// Removes all buildings and resets the dirty flag.
@@ -863,6 +912,7 @@ impl BuildingAllocator {
         self.building_handles.clear();
         self.field_clearance.clear();
         self.pending_production_site_removals.clear();
+        self.pending_construction.clear();
         self.pending_yards.clear();
         self.level_changes.clear();
         self.building_sites.clear();

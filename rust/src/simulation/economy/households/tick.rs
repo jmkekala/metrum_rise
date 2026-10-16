@@ -10,7 +10,6 @@ use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::{debug, debug_log};
-use rayon::prelude::*;
 use std::time::Instant;
 
 impl HouseholdSystem {
@@ -159,10 +158,8 @@ impl HouseholdSystem {
             crate::debug::work::Work::HouseholdSettlements,
             self.households.len() as u64,
         );
-        // Advance per-agent job-lock countdown once per day.
-        agents.job_lock_days.par_iter_mut().for_each(|lock_days| {
-            *lock_days = lock_days.saturating_sub(1);
-        });
+        // Job locks are deadlines in settlement days; nothing scans the agents (`SIM-02-D`).
+        agents.settlement_days += 1;
         let ledger_and_locks_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
         // Step 1: bankruptcy check — mark buildings that were in distress yesterday and are

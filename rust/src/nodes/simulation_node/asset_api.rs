@@ -218,9 +218,12 @@ impl SimulationNode {
         dict.set("under_construction", b.is_under_construction());
         dict.set(
             "construction_remaining_hours",
-            b.construction_remaining_hours as i32,
+            i32::from(b.construction_hours_left(core.time.absolute_slot())),
         );
-        dict.set("construction_progress", b.construction_progress() as f64);
+        dict.set(
+            "construction_progress",
+            f64::from(b.construction_progress(core.construction_clock_slots())),
+        );
         dict.set("occupancy", b.occupancy as i32);
         let usage = b.recent_electricity;
         let consumed_kwh = usage.workplace.consumed_kwh + usage.residential.consumed_kwh;

@@ -44,6 +44,8 @@ impl SimCore {
                     next_slot: events.next_slot(),
                     next_event_seq: events.next_seq(),
                     next_spawn_id: self.next_spawn_id,
+                    logistics_hour_ticks: self.logistics.hour_ticks,
+                    agent_settlement_days: self.agents.settlement_days,
                     events: events
                         .pending()
                         .into_iter()
@@ -103,6 +105,7 @@ impl SimCore {
         let mut new_allocator = loaded.allocator;
         std::mem::swap(&mut new_allocator.registry, &mut self.allocator.registry);
         self.allocator = new_allocator;
+        self.allocator.now_slot = self.time.absolute_slot();
         // Vacancy capacity and admission eligibility require the restored asset registry.
         self.allocator.rebuild_zone_index();
         self.zoning.invalidate_cell_lot_assets();
@@ -111,9 +114,11 @@ impl SimCore {
             .rebuild_building_site_clients(self.zoning.config.zone_cell_m);
         self.households = loaded.households;
         self.logistics = loaded.logistics;
+        self.logistics.hour_ticks = loaded.scheduler.logistics_hour_ticks;
         self.resource_extraction = loaded.resource_extraction;
         self.agriculture = loaded.agriculture;
         self.agents = loaded.agents;
+        self.agents.settlement_days = loaded.scheduler.agent_settlement_days;
         self.treasury = loaded.treasury;
         self.service_policy = loaded.service_policy;
         self.fiscal_policy = loaded.fiscal_policy;

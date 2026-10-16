@@ -558,6 +558,7 @@ impl SimCore {
         let mut allocator = BuildingAllocator::new();
         std::mem::swap(&mut allocator.registry, &mut self.allocator.registry);
         self.allocator = allocator;
+        self.allocator.now_slot = self.time.absolute_slot();
 
         self.treasury = CityTreasury::default();
         self.service_policy = Default::default();

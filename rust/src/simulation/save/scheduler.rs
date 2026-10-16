@@ -3,7 +3,7 @@
 //! Scheduler state (`SIM-02`): the timing wheel and its counters, saved as generic rows so
 //! this module does not depend on the simulation's event types.
 
-use super::{SaveLoadError, SaveLoadResult, i64_to_u16, i64_to_u64, u64_to_i64};
+use super::{SaveLoadError, SaveLoadResult, i64_to_u16, i64_to_u32, i64_to_u64, u64_to_i64};
 use rusqlite::{Connection, Transaction, params};
 
 /// The timing wheel and its counters as saved.
@@ -15,6 +15,10 @@ pub(crate) struct SavedScheduler {
     pub(crate) next_event_seq: u64,
     /// Next queued demand spawn id.
     pub(crate) next_spawn_id: u64,
+    /// Clock of building freight cooldowns (`ShipmentSystem::hour_ticks`).
+    pub(crate) logistics_hour_ticks: u32,
+    /// Clock of job locks (`AgentSystem::settlement_days`).
+    pub(crate) agent_settlement_days: u32,
     /// `(slot, seq, kind, a)` per pending event, in firing order; `kind` and `a` are owned by
     /// the simulation's event type.
     pub(crate) events: Vec<(u64, u64, u16, u64)>,
@@ -22,11 +26,13 @@ pub(crate) struct SavedScheduler {
 
 pub(super) fn save(tx: &Transaction, scheduler: &SavedScheduler) -> SaveLoadResult<()> {
     tx.execute(
-        "INSERT INTO scheduler_state(singleton, next_slot, next_event_seq, next_spawn_id) VALUES (1, ?1, ?2, ?3)",
+        "INSERT INTO scheduler_state(singleton, next_slot, next_event_seq, next_spawn_id, logistics_hour_ticks, agent_settlement_days) VALUES (1, ?1, ?2, ?3, ?4, ?5)",
         params![
             u64_to_i64(scheduler.next_slot)?,
             u64_to_i64(scheduler.next_event_seq)?,
             u64_to_i64(scheduler.next_spawn_id)?,
+            i64::from(scheduler.logistics_hour_ticks),
+            i64::from(scheduler.agent_settlement_days),
         ],
     )?;
     let mut events =
@@ -43,15 +49,17 @@ pub(super) fn save(tx: &Transaction, scheduler: &SavedScheduler) -> SaveLoadResu
 }
 
 pub(super) fn load(conn: &Connection) -> SaveLoadResult<SavedScheduler> {
-    let (next_slot, next_event_seq, next_spawn_id): (i64, i64, i64) = conn.query_row(
-        "SELECT next_slot, next_event_seq, next_spawn_id FROM scheduler_state WHERE singleton = 1",
+    let row: (i64, i64, i64, i64, i64) = conn.query_row(
+        "SELECT next_slot, next_event_seq, next_spawn_id, logistics_hour_ticks, agent_settlement_days FROM scheduler_state WHERE singleton = 1",
         [],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
     )?;
     let mut scheduler = SavedScheduler {
-        next_slot: i64_to_u64(next_slot)?,
-        next_event_seq: i64_to_u64(next_event_seq)?,
-        next_spawn_id: i64_to_u64(next_spawn_id)?,
+        next_slot: i64_to_u64(row.0)?,
+        next_event_seq: i64_to_u64(row.1)?,
+        next_spawn_id: i64_to_u64(row.2)?,
+        logistics_hour_ticks: i64_to_u32(row.3)?,
+        agent_settlement_days: i64_to_u32(row.4)?,
         events: Vec::new(),
     };
     let mut stmt = conn.prepare("SELECT slot, seq, kind, a FROM timed_events ORDER BY slot, seq")?;
