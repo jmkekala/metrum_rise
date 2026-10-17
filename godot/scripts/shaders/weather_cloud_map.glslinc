@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
+// The clouds' 2D weather map, shared by the compute passes that read it: the volumetric march
+// (weather_cloud_march.glsl) and the shadow bake (weather_cloud_shadow_map.glsl). The including
+// shader declares `shape_texture` (weather_cloud_shape_bake's RG shape and BA regional fields)
+// and a `params` block whose `clouds` is the weather_clouds global. The surface shaders read the
+// same map through weather_cloud_density() in weather_clouds.gdshaderinc, which must match.
+
+// Must match weather_clouds.gdshaderinc and weather_cloud_field.gdshaderinc.
+const float SHAPE_PERIOD_M = 8192.0;
+const float SHAPE_TEXEL_M = 8.0;
+const float REGION_PERIOD_M = 65536.0;
+const float REGION_LOD = 3.0;
+
+// The regional fields at a point: coverage shift and the two placement picks. They change over
+// kilometres, so a march step reads them once and its sun samples reuse them.
+vec3 weather_region(vec2 world_xz) {
+	vec4 fields = textureLod(shape_texture,
+		(world_xz + params.clouds.xy) / REGION_PERIOD_M + vec2(0.31, 0.67), REGION_LOD);
+	return vec3(fields.r, smoothstep(0.45, 0.55, fields.b), smoothstep(0.45, 0.55, fields.a));
+}
+
+// The 2D weather map: how much a column holds cloud, 0 to 1. Same formula as
+// weather_cloud_density() in weather_clouds.gdshaderinc, which explains the regional reads.
+float weather_presence(vec2 world_xz, float lod, vec3 regional) {
+	vec2 uv = (world_xz + params.clouds.xy) / SHAPE_PERIOD_M;
+	float region = regional.x;
+	float pick_a = regional.y;
+	float pick_b = regional.z;
+	// Four placements of the same map, each read only where its weight is not zero, which
+	// away from the blend bands is one read.
+	vec2 shape = vec2(0.0);
+	float w0 = (1.0 - pick_a) * (1.0 - pick_b);
+	float w1 = pick_a * (1.0 - pick_b);
+	float w2 = (1.0 - pick_a) * pick_b;
+	float w3 = pick_a * pick_b;
+	if (w0 > 0.0) {
+		shape += w0 * textureLod(shape_texture, uv, lod).rg;
+	}
+	if (w1 > 0.0) {
+		shape += w1 * textureLod(shape_texture, uv.yx + vec2(0.5, 0.25), lod).rg;
+	}
+	if (w2 > 0.0) {
+		shape += w2 * textureLod(shape_texture, vec2(-uv.x, uv.y) + vec2(0.25, 0.6), lod).rg;
+	}
+	if (w3 > 0.0) {
+		shape += w3 * textureLod(shape_texture, vec2(uv.y, -uv.x) + vec2(0.7, 0.1), lod).rg;
+	}
+	float closed = smoothstep(0.8, 1.0, params.clouds.z);
+	float coverage = clamp(params.clouds.z + (region - 0.5) * 0.6 * (1.0 - closed), 0.0, 1.0);
+	float threshold = 0.76 - 0.40 * coverage;
+	float body = clamp((shape.x - threshold) / (0.26 + 0.12 * coverage), 0.0, 1.0);
+	float eroded = clamp(body - (1.0 - shape.y) * 0.22 * (1.0 - body), 0.0, 1.0);
+	return mix(smoothstep(0.0, 0.46, eroded), 0.46 + 0.54 * shape.x, closed);
+}

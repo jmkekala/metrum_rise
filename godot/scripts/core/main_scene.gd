@@ -68,6 +68,24 @@ func menu_set_time_of_day(hour: float) -> void:
 	if lighting:
 		lighting.pin_hour_of_day(hour)
 
+## Sets the weather to scenario `index` of [constant TopMenu.WEATHER_SCENARIOS] at once and
+## holds it there: the weather schedule stops.
+func menu_set_weather(index: int) -> void:
+	var simulation := get_node_or_null("SimulationNode")
+	if simulation:
+		simulation.set_weather_scenario(index, 0.0)
+
+## Hands the weather to the seeded schedule, or takes it away.
+func menu_set_weather_automatic(automatic: bool) -> void:
+	var simulation := get_node_or_null("SimulationNode")
+	if simulation:
+		simulation.set_weather_automatic(automatic)
+
+## Whether the seeded schedule moves the weather.
+func menu_weather_automatic() -> bool:
+	var simulation := get_node_or_null("SimulationNode")
+	return simulation != null and simulation.get_weather_automatic()
+
 func menu_open_asset_editor() -> void:
 	_spawn_project_instance(["--asset-editor"])
 

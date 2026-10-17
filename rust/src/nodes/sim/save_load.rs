@@ -26,6 +26,7 @@ impl SimCore {
                 vegetation: &self.vegetation.config,
                 vegetation_edits: &self.vegetation_edits,
                 time: &self.time,
+                weather: &self.weather,
                 terrain: &self.heightmap,
                 water: &self.watermap,
                 resource_deposits: &self.resource_deposits,
@@ -68,6 +69,8 @@ impl SimCore {
         self.vegetation = VegetationGenerator::resolve(loaded.vegetation, &self.config);
         self.vegetation_edits = loaded.vegetation_edits;
         self.time = loaded.time;
+        self.weather = loaded.weather;
+        self.world_epoch = self.world_epoch.wrapping_add(1);
         self.heightmap = loaded.terrain;
         self.watermap = loaded.water;
         self.resource_deposits = loaded.resource_deposits;

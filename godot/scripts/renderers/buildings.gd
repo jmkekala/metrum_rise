@@ -6,6 +6,7 @@ extends Node3D
 
 const ModPackConfig = preload("res://scripts/core/mod_pack_config.gd")
 const BuildingLods := preload("res://scripts/renderers/building_lods.gd")
+const WindowMaterials := preload("res://scripts/renderers/window_materials.gd")
 const WorldMaterials = preload("res://scripts/renderers/world_materials.gd")
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 const PerfDebug := preload("res://scripts/core/perf_debug.gd")
@@ -166,7 +167,7 @@ func _setup_construction_site(zone_id: int) -> void:
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	mat.roughness = 0.9
 	mat.albedo_color = Color(0.24, 0.23, 0.20, 0.72)
-	mesh.material = mat
+	mesh.material = WindowMaterials.create(mat)
 	mm.mesh = mesh
 	mmi.multimesh = mm
 	SceneLightingConfig.apply_shadow_policy(
@@ -187,7 +188,7 @@ func _setup_construction_foundation(zone_id: int) -> void:
 	var mat := StandardMaterial3D.new()
 	mat.roughness = 0.82
 	mat.albedo_color = Color(0.48, 0.49, 0.46, 1.0)
-	mesh.material = mat
+	mesh.material = WindowMaterials.create(mat)
 	mm.mesh = mesh
 	mmi.multimesh = mm
 	SceneLightingConfig.apply_shadow_policy(
@@ -200,6 +201,7 @@ func _setup_construction_foundation(zone_id: int) -> void:
 
 func _setup_construction_scaffold(zone_id: int) -> void:
 	var mmi := MultiMeshInstance3D.new()
+	mmi.set_meta("reflection_source", true)
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
 	mm.instance_count = 0
@@ -208,7 +210,7 @@ func _setup_construction_scaffold(zone_id: int) -> void:
 	var mat := StandardMaterial3D.new()
 	mat.roughness = 0.72
 	mat.albedo_color = Color(0.34, 0.33, 0.30, 1.0)
-	mesh.material = mat
+	mesh.material = WindowMaterials.create(mat)
 	mm.mesh = mesh
 	mmi.multimesh = mm
 	SceneLightingConfig.apply_shadow_policy(

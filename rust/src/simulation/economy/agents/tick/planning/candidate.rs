@@ -15,6 +15,7 @@ use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::lanes::LaneType;
 use crate::simulation::network::types::TransitFlags;
+use crate::simulation::pathing::cost::CostCalculator;
 use crate::simulation::zoning::ZoneType;
 use std::cmp::Ordering as CmpOrdering;
 use std::collections::BinaryHeap;
@@ -734,7 +735,7 @@ fn visit_pedestrian_successors(
         let travel_cost = graph
             .edges()
             .get(target_lane.edge_id)
-            .map(|edge| edge.base_cost)
+            .map(CostCalculator::walk_cost_s)
             .unwrap_or(target_lane.length / WALK_CONNECTOR_COST_SPEED_MS)
             + conn_lane.length / WALK_CONNECTOR_COST_SPEED_MS;
         visit(PedestrianSearchState {

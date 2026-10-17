@@ -54,14 +54,49 @@ vec2 vegetation_level_keeps(float impostor_share, float reduced_share) {
 	return reduced_level ? vec2(impostor_share, full_from) : vec2(full_from, 2.0);
 }
 
-// World XZ direction; zero direction disables displacement without a normalization NaN.
+// Distance a canopy tree casts from its branched level out to, from the main camera; past it the
+// tree casts from its impostor. Set from tree_species.gd. A baked view is up to half an atlas cell
+// off the light, so the impostor's shadow slips off its trunk by up to a metre under a low sun.
+// The slip shrinks on screen with distance while the branched casting cost grows with the disc,
+// which sets this distance.
+uniform float tree_shadow_handover_m = 60.0;
+
+// Whether this branched level casts a canopy tree's shadow. One level casts, the one the colour
+// pass keeps more of, so a tree inside its detail handover does not cast twice.
+bool vegetation_branched_casts(vec3 tree_origin, vec3 main_camera, float reduced_share) {
+	return distance(tree_origin, main_camera) < tree_shadow_handover_m
+		&& (reduced_share >= 0.5) == reduced_level;
+}
+
+// How far a branched caster stands back from the sun, in metres per unit of tree scale: the
+// impostor caster's LIGHT_SETBACK times the 20-27 m canopy form bounds. Without it a crown
+// shadowed its own sunlit half and its neighbours', so trees darkened as they came within
+// tree_shadow_handover_m.
+const float BRANCHED_CASTER_SETBACK_M = 2.9;
+
+// Moves a branched caster's vertex away from the sun along the light. The move along the light
+// leaves its shadow on the ground where it was, and only moves its depth. It is capped at half the
+// height above the root: a sun ray from height h meets level ground at least h away. So no part
+// sinks below the ground it shades, and the trunk's shadow still starts at its root.
+vec3 vegetation_caster_setback(vec3 vertex, vec3 tree_origin, float tree_scale, vec3 to_sun) {
+	float depth = min(BRANCHED_CASTER_SETBACK_M * tree_scale, 0.5 * max(vertex.y - tree_origin.y, 0.0));
+	return vertex - to_sun * depth;
+}
+
+#include "res://scripts/shaders/weather_wind.gdshaderinc"
+
+// World XZ direction of the sway's travelling wave. Fixed: turning it with the weather would
+// swing every phase across a forest at once. Trees bend along weather_wind_direction.
 uniform vec2 wind_direction = vec2(1.0, 0.35);
 uniform float wind_strength : hint_range(0.0, 2.0) = 1.0;
 // Radians per second; wavelength is in world metres.
 uniform float wind_speed : hint_range(0.0, 4.0) = 0.8;
 uniform float gust_wavelength : hint_range(1.0, 500.0) = 80.0;
 
-// The largest lateral offset the term below can produce, at weight 1 and default strength.
+// The largest lateral offset the term below can produce, at weight 1, default strength and the
+// fair-weather wind; a gust adds up to 40 percent and a storm up to WEATHER_WIND_MAX_STRENGTH.
+// The gate below is measured against this fair-weather sway, so stronger wind sways harder but
+// no farther away.
 const float WIND_MAX_OFFSET_M = 0.50;
 // Screen-space bounds of the gate, in pixels of that offset, and the shape of the ramp between
 // them. The exponent biases the curve toward the near end: a linear smoothstep spends most of
@@ -96,26 +131,133 @@ uniform float camera_projection_scale = 1.303;
 // at 150 m, 8 percent at 200 m, 0.5 percent at 250 m and none past 251 m, where the offset
 // falls below WIND_FADE_MIN_PX. Both terms are screen-space, so a different resolution or
 // field of view moves those distances rather than changing what is drawn.
-float vegetation_wind_visibility(float distance_m, vec2 viewport) {
+float vegetation_wind_visibility(float distance_m, vec2 viewport, float offset_m) {
 	// Pixels one world metre covers at this depth.
 	float px_per_m = camera_projection_scale * viewport.y * 0.5 / max(distance_m, 0.001);
-	float ramp = smoothstep(WIND_FADE_MIN_PX, WIND_FADE_FULL_PX, WIND_MAX_OFFSET_M * px_per_m);
-	// The impostor does not sway, so the sway is gone before a tree starts to become one.
+	float ramp = smoothstep(WIND_FADE_MIN_PX, WIND_FADE_FULL_PX, offset_m * px_per_m);
+	// A breeze's sway is gone before a tree starts to become an impostor, which does not sway in
+	// a breeze. In strong wind the impostor sways too (vegetation_wind_impostor_shear), in the
+	// same phase, so the branched tree keeps its sway through the handover.
 	float before_handover = 1.0 - smoothstep(tree_crossfade_begin_m - 50.0, tree_crossfade_begin_m,
 		distance_m);
+	before_handover = mix(before_handover, 1.0, weather_storminess());
 	return pow(ramp, WIND_FADE_EXPONENT) * before_handover;
 }
 
-// O(1) per near vertex: three sine terms, no textures or inverse transforms.
-// Only instance origin and authored weight participate, so cores and cards stay together.
-vec3 vegetation_wind_offset(vec2 instance_xz, float weight, float time, float visibility) {
-	vec2 direction = wind_direction / max(length(wind_direction), 0.0001);
+// Most the sway may scale over the authored fair-weather sway, wind and gust together: a storm
+// gust swings a crown about a metre either side, where a uniformly doubled sway already read
+// as rubber before gusts came and went.
+const float WIND_MAX_SWAY_SCALE = 2.2;
+// A strong gust also bends a tree downwind and holds it there while it lasts: the lean, as the
+// square of the gusting wind, up to WIND_MAX_LEAN_M at weight 1 (a crown tip about a metre and
+// a half over for a 20 m tree). It changes only as gusts come and go, over seconds, so it cannot
+// shimmer: it is gated at a pixel instead of the sway's four, and carries on into the impostor
+// (vegetation_wind_lean_m), so a storm moves the distant forest too.
+const float WIND_LEAN_PER_MS2 = 0.0021;
+const float WIND_MAX_LEAN_M = 1.9;
+const float WIND_LEAN_FADE_MIN_PX = 0.4;
+const float WIND_LEAN_FADE_FULL_PX = 1.2;
+
+// The wind over the mean a tree at `instance_xz` feels now (weather_gust_factor); one texture
+// fetch, two when it is gusty.
+float vegetation_gust(vec2 instance_xz) {
+	return weather_gust_factor(weather_gust(instance_xz));
+}
+
+// Downwind lean in metres at weight 1 for a gust factor; 0 below a fresh breeze.
+float vegetation_wind_lean_m(float gust_factor) {
+	float storm = weather_storminess();
+	if (storm <= 0.0) {
+		return 0.0;
+	}
+	// weather_wind.y is the wind over the authored 4.27 m/s; the lean takes metres per second.
+	float wind_ms = weather_wind.y * 4.272 * gust_factor;
+	return storm * min(WIND_LEAN_PER_MS2 * wind_ms * wind_ms, WIND_MAX_LEAN_M);
+}
+
+// Where the trees bend and lean: downwind, as the weather turns it. A zero direction gives no
+// bend rather than a normalization NaN.
+vec2 vegetation_wind_direction() {
+	return weather_wind_direction / max(length(weather_wind_direction), 0.0001);
+}
+
+// Sway phase of a tree: one travelling wave across the stand. The slowest term turns at half
+// the sway frequency, so that half is rounded to whole cycles of the clock's wrap and every term
+// stays continuous through it.
+float vegetation_wind_phase(vec2 instance_xz, float clock) {
+	float omega = 2.0 * weather_wind_omega(wind_speed * 0.5);
+	return clock * omega - dot(instance_xz, wind_direction / max(length(wind_direction), 0.0001)) * TAU
+		/ max(gust_wavelength, 1.0);
+}
+
+// How far an impostor's crown moves downwind in strong wind, in world metres at weight 1: the
+// lean (x) and the near trees' bend (y), each gated by its own size in pixels. The sway reads at
+// a pixel here, not the near trees' four: a storm's sway is slow and a metre wide, so it moves
+// a distant crown as a whole instead of flickering its cut-out edges. 0 in a breeze.
+// The caller multiplies the lean by the weight squared over 0.8 and the sway by the weight, as
+// vegetation_wind_offset does; this returns the two at weight 1 in `lean_sway`.
+vec2 vegetation_wind_impostor_shear(vec2 instance_xz, float gust, float px_per_m) {
+	float storm = weather_storminess();
+	if (storm <= 0.0) {
+		return vec2(0.0);
+	}
+	float lean_m = vegetation_wind_lean_m(gust);
+	float sway_m = WIND_MAX_OFFSET_M * min(wind_strength * weather_wind_strength() * gust,
+		WIND_MAX_SWAY_SCALE);
+	float phase = vegetation_wind_phase(instance_xz, weather_wind.x);
+	float bend = 0.36 * sin(phase) + 0.08 * sin(phase * 0.5);
+	return vec2(lean_m * smoothstep(WIND_LEAN_FADE_MIN_PX, WIND_LEAN_FADE_FULL_PX, lean_m * px_per_m),
+		bend * sway_m * storm * smoothstep(0.6, 1.6, sway_m * px_per_m));
+}
+
+
+// O(1) per near vertex: three sine terms and, where the tree can move visibly at all, one gust
+// lookup, returned in `gust` for the sheen (1 where it was skipped, which is only in a calm).
+// No textures or inverse transforms. Only instance origin and authored weight participate, so
+// cores and cards stay together. `clock` is weather_wind.x, never TIME, so the forest holds still
+// while the game is paused and sways with the weather's wind. The sway is gated by its own size
+// in pixels, so a storm's larger sway reads farther out than a breeze's.
+vec3 vegetation_wind_offset(vec2 instance_xz, float weight, float clock, float distance_m,
+		vec2 viewport, out float gust) {
+	gust = 1.0;
+	float storm = weather_storminess();
+	float base = wind_strength * weather_wind_strength();
+	float sway;
+	float sway_visible;
+	float lean_visible = 0.0;
+	float lean_m = 0.0;
+	if (storm <= 0.0) {
+		// A breeze, a uniform branch: the gate stays on the authored fair sway, as it was before
+		// gusts varied, and a tree past it skips the gust lookup.
+		sway_visible = vegetation_wind_visibility(distance_m, viewport, WIND_MAX_OFFSET_M);
+		if (sway_visible <= 0.0) {
+			return vec3(0.0);
+		}
+		gust = vegetation_gust(instance_xz);
+		sway = base * gust;
+	} else {
+		gust = vegetation_gust(instance_xz);
+		sway = min(base * gust, WIND_MAX_SWAY_SCALE);
+		sway_visible = vegetation_wind_visibility(distance_m, viewport, WIND_MAX_OFFSET_M * sway);
+		lean_m = vegetation_wind_lean_m(gust);
+		float px_per_m = camera_projection_scale * viewport.y * 0.5 / max(distance_m, 0.001);
+		lean_visible = smoothstep(WIND_LEAN_FADE_MIN_PX, WIND_LEAN_FADE_FULL_PX, lean_m * px_per_m);
+		if (sway_visible <= 0.0 && lean_visible <= 0.0) {
+			return vec3(0.0);
+		}
+	}
+	vec2 direction = vegetation_wind_direction();
 	vec2 across = vec2(-direction.y, direction.x);
-	float phase = time * wind_speed - dot(instance_xz, direction) * TAU / max(gust_wavelength, 1.0);
+	float phase = vegetation_wind_phase(instance_xz, clock);
 	float bend = 0.36 * sin(phase) + 0.08 * sin(phase * 0.5);
 	float flutter = 0.06 * sin(phase * 4.0) * weight;
-	// At weight 1, default strength and full visibility, the offset is WIND_MAX_OFFSET_M.
-	vec2 offset = (direction * bend + across * flutter) * weight * wind_strength * visibility;
+	// At weight 1, default strength, the fair-weather wind, an average gust and full visibility,
+	// the sway is WIND_MAX_OFFSET_M.
+	// The lean bends a tree from the top, as a gust loads its crown: it grows as the weight
+	// squared (equal at the crown top's 0.8), so the lower trunk stays nearly straight instead of
+	// the whole tree tilting like a pole.
+	vec2 offset = (direction * bend + across * flutter) * weight * sway * sway_visible
+		+ direction * (weight * weight / 0.8) * lean_m * lean_visible;
 	return vec3(offset.x, 0.0, offset.y);
 }
 
@@ -130,6 +272,23 @@ vec3 vegetation_backlight(vec3 albedo) {
 	return foliage_backlight * smoothstep(0.0, 0.05, albedo.g - albedo.r);
 }
 
+// Leaves a gust turns over show their paler undersides, so a strong wind's gusts roll across a
+// forest as moving light patches. Sway is gated to the near trees (above); this reads at any
+// distance, impostors included, and moves no geometry, so it cannot shimmer. The same gust
+// factor as the sway. 1 below a fresh breeze.
+const float VEGETATION_GUST_SHEEN = 0.2;
+
+float vegetation_gust_sheen(float gust_factor) {
+	float storm = weather_storminess();
+	if (storm <= 0.0) {
+		return 1.0;
+	}
+	// The gust factor spans about 0.5 to 2.2 in a storm; its lulls darken, its gusts brighten.
+	float gust = clamp((gust_factor - 0.5) / 1.7, 0.0, 1.0);
+	return 1.0 + VEGETATION_GUST_SHEEN * storm * (gust * 2.0 - 1.0);
+}
+
+
 // Distance over which a tree stops receiving cast shadows, just inside the sun's shadow range.
 // A distant tree casts its own baked silhouette, set back along the light, so a stand shadows
 // itself tree by tree out to here. Past the fade the canopy shade term below stands in for those
@@ -140,6 +299,15 @@ uniform float tree_receive_end_m = 120.0;
 // Share of the cast shadow a tree at this distance receives.
 float vegetation_shadow_keep(float distance_m) {
 	return 1.0 - smoothstep(tree_receive_begin_m, tree_receive_end_m, distance_m);
+}
+
+#include "res://scripts/shaders/weather_clouds.gdshaderinc"
+
+// Share of direct sunlight the clouds let through to a tree, read once per vertex at the tree's
+// origin so a whole crown darkens together. Its 0.04 m-per-metre penumbra is far wider than a
+// crown, so the per-tree sample loses nothing against a per-pixel one.
+float vegetation_cloud_sun(vec3 tree_origin) {
+	return weather_cloud_shadow(tree_origin, 0.0);
 }
 
 // Cast shadow a tree receives from one light. Directional attenuation is the shadow alone; other

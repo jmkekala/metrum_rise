@@ -17,6 +17,7 @@ uniform vec3 editor_ground_tint = vec3(0.91, 0.93, 0.80);
 varying vec3 world_pos;
 
 #include "res://scripts/shaders/ground_grass.gdshaderinc"
+#include "res://scripts/shaders/ground_paving.gdshaderinc"
 
 // One grass layer without the meadow noise: the photo's chroma over the palette's luminance.
 vec3 editor_grass_layer(vec3 base_color, vec3 grass_color, float contrast) {
@@ -57,11 +58,17 @@ void fragment() {
 }
 
 void light() {
-	float shadow_visibility = mix(
-		clamp(ground_shadow_min_visibility, 0.0, 1.0),
-		1.0,
-		clamp(ATTENUATION, 0.0, 1.0)
-	);
-	float soft_facing = mix(0.82, 1.0, clamp(dot(NORMAL, LIGHT), 0.0, 1.0));
-	DIFFUSE_LIGHT += ALBEDO * LIGHT_COLOR * ground_shadow_sun_strength * shadow_visibility * soft_facing;
+	// The shadow visibility floor belongs to sun/moon light only. Local lights must retain
+	// their distance/cone/projector attenuation, including zero outside a headlight beam.
+	if (!LIGHT_IS_DIRECTIONAL) {
+		DIFFUSE_LIGHT += paving_diffuse(NORMAL, LIGHT, LIGHT_COLOR, ATTENUATION);
+	} else {
+		float shadow_visibility = mix(
+			clamp(ground_shadow_min_visibility, 0.0, 1.0),
+			1.0,
+			clamp(ATTENUATION, 0.0, 1.0)
+		);
+		float soft_facing = mix(0.82, 1.0, clamp(dot(NORMAL, LIGHT), 0.0, 1.0));
+		DIFFUSE_LIGHT += ALBEDO * LIGHT_COLOR * ground_shadow_sun_strength * shadow_visibility * soft_facing;
+	}
 }

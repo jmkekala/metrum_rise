@@ -134,6 +134,12 @@ func _run() -> void:
 	key.physical_keycode = KEY_QUOTELEFT
 	console._input(key)
 	_expect(console.is_open(), "the key left of 1 must open the console")
+	var iso_mac_keys := [[KEY_SECTION, KEY_SECTION, true], [KEY_QUOTELEFT, KEY_LESS, false]]
+	for entry in iso_mac_keys:
+		var iso_key := InputEventKey.new()
+		iso_key.physical_keycode = entry[0]
+		iso_key.key_label = entry[1]
+		_expect(DebugConsole._is_toggle_key(iso_key) == entry[2], "on a macOS ISO keyboard § toggles the console and < types (%s)" % OS.get_keycode_string(entry[0]))
 	await process_frame
 	var visible_size := root.get_visible_rect().size
 	_expect(console._view.size.x <= visible_size.x / 3.0 + 0.5, "the console must use at most a third of the width")

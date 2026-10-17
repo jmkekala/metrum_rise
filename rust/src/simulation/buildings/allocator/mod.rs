@@ -158,6 +158,11 @@ pub struct Building {
     pub frontage_t: f32,
     /// Distance in metres from the road centreline to the building's frontage curb.
     pub side_offset: f32,
+    /// How far the road's outer edge stands off the lot's front line at its left end, centre
+    /// and right end (`geometry::lot_front_gaps`): zero on a straight road, up to a few metres
+    /// where a rigid lot fronts a curve. Paving that reaches the lot line runs on across this
+    /// verge to the road. Derived from the road, never saved.
+    pub front_gap_m: [f32; 3],
     /// True once this building has entered the permanent deserted state.
     ///
     /// A one-way latch: set by the daily bankruptcy check when budget was negative at end of the

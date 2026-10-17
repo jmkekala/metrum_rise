@@ -9,7 +9,7 @@
 use crate::simulation::network::graph::Edge;
 use godot::prelude::Vector3;
 
-use crate::config::MIN_ROUTE_SPEED_MS;
+use crate::config::{AGENT_WALK_SPEED_MS, MIN_ROUTE_SPEED_MS};
 
 /// Stateless helper that computes traversal costs for a single [`Edge`].
 pub struct CostCalculator;
@@ -63,5 +63,12 @@ impl CostCalculator {
         };
 
         (time_cost * slope_penalty, total_distance)
+    }
+
+    /// Time to walk an edge: its length at walking pace, with the same slope penalty as
+    /// `base_cost`, whatever the edge's speed limit. Recovered from `base_cost`, which is the
+    /// length over the clamped speed limit times that penalty.
+    pub fn walk_cost_s(edge: &Edge) -> f32 {
+        edge.base_cost * edge.speed_limit.max(MIN_ROUTE_SPEED_MS) / AGENT_WALK_SPEED_MS
     }
 }

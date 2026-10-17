@@ -2444,6 +2444,15 @@ Recommended deterministic policy for ordinary building-origin trips:
 5. Choose the lower total cost.
 6. If the two totals are exactly equal, choose walking.
 
+Walking network cost is priced at walking pace (`TRAFFIC-05`): each walkable arc costs
+`base_cost * max(speed_limit, MIN_ROUTE_SPEED_MS) / AGENT_WALK_SPEED_MS`, its length over 1.4 m/s.
+The CCH keeps a second, walking metric beside the driving one, customized once per build without
+congestion, and `FOOT`-only queries, sweeps, flow fields and the sidewalk-connector fallback
+searches read it. The exact `FOOT` mask always gets its own CCH profile, and walkers leaving a
+restricted junction are seeded from the per-edge walking cost. Before, walkers were priced at the road's speed limit, as fast as a car, so with
+`CAR_MODE_CHOICE_OVERHEAD_S` (180 s) on top of driving, walking won nearly every trip. Now driving
+wins once the trip is longer than about 280 m.
+
 The required tie-break order is:
 
 - lower total cost

@@ -108,6 +108,15 @@ fn reordered_grid_routes_match_all_pairs_shortest_costs() {
     }
 }
 
+// Walkers go at walking pace, blind to speed limits (TRAFFIC-05).
+fn edge_cost(edge: &Edge, mode: u8) -> f32 {
+    if mode == TransitFlags::FOOT {
+        crate::simulation::pathing::cost::CostCalculator::walk_cost_s(edge)
+    } else {
+        edge.base_cost
+    }
+}
+
 fn assert_all_pairs_costs(cch: &CchGraph, graph: &RegionGraph, mode: u8) {
     let n = graph.node_count();
     let mut costs = vec![vec![f32::INFINITY; n]; n];
@@ -121,7 +130,7 @@ fn assert_all_pairs_costs(cch: &CchGraph, graph: &RegionGraph, mode: u8) {
     {
         let a = edge.start_node as usize;
         let b = edge.end_node as usize;
-        let cost = edge.base_cost;
+        let cost = edge_cost(edge, mode);
         if mode == TransitFlags::FOOT || edge.fwd_lanes > 0 {
             costs[a][b] = costs[a][b].min(cost);
         }
@@ -162,7 +171,7 @@ fn assert_all_pairs_costs(cch: &CchGraph, graph: &RegionGraph, mode: u8) {
                                 edge.bkw_lanes > 0
                             }
                     );
-                    reconstructed_cost += edge.base_cost;
+                    reconstructed_cost += edge_cost(edge, mode);
                 }
                 assert!(
                     (reconstructed_cost - cost).abs() < 0.001,
@@ -469,12 +478,18 @@ fn assert_costs_from_match_queries(cch: &CchGraph, graph: &RegionGraph, mode: u8
     let starts: Vec<u32> = (0..graph.node_count() as u32).collect();
     for (&start, costs) in starts.iter().zip(cch.costs_from_each(&starts, graph, mode)) {
         for end in 0..graph.node_count() as u32 {
-            assert_eq!(
-                costs.cost_to(end),
-                cch.find_path(start, end, usize::MAX, usize::MAX, graph, mode)
-                    .map(|route| route.0),
-                "{start}->{end}, mode={mode}"
-            );
+            let sweep = costs.cost_to(end);
+            let point = cch
+                .find_path(start, end, usize::MAX, usize::MAX, graph, mode)
+                .map(|route| route.0);
+            assert_eq!(sweep.is_some(), point.is_some());
+            if let (Some(sweep), Some(point)) = (sweep, point) {
+                // PHAST sums outward; point queries join independently summed halves.
+                assert!(
+                    (sweep - point).abs() <= 4.0 * f32::EPSILON * point.abs().max(1.0),
+                    "{start}->{end}, mode={mode}: {sweep} vs {point}"
+                );
+            }
         }
     }
 }
@@ -793,6 +808,7 @@ fn benchmark_cch_build_storage() {
             + vec_bytes(&warm.turns.allowed.values)
             + vec_bytes(&warm.base_arcs)
             + vec_bytes(&warm.base_metric)
+            + vec_bytes(&warm.base_walk)
             + vec_bytes(&warm.triangles)
             + vec_bytes(&warm.node_order)
             + vec_bytes(&warm.profiles)
@@ -1071,15 +1087,29 @@ fn filled_neighbors_are_ancestors_and_form_cliques() {
 #[test]
 fn restricted_origin_uses_customized_metric_until_next_customization() {
     let mut graph = grid(2);
+    for edge in graph.edges_iter_mut() {
+        edge.allowed_types |= TransitFlags::FOOT;
+    }
     graph.add_lane_connection(0, 0, 0, 1, 0);
     let mut cch = CchGraph::build(&graph);
+    let walk_before = cch.find_path(0, 2, 0, usize::MAX, &graph, TransitFlags::FOOT);
     let before = cch.find_path(0, 2, 0, usize::MAX, &graph, TransitFlags::CAR);
     graph.edge_mut(1).base_cost *= 3.0;
     assert_eq!(
         cch.find_path(0, 2, 0, usize::MAX, &graph, TransitFlags::CAR),
         before
     );
+    assert_eq!(
+        cch.find_path(0, 2, 0, usize::MAX, &graph, TransitFlags::FOOT),
+        walk_before
+    );
     cch.customize(&graph);
+    assert!(
+        cch.find_path(0, 2, 0, usize::MAX, &graph, TransitFlags::FOOT)
+            .unwrap()
+            .0
+            > walk_before.unwrap().0
+    );
     assert_eq!(
         cch.find_path(0, 2, 0, usize::MAX, &graph, TransitFlags::CAR)
             .unwrap()

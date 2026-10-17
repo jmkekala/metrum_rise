@@ -747,7 +747,10 @@ fn moving_junction_bounds_reuse_resident_split_and_clip_only_approaches() {
         let markings: usize = first
             .retained
             .values()
-            .map(|mesh| mesh.marking_vertices.len())
+            .map(|mesh| {
+                mesh.marking_vertices.len()
+                    + mesh.road_crossings.iter().filter(|v| v.z > 0.0).count()
+            })
             .sum();
         assert!(markings > 0, "unrelated markings must stay resident");
         assert!(

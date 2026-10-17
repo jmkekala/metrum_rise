@@ -78,6 +78,7 @@ func set_field(key: String, value: Variant) -> void:
 	document.set_parameter(key, value, "Edit " + key)
 
 func _document_changed() -> void:
+	_editor._yard_preview.exit()
 	if not ready:
 		return
 	rendering = true
@@ -509,13 +510,16 @@ func extend_lot_at_back(cells: int) -> void:
 	document.apply(state, "Extend lot at back" if cells > 0 else "Trim lot at back")
 
 # After rendering, so the rows keep off the walls of the meshes now shown, as the game's do.
-func _preview_yard_hedge() -> void:
+func yard_structure_bounds() -> PackedFloat32Array:
 	var walls := PackedFloat32Array()
 	for index in _editor._parts.size():
 		var rect: Rect2 = _editor._mesh_part_footprint_bounds(index, _editor._parts[index].position)
 		if rect.has_area():
 			walls.append_array([rect.position.x, rect.position.y, rect.end.x, rect.end.y])
-	var rows = JSON.parse_string(policy.yard_hedge_rows_json(JSON.stringify(params), walls))
+	return walls
+
+func _preview_yard_hedge() -> void:
+	var rows = JSON.parse_string(policy.yard_hedge_rows_json(JSON.stringify(params), yard_structure_bounds()))
 	_editor._preview.set_yard_hedge(rows if rows is Array else [],
 		["low", "medium", "tall"].find(str(params.get("yard_hedge", ""))))
 

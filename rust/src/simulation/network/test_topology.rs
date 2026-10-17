@@ -450,6 +450,7 @@ mod tests {
                 facing_dir: godot::prelude::Vector2::new(0.0, 1.0),
                 frontage_t: 0.75,
                 side_offset: 5.0,
+                front_gap_m: [0.0; 3],
                 budget_distress: false,
                 is_deserted: false,
                 edge_idx: old_edge_id,

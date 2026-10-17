@@ -37,7 +37,7 @@ use domains::{
 
 use rings::{
     NodeOwnershipPointIndex, canonicalize_owned_region_rings,
-    clean_canonical_owned_region_shapes_with_reuse,
+    clean_canonical_owned_region_shapes_with_reuse, noded_owned_region_contour_with_point_index,
 };
 
 use rail_authority::canonical_points_for_rail_set;
@@ -498,8 +498,11 @@ impl NodeBooleanOwnership {
         )?;
         let cleanup_ms = elapsed_profile_ms(cleanup_start);
         let footprint_rebuild_start = road_debug.then(Instant::now);
-        footprint_shapes =
-            final_footprint_shapes_from_owned_regions(rails.node_id, &owned_regions)?;
+        footprint_shapes = final_footprint_shapes_from_owned_regions(
+            rails.node_id,
+            &mut owned_regions,
+            constraint_overlap_mode,
+        )?;
         canonicalize_footprint_shapes_with_final_points(&mut footprint_shapes, &owned_regions);
         let footprint_rebuild_ms = elapsed_profile_ms(footprint_rebuild_start);
         let arrangement_rebuild_start = road_debug.then(Instant::now);
@@ -522,8 +525,11 @@ impl NodeBooleanOwnership {
             &owned_region_arrangement,
             &rails.constraints,
         ) {
-            footprint_shapes =
-                final_footprint_shapes_from_owned_regions(rails.node_id, &owned_regions)?;
+            footprint_shapes = final_footprint_shapes_from_owned_regions(
+                rails.node_id,
+                &mut owned_regions,
+                constraint_overlap_mode,
+            )?;
             canonicalize_footprint_shapes_with_final_points(&mut footprint_shapes, &owned_regions);
             owned_region_arrangement = rebuild_owned_region_seam_constraints_and_arrangement(
                 rails.node_id,
@@ -571,8 +577,11 @@ impl NodeBooleanOwnership {
         let final_boundary_ms = elapsed_profile_ms(final_boundary_start);
         let dust_cleanup_start = road_debug.then(Instant::now);
         if discard_unprovenanced_numeric_dust_regions(&mut owned_regions, &carrier_context)? {
-            footprint_shapes =
-                final_footprint_shapes_from_owned_regions(rails.node_id, &owned_regions)?;
+            footprint_shapes = final_footprint_shapes_from_owned_regions(
+                rails.node_id,
+                &mut owned_regions,
+                constraint_overlap_mode,
+            )?;
             canonicalize_footprint_shapes_with_final_points(&mut footprint_shapes, &owned_regions);
             owned_region_arrangement = rebuild_owned_region_seam_constraints_and_arrangement(
                 rails.node_id,
@@ -896,7 +905,11 @@ fn materialize_final_boundary_vertices_for_height(
         }
         FinalBoundaryAssemblyLookup::Miss(cache_key) => {
             reuse.begin_final_boundary_assembly_build();
-            *footprint_shapes = final_footprint_shapes_from_owned_regions(node_id, owned_regions)?;
+            *footprint_shapes = final_footprint_shapes_from_owned_regions(
+                node_id,
+                owned_regions,
+                constraint_overlap_mode,
+            )?;
             canonicalize_footprint_shapes_with_final_points(footprint_shapes, owned_regions);
             *owned_region_arrangement = rebuild_owned_region_seam_constraints_and_arrangement(
                 node_id,
@@ -1238,8 +1251,34 @@ fn non_road_side_join_contours_for_asphalt_trim(
 
 fn final_footprint_shapes_from_owned_regions(
     node_id: u32,
-    owned_regions: &[NodeBooleanOwnedRegion],
+    owned_regions: &mut [NodeBooleanOwnedRegion],
+    constraint_overlap_mode: ConstraintOverlapMode,
 ) -> Result<NodeOverlayShapes, NodeBooleanOwnershipError> {
+    // Footpaths take the sidewalk's grade at their explicit tie-in. Node those contacts
+    // before seam extraction and footprint union, using the same grid bound as seam
+    // extraction. Exact-canonical pieces must keep their retained source segments.
+    if constraint_overlap_mode.allows_grid_bounded_constraint_overlap()
+        && owned_regions
+            .iter()
+            .any(|region| region.kind == RoadSurfaceBandKind::Footpath)
+    {
+        let points = owned_regions
+            .iter()
+            .filter(|region| region.kind == RoadSurfaceBandKind::Sidewalk)
+            .flat_map(|region| region.shape.iter().flatten().copied())
+            .map(ownership_key_from_overlay_point)
+            .collect::<Vec<_>>();
+        let point_index = NodeOwnershipPointIndex::new(&points);
+        for region in owned_regions.iter_mut() {
+            if region.kind != RoadSurfaceBandKind::Footpath {
+                continue;
+            }
+            for contour in &mut region.shape {
+                *contour =
+                    noded_owned_region_contour_with_point_index(contour, &point_index, false);
+            }
+        }
+    }
     let contours = owned_regions
         .iter()
         .flat_map(|region| region.shape.iter().cloned())

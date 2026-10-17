@@ -106,7 +106,7 @@ func _input(event: InputEvent) -> void:
 	var key := event as InputEventKey
 	if key == null or not key.pressed:
 		return
-	if key.physical_keycode == KEY_QUOTELEFT:
+	if _is_toggle_key(key):
 		# Consumed even on echo so the key never types into a text field.
 		get_viewport().set_input_as_handled()
 		if not key.echo:
@@ -114,6 +114,13 @@ func _input(event: InputEvent) -> void:
 	elif key.keycode == KEY_ESCAPE and _open and _view.has_text_focus():
 		_view.release_text_focus()
 		get_viewport().set_input_as_handled()
+
+# The key left of 1. macOS reports it as § on ISO keyboards (the ` code there belongs to the <
+# key beside left shift, which must keep typing) and as ` on ANSI ones.
+static func _is_toggle_key(key: InputEventKey) -> bool:
+	if key.physical_keycode == KEY_SECTION:
+		return true
+	return key.physical_keycode == KEY_QUOTELEFT and key.key_label != KEY_LESS
 
 ## Opens or closes the console with a short slide from the top edge.
 func set_open(open: bool) -> void:

@@ -9,6 +9,7 @@ use super::{LaneSystem, LaneType};
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::*;
 use std::collections::HashSet;
+use std::f32::consts::PI;
 
 #[test]
 fn test_lane_geometry_and_length() {
@@ -137,6 +138,61 @@ fn lane_height_sync_matches_compiled_visible_surface() {
             .expect("sidewalk lane vertex should be over visible sidewalk");
         assert!((point.y + CURB_STEP_HEIGHT_M - expected_top_y).abs() <= 1e-4);
     }
+}
+
+#[test]
+fn incremental_lane_rebuild_is_lifted_without_the_renderer() {
+    let terrain = TerrainSystem::new(128, 128);
+    let mut graph = RegionGraph::new();
+    let n1 = graph.add_node(Vector3::new(-20.0, 0.0, 0.0), NodeType::Junction);
+    let n2 = graph.add_node(Vector3::new(20.0, 0.0, 0.0), NodeType::Junction);
+    graph.add_edge(Edge {
+        start_node: n1,
+        end_node: n2,
+        primary_type: TransitType::Road,
+        allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+        class: EdgeClass::Standard,
+        width: 10.0,
+        fwd_lanes: 1,
+        bkw_lanes: 1,
+        speed_limit: 13.0,
+        base_cost: 2.0,
+        physical_length: 40.0,
+        geometry: vec![Vector3::new(-20.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)],
+        physical_geometry: vec![Vector3::new(-20.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)],
+        ..Default::default()
+    });
+    graph.rebuild_adjacency_list();
+    let mut road_surface = RoadSurfaceSystem::new(RegionGraph::CHUNK_SIZE);
+    road_surface.compile_dirty(&graph, &terrain);
+
+    let mut lanes = LaneSystem::new();
+    lanes.rebuild(&mut graph);
+    lanes.sync_heights_to_visible_surface(&graph, &terrain, &road_surface);
+    assert!(!lanes.has_unsynced_lanes());
+
+    // A local rebuild appends flat lanes; the sim-side sync must match a load-time full sync.
+    lanes.rebuild_edges_incremental(&mut graph, &HashSet::from([0]));
+    assert!(lanes.has_unsynced_lanes());
+    lanes.sync_new_lanes_to_visible_surface(&graph, &terrain, &road_surface);
+    assert!(!lanes.has_unsynced_lanes());
+
+    let mut loaded = LaneSystem::new();
+    loaded.rebuild(&mut graph);
+    loaded.sync_heights_to_visible_surface(&graph, &terrain, &road_surface);
+    let sidewalk = |system: &LaneSystem| {
+        let id = system.edge_lanes[&0]
+            .iter()
+            .copied()
+            .find(|&id| system.lanes[id].lane_type == LaneType::Foot)
+            .expect("sidewalk lane");
+        (system.lanes[id].geometry.clone(), system.lanes[id].length)
+    };
+    let (live_geometry, live_length) = sidewalk(&lanes);
+    let (loaded_geometry, loaded_length) = sidewalk(&loaded);
+    assert!(live_geometry.iter().all(|point| point.y != 0.0));
+    assert_eq!(live_geometry, loaded_geometry);
+    assert_eq!(live_length, loaded_length);
 }
 
 #[test]
@@ -420,6 +476,92 @@ fn acute_pedestrian_corner_falls_back_outside_junction_core() {
                 "acute-corner fallback entered the asphalt junction core"
             );
         }
+    }
+}
+
+// A road arm from the node: a circular arc of `radius_m` (positive turns left) leaving at
+// `heading` radians, sampled every 2 m like the spline tool's roads.
+fn curved_arm(graph: &mut RegionGraph, node: u32, heading: f32, radius_m: f32) -> usize {
+    let origin = graph.node(node).pos;
+    let points: Vec<Vector3> = (0..=50)
+        .map(|i| {
+            let angle = i as f32 * 2.0 / radius_m;
+            let (along, side) = (radius_m * angle.sin(), radius_m * (1.0 - angle.cos()));
+            let (c, s) = (heading.cos(), heading.sin());
+            origin + Vector3::new(along * c - side * s, 0.0, along * s + side * c)
+        })
+        .collect();
+    let end = graph.add_node(*points.last().unwrap(), NodeType::Junction);
+    let edge = add_road_edge(graph, node, end);
+    let edge = graph.edge_mut(edge);
+    edge.physical_length = points.windows(2).map(|w| w[0].distance_to(w[1])).sum();
+    edge.geometry = points.clone();
+    edge.physical_geometry = points;
+    graph.edge_count() - 1
+}
+
+#[test]
+fn sidewalks_through_bends_between_curved_roads_stay_on_the_sidewalk() {
+    // TRAFFIC-04: where curved roads meet, the walk between the sidewalk ends of the two
+    // through roads swung round a wide arc about the node, out over the verge: at a gentle
+    // bend between two curved roads, and along the straight side of a curved road's Y.
+    let cases = [
+        (PI - 0.23, None, "13 degree bend"),
+        (PI, Some(PI + 0.65), "straight side of a Y"),
+    ];
+    for (second_heading, branch_heading, label) in cases {
+        let mut graph = RegionGraph::new();
+        let center = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        let through = [
+            curved_arm(&mut graph, center, 0.0, 150.0),
+            curved_arm(&mut graph, center, second_heading, 150.0),
+        ];
+        if let Some(heading) = branch_heading {
+            curved_arm(&mut graph, center, heading, -150.0);
+        }
+        graph.rebuild_adjacency_list();
+        graph.rebuild_intersection_clips();
+        let mut lanes = LaneSystem::new();
+        lanes.rebuild(&mut graph);
+
+        let from_arm = |p: Vector3, edge: usize| {
+            graph
+                .edge(edge)
+                .physical_geometry
+                .windows(2)
+                .map(|w| distance_to_segment_xz(p, w[0], w[1]))
+                .fold(f32::INFINITY, f32::min)
+        };
+        let nearest_arm = |p: Vector3| {
+            (0..graph.edge_count())
+                .min_by(|&a, &b| from_arm(p, a).total_cmp(&from_arm(p, b)))
+                .unwrap()
+        };
+        // A sidewalk centreline runs half a sidewalk outside the asphalt; allow its width.
+        let limit = 3.5 + crate::config::SIDEWALK_WIDTH;
+        let mut checked = 0;
+        for &lane_id in &lanes.node_lanes[&(center as usize)] {
+            let lane = &lanes.lanes[lane_id];
+            if lane.lane_type != LaneType::Foot || lanes.crosswalk(lane_id).is_some() {
+                continue;
+            }
+            let ends = [
+                nearest_arm(lane.geometry[0]),
+                nearest_arm(*lane.geometry.last().unwrap()),
+            ];
+            if !(ends.contains(&through[0]) && ends.contains(&through[1])) {
+                continue;
+            }
+            checked += 1;
+            for &point in &lane.geometry {
+                let off = from_arm(point, nearest_arm(point));
+                assert!(
+                    off <= limit,
+                    "{label}: walking connector {lane_id} leaves the sidewalk at {point:?}, {off:.1} m from the road"
+                );
+            }
+        }
+        assert!(checked > 0, "{label}: no walk between the through roads");
     }
 }
 
@@ -712,6 +854,49 @@ fn test_vehicle_pass_through_split_uses_direct_lane_link() {
             }),
         "pass-through split should not create zero-length vehicle connector lanes"
     );
+}
+
+#[test]
+fn test_vehicle_pass_through_at_a_slight_bend_never_runs_backwards() {
+    // A 4.6 degree bend: on its inside the offset lanes overlap, so the outgoing lane starts
+    // behind the incoming lane's end.
+    let mut graph = RegionGraph::new();
+    let n_west = graph.add_node(Vector3::new(-100.0, 0.0, 0.0), NodeType::Junction);
+    let n_center = graph.add_node(Vector3::ZERO, NodeType::Junction);
+    let n_east = graph.add_node(Vector3::new(100.0, 0.0, 8.0), NodeType::Junction);
+    let west_edge = add_road_edge(&mut graph, n_west, n_center);
+    let east_edge = add_road_edge(&mut graph, n_center, n_east);
+    graph.rebuild_adjacency_list();
+    graph.rebuild_intersection_clips();
+    let mut lanes = LaneSystem::new();
+    lanes.rebuild(&mut graph);
+
+    for (from, to) in [
+        (
+            vehicle_lane_on_edge(&lanes, west_edge, true),
+            vehicle_lane_on_edge(&lanes, east_edge, true),
+        ),
+        (
+            vehicle_lane_on_edge(&lanes, east_edge, false),
+            vehicle_lane_on_edge(&lanes, west_edge, false),
+        ),
+    ] {
+        let route = lanes.lanes[from]
+            .next_lanes
+            .iter()
+            .copied()
+            .find(|&next| next == to || lanes.lanes[next].next_lanes.first() == Some(&to))
+            .expect("cars drive on through the bend");
+        let travel = *lanes.lanes[from].geometry.last().unwrap()
+            - lanes.lanes[from].geometry[lanes.lanes[from].geometry.len() - 2];
+        for step in lanes.lanes[route].geometry.windows(2) {
+            let d = step[1] - step[0];
+            assert!(
+                d.x * travel.x + d.z * travel.z >= 0.0,
+                "lane {route} runs backwards"
+            );
+        }
+    }
 }
 
 #[test]
@@ -1203,4 +1388,5 @@ fn test_incremental_rebuild_connection_lanes_exist_at_junction() {
     assert!(e0_lane_has_conns);
 }
 
+mod footpaths;
 mod rebuild_benchmark;

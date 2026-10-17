@@ -1,11 +1,16 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## Road drawing tool — straight and spline modes with live compiled preview and lane configuration.
+## Road drawing tool — straight and curve modes with live compiled preview and lane configuration.
 ##
 ## Extends NetworkTool. Adds: Rust-compiled roadbed preview, checkbox-controlled zoning-grid
-## snapping and the distance + angle HUD label.
+## snapping, angle snapping (Shift draws free) and the distance + angle HUD label.
+## Rust methods called: get_road_tool_cursor_pos(), get_road_tool_start_direction().
 ## Placement stays pending until Rust acknowledges acceptance; rejection retains the editable stroke.
-## State machine: IDLE → SETTING_CONTROL (spline handle) → SETTING_END → accepted commit → IDLE.
+## Drawing is continuous: an accepted road starts the next one at its end, using its end
+## direction for straight-road snapping, until right-click/Esc, a connection to existing roads,
+## or the map edge (the external-connection prompt).
+## Curve mode always takes a free control-point click, including each stroke in a chain.
+## State machine: IDLE → [SETTING_CONTROL] → SETTING_END → accepted commit → next stroke.
 extends "res://scripts/tools/network_tool.gd"
 
 const GameSettings = preload("res://scripts/core/game_settings.gd")
@@ -87,6 +92,14 @@ var _start_tangent_angle: float = 0.0
 var _has_road_tangent: bool = false
 # The Rust cursor result retains a node/edge target only within its snapshot generation.
 var _sticky_network_snap: Dictionary = {}
+
+# Reference direction from Rust for straight-road snapping and the HUD.
+var _start_dir: Vector3 = Vector3.ZERO
+# Direction the current stroke ends in (unit XZ), handed to the next stroke when drawing continues.
+var _stroke_end_dir: Vector3 = Vector3.ZERO
+var _commit_end_dir: Vector3 = Vector3.ZERO
+var _commit_ends_on_network: bool = false
+var _angle_snapped: bool = false
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_PREDELETE:
@@ -245,33 +258,20 @@ func _handle_click():
 	
 	match current_state:
 		State.IDLE:
-			start_pos = pos
-			active = true
-			_clear_sticky_network_snap()
-			if draw_mode == 0:
-				current_state = State.SETTING_END
-				control_pos = start_pos
-			else:
-				current_state = State.SETTING_CONTROL
-
-			# Store the road tangent at start_pos so the angle HUD is relative to the road,
-			# not the world grid. Falls back to Vector2(0,1) on open terrain.
 			var tangent_start_us := Time.get_ticks_usec()
-			var _st: Vector2 = simulation_node.get_road_tangent_at(start_pos, 6.0)
+			# Read the start's snap target before the stroke clears it.
+			var snap := _sticky_network_snap.duplicate()
+			var direction: Dictionary = simulation_node.get_road_tool_start_direction(
+				pos,
+				int(snap.get("snap_node", -1)),
+				int(snap.get("snap_edge", -1)),
+				int(snap.get("surface_generation", -1))
+			)
 			tangent_ms = float(Time.get_ticks_usec() - tangent_start_us) / 1000.0
-			_start_tangent_angle = atan2(_st.y, _st.x)  # atan2(z, x) = East-0° convention
-			# Detect fallback: (0,1) means no road found within range.
-			_has_road_tangent = not (_st.x == 0.0 and _st.y == 1.0)
-
 			var path_start_us := Time.get_ticks_usec()
-			current_path = Path3D.new()
-			current_path.curve = Curve3D.new()
-			current_path.curve.bake_interval = 0.5
-			current_path.curve.up_vector_enabled = false # Prevent 'looking_at' errors on degenerate paths
-			add_child(current_path)
-			_queue_preview_update()
+			_begin_stroke(pos, int(direction.get("kind", 0)), direction.get("direction", Vector3.ZERO))
 			path_ms = float(Time.get_ticks_usec() - path_start_us) / 1000.0
-			
+
 		State.SETTING_CONTROL:
 			control_pos = pos
 			_clear_sticky_network_snap()
@@ -343,6 +343,29 @@ func _update_preview():
 			return
 	_draw_candidate_preview(points, validation)
 
+# Starts a stroke at `pos`. Rust supplies `kind` (0 means no road reference) and `direction`
+# for the HUD and straight-road angle snapping; curves always choose a free control point.
+func _begin_stroke(pos: Vector3, kind: int, direction: Vector3) -> void:
+	start_pos = pos
+	control_pos = pos
+	active = true
+	_clear_sticky_network_snap()
+	_has_road_tangent = kind != 0 and direction.length_squared() > 0.0
+	_start_dir = Vector3(direction.x, 0.0, direction.z).normalized() if _has_road_tangent else Vector3.ZERO
+	_start_tangent_angle = atan2(_start_dir.z, _start_dir.x)  # East-0° convention
+	_stroke_end_dir = Vector3.ZERO
+	_angle_snapped = false
+	if draw_mode == 0:
+		current_state = State.SETTING_END
+	else:
+		current_state = State.SETTING_CONTROL
+	current_path = Path3D.new()
+	current_path.curve = Curve3D.new()
+	current_path.curve.bake_interval = 0.5
+	current_path.curve.up_vector_enabled = false # Prevent 'looking_at' errors on degenerate paths
+	add_child(current_path)
+	_queue_preview_update()
+
 func _refresh_preview_curve() -> PackedVector3Array:
 	if current_path == null:
 		return PackedVector3Array()
@@ -365,12 +388,14 @@ func _refresh_preview_curve() -> PackedVector3Array:
 				if draw_mode == 0:
 					current_path.curve.add_point(start_pos)
 					current_path.curve.add_point(mouse_pos)
+					_stroke_end_dir = Vector3(mouse_pos.x - start_pos.x, 0.0, mouse_pos.z - start_pos.z).normalized()
 				else:
 					var t_start = (control_pos - start_pos)
 					var t_end = (mouse_pos - control_pos) # Direction of the second half
 					
 					current_path.curve.add_point(start_pos, Vector3.ZERO, t_start)
 					current_path.curve.add_point(mouse_pos, -t_end, Vector3.ZERO)
+					_stroke_end_dir = Vector3(t_end.x, 0.0, t_end.z).normalized()
 
 	return _road_surface_points_from_curve(current_path.curve)
 
@@ -685,7 +710,7 @@ func _update_preview_measurement_label(points: PackedVector3Array, preview: Dict
 		if angle_deg < 0.0: angle_deg += 360.0
 		if angle_deg >= 180.0: angle_deg -= 180.0
 
-	var snap_str := " [zoning grid]" if (active and _zoning_snap_enabled()) else ""
+	var snap_str := " [zoning grid]" if (active and _zoning_snap_enabled()) else (" [snapped]" if _angle_snapped else "")
 	var build_cost := float(preview.get("build_cost", 0.0))
 	if bool(preview.get("is_pending", false)):
 		_info_label.add_theme_color_override("font_color", Color(1.0, 0.76, 0.18, 0.98))
@@ -738,6 +763,23 @@ func _preview_invalid_text(preview: Dictionary) -> String:
 			return "Road terrain boundary could not be built"
 		"parcel_overlap":
 			return "Road overlaps existing zoning parcels"
+		"road_grade_change":
+			return "Road bends too sharply up or down"
+		"road_tight_curve":
+			return "Curve too tight: radius %.1f m, needs %.1f m" % [
+				float(preview.get("geometry_measured", 0.0)),
+				float(preview.get("geometry_limit", 0.0)),
+			]
+		"junction_arm_angle":
+			return "Roads meet at %.0f°; junction arms need %.0f°" % [
+				float(preview.get("geometry_measured", 0.0)),
+				float(preview.get("geometry_limit", 0.0)),
+			]
+		"junction_degree":
+			return "Too many roads at one junction (%d, at most %d)" % [
+				int(preview.get("geometry_measured", 0.0)),
+				int(preview.get("geometry_limit", 0.0)),
+			]
 		"same_node_connection":
 			return "Road endpoints connect to the same junction"
 		"too_short":
@@ -795,6 +837,12 @@ func _commit_segment(end_pos: Vector3) -> bool:
 		_commit_path_id = current_path.get_instance_id()
 		_commit_points = points
 		_commit_validation = validation
+		_commit_end_dir = _stroke_end_dir
+		# Ending on an existing road or junction ends the chain, as it does in other city builders.
+		_commit_ends_on_network = (
+			int(_sticky_network_snap.get("snap_node", -1)) >= 0
+			or int(_sticky_network_snap.get("snap_edge", -1)) >= 0
+		)
 		add_road_ms = float(Time.get_ticks_usec() - add_road_start_us) / 1000.0
 		# Do NOT trigger the terrain/network visual refresh here — the road
 		# is queued to the sim thread and is not in the graph yet.  _process polls
@@ -861,7 +909,11 @@ func _poll_road_commit_result() -> void:
 	# Cancellation or a new drawing gesture must not be undone by an older completion.
 	if current_path != null and current_path.get_instance_id() == _commit_path_id:
 		if committed:
+			var end_pos := _commit_points[_commit_points.size() - 1] if _commit_points.size() > 0 else Vector3.ZERO
+			var chain := _commit_points.size() > 1 and not _commit_ends_on_network and not _commit_reaches_border()
 			cancel_road()
+			if chain and active:
+				_begin_stroke(end_pos, 1, _commit_end_dir)
 		else:
 			var rejected := _commit_validation.duplicate(false)
 			rejected["is_valid"] = false
@@ -875,8 +927,19 @@ func _poll_road_commit_result() -> void:
 	_commit_validation = {}
 	_commit_border_check = []
 
+# A road touching the map edge asks about an external connection; the chain ends there so the
+# dialog never sits over a stroke still following the pointer off the map.
+func _commit_reaches_border() -> bool:
+	for pos in _commit_border_check:
+		if simulation_node.check_border_candidate(pos) >= 0:
+			return true
+	return false
+
 func cancel_road():
 	current_state = State.IDLE
+	_start_dir = Vector3.ZERO
+	_has_road_tangent = false
+	_angle_snapped = false
 	_clear_sticky_network_snap()
 	_clear_preview_visual()
 	_terrain_preview.reset()
@@ -983,7 +1046,8 @@ func get_world_mouse_pos() -> Vector3:
 		bkw_lanes,
 		MAP_BORDER_SNAP_DIST_M,
 		_sticky_network_snap,
-		ROAD_NETWORK_SNAP_RELEASE_DIST_M
+		ROAD_NETWORK_SNAP_RELEASE_DIST_M,
+		_angle_snap()
 	)
 	if pos_variant == null:
 		if _has_last_world_mouse_pos:
@@ -992,11 +1056,18 @@ func get_world_mouse_pos() -> Vector3:
 		return Vector3.ZERO
 	is_valid = true
 	var pos: Vector3 = pos_variant["position"]
+	_angle_snapped = bool(pos_variant.get("angle_snapped", false))
 	if not _snap_to_roads_enabled() or not _can_stick_to_network_snap(pos):
 		_clear_sticky_network_snap()
 		return pos
 	_sticky_network_snap = pos_variant
 	return pos
+
+# Straight strokes snap every 45° from the start direction; Shift draws free.
+func _angle_snap() -> Vector3:
+	if draw_mode != 0 or not _has_road_tangent or Input.is_key_pressed(KEY_SHIFT):
+		return Vector3.ZERO
+	return _start_dir
 
 func _can_stick_to_network_snap(pos: Vector3) -> bool:
 	if current_state == State.SETTING_END:

@@ -9,6 +9,7 @@
 
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::TransitFlags;
+use crate::simulation::pathing::cost::CostCalculator;
 use crate::simulation::zoning::ZoneType;
 use std::collections::BinaryHeap;
 
@@ -77,7 +78,12 @@ impl FlowField {
             }
             let start = edge.start_node as usize;
             let end = edge.end_node as usize;
-            let cost = edge.base_cost.max(1e-6);
+            let cost = if flags == TransitFlags::FOOT {
+                CostCalculator::walk_cost_s(edge)
+            } else {
+                edge.base_cost
+            }
+            .max(1e-6);
             if edge.traversal_flags(true) & flags != 0 {
                 rev_adj[end].push((edge.start_node, cost));
             }

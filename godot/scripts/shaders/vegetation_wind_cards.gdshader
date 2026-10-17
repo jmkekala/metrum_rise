@@ -28,28 +28,44 @@ varying flat vec2 dither;
 // and keeps its own ranges, so it stays at zero. Set per instance by vegetation.gd.
 instance uniform float hands_over = 0.0;
 
+// Share of direct sunlight the clouds let through to this tree.
+varying flat float cloud_sun;
+
 void vertex() {
-	// Measured before the displacement, which is bounded by half a metre and cannot change
-	// which side of the gate a tree falls on. One distance now serves both terms.
-	float view_distance_m = distance(VERTEX, CAMERA_POSITION_WORLD);
-	VERTEX += vegetation_wind_offset(MODEL_MATRIX[3].xz, COLOR.a, TIME,
-		vegetation_wind_visibility(view_distance_m, VIEWPORT_SIZE));
+	cloud_sun = vegetation_cloud_sun(MODEL_MATRIX[3].xyz);
+	// Measured before the displacement, which is bounded by about two and a half metres and cannot change
+	// which side of the gate a tree falls on. One distance now serves both terms. Measured to the
+	// main camera, so a tree that casts from its branches sways its shadow with it; the shadow
+	// pass's larger VIEWPORT_SIZE only keeps a few pixels more of the sway's fade-out.
+	float view_distance_m = distance(VERTEX, MAIN_CAM_INV_VIEW_MATRIX[3].xyz);
+	float gust;
+	VERTEX += vegetation_wind_offset(MODEL_MATRIX[3].xz, COLOR.a, weather_wind.x, view_distance_m,
+		VIEWPORT_SIZE, gust);
 	// Understory is ground cover rather than a trunk under a crown, so it takes no base shade.
 	crown_height = (VERTEX.y - MODEL_MATRIX[3].y) / length(MODEL_MATRIX[1].xyz);
 	stand_closure = hands_over > 0.5 ? INSTANCE_CUSTOM.x : 0.0;
 	canopy_light = vegetation_canopy_shade(MODEL_MATRIX[3].xz, view_distance_m, hands_over > 0.5
-		? (VERTEX.y - MODEL_MATRIX[3].y) / length(MODEL_MATRIX[1].xyz) : CANOPY_BASE_TOP_M);
+		? (VERTEX.y - MODEL_MATRIX[3].y) / length(MODEL_MATRIX[1].xyz) : CANOPY_BASE_TOP_M)
+		* vegetation_gust_sheen(gust);
 	shadow_keep = vegetation_shadow_keep(view_distance_m);
 	crossfade = hands_over > 0.5
 		? vegetation_crossfade(MODEL_MATRIX[3].xyz, MAIN_CAM_INV_VIEW_MATRIX[3].xyz) : 0.0;
-	// A canopy tree casts from its impostor at every distance, so only the colour pass hands over.
+	// The shadow pass takes no dither: near the camera one level casts whole, and the impostor
+	// caster farther out; see vegetation_branched_casts.
 	bool shadow_pass = vegetation_shadow_pass(CAMERA_POSITION_WORLD, MAIN_CAM_INV_VIEW_MATRIX[3].xyz);
 	float reduced = vegetation_reduced_share(MODEL_MATRIX[3].xyz, MAIN_CAM_INV_VIEW_MATRIX[3].xyz,
 		hands_over > 0.5);
-	dither = shadow_pass ? vec2(0.0, 2.0) : vegetation_level_keeps(crossfade, reduced);
+	dither = shadow_pass
+		? (hands_over < 0.5
+			|| vegetation_branched_casts(MODEL_MATRIX[3].xyz, MAIN_CAM_INV_VIEW_MATRIX[3].xyz, reduced)
+			? vec2(0.0, 2.0) : vec2(1.0, 1.0))
+		: vegetation_level_keeps(crossfade, reduced);
 	// A tree this level keeps no pixel of collapses to a point and is never rasterised.
-	if (!shadow_pass && dither.x >= min(dither.y, 1.0)) {
+	if (dither.x >= min(dither.y, 1.0)) {
 		VERTEX = MODEL_MATRIX[3].xyz;
+	} else if (shadow_pass && hands_over > 0.5) {
+		VERTEX = vegetation_caster_setback(VERTEX, MODEL_MATRIX[3].xyz, length(MODEL_MATRIX[1].xyz),
+			INV_VIEW_MATRIX[2].xyz);
 	}
 }
 
@@ -76,6 +92,7 @@ void light() {
 	float shadow = vegetation_shadow(ATTENUATION, LIGHT_IS_DIRECTIONAL, shadow_keep);
 	if (LIGHT_IS_DIRECTIONAL) {
 		shadow = min(shadow, vegetation_stand_sun(crown_height, stand_closure));
+		shadow *= cloud_sun;
 	}
 	// No sun highlight. A card stands for a cluster of leaves under one normal, so the highlight
 	// lit a whole cluster at once and turned crowns facing the sun white. In a real crown the

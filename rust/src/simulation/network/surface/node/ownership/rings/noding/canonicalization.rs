@@ -18,7 +18,8 @@ pub(in crate::simulation::network::surface::node::ownership) fn canonicalize_own
     let global_point_index = NodeOwnershipPointIndex::new(&global_points);
     for region in regions.iter_mut() {
         for contour in &mut region.shape {
-            *contour = noded_owned_region_contour_with_point_index(contour, &global_point_index);
+            *contour =
+                noded_owned_region_contour_with_point_index(contour, &global_point_index, true);
         }
     }
 }
@@ -90,7 +91,8 @@ fn node_owned_region_rings_to_global_points(
     let global_point_index = NodeOwnershipPointIndex::new(&global_points);
     for region in regions {
         for contour in &mut region.shape {
-            *contour = noded_owned_region_contour_with_point_index(contour, &global_point_index);
+            *contour =
+                noded_owned_region_contour_with_point_index(contour, &global_point_index, true);
         }
     }
 }
@@ -106,7 +108,8 @@ fn node_join_or_cap_owned_region_rings_to_global_points(
             continue;
         }
         for contour in &mut region.shape {
-            *contour = noded_owned_region_contour_with_point_index(contour, &global_point_index);
+            *contour =
+                noded_owned_region_contour_with_point_index(contour, &global_point_index, true);
         }
     }
 }

@@ -11,6 +11,7 @@ use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::time::{
     MINUTES_PER_DAY, TimeSystem, validate_day_duration, validated_simulation_speed,
 };
+use crate::simulation::core::weather::WeatherState;
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::demand::DemandSystem;
 use crate::simulation::economy::fiscal::CityFiscalPolicy;
@@ -43,6 +44,7 @@ pub(crate) mod sqlite;
 #[cfg(test)]
 pub mod tests;
 mod vegetation;
+mod weather;
 pub mod world;
 mod workplace_quotes;
 
@@ -58,6 +60,7 @@ pub(crate) struct SaveGameView<'a> {
     /// Player placements and generated-cell tombstones.
     pub vegetation_edits: &'a VegetationEdits,
     pub time: &'a TimeSystem,
+    pub weather: &'a WeatherState,
     pub terrain: &'a TerrainSystem,
     pub water: &'a WaterSystem,
     pub resource_deposits: &'a ResourceDepositSystem,
@@ -90,6 +93,8 @@ pub(crate) struct LoadedSimulation {
     /// Sparse player delta, empty for saves before version 61.
     pub vegetation_edits: VegetationEdits,
     pub time: TimeSystem,
+    /// Settled fair weather for saves before version 70.
+    pub weather: WeatherState,
     pub terrain: TerrainSystem,
     pub water: WaterSystem,
     pub resource_deposits: ResourceDepositSystem,
@@ -412,6 +417,7 @@ fn write_snapshot(
         ],
     )?;
     vegetation::save(tx, view.vegetation_edits)?;
+    weather::save_weather_state(tx, view.weather)?;
     tx.execute("INSERT INTO time_state(time_elapsed, speed_multiplier, day_index, minute_of_day, seconds_per_day, agent_sim_time) VALUES (?1, ?2, ?3, ?4, ?5, ?6)", params![view.time.time_elapsed, view.time.speed_multiplier, i64::from(view.time.day_index), i64::from(view.time.minute_of_day), view.time.seconds_per_day, view.agents.sim_time])?;
     tx.execute(
         "INSERT INTO city_treasury(balance, lifetime_build_cost, lifetime_tax_revenue, last_daily_upkeep, last_daily_income_tax, last_daily_household_vat, last_daily_business_profit_tax, last_daily_property_tax, last_daily_residential_property_tax, last_daily_commercial_property_tax, last_daily_industrial_property_tax, pending_income_tax, pending_household_vat, pending_business_profit_tax, pending_property_tax, pending_residential_property_tax, pending_commercial_property_tax, pending_industrial_property_tax) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
@@ -551,6 +557,11 @@ pub(crate) fn load_from_sqlite(
         seconds_per_day: time_r.4,
     };
     validate_time_state(&time, time_r.5)?;
+    let weather = if version >= WEATHER_SAVE_VERSION {
+        weather::load_weather_state(&conn, version)?
+    } else {
+        WeatherState::default()
+    };
 
     let mut terrain = world::load_terrain(&conn, &config)?;
     let water = world::load_water(&conn, &config, terrain.width, terrain.height)?;
@@ -744,6 +755,7 @@ pub(crate) fn load_from_sqlite(
         camera,
         config,
         time,
+        weather,
         terrain,
         water,
         resource_deposits,

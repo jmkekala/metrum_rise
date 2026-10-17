@@ -18,7 +18,9 @@ mod land_cover;
 // get_vegetation_stand_cover.
 const STAND_RADIUS_TEXELS: usize = 2;
 mod placement;
+mod tree_clearance;
 mod yard_planting;
+pub(crate) mod yard_preview;
 #[cfg(test)]
 pub(crate) use hedge_runs::hedge_runs;
 pub(crate) use placement::publish_yards;
@@ -747,6 +749,7 @@ fn placement_clear_for(core: &SimCore, x: f32, z: f32, layer: VegetationLayer, y
         (2.5, 1.6)
     };
     clear_site(core, x, z, radius, max_relief, yard)
+        && (layer != VegetationLayer::Canopy || tree_clearance::clear(core, x, z))
 }
 
 // Whether a 3x3 footprint of `radius` around a position is open, native ground within

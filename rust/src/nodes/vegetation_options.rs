@@ -7,7 +7,7 @@
 //! ceiling are. This class carries those numbers across the boundary so GDScript does not keep
 //! a second copy of them that drifts when `RENDER-04` raises the ceiling.
 
-use crate::simulation::vegetation::{VegetationConfig, canopy_cell_m_for_density};
+use crate::simulation::vegetation::{canopy_cell_m_for_density, VegetationConfig};
 use godot::prelude::*;
 
 /// Read-only source of authored vegetation defaults and bounds for menu code.
@@ -26,6 +26,34 @@ impl VegetationOptions {
         dict.set("seed", i64::from(config.seed));
         dict.set("coverage", f64::from(config.coverage));
         dict.set("canopy_stems_per_ha", f64::from(config.canopy_stems_per_ha));
+        dict
+    }
+
+    /// Returns the new-game dialog's forest presets, "less" and "more", each a coverage
+    /// fraction and a canopy density in stems per hectare.
+    #[func]
+    pub fn get_presets(&self) -> VarDictionary {
+        let forest = |coverage: f32, canopy_stems_per_ha: f32| {
+            let mut dict = VarDictionary::new();
+            dict.set("coverage", f64::from(coverage));
+            dict.set("canopy_stems_per_ha", f64::from(canopy_stems_per_ha));
+            dict
+        };
+        let mut dict = VarDictionary::new();
+        dict.set(
+            "less",
+            forest(
+                VegetationConfig::DEFAULT_COVERAGE,
+                VegetationConfig::LESS_FOREST_CANOPY_STEMS_PER_HA,
+            ),
+        );
+        dict.set(
+            "more",
+            forest(
+                VegetationConfig::MORE_COVERAGE,
+                VegetationConfig::MORE_FOREST_CANOPY_STEMS_PER_HA,
+            ),
+        );
         dict
     }
 

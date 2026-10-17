@@ -14,6 +14,7 @@ pub mod graph;
 pub mod render;
 pub mod surface;
 pub mod types;
+pub mod validate;
 pub use render::NetworkMeshData;
 pub mod interaction;
 /// Physical lane geometry and connectivity system.
@@ -418,6 +419,30 @@ impl TransitNetwork {
         // Mark chunks as dirty
         let chunks = graph.get_edge_chunks(edge_id);
         self.cch_dirty_chunks.extend(chunks);
+    }
+
+    /// Lifts lanes appended by rebuilds onto the compiled road surface.
+    ///
+    /// Lane heights decide lane lengths, which agents and route costs consume, so they must not
+    /// wait for the renderer. Leaves lanes pending while the surface lags its source graph.
+    pub(crate) fn sync_new_lane_heights(
+        &mut self,
+        graph: &RegionGraph,
+        terrain: &crate::simulation::terrain::TerrainSystem,
+    ) {
+        if !self.lane_system.has_unsynced_lanes() {
+            return;
+        }
+        self.road_surface.compile_dirty_with_reason(
+            graph,
+            terrain,
+            RoadSurfaceCompileReason::SimCommit,
+        );
+        if !self.road_surface.published_generation_matches_source() {
+            return;
+        }
+        self.lane_system
+            .sync_new_lanes_to_visible_surface(graph, terrain, &self.road_surface);
     }
 
     /// Generates visual mesh data for the entire road network.

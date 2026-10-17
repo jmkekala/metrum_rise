@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::simulation::core::time::{SIMULATION_SPEED_STEPS, validated_simulation_speed};
+use crate::simulation::core::weather::WeatherScenario;
 
 #[godot_api(secondary)]
 impl SimulationNode {
@@ -105,6 +106,96 @@ impl SimulationNode {
         self.snapshot.read().unwrap().current_day_fraction
     }
 
+    /// Returns the cloud field state for this frame as `(origin_x_m, origin_z_m, coverage,
+    /// optical_depth)`, from the same snapshot as the clock.
+    ///
+    /// The origin is added to a world position before the cloud field lookup; it combines the
+    /// seeded field origin with the accumulated drift, so a paused game holds the clouds still.
+    #[func]
+    pub fn get_weather_clouds(&self) -> Vector4 {
+        let weather = self.snapshot.read().unwrap().weather;
+        Vector4::new(
+            weather.cloud_origin_m[0],
+            weather.cloud_origin_m[1],
+            weather.cloud_coverage,
+            weather.cloud_optical_depth,
+        )
+    }
+
+    /// Returns the wind for this frame as `(clock_s, strength, offset_x_m, offset_z_m)`, from the
+    /// same snapshot as the clock: the wrapped wind clock every sway and ripple phase reads, the
+    /// wind speed over the authored one, and the distance the air has moved, for the gust field.
+    #[func]
+    pub fn get_weather_wind(&self) -> Vector4 {
+        let weather = self.snapshot.read().unwrap().weather;
+        Vector4::new(
+            weather.wind_clock_s,
+            weather.wind_strength,
+            weather.wind_offset_m[0],
+            weather.wind_offset_m[1],
+        )
+    }
+
+    /// Returns the high cloud layer for this frame as `(origin_x_m, origin_z_m, cover, 0)`, from
+    /// the same snapshot as the clock. The origin is added to a world position before the high
+    /// layer's lookup; the layer drifts on its own, faster and veered wind.
+    #[func]
+    pub fn get_weather_high_clouds(&self) -> Vector4 {
+        let weather = self.snapshot.read().unwrap().weather;
+        Vector4::new(
+            weather.high_origin_m[0],
+            weather.high_origin_m[1],
+            weather.high_cover,
+            0.0,
+        )
+    }
+
+    /// Returns the rain intensity this frame in `[0, 1]`, from dry to a downpour. It follows the
+    /// cloud deck: rain falls only from a closed deck thicker than an overcast one.
+    #[func]
+    pub fn get_weather_rain(&self) -> f32 {
+        self.snapshot.read().unwrap().weather.rain
+    }
+
+    /// Returns the unit X/Z direction the wind blows towards this frame, from the same snapshot
+    /// as the clock. Trees bend and whitecaps streak along it.
+    #[func]
+    pub fn get_weather_wind_direction(&self) -> Vector2 {
+        let direction = self.snapshot.read().unwrap().weather.wind_direction;
+        Vector2::new(direction[0], direction[1])
+    }
+
+    /// Whether the seeded schedule moves the weather, from the same snapshot as the clock.
+    #[func]
+    pub fn get_weather_automatic(&self) -> bool {
+        self.snapshot.read().unwrap().weather.automatic
+    }
+
+    /// Hands the weather to the seeded schedule, or takes it away so the current scenario holds.
+    /// Returns false for a closed simulation command channel.
+    #[func]
+    pub fn set_weather_automatic(&mut self, automatic: bool) -> bool {
+        self.cmd_tx
+            .send(SimCommand::SetWeatherAutomatic(automatic))
+            .is_ok()
+    }
+
+    /// Moves the weather to scenario `index` (0 clear, 1 fair cumulus, 2 overcast, 3 storm) over
+    /// `duration_s` speed-scaled seconds and holds it there: the schedule stops. Zero switches at
+    /// once. Returns false for an unknown index or a closed simulation command channel.
+    #[func]
+    pub fn set_weather_scenario(&mut self, index: i32, duration_s: f64) -> bool {
+        let Some(scenario) = u8::try_from(index)
+            .ok()
+            .and_then(WeatherScenario::from_index)
+        else {
+            return false;
+        };
+        self.cmd_tx
+            .send(SimCommand::SetWeather(scenario, duration_s))
+            .is_ok()
+    }
+
     /// Returns a Dictionary of packed transforms for visible non-car agents, keyed by pedestrian_type.
     #[func]
     pub fn get_agent_transforms(&self) -> VarDictionary {
@@ -169,6 +260,47 @@ impl SimulationNode {
         } else {
             PackedFloat32Array::new()
         }
+    }
+
+    /// Up to `max_count` drawn cars nearest `eye` within `radius_m`, nearest first, from the
+    /// bucket → transform buffers `smooth_car_render_data` returns: 13 floats per car, its
+    /// 12-float MultiMesh transform then its bucket key. Feeds the headlight spot lights.
+    /// O(cars · log max_count).
+    #[func]
+    pub fn nearest_car_poses(
+        &self,
+        car_buffers: VarDictionary,
+        eye: Vector3,
+        radius_m: f32,
+        max_count: i64,
+    ) -> PackedFloat32Array {
+        use crate::nodes::sim::render::car_visual::nearest_cars;
+        let mut keys = Vec::new();
+        let mut buffers = Vec::new();
+        for (key, buffer) in car_buffers.iter_shared() {
+            if let (Ok(key), Ok(buffer)) =
+                (key.try_to::<i64>(), buffer.try_to::<PackedFloat32Array>())
+            {
+                keys.push(key as f32);
+                buffers.push(buffer);
+            }
+        }
+        let slices: Vec<&[f32]> = buffers.iter().map(|buffer| buffer.as_slice()).collect();
+        let chosen = nearest_cars(
+            &slices,
+            glam::Vec3::new(eye.x, eye.y, eye.z),
+            radius_m,
+            usize::try_from(max_count).unwrap_or(0),
+        );
+        let mut out = PackedFloat32Array::new();
+        out.resize(chosen.len() * 13);
+        let out_slice = out.as_mut_slice();
+        for (i, (buffer, car)) in chosen.into_iter().enumerate() {
+            out_slice[i * 13..i * 13 + 12]
+                .copy_from_slice(&slices[buffer][car * 12..car * 12 + 12]);
+            out_slice[i * 13 + 12] = keys[buffer];
+        }
+        out
     }
 
     /// Returns bucket → MultiMesh transform buffer for this frame's drawn cars, from buckets

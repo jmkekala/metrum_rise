@@ -227,7 +227,7 @@ func set_yard_hedge(rows: Array, hedge: int) -> void:
 
 func _yard_hedge_material(hedge: int) -> StandardMaterial3D:
 	if not _yard_hedge_materials.has(hedge):
-		var material := (TreeSpecies.hedge_run_mesh(hedge).material as StandardMaterial3D).duplicate()
+		var material := TreeSpecies.hedge_run_source_material(hedge).duplicate()
 		material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 		material.albedo_color.a = YARD_HEDGE_ALPHA
 		_yard_hedge_materials[hedge] = material
@@ -251,6 +251,21 @@ func end_thumbnail_capture(state: Dictionary) -> void:
 	for helper: Node3D in state.visibility:
 		helper.visible = state.visibility[helper]
 	_ground.material_overlay = state.grid
+
+## Hide authoring guides and planting washes while preserving the exact editing resources.
+func begin_yard_preview() -> Dictionary:
+	var state := begin_thumbnail_capture()
+	state["hedge_visible"] = _yard_hedge.visible
+	state["surface_mesh"] = _site_surface_fill.mesh
+	_yard_hedge.hide()
+	_build_site_surface_fill(false)
+	return state
+
+## Restore the meshes, labels, guides and their previous visibility without rebuilding them.
+func end_yard_preview(state: Dictionary) -> void:
+	end_thumbnail_capture(state)
+	_yard_hedge.visible = state.hedge_visible
+	_site_surface_fill.mesh = state.surface_mesh
 
 ## Add a GLB, GLTF, or FBX as another building mesh part and return its local AABB.
 func add_mesh_part(native_path: String) -> AABB:
@@ -1084,7 +1099,7 @@ func _build_site_surface_overlay() -> void:
 	_site_surface_overlay.mesh = im
 	_site_labels_ready.call_deferred()
 
-func _build_site_surface_fill() -> void:
+func _build_site_surface_fill(include_planting: bool = true) -> void:
 	if not _site_surface_fill:
 		return
 
@@ -1097,6 +1112,8 @@ func _build_site_surface_fill() -> void:
 	for surface in _site_surfaces:
 		var material := str(surface.get("material", WorldMaterials.MATERIAL_ASPHALT))
 		if material in PLANTING_KINDS:
+			if not include_planting:
+				continue
 			material = PLANTING
 		elif not triangles_by_material.has(material):
 			material = WorldMaterials.MATERIAL_ASPHALT

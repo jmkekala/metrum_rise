@@ -31,6 +31,11 @@ const CONCRETE_NORMAL := "res://assets/textures/general/concrete_layers/concrete
 const CONCRETE_ROUGH := "res://assets/textures/general/concrete_layers/concrete_layers_02_rough_4k.png"
 
 const ROAD_SHADER := "res://assets/materials/road.gdshader"
+const ROAD_ASPHALT_SHADER := "res://assets/materials/road_asphalt.gdshader"
+const ROAD_MARKING_SHADER := "res://scripts/shaders/road_marking.gdshader"
+const ROAD_PATH_SHADER := "res://assets/materials/road_path.gdshader"
+# Procedural aggregate detail for road_surface_finnish.gdshaderinc: R aggregate, GB slopes, A relief.
+const ROAD_AGGREGATE_DETAIL := "res://assets/textures/road/finnish/aggregate_packed.png"
 const ROAD_PREVIEW_SHADER := "res://scripts/shaders/road_preview.gdshader"
 const ROAD_FACE_SHADER := "res://scripts/shaders/road_sidewalk_face.gdshader"
 const CONCRETE_SHADER := "res://assets/materials/concrete.gdshader"
@@ -43,6 +48,7 @@ const FIELD_OVERLAY_SHADER := "res://scripts/shaders/field_overlay.gdshader"
 static var _texture_cache = {}
 static var _shader_cache = {}
 static var _road_asphalt_material: ShaderMaterial
+static var _road_marking_material: ShaderMaterial
 static var _road_sidewalk_material: ShaderMaterial
 static var _road_sidewalk_face_material: ShaderMaterial
 static var _road_concrete_material: ShaderMaterial
@@ -54,6 +60,7 @@ static var _site_concrete_material: ShaderMaterial
 
 static func prewarm_road_materials() -> void:
 	road_asphalt_material()
+	road_marking_material()
 	road_sidewalk_material()
 	road_sidewalk_face_material()
 	road_concrete_material()
@@ -69,16 +76,25 @@ static func road_preview_material() -> ShaderMaterial:
 
 static func road_asphalt_material() -> ShaderMaterial:
 	if _road_asphalt_material == null:
-		_road_asphalt_material = _new_paving_material(
-			ROAD_SHADER, ROAD_ASPHALT_DIFF, ROAD_ASPHALT_NORMAL, ROAD_ASPHALT_ROUGH,
-			0.05, 0.007, 0.4
-		)
+		_road_asphalt_material = ShaderMaterial.new()
+		_road_asphalt_material.resource_name = "road_asphalt_finnish"
+		_road_asphalt_material.shader = _load_shader(ROAD_ASPHALT_SHADER)
+		_road_asphalt_material.set_shader_parameter("detail_texture", load_texture(ROAD_AGGREGATE_DETAIL))
 	return _road_asphalt_material
+
+static func road_marking_material() -> ShaderMaterial:
+	if _road_marking_material == null:
+		_road_marking_material = ShaderMaterial.new()
+		_road_marking_material.resource_name = "road_marking_finnish"
+		_road_marking_material.shader = _load_shader(ROAD_MARKING_SHADER)
+	return _road_marking_material
 
 static func road_sidewalk_material() -> ShaderMaterial:
 	if _road_sidewalk_material == null:
-		_road_sidewalk_material = _new_sidewalk_asphalt(ROAD_SHADER)
+		# Same paving look on roadside sidewalks; footpath stretches switch to the path surface.
+		_road_sidewalk_material = _new_sidewalk_asphalt(ROAD_PATH_SHADER)
 		_road_sidewalk_material.resource_name = "road_sidewalk_asphalt_04"
+		_road_sidewalk_material.set_shader_parameter("detail_texture", load_texture(ROAD_AGGREGATE_DETAIL))
 	return _road_sidewalk_material
 
 static func road_sidewalk_face_material() -> ShaderMaterial:
@@ -95,7 +111,10 @@ static func road_sidewalk_face_material() -> ShaderMaterial:
 		_road_sidewalk_face_material.set_shader_parameter("uv_scale", Vector2(0.12, 0.12))
 		_road_sidewalk_face_material.set_shader_parameter("vertical_uv_scale", Vector2(0.12, 0.12))
 		_road_sidewalk_face_material.set_shader_parameter("vertical_normal_strength", 0.25)
-		_road_sidewalk_face_material.set_shader_parameter("tint", Color(0.88, 0.87, 0.82, 1.0))
+		_road_sidewalk_face_material.set_shader_parameter("tint", Color(1.0, 1.0, 1.0, 1.0))
+		_road_sidewalk_face_material.set_shader_parameter(
+			"detail_texture", load_texture(ROAD_AGGREGATE_DETAIL)
+		)
 	return _road_sidewalk_face_material
 
 static func road_concrete_material() -> ShaderMaterial:

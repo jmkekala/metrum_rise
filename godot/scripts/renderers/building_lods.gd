@@ -4,6 +4,9 @@
 ## projection, hysteresis and grouping; Godot applies complete changed batches before drawing.
 extends Node3D
 
+## Emitted after a batch's complete upload, so the water reflection re-reads its shared buffer.
+signal reflection_batch_changed(instance: MultiMeshInstance3D)
+
 const BuildingMeshes := preload("res://scripts/renderers/building_meshes.gd")
 const WindowMaterials := preload("res://scripts/renderers/window_materials.gd")
 const SchemeMaterials := preload("res://scripts/renderers/scheme_materials.gd")
@@ -21,19 +24,27 @@ var evaluated_parts := 0
 var queried_chunks := 0
 var uploaded_bytes := 0
 var _source_parts: Dictionary = {}
+# Authored surface materials of each loaded mesh, by mesh. The mesh itself draws converted
+# copies (see _converted), and scheme bindings still match and vary the originals.
+var _source_materials: Dictionary = {}
+# The window brightness each converted mesh carries, and per [shared mesh, brightness] the
+# converted copy made when another asset reuses that mesh at a different brightness.
+var _mesh_brightness: Dictionary = {}
+var _brightness_variants: Dictionary = {}
 var _scheme_variants: Dictionary = {}
 # Batch keys pack tier/deserted/scheme into one int; the stride is the widest authored
 # scheme table in this catalog, so a key stays unique across every part.
 var _scheme_stride := 1
 var _placeholder: Mesh
-var _deserted_material: StandardMaterial3D
+var _deserted_material: Material
 var _sun: DirectionalLight3D
 
 func configure(simulation: Node, placeholder: Mesh) -> void:
 	simulation_node = simulation
 	_placeholder = placeholder
-	_deserted_material = StandardMaterial3D.new()
-	_deserted_material.albedo_color = Color(0.45, 0.42, 0.38, 1.0)
+	var deserted := StandardMaterial3D.new()
+	deserted.albedo_color = Color(0.45, 0.42, 0.38, 1.0)
+	_deserted_material = WindowMaterials.create(deserted)
 	quality = GameSettings.get_building_lod_quality()
 	add_to_group("building_lod_renderers")
 	if get_parent() and get_parent().get_parent():
@@ -49,6 +60,9 @@ func reload_resources() -> void:
 	batches.clear()
 	meshes.clear()
 	_source_parts.clear()
+	_source_materials.clear()
+	_mesh_brightness.clear()
+	_brightness_variants.clear()
 	_scheme_variants.clear()
 	_scheme_stride = 1
 	resources = BuildingMeshes.new()
@@ -62,6 +76,8 @@ func reload_resources() -> void:
 		var loaded := PackedByteArray()
 		for path: String in part.paths:
 			var mesh: Mesh = _placeholder if path.is_empty() else resources.load_mesh(path)
+			if mesh != null:
+				mesh = _converted(mesh, float(part.get("window_brightness", WindowMaterials.DEFAULT_BRIGHTNESS)))
 			chain.append(mesh)
 			loaded.append(1 if mesh != null else 0)
 			if mesh == null:
@@ -81,6 +97,38 @@ func reload_resources() -> void:
 		_scheme_stride = maxi(_scheme_stride, part.get("schemes", []).size())
 	if not simulation_node.configure_building_lod_resources(generation, availability, resource_bounds):
 		push_error("Building LOD catalog changed during resource loading")
+
+# Every building surface draws through the window shader, whose light() lets the clouds dim
+# the sun; Godot's own materials offer no hook for that. The meshes are this renderer's own
+# bakes, not shared imports, so their surfaces are converted in place, once per mesh, and no
+# geometry is duplicated. The shader carries the asset's window brightness, and BuildingMeshes
+# shares a mesh between assets that use the same model: another asset reusing it at a different
+# brightness gets its own converted copy, the only case that duplicates geometry.
+func _converted(mesh: Mesh, window_brightness: float) -> Mesh:
+	if not _source_materials.has(mesh):
+		var originals: Array[BaseMaterial3D] = []
+		for surface in mesh.get_surface_count():
+			var source := mesh.surface_get_material(surface) as BaseMaterial3D
+			originals.append(source)
+			if source != null:
+				mesh.surface_set_material(surface, WindowMaterials.create(source, false, window_brightness))
+		_source_materials[mesh] = originals
+		_mesh_brightness[mesh] = window_brightness
+		return mesh
+	if is_equal_approx(_mesh_brightness[mesh], window_brightness):
+		return mesh
+	var key := [mesh, window_brightness]
+	if not _brightness_variants.has(key):
+		var variant := mesh.duplicate() as Mesh
+		var originals: Array = _source_materials[mesh]
+		for surface in variant.get_surface_count():
+			if originals[surface] != null:
+				variant.surface_set_material(surface,
+					WindowMaterials.create(originals[surface], false, window_brightness))
+		_source_materials[variant] = originals
+		_mesh_brightness[variant] = window_brightness
+		_brightness_variants[key] = variant
+	return _brightness_variants[key]
 
 func get_source_mesh(asset_id: String, part_index: int) -> Mesh:
 	return _source_parts.get("%s|part:%d" % [asset_id, part_index])
@@ -147,6 +195,7 @@ func _apply_batch(change: Dictionary) -> void:
 			if group["override"] != null:
 				instance.material_override = group["override"]
 		SceneLightingConfig.apply_shadow_policy(instance, SceneLightingConfig.SHADOW_STATIC_CASTER, "buildings")
+		instance.set_meta("reflection_source", true)
 		add_child(instance)
 		batches[key] = instance
 	var multimesh := instance.multimesh
@@ -164,6 +213,7 @@ func _apply_batch(change: Dictionary) -> void:
 		uploaded_bytes += buffer.size() * 4
 	multimesh.visible_instance_count = count
 	instance.visible = count > 0
+	reflection_batch_changed.emit(instance)
 
 ## Decode a batch dictionary key back into its group identity. `_apply_batch` is the only
 ## writer of this packing, so diagnostics and regressions cannot drift from it.
@@ -178,7 +228,8 @@ func batch_identity(key: Vector4i) -> Dictionary:
 ## Godot exposes per-surface overrides on `MeshInstance3D` only, never on a MultiMesh, so a
 ## tier with one surface takes an instance override and keeps sharing the source mesh, while
 ## a multi-material tier needs its own mesh resource to leave untargeted surfaces authored.
-## Only parts with scheme or window overrides pay for that duplicated geometry.
+## Only parts with scheme overrides pay for that duplicated geometry; window and cloud-shadow
+## conversion is already on the shared mesh.
 func _scheme_group(part: int, lod: int, scheme: int) -> Dictionary:
 	var cache_key := Vector3i(part, lod, scheme)
 	if _scheme_variants.has(cache_key):
@@ -189,14 +240,14 @@ func _scheme_group(part: int, lod: int, scheme: int) -> Dictionary:
 	if mesh != null:
 		var replacements: Array[Material] = []
 		var replaced := 0
+		var originals: Array = _source_materials.get(mesh, [])
 		for surface in mesh.get_surface_count():
-			var source := mesh.surface_get_material(surface) as BaseMaterial3D
+			var source: BaseMaterial3D = originals[surface] if surface < originals.size() else null
 			var replacement: Material = null
 			if source != null and bindings.has(source.resource_name):
-				replacement = SchemeMaterials.variant(source, bindings[source.resource_name])
-			var base: BaseMaterial3D = replacement if replacement != null else source
-			if base != null and base.emission_texture != null:
-				replacement = WindowMaterials.create(base, false, float(catalog[part]["window_brightness"]))
+				replacement = WindowMaterials.create(
+					SchemeMaterials.variant(source, bindings[source.resource_name]), false,
+					float(catalog[part]["window_brightness"]))
 			if replacement != null:
 				replaced += 1
 			replacements.append(replacement)

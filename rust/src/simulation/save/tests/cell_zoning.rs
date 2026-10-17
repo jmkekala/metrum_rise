@@ -102,6 +102,7 @@ fn write_snapshot(
             vegetation: &VegetationConfig::default(),
             vegetation_edits: &VegetationEdits::default(),
             time: &TimeSystem::new(),
+            weather: &Default::default(),
             terrain: &TerrainSystem::from_world_config(config),
             water: &WaterSystem::from_world_config(config),
             resource_deposits: &ResourceDepositSystem::from_world_config(config),

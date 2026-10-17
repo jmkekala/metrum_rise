@@ -1,0 +1,4 @@
+Tree impostor albedo and normal atlases: original work, baked from the models in
+models/vegetation/trees by tools/bake_tree_impostors.py.
+Licensed under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/); credit as
+"<asset name>" from Metrum Rise. The generator scripts are code, GPL-2.0-only.

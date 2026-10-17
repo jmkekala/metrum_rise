@@ -46,6 +46,9 @@ fn trim_from_front(geom: &[Vector3], dist: f32) -> Vec<Vector3> {
 }
 
 /// Builds geometry and appends one straight lane to `lanes`, updating `lane_map` and `edge_lane_indices`.
+///
+/// `end_insets` trims that many metres more from the edge's start and end than its junction
+/// clips do; footpaths use it to stop at the sidewalk of the roads they meet.
 #[allow(clippy::too_many_arguments)]
 pub fn build_one_lane(
     lanes: &mut Vec<Lane>,
@@ -57,6 +60,7 @@ pub fn build_one_lane(
     lane_idx: i8,
     lane_type: LaneType,
     lane_offset: f32,
+    end_insets: (f32, f32),
 ) {
     let pts = &edge.physical_geometry;
     let mut geometry = Vec::with_capacity(pts.len());
@@ -112,8 +116,8 @@ pub fn build_one_lane(
     } else {
         0.0
     };
-    let start_clip = edge.start_clip + junction_inset;
-    let end_clip = edge.end_clip + junction_inset;
+    let start_clip = edge.start_clip + junction_inset + end_insets.0;
+    let end_clip = edge.end_clip + junction_inset + end_insets.1;
     if start_clip > 0.0 {
         geometry = trim_from_front(&geometry, start_clip);
     }

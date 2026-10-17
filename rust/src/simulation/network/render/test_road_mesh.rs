@@ -273,28 +273,6 @@ mod tests {
             .collect()
     }
 
-    fn triangles_from_vertices_matching_colors(
-        vertices: &[Vector3],
-        colors: &[Color],
-        mut matches_color: impl FnMut(Color) -> bool,
-    ) -> Vec<[Vector3; 3]> {
-        assert_eq!(
-            vertices.len(),
-            colors.len(),
-            "colored triangle data must keep vertices and colors aligned"
-        );
-        vertices
-            .as_chunks::<3>()
-            .0
-            .iter()
-            .zip(colors.as_chunks::<3>().0)
-            .filter(|&(_triangle, triangle_colors)| {
-                triangle_colors.iter().copied().all(&mut matches_color)
-            })
-            .map(|(triangle, _triangle_colors)| [triangle[0], triangle[1], triangle[2]])
-            .collect()
-    }
-
     fn triangle_projected_double_area(triangle: [Vector3; 3]) -> f32 {
         let [a, b, c] = triangle;
         (b.x - a.x) * (c.z - a.z) - (b.z - a.z) * (c.x - a.x)
@@ -760,6 +738,14 @@ mod tests {
     fn generate_editor_mesh(
         roads: &[(&[Vector3], u8, u8)],
     ) -> (RegionGraph, NetworkMeshData, TerrainSystem) {
+        generate_editor_mesh_at_speed(roads, None)
+    }
+
+    // A 1+1 street at the default 50 km/h is unmarked; marking tests drive faster roads.
+    fn generate_editor_mesh_at_speed(
+        roads: &[(&[Vector3], u8, u8)],
+        speed_kmh: Option<f32>,
+    ) -> (RegionGraph, NetworkMeshData, TerrainSystem) {
         let mut network = TransitNetwork::new();
         let mut graph = RegionGraph::new();
         let config = WorldConfig::default();
@@ -776,6 +762,11 @@ mod tests {
                 &mut zoning,
                 &mut allocator,
             );
+        }
+        if let Some(speed_kmh) = speed_kmh {
+            for edge_idx in 0..graph.edge_count() {
+                graph.edge_mut(edge_idx).speed_limit = speed_kmh * crate::config::KMH_TO_MPS;
+            }
         }
 
         let terrain = TerrainSystem::new(256, 256);
@@ -2600,16 +2591,19 @@ mod tests {
         let north = [Vector3::new(0.0, 0.0, -24.0), Vector3::new(0.0, 0.0, 0.0)];
         let east = [Vector3::new(0.0, 0.0, 0.0), Vector3::new(24.0, 0.0, 0.0)];
         let west = [Vector3::new(-24.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 0.0)];
-        let (_graph, mesh_data, _terrain) =
-            generate_editor_mesh(&[(&north, 1, 1), (&east, 1, 1), (&west, 1, 1)]);
+        let (_graph, mesh_data, _terrain) = generate_editor_mesh_at_speed(
+            &[(&north, 1, 1), (&east, 1, 1), (&west, 1, 1)],
+            Some(60.0),
+        );
         validate_mesh(&mesh_data, 70.0);
 
         let marking_triangles = triangles_from_vertices(&mesh_data.marking_vertices);
+        // Sample inside the 0.15 m lane line; zebra paint no longer contributes to this layer.
         let arm_markings = triangle_coverage_ratio(
             &marking_triangles,
-            Vector2::new(7.0, -0.25),
-            Vector2::new(15.0, 0.25),
-            0.1,
+            Vector2::new(7.0, -0.05),
+            Vector2::new(15.0, 0.05),
+            0.025,
         );
         let center_markings = triangle_coverage_ratio(
             &marking_triangles,
@@ -2667,27 +2661,32 @@ mod tests {
 
         validate_mesh(&mesh_data, 60.0);
 
-        // Marking vertices should include both road dividers and crosswalks.
-        // A T-junction has 3 road arms and at least 2 crosswalks.
-        // Each zebra bar is 6 vertices. 10m crossing = ~12 bars = 72 vertices per crosswalk.
-        assert!(
-            mesh_data.marking_vertices.len() >= 150,
-            "Expected significant marking vertices for crosswalks, got {}",
-            mesh_data.marking_vertices.len()
+        // Urban residential roads have no lane lines; their zebras live in the asphalt.
+        assert!(mesh_data.marking_vertices.is_empty());
+        assert!(mesh_data.road_crossings.iter().any(|v| v.z > 0.0));
+        assert_eq!(
+            mesh_data.road_crossings.len(),
+            mesh_data.road_vertices.len()
         );
     }
 
     #[test]
     fn lane_markings_stop_before_crosswalk_edges() {
         let road = [Vector3::new(-30.0, 0.0, 0.0), Vector3::new(30.0, 0.0, 0.0)];
-        let (graph, mesh_data, _terrain) = generate_editor_mesh(&[(&road, 1, 1)]);
+        let (graph, mesh_data, _terrain) =
+            generate_editor_mesh_at_speed(&[(&road, 1, 1)], Some(60.0));
         validate_mesh(&mesh_data, 70.0);
 
-        let center_line_triangles = triangles_from_vertices_matching_colors(
-            &mesh_data.marking_vertices,
-            &mesh_data.marking_colors,
-            |color| color.r > 0.9 && color.g > 0.7 && color.b < 0.4 && color.a > 0.5,
-        );
+        // Lane lines retain their dash pattern in UV.y >= 2; zebra paint is in the road layer.
+        let center_line_triangles: Vec<[Vector3; 3]> = mesh_data
+            .marking_vertices
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .zip(mesh_data.marking_uvs.as_chunks::<3>().0)
+            .filter(|(_, uvs)| uvs.iter().all(|uv| uv.y > 1.5))
+            .map(|(triangle, _)| [triangle[0], triangle[1], triangle[2]])
+            .collect();
         assert!(
             !center_line_triangles.is_empty(),
             "two-lane road should emit visible center-line marking triangles"
@@ -2766,20 +2765,27 @@ mod tests {
             renderer.generate_mesh_data_with_surface(&graph, &lane_system, &terrain, &road_surface);
         validate_mesh(&mesh_data, 30.0);
         assert!(
-            !mesh_data.marking_vertices.is_empty(),
+            mesh_data.road_crossings.iter().any(|v| v.z > 0.0),
             "one-lane road terminals should still emit crosswalk paint"
         );
 
         let mut min_y = f32::INFINITY;
         let mut max_y = f32::NEG_INFINITY;
-        for vertex in &mesh_data.marking_vertices {
+        for (vertex, paint) in mesh_data
+            .road_vertices
+            .iter()
+            .zip(&mesh_data.road_crossings)
+        {
+            if paint.z == 0.0 {
+                continue;
+            }
             let expected_height_m = road_surface
                 .sample_visible_carriageway_height(&graph, &terrain, vertex.x, vertex.z)
                 .or_else(|| {
                     road_surface.sample_visible_surface_height(&graph, &terrain, vertex.x, vertex.z)
                 })
                 .expect("crosswalk marking vertex should be over compiled road surface");
-            let expected_y = expected_height_m + config::ROAD_DECAL_RENDER_Z_BIAS_M;
+            let expected_y = expected_height_m;
             assert!(
                 (vertex.y - expected_y).abs() <= 0.01,
                 "crosswalk paint must use compiled surface height at {:?}; expected_y={expected_y:.3}",
@@ -2800,21 +2806,25 @@ mod tests {
         let east = [Vector3::new(0.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)];
 
         // Bend (2 arms)
-        let (_graph, mesh_data, _terrain) = generate_editor_mesh(&[(&north, 1, 1), (&east, 1, 1)]);
+        let (_graph, mesh_data, _terrain) =
+            generate_editor_mesh_at_speed(&[(&north, 1, 1), (&east, 1, 1)], Some(60.0));
 
         validate_mesh(&mesh_data, 40.0);
 
-        // A 2-way junction should have:
-        // - Dash markings on the 2 road arms
-        // - exactly ONE crosswalk (zebra stripes)
-        // Current rendering produces ~336 vertices for 2×20m arms + 1 crosswalk.
-        // A "no crosswalk" result (dash markings only) would be well below 200.
-        // Two crosswalks would be above 550.
-        assert!(
-            mesh_data.marking_vertices.len() > 140 && mesh_data.marking_vertices.len() < 550,
-            "Expected one crosswalk's worth of marking vertices (plus road dashings) for 2-way node, got {}",
-            mesh_data.marking_vertices.len()
-        );
+        // Only one arm is painted at the central degree-two node; terminal zebras lie farther out.
+        let mut north_painted = false;
+        let mut east_painted = false;
+        for (p, paint) in mesh_data
+            .road_vertices
+            .iter()
+            .zip(&mesh_data.road_crossings)
+        {
+            if paint.z > 0.0 && p.x.abs().max(p.z.abs()) < 12.0 {
+                north_painted |= -p.z > p.x;
+                east_painted |= p.x > -p.z;
+            }
+        }
+        assert_ne!(north_painted, east_painted);
     }
 
     #[test]
@@ -2911,6 +2921,19 @@ mod tests {
             sidewalk_colors
         );
         assert_layer!("road", road_vertices, road_normals, road_uvs, road_colors);
+        let mut global_paint: Vec<_> = global
+            .road_crossings
+            .iter()
+            .map(|v| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits(), v.w.to_bits()])
+            .collect();
+        let mut chunk_paint: Vec<_> = chunks
+            .values()
+            .flat_map(|mesh| &mesh.road_crossings)
+            .map(|v| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits(), v.w.to_bits()])
+            .collect();
+        global_paint.sort_unstable();
+        chunk_paint.sort_unstable();
+        assert_eq!(global_paint, chunk_paint);
         assert_layer!(
             "marking",
             marking_vertices,

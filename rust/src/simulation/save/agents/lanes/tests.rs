@@ -381,6 +381,103 @@ fn loaded_network_and_ingress_plans_preserve_detach_without_origin_attach() {
 }
 
 #[test]
+fn stale_junction_lane_from_an_older_save_is_sent_to_replan_instead_of_failing_the_load() {
+    let (mut graph, network) = fixture();
+    let lanes = &network.lane_system;
+    let mut connectors = lanes
+        .node_lanes
+        .values()
+        .flatten()
+        .copied()
+        .collect::<Vec<_>>();
+    connectors.sort_unstable();
+    let mut agents = AgentSystem::new();
+    let healthy = add_agent(&mut agents, connectors[0], &graph, lanes);
+    let stale = add_agent(&mut agents, connectors[0], &graph, lanes);
+    let owner = lanes.lanes[connectors[0]].node_id as u32;
+
+    let allocator = BuildingAllocator::new();
+    let maps = crate::simulation::save::build_snapshot_maps(&graph, &allocator, &agents).unwrap();
+    let other = maps
+        .node_old_to_new
+        .iter()
+        .filter(|&(&old, _)| old != owner)
+        .map(|(_, &saved)| saved)
+        .min()
+        .unwrap();
+    let mut conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(crate::simulation::save::schema::SCHEMA)
+        .unwrap();
+    let tx = conn.transaction().unwrap();
+    crate::simulation::save::network::save_network(&tx, &graph, &maps).unwrap();
+    save_agents(&tx, &agents, &graph, &network, &maps).unwrap();
+    // What a pre-ROAD-65 terrain edit or undo left behind, which the writer now refuses: a
+    // connector owned by another node.
+    tx.execute(
+        "UPDATE agents SET current_node = ?1 WHERE agent_id = ?2",
+        rusqlite::params![other, stale as i64],
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    let mut restored =
+        load_agents(&conn, 0.0, crate::simulation::save::schema::SAVE_VERSION).unwrap();
+    graph = crate::simulation::save::network::load_graph(&conn).unwrap();
+    let mut new_network = TransitNetwork::new();
+    new_network.lane_system.rebuild(&mut graph);
+    restore_lane_references(&conn, 58, &mut restored, &graph, &mut new_network, &allocator)
+        .unwrap();
+
+    assert_ne!(restored.current_lane_id[healthy], usize::MAX);
+    assert_eq!(restored.transit[healthy], TRANSIT_INTERSECTION);
+    assert_eq!(restored.current_lane_id[stale], usize::MAX);
+    assert_eq!(restored.transit[stale], TRANSIT_NETWORK);
+    assert_eq!(restored.planned_attach_lane_id[stale], u32::MAX);
+}
+
+#[test]
+fn connector_the_rebuild_now_links_straight_through_is_dropped_and_its_agent_replans() {
+    let (mut graph, network) = fixture();
+    let lanes = &network.lane_system;
+    let connector = lanes.node_lanes.values().flatten().copied().min().unwrap();
+    let mut agents = AgentSystem::new();
+    let on_connector = add_agent(&mut agents, connector, &graph, lanes);
+
+    let allocator = BuildingAllocator::new();
+    let maps = crate::simulation::save::build_snapshot_maps(&graph, &allocator, &agents).unwrap();
+    let mut conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(crate::simulation::save::schema::SCHEMA)
+        .unwrap();
+    let tx = conn.transaction().unwrap();
+    crate::simulation::save::network::save_network(&tx, &graph, &maps).unwrap();
+    save_agents(&tx, &agents, &graph, &network, &maps).unwrap();
+    tx.commit().unwrap();
+    let mut restored =
+        load_agents(&conn, 0.0, crate::simulation::save::schema::SAVE_VERSION).unwrap();
+    graph = crate::simulation::save::network::load_graph(&conn).unwrap();
+    let mut new_network = TransitNetwork::new();
+    new_network.lane_system.rebuild(&mut graph);
+    // The current builder links every route's road lanes directly, as it now does past a
+    // footpath arm.
+    let new_lanes = &mut new_network.lane_system.lanes;
+    for id in 0..new_lanes.len() {
+        let direct: Vec<usize> = new_lanes[id]
+            .next_lanes
+            .iter()
+            .map(|&next| match new_lanes[next].edge_id {
+                usize::MAX => new_lanes[next].next_lanes[0],
+                _ => next,
+            })
+            .collect();
+        new_lanes[id].next_lanes = direct.into();
+    }
+    restore_lane_references(&conn, 58, &mut restored, &graph, &mut new_network, &allocator)
+        .unwrap();
+
+    assert_eq!(restored.current_lane_id[on_connector], usize::MAX);
+    assert_eq!(restored.transit[on_connector], TRANSIT_NETWORK);
+}
+
+#[test]
 fn loaded_network_retry_preserves_backoff_without_repairing_to_home() {
     let (graph, network) = fixture();
     let mut allocator = BuildingAllocator::new();

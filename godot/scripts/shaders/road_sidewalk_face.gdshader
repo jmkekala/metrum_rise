@@ -9,9 +9,18 @@ uniform vec2 uv_scale = vec2(0.12, 0.12);
 uniform vec2 vertical_uv_scale = vec2(0.12, 0.12);
 uniform vec4 tint : source_color = vec4(1.0);
 uniform float vertical_normal_strength = 0.25;
+// Granite kerbstones: light grey with dark mica and feldspar specks from the aggregate texture
+// (R channel, linear), sampled per metre of kerb.
+uniform sampler2D detail_texture : filter_linear_mipmap_anisotropic, repeat_enable;
+uniform vec3 granite_albedo = vec3(0.40, 0.395, 0.38);
 
 varying vec3 world_pos;
 varying vec3 world_normal;
+uniform float specular = 0.5;
+
+// Godot's lighting with the cloud shadow on the sun; reads `specular`.
+#include "res://scripts/shaders/standard_light.gdshaderinc"
+#include "res://scripts/shaders/weather_rain.gdshaderinc"
 
 void vertex() {
 	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
@@ -29,6 +38,8 @@ vec2 vertical_face_uv(vec3 pos, vec3 normal) {
 	return vec2(dot(pos.xz, tangent), pos.y) * vertical_uv_scale;
 }
 
+#include "res://scripts/shaders/street_lamp_light.gdshaderinc"
+
 void fragment() {
 	vec3 face_normal = normalize(world_normal);
 	float horizontal_mask = smoothstep(0.45, 0.80, abs(face_normal.y));
@@ -36,14 +47,21 @@ void fragment() {
 	vec2 wall_uv = vertical_face_uv(world_pos, face_normal);
 	vec2 detail_uv = mix(wall_uv, top_uv, horizontal_mask);
 
-	vec3 albedo = texture(albedo_tex, detail_uv).rgb * tint.rgb;
+	vec2 metres = detail_uv / max(uv_scale, vec2(1.0e-4));
+	float speck = texture(detail_texture, metres / 0.35).r;
+	vec3 albedo = granite_albedo * (0.72 + 0.85 * (speck - 0.34)) * tint.rgb;
 	vec3 normal = texture(normal_tex, detail_uv).rgb;
 	float normal_strength = mix(vertical_normal_strength, 1.0, horizontal_mask);
 	normal = mix(vec3(0.5, 0.5, 1.0), normal, normal_strength);
 	float roughness = texture(roughness_tex, detail_uv).r;
 
+	weather_wet_surface(weather_wetness((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).y), 0.9, albedo,
+		roughness);
 	ALBEDO = albedo;
 	NORMAL_MAP = normal;
 	ROUGHNESS = roughness;
 	METALLIC = 0.0;
+	standard_light_cloud_sun = standard_light_cloud(VERTEX, INV_VIEW_MATRIX);
+	EMISSION += ALBEDO * (1.0 - METALLIC) * street_lamp_surface(VERTEX, NORMAL, TANGENT, BINORMAL,
+		NORMAL_MAP, NORMAL_MAP_DEPTH, INV_VIEW_MATRIX, CAMERA_POSITION_WORLD);
 }

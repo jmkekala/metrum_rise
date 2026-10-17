@@ -4,8 +4,8 @@
 
 use super::super::crosswalks::CROSSWALK_STRIPE_LEN;
 use super::super::{
-    MARKING_RENDER_Z_BIAS_M, MARKING_WIDTH, MIN_SEGMENT_LEN, MeshLayer, NetworkMeshData,
-    NetworkMeshOwner, marking_center_color, marking_dash_color,
+    MARKING_RENDER_Z_BIAS_M, MIN_SEGMENT_LEN, MeshLayer, NetworkMeshData, NetworkMeshOwner,
+    marking_dash_color,
 };
 use super::coverage::CompiledSurfaceCoverage;
 use super::geometry::{emit_surface_quad, section_world_point_at_lateral_offset};
@@ -21,6 +21,45 @@ use godot::prelude::{Color, Vector2, Vector3};
 use std::collections::{BTreeSet, HashMap};
 
 const LANE_MARKING_CROSSWALK_CLEARANCE_M: f32 = 0.25;
+// Traficom, Liite 14 (2023), K0 table: centre line K1 and lane line K2_1 are 1 m dashes with
+// 3 m gaps at 50 km/h or less, and 3 m dashes with 9 m gaps above; 0.10 m wide, or 0.15 m
+// (K1_3, K2_1_3) above 50 km/h. Every longitudinal line is white since the 2020 Road Traffic Act.
+const FINNISH_LINE_SPEED_THRESHOLD_KMH: f32 = 50.0;
+const FINNISH_LINE_WIDTH_M: f32 = 0.10;
+const FINNISH_FAST_LINE_WIDTH_M: f32 = 0.15;
+// Marking UV.y carries the dash pattern for road_marking.gdshader: 2 solid, then 1 m / 3 m,
+// then 3 m / 9 m. Zebra paint is now part of the asphalt surface.
+const MARKING_PATTERN_SHORT_DASH: f32 = 3.0;
+const MARKING_PATTERN_LONG_DASH: f32 = 4.0;
+// One lane each way at urban speed stays unmarked, as Finnish residential streets are. The road
+// tool has no street hierarchy, so a 1+1 road at 50 km/h (its default) counts as residential.
+const UNMARKED_STREET_MAX_KMH: f32 = 50.0;
+
+#[derive(Clone, Copy)]
+struct FinnishLaneLine {
+    width_m: f32,
+    pattern: f32,
+}
+
+impl FinnishLaneLine {
+    fn for_edge(edge: &Edge) -> Option<Self> {
+        let speed_kmh = (edge.speed_limit * 3.6).round();
+        if edge.fwd_lanes == 1 && edge.bkw_lanes == 1 && speed_kmh <= UNMARKED_STREET_MAX_KMH {
+            return None;
+        }
+        Some(if speed_kmh <= FINNISH_LINE_SPEED_THRESHOLD_KMH {
+            Self {
+                width_m: FINNISH_LINE_WIDTH_M,
+                pattern: MARKING_PATTERN_SHORT_DASH,
+            }
+        } else {
+            Self {
+                width_m: FINNISH_FAST_LINE_WIDTH_M,
+                pattern: MARKING_PATTERN_LONG_DASH,
+            }
+        })
+    }
+}
 const CROSSWALK_MOUTH_CENTER_MATCH_TOLERANCE_M: f32 = 0.25;
 
 pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
@@ -64,14 +103,10 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
             continue;
         }
 
+        let Some(line) = FinnishLaneLine::for_edge(edge) else {
+            continue;
+        };
         for divider in 1..total_lanes {
-            let is_center =
-                edge.fwd_lanes > 0 && edge.bkw_lanes > 0 && divider == edge.bkw_lanes as usize;
-            let color = if is_center {
-                marking_center_color()
-            } else {
-                marking_dash_color()
-            };
             for (start_index, end_index) in &ranges {
                 if *end_index <= *start_index {
                     continue;
@@ -82,7 +117,7 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
                     divider,
                     total_lanes,
                     marking_s_range,
-                    color,
+                    line,
                 );
             }
         }
@@ -95,7 +130,7 @@ fn emit_lane_marking_sections(
     divider: usize,
     total_lanes: usize,
     marking_s_range: (f32, f32),
-    color: Color,
+    line: FinnishLaneLine,
 ) {
     if sections.len() < 2 {
         return;
@@ -140,8 +175,9 @@ fn emit_lane_marking_sections(
             clipped_end,
             clipped_start_s,
             clipped_end_s,
-            MARKING_WIDTH * 0.5,
-            color,
+            line.width_m * 0.5,
+            line.pattern,
+            marking_dash_color(),
         );
     }
 }
@@ -306,6 +342,7 @@ fn carriageway_bounds(section: &RoadSurfaceSection) -> Option<(f32, f32)> {
     Some((first_band.lateral_start_m, last_band.lateral_end_m))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_marking_segment(
     mesh: &mut NetworkMeshData,
     start: Vector3,
@@ -313,6 +350,7 @@ fn emit_marking_segment(
     uv_start: f32,
     uv_end: f32,
     half_width: f32,
+    pattern: f32,
     color: Color,
 ) {
     let delta = Vector2::new(end.x - start.x, end.z - start.z);
@@ -335,10 +373,10 @@ fn emit_marking_segment(
         MeshLayer::Marking,
         [a_l, a_r, b_r, b_l],
         [
-            Vector2::new(uv_start, 1.0),
-            Vector2::new(uv_start, 1.0),
-            Vector2::new(uv_end, 1.0),
-            Vector2::new(uv_end, 1.0),
+            Vector2::new(uv_start, pattern),
+            Vector2::new(uv_start, pattern),
+            Vector2::new(uv_end, pattern),
+            Vector2::new(uv_end, pattern),
         ],
         color,
     );

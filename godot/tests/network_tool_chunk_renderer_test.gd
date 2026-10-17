@@ -53,7 +53,7 @@ class MockSimulation:
 
 	func get_vegetation_land_cover(_key: Vector2i) -> Dictionary:
 		return {"width": 1, "height": 1, "bytes": PackedByteArray([0]),
-			"world_bounds": Vector4.ZERO, "generations": PackedInt64Array([generation])}
+			"world_bounds": Vector3.ZERO, "generations": PackedInt64Array([generation])}
 
 	func is_vegetation_land_cover_current(_key: Vector2i, revisions: PackedInt64Array) -> bool:
 		return revisions == PackedInt64Array([generation])
@@ -210,6 +210,11 @@ class MockRoadCandidateSimulation:
 	var started_request: int = 0
 	var commit_requests: int = 0
 	var commit_result: Variant = null
+	var border_node: int = -1
+	var start_direction := {"kind": 0, "direction": Vector3.ZERO}
+
+	func get_road_tool_start_direction(_pos, _node, _edge, _generation) -> Dictionary:
+		return start_direction
 
 	func add_road_with_snap(_points, _fwd, _bkw, _snap) -> int:
 		commit_requests += 1
@@ -217,6 +222,9 @@ class MockRoadCandidateSimulation:
 
 	func get_road_commit_result(_request_id: int) -> Variant:
 		return commit_result
+
+	func check_border_candidate(_pos: Vector3) -> int:
+		return border_node
 
 	func get_zoning_overlay_revision() -> int:
 		return zoning_revision
@@ -263,6 +271,14 @@ class MockRoadCandidateSimulation:
 		if completed_preview != null and int(completed_preview["request_id"]) == request_id:
 			return completed_preview
 		return null
+
+class ClickRoadTool:
+	extends RoadToolScript
+	var pointer := Vector3.ZERO
+
+	func get_world_mouse_pos() -> Vector3:
+		is_valid = true
+		return pointer
 
 class PointerRoadTool:
 	extends RoadToolScript
@@ -317,6 +333,7 @@ func _run() -> void:
 	await _test_native_road_cursor_contract()
 	_test_road_parcel_validation_cache()
 	_test_road_commit_acknowledgment()
+	_test_free_control_curve_chain()
 	_test_real_terrain_atomic_transaction()
 	var host := Node3D.new()
 	root.add_child(host)
@@ -1015,9 +1032,20 @@ func _test_road_payload_certificate(road_tool: Node) -> void:
 			and certified.mesh.surface_get_arrays(0) == uncertified.mesh.surface_get_arrays(0),
 			"certified payload must upload identical geometry"
 		)
+		_expect(
+			certified.mesh.surface_get_arrays(0)[Mesh.ARRAY_CUSTOM0] == certified_chunk["road_crossings"],
+			"crossing metres and age must survive upload at float precision"
+		)
 		certified.free()
 		uncertified.free()
 
+	var bad_crossing := _triangle_chunk(1, 1)
+	bad_crossing["road_mesh_payload_validated"] = true
+	bad_crossing["road_crossings"] = PackedFloat32Array([0, 0, 0, 0])
+	_expect(
+		road_tool._build_road_chunk_instance(bad_crossing, key, CHUNK_SPAN_M, CHUNK_ORIGIN_X_M, CHUNK_ORIGIN_Z_M) == null,
+		"certified crossing payload must still pass attribute count checks"
+	)
 	var wrong_type := _triangle_chunk(1, 1)
 	wrong_type["road_mesh_payload_validated"] = 1
 	_expect(
@@ -1072,6 +1100,7 @@ func _triangle_chunk(chunk_x: int, chunk_z: int, x_offset: float = 0.0) -> Dicti
 		Vector2.RIGHT,
 		Vector2.DOWN,
 	])
+	chunk["road_crossings"] = PackedFloat32Array([0, 0, 1.5, 0, 1, 0, 1.5, 1, 0, 1, 1.5, 0])
 	chunk["road_colors"] = PackedColorArray([
 		Color.WHITE,
 		Color.WHITE,
@@ -1098,7 +1127,7 @@ func _test_native_road_cursor_contract() -> void:
 		var x := 30.0 + index * 0.1
 		var result: Variant = simulation.get_road_tool_cursor_pos(
 			Vector3(x, 100.0, 20.0), Vector3.DOWN, 0.0, false, 0,
-			Vector3.ZERO, Vector3.ZERO, false, 1, 1, 25.0, previous, 8.0
+			Vector3.ZERO, Vector3.ZERO, false, 1, 1, 25.0, previous, 8.0, Vector3.ZERO
 		)
 		_expect(result is Dictionary, "native cursor result must include position and target identity")
 		if result is Dictionary:
@@ -1114,22 +1143,32 @@ func _test_native_road_cursor_contract() -> void:
 	_expect(accepted.get("committed", false) and simulation.get_road_benchmark_state()["live_edges"] == 1, "native acknowledgment must reflect an accepted road")
 	var grid_cursor: Dictionary = simulation.get_road_tool_cursor_pos(
 		Vector3(6.0, 100.0, 104.0), Vector3.DOWN, 0.0, true, 2,
-		Vector3(5.0, 0.0, 32.0), Vector3.ZERO, true, 1, 1, 0.0, {}, 8.0
+		Vector3(5.0, 0.0, 32.0), Vector3.ZERO, true, 1, 1, 0.0, {}, 8.0, Vector3.ZERO
 	)
 	_expect(grid_cursor["position"].distance_to(Vector3(5.0, 0.0, 102.0)) < 0.01, "zoning snap must use the curb grid without guide snapping")
 	var angled_cursor: Dictionary = simulation.get_road_tool_cursor_pos(
 		Vector3(45.0, 100.0, 102.0), Vector3.DOWN, 0.0, true, 2,
-		Vector3(5.0, 0.0, 32.0), Vector3.ZERO, true, 1, 1, 0.0, {}, 8.0
+		Vector3(5.0, 0.0, 32.0), Vector3.ZERO, true, 1, 1, 0.0, {}, 8.0, Vector3.ZERO
 	)
 	_expect(angled_cursor["position"].distance_to(Vector3(45.0, 0.0, 102.0)) < 0.01, "zoning snap must allow free angles away from grid axes")
 	var free_cursor: Dictionary = simulation.get_road_tool_cursor_pos(
 		Vector3(80.0, 100.0, 33.0), Vector3.DOWN, 0.0, true, 2,
-		Vector3(60.0, 0.0, 32.0), Vector3.ZERO, false, 1, 1, 0.0, {}, 8.0)
+		Vector3(60.0, 0.0, 32.0), Vector3.ZERO, false, 1, 1, 0.0, {}, 8.0, Vector3.ZERO)
 	_expect(free_cursor["position"].distance_to(Vector3(80.0, 0.0, 33.0)) < 0.01, "removed continuation guides must not snap the cursor")
 	_expect(not free_cursor.has("guide_vertices"), "cursor bridge must not generate guide geometry")
+	var snapped_cursor: Dictionary = simulation.get_road_tool_cursor_pos(
+		Vector3(80.0, 100.0, 33.0), Vector3.DOWN, 0.0, true, 2,
+		Vector3(60.0, 0.0, 32.0), Vector3.ZERO, false, 1, 1, 0.0, {}, 8.0, Vector3(1.0, 0.0, 0.0))
+	_expect(absf(snapped_cursor["position"].z - 32.0) < 0.01 and snapped_cursor.get("angle_snapped", false), "a stroke 3° off its start direction must snap onto it")
+	var end_cursor: Dictionary = simulation.get_road_tool_cursor_pos(
+		Vector3(60.5, 100.0, 32.5), Vector3.DOWN, 0.0, false, 0,
+		Vector3.ZERO, Vector3.ZERO, false, 1, 1, 0.0, {}, 8.0, Vector3.ZERO)
+	var continuation: Dictionary = simulation.get_road_tool_start_direction(
+		end_cursor["position"], end_cursor["snap_node"], end_cursor["snap_edge"], end_cursor["surface_generation"])
+	_expect(end_cursor["snap_node"] >= 0 and continuation["kind"] == 1 and continuation["direction"].distance_to(Vector3(1.0, 0.0, 0.0)) < 0.01, "a stroke from a dead end must continue its road")
 	var branch_cursor: Dictionary = simulation.get_road_tool_cursor_pos(
 		Vector3(3.0, 100.0, 33.0), Vector3.DOWN, 0.0, false, 0,
-		Vector3.ZERO, Vector3.ZERO, true, 1, 1, 0.0, {}, 8.0
+		Vector3.ZERO, Vector3.ZERO, true, 1, 1, 0.0, {}, 8.0, Vector3.ZERO
 	)
 	_expect(absf(branch_cursor["position"].x - 5.0) < 0.01 and absf(branch_cursor["position"].z - 32.0) < 0.01, "grid-aligned branch start must remain on the supplying road")
 	_expect(branch_cursor["snap_edge"] >= 0, "zoning snap must retain real road connections")
@@ -1157,6 +1196,10 @@ func _test_native_road_cursor_contract() -> void:
 	modes.zoning_grid_snap_enabled = true
 	_expect(modes._zoning_snap_enabled(), "checkbox enables the zoning snap path")
 	modes.zoning_grid_snap_enabled = false
+	modes.blueprint_mesh = MeshInstance3D.new()
+	modes.add_child(modes.blueprint_mesh)
+	modes._begin_stroke(Vector3.ZERO, 1, Vector3.RIGHT)
+	_expect(modes._angle_snap() == Vector3.RIGHT, "straight strokes retain their start direction for angle snapping")
 	var shift := InputEventKey.new()
 	shift.keycode = KEY_SHIFT
 	shift.pressed = true
@@ -1164,6 +1207,7 @@ func _test_native_road_cursor_contract() -> void:
 	Input.parse_input_event(shift)
 	Input.flush_buffered_events()
 	_expect(not modes._zoning_snap_enabled() and modes._snap_to_roads_enabled(), "Shift must not enable zoning snap or disable road connections")
+	_expect(modes._angle_snap() == Vector3.ZERO, "Shift makes straight-road angle snapping free")
 	modes.zoning_grid_snap_enabled = true
 	_expect(modes._zoning_snap_enabled(), "checkbox controls zoning snap while Shift is held")
 	shift = InputEventKey.new()
@@ -1171,9 +1215,12 @@ func _test_native_road_cursor_contract() -> void:
 	Input.parse_input_event(shift)
 	Input.flush_buffered_events()
 	_expect(modes._zoning_snap_enabled(), "releasing Shift must not change the checkbox setting")
+	_expect(modes._angle_snap() == Vector3.RIGHT, "releasing Shift restores straight-road angle snapping")
 	modes.zoning_grid_snap_enabled = true
 	modes.draw_mode = 1
 	_expect(not modes._zoning_snap_enabled(), "spline drawing does not promise a square zoning lattice")
+	_expect(modes._angle_snap() == Vector3.ZERO, "curve endpoints and control points remain free of angle snapping")
+	modes.cancel_road()
 	modes.free()
 	var invalid := PackedVector3Array([Vector3.ZERO])
 	var abandoned := simulation.add_road_with_snap(invalid, 1, 1, true)
@@ -1472,6 +1519,7 @@ func _test_road_commit_acknowledgment() -> void:
 	simulation.validation = {"is_valid": true, "surface_generation": 1}
 	var tool := RoadToolScript.new()
 	tool.simulation_node = simulation
+	tool.active = true
 	tool.blueprint_mesh = MeshInstance3D.new()
 	tool.add_child(tool.blueprint_mesh)
 	tool._info_label = Label.new()
@@ -1503,7 +1551,111 @@ func _test_road_commit_acknowledgment() -> void:
 	_expect(tool._commit_segment(endpoint), "rejected stroke must permit another attempt")
 	simulation.commit_result = {"committed": true}
 	tool._poll_road_commit_result()
-	_expect(tool.current_path == null and tool.current_state == RoadToolScript.State.IDLE, "only acceptance may finish the drawing gesture")
+	_expect(tool.current_path != null and tool.current_path != path and tool.current_state == RoadToolScript.State.SETTING_END, "acceptance must start the next straight stroke")
+	_expect(tool.start_pos == endpoint and tool._angle_snap() == Vector3.RIGHT, "straight continuation must retain the accepted endpoint and end direction")
+	tool._angle_snapped = true
+	tool._update_preview_measurement_label(PackedVector3Array([endpoint, endpoint + Vector3.RIGHT * 20.0]))
+	_expect(tool._info_label.text.contains("[snapped]"), "angle-snapped straight preview must retain its HUD label")
+	tool.cancel_road()
+	tool.free()
+	simulation.free()
+
+func _test_free_control_curve_chain() -> void:
+	var simulation := MockRoadCandidateSimulation.new()
+	simulation.generation = 1
+	simulation.validation = {"is_valid": true, "surface_generation": 1}
+	var tool := ClickRoadTool.new()
+	tool.simulation_node = simulation
+	tool.blueprint_mesh = MeshInstance3D.new()
+	tool.add_child(tool.blueprint_mesh)
+	tool._info_label = Label.new()
+	tool.add_child(tool._info_label)
+	tool.draw_mode = 1
+	tool.active = true
+	# Free terrain, dead ends and through roads all need the same control-point gesture.
+	for kind in [0, 1, 2]:
+		simulation.start_direction = {"kind": kind, "direction": Vector3.RIGHT if kind != 0 else Vector3.ZERO}
+		tool.pointer = Vector3.ZERO
+		tool._handle_click()
+		_expect(tool.current_state == RoadToolScript.State.SETTING_CONTROL, "every curve start must request a free control point")
+		tool.pointer = Vector3(20.0, 0.0, 10.0)
+		tool._last_world_mouse_pos = tool.pointer
+		var ghost := tool._refresh_preview_curve()
+		_expect(ghost[0] == Vector3.ZERO and ghost[-1] == tool.pointer, "control selection previews the original start-to-cursor leg")
+		tool._handle_click()
+		_expect(tool.current_state == RoadToolScript.State.SETTING_END and tool.control_pos == tool.pointer, "the second click must retain the freely chosen control point")
+		_expect(simulation.commit_requests == 0, "a control-point click must not commit a road")
+		tool.cancel_road()
+	# Both curves bend the same way; their start handles must not inherit the preceding tangent.
+	tool.pointer = Vector3.ZERO
+	tool._handle_click()
+	tool.pointer = Vector3(20.0, 0.0, 10.0)
+	tool._handle_click()
+	tool.pointer = Vector3(40.0, 0.0, 0.0)
+	tool._handle_click()
+	var first_points := tool._commit_points
+	_expect(tool.current_path.curve.get_point_out(0) == Vector3(20.0, 0.0, 10.0), "curve preview must use the old control-point start handle")
+	_expect(tool.current_path.curve.get_point_in(1) == Vector3(-20.0, 0.0, 10.0), "curve preview must use the old control-point end handle")
+	_expect(first_points[0] == Vector3.ZERO and first_points[-1] == tool.pointer, "committed samples must retain the preview endpoints")
+	tool._poll_road_commit_result()
+	_expect(tool.current_state == RoadToolScript.State.SETTING_END, "pending acceptance must not advance the curve chain")
+	simulation.commit_result = {"committed": true}
+	tool._poll_road_commit_result()
+	_expect(tool.current_state == RoadToolScript.State.SETTING_CONTROL and tool.start_pos == Vector3(40.0, 0.0, 0.0), "accepted curve must chain at its endpoint with a new free control point")
+	tool.pointer = Vector3(60.0, 0.0, 10.0)
+	tool._handle_click()
+	tool.pointer = Vector3(80.0, 0.0, 0.0)
+	tool._handle_click()
+	_expect(tool.current_path.curve.get_point_out(0) == Vector3(20.0, 0.0, 10.0), "a chained curve may bend the same way as the previous curve")
+	_expect(tool._commit_points.size() == first_points.size(), "translated identical curves must have matching preview sampling")
+	for index in range(mini(first_points.size(), tool._commit_points.size())):
+		_expect(tool._commit_points[index].distance_to(first_points[index] + Vector3(40.0, 0.0, 0.0)) < 0.001, "chained preview must reproduce the freely chosen curve geometry")
+	tool._poll_road_commit_result()
+	var manager = preload("res://scripts/core/input_manager.gd").new()
+	manager.road_tool = tool
+	manager.current_tool = manager.Tool.ROAD
+	var right_click := InputEventMouseButton.new()
+	right_click.button_index = MOUSE_BUTTON_RIGHT
+	right_click.pressed = true
+	manager._handle_mouse(right_click)
+	_expect(tool.current_state == RoadToolScript.State.IDLE and tool.current_path == null and tool.active, "right-click must end the curve chain while retaining the road tool")
+	tool._begin_stroke(Vector3.ZERO, 1, Vector3.RIGHT)
+	manager._handle_escape()
+	_expect(tool.current_state == RoadToolScript.State.IDLE and tool.current_path == null and not tool.active, "Escape must end the curve chain and deactivate the tool")
+	manager.free()
+	# Network-connected endpoints end either drawing mode, for both node and edge targets.
+	for mode in [0, 1]:
+		for target in [{"snap_node": 7}, {"snap_edge": 9}]:
+			tool.draw_mode = mode
+			tool._begin_stroke(Vector3.ZERO, 1, Vector3.RIGHT)
+			if mode == 1:
+				tool.pointer = Vector3(20.0, 0.0, 10.0)
+				tool._handle_click()
+			tool._sticky_network_snap = target
+			_expect(tool._commit_segment(Vector3(40.0, 0.0, 0.0)), "network-connected endpoint must queue a road")
+			tool._poll_road_commit_result()
+			_expect(tool.current_state == RoadToolScript.State.IDLE and tool.current_path == null, "ending on existing network must end the chain")
+	# A road that prompts for an external connection ends either drawing mode.
+	simulation.border_node = 3
+	for mode in [0, 1]:
+		tool.draw_mode = mode
+		tool._begin_stroke(Vector3.ZERO, 1, Vector3.RIGHT)
+		if mode == 1:
+			tool.pointer = Vector3(20.0, 0.0, 10.0)
+			tool._handle_click()
+		_expect(tool._commit_segment(Vector3(40.0, 0.0, 0.0)), "map-edge endpoint must queue a road")
+		tool._poll_road_commit_result()
+		_expect(tool.current_state == RoadToolScript.State.IDLE and tool.current_path == null, "reaching the map edge must end the chain")
+	simulation.border_node = -1
+	# A valid curve can have its control point at the end, leaving a zero analytical end handle.
+	tool.draw_mode = 1
+	tool._begin_stroke(Vector3.ZERO, 1, Vector3.RIGHT)
+	tool.pointer = Vector3(40.0, 0.0, 0.0)
+	tool._handle_click()
+	tool._handle_click()
+	tool._poll_road_commit_result()
+	_expect(tool.current_state == RoadToolScript.State.SETTING_CONTROL, "a zero end handle must not stop an accepted curve chain")
+	tool.cancel_road()
 	tool.free()
 	simulation.free()
 

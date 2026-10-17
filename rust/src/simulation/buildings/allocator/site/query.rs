@@ -13,9 +13,9 @@ impl BuildingSiteClient {
         point_in_polygon_slice(pos, &self.footprint_world)
     }
 
-    // Walls and paving, where even a yard plant cannot stand. A site without imported mesh
-    // bounds knows no walls, so its whole support stays closed as before.
-    fn blocks_yard_plant(&self, pos: Vector2) -> bool {
+    /// Walls and paving, where even a yard plant cannot stand. A site without imported mesh
+    /// bounds knows no walls, so its whole support stays closed as before.
+    pub(crate) fn blocks_yard_plant(&self, pos: Vector2) -> bool {
         self.structure_world.is_empty()
             || self
                 .structure_world
@@ -25,6 +25,13 @@ impl BuildingSiteClient {
                 .surfaces
                 .iter()
                 .any(|surface| point_in_polygon_slice(pos, &surface.vertices_world))
+    }
+
+    /// Whether the point lies in an authored planting polygon, using the site's edge tolerance.
+    pub(crate) fn contains_yard_planting(&self, pos: Vector2) -> bool {
+        self.planting_world
+            .iter()
+            .any(|area| point_in_polygon_slice(pos, area))
     }
 
     pub(super) fn height_at(&self, pos: Vector2) -> Option<f32> {
@@ -78,6 +85,14 @@ impl BuildingAllocator {
         self.building_sites
             .get(building_idx)
             .map(|site| site.lot_bounds())
+    }
+
+    /// Ground a site draws on: its lot and any paving run on past the lot line to the road.
+    pub(crate) fn site_dirty_bounds(&self, building_idx: usize) -> Option<(f32, f32, f32, f32)> {
+        self.building_sites.get(building_idx).map(|site| {
+            let (a, b) = (site.lot_bounds(), site.bounds());
+            (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3))
+        })
     }
 
     pub(crate) fn accumulate_pending_site_dirty_bounds(
@@ -142,13 +157,8 @@ impl BuildingAllocator {
 
     /// Whether `pos` lies in a building's yard planting area. Same bounded chunk lookup.
     pub(crate) fn in_yard_planting(&self, pos: Vector2) -> bool {
-        self.site_at(pos, |site| {
-            site.planting_world
-                .iter()
-                .any(|area| point_in_polygon_slice(pos, area))
-                .then_some(())
-        })
-        .is_some()
+        self.site_at(pos, |site| site.contains_yard_planting(pos).then_some(()))
+            .is_some()
     }
 
     // The lowest-index site for which `probe` answers at `pos`, through the 512 m chunk index;

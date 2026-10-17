@@ -815,6 +815,18 @@ walkways. Outside the level support pad, those triangles can rise or fall to mat
 Partitioning preserves triangle planes and area; road boundary heights remain authoritative.
 Authored `y_m` is a flat-editor preview offset, not a gameplay displacement or raised-platform contract.
 
+On a curved street a lot is still a rigid rectangle (`ZONE-04`), so its front line is a chord and
+the road bends away from it, up to about 1.5 m on the curves players draw (`ZONE-07`). Paving drawn
+to within 0.25 m of the front line runs on across that verge to the road: each building measures
+the gap between its front line and the outer edge of the road in front of it at both ends and the
+centre (`Building::front_gap_m`, from the road edge R-tree, so O(nearby road points)), and each
+front vertex moves toward the road by the gap at its position, through those three samples, plus
+0.1 m that tucks under the sidewalk. The extension is a material region on terrain triangles like
+any other paving, so it follows the ground. The gap is derived, never saved: placement measures it
+with the site support, loading measures it again, and a reattachment that changes it rebuilds that
+site. A gap under 1 cm is rounding and moves nothing; a sample with no road within 4 m, a lot
+corner past the end of its road, reads zero.
+
 The site CDT cutout uses the exact flat-support boundary and height, also used by the foundation
 mesh and ground queries. The former 2 cm inward cutout offset is removed: it let the terrain
 transition begin inside the flat pad and disagree with its height query at the edge. Rust/Godot

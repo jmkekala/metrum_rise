@@ -5,7 +5,7 @@
 use crate::config::ROAD_DECAL_RENDER_Z_BIAS_M;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::surface::{
-    RoadLaneSurfaceQuery, RoadSurfaceCompileReason, RoadSurfaceSystem, SurfaceChunkKey,
+    RoadSurfaceCompileReason, RoadSurfaceSystem, SurfaceChunkKey,
 };
 use crate::{debug, debug_log};
 use godot::prelude::*;
@@ -19,10 +19,12 @@ pub mod crosswalks;
 pub(crate) mod preview;
 /// Compiled roadbed top-surface, structural concrete, and lane-marking rendering.
 pub mod standard_surface;
+pub(crate) mod street_lights;
+/// Cosmetic Finnish crossing and speed-limit sign placement.
+pub(crate) mod road_signs;
 
 pub(super) const MIN_SEGMENT_LEN: f32 = 0.01;
 pub(super) const MARKING_RENDER_Z_BIAS_M: f32 = ROAD_DECAL_RENDER_Z_BIAS_M;
-pub(super) const MARKING_WIDTH: f32 = 0.16;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum MeshLayer {
@@ -51,14 +53,7 @@ impl RoadRenderer {
             standard_surface::build_compiled_surface_coverage(graph, road_surface, terrain);
         let mut mesh = NetworkMeshData::new();
 
-        crosswalks::emit_crosswalk_markings(
-            &mut mesh,
-            graph,
-            lane_system,
-            terrain,
-            road_surface,
-            &compiled_surface,
-        );
+        crosswalks::prepare_crosswalks(&mut mesh, graph, lane_system, &compiled_surface);
         standard_surface::emit_compiled_surface_mesh(
             &mut mesh,
             graph,
@@ -67,6 +62,21 @@ impl RoadRenderer {
             &compiled_surface,
         );
         standard_surface::emit_compiled_lane_markings(
+            &mut mesh,
+            graph,
+            lane_system,
+            road_surface,
+            terrain,
+            &compiled_surface,
+        );
+        street_lights::emit_street_lights(
+            &mut mesh,
+            graph,
+            road_surface,
+            terrain,
+            &compiled_surface,
+        );
+        road_signs::emit_road_signs(
             &mut mesh,
             graph,
             lane_system,
@@ -119,14 +129,7 @@ impl RoadRenderer {
             target_chunks.clone(),
         );
         let crosswalk_start = road_debug.then(Instant::now);
-        crosswalks::emit_crosswalk_markings(
-            &mut mesh,
-            graph,
-            lane_system,
-            terrain,
-            road_surface,
-            &compiled_surface,
-        );
+        crosswalks::prepare_crosswalks(&mut mesh, graph, lane_system, &compiled_surface);
         let crosswalk_ms = crosswalk_start
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)
             .unwrap_or(0.0);
@@ -153,6 +156,21 @@ impl RoadRenderer {
         let marking_ms = marking_start
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)
             .unwrap_or(0.0);
+        street_lights::emit_street_lights(
+            &mut mesh,
+            graph,
+            road_surface,
+            terrain,
+            &compiled_surface,
+        );
+        road_signs::emit_road_signs(
+            &mut mesh,
+            graph,
+            lane_system,
+            road_surface,
+            terrain,
+            &compiled_surface,
+        );
         let chunks = mesh.into_partitioned_chunks();
         if road_debug {
             debug_log!(
@@ -197,6 +215,7 @@ impl TransitRenderer for RoadRenderer {
     }
 }
 
+#[cfg(test)]
 pub(super) fn push_quad(
     mesh: &mut NetworkMeshData,
     layer: MeshLayer,
@@ -312,6 +331,69 @@ pub(super) fn push_triangle_preserving_winding_with_exact_normal(
     push_triangle_to_layer(mesh, layer, vertices, uvs, color, normal);
 }
 
+impl NetworkMeshData {
+    // Signs use the same chunk ownership and local-coordinate contract as pole instances.
+    fn push_road_sign(&mut self, mut sign: road_signs::RoadSign) {
+        if let Some(partition) = self.chunk_partition.as_mut() {
+            let span = f64::from(partition.chunk_span_m);
+            let chunk = (
+                ((f64::from(sign.position.x) - f64::from(partition.chunk_origin_x_m)) / span)
+                    .floor() as i32,
+                ((f64::from(sign.position.z) - f64::from(partition.chunk_origin_z_m)) / span)
+                    .floor() as i32,
+            );
+            if !partition.target_chunks.contains(&chunk) {
+                return;
+            }
+            sign.position.x -=
+                partition.chunk_origin_x_m + chunk.0 as f32 * partition.chunk_span_m;
+            sign.position.z -=
+                partition.chunk_origin_z_m + chunk.1 as f32 * partition.chunk_span_m;
+            partition
+                .chunks
+                .entry(chunk)
+                .or_insert_with(NetworkMeshData::new)
+                .road_signs
+                .push(sign);
+            return;
+        }
+        self.road_signs.push(sign);
+    }
+
+    // Routes a light to its chunk like a triangle centroid, in chunk-local coordinates; lights
+    // outside the target chunks belong to another rebuild and are dropped.
+    fn push_street_light(&mut self, mut light: street_lights::StreetLight) {
+        if let Some(partition) = self.chunk_partition.as_mut() {
+            // Keep world-space poles for sign clearance, including poles outside target chunks.
+            self.street_lights.push(light);
+            let chunk_span_m = f64::from(partition.chunk_span_m);
+            let chunk = (
+                ((f64::from(light.position.x) - f64::from(partition.chunk_origin_x_m))
+                    / chunk_span_m)
+                    .floor() as i32,
+                ((f64::from(light.position.z) - f64::from(partition.chunk_origin_z_m))
+                    / chunk_span_m)
+                    .floor() as i32,
+            );
+            if !partition.target_chunks.contains(&chunk) {
+                return;
+            }
+            light.position.x -=
+                partition.chunk_origin_x_m + chunk.0 as f32 * partition.chunk_span_m;
+            light.position.z -=
+                partition.chunk_origin_z_m + chunk.1 as f32 * partition.chunk_span_m;
+            partition
+                .chunks
+                .entry(chunk)
+                .or_insert_with(NetworkMeshData::new)
+                .street_lights
+                .push(light);
+            return;
+        }
+        self.street_lights.push(light);
+    }
+}
+
 fn push_triangle_to_layer(
     mesh: &mut NetworkMeshData,
     layer: MeshLayer,
@@ -320,6 +402,45 @@ fn push_triangle_to_layer(
     color: Color,
     normal: Vector3,
 ) {
+    if matches!(layer, MeshLayer::Road) {
+        let triangle = std::array::from_fn(|i| super::ownership::Vertex {
+            p: vertices[i],
+            n: normal,
+            uv: uvs[i],
+            c: color,
+            crossing: Vector4::ZERO,
+        });
+        crosswalks::emit_triangle(mesh, triangle, 0);
+    } else {
+        push_triangle_to_layer_with_crossing(
+            mesh,
+            layer,
+            vertices,
+            uvs,
+            color,
+            normal,
+            [Vector4::ZERO; 3],
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_triangle_to_layer_with_crossing(
+    mesh: &mut NetworkMeshData,
+    layer: MeshLayer,
+    vertices: [Vector3; 3],
+    uvs: [Vector2; 3],
+    color: Color,
+    normal: Vector3,
+    crossing: [Vector4; 3],
+) {
+    if (vertices[1] - vertices[0])
+        .cross(vertices[2] - vertices[0])
+        .length_squared()
+        == 0.0
+    {
+        return;
+    }
     if let Some(partition) = mesh.chunk_partition.as_mut() {
         let centroid_x =
             (f64::from(vertices[0].x) + f64::from(vertices[1].x) + f64::from(vertices[2].x)) / 3.0;
@@ -342,10 +463,21 @@ fn push_triangle_to_layer(
             .entry(chunk)
             .or_insert_with(NetworkMeshData::new);
         chunk_mesh.current_owner = mesh.current_owner;
-        push_triangle_to_layer(chunk_mesh, layer, local_vertices, uvs, color, normal);
+        push_triangle_to_layer_with_crossing(
+            chunk_mesh,
+            layer,
+            local_vertices,
+            uvs,
+            color,
+            normal,
+            crossing,
+        );
         return;
     }
 
+    if matches!(layer, MeshLayer::Road) {
+        mesh.road_crossings.extend_from_slice(&crossing);
+    }
     let target = match layer {
         MeshLayer::Earthwork => (
             &mut mesh.earthwork_vertices,
@@ -408,6 +540,54 @@ pub(super) fn road_color() -> Color {
     Color::from_rgba(0.0, 0.0, 0.0, 0.0)
 }
 
+// Per-vertex road description for the asphalt shader (road_asphalt.gdshader), in 8-bit
+// channels: forward and backward lane counts, the speed limit in km/h, and a cosmetic age in
+// the upper half of alpha. Junction asphalt keeps `road_color`'s zero alpha: it has no road space.
+pub(super) fn road_space_color(edge: &crate::simulation::network::graph::Edge) -> Color {
+    let channel = |value: f32| value.round().clamp(0.0, 255.0) / 255.0;
+    Color::from_rgba(
+        channel(f32::from(edge.fwd_lanes)),
+        channel(f32::from(edge.bkw_lanes)),
+        channel(edge.speed_limit * 3.6),
+        channel(128.0 + 127.0 * cosmetic_road_age(edge)),
+    )
+}
+
+// Per-vertex footpath description for road_path.gdshader: half-width in decimetres, a full green
+// channel marking the vertex as footpath (roadside sidewalks keep `sidewalk_color`'s zero), the
+// surface kind (0 asphalt), and the cosmetic age as in `road_space_color`.
+pub(super) fn footpath_color(edge: &crate::simulation::network::graph::Edge) -> Color {
+    let channel = |value: f32| value.round().clamp(0.0, 255.0) / 255.0;
+    Color::from_rgba(
+        channel(edge.width.max(2.0) * 0.5 * 10.0),
+        1.0,
+        0.0,
+        channel(128.0 + 127.0 * cosmetic_road_age(edge)),
+    )
+}
+
+// Footpath junction and end pieces: the footpath marker with a zero half-width, which tells
+// road_path.gdshader there is no road space, and age 0 so no cracks align to world axes.
+pub(super) fn footpath_node_color() -> Color {
+    Color::from_rgba(0.0, 1.0, 0.0, 128.0 / 255.0)
+}
+
+// A stable 0..1 look age from where the edge lies, so a road keeps its wear across saves, splits
+// of other roads and edge-id compaction. Cosmetic only: nothing in the simulation reads it.
+fn cosmetic_road_age(edge: &crate::simulation::network::graph::Edge) -> f32 {
+    let (Some(first), Some(last)) = (edge.geometry.first(), edge.geometry.last()) else {
+        return 0.5;
+    };
+    // Direction-independent: the same road drawn either way ages alike.
+    let key = |p: &Vector3| ((p.x * 2.0).round() as i64, (p.z * 2.0).round() as i64);
+    let (a, b) = (key(first).min(key(last)), key(first).max(key(last)));
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for value in [a.0, a.1, b.0, b.1] {
+        hash = (hash ^ value as u64).wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    (hash >> 40) as f32 / (1u64 << 24) as f32
+}
+
 pub(super) fn curb_color() -> Color {
     Color::from_rgba(0.56, 0.55, 0.53, 1.0)
 }
@@ -420,21 +600,16 @@ pub(super) fn concrete_color() -> Color {
     Color::from_rgba(0.75, 0.75, 0.75, 1.0)
 }
 
-pub(super) fn marking_center_color() -> Color {
-    Color::from_rgba(1.0, 0.86, 0.12, 1.0)
-}
-
 pub(super) fn marking_dash_color() -> Color {
     Color::from_rgba(1.0, 1.0, 1.0, 1.0)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{marking_center_color, marking_dash_color};
+    use super::marking_dash_color;
 
     #[test]
     fn lane_marking_colors_are_visible() {
-        assert!(marking_center_color().a > 0.0);
         assert!(marking_dash_color().a > 0.0);
     }
 }

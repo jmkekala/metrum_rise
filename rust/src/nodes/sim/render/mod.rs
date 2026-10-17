@@ -15,6 +15,8 @@ pub(crate) mod car_visual;
 pub(crate) mod junctions;
 /// Shared lane pose sampling for render transforms.
 pub mod lane_pose;
+/// Morning-mist presence and water level over the world.
+pub(crate) mod mist;
 /// Road-network rendering (mesh data, connection helpers).
 pub mod network;
 /// Authored resource overlay rendering.
@@ -22,5 +24,7 @@ pub mod resources;
 pub(crate) mod vehicle_ground;
 /// Water patch mesh generation and cache helpers.
 pub mod water;
+/// The water a view ray first comes down onto, for the planar reflection's mirror planes.
+pub(crate) mod water_reflection;
 /// Zoning and environment rendering (image overlays).
 pub mod zoning;

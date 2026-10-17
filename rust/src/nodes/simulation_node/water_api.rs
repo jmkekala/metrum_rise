@@ -558,6 +558,109 @@ impl SimulationNode {
         array
     }
 
+    /// Generation of the mist map; it changes whenever the map is rebuilt, so a caller fetches
+    /// [`Self::get_mist_map`] only then.
+    #[func]
+    pub fn get_mist_map_generation(&self) -> i64 {
+        let key = self.snapshot.read().unwrap().mist_map_key;
+        // A cheap mix of the world epoch and the three generations; only inequality matters.
+        (key[0].rotate_left(11) ^ key[1] ^ key[2].rotate_left(21) ^ key[3].rotate_left(42)) as i64
+    }
+
+    /// The mist map for upload: `width`, `height`, `cell_m`, `origin_x`, `origin_z` (centre of
+    /// cell 0, 0), `top_level` (the highest water level mist lies on, or -inf for none) and
+    /// `data`, per cell the presence in `[0, 1]` and presence x water level. The level is
+    /// premultiplied so texture filtering weights it by where mist can lie; divide it back out.
+    #[func]
+    pub fn get_mist_map(&self) -> VarDictionary {
+        let map = std::sync::Arc::clone(&self.snapshot.read().unwrap().mist_map);
+        let mut top_level = f32::NEG_INFINITY;
+        let mut data = Vec::with_capacity(map.data.len());
+        for cell in map.data.as_chunks::<2>().0 {
+            if cell[0] > 0.0 {
+                top_level = top_level.max(cell[1]);
+            }
+            data.extend_from_slice(&[cell[0], cell[0] * cell[1]]);
+        }
+        let mut result = VarDictionary::new();
+        result.set("width", map.width as i64);
+        result.set("height", map.height as i64);
+        result.set("cell_m", crate::nodes::sim::render::mist::MIST_CELL_M);
+        result.set("origin_x", map.origin[0]);
+        result.set("origin_z", map.origin[1]);
+        result.set("top_level", top_level);
+        result.set("data", PackedFloat32Array::from(data.as_slice()));
+        result
+    }
+
+    /// Height of the visible water surface each ray from `origin` along a unit direction first
+    /// comes down onto, or NaN where it meets land first or nothing within `max_distance_m`.
+    ///
+    /// Empty while the simulation holds the core: the water reflection calls this every frame
+    /// and must never wait for the lock. O(rays * `max_distance_m` / 4 m), rays in parallel.
+    #[func]
+    pub fn get_first_water_surfaces(
+        &self,
+        origin: Vector3,
+        directions: PackedVector3Array,
+        max_distance_m: f32,
+    ) -> PackedFloat32Array {
+        let Some(core) = self.try_lock_core() else {
+            return PackedFloat32Array::new();
+        };
+        let levels: Vec<f32> = directions
+            .as_slice()
+            .par_iter()
+            .map(|&direction| {
+                crate::nodes::sim::render::water_reflection::first_water_surface(
+                    &core.watermap,
+                    &core.heightmap,
+                    origin,
+                    direction,
+                    max_distance_m,
+                )
+            })
+            .collect();
+        PackedFloat32Array::from(levels.as_slice())
+    }
+
+    /// Samples the drawn water level under a camera, including the 5 cm surface lift; NaN on
+    /// dry land. Uses the same bounded wet-neighbour reconstruction as the reflection vote.
+    #[func]
+    pub fn get_camera_water_surface_at(&self, pos: Vector2) -> f32 {
+        let core = self.lock_core();
+        let level = crate::nodes::sim::render::water_reflection::display_water_surface(
+            &core.watermap,
+            &core.heightmap,
+            pos.x,
+            pos.y,
+        );
+        let ground =
+            core.heightmap.sample_visual_height_world(pos.x, pos.y) * crate::config::HEIGHT_SCALE;
+        if level > ground {
+            level + 0.05
+        } else {
+            f32::NAN
+        }
+    }
+
+    /// Selects the two planar reflection levels from weighted screen rays, keeping previous
+    /// slots and heights through near ties. At most 168 rays; O(rays²), no temporary heap storage.
+    #[func]
+    pub fn select_water_reflection_planes(
+        &self,
+        levels: PackedFloat32Array,
+        weights: PackedFloat32Array,
+        previous: PackedFloat32Array,
+    ) -> PackedFloat32Array {
+        let chosen = crate::nodes::sim::render::water_reflection::select_planes(
+            levels.as_slice(),
+            weights.as_slice(),
+            previous.as_slice(),
+        );
+        PackedFloat32Array::from(chosen.as_slice())
+    }
+
     /// Returns the visible water depth along the world-edge perimeter loop.
     #[func]
     pub fn get_water_border_depths(&self) -> PackedFloat32Array {

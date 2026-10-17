@@ -1,5 +1,8 @@
 shader_type spatial;
 render_mode cull_disabled;
+#ifdef WATER_REFLECTION_PROXY
+render_mode alpha_to_coverage_and_one, depth_draw_always;
+#endif
 
 uniform sampler2D heightmap;
 // Rust-baked per patch on the heightmap's texel grid (patch_masks.rs), one layer per patch slot:
@@ -154,10 +157,22 @@ varying vec2 var_centered_uv;
 varying vec2 var_water_uv;
 varying vec3 var_world_pos;
 varying float var_view_distance_m;
+// Share of direct sunlight the clouds let through, from fragment() to light().
+varying float var_cloud_sun;
 
 // Position-only noise comes from the per-world bake (see terrain_world_noise.gd).
 #define GRASS_BAKED_WORLD_NOISE
 #include "res://scripts/shaders/ground_grass.gdshaderinc"
+#include "res://scripts/shaders/weather_clouds.gdshaderinc"
+#include "res://scripts/shaders/weather_wind.gdshaderinc"
+#include "res://scripts/shaders/grass_wind.gdshaderinc"
+#include "res://scripts/shaders/weather_rain.gdshaderinc"
+#include "res://scripts/shaders/water_reflection.gdshaderinc"
+#ifdef WATER_REFLECTION_PROXY
+const bool WATER_REFLECTION_UNDERSIDE = true;
+#else
+const bool WATER_REFLECTION_UNDERSIDE = false;
+#endif
 
 vec2 watermap_centered_uv(vec2 patch_uv) {
 	vec2 safe_inner_size = max(watermap_inner_sample_size_texels, vec2(1.0));
@@ -165,33 +180,7 @@ vec2 watermap_centered_uv(vec2 patch_uv) {
 		/ max(watermap_texture_size, vec2(1.0));
 }
 
-vec2 rotate2d(vec2 uv, float angle) {
-	float s = sin(angle);
-	float c = cos(angle);
-	return vec2(c * uv.x - s * uv.y, s * uv.x + c * uv.y);
-}
-
-vec3 terrain_grain_field_color(vec2 world_xz) {
-	vec2 world_uv = world_xz * terrain_grain_detail_scale;
-	vec3 grain_a = texture(terrain_grain_albedo, world_uv).rgb;
-	vec3 grain_b = texture(
-		terrain_grain_albedo,
-		rotate2d(world_uv + vec2(19.17, 7.31), 1.5707963268)
-	).rgb;
-	vec3 grain_c = texture(
-		terrain_grain_albedo,
-		rotate2d(world_uv * 0.87 + vec2(-11.43, 23.61), -0.7853981634)
-	).rgb;
-
-	float mid_mask = smoothstep(0.25, 0.75, noise2d(world_xz * 0.050));
-	float wide_mask = smoothstep(0.18, 0.82, noise2d(world_xz * 0.016 + vec2(7.0, 2.0)));
-	vec3 grain = mix(grain_a, grain_b, mid_mask * terrain_grain_mix_strength);
-	grain = mix(grain, grain_c, wide_mask * terrain_grain_mix_strength * 0.55);
-
-	float macro = noise2d(world_xz * 0.010 + vec2(2.1, 6.4));
-	grain *= mix(1.0 - terrain_grain_macro_strength, 1.0 + terrain_grain_macro_strength, macro);
-	return grain * terrain_grain_tint * terrain_grain_brightness;
-}
+#include "res://scripts/shaders/terrain_grain.gdshaderinc"
 
 float sample_world_height(vec2 uv) {
 	vec2 clamped_uv = clamp(uv, vec2(0.0), vec2(1.0));
@@ -529,7 +518,39 @@ void vertex() {
 
 varying float paved_surface;
 
+#include "res://scripts/shaders/street_lamp_light.gdshaderinc"
+
 void fragment() {
+#ifdef WATER_REFLECTION_PROXY
+	// Compiled only into the water reflection's copy of this shader (water_reflection.gd), so
+	// the main pass keeps a shader with no mirror clip or coverage path.
+	// A binary discard at half resolution made a stair-stepped shoreline mask. The signed
+	// plane distance gives alpha antialiasing its pixel derivative; MSAA resolves coverage
+	// into the transparent reflection map without shifting the geometric waterline.
+	// Keep the input unclamped so its derivative spans steep subpixel banks too. Godot
+	// scissors before edge AA, so a scissor threshold here would truncate that coverage.
+	float clip_distance = var_world_pos.y - water_reflection_mirror_plane(CAMERA_VISIBLE_LAYERS);
+	float clip_span = max(fwidth(clip_distance), 0.0001);
+	// Only reject zero-coverage fragments, saving all lake-bed shading outside the AA band.
+	if (clip_distance <= -0.5 * clip_span) {
+		discard;
+	}
+	ALPHA = 0.5 + clip_distance;
+	ALPHA_ANTIALIASING_EDGE = 0.5;
+	// Screen coordinates have unit derivatives: the engine's texture mip boost stays zero.
+	ALPHA_TEXTURE_COORDINATE = FRAGCOORD.xy;
+#endif
+	// The reflection camera sees most land from below. Its underside only has to hide what lies
+	// behind a bank, so it skips the ground's shading.
+	if (WATER_REFLECTION_UNDERSIDE && !FRONT_FACING) {
+		// A shaded bank's mean colour; light() reads the cloud term, so it is set as well.
+		var_cloud_sun = 1.0;
+		paved_surface = 0.0;
+		ALBEDO = vec3(0.10, 0.13, 0.05);
+		ROUGHNESS = 1.0;
+		SPECULAR = 0.0;
+	} else {
+	var_cloud_sun = weather_cloud_sun(var_world_pos);
 	paved_surface = float(height_is_baked && COLOR.b < 0.5 && terrain_visual_debug_mode == 0 && terrain_grass_visual_debug_mode == 0);
 	if (paved_surface > 0.5) {
 		// Graded frontage is paving: use the same texture, normal basis and lighting as yards.
@@ -554,6 +575,8 @@ void fragment() {
 				site_concrete_albedo_floor, site_concrete_floor_influence
 			);
 		}
+		float paving_wet = weather_wetness((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).y);
+		weather_wet_surface(paving_wet, 0.9, paving.albedo, paving.roughness);
 		ALBEDO = paving.albedo;
 		NORMAL_MAP = paving.normal_map;
 		ROUGHNESS = paving.roughness;
@@ -770,6 +793,10 @@ void fragment() {
 				vec3 grain_albedo = terrain_grain_field_color(var_world_pos.xz);
 				color = mix(color, grain_albedo, field_mask * terrain_field_strength);
 			}
+			// Wind waves rolling over the grass and grain; the forest floor is sheltered and the
+			// coal pit bare.
+			color *= mix(grass_wind_sheen(var_world_pos.xz, length(fwidth(var_world_pos.xz)),
+				field_mask, floor_cover), 1.0, coal_pit_mask);
 			float hillshade = hillshade_mask(normal);
 			color = mix(color, cliff_face_color, cliff_face * cliff_face_strength);
 			vec3 hillshade_tint = mix(hillshade_shadow_tint, hillshade_light_tint, hillshade);
@@ -832,18 +859,33 @@ void fragment() {
 			// Desaturated before it is either shown or lit, so the moonlit diffuse washes out
 			// with the ambient floor rather than staying vivid against a grey ground.
 			color = mix(color, vec3(dot(color, vec3(0.2126, 0.7152, 0.0722))), scene_ambient_desaturation);
+			// Wet before the ambient floor is emitted from it, so rain darkens both.
+			float ground_roughness = mix(mix(0.96, 0.76, rock_mask), 0.90, cliff_face * 0.70);
+			weather_wet_surface(weather_wetness((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).y), 1.0,
+				color, ground_roughness);
 			ALBEDO = color;
 			EMISSION = color * clamp(ground_shadow_ambient, 0.0, 1.0) * floor_sky
 				* scene_ambient_light.rgb;
-			ROUGHNESS = mix(mix(0.96, 0.76, rock_mask), 0.90, cliff_face * 0.70);
+			ROUGHNESS = ground_roughness;
 			SPECULAR = 0.08;
 		}
+	}
+	}
+	if (terrain_visual_debug_mode == 0) {
+		EMISSION += ALBEDO * (1.0 - METALLIC) * street_lamp_surface(VERTEX, NORMAL, TANGENT, BINORMAL,
+			NORMAL_MAP, NORMAL_MAP_DEPTH, INV_VIEW_MATRIX, CAMERA_POSITION_WORLD);
 	}
 }
 
 void light() {
-	if (paved_surface > 0.5) {
-		DIFFUSE_LIGHT += paving_diffuse(NORMAL, LIGHT, LIGHT_COLOR, ATTENUATION);
+	// Clouds dim the sun only; the moon and every other light pass untouched.
+	float cloud = LIGHT_IS_DIRECTIONAL ? var_cloud_sun : 1.0;
+	// Local lights (street lamps) light the ground physically: Lambert with their own distance and
+	// cone falloff. The ground-shadow model below is for the sun and moon only: its visibility
+	// floor would add a share of every local light to each cluster cell the light touches, which
+	// drew the clustered-lighting grid as blocks on the grass.
+	if (paved_surface > 0.5 || !LIGHT_IS_DIRECTIONAL) {
+		DIFFUSE_LIGHT += paving_diffuse(NORMAL, LIGHT, LIGHT_COLOR, ATTENUATION) * cloud;
 	} else if (terrain_visual_debug_mode == 0 || terrain_visual_debug_mode == 10) {
 		float sun_strength = ground_shadow_sun_strength;
 		if (terrain_visual_debug_mode == 10) {
@@ -860,6 +902,7 @@ void light() {
 			* LIGHT_COLOR
 			* sun_strength
 			* shadow_visibility
-			* soft_facing;
+			* soft_facing
+			* cloud;
 	}
 }

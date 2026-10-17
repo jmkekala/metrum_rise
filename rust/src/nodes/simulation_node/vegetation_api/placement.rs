@@ -3,8 +3,53 @@
 //! Bounded brush proposals and class-local occupancy over the existing edit cells.
 
 use super::*;
-use crate::simulation::buildings::allocator::yard::YardEvent;
+use crate::simulation::buildings::allocator::yard::{self, YardEvent};
 use brush::{BrushPreset, HEDGE_LOW_PRESET, PlantClass};
+
+/// Read-only inputs to hedge planning, supplied by the live world or an isolated flat lot.
+/// Cell lookup retains the vegetation store's existing expected O(1) index.
+pub(super) trait HedgeSite {
+    /// Canopy owner-cell size and generator salt.
+    fn hedge_grid(&self) -> (f32, u32);
+    /// Authored plants in stable storage order for one canopy cell.
+    fn hedge_cell(&self, cell: VegetationCell) -> &[Plant];
+    /// Whether the plant's sampled footprint is clear of walls, paving, roads and water.
+    fn hedge_clear(&self, plant: &Plant) -> bool;
+}
+
+impl HedgeSite for SimCore {
+    fn hedge_grid(&self) -> (f32, u32) {
+        grid(self, VegetationLayer::Canopy)
+    }
+
+    fn hedge_cell(&self, cell: VegetationCell) -> &[Plant] {
+        self.vegetation_edits.cell(cell).1
+    }
+
+    fn hedge_clear(&self, plant: &Plant) -> bool {
+        authored_clear(self, plant)
+    }
+}
+
+/// Shared exclusion predicate, caching the proposal's class and spacing outside neighbor loops.
+pub(super) fn plant_conflicts(plant: &Plant) -> impl Fn(&Plant) -> bool + Copy + '_ {
+    let class = PlantClass::of(plant.species, plant.variant);
+    let radius = class.spacing();
+    move |other| {
+        PlantClass::of(other.species, other.variant) == class
+            && (other.x - plant.x).powi(2) + (other.z - plant.z).powi(2) < radius * radius
+    }
+}
+
+/// Clearance radius for an authored plant, including the reduced tree radius in yard areas.
+pub(super) fn authored_radius(class: PlantClass, in_planting: bool) -> f32 {
+    match class {
+        PlantClass::Tree if in_planting => YARD_TREE_CLEAR_RADIUS_M,
+        PlantClass::Landscape => LANDSCAPE_CLEAR_RADIUS_M,
+        PlantClass::Tree => CANOPY_CLEAR_RADIUS_M,
+        _ => 2.5,
+    }
+}
 
 const ATTEMPTS: usize = 2;
 
@@ -43,21 +88,23 @@ fn influence(plant: &Plant, pos: Vector2, radius: f32) -> f32 {
 /// Uses species clearance while keeping the authored canopy owner cell.
 pub(super) fn authored_clear(core: &SimCore, plant: &Plant) -> bool {
     let class = PlantClass::of(plant.species, plant.variant);
-    if class == PlantClass::Tree
+    let in_planting = class == PlantClass::Tree
         && core
             .allocator
-            .in_yard_planting(Vector2::new(plant.x, plant.z))
-    {
-        // An asset's planting area is lawn its author meant for trees, so a yard tree there
-        // needs only its trunk's room off walls, paving and roads, not a wild tree's.
-        return clear_site(core, plant.x, plant.z, YARD_TREE_CLEAR_RADIUS_M, 3.0, true);
-    }
-    if class == PlantClass::Landscape {
-        // A yard shrub or hedge stands beside a kerb or a wall by design, so only its own
-        // stem position has to be clear, not a canopy tree's room.
-        return clear_site(core, plant.x, plant.z, LANDSCAPE_CLEAR_RADIUS_M, 1.0, true);
-    }
-    placement_clear_for(core, plant.x, plant.z, class.clearance_layer(), true)
+            .in_yard_planting(Vector2::new(plant.x, plant.z));
+    let relief = match class {
+        PlantClass::Tree => 3.0,
+        PlantClass::Landscape => 1.0,
+        _ => 1.6,
+    };
+    clear_site(
+        core,
+        plant.x,
+        plant.z,
+        authored_radius(class, in_planting),
+        relief,
+        true,
+    ) && (class != PlantClass::Tree || in_planting || tree_clearance::clear(core, plant.x, plant.z))
 }
 
 // Both layers can own authored plants. Generated neighbors are evaluated locally and honor
@@ -66,10 +113,7 @@ pub(super) fn occupied(core: &SimCore, plant: &Plant) -> bool {
     let class = PlantClass::of(plant.species, plant.variant);
     let radius = class.spacing();
     let pos = Vector2::new(plant.x, plant.z);
-    let conflicts = |other: &Plant| {
-        PlantClass::of(other.species, other.variant) == class
-            && (other.x - plant.x).powi(2) + (other.z - plant.z).powi(2) < radius * radius
-    };
+    let conflicts = plant_conflicts(plant);
     for layer in [VegetationLayer::Canopy, VegetationLayer::Understory] {
         let (step, salt) = grid(core, layer);
         let first = cell_at(pos - Vector2::splat(radius), layer, step);
@@ -150,9 +194,9 @@ const HEDGE_FACE_TOLERANCE_M: f32 = 0.05;
 // rather than meet, and need no fill at the joint.
 const HEDGE_COLLINEAR_COS: f32 = 0.97;
 
-// How far across its row a yard hedge module counts a parallel hedge as its own: a neighbour's
-// hedge on or just beyond the shared lot line, so adjoining yards share one hedge between them.
-const YARD_SHARE_M: f32 = 2.5;
+/// How far across its row a yard hedge module counts a parallel hedge as its own: a neighbour's
+/// hedge on or just beyond the shared lot line, so adjoining yards share one hedge between them.
+pub(super) const YARD_SHARE_M: f32 = 2.5;
 
 /// Lays hedge modules end to end from `from` to `to`, each facing along the row, and returns
 /// how many it planted. An end drawn within `HEDGE_SNAP_M` of a hedge already standing moves
@@ -206,12 +250,17 @@ pub(crate) fn publish_yards(core: &mut SimCore) {
             YardEvent::Placed {
                 key,
                 hedge,
-                rows,
+                mut rows,
                 planting,
             } => {
                 if let Some(preset) =
                     hedge.and_then(|hedge| preset(HEDGE_LOW_PRESET + hedge.index() as i64))
                 {
+                    // On a curve the hedge between two lots stands on the wedge's centre line.
+                    yard::fit_rows_to_shared_sides(
+                        &mut rows,
+                        &yard::shared_lot_sides(&core.zoning, key.0),
+                    );
                     let mut laid = Vec::new();
                     // Row by row, so each row sees the ones before it and the corners join.
                     for row in rows {
@@ -272,8 +321,9 @@ pub(crate) fn publish_yards(core: &mut SimCore) {
 // hedge facing the same way within that distance across the row (a yard line a neighbour
 // already hedged). O(L) in the row length: one
 // clearance test and one bounded lookup per module, plus two bounded joint searches.
-fn plan_row(
-    core: &SimCore,
+/// Plan one row with shared joining, clearance and module spacing; O(row length) bounded queries.
+pub(super) fn plan_row(
+    core: &impl HedgeSite,
     preset: &BrushPreset,
     from: Vector2,
     to: Vector2,
@@ -322,7 +372,7 @@ fn plan_row(
     };
     // The renderer turns +X by this yaw about +Y, which carries it to (cos, -sin) on the ground.
     let yaw = (-span.y).atan2(span.x);
-    let (cell_m, salt) = grid(core, VegetationLayer::Canopy);
+    let (cell_m, salt) = core.hedge_grid();
     (0..modules)
         .filter_map(|i| {
             let at = first + step * i as f32;
@@ -340,7 +390,7 @@ fn plan_row(
                 Some(across) => hedge_alongside(core, &plant, across),
                 None => module_taken(core, &plant, cell_m),
             };
-            (authored_clear(core, &plant) && !taken).then_some((cell, plant))
+            (core.hedge_clear(&plant) && !taken).then_some((cell, plant))
         })
         .collect()
 }
@@ -402,12 +452,12 @@ impl HedgeModule {
 // Visits every hedge module whose centre lies within `reach` of `pos` on each axis, in canopy
 // cell order. Authored plants live in canopy cells, so this is a few cells.
 fn for_each_hedge(
-    core: &SimCore,
+    core: &impl HedgeSite,
     pos: Vector2,
     reach: f32,
     mut visit: impl FnMut(&Plant, HedgeModule),
 ) {
-    let (cell_m, _) = grid(core, VegetationLayer::Canopy);
+    let (cell_m, _) = core.hedge_grid();
     let first = cell_at(pos - Vector2::splat(reach), VegetationLayer::Canopy, cell_m);
     let last = cell_at(pos + Vector2::splat(reach), VegetationLayer::Canopy, cell_m);
     for z in first.z..=last.z {
@@ -417,7 +467,7 @@ fn for_each_hedge(
                 x,
                 z,
             };
-            for plant in core.vegetation_edits.cell(cell).1 {
+            for plant in core.hedge_cell(cell) {
                 if let Some(module) = HedgeModule::of(plant) {
                     visit(plant, module);
                 }
@@ -433,7 +483,7 @@ fn for_each_hedge(
 // and the ends already buried in a joint. O(k^2) in the k modules
 // within a few metres of `pos`; the earliest of equally near candidates wins, so the result
 // follows cell and storage order deterministically.
-fn hedge_join(core: &SimCore, pos: Vector2, line: Option<Vector2>) -> Option<HedgeJoin> {
+fn hedge_join(core: &impl HedgeSite, pos: Vector2, line: Option<Vector2>) -> Option<HedgeJoin> {
     let reach = HEDGE_SNAP_M + HEDGE_MODULE_M * 0.5;
     let mut end: Option<(f32, HedgeJoin)> = None;
     let mut side: Option<(f32, HedgeJoin)> = None;
@@ -483,7 +533,7 @@ fn hedge_join(core: &SimCore, pos: Vector2, line: Option<Vector2>) -> Option<Hed
 // Whether a module of the same hedge, facing the same way, already stands within half a module
 // of this one. A row that meets another at an angle crosses its modules and is not a redraw.
 // Authored plants live in canopy cells, so this visits the few cells around it.
-fn module_taken(core: &SimCore, plant: &Plant, cell_m: f32) -> bool {
+fn module_taken(core: &impl HedgeSite, plant: &Plant, cell_m: f32) -> bool {
     let reach = HEDGE_MODULE_M * 0.5;
     let pos = Vector2::new(plant.x, plant.z);
     let first = cell_at(pos - Vector2::splat(reach), VegetationLayer::Canopy, cell_m);
@@ -495,7 +545,7 @@ fn module_taken(core: &SimCore, plant: &Plant, cell_m: f32) -> bool {
                 x,
                 z,
             };
-            core.vegetation_edits.cell(cell).1.iter().any(|other| {
+            core.hedge_cell(cell).iter().any(|other| {
                 other.species == plant.species
                     && other.variant == plant.variant
                     && (other.yaw - plant.yaw).cos().abs() >= HEDGE_COLLINEAR_COS
@@ -507,7 +557,7 @@ fn module_taken(core: &SimCore, plant: &Plant, cell_m: f32) -> bool {
 
 // Whether any hedge module facing the same way as `plant` stands within half a module of it
 // along the row and within `across_m` across it. Visits the canopy cells around it.
-fn hedge_alongside(core: &SimCore, plant: &Plant, across_m: f32) -> bool {
+fn hedge_alongside(core: &impl HedgeSite, plant: &Plant, across_m: f32) -> bool {
     let reach = (HEDGE_MODULE_M * 0.5).max(across_m);
     let pos = Vector2::new(plant.x, plant.z);
     let along = Vector2::new(plant.yaw.cos(), -plant.yaw.sin());

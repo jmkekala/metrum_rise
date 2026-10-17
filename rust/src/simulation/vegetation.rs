@@ -102,6 +102,18 @@ impl VegetationConfig {
     /// Kept exact rather than rounded so the default world generates the measured population.
     pub const DEFAULT_CANOPY_STEMS_PER_HA: f32 = 30.468_75;
 
+    /// Coverage of the new-game dialog's "More" forest, as an area fraction. "Less" keeps the
+    /// shipped `DEFAULT_COVERAGE`.
+    pub const MORE_COVERAGE: f32 = 0.8;
+
+    /// Canopy density of the new-game dialog's "Less" forest: an 11 m canopy grid, about 64
+    /// stems per hectare.
+    pub const LESS_FOREST_CANOPY_STEMS_PER_HA: f32 = 10_000.0 * CANOPY_STAND_ACCEPT / (11.0 * 11.0);
+
+    /// Canopy density of the new-game dialog's "More" forest: the renderer ceiling, an 8 m
+    /// canopy grid at about 122 stems per hectare.
+    pub const MORE_FOREST_CANOPY_STEMS_PER_HA: f32 = Self::MAX_CANOPY_STEMS_PER_HA;
+
     /// Highest canopy density the renderer currently accepts, in stems per hectare.
     pub const MAX_CANOPY_STEMS_PER_HA: f32 =
         10_000.0 * CANOPY_STAND_ACCEPT / (MIN_CANOPY_CELL_M * MIN_CANOPY_CELL_M);
@@ -331,6 +343,22 @@ fn coverage_threshold(coverage: f32, seed: u32, feature_m: f32, world: &WorldCon
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vegetation_forest_presets_are_ordered_bounded_and_match_their_grids() {
+        let densities = [
+            VegetationConfig::LESS_FOREST_CANOPY_STEMS_PER_HA,
+            VegetationConfig::MORE_FOREST_CANOPY_STEMS_PER_HA,
+        ];
+        assert!(densities[0] < densities[1]);
+        const { assert!(VegetationConfig::DEFAULT_COVERAGE < VegetationConfig::MORE_COVERAGE) };
+        for (density, spacing) in densities.into_iter().zip([11.0, 8.0]) {
+            assert!((VegetationConfig::MIN_CANOPY_STEMS_PER_HA
+                ..=VegetationConfig::MAX_CANOPY_STEMS_PER_HA)
+                .contains(&density));
+            assert_eq!(canopy_cell_m_for_density(density), spacing);
+        }
+    }
 
     fn world(size_m: f32) -> WorldConfig {
         WorldConfig::new(size_m, size_m, 40.0, 10.0)

@@ -16,6 +16,7 @@ const EditorTheme = preload("res://scripts/ui/editor_theme.gd")
 const EditorView = preload("res://scripts/editors/asset_editor/editor_view.gd")
 const MeshPart = preload("res://scripts/editors/asset_editor/mesh_part.gd")
 const SceneLightingConfig = preload("res://scripts/core/scene_lighting.gd")
+const YardPreview = preload("res://scripts/editors/asset_editor/yard_preview.gd")
 const PreviewLod = preload("res://scripts/editors/asset_editor/preview_lod.gd")
 const EditorSpacing = preload("res://scripts/editors/asset_editor/editor_spacing.gd")
 const AuthoringSession = preload("res://scripts/editors/asset_editor/authoring_session.gd")
@@ -49,6 +50,7 @@ var _layout := WorkspaceLayout.new()
 var _selection := AssetSelection.new()
 var _menus := ContextMenus.new()
 var _session: RefCounted
+var _yard_preview: RefCounted
 var _lod_preview := PreviewLod.new()
 
 @onready var sim: SimulationNode = $SimulationNode
@@ -109,6 +111,7 @@ const CONFIG_PATH := "user://asset_editor.cfg"
 
 func _ready() -> void:
 	_session = AuthoringSession.new(self)
+	_yard_preview = YardPreview.new(self)
 	_view.configure(self)
 	if not sim.is_asset_editor_mode():
 		push_error("AssetEditor scene loaded without --asset-editor flag")
@@ -142,7 +145,7 @@ func _process(_delta: float) -> void:
 	_lod_preview.update($CameraNode)
 	if _menus.actions != null and not _menus.actions.mode.is_empty() and _cam_input._ui_has_modal_popup():
 		_menus.actions.cancel()
-	if _menus.actions == null or _menus.actions.mode.is_empty():
+	if not _yard_preview.active and (_menus.actions == null or _menus.actions.mode.is_empty()):
 		_selection.update()
 
 func _sync_preview_lods() -> void:
@@ -199,7 +202,9 @@ func _build_preview_node() -> void:
 	_cam_input.set_script(cam_script)
 	_cam_input.right_mouse_pan_enabled = false
 	# Alt+drag orbits on a touchpad, so an Alt+click arrives from the camera once it proves no drag.
-	_cam_input.alt_click = func(mouse: Vector2) -> void: _selection.cycle(mouse)
+	_cam_input.alt_click = func(mouse: Vector2) -> void:
+		if not _yard_preview.active:
+			_selection.cycle(mouse)
 	add_child(_cam_input)
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -255,6 +260,8 @@ func menu_toggle_ui_theme() -> String:
 	return _view._theme_mode
 
 func set_ui_theme_mode(mode: String) -> void:
+	if _yard_preview != null:
+		_yard_preview.exit()
 	var next_mode := EditorTheme.normalize_mode(mode)
 	if _view._theme_mode == next_mode:
 		return
@@ -831,6 +838,8 @@ func _on_mesh_part_multi_selected(index: int, _selected: bool) -> void:
 		_set_selected_site_surface(-1)
 
 func _set_selected_mesh_parts(indices: Array, primary_index: int = -1) -> void:
+	if _yard_preview != null:
+		_yard_preview.exit()
 	var seen := {}
 	var resolved: Array[int] = []
 	for raw_index in indices:
@@ -906,6 +915,8 @@ func _site_surface_index_among_material(index: int) -> int:
 	return count
 
 func _set_selected_site_surface(index: int, clear_others: bool = true) -> void:
+	if _yard_preview != null:
+		_yard_preview.exit()
 	_selected_site_surface_index = index if index >= 0 and index < _site_surfaces_data.size() else -1
 	_refresh_site_surface_list()
 	if _selected_site_surface_index >= 0 and clear_others:
@@ -1074,6 +1085,8 @@ func _select_site_anchor(index: int, clear_mesh_parts: bool = true) -> void:
 		_set_selected_site_surface(-1)
 
 func _set_selected_site_anchors(indices: Array, primary_index: int = -1) -> void:
+	if _yard_preview != null:
+		_yard_preview.exit()
 	var seen := {}
 	var resolved: Array[int] = []
 	for raw_index in indices:
@@ -1674,6 +1687,11 @@ func _on_clear_ghost_pressed() -> void:
 	_view.update_context_actions()
 
 func _input(event: InputEvent) -> void:
+	if _yard_preview != null and _yard_preview.active:
+		if event.is_action_pressed("ui_cancel"):
+			_yard_preview.exit()
+			get_viewport().set_input_as_handled()
+		return
 	if _menus.actions != null and (_menus.actions.handle_input(event) or _menus.handle_right(event)):
 		get_viewport().set_input_as_handled()
 		return

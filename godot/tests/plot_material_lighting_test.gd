@@ -202,6 +202,30 @@ func run() -> void:
 			expect(frontage.get_pixel(185, 145).get_luminance() > 0.02, "frontage must receive local lights")
 	blocker.free()
 	lamp.free()
+	# A production-strength headlight must illuminate only its cone, with terrain/road falloff.
+	sun.light_energy = 0.0
+	RenderingServer.global_shader_parameter_set("scene_ambient_light", Color.BLACK)
+	var headlight := SpotLight3D.new()
+	var headlights_script := preload("res://scripts/renderers/vehicle_headlights.gd")
+	headlight.position = Vector3(0, 0.65, 8)
+	headlight.spot_range = headlights_script.RANGE_M
+	headlight.spot_attenuation = headlights_script.DECAY
+	headlight.spot_angle = headlights_script.CONE_ANGLE_DEG
+	headlight.spot_angle_attenuation = headlights_script.CONE_ANGLE_ATTENUATION
+	headlight.light_energy = headlights_script.CONE_ENERGY
+	headlight.light_specular = 0.0
+	viewport.add_child(headlight)
+	var headlight_reference := await capture(terrain)
+	for material: ShaderMaterial in [Materials.site_ground_material(), Materials.editor_ground_material()]:
+		var lit := await capture(material)
+		# Outside the cone but inside the light's range; a visibility floor lights this pixel.
+		var outside := camera.unproject_position(Vector3(8, 0, 4))
+		expect(lit.get_pixelv(Vector2i(outside)).get_luminance() < 0.01, "ground outside the headlight cone must stay dark")
+		var inside := camera.unproject_position(Vector3(0, 0, -4))
+		expect(lit.get_pixelv(Vector2i(inside)).get_luminance() > 0.02, "ground inside the headlight cone must receive light")
+		if material == Materials.site_ground_material():
+			expect(difference(lit, headlight_reference) < 0.012, "site grass must retain terrain/road headlight attenuation")
+	headlight.free()
 	sun.shadow_enabled = false
 	if "--benchmark-plots" in OS.get_cmdline_user_args():
 		var baseline_dir := ""

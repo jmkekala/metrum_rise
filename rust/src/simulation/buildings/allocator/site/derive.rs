@@ -10,6 +10,7 @@ use crate::assets::{Anchor, AnchorType, AssetManifest, MeshPart};
 use crate::simulation::buildings::allocator::entrance::{
     building_local_xz_basis, building_local_xz_pos,
 };
+use crate::simulation::buildings::allocator::geometry::front_gap_at;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::zoning::ParcelGeometry;
 use godot::prelude::Vector2;
@@ -23,6 +24,12 @@ const BUILDING_SITE_ENTRANCE_SUPPORT_LENGTH_M: f32 = 2.0;
 // Keep room between a level yard and road/neighbor/terrain boundaries. Mesh support
 // remains authoritative; this reservation applies to authored yard support only.
 const BUILDING_SITE_LOT_TIE_IN_WIDTH_M: f32 = 2.0;
+// Paving drawn this close to the lot's front line reaches it: the asset editor places points by
+// hand, and authored driveways stop a couple of centimetres short of the line.
+const LOT_LINE_EPS_M: f32 = 0.25;
+// How far paving run on to the road reaches past the sidewalk's outer edge, under the road's own
+// surface, so no sliver of grass shows at the seam.
+const APRON_TUCK_M: f32 = 0.1;
 
 #[derive(Clone, Copy)]
 struct LocalLotSupport {
@@ -64,11 +71,11 @@ impl BuildingAllocator {
         }
         // Explicit whole-catalog reload: all buildings may have changed asset geometry.
         for idx in 0..self.building_sites.len() {
-            self.record_building_site_change(idx, self.site_world_bounds(idx));
+            self.record_building_site_change(idx, self.site_dirty_bounds(idx));
         }
         self.rebuild_building_site_clients(zone_cell_m);
         for idx in 0..self.building_sites.len() {
-            self.record_building_site_change(idx, self.site_world_bounds(idx));
+            self.record_building_site_change(idx, self.site_dirty_bounds(idx));
         }
         self.bump_building_ref_revision();
         self.entrances_dirty = true;
@@ -194,6 +201,10 @@ impl BuildingAllocator {
             .registry
             .get(&building.asset_id)
             .map(|entry| {
+                let front_dir = asset_frontage_dir_local(&entry.manifest);
+                let front_limit =
+                    frontage_projection_limit(front_dir, lot_half_width, lot_half_depth);
+                let lot_front = center + building.facing_dir * lot_half_depth;
                 entry
                     .manifest
                     .site_surfaces
@@ -205,11 +216,26 @@ impl BuildingAllocator {
                             .vertices
                             .iter()
                             .map(|vertex| {
-                                building_local_xz_pos(
+                                let world = building_local_xz_pos(
                                     building,
                                     [vertex[0], 0.0, vertex[1]],
                                     frontage_forward,
-                                )
+                                );
+                                let local = Vector2::new(vertex[0], vertex[1]);
+                                if frontage_projection(local, front_dir)
+                                    < front_limit - LOT_LINE_EPS_M
+                                {
+                                    return world;
+                                }
+                                // Paving drawn to the lot line runs on across the verge a
+                                // curve leaves between the line and the road.
+                                let s = (world - lot_front).dot(building.facing_dir.orthogonal())
+                                    / lot_half_width.max(f32::EPSILON);
+                                let gap = front_gap_at(building.front_gap_m, s.clamp(-1.5, 1.5));
+                                if gap <= 0.0 {
+                                    return world;
+                                }
+                                world + building.facing_dir * (gap + APRON_TUCK_M)
                             })
                             .collect(),
                     })

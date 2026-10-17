@@ -1,6 +1,11 @@
 shader_type spatial;
 render_mode depth_prepass_alpha, shadows_disabled, cull_disabled;
 
+#include "res://scripts/shaders/weather_clouds.gdshaderinc"
+#include "res://scripts/shaders/weather_wind.gdshaderinc"
+#include "res://scripts/shaders/night_sky.gdshaderinc"
+#include "res://scripts/shaders/water_reflection.gdshaderinc"
+
 uniform sampler2D heightmap : repeat_disable, filter_linear;
 uniform sampler2D watermap : repeat_disable, filter_linear;
 uniform sampler2D screen_texture : hint_screen_texture, repeat_disable, filter_linear_mipmap;
@@ -167,15 +172,20 @@ float hash12(vec2 p) {
 	return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
 }
 
+// The broad surface noise repeats every WATER_NOISE_PERIOD cells, so its drift, rounded to whole
+// periods per wrap of the wind clock, is continuous through the wrap. 64 cells of the coarsest
+// octave are 11.6 km, and the octaves are rotated against each other, so no repeat shows.
+const float WATER_NOISE_PERIOD = 64.0;
+
 vec3 value_noise_field(vec2 p) {
 	vec2 cell = floor(p);
 	vec2 local = fract(p);
 	vec2 smooth_local = local * local * (3.0 - 2.0 * local);
 	vec2 smooth_derivative = 6.0 * local * (1.0 - local);
-	float n00 = hash12(cell);
-	float n10 = hash12(cell + vec2(1.0, 0.0));
-	float n01 = hash12(cell + vec2(0.0, 1.0));
-	float n11 = hash12(cell + vec2(1.0, 1.0));
+	float n00 = hash12(mod(cell, WATER_NOISE_PERIOD));
+	float n10 = hash12(mod(cell + vec2(1.0, 0.0), WATER_NOISE_PERIOD));
+	float n01 = hash12(mod(cell + vec2(0.0, 1.0), WATER_NOISE_PERIOD));
+	float n11 = hash12(mod(cell + vec2(1.0, 1.0), WATER_NOISE_PERIOD));
 	float row_0 = mix(n00, n10, smooth_local.x);
 	float row_1 = mix(n01, n11, smooth_local.x);
 	return vec3(
@@ -194,7 +204,10 @@ vec3 water_noise_octave(
 ) {
 	vec2 perpendicular = vec2(-axis.y, axis.x);
 	vec2 rotated_world = vec2(dot(world_xz, axis), dot(world_xz, perpendicular));
-	vec3 field = value_noise_field(rotated_world * scale + drift * TIME + offset);
+	// Whole noise periods per wrap of the wind clock: a step of 1/256 cell per second.
+	float step = WATER_NOISE_PERIOD / WEATHER_WIND_PERIOD_S;
+	vec2 whole_drift = round(drift / step) * step;
+	vec3 field = value_noise_field(rotated_world * scale + whole_drift * weather_wind.x + offset);
 	vec2 world_gradient = (axis * field.y + perpendicular * field.z) * scale;
 	return vec3(field.x, world_gradient);
 }
@@ -232,6 +245,9 @@ vec3 water_surface_field(vec2 world_xz) {
 // its wavelength nears the pixel footprint, where it would only alias into shimmer. A slow noise
 // field gates them into gusts, leaving calm patches that mirror the shore. The broad noise field
 // above is 40-180 m across and only shades the surface; it never read as waves.
+// The ripples keep this fixed direction while the weather turns the wind: turning a phase laid
+// across the whole lake would sweep its far side faster than the waves move. Whitecaps, which
+// are local, streak along weather_wind_direction.
 const vec2 WATER_WIND_DIRECTION = vec2(0.8, 0.6);
 // Wavelength (m), angle from the wind (rad), steepness (amplitude x wavenumber).
 const vec3 WATER_RIPPLES[5] = {
@@ -242,8 +258,24 @@ const vec3 WATER_RIPPLES[5] = {
 	vec3(0.93, -0.9, 0.009)
 };
 
-vec2 water_ripple_slope(vec2 world_xz, float footprint_m) {
+// Wind speed over the authored fair-weather wind, as the ripples take it. Trees cap theirs at
+// WEATHER_WIND_MAX_STRENGTH because a crown swaying further reads as rubber; water has no such
+// limit, so a storm's 3.5 times reaches the waves.
+const float WATER_MAX_SEA_STATE = 4.0;
+
+float water_sea_state() {
+	return clamp(weather_wind.y, 0.0, WATER_MAX_SEA_STATE);
+}
+
+// `unresolved` returns the slope variance of the ripples too fine for the pixel, `total` that of
+// all of them. Dropping them
+// left a distant lake a mirror in any wind; their variance is roughness instead, which blurs the
+// reflections as real chop does (a slope deviation sigma spreads a reflection by about 2 sigma).
+vec2 water_ripple_slope(vec2 world_xz, float footprint_m, float gust, out float unresolved,
+		out float total) {
 	vec2 slope = vec2(0.0);
+	unresolved = 0.0;
+	total = 0.0;
 	for (int i = 0; i < 5; i++) {
 		vec3 ripple = WATER_RIPPLES[i];
 		float c = cos(ripple.y);
@@ -253,14 +285,29 @@ vec2 water_ripple_slope(vec2 world_xz, float footprint_m) {
 			WATER_WIND_DIRECTION.x * s + WATER_WIND_DIRECTION.y * c
 		);
 		float wavenumber = TAU / ripple.x;
-		float phase = wavenumber * dot(direction, world_xz) - sqrt(9.81 * wavenumber) * TIME
-			+ float(i) * 1.7;
+		float phase = wavenumber * dot(direction, world_xz)
+			- weather_wind_omega(sqrt(9.81 * wavenumber)) * weather_wind.x + float(i) * 1.7;
 		float resolved = 1.0 - smoothstep(ripple.x * 0.1, ripple.x * 0.35, footprint_m);
 		slope += direction * (ripple.z * cos(phase) * resolved);
+		// cos^2 averages a half.
+		unresolved += 0.5 * ripple.z * ripple.z * (1.0 - resolved * resolved);
+		total += 0.5 * ripple.z * ripple.z;
 	}
-	float gust = smoothstep(0.3, 0.75,
-		value_noise_field(world_xz * 0.012 + TIME * vec2(0.02, 0.015)).x);
-	return slope * mix(0.35, 1.0, gust) * water_ripple_strength;
+	// `gust` is the weather_gust() field that bends the trees, crossing the lake at the wind's speed.
+	// A lake's fetch-limited waves steepen as the wind rises, so they grow faster than it.
+	float sea = water_sea_state();
+	// A breeze's gusts only gate the ripples; a storm's gusts (weather_gust_factor) cross the
+	// lake as patches of rougher, darker water between calmer lulls.
+	float storminess = weather_storminess();
+	float gusting = mix(0.35, 1.0, smoothstep(0.3, 0.75, gust));
+	if (storminess > 0.0) {
+		gusting = mix(gusting, weather_gust_factor(gust) / 1.2, storminess);
+	}
+	float amplitude = gusting * water_ripple_strength
+		* sea * sqrt(sea);
+	unresolved *= amplitude * amplitude;
+	total *= amplitude * amplitude;
+	return slope * amplitude;
 }
 
 // View-space normal of the surface tilted by a world-space slope (dh/dx, dh/dz).
@@ -344,10 +391,12 @@ vec2 water_screen_at(vec3 view, mat4 projection) {
 }
 
 // Mip whose texel spans the blur of a ray `ray_m` long meeting the scene at `hit_view`.
-float water_reflection_lod(float ray_m, vec3 hit_view, mat4 projection) {
+// `spread` adds the angular blur of unresolved chop, in radians.
+float water_reflection_lod(float ray_m, vec3 hit_view, mat4 projection, float spread) {
 	float pixels_per_m = projection[1][1] * 0.5 * float(textureSize(screen_texture, 0).y)
 		/ max(-hit_view.z, 1.0);
-	return clamp(log2(1.0 + ray_m * REFLECTION_BLUR_PER_M * pixels_per_m), 0.0, REFLECTION_MAX_LOD);
+	return clamp(log2(1.0 + ray_m * (REFLECTION_BLUR_PER_M + spread) * pixels_per_m), 0.0,
+		REFLECTION_MAX_LOD);
 }
 
 // True where the view-space point is behind the opaque scene drawn at its pixel. The sky is
@@ -362,7 +411,7 @@ bool water_ray_behind_scene(vec3 sample_view, mat4 projection, mat4 inv_projecti
 }
 
 vec3 water_reflection(vec3 view_pos, vec3 view_normal, mat4 projection, mat4 inv_projection,
-		out float weight) {
+		float spread, out float weight) {
 	weight = 0.0;
 	vec3 direction = reflect(normalize(view_pos), view_normal);
 	// A ray turning back toward the camera leaves the screen at once. Fading out toward that
@@ -398,16 +447,56 @@ vec3 water_reflection(vec3 view_pos, vec3 view_normal, mat4 projection, mat4 inv
 			if (gap_m < (behind_t - in_front_t) * REFLECTION_HIT_BRACKETS
 					- hit_view.z * REFLECTION_HIT_DEPTH_SHARE) {
 				uv = water_screen_at(hit_view, projection);
+				// The side fade is a known limitation, not a bug: near a side edge the reflected
+				// shore is off screen. Narrowing it, or clamping or mirroring rays past the edge,
+				// was tried and reverted; see "known limitation" under water in docs/terrain.md.
 				vec2 edge = min(uv, vec2(1.0) - uv);
 				weight = smoothstep(0.0, 0.15, min(edge.x, edge.y)) * facing;
-				return textureLod(screen_texture, uv,
-					water_reflection_lod(behind_t, hit_view, projection)).rgb;
+				// Two reads half a blur width above and below: water stretches a reflection
+				// vertically, and one coarse mip read showed its texels as blocks.
+				float lod = water_reflection_lod(behind_t, hit_view, projection, spread);
+				vec2 tap = vec2(0.0, 0.5 * exp2(lod) / float(textureSize(screen_texture, 0).y));
+				return 0.5 * (textureLod(screen_texture, clamp(uv + tap, 0.0, 1.0), lod).rgb
+					+ textureLod(screen_texture, clamp(uv - tap, 0.0, 1.0), lod).rgb);
 			}
 		}
 		near_t = far_t;
 		far_t *= REFLECTION_STEP_GROWTH;
 	}
 	return vec3(0.0);
+}
+
+global uniform sampler2D water_reflection_map : filter_linear, repeat_disable;
+global uniform mat4 water_reflection_view_projection;
+global uniform sampler2D water_reflection_map_2 : filter_linear, repeat_disable;
+global uniform mat4 water_reflection_view_projection_2;
+
+// Water this far above or below both mirror planes is another lake and keeps the screen march.
+const float REFLECTION_PLANE_TOLERANCE_M = 0.5;
+// The planar map has no depth, so the ripples bend it as if the reflected scene stood this
+// share of the view distance beyond the water, which keeps the bend a constant share of the
+// screen: a fixed 40 m bent the reflections of trees by the camera into zigzags.
+const float REFLECTION_BEND_VIEW_SHARE = 0.5;
+
+// Scene reflected at `world_pos` from the first or `second` mirror's pass, along `reflected`
+// (with ripples) rather than `reflected_flat` (the mirror's own). Alpha is the scene's coverage:
+// zero where the pass drew no scene (the sky), and less than one where the distance fade takes
+// the scene out (water_reflection_fog.glsl). The map is premultiplied by it; the colour comes
+// back straight, as the screen march returns it.
+vec4 water_planar_reflection(vec3 world_pos, vec3 reflected, vec3 reflected_flat,
+		float view_distance_m, bool second) {
+	vec3 bent = world_pos
+		+ (reflected - reflected_flat) * view_distance_m * REFLECTION_BEND_VIEW_SHARE;
+	vec4 clip = (second ? water_reflection_view_projection_2 : water_reflection_view_projection)
+		* vec4(bent, 1.0);
+	if (clip.w <= 0.0) {
+		return vec4(0.0);
+	}
+	vec2 uv = vec2(0.5, 0.5) + vec2(0.5, -0.5) * clip.xy / clip.w;
+	vec2 edge = min(uv, vec2(1.0) - uv);
+	uv = clamp(uv, vec2(0.0), vec2(1.0));
+	vec4 scene = second ? texture(water_reflection_map_2, uv) : texture(water_reflection_map, uv);
+	return vec4(scene.rgb / max(scene.a, 1.0e-4), scene.a * smoothstep(0.0, 0.02, min(edge.x, edge.y)));
 }
 
 float water_debug_patch_border(vec2 patch_uv) {
@@ -516,6 +605,8 @@ vec3 water_visual_debug_color(vec2 patch_uv, float depth_m, float shore_mask) {
 	return mix(debug_color, vec3(1.0), border);
 }
 
+#include "res://scripts/shaders/street_lamp_light.gdshaderinc"
+
 void fragment() {
 	// Water column under this pixel: the flat surface minus the terrain below it. Shoreline cells
 	// are drawn whole at the water level, so this reaches zero exactly where the terrain meets the
@@ -537,7 +628,21 @@ void fragment() {
 	float wave = surface_field.x;
 	float wave_signed = wave * 2.0 - 1.0;
 	vec2 wave_slope = surface_field.yz;
-	vec2 ripple_slope = water_ripple_slope(var_world_pos.xz, length(fwidth(var_world_pos.xz)));
+	float footprint_m = length(fwidth(var_world_pos.xz));
+	float gust = weather_gust(var_world_pos.xz);
+	float chop_variance;
+	float ripple_variance;
+	vec2 ripple_slope = water_ripple_slope(var_world_pos.xz, footprint_m, gust, chop_variance,
+		ripple_variance);
+	float chop_sigma = sqrt(chop_variance);
+	// A ripple a pixel still resolves for shading bends the reflection ray, but once the pixel
+	// spans a good part of its wavelength that bend lands on a different hit every few pixels
+	// and every frame: distant reflections broke into tears that flickered as the ripples moved,
+	// as far trees once boiled with sway. Past a 0.25 m footprint the bend hands over to blur
+	// of the same slope variance, which is how many ripples inside one pixel look.
+	float bend_keep = 1.0 - smoothstep(0.25, 1.2, footprint_m);
+	float reflection_sigma = sqrt(chop_variance
+		+ max(ripple_variance - chop_variance, 0.0) * (1.0 - bend_keep * bend_keep));
 	vec3 world_normal = water_world_normal(wave_slope);
 	float normal_debug_strength = clamp(length(wave_slope) * water_wave_normal_strength * 18.0, 0.0, 1.0);
 	vec3 depth_tint = mix(shallow_water_color.rgb, deep_water_color.rgb, depth_factor);
@@ -564,9 +669,11 @@ void fragment() {
 		water_fresnel_power
 	);
 	float fresnel_mix = clamp(fresnel * water_fresnel_strength, 0.0, 1.0);
+	// The glitter is the sun's own reflection, so a cloud over the water puts it out.
 	float sun_specular = water_sun_glitter(NORMAL, wave)
 		* shore_mask
-		* (0.40 + depth_factor * 0.60);
+		* (0.40 + depth_factor * 0.60)
+		* weather_cloud_sun(var_world_pos);
 	vec3 sky_reflection = mix(sky_reflection_color.rgb, scene_sky_color.rgb, 0.65);
 
 	if (terrain_visual_debug_mode > 0) {
@@ -612,18 +719,57 @@ void fragment() {
 		// share of the broad wave slope, bend the reflected ray.
 		float reflection_weight = 0.0;
 		vec3 reflected_scene = vec3(0.0);
-		// Below a few percent the reflection cannot be seen, and steep views skip the march.
-		if (fresnel_mix > 0.05) {
-			// Half the ripple slope: the full bend chopped reflected trees into columns.
-			vec3 ripple_normal = water_view_normal(
-				(wave_slope * water_wave_normal_strength * 0.25 + ripple_slope) * 0.5, VIEW_MATRIX);
+		vec4 reflected_cloud = vec4(0.0);
+		// Half the ripple slope: the full bend chopped reflected trees into columns.
+		vec3 ripple_normal = water_view_normal(
+			(wave_slope * water_wave_normal_strength * 0.25 + ripple_slope * bend_keep) * 0.5,
+			VIEW_MATRIX);
+		// Steep views skip the scene march, fading it out rather than cutting it: a hard cut drew
+		// a circle around the camera inside which nothing was reflected.
+		float scene_reflection_fade = smoothstep(0.03, 0.06, fresnel_mix);
+		// The nearer of the active mirror planes, if either lies within the tolerance.
+		float first_offset = water_reflection_plane.y > 0.5
+			? abs(var_world_pos.y - water_reflection_plane.x) : 1.0e9;
+		float second_offset = water_reflection_plane.w > 0.5
+			? abs(var_world_pos.y - water_reflection_plane.z) : 1.0e9;
+		bool on_mirror = min(first_offset, second_offset) < REFLECTION_PLANE_TOLERANCE_M;
+		if (on_mirror) {
+			vec3 to_surface = normalize(var_world_pos - CAMERA_POSITION_WORLD);
+			vec4 planar = water_planar_reflection(var_world_pos,
+				normalize((INV_VIEW_MATRIX * vec4(reflect(normalize(VERTEX), ripple_normal), 0.0)).xyz),
+				reflect(to_surface, vec3(0.0, 1.0, 0.0)), var_view_distance_m,
+				second_offset < first_offset);
+			reflected_scene = planar.rgb;
+			reflection_weight = planar.a;
+		} else if (scene_reflection_fade > 0.0) {
 			reflected_scene = water_reflection(VERTEX, ripple_normal, PROJECTION_MATRIX,
-				INV_PROJECTION_MATRIX, reflection_weight);
+				INV_PROJECTION_MATRIX, 2.0 * reflection_sigma, reflection_weight);
+			reflection_weight *= scene_reflection_fade;
+		}
+		// Where no scene is reflected the engine reflects the sky's radiance map, which holds
+		// only the mean cloud cover, so the moving clouds are read from the cloud panorama
+		// instead, at every view angle, since the engine's sky reflection does not fade with it.
+		// Stars and the Milky Way stay out of that radiance map (night_sky.gdshaderinc). Their
+		// celestial bake is sampled along the same ray, behind the reflected clouds. The ray's
+		// derivative selects the mip, spreading starlight through the ripples; it is taken
+		// outside the branch, where it is defined.
+		vec3 reflected_world = normalize(
+			(INV_VIEW_MATRIX * vec4(reflect(normalize(VERTEX), ripple_normal), 0.0)).xyz);
+		float star_pixel = length(fwidth(reflected_world));
+		vec3 reflected_stars = vec3(0.0);
+		if (reflection_weight < 0.99) {
+			reflected_cloud = weather_cloud_reflected(reflected_world);
+			reflected_stars = night_sky_baked(reflected_world, star_pixel)
+				* (1.0 - reflected_cloud.a);
 		}
 		// The sky itself is the engine's specular reflection below; mixing a sky tint into the
 		// albedo as well counted it twice once the surface faced up.
 		final_color *= 1.0 - fresnel_mix;
-		EMISSION = reflected_scene * fresnel_mix * reflection_weight;
+		// The stars are sky, which the engine reflects at water's physical Fresnel; the scene and
+		// clouds take the authored water_fresnel_strength on top of it.
+		EMISSION = (reflected_scene * reflection_weight
+			+ reflected_cloud.rgb * (1.0 - reflection_weight)) * fresnel_mix
+			+ reflected_stars * (1.0 - reflection_weight) * fresnel;
 		final_color += scene_sun_color.rgb
 			* scene_ambient_light.rgb
 			* sun_specular
@@ -636,11 +782,17 @@ void fragment() {
 		ALBEDO = final_color;
 		// A reflection is light leaving the surface, not the lake bed seen through it.
 		ALPHA = min(mix(final_alpha, 1.0, fresnel_mix * shore_mask), WATER_MAX_ALPHA);
-		ROUGHNESS = clamp(0.08 + normal_debug_strength * water_wave_roughness_strength, 0.05, 0.20);
+		// The unresolved chop as GGX roughness: alpha = sqrt(2) sigma, roughness = sqrt(alpha).
+		ROUGHNESS = clamp(max(0.08 + normal_debug_strength * water_wave_roughness_strength,
+			sqrt(1.414 * chop_sigma)), 0.05, 0.45);
 		// The engine's own specular reflects the sky; where the scene is reflected instead, it
 		// would lay that sky over the reflected shore and wash it out.
 		// 0.25 is Godot's encoding of water's 0.02 reflectance; the engine applies its own
 		// Fresnel on top, matching the one above.
-		SPECULAR = 0.25 * (1.0 - reflection_weight);
+		SPECULAR = 0.25 * (1.0 - reflection_weight) * (1.0 - reflected_cloud.a);
+	}
+	if (terrain_visual_debug_mode == 0) {
+		EMISSION += ALBEDO * (1.0 - METALLIC) * street_lamp_surface(VERTEX, NORMAL, TANGENT, BINORMAL,
+			NORMAL_MAP, NORMAL_MAP_DEPTH, INV_VIEW_MATRIX, CAMERA_POSITION_WORLD);
 	}
 }

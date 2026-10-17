@@ -285,6 +285,8 @@ mod tests {
             end_endpoint_support_delta_m: 7.25,
             clearance_m: 1.5,
             required_clearance_m: 4.5,
+            geometry_measured: 0.0,
+            geometry_limit: 0.0,
         }
     }
 
