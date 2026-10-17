@@ -23,6 +23,7 @@ signal patches_will_reset
 const TERRAIN_SHADER := preload("res://assets/materials/terrain.gdshader")
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 const TreeSpecies := preload("res://scripts/renderers/tree_species.gd")
+const WindowMaterials := preload("res://scripts/renderers/window_materials.gd")
 const PerfDebug := preload("res://scripts/core/perf_debug.gd")
 const TerrainWorldNoise := preload("res://scripts/renderers/terrain_world_noise.gd")
 const RenderDebug := preload("res://scripts/renderers/render_debug.gd")
@@ -185,7 +186,7 @@ var border_skirt_instance: MeshInstance3D
 var border_bottom_cap_instance: MeshInstance3D
 var border_skirt_material: ShaderMaterial
 var border_bottom_cap_material: StandardMaterial3D
-var retaining_wall_material: StandardMaterial3D
+var retaining_wall_material: ShaderMaterial
 var _resident_patch_bounds_valid: bool = false
 var _resident_min_patch_x: int = 0
 var _resident_max_patch_x: int = -1
@@ -2835,13 +2836,15 @@ func _retaining_wall_patch_mesh(patch_data: Dictionary) -> ArrayMesh:
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	return mesh
 
-func _retaining_wall_material() -> StandardMaterial3D:
+func _retaining_wall_material() -> ShaderMaterial:
 	if retaining_wall_material == null:
-		retaining_wall_material = StandardMaterial3D.new()
-		retaining_wall_material.albedo_color = RETAINING_WALL_COLOR
-		retaining_wall_material.roughness = RETAINING_WALL_ROUGHNESS
-		retaining_wall_material.metallic = 0.0
-		retaining_wall_material.cull_mode = BaseMaterial3D.CULL_DISABLED
+		var source := StandardMaterial3D.new()
+		source.albedo_color = RETAINING_WALL_COLOR
+		source.roughness = RETAINING_WALL_ROUGHNESS
+		source.metallic = 0.0
+		source.cull_mode = BaseMaterial3D.CULL_DISABLED
+		# Through the shared factory, so the clouds dim the sun on walls as on the ground.
+		retaining_wall_material = WindowMaterials.create(source)
 	return retaining_wall_material
 
 func _road_clip_loop_groups_from_patch_data(patch_data: Dictionary) -> Array:

@@ -80,6 +80,8 @@ pub struct CameraNode {
     /// Cached terrain/runtime source for height sampling.
     simulation_node: Option<Gd<SimulationNode>>,
 
+    water_clearance_pending: bool,
+
     base: Base<Camera3D>,
 }
 
@@ -110,6 +112,16 @@ impl ICamera3D for CameraNode {
             following: false,
             simulation_node: None,
             orthogonal: false,
+            water_clearance_pending: false,
+        }
+    }
+
+    fn process(&mut self, _delta: f64) {
+        if self.water_clearance_pending {
+            self.water_clearance_pending = false;
+            let offset = self.camera_offset();
+            self.enforce_water_clearance(offset);
+            self.apply_camera_transform(offset);
         }
     }
 
@@ -155,6 +167,45 @@ impl CameraNode {
         // The saved pivot already includes terrain clearance. Applying it directly preserves
         // the view and avoids a terrain callback into the SimulationNode still finishing load.
         self.apply_camera_transform(self.camera_offset());
+        // Load is still binding SimulationNode; defer its height query until that bind ends.
+        self.water_clearance_pending = true;
+    }
+
+    /// The orbit view as `[pivot_x, pivot_y, pivot_z, yaw, pitch, distance, orthogonal]`, so a
+    /// caller such as a benchmark can return to exactly this view with `set_view_state`.
+    #[func]
+    pub fn get_view_state(&self) -> PackedFloat32Array {
+        let state = self.saved_state();
+        let mut values = state.pivot.to_vec();
+        values.extend([
+            state.yaw,
+            state.pitch,
+            state.distance,
+            f32::from(u8::from(state.orthogonal)),
+        ]);
+        PackedFloat32Array::from(values.as_slice())
+    }
+
+    /// Restores a view from `get_view_state`; false, leaving the camera unchanged, when the
+    /// array is malformed or its values invalid.
+    #[func]
+    pub fn set_view_state(&mut self, values: PackedFloat32Array) -> bool {
+        let v = values.as_slice();
+        if v.len() != 7 {
+            return false;
+        }
+        let state = SavedCameraState {
+            pivot: [v[0], v[1], v[2]],
+            yaw: v[3],
+            pitch: v[4],
+            distance: v[5],
+            orthogonal: v[6] != 0.0,
+        };
+        if state.validate().is_err() {
+            return false;
+        }
+        self.restore_saved_state(state);
+        true
     }
 
     /// Return the orbit pivot so editor chrome can center its unobscured preview without changing navigation.
@@ -381,7 +432,39 @@ impl CameraNode {
                 self.terrain_camera_clearance_m,
             );
         }
+        self.enforce_water_clearance(offset);
+        self.water_clearance_pending = false;
         self.apply_camera_transform(offset);
+    }
+
+    fn water_clearance_pivot_y(pivot_y: f32, offset_y: f32, water_y: f32, clearance: f32) -> f32 {
+        if water_y.is_finite() {
+            pivot_y.max(water_y + clearance.max(1.5) - offset_y)
+        } else {
+            pivot_y
+        }
+    }
+
+    fn enforce_water_clearance(&mut self, offset: Vector3) {
+        if !self.terrain_clearance_enabled {
+            return;
+        }
+        self.resolve_simulation_node_if_needed();
+        let Some(simulation) = self.simulation_node.as_ref() else {
+            return;
+        };
+        let eye = self.pivot + offset;
+        let water_y = simulation
+            .bind()
+            .get_camera_water_surface_at(Vector2::new(eye.x, eye.z));
+        // Water clearance also applies to an upward debug orbit; its terrain exception must
+        // not let the mirrored camera cross the lake plane.
+        self.pivot.y = Self::water_clearance_pivot_y(
+            self.pivot.y,
+            offset.y,
+            water_y,
+            self.terrain_camera_clearance_m,
+        );
     }
 
     fn apply_camera_transform(&mut self, offset: Vector3) {
@@ -410,6 +493,26 @@ mod tests {
 
         let underground = CameraNode::terrain_follow_pivot_y(-20.0, 100.0, None, 0.25, 1.5);
         assert!((underground - 100.25).abs() < 0.001);
+    }
+
+    #[test]
+    fn water_clearance_lifts_low_and_upward_orbits_without_lowering_dry_views() {
+        assert_eq!(
+            CameraNode::water_clearance_pivot_y(100.0, 0.0, 110.05, 1.5),
+            111.55
+        );
+        assert_eq!(
+            CameraNode::water_clearance_pivot_y(100.0, -20.0, 110.05, 0.0),
+            131.55
+        );
+        assert_eq!(
+            CameraNode::water_clearance_pivot_y(120.0, 0.0, 110.05, 1.5),
+            120.0
+        );
+        assert_eq!(
+            CameraNode::water_clearance_pivot_y(100.0, -20.0, f32::NAN, 1.5),
+            100.0
+        );
     }
 
     #[test]

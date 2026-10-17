@@ -1515,6 +1515,7 @@ mod tests {
                 facing_dir: godot::prelude::Vector2::new(0.0, 1.0),
                 frontage_t: 0.85, // Pre-split frontage_t
                 side_offset: 1.0,
+                front_gap_m: [0.0; 3],
                 is_deserted: false,
                 budget_distress: false,
                 edge_idx: edge_id,

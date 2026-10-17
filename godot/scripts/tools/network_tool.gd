@@ -13,6 +13,8 @@ class_name NetworkTool
 
 const WorldMaterials = preload("res://scripts/renderers/world_materials.gd")
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
+const StreetLights := preload("res://scripts/renderers/street_lights.gd")
+const RoadSigns := preload("res://scripts/renderers/road_signs.gd")
 
 @onready var simulation_node = $"../SimulationNode"
 @onready var terrain_node = $"../Terrain"
@@ -23,6 +25,9 @@ var blue_color = Color(0.0, 1.0, 1.0, 0.6)
 var red_color = Color(1.0, 0.1, 0.1, 0.6)
 
 var road_mesh_root: Node3D # Final road chunks owned only by RoadTool
+# Street lights per road chunk, outside the chunk meshes: junction previews hide those.
+var _street_lights: StreetLights
+var _road_signs: RoadSigns
 var _road_chunk_instances: Dictionary = {}
 var _road_mesh_generation: int = -1
 var _road_chunk_span_m: float = 0.0
@@ -65,6 +70,12 @@ func _setup_visuals():
 		road_mesh_root = Node3D.new()
 		road_mesh_root.name = "RoadMeshChunks"
 		add_child(road_mesh_root)
+		_street_lights = StreetLights.new()
+		_street_lights.name = "StreetLights"
+		add_child(_street_lights)
+		_road_signs = RoadSigns.new()
+		_road_signs.name = "RoadSigns"
+		add_child(_road_signs)
 	
 	# Blueprint mesh container
 	blueprint_mesh = MeshInstance3D.new()
@@ -285,7 +296,7 @@ func _append_debug_lines(immediate: ImmediateMesh, points: PackedVector3Array, c
 		immediate.surface_add_vertex(point)
 	immediate.surface_end()
 
-static var _marking_mat: StandardMaterial3D = null
+static var _marking_mat: ShaderMaterial = null
 static var _earthwork_mat: StandardMaterial3D = null
 
 func update_main_mesh(expected_generation: int = -1, stage_only: bool = false) -> int:
@@ -472,13 +483,40 @@ func _commit_road_mesh_update(
 ) -> int:
 	if invalidate_nodes:
 		mark_network_nodes_dirty()
+	# Lights and signs exist only on the scene's RoadTool (`_setup_visuals`); tests that assemble a
+	# tool by hand have neither.
+	var props := _street_lights != null and _road_signs != null
+	if props:
+		_street_lights.configure_chunks(chunk_span_m, Vector2(chunk_origin_x_m, chunk_origin_z_m))
 	if full_replace:
 		for key in _road_chunk_instances.keys():
 			_remove_road_chunk(key)
+		if props:
+			_street_lights.clear()
+			_road_signs.clear()
 	for chunk_data in validated_updates:
 		var key := Vector2i(chunk_data["chunk_x"], chunk_data["chunk_z"])
 		if chunk_data["removed"]:
 			_remove_road_chunk(key)
+			if props:
+				_street_lights.remove_chunk(key)
+				_road_signs.remove_chunk(key)
+			continue
+		if not props:
+			continue
+		var origin := Vector3(
+			chunk_origin_x_m + float(key.x) * chunk_span_m,
+			0.0,
+			chunk_origin_z_m + float(key.y) * chunk_span_m
+		)
+		var lights = chunk_data.get("street_lights")
+		_street_lights.set_chunk(
+			key, origin, lights if typeof(lights) == TYPE_PACKED_FLOAT32_ARRAY else PackedFloat32Array()
+		)
+		var signs = chunk_data.get("road_signs")
+		_road_signs.set_chunk(
+			key, origin, signs if typeof(signs) == TYPE_PACKED_FLOAT32_ARRAY else PackedFloat32Array()
+		)
 	for key in staged_instances:
 		_remove_road_chunk(key)
 		var instance: MeshInstance3D = staged_instances[key]
@@ -494,6 +532,10 @@ func reset_main_mesh_chunks() -> void:
 	discard_staged_main_mesh_update()
 	for key in _road_chunk_instances.keys():
 		_remove_road_chunk(key)
+	if _street_lights:
+		_street_lights.clear()
+	if _road_signs:
+		_road_signs.clear()
 	_road_mesh_generation = -1
 	_road_chunk_span_m = 0.0
 	_road_chunk_origin_x_m = 0.0
@@ -659,8 +701,23 @@ func _append_road_surface(
 	arrays[Mesh.ARRAY_NORMAL] = normals
 	arrays[Mesh.ARRAY_COLOR] = colors
 	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	var flags := 0
+	if layer == "road":
+		# Full-precision crossing metres/age must not pass through 8-bit vertex COLOR.
+		var crossing_data = chunk_data.get("road_crossings", null)
+		if typeof(crossing_data) != TYPE_PACKED_FLOAT32_ARRAY:
+			return false
+		var crossings: PackedFloat32Array = crossing_data
+		if crossings.size() != vertices.size() * 4:
+			return false
+		if not rust_validated:
+			for value in crossings:
+				if not is_finite(value):
+					return false
+		arrays[Mesh.ARRAY_CUSTOM0] = crossings
+		flags = Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM0_SHIFT
 	var previous_surface_count := arr_mesh.get_surface_count()
-	arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays, [], {}, flags)
 	if arr_mesh.get_surface_count() != previous_surface_count + 1:
 		return false
 	arr_mesh.surface_set_material(previous_surface_count, material)
@@ -699,14 +756,7 @@ func _road_layer_is_finite(
 
 func _ensure_road_mesh_materials() -> void:
 	if _marking_mat == null:
-		_marking_mat = StandardMaterial3D.new()
-		_marking_mat.vertex_color_use_as_albedo = true
-		# Road paint receives the same day/night and local lighting as the roadbed.
-		_marking_mat.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
-		_marking_mat.roughness = 1.0
-		_marking_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-		_marking_mat.albedo_color = Color(1.0, 1.0, 1.0, 0.35)
-		_marking_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+		_marking_mat = WorldMaterials.road_marking_material()
 	if _earthwork_mat == null:
 		_earthwork_mat = StandardMaterial3D.new()
 		_earthwork_mat.vertex_color_use_as_albedo = true

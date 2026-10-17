@@ -138,6 +138,39 @@ pub(crate) fn restore_off_lane_targets(poses: &mut [f32], targets: &[f32], flags
 }
 
 /// Godot's `Quaternion.slerp`, normalized as Godot's `Basis(Quaternion)` constructor does.
+/// Up to `max` cars nearest `eye` within `radius` across row-major 3×4 pose buffers, nearest
+/// first, as (buffer index, car index). Ties go to the lower buffer, then car, so the choice is
+/// stable frame to frame. O(cars · log max) with a heap bounded at `max`.
+pub(crate) fn nearest_cars(
+    buffers: &[&[f32]],
+    eye: Vec3,
+    radius: f32,
+    max: usize,
+) -> Vec<(usize, usize)> {
+    if max == 0 {
+        return Vec::new();
+    }
+    let mut heap = std::collections::BinaryHeap::with_capacity(max + 1);
+    let limit = radius * radius;
+    for (buffer, poses) in buffers.iter().enumerate() {
+        for (car, pose) in poses.as_chunks::<STRIDE>().0.iter().enumerate() {
+            let d2 = Vec3::new(pose[3], pose[7], pose[11]).distance_squared(eye);
+            // Non-negative finite f32s order like their bit patterns.
+            if d2.is_nan() || d2 > limit {
+                continue;
+            }
+            heap.push((d2.to_bits(), buffer, car));
+            if heap.len() > max {
+                heap.pop();
+            }
+        }
+    }
+    heap.into_sorted_vec()
+        .into_iter()
+        .map(|(_, buffer, car)| (buffer, car))
+        .collect()
+}
+
 fn slerp(from: Quat, to: Quat, weight: f32) -> Quat {
     let mut cosom = from.dot(to);
     let to = if cosom < 0.0 {
@@ -354,5 +387,29 @@ mod tests {
                 median * 1e3 / count as f64
             );
         }
+    }
+
+    #[test]
+    fn nearest_cars_picks_the_closest_within_radius_nearest_first() {
+        let eye = Vec3::new(0.0, 2.0, 0.0);
+        let first: Vec<f32> = [
+            pose(0.0, Vec3::new(30.0, 0.0, 0.0)),
+            pose(0.0, Vec3::new(5.0, 0.0, 0.0)),
+            pose(0.0, Vec3::new(500.0, 0.0, 0.0)),
+        ]
+        .concat();
+        let second: Vec<f32> = [
+            pose(0.0, Vec3::new(0.0, 0.0, -10.0)),
+            pose(0.0, Vec3::new(0.0, 0.0, 20.0)),
+        ]
+        .concat();
+        let buffers = [first.as_slice(), second.as_slice()];
+        assert_eq!(
+            nearest_cars(&buffers, eye, 100.0, 3),
+            vec![(0, 1), (1, 0), (1, 1)]
+        );
+        // Beyond the radius is never chosen, however few cars are near.
+        assert_eq!(nearest_cars(&buffers, eye, 100.0, 10).len(), 4);
+        assert!(nearest_cars(&buffers, eye, 100.0, 0).is_empty());
     }
 }

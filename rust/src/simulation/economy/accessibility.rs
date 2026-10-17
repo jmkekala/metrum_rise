@@ -1007,14 +1007,17 @@ pub(crate) fn lower_bound_travel_seconds(distance_sq: f32, max_speed: f32) -> f3
     distance_sq.sqrt() / max_speed.max(1.0)
 }
 
-/// Returns the fastest edge speed available to any of the requested transit modes.
+/// Returns a speed ceiling for the requested routing modes, including walking access legs.
 pub(crate) fn max_speed_for_modes(graph: &RegionGraph, transit_flags: u8) -> f32 {
+    if transit_flags == TransitFlags::FOOT {
+        return crate::config::AGENT_WALK_SPEED_MS;
+    }
     graph
         .edges()
-        .iter()
+        .par_iter()
         .filter(|edge| !edge.deleted && (edge.allowed_types & transit_flags) != 0)
-        .map(|edge| edge.speed_limit)
-        .fold(1.0_f32, f32::max)
+        .map(|edge| edge.speed_limit.max(crate::config::MIN_ROUTE_SPEED_MS))
+        .reduce(|| crate::config::AGENT_WALK_SPEED_MS, f32::max)
 }
 
 fn entrance_supports_mode(
@@ -1168,6 +1171,36 @@ fn unite(i: usize, j: usize, parent: &mut [usize]) {
 #[cfg(test)]
 mod reservation_tests {
     use super::*;
+
+    #[test]
+    fn walking_speed_bound_ignores_slow_edge_speed_limits() {
+        use crate::simulation::network::graph::Edge;
+        use crate::simulation::network::types::NodeType;
+        use crate::simulation::pathing::cost::CostCalculator;
+        use godot::prelude::Vector3;
+
+        let mut graph = RegionGraph::new();
+        let start = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        let end = graph.add_node(Vector3::new(140.0, 0.0, 0.0), NodeType::Junction);
+        let edge = graph.add_edge(Edge {
+            start_node: start,
+            end_node: end,
+            allowed_types: TransitFlags::FOOT | TransitFlags::CAR,
+            speed_limit: 0.5,
+            base_cost: 140.0 / crate::config::MIN_ROUTE_SPEED_MS,
+            physical_length: 140.0,
+            ..Default::default()
+        });
+        for mask in [TransitFlags::FOOT, TransitFlags::FOOT | TransitFlags::CAR] {
+            let bound =
+                lower_bound_travel_seconds(140.0 * 140.0, max_speed_for_modes(&graph, mask));
+            assert!(bound <= CostCalculator::walk_cost_s(graph.edge(edge)));
+        }
+        assert_eq!(
+            max_speed_for_modes(&graph, TransitFlags::FOOT),
+            crate::config::AGENT_WALK_SPEED_MS
+        );
+    }
 
     #[test]
     fn clipped_chunk_rings_preserve_every_original_intersecting_chunk() {

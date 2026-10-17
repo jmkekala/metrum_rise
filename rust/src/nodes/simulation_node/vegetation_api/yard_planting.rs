@@ -103,6 +103,32 @@ pub(super) fn plant_area(
     area: &YardPlantingArea,
     layout: &PatchLayout,
 ) -> Vec<(VegetationCell, Plant)> {
+    let (cell_m, _) = grid(core, VegetationLayer::Canopy);
+    plan_area(key, index, area, |plant| {
+        if !placement::authored_clear(core, &plant) || placement::occupied(core, &plant) {
+            return None;
+        }
+        let cell = cell_at(
+            Vector2::new(plant.x, plant.z),
+            VegetationLayer::Canopy,
+            cell_m,
+        );
+        core.vegetation_edits.add(cell, plant);
+        core.vegetation_edits
+            .bump_patch(layout.key(plant.x, plant.z));
+        Some((cell, plant))
+    })
+}
+
+/// Deterministic lot-frame planting kernel. Acceptance sees candidates in their original order;
+/// only accepted plants reserve room for later passes. The callback supplies site/occupancy
+/// checks and output storage, avoiding an extra candidate buffer on the spawn path.
+pub(super) fn plan_area<T>(
+    key: YardKey,
+    index: usize,
+    area: &YardPlantingArea,
+    mut accept: impl FnMut(Plant) -> Option<T>,
+) -> Vec<T> {
     let passes = match area.plants {
         YardPlantKind::Trees => TREES,
         YardPlantKind::Bushes => BUSHES,
@@ -118,7 +144,6 @@ pub(super) fn plant_area(
         (key.0 >> 32) as i32,
         key.1.wrapping_mul(0x9e37_79b9),
     ) ^ hash(index as i32, 0, 0x5eed_7a4d);
-    let (cell_m, _) = grid(core, VegetationLayer::Canopy);
     let mut planted = Vec::new();
     // Each planted position and the room it keeps, for the passes after it.
     let mut kept: Vec<(Vector2, f32)> = Vec::new();
@@ -171,14 +196,10 @@ pub(super) fn plant_area(
                     species,
                     variant,
                 };
-                if !placement::authored_clear(core, &plant) || placement::occupied(core, &plant) {
+                let Some(accepted) = accept(plant) else {
                     continue;
-                }
-                let cell = cell_at(pos, VegetationLayer::Canopy, cell_m);
-                core.vegetation_edits.add(cell, plant);
-                core.vegetation_edits
-                    .bump_patch(layout.key(plant.x, plant.z));
-                planted.push((cell, plant));
+                };
+                planted.push(accepted);
                 kept.push((pos, pass.radius_m));
             }
         }
@@ -213,4 +234,69 @@ fn inside(p: [f32; 2], polygon: &[[f32; 2]]) -> bool {
         }
     }
     inside
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::buildings::allocator::yard::{YardEvent, YardHedgeRowWorld};
+
+    #[test]
+    fn spawned_yard_placements_keep_their_original_bits() {
+        let mut core = super::super::super::tests::vegetation_test_core(Default::default());
+        core.vegetation.config.enabled = false;
+        let key = (0x1234_5678_9abc_def0, 7);
+        core.allocator.pending_yards.push(YardEvent::Placed {
+            key,
+            hedge: Some(crate::assets::asset::YardHedgeKind::Medium),
+            rows: vec![
+                YardHedgeRowWorld {
+                    from: Vector2::new(-20.0, -20.0),
+                    to: Vector2::new(20.0, -20.0),
+                    join_from: true,
+                    join_to: true,
+                },
+                YardHedgeRowWorld {
+                    from: Vector2::new(20.0, -20.0),
+                    to: Vector2::new(20.0, 20.0),
+                    join_from: true,
+                    join_to: true,
+                },
+            ],
+            planting: [YardPlantKind::Mixed, YardPlantKind::Flowers]
+                .into_iter()
+                .map(|plants| YardPlantingArea {
+                    plants,
+                    polygon: vec![[-18.0, -18.0], [18.0, -18.0], [18.0, 18.0], [-18.0, 18.0]],
+                    origin: Vector2::ZERO,
+                    basis_x: Vector2::RIGHT,
+                    basis_z: Vector2::DOWN,
+                })
+                .collect(),
+        });
+        placement::publish_yards(&mut core);
+        let hedges = core.vegetation_edits.take_yard_hedge(key).unwrap();
+        let plants = core.vegetation_edits.take_yard_planting(key).unwrap();
+        let mut fingerprint = 0xcbf29ce484222325u64;
+        for (cell, plant) in hedges.iter().chain(&plants) {
+            for word in [
+                cell.x as u32,
+                cell.z as u32,
+                plant.x.to_bits(),
+                plant.z.to_bits(),
+                plant.yaw.to_bits(),
+                plant.scale.to_bits(),
+                plant.species as u32,
+                plant.variant as u32,
+            ] {
+                for byte in word.to_le_bytes() {
+                    fingerprint = (fingerprint ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+                }
+            }
+        }
+        assert_eq!(
+            (hedges.len(), plants.len(), fingerprint),
+            (81, 904, 15_976_650_839_350_838_468)
+        );
+    }
 }

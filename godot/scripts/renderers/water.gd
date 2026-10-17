@@ -13,6 +13,7 @@ const WATER_SHADER := preload("res://assets/materials/water.gdshader")
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 const PerfDebug := preload("res://scripts/core/perf_debug.gd")
 const RenderDebug := preload("res://scripts/renderers/render_debug.gd")
+const WaterReflection := preload("res://scripts/renderers/water_reflection.gd")
 const TerrainRenderer := preload("res://scripts/renderers/terrain.gd")
 const HEIGHT_SCALE := 20.0
 const SHORE_SOFTNESS_M := 0.26
@@ -944,6 +945,7 @@ func _release_water_patch_resources(patch: Dictionary) -> void:
 func _new_water_patch_resources() -> Dictionary:
 	var patch_node := MeshInstance3D.new()
 	patch_node.name = "WaterPatchPool"
+	patch_node.layers = WaterReflection.WATER_LAYER
 	SceneLightingConfig.apply_shadow_policy(
 		patch_node,
 		SceneLightingConfig.SHADOW_RECEIVER_ONLY,
@@ -2451,6 +2453,7 @@ func _ensure_water_border_visual() -> void:
 	if water_border_instance == null:
 		water_border_instance = MeshInstance3D.new()
 		water_border_instance.name = "WaterBorderCurtain"
+		water_border_instance.layers = WaterReflection.WATER_LAYER
 		SceneLightingConfig.apply_shadow_policy(
 			water_border_instance,
 			SceneLightingConfig.SHADOW_RECEIVER_ONLY,

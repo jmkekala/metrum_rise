@@ -132,6 +132,9 @@ impl SimCore {
 
         // Rebuild CCH if dirty, then rebuild any dirty flow fields.
         let pathing_start = Instant::now();
+        record_crash_phase_for_core(self, "lane surface sync");
+        self.transit_network
+            .sync_new_lane_heights(&self.region_graph, &self.heightmap);
         record_crash_phase_for_core(self, "pathing rebuild");
         self.transit_network
             .rebuild_pathing_if_dirty(&mut self.region_graph);
@@ -164,6 +167,9 @@ impl SimCore {
         let minute_start = Instant::now();
         record_crash_phase_for_core(self, "time advance");
         let time_advance = self.time.process_delta(frame_dt_s);
+        self.weather
+            .advance_scheduled(frame_dt_s * speed as f64, self.time.seconds_per_day / 24.0);
+        self.weather.advance_wind(frame_dt_s * f64::from(speed.min(1.0)));
         report.elapsed_minutes = time_advance.elapsed_minutes;
         for (step_day_index, step_minute_of_day) in time_advance.iter_elapsed_minutes() {
             self.step_authored_minute(step_day_index, step_minute_of_day, &mut report, observer);

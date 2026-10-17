@@ -224,8 +224,19 @@ func correctness(pack_dir: String) -> void:
 		for mesh: Mesh in chain:
 			if mesh == lods.meshes[0][0]:
 				continue
-			var material := mesh.surface_get_material(0) as StandardMaterial3D
-			expect(material != null and material.emission_texture != null and material.emission_enabled, "every tier preserves authored emission")
+			# Every surface draws through the window shader, which carries the authored emission.
+			var material := mesh.surface_get_material(0) as ShaderMaterial
+			expect(material != null and material.get_shader_parameter("texture_emission") != null
+				and material.shader.code.contains("#define WINDOW_EMISSION"), "every tier preserves authored emission")
+	# Parts may share one model; each still draws at its own asset's window brightness.
+	for part in lods.meshes.size():
+		var brightness := float(lods.catalog[part].get("window_brightness", 3.0))
+		for mesh: Mesh in lods.meshes[part]:
+			if mesh == null or mesh == lods.meshes[0][0]:
+				continue
+			var material := mesh.surface_get_material(0) as ShaderMaterial
+			expect(material != null and is_equal_approx(float(material.get_shader_parameter("window_strength")), brightness),
+				"part %d draws at its own window brightness" % part)
 	var far := counts()
 	expect(far.instances == 2731, "all 2048 buildings including multipart instances must draw exactly once")
 	expect(far.tiers.has(0) and far.tiers.has(3) and far.tiers.has(4), "short chains retain their final tier at distant zoom")
@@ -344,8 +355,10 @@ func check_schemes(frame: Dictionary) -> void:
 				expect(group["override"] == null, "a multi-material tier takes no whole-instance override")
 				expect(group["mesh"] != source, "a multi-material tier needs its own scheme mesh")
 				expect(group["mesh"].get_surface_count() == source.get_surface_count(), "a scheme mesh keeps every authored surface")
-				var trim := group["mesh"].surface_get_material(1) as BaseMaterial3D
-				expect(trim != null and trim.resource_name == "authored_trim" and trim.albedo_texture == null,
+				# The shared mesh's converted surface, carrying the authored properties unvaried.
+				var trim := group["mesh"].surface_get_material(1) as ShaderMaterial
+				expect(trim != null and trim == source.surface_get_material(1) and trim.resource_name == "authored_trim"
+					and trim.get_shader_parameter("texture_albedo") == null,
 					"a surface the scheme does not name keeps its authored material")
 				painted = group["mesh"].surface_get_material(0) as ShaderMaterial
 			else:

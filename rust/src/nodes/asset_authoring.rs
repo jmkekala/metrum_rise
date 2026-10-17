@@ -260,6 +260,44 @@ impl AssetAuthoringPolicy {
         )
     }
 
+    /// Plan an isolated flat yard without changing the document or the editor sandbox.
+    /// Returns the game's six-float placement records: x, y, z, yaw, scale, packed species/pin.
+    #[func]
+    pub fn yard_preview_plants(
+        &self,
+        document: GString,
+        structures: PackedFloat32Array,
+        salt: i64,
+    ) -> PackedFloat32Array {
+        let Ok(data) = serde_json::from_str::<Value>(&document.to_string()) else {
+            return PackedFloat32Array::new();
+        };
+        let walls: Vec<_> = structures
+            .as_slice()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| [[c[0], c[1]], [c[2], c[3]]])
+            .collect();
+        let plants = crate::nodes::simulation_node::vegetation_api::yard_preview::plan(
+            &data,
+            &walls,
+            salt as u64,
+        );
+        let mut packed = Vec::with_capacity(plants.len() * 6);
+        for plant in plants {
+            packed.extend_from_slice(&[
+                plant.x,
+                0.0,
+                plant.z,
+                plant.yaw,
+                plant.scale,
+                f32::from((plant.variant << 2) | plant.species),
+            ]);
+        }
+        PackedFloat32Array::from(packed.as_slice())
+    }
+
     /// Preview a conversion with an exact change list. Applying it requires UI confirmation.
     #[func]
     pub fn conversion_json(&self, document: GString, target: GString, subtype: GString) -> GString {

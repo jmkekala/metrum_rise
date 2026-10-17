@@ -7,6 +7,7 @@ extends RefCounted
 # Matches the renderers' idiom. A bare SceneLighting class_name reference needs Godot's
 # global class cache, which a freshly cloned checkout has not built yet.
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
+const WindowMaterials := preload("res://scripts/renderers/window_materials.gd")
 
 # Species ordinals must match vegetation_api.rs.
 const CONIFER := 0
@@ -57,6 +58,13 @@ const TREE_CROSSFADE_END_M := 200.0
 # band it dissolves over, by its own distance like the impostor handover; see vegetation.gd.
 const TREE_NEAR_DETAIL_M := 45.0
 const TREE_DETAIL_FADE_M := 10.0
+# Distance a canopy tree casts from its branched level out to; past it, from its impostor. See
+# vegetation_wind.gdshaderinc for why, and vegetation.gd for the patches that submit to the shadow
+# pass. Shadow cost grows with the area of this disc.
+const TREE_SHADOW_HANDOVER_M := 60.0
+# Distance within which an impostor's shadow blends the three baked views around the light; see
+# vegetation_impostor_shadow.gdshader.
+const TREE_SHADOW_BLEND_M := 150.0
 
 # Understory cards sample the shared foliage_atlas.dds. Its mip 0, alpha >= 102/255 (0.4),
 # measured 2026-09-26, has these half-open pixel bounds within each 256x256 cell: (11,24)-(233,230),
@@ -127,12 +135,14 @@ const HEDGE_RUN_SIZES: Array[Vector2] = [Vector2(0.90, 0.60), Vector2(1.40, 0.80
 const HEDGE_RUN_COLORS: Array[Color] = [
 	Color(0.25, 0.35, 0.16), Color(0.33, 0.44, 0.20), Color(0.21, 0.32, 0.24)]
 static var _hedge_run_meshes: Array[BoxMesh] = []
+# The authored material of each hedge run; the meshes draw its cloud-lit conversion.
+static var _hedge_run_sources: Array[StandardMaterial3D] = []
 # Granite boulders from tools/model_landscape.py, on one tiled stone texture.
 const ROCK_MODEL_DIR := "res://assets/models/vegetation/rocks/"
 
 # Per model directory, the converter's measured means of each form.
 static var _model_info: Dictionary = {}
-static var _rock_material: StandardMaterial3D
+static var _rock_material: ShaderMaterial
 static var _form_meshes: Dictionary = {}
 # Per form, and per form plus "_lod1" for the reduced level: [wood, cards]. Every one of them is
 # also in _canopy_materials for set_crossfade and set_detail.
@@ -295,9 +305,15 @@ static func hedge_run_mesh(hedge: int) -> BoxMesh:
 			var material := StandardMaterial3D.new()
 			material.albedo_color = HEDGE_RUN_COLORS[index]
 			material.roughness = 0.9
-			mesh.material = material
+			mesh.material = WindowMaterials.create(material)
+			_hedge_run_sources.append(material)
 			_hedge_run_meshes.append(mesh)
 	return _hedge_run_meshes[hedge]
+
+## The authored material behind hedge_run_mesh(), for views that vary it.
+static func hedge_run_source_material(hedge: int) -> StandardMaterial3D:
+	hedge_run_mesh(hedge)
+	return _hedge_run_sources[hedge]
 
 static func impostor_form(species: int, variant: int) -> String:
 	return "%s_%02d" % [IMPOSTOR_SPECIES_NAMES[species], variant]
@@ -379,6 +395,8 @@ static func impostor_shadow_material(species: int) -> ShaderMaterial:
 		material.shader = preload("res://scripts/shaders/vegetation_impostor_shadow.gdshader")
 		for parameter in ["albedo_atlas", "bounds_centre", "bounds_size", "frame_bounds"]:
 			material.set_shader_parameter(parameter, visible.get_shader_parameter(parameter))
+		material.set_shader_parameter("tree_shadow_handover_m", TREE_SHADOW_HANDOVER_M)
+		material.set_shader_parameter("tree_shadow_blend_m", TREE_SHADOW_BLEND_M)
 		_impostor_shadow_materials[species] = material
 	return _impostor_shadow_materials[species]
 
@@ -568,6 +586,7 @@ static func _apply_wind_visibility(material: ShaderMaterial) -> void:
 
 static func _apply_canopy_shading(material: ShaderMaterial) -> void:
 	_apply_crossfade(material, TREE_CROSSFADE_END_M)
+	material.set_shader_parameter("tree_shadow_handover_m", TREE_SHADOW_HANDOVER_M)
 	_apply_detail(material, TREE_NEAR_DETAIL_M)
 	material.set_shader_parameter("canopy_base_begin_m", TREE_CROSSFADE_END_M)
 	var receive_end := SceneLightingConfig.shadow_max_distance_m() - TREE_RECEIVE_MARGIN_M
@@ -762,12 +781,13 @@ static func _bush_fern(variant: int) -> ArrayMesh:
 ## lichen, the moss at the foot and the occlusion under it. Startup only.
 static func _rock(variant: int) -> ArrayMesh:
 	if _rock_material == null:
-		_rock_material = StandardMaterial3D.new()
-		_rock_material.vertex_color_use_as_albedo = true
-		_rock_material.albedo_texture = load(ROCK_MODEL_DIR + "rock_albedo.png")
-		_rock_material.normal_enabled = true
-		_rock_material.normal_texture = load(ROCK_MODEL_DIR + "rock_normal.png")
-		_rock_material.roughness = 0.9
+		var source := StandardMaterial3D.new()
+		source.vertex_color_use_as_albedo = true
+		source.albedo_texture = load(ROCK_MODEL_DIR + "rock_albedo.png")
+		source.normal_enabled = true
+		source.normal_texture = load(ROCK_MODEL_DIR + "rock_normal.png")
+		source.roughness = 0.9
+		_rock_material = WindowMaterials.create(source)
 	var scene: Node = (load(ROCK_MODEL_DIR + "rock_%d.glb" % variant) as PackedScene).instantiate()
 	var source: Mesh = (scene.find_children("*", "MeshInstance3D", true, false)[0] as MeshInstance3D).mesh
 	scene.free()

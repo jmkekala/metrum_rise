@@ -9,6 +9,7 @@
 mod policy;
 mod terrain_cdt;
 mod traversal;
+mod vegetation;
 mod view;
 mod visible;
 

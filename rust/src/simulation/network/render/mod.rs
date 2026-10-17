@@ -10,7 +10,7 @@ use super::surface::SurfaceChunkKey;
 use godot::prelude::*;
 pub(crate) use ownership::NetworkMeshOwner;
 use ownership::OwnedVertexRange;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 #[derive(Debug)]
@@ -65,6 +65,8 @@ pub struct NetworkMeshData {
     pub road_normals: Vec<Vector3>,
     /// UV coordinates for the road surface.
     pub road_uvs: Vec<Vector2>,
+    /// Crossing coordinates, paint age marker and lane offset for CUSTOM0 (zero outside paint).
+    pub road_crossings: Vec<Vector4>,
     /// Vertex colors for the road surface.
     pub road_colors: Vec<Color>,
     /// Vertices for lane markings and paint.
@@ -83,9 +85,14 @@ pub struct NetworkMeshData {
     pub concrete_uvs: Vec<Vector2>,
     /// Vertex colors for structural concrete.
     pub concrete_colors: Vec<Color>,
+    /// Street lights standing on this mesh's roads (`ROAD-59`), in the mesh's coordinates.
+    pub(crate) street_lights: Vec<road::street_lights::StreetLight>,
+    /// Cosmetic roadside sign poses in the mesh coordinate system.
+    pub(crate) road_signs: Vec<road::road_signs::RoadSign>,
     // Source ranges extend the existing chunk cache; previews can replace owners without
     // clipping triangles heuristically or rebuilding unrelated roads in the same chunk.
     current_owner: Option<NetworkMeshOwner>,
+    crosswalks: HashMap<NetworkMeshOwner, Vec<road::crosswalks::Crossing>>,
     owner_ranges: [Vec<OwnedVertexRange>; 7],
     chunk_partition: Option<NetworkMeshChunkPartition>,
     // Set only by `seal`: the type is not `Clone`, so the certified buffers cannot change
@@ -122,6 +129,7 @@ impl NetworkMeshData {
             road_vertices: Vec::new(),
             road_normals: Vec::new(),
             road_uvs: Vec::new(),
+            road_crossings: Vec::new(),
             road_colors: Vec::new(),
             marking_vertices: Vec::new(),
             marking_normals: Vec::new(),
@@ -131,7 +139,10 @@ impl NetworkMeshData {
             concrete_normals: Vec::new(),
             concrete_uvs: Vec::new(),
             concrete_colors: Vec::new(),
+            street_lights: Vec::new(),
+            road_signs: Vec::new(),
             current_owner: None,
+            crosswalks: HashMap::new(),
             owner_ranges: Default::default(),
             chunk_partition: None,
             render_payload_validated: false,
@@ -173,6 +184,8 @@ impl NetworkMeshData {
             && self.road_vertices.is_empty()
             && self.marking_vertices.is_empty()
             && self.concrete_vertices.is_empty()
+            && self.street_lights.is_empty()
+            && self.road_signs.is_empty()
     }
 
     /// Validates the final render buffers once and freezes them for publication.
@@ -255,6 +268,23 @@ impl NetworkMeshData {
         ]
         .into_iter()
         .all(|(vertices, normals, uvs, colors)| layer_valid(vertices, normals, uvs, colors))
+            && self.road_crossings.len() == self.road_vertices.len()
+            && self
+                .road_crossings
+                .iter()
+                .all(|v| v.x.is_finite() && v.y.is_finite() && v.z.is_finite() && v.w.is_finite())
+            && self.street_lights.iter().all(|light| {
+                light.position.x.is_finite()
+                    && light.position.y.is_finite()
+                    && light.position.z.is_finite()
+                    && light.yaw.is_finite()
+            })
+            && self.road_signs.iter().all(|sign| {
+                sign.position.x.is_finite()
+                    && sign.position.y.is_finite()
+                    && sign.position.z.is_finite()
+                    && sign.yaw.is_finite()
+            })
     }
 
     /// Returns the total number of non-indexed vertices across all material layers.
@@ -289,6 +319,7 @@ mod tests {
         mesh.road_vertices = vec![Vector3::ZERO, Vector3::RIGHT, Vector3::BACK];
         mesh.road_normals = vec![Vector3::UP; 3];
         mesh.road_uvs = vec![Vector2::ZERO; 3];
+        mesh.road_crossings = vec![Vector4::ZERO; 3];
         mesh.road_colors = vec![Color::WHITE; 3];
         mesh
     }
@@ -299,11 +330,15 @@ mod tests {
         assert!(triangle().seal().render_payload_validated());
         assert!(NetworkMeshData::new().seal().render_payload_validated());
 
-        let malformed: [fn(&mut NetworkMeshData); 6] = [
+        let malformed: [fn(&mut NetworkMeshData); 8] = [
             |mesh| mesh.road_vertices[1].y = f32::NAN,
             |mesh| mesh.road_normals[0].z = f32::INFINITY,
             |mesh| mesh.road_uvs[2].x = f32::NEG_INFINITY,
             |mesh| mesh.road_colors[0].a = f32::NAN,
+            |mesh| mesh.road_crossings[0].z = f32::NAN,
+            |mesh| {
+                mesh.road_crossings.pop();
+            },
             |mesh| {
                 mesh.road_colors.pop();
             },

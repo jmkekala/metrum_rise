@@ -45,6 +45,19 @@ pub(super) fn side_join_boundary_path_world(
     path_mode: SideJoinPathMode,
     height_plane: Option<SideJoinHeightPlane>,
 ) -> Result<Option<SideJoinBoundaryPath>, SideJoinGenerationError> {
+    // A continuous curved road can have different tangents at its two ownership mouths.
+    // Its matching endpoint rails already describe the join. Extrapolating the mouth
+    // tangents creates a second curb/sidewalk ribbon beside that retained curve.
+    if let Some(path_world) =
+        shared_endpoint_join_path_world(from_mouth, from_world, to_mouth, to_world)
+    {
+        let path_world = clean_side_join_path_world(path_world)
+            .map_err(SideJoinGenerationError::from_path_height_error)?;
+        return Ok(path_world.map(|path_world| SideJoinBoundaryPath {
+            rounded_world: path_world.clone(),
+            miter_world: path_world,
+        }));
+    }
     let from_xz = xz_from_road_vec3(from_world);
     let to_xz = xz_from_road_vec3(to_world);
     let join_point_xz = side_join_backend_meet_point_xz(
@@ -92,6 +105,85 @@ pub(super) fn side_join_boundary_path_world(
         rounded_world,
         miter_world,
     }))
+}
+
+fn shared_endpoint_join_path_world(
+    from_mouth: &NodeInputMouth,
+    from_world: RoadVec3,
+    to_mouth: &NodeInputMouth,
+    to_world: RoadVec3,
+) -> Option<Vec<RoadVec3>> {
+    if !from_mouth.uses_explicit_band_domain_paths && !to_mouth.uses_explicit_band_domain_paths {
+        return None;
+    }
+    fn path_for(mouth: &NodeInputMouth, point: RoadVec3) -> Option<&[RoadVec3]> {
+        mouth
+            .band_intervals
+            .iter()
+            .flat_map(|band| {
+                [
+                    band.start_path_world.as_slice(),
+                    band.end_path_world.as_slice(),
+                ]
+            })
+            .find(|path| path.first() == Some(&point))
+    }
+    let from_path = path_for(from_mouth, from_world)?;
+    let to_path = path_for(to_mouth, to_world)?;
+    let from_endpoint = *from_path.last()?;
+    let to_endpoint = *to_path.last()?;
+    // A split source segment is stored in f32 on each arm. Normalizing its rounded
+    // halves can put the same offset boundary a few micrometres apart in the f64
+    // overlay. Require coincidence in height as well as XZ: distinct graded supports
+    // still need the ordinary join's height transition. Retain BOTH source endpoints.
+    let coordinate_scale = from_endpoint
+        .abs()
+        .max(to_endpoint.abs())
+        .max_element()
+        .max(1.0);
+    let source_roundoff_m = 4.0 * f64::from(f32::EPSILON) * coordinate_scale;
+    if from_endpoint.distance(to_endpoint) > source_roundoff_m {
+        return None;
+    }
+    // All arm centerlines meet at the node too. Require their endpoint segments to
+    // continue on the same line in XYZ, including grade. Use the retained centerline
+    // rail: offset-curve sample chords do not describe the source endpoint tangent.
+    let endpoint_axis = |mouth: &NodeInputMouth| {
+        mouth.boundary_rails.iter().find_map(|rail| {
+            if !matches!(
+                rail.role,
+                super::super::input::NodeInputBoundaryRailRole::InteriorBandBoundary {
+                    left_kind: RoadSurfaceBandKind::Carriageway,
+                    right_kind: RoadSurfaceBandKind::Carriageway,
+                }
+            ) {
+                return None;
+            }
+            let [.., previous, endpoint] = rail.path_world.as_slice() else {
+                return None;
+            };
+            let axis = *endpoint - *previous;
+            (axis.length_squared() > f64::EPSILON).then_some(axis)
+        })
+    };
+    let from_axis = endpoint_axis(from_mouth)?;
+    let to_axis = endpoint_axis(to_mouth)?;
+    let from_length = from_axis.length();
+    let to_length = to_axis.length();
+    if from_length <= f64::EPSILON
+        || to_length <= f64::EPSILON
+        || from_axis.dot(to_axis) >= 0.0
+        || from_axis.cross(to_axis).length() > source_roundoff_m * (from_length + to_length)
+    {
+        return None;
+    }
+    Some(
+        from_path
+            .iter()
+            .chain(to_path.iter().rev())
+            .copied()
+            .collect(),
+    )
 }
 
 /// Builds a sampled sidewalk centerline using the same rounded join policy as node ownership.

@@ -1,0 +1,51 @@
+Faces: public domain, supplied manifests. Rasterized without redrawing.
+Commons licence for every face below: PD-FinlandGov (Finnish Copyright Act section 9: acts,
+decrees and official decisions carry no copyright; the signs are set by Traficom regulation).
+B5: Finland_road_sign_B5.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_B5.svg
+B6: Finland_road_sign_B6.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_B6.svg
+B1: Finland_road_sign_B1.svg | Public domain |  | https://commons.wikimedia.org/wiki/File:Finland_road_sign_B1.svg
+C32-30: Finland_road_sign_C32-30.svg | Public domain |  | https://commons.wikimedia.org/wiki/File:Finland_road_sign_C32-30.svg
+C32-40: Finland_road_sign_C32-40.svg | Public domain |  | https://commons.wikimedia.org/wiki/File:Finland_road_sign_C32-40.svg
+C32-50: Finland_road_sign_C32-50.svg | Public domain |  | https://commons.wikimedia.org/wiki/File:Finland_road_sign_C32-50.svg
+C32-60: Finland_road_sign_C32-60.svg | Public domain |  | https://commons.wikimedia.org/wiki/File:Finland_road_sign_C32-60.svg
+C32-80: Finland_road_sign_C32-80.svg | Public domain |  | https://commons.wikimedia.org/wiki/File:Finland_road_sign_C32-80.svg
+E1-1: Finland_road_sign_E1-1.svg | Public domain |  | https://commons.wikimedia.org/wiki/File:Finland_road_sign_E1-1.svg
+E1-2: Finland_road_sign_E1-2.svg | Public domain |  | https://commons.wikimedia.org/wiki/File:Finland_road_sign_E1-2.svg
+Geometry and metal swatch: original, CC BY 4.0 (credit as "<sign> model" from Metrum Rise).
+The public-domain faces stay public domain. Code: GPL-2.0-only.
+Warning faces (offline path compositions; source IDs retained):
+A1.1: Finland_road_sign_A1.1.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_A1.1.svg
+A1.2: Finland_road_sign_A1.2.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_A1.2.svg
+A2.1: Finland_road_sign_A2.1.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_A2.1.svg
+A2.2: Finland_road_sign_A2.2.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_A2.2.svg
+A9: Finland_road_sign_A9.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_A9.svg
+A3.1-8: Finland_road_sign_A3.1.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_A3.1.svg (composed face source)
+A3.1-8: Finland_road_sign_A3.1-8.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_A3.1-8.svg (composed face source)
+A3.1-10: Finland_road_sign_A3.1.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_A3.1.svg (composed face source)
+A3.1-10: Finland_road_sign_A3.1-10.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_A3.1-10.svg (composed face source)
+A3.1-12: Finland_road_sign_A3.1.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_A3.1.svg (composed face source)
+A3.1-12: Finland_road_sign_A3.1-12.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_A3.1-12.svg (composed face source)
+A3.1-14: Finland_road_sign_A3.1.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_A3.1.svg (composed face source)
+A3.1-14: Finland_road_sign_A3.1-10.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_A3.1-10.svg (composed face source)
+A3.1-14: Finland_road_sign_C32-40.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_C32-40.svg (composed face source)
+A3.1-16: Finland_road_sign_A3.1.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_A3.1.svg (composed face source)
+A3.1-16: Finland_road_sign_A3.1-10.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_A3.1-10.svg (composed face source)
+A3.1-16: Finland_road_sign_C32-60.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_C32-60.svg (composed face source)
+A3.1-18: Finland_road_sign_A3.1.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_A3.1.svg (composed face source)
+A3.1-18: Finland_road_sign_A3.1-10.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_A3.1-10.svg (composed face source)
+A3.1-18: Finland_road_sign_A3.1-8.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_A3.1-8.svg (composed face source)
+A3.2-8: Finland_road_sign_A3.2.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_A3.2.svg (composed face source)
+A3.2-8: Finland_road_sign_A3.1-8.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_A3.1-8.svg (composed face source)
+A3.2-10: Finland_road_sign_A3.2.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_A3.2.svg (composed face source)
+A3.2-10: Finland_road_sign_A3.1-10.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_A3.1-10.svg (composed face source)
+A3.2-12: Finland_road_sign_A3.2.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_A3.2.svg (composed face source)
+A3.2-12: Finland_road_sign_A3.1-12.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_A3.1-12.svg (composed face source)
+A3.2-14: Finland_road_sign_A3.2.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_A3.2.svg (composed face source)
+A3.2-14: Finland_road_sign_A3.1-10.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_A3.1-10.svg (composed face source)
+A3.2-14: Finland_road_sign_C32-40.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_C32-40.svg (composed face source)
+A3.2-16: Finland_road_sign_A3.2.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_A3.2.svg (composed face source)
+A3.2-16: Finland_road_sign_A3.1-10.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_A3.1-10.svg (composed face source)
+A3.2-16: Finland_road_sign_C32-60.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_C32-60.svg (composed face source)
+A3.2-18: Finland_road_sign_A3.2.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_A3.2.svg (composed face source)
+A3.2-18: Finland_road_sign_A3.1-10.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_A3.1-10.svg (composed face source)
+A3.2-18: Finland_road_sign_A3.1-8.svg | Public domain | Republic of Finland | https://commons.wikimedia.org/wiki/File:Finland_road_sign_A3.1-8.svg (composed face source)

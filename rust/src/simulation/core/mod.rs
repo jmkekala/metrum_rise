@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Core simulation primitives: time and tick control.
+//! Core simulation primitives: time, tick control and weather.
 
 pub(crate) mod change_log;
 pub mod config;
 pub(crate) mod sparse_chunk_grid;
 pub mod time;
+pub mod weather;
 
 /// Rounds a finite or non-finite `f64` with `f64::round` semantics and saturates to `i64`.
 #[inline]

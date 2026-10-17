@@ -23,6 +23,10 @@ uniform float contour_major_strength = 0.28;
 varying float local_height_m;
 varying float depth_t;
 varying float perimeter_u;
+uniform float specular = 0.04;
+
+// Godot's lighting with the cloud shadow on the sun; reads `specular`.
+#include "res://scripts/shaders/standard_light.gdshaderinc"
 
 float hash_noise(vec2 point) {
 	vec3 point3 = fract(vec3(point.xyx) * 0.1031);
@@ -52,6 +56,8 @@ void vertex() {
 	depth_t = clamp(UV.y, 0.0, 1.0);
 	perimeter_u = UV.x;
 }
+
+#include "res://scripts/shaders/street_lamp_light.gdshaderinc"
 
 void fragment() {
 	float mid_mix = smoothstep(0.0, 0.48, depth_t);
@@ -97,7 +103,9 @@ void fragment() {
 
 	ALBEDO = color;
 	ROUGHNESS = 0.98;
-	SPECULAR = 0.04;
 	NORMAL_MAP = detail_normal * 0.5 + 0.5;
 	NORMAL_MAP_DEPTH = normal_strength * detail_fade;
+	standard_light_cloud_sun = standard_light_cloud(VERTEX, INV_VIEW_MATRIX);
+	EMISSION += ALBEDO * (1.0 - METALLIC) * street_lamp_surface(VERTEX, NORMAL, TANGENT, BINORMAL,
+		NORMAL_MAP, NORMAL_MAP_DEPTH, INV_VIEW_MATRIX, CAMERA_POSITION_WORLD);
 }

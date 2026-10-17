@@ -358,6 +358,117 @@ pub fn find_intersection_2d(
     }
 }
 
+/// How a road drawn from a snapped start point should leave it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum StartDirection {
+    /// Out of a dead end, continuing its road: unit XZ direction, signed.
+    Continue(Vector3),
+    /// Along the road through the start (an edge, or a degree-two node): unit XZ, either sense.
+    Along(Vector3),
+}
+
+// Unit XZ direction of the edge's centreline leaving `node` into the edge, skipping
+// sub-`MIN_RUN_M` segments. O(points of the edge).
+fn direction_into_edge(graph: &RegionGraph, edge_id: usize, node: u32) -> Option<Vector3> {
+    const MIN_RUN_M: f32 = 0.05;
+    let edge = graph.edge(edge_id);
+    let points = if edge.physical_geometry.len() >= 2 {
+        &edge.physical_geometry
+    } else {
+        &edge.geometry
+    };
+    let first = if edge.start_node == node {
+        *points.first()?
+    } else {
+        *points.last()?
+    };
+    let flat = |p: Vector3| Vector3::new(p.x - first.x, 0.0, p.z - first.z);
+    let away = |p: &Vector3| (flat(*p).length() >= MIN_RUN_M).then(|| flat(*p).normalized());
+    if edge.start_node == node {
+        points.iter().find_map(away)
+    } else {
+        points.iter().rev().find_map(away)
+    }
+}
+
+/// The direction a road started on `target` should take: continuing a dead end, or along the road
+/// through the start. None at a junction of three or more arms. O(points of the touched edges).
+pub(crate) fn road_start_direction(
+    graph: &RegionGraph,
+    target: NetworkSnapTarget,
+    position: Vector3,
+) -> Option<StartDirection> {
+    match target {
+        NetworkSnapTarget::Node(node) => {
+            let mut arms = graph
+                .node_adjacency(node)
+                .iter()
+                .copied()
+                .filter(|&edge| !graph.edge(edge).deleted);
+            let first = arms.next()?;
+            let into = direction_into_edge(graph, first, node)?;
+            match (arms.next(), arms.next()) {
+                (None, _) => Some(StartDirection::Continue(-into)),
+                (Some(_), None) => Some(StartDirection::Along(into)),
+                _ => None,
+            }
+        }
+        NetworkSnapTarget::Edge(edge_id) => {
+            let edge = graph.edge(edge_id);
+            let points = if edge.physical_geometry.len() >= 2 {
+                &edge.physical_geometry
+            } else {
+                &edge.geometry
+            };
+            points
+                .windows(2)
+                .filter_map(|pair| {
+                    let d = Vector3::new(pair[1].x - pair[0].x, 0.0, pair[1].z - pair[0].z);
+                    let len_sq = d.length_squared();
+                    (len_sq > 1e-6).then(|| {
+                        let p = Vector3::new(position.x - pair[0].x, 0.0, position.z - pair[0].z);
+                        let t = (p.dot(d) / len_sq).clamp(0.0, 1.0);
+                        ((p - d * t).length_squared(), d / len_sq.sqrt())
+                    })
+                })
+                .min_by(|a, b| a.0.total_cmp(&b.0))
+                .map(|(_, dir)| StartDirection::Along(dir))
+        }
+    }
+}
+
+/// Rotates the stroke `start -> cursor` onto the nearest 45-degree multiple from `reference`
+/// (unit XZ) when it lies within `tolerance_rad` of it, keeping its horizontal length. Returns the
+/// snapped XZ position (y from `cursor`; the caller samples the surface), or None when the stroke
+/// is free or too short to have a direction.
+pub(crate) fn snap_stroke_angle(
+    start: Vector3,
+    cursor: Vector3,
+    reference: Vector3,
+    tolerance_rad: f32,
+) -> Option<Vector3> {
+    let d = Vector3::new(cursor.x - start.x, 0.0, cursor.z - start.z);
+    let length = d.length();
+    if length < 1.0 || reference.length_squared() < 1e-6 {
+        return None;
+    }
+    let reference = Vector3::new(reference.x, 0.0, reference.z).normalized();
+    let base = reference.z.atan2(reference.x);
+    let relative = d.z.atan2(d.x) - base;
+    let step_rad = std::f32::consts::FRAC_PI_4;
+    let snapped = (relative / step_rad).round() * step_rad;
+    let off = (relative - snapped).rem_euclid(std::f32::consts::TAU);
+    if off.min(std::f32::consts::TAU - off) > tolerance_rad {
+        return None;
+    }
+    let angle = base + snapped;
+    Some(Vector3::new(
+        start.x + angle.cos() * length,
+        cursor.y,
+        start.z + angle.sin() * length,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -742,5 +853,110 @@ mod tests {
 
         assert!((t - 0.5).abs() < 0.0001);
         assert!((u - 0.5).abs() < 0.0001);
+    }
+
+    #[test]
+    fn stroke_angle_snaps_within_tolerance_and_keeps_length() {
+        use super::snap_stroke_angle;
+        let start = Vector3::new(10.0, 0.0, 10.0);
+        let east = Vector3::new(1.0, 0.0, 0.0);
+        // 3 degrees off the reference snaps straight on, same length.
+        let a = 3f32.to_radians();
+        let cursor = start + Vector3::new(a.cos(), 0.0, a.sin()) * 20.0;
+        let snapped = snap_stroke_angle(start, cursor, east, 4f32.to_radians()).unwrap();
+        assert!((snapped - Vector3::new(30.0, 0.0, 10.0)).length() < 1e-3);
+        // 88 degrees snaps to the perpendicular.
+        let a = 88f32.to_radians();
+        let cursor = start + Vector3::new(a.cos(), 0.0, a.sin()) * 20.0;
+        let snapped = snap_stroke_angle(start, cursor, east, 4f32.to_radians()).unwrap();
+        assert!((snapped - Vector3::new(10.0, 0.0, 30.0)).length() < 1e-3);
+        // 20 degrees is free.
+        let a = 20f32.to_radians();
+        let cursor = start + Vector3::new(a.cos(), 0.0, a.sin()) * 20.0;
+        assert!(snap_stroke_angle(start, cursor, east, 4f32.to_radians()).is_none());
+    }
+
+    #[test]
+    fn stroke_angle_uses_45_degree_steps_relative_to_the_reference() {
+        use super::snap_stroke_angle;
+        let start = Vector3::new(10.0, 2.0, -10.0);
+        let base = 30f32.to_radians();
+        let reference = Vector3::new(base.cos(), 0.0, base.sin());
+        let tolerance = 4f32.to_radians();
+        for turn in [-135.0_f32, -45.0, 45.0, 180.0] {
+            let angle = base + (turn + 3.0).to_radians();
+            let cursor = start + Vector3::new(angle.cos() * 20.0, 5.0, angle.sin() * 20.0);
+            let snapped = snap_stroke_angle(start, cursor, reference, tolerance).unwrap();
+            let expected_angle = base + turn.to_radians();
+            let expected = start
+                + Vector3::new(
+                    expected_angle.cos() * 20.0,
+                    5.0,
+                    expected_angle.sin() * 20.0,
+                );
+            assert!((snapped - expected).length() < 1e-3);
+        }
+        // The removed arc chord step must not snap a straight stroke at 22.5 degrees.
+        let angle = base + 22.5f32.to_radians();
+        let cursor = start + Vector3::new(angle.cos(), 0.0, angle.sin()) * 20.0;
+        assert!(snap_stroke_angle(start, cursor, reference, tolerance).is_none());
+        assert!(snap_stroke_angle(start, cursor, Vector3::ZERO, tolerance).is_none());
+        assert!(snap_stroke_angle(start, start + reference * 0.5, reference, tolerance).is_none());
+    }
+
+    #[test]
+    fn start_direction_continues_a_dead_end_and_follows_a_through_road() {
+        use super::{StartDirection, road_start_direction};
+        let mut graph = RegionGraph::new();
+        let a = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+        let b = graph.add_node(Vector3::new(20.0, 0.0, 0.0), NodeType::Junction);
+        let c = graph.add_node(Vector3::new(20.0, 0.0, 30.0), NodeType::Junction);
+        graph.add_edge(super::super::build_surface_edge(
+            a,
+            b,
+            vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)],
+            1,
+            1,
+            EdgeClass::Standard,
+        ));
+        graph.add_edge(super::super::build_surface_edge(
+            b,
+            c,
+            vec![Vector3::new(20.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 30.0)],
+            1,
+            1,
+            EdgeClass::Standard,
+        ));
+        // Dead end at a: continue westward, away from the road.
+        assert_eq!(
+            road_start_direction(&graph, NetworkSnapTarget::Node(a), Vector3::ZERO),
+            Some(StartDirection::Continue(Vector3::new(-1.0, 0.0, 0.0)))
+        );
+        // Dead end at c: continue north (+z).
+        assert_eq!(
+            road_start_direction(
+                &graph,
+                NetworkSnapTarget::Node(c),
+                Vector3::new(20.0, 0.0, 30.0)
+            ),
+            Some(StartDirection::Continue(Vector3::new(0.0, 0.0, 1.0)))
+        );
+        // Mid-edge: along the road.
+        assert_eq!(
+            road_start_direction(
+                &graph,
+                NetworkSnapTarget::Edge(0),
+                Vector3::new(8.0, 0.0, 1.0)
+            ),
+            Some(StartDirection::Along(Vector3::new(1.0, 0.0, 0.0)))
+        );
+        assert!(matches!(
+            road_start_direction(
+                &graph,
+                NetworkSnapTarget::Node(b),
+                Vector3::new(20.0, 0.0, 0.0)
+            ),
+            Some(StartDirection::Along(_))
+        ));
     }
 }

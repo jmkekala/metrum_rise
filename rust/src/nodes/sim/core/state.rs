@@ -21,6 +21,7 @@ use crate::simulation::agriculture::AgricultureSystem;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::time::TimeSystem;
+use crate::simulation::core::weather::WeatherState;
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::definitions::load_runtime_economy_catalog;
 use crate::simulation::economy::demand::{
@@ -95,6 +96,17 @@ pub(super) fn demand_plan_without_spawns(
 pub struct SimCore {
     /// Simulation clock and day counter.
     pub time: TimeSystem,
+    /// Weather scenario and cloud drift, advanced on the clock's speed-scaled seconds.
+    pub weather: WeatherState,
+    /// Counts world replacements (load, new world), so derived render data keyed by the
+    /// water and terrain generations, which restart with each world, still changes.
+    pub(crate) world_epoch: u64,
+    /// Where morning mist can lie, derived from the water and terrain; see `refresh_mist_map`.
+    pub(crate) mist_map: std::sync::Arc<crate::nodes::sim::render::mist::MistMap>,
+    /// World epoch and water/terrain generations `mist_map` was built from.
+    pub(crate) mist_map_key: [u64; 4],
+    /// When `mist_map` was last rebuilt, to bound rebuilds during continuous edits.
+    pub(crate) mist_map_built_at: Option<std::time::Instant>,
     /// Terrain heightmap.
     pub heightmap: TerrainSystem,
     /// Authored baseline water depths and derived rendering state.
@@ -243,6 +255,11 @@ impl SimCore {
     pub fn new(config: WorldConfig) -> Self {
         Self {
             time: TimeSystem::new(),
+            weather: WeatherState::default(),
+            world_epoch: 0,
+            mist_map: Default::default(),
+            mist_map_key: [u64::MAX; 4],
+            mist_map_built_at: None,
             heightmap: TerrainSystem::from_world_config(&config),
             watermap: WaterSystem::from_world_config(&config),
             region_graph: crate::simulation::network::graph::RegionGraph::new(),

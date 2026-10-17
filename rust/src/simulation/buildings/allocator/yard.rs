@@ -11,6 +11,7 @@ use super::entrance::{building_local_xz_basis, building_local_xz_pos};
 use crate::assets::asset::{
     AnchorType, YardHedgeKind, YardLot, YardPlantKind, plan_yard_hedge, structure_footprint,
 };
+use crate::simulation::zoning::ZoningSystem;
 use godot::prelude::Vector2;
 
 /// Stable identity of a zoned building's yard: its parcel and that parcel's build generation.
@@ -50,6 +51,116 @@ pub(crate) enum YardEvent {
     },
     /// A zoned building was removed.
     Removed(YardKey),
+}
+
+// How far apart the front corners of two lots may stand and still share a side line: the wedge
+// a curve leaves between rigid lots opens at most this wide at the street.
+const SHARED_SIDE_FRONT_GAP_M: f32 = 4.0;
+// Side lines turned further apart than this belong to lots on different streets, not a curve.
+const SHARED_SIDE_MAX_TURN_COS: f32 = 0.866;
+// How close a row end must lie to a lot line to count as standing on it; rows are planned in
+// the asset's frame and moved into the world, so this only absorbs f32 rounding.
+const ON_LOT_LINE_M: f32 = 0.05;
+
+/// A lot side line and the line it shares with the neighbouring lot across a curve's wedge.
+/// Lots are rigid rectangles, so on a curve two neighbours' side lines splay apart; each yard
+/// moves its hedge onto the wedge's centre line instead, so both lay one hedge there.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SharedLotSide {
+    /// The lot's own side line, from its front corner to its rear corner.
+    front: Vector2,
+    rear: Vector2,
+    /// The shared line: it starts midway between the two front corners and runs midway between
+    /// the two side directions.
+    shared_front: Vector2,
+    shared_dir: Vector2,
+}
+
+/// The side lines of parcel `parcel_id` that a neighbouring lot across a curve shares, from the
+/// parcel index. Lots on a straight street share their side lines already and come back
+/// unchanged. Deterministic: both lots of a pair compute the same shared line, as the midpoint
+/// and the direction sum are symmetric. O(parcels in the lot's chunks).
+pub(crate) fn shared_lot_sides(zoning: &ZoningSystem, parcel_id: u64) -> Vec<SharedLotSide> {
+    let Some(lot) = zoning.parcel_by_raw_id(parcel_id) else {
+        return Vec::new();
+    };
+    // Corners run front-left, front-right, rear-right, rear-left.
+    let sides = |c: [Vector2; 4]| [(c[0], c[3]), (c[1], c[2])];
+    let pad = Vector2::splat(SHARED_SIDE_FRONT_GAP_M);
+    let mut shared = Vec::new();
+    for (front, rear) in sides(lot.corners()) {
+        let Some(dir) = (rear - front).try_normalized() else {
+            continue;
+        };
+        let outward = (front - lot.center()).dot(dir.orthogonal()).signum() * dir.orthogonal();
+        let mut best: Option<(f32, u64, Vector2, Vector2)> = None;
+        zoning.parcels.visit_in_bounds(front - pad, front + pad, |other| {
+            if other.id().raw() == parcel_id || (other.center() - front).dot(outward) <= 0.0 {
+                return;
+            }
+            for (other_front, other_rear) in sides(other.corners()) {
+                let gap = other_front.distance_to(front);
+                let Some(other_dir) = (other_rear - other_front).try_normalized() else {
+                    continue;
+                };
+                let key = (gap, other.id().raw());
+                if gap <= SHARED_SIDE_FRONT_GAP_M
+                    && dir.dot(other_dir) >= SHARED_SIDE_MAX_TURN_COS
+                    && best.is_none_or(|(g, id, _, _)| key < (g, id))
+                {
+                    best = Some((gap, other.id().raw(), other_front, other_dir));
+                }
+            }
+        });
+        let Some((_, _, other_front, other_dir)) = best else {
+            continue;
+        };
+        let Some(shared_dir) = (dir + other_dir).try_normalized() else {
+            continue;
+        };
+        shared.push(SharedLotSide {
+            front,
+            rear,
+            shared_front: (front + other_front) * 0.5,
+            shared_dir,
+        });
+    }
+    shared
+}
+
+/// Moves a yard's hedge rows onto the side lines it shares (see [`SharedLotSide`]). A row along
+/// a side moves onto the shared line at the same depth from the street; a row ending on a side
+/// runs on, or stops short, to meet the shared line. Rows off the lot lines stay as planned.
+/// O(rows * sides).
+pub(crate) fn fit_rows_to_shared_sides(rows: &mut [YardHedgeRowWorld], sides: &[SharedLotSide]) {
+    for side in sides {
+        let Some(dir) = (side.rear - side.front).try_normalized() else {
+            continue;
+        };
+        let on_side = |p: Vector2| (p - side.front).dot(dir.orthogonal()).abs() <= ON_LOT_LINE_M;
+        for row in rows.iter_mut() {
+            let (from_on, to_on) = (on_side(row.from), on_side(row.to));
+            if from_on && to_on {
+                let shared = |p: Vector2| side.shared_front + side.shared_dir * (p - side.front).dot(dir);
+                row.from = shared(row.from);
+                row.to = shared(row.to);
+                continue;
+            }
+            let meet = |end: Vector2, other: Vector2| {
+                let along = end - other;
+                let denom = along.cross(side.shared_dir);
+                if denom.abs() <= f32::EPSILON {
+                    return end;
+                }
+                other + along * ((side.shared_front - other).cross(side.shared_dir) / denom)
+            };
+            if from_on && row.join_from {
+                row.from = meet(row.from, row.to);
+            } else if to_on && row.join_to {
+                row.to = meet(row.to, row.from);
+            }
+        }
+    }
 }
 
 impl BuildingAllocator {

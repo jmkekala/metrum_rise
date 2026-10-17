@@ -40,6 +40,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 mod bend_terminal;
 mod core;
 mod earthwork;
+mod edit_geometry;
 mod junction;
 mod preview;
 mod span;

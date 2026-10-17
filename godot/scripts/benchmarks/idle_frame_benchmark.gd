@@ -30,6 +30,10 @@ const POSES := [
 	# Saved-city poses; pair them with METRUM_IDLE_BENCH_SAVE_PATH and METRUM_IDLE_BENCH_CENTRE.
 	{"name": "city", "offset": Vector2(0.0, 0.0), "radius": 60.0},
 	{"name": "city_low", "offset": Vector2(0.0, 0.0), "radius": 20.0},
+	# The camera as the world loaded it (a save's own view), and that view tilted up to its pitch
+	# limit, nearly level, so the sky and clouds fill the upper half of the frame.
+	{"name": "saved"},
+	{"name": "saved_sky", "look_up": true},
 ]
 # Per-frame camera paths from `from` to `to` (offsets from the world centre) with the orbit radius
 # interpolated geometrically. `turns` orbits the view about the moving pivot by that many full
@@ -43,13 +47,16 @@ const PATHS := [
 ]
 const DEFAULT_PATH_FRAMES := 600
 const SLOW_FRAME_MS := 33.3
-const VARIANTS := ["full", "no_vegetation", "no_ssil_glow", "no_ssil", "no_glow", "no_shadows", "minimal", "no_water", "no_terrain"]
+const VARIANTS := ["full", "no_vegetation", "no_ssil_glow", "no_ssil", "no_glow", "no_shadows", "minimal", "no_water", "no_terrain", "no_clouds", "no_cloud_shadows", "no_pcss", "no_blend_splits"]
 const DEFAULT_WARMUP_FRAMES := 120
 const DEFAULT_CAPTURE_FRAMES := 600
 
 var _report: Dictionary
 var _environment: Environment
 var _sun: DirectionalLight3D
+# The shadow settings the player's quality chose, restored after a variant that changes one.
+var _sun_angular_distance := 0.0
+var _sun_blend_splits := false
 var _vegetation: Node
 var _water: Node3D
 var _terrain: Node3D
@@ -60,6 +67,8 @@ func run(bench: Node) -> void:
 	var main := bench.get_parent()
 	_environment = (main.get_node("WorldEnvironment") as WorldEnvironment).environment
 	_sun = main.get_node("DirectionalLight3D")
+	_sun_angular_distance = _sun.light_angular_distance
+	_sun_blend_splits = _sun.directional_shadow_blend_splits
 	_vegetation = main.get_node("Vegetation")
 	_water = main.get_node("Water")
 	_terrain = main.get_node("Terrain")
@@ -104,6 +113,10 @@ func run(bench: Node) -> void:
 	bench.input_manager.set_simulation_speed(0.0)
 	# Fixed daylight so screenshots of saved cities compare like with like.
 	bench.get_parent().menu_set_time_of_day(float(bench._environment_int("METRUM_IDLE_BENCH_HOUR", 10, 0)))
+	# Optional weather scenario index (0 clear .. 3 storm); unset keeps the world's own weather.
+	var weather: int = bench._environment_int("METRUM_IDLE_BENCH_WEATHER", -1, 0)
+	if weather >= 0:
+		bench.get_parent().menu_set_weather(weather)
 	var load_call_ms: float = bench._elapsed_ms(load_start_us)
 	var load_wait: Dictionary = await bench._wait_for_idle(bench.settle_timeout_sec)
 	_report.phases.append({"phase": "world_load", "load_call_ms": load_call_ms,
@@ -118,10 +131,17 @@ func run(bench: Node) -> void:
 	var centre_text := OS.get_environment("METRUM_IDLE_BENCH_CENTRE").split(",", false)
 	if centre_text.size() == 2:
 		centre = Vector2(float(centre_text[0]), float(centre_text[1]))
+	var loaded_view: PackedFloat32Array = bench.camera.get_view_state()
 	for pose in _selected_poses(OS.get_environment("METRUM_IDLE_BENCH_POSES")):
-		var xz: Vector2 = centre + pose.offset
-		var y := float(bench.simulation_node.get_world_surface_height(xz))
-		bench.camera.focus_on(Vector3(xz.x, y, xz.y), pose.radius)
+		# Every pose starts from the loaded view, so one pose's tilt never carries into the next.
+		bench.camera.set_view_state(loaded_view)
+		if pose.has("offset"):
+			var xz: Vector2 = centre + pose.offset
+			var y := float(bench.simulation_node.get_world_surface_height(xz))
+			bench.camera.focus_on(Vector3(xz.x, y, xz.y), pose.radius)
+		if pose.get("look_up", false):
+			# orbit() clamps the pitch, so an oversized upward drag lands exactly on the limit.
+			bench.camera.orbit(Vector2(0.0, -100000.0))
 		for variant in variants:
 			_apply_variant(variant)
 			var settle: Dictionary = await bench._wait_for_idle(bench.settle_timeout_sec)
@@ -234,6 +254,13 @@ func _apply_variant(variant: String) -> void:
 	_sun.shadow_enabled = not (minimal or variant == "no_shadows")
 	_water.visible = variant != "no_water"
 	_terrain.visible = variant != "no_terrain"
+	# The cloud pass and the receivers' cloud lookups, measured apart.
+	_lighting._cloud_effect.enabled = not (minimal or variant == "no_clouds")
+	_lighting.cloud_shadows_allowed = not (minimal or variant == "no_cloud_shadows")
+	# The two open RENDER-15 shadow costs at High quality: the variable penumbra (an angular
+	# size of zero makes the directional shadow a plain PCF lookup) and blending between splits.
+	_sun.light_angular_distance = 0.0 if variant == "no_pcss" else _sun_angular_distance
+	_sun.directional_shadow_blend_splits = variant != "no_blend_splits" and _sun_blend_splits
 
 # Screenshot-only: TreeSpecies caches every vegetation ShaderMaterial in static containers.
 func _set_vegetation_wind(strength: float) -> void:

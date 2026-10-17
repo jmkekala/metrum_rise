@@ -271,3 +271,72 @@ fn last_projected_tangent(points: &[Vector3], end_seg: usize) -> Option<Vector2>
     }
     None
 }
+
+// Farthest a lot's front line can stand off its road and still front it. On a curve the line is
+// a chord of the road and stays within a few metres; past the end of the road there is none.
+const MAX_FRONT_GAP_M: f32 = 4.0;
+// A gap below this is rounding: the lot line stands on the road's edge.
+const MIN_FRONT_GAP_M: f32 = 0.01;
+
+/// How far the outer edge of the road in front of a lot (its sidewalk, as `side_offset` counts
+/// it) stands off the lot's front line, at the line's two ends and its centre, in the order
+/// `-1, 0, 1` along `facing_dir.orthogonal()`. `facing_dir` points from the lot to the road.
+/// Zero where they meet, as along a straight road; on a curve the lot is a rigid rectangle, its
+/// front line a chord, and the road bends away from it. A point with no road within
+/// `MAX_FRONT_GAP_M`, such as a lot corner past the end of its road, reads zero. O(road points
+/// near the line).
+pub(crate) fn lot_front_gaps(
+    graph: &RegionGraph,
+    center: Vector2,
+    facing_dir: Vector2,
+    half_width_m: f32,
+    half_depth_m: f32,
+) -> [f32; 3] {
+    let front = center + facing_dir * half_depth_m;
+    let lateral = facing_dir.orthogonal();
+    [-1.0, 0.0, 1.0].map(|s| {
+        let point = front + lateral * (s * half_width_m);
+        let reach = MAX_FRONT_GAP_M + 16.0;
+        let mut gap = f32::INFINITY;
+        graph.visit_edges_near_aabb(
+            Vector3::new(point.x - reach, 0.0, point.y - reach),
+            Vector3::new(point.x + reach, 0.0, point.y + reach),
+            |edge_idx| {
+                let edge = graph.edge(edge_idx);
+                if edge.deleted
+                    || edge.primary_type != crate::simulation::network::types::TransitType::Road
+                {
+                    return;
+                }
+                let outer = edge.width * 0.5 + crate::config::SIDEWALK_WIDTH;
+                for pair in edge.physical_geometry.windows(2) {
+                    let a = Vector2::new(pair[0].x, pair[0].z);
+                    let b = Vector2::new(pair[1].x, pair[1].z);
+                    let ab = b - a;
+                    let t = if ab.length_squared() > 0.0 {
+                        ((point - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    gap = gap.min((a + ab * t).distance_to(point) - outer);
+                }
+            },
+        );
+        if gap <= MAX_FRONT_GAP_M {
+            gap.max(0.0)
+        } else {
+            0.0
+        }
+    })
+}
+
+/// The gap of [`lot_front_gaps`] at lateral position `s` in `-1..=1` across the lot front,
+/// through its three samples; zero below `MIN_FRONT_GAP_M`. A circular road under a chord is a
+/// parabola to within millimetres at lot scale.
+pub(crate) fn front_gap_at(gaps: [f32; 3], s: f32) -> f32 {
+    let [left, mid, right] = gaps;
+    let slope = (right - left) * 0.5;
+    let bend = (right + left) * 0.5 - mid;
+    let gap = mid + slope * s + bend * s * s;
+    if gap < MIN_FRONT_GAP_M { 0.0 } else { gap }
+}

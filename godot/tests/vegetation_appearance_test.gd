@@ -139,8 +139,9 @@ func run():
 		for species in species_bounds:
 			var union: AABB = species_union[species]
 			assert(species_bounds[species] == (union if union.size != Vector3.ZERO else AABB()))
-		# Every canopy tree casts from its impostor, faced to the light, through one shadows-only
-		# instance per species that shares the impostor's buffer. Nothing else casts.
+		# Every canopy tree past TREE_SHADOW_HANDOVER_M casts from its impostor, faced to the light,
+		# through one shadows-only instance per species that shares the impostor's buffer. A patch
+		# near the camera also submits its branched canopy; the shaders split the trees.
 		assert(patch.get_meta("shadow_caster") == Vegetation.ShadowCaster.IMPOSTOR)
 		var casters := {}
 		var impostors := {}
@@ -161,9 +162,11 @@ func run():
 				continue
 			if lod == 2:
 				impostors[species] = mm
-			# Rocks and yard plants stand in the open and cast; ground cover and trees do not.
+			# Rocks and yard plants stand in the open and cast; ground cover does not, and the
+			# branched canopy only while its patch is near the camera.
 			var casts: bool = species == Species.ROCK or (species == Species.BUSH
-				and int(instance.get_meta("variant")) >= Species.LANDSCAPE_FIRST_VARIANT)
+				and int(instance.get_meta("variant")) >= Species.LANDSCAPE_FIRST_VARIANT) or (
+				species < Species.BUSH and lod == 0 and bool(patch.get_meta("branched_casts", false)))
 			assert(instance.cast_shadow == (GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 				if casts else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF))
 			# Only the near band carries instance colours; see the renderer's distant level.
@@ -394,9 +397,11 @@ func _check_meshes(meshes: Array) -> void:
 	var shared: Material = meshes[Species.ROCK][0][0].surface_get_material(0)
 	var shared_wind: Material = Species._wind_branch_material()
 	var shared_cards: Material = Species._foliage_material()
-	# One stone material for every rock: the tile, its normal map and the vertex colour.
-	assert(shared is StandardMaterial3D)
-	assert(shared.vertex_color_use_as_albedo and shared.albedo_texture != null and shared.normal_enabled)
+	# One cloud-lit stone material for every rock: the tile, its normal map and the vertex colour.
+	assert(shared is ShaderMaterial)
+	var rock_code: String = shared.shader.code
+	assert(rock_code.contains("#define WINDOW_VERTEX_COLOR") and rock_code.contains("#define WINDOW_NORMAL"))
+	assert(shared.get_shader_parameter("texture_albedo") != null)
 	assert(shared_wind != shared_cards)
 	assert(shared_wind.shader == preload("res://scripts/shaders/vegetation_wind.gdshader"))
 	assert(shared_cards.shader == preload("res://scripts/shaders/vegetation_wind_cards.gdshader"))

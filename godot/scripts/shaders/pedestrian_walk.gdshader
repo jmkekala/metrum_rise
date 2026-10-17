@@ -12,6 +12,10 @@ uniform bool      reverse_phase = false;
 
 varying float vat_id_debug;
 varying float vat_offset_debug;
+uniform float specular = 0.5;
+
+// Godot's lighting with the cloud shadow on the sun; reads `specular`.
+#include "res://scripts/shaders/standard_light.gdshaderinc"
 
 void vertex() {
 	// walk_phase [0..1] passed from Rust via INSTANCE_CUSTOM.x
@@ -32,6 +36,8 @@ void vertex() {
 	}
 }
 
+#include "res://scripts/shaders/street_lamp_light.gdshaderinc"
+
 void fragment() {
 	if (debug_mode == 2) {
 		ALBEDO = vec3(vat_id_debug, fract(vat_id_debug * 32.0), 1.0 - vat_id_debug);
@@ -43,4 +49,7 @@ void fragment() {
 	}
 	ROUGHNESS = 0.85;
 	METALLIC  = 0.0;
+	standard_light_cloud_sun = standard_light_cloud(VERTEX, INV_VIEW_MATRIX);
+	EMISSION += ALBEDO * (1.0 - METALLIC) * street_lamp_surface(VERTEX, NORMAL, TANGENT, BINORMAL,
+		NORMAL_MAP, NORMAL_MAP_DEPTH, INV_VIEW_MATRIX, CAMERA_POSITION_WORLD);
 }

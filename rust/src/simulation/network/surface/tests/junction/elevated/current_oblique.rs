@@ -328,7 +328,9 @@ fn logged_current_elevated_oblique_three_way_compiles_with_endpoint_profile_solv
         TransitFlags::CAR | TransitFlags::FOOT,
     ));
     graph.rebuild_intersection_clips();
-    assert!((graph.edge(0).end_clip - 12.071).abs() <= 0.01);
+    // The through arm meets the branch at 135 degrees; their facing edges cross 2.1 m out, so
+    // it keeps the baseline clip (half-width plus margin). The 45-degree pair needs 12.07 m.
+    assert!((graph.edge(0).end_clip - 5.5).abs() <= 0.01);
     assert!((graph.edge(1).start_clip - 12.071).abs() <= 0.01);
     assert!((graph.edge(2).start_clip - 12.071).abs() <= 0.01);
 

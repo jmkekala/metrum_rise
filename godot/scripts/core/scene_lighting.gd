@@ -16,25 +16,42 @@ class_name SceneLighting
 const DayCycleConfig := preload("res://scripts/core/day_cycle.gd")
 const GameSettings := preload("res://scripts/core/game_settings.gd")
 const SKY_CLOUD_SHADER := preload("res://scripts/shaders/sky_cloud_cover.gdshader")
-const SKY_CLOUD_PANORAMA_PATH := (
-	"res://assets/textures/general/sky/DaySkyHDRI059B_2K_TONEMAPPED.jpg"
-)
+const NightSkyBake := preload("res://scripts/renderers/night_sky_bake.gd")
+const WaterReflection := preload("res://scripts/renderers/water_reflection.gd")
+const WeatherGustMap := preload("res://scripts/renderers/weather_gust_map.gd")
+const WeatherCloudShape := preload("res://scripts/renderers/weather_cloud_shape.gd")
+const WeatherCloudEffect := preload("res://scripts/renderers/weather_cloud_effect.gd")
+const WeatherMistEffect := preload("res://scripts/renderers/weather_mist_effect.gd")
+# Weather for scenes with no simulation, such as the asset editor: settled fair cumulus, still.
+const FALLBACK_WEATHER_CLOUDS := Vector4(0.0, 0.0, 0.45, 1.2)
+# Fair weather's authored wind direction (weather.rs), for scenes with no simulation.
+const FALLBACK_WIND_DIRECTION := Vector2(0.936329, 0.351123)
+# Height a cloud's mass casts its shadow from, the base plus a third of the thickness, and the
+# lowest sun that casts one; both must match weather_clouds.gdshaderinc.
+const CLOUD_SHADOW_CAST_M := 1500.0 + 1400.0 * 0.3
+const CLOUD_SHADOW_MIN_SUN_Y := 0.005
+# The baked shadow window: 1024 texels of 24 m cover the 9 km of visible ground on every side,
+# finer than the narrowest penumbra (about 70 m).
+const CLOUD_SHADOW_TEXEL_M := 24.0
+# Morning mist: extinction per metre at the water's surface over open water (about 190 m of
+# visibility inside it), and the height over which it thins by e, so it hugs the water.
+const MIST_EXTINCTION_PER_M := 0.016
+const MIST_SCALE_HEIGHT_M := 14.0
+# In-game hours: mist gathers from the first to the second, holds to the third and burns off by
+# the fourth. An authored envelope, not a meteorological model.
+const MIST_HOURS := [2.0, 5.0, 7.0, 10.0]
+# Must match WIND_PERIOD_S in rust/src/simulation/core/weather.rs and weather_wind.gdshaderinc.
+const WIND_PERIOD_S := 16384.0
 
 const SKY_HEMISPHERE_CURVE := 0.20
-# The panorama is a daylight capture used only as a cloud shape source; the day cycle supplies
-# its colour through the shadow/light tints. The rotation is therefore fixed at the value the
-# authored sun used to produce. Turning it with the sun would spin the entire cloud field
-# around the sky once per day.
-const SKY_CLOUD_PANORAMA_ROTATION := 0.3903
-const SKY_CLOUD_STRENGTH := 0.48
-const SKY_CLOUD_HORIZON_FADE_START := 0.04
-const SKY_CLOUD_HORIZON_FADE_END := 0.16
 const SKY_SUN_CURVE := 0.12
 # Writing a sky material parameter marks the sky dirty, and a dirty sky regenerates its radiance
 # cubemap. Rewriting it with identical values every frame therefore pays for a regeneration that
 # changes nothing, and a paused game pays it forever. The gate is a thirtieth of the sun disk's
 # own diameter, so the disk cannot be seen to step.
 const SKY_UPDATE_MIN_DEG := 0.02
+# Smallest change of cloud coverage that refreshes the sky's radiance cubemap.
+const SKY_UPDATE_MIN_COVERAGE := 0.02
 const FAR_FADE_END_GUARD_PATCHES := 0.50
 # Aerial perspective and the far cull curtain are one depth ramp. The haze starts a few
 # hundred metres out and reaches full sky colour exactly at the cull boundary, so distance
@@ -60,7 +77,10 @@ const SHADOW_SPLIT_3 := 0.58
 const SHADOW_FADE_START := 0.78
 const SHADOW_BIAS := 0.060
 const SHADOW_NORMAL_BIAS := 1.25
-const SHADOW_BLUR := 1.80
+# Multiplies the penumbra the sun's angular size gives. One is the real sun. 1.80 nearly doubled
+# it, and with the low soft-shadow filter a trunk's shadow broke into dots and stopped short of
+# its root. One, with the high filter in project.godot, keeps it whole from the root.
+const SHADOW_BLUR := 1.0
 const GROUND_SHADOW_AMBIENT := 0.50
 const GROUND_SHADOW_SUN_STRENGTH := 0.50
 const GROUND_SHADOW_MIN_VISIBILITY := 0.02
@@ -90,22 +110,32 @@ const SHADOW_RECEIVER_ONLY := "receiver_only"
 const SHADOW_NON_RECEIVER := "non_receiver"
 const SHADOW_DEBUG_OVERLAY := "debug_overlay"
 
-static var _cloud_panorama_cache: Texture2D
+## Sun elevation in degrees as last applied, for scripts that switch on at dusk (street lights).
+static var current_sun_elevation_deg := 90.0
 
 var _distance_fade_environment: Environment
 ## Benchmarks clear this to measure the frame without SSIL; gameplay never changes it.
 var ssil_allowed := true
+## Whether clouds may shade the sun. Off makes every receiver skip its cloud lookup.
+var cloud_shadows_allowed := true
+var _local_wind_clock_s := 0.0
 var _distance_fade_terrain: Node
 var _distance_fade_begin_m := -1.0
 var _distance_fade_end_m := -1.0
 var _sun: DirectionalLight3D
 var _sky_material: Material
+var _cloud_effect: WeatherCloudEffect
+var _mist_effect: WeatherMistEffect
+var _mist_map_generation := -1
+# The shadow window the cloud effect baked last frame, as the receivers' global reads it.
+var _baked_shadow_window := Vector4.ZERO
 var _simulation: Node
 # Written in place every frame, so the per-frame lighting path allocates nothing.
 var _day_sample := DayCycleConfig.create_sample()
 var _pinned_day_fraction := -1.0
 var _sky_applied_elevation_deg := INF
 var _sky_applied_azimuth_deg := INF
+var _sky_applied_coverage := INF
 
 ## Shadow range in effect, in metres. `METRUM_SHADOW_FAR` replaces the authored range, so a
 ## probe can separate the two discontinuities that sit near each other in a forest view: the
@@ -233,6 +263,21 @@ func _ready() -> void:
 	_simulation = scene_root.get_node_or_null("SimulationNode")
 	_configure_sun(scene_root)
 	_configure_environment(scene_root)
+	var cloud_shape := WeatherCloudShape.new()
+	cloud_shape.name = "WeatherCloudShape"
+	add_child(cloud_shape)
+	var night_sky_bake := NightSkyBake.new()
+	night_sky_bake.name = "NightSkyBake"
+	add_child(night_sky_bake)
+	var gust_map := WeatherGustMap.new()
+	gust_map.name = "WeatherGustMap"
+	add_child(gust_map)
+	var water_reflection := WaterReflection.new()
+	water_reflection.name = "WaterReflection"
+	water_reflection.setup(
+		_simulation, _sun, _distance_fade_environment, scene_root.get_node_or_null("Water")
+	)
+	add_child(water_reflection)
 	add_to_group("graphics_settings")
 	_distance_fade_terrain = scene_root.get_node_or_null("Terrain")
 	# Before the first frame is drawn, so nothing renders against the project-default palette.
@@ -240,17 +285,29 @@ func _ready() -> void:
 	_update_distance_fade()
 	call_deferred("_print_debug_if_requested", scene_root)
 
-func _process(_delta: float) -> void:
+# The reflection global outlives this scene; left pointing at the freed panorama, every
+# material that reads globals would fail to bind until the next scene published a new one.
+func _exit_tree() -> void:
+	if _cloud_effect != null:
+		RenderingServer.global_shader_parameter_set("weather_cloud_reflection", null)
+		RenderingServer.global_shader_parameter_set("weather_cloud_shadow_map", null)
+		RenderingServer.global_shader_parameter_set("weather_cloud_shadow_window", Vector4.ZERO)
+
+func _process(delta: float) -> void:
+	# A scene with no simulation, such as the asset editor, keeps its own wind clock on wall
+	# time so its trees still sway; a simulated world's wind follows the simulation clock.
+	_local_wind_clock_s = fposmod(_local_wind_clock_s + delta, WIND_PERIOD_S)
 	_apply_day_cycle()
 	_update_distance_fade()
 
 # Every write here is a single RenderingServer call that covers the whole world, so the cost
 # is a constant handful of calls per frame regardless of how many patches are resident.
 func _apply_day_cycle() -> void:
-	DayCycleConfig.sample_into(_current_day_fraction(), _day_sample)
+	DayCycleConfig.sample_into(_current_day_fraction(), _day_sample, _current_day())
 	_apply_key_light(_day_sample)
 	_apply_environment_palette(_day_sample)
 	_apply_shader_globals(_day_sample)
+	_apply_weather_globals(_day_sample)
 	_apply_sky_palette(_day_sample)
 
 ## Pins the rendered clock to an hour of day, or releases it back to the simulation clock
@@ -275,6 +332,12 @@ func _current_day_fraction() -> float:
 	if _simulation != null and _simulation.has_method("get_day_fraction"):
 		return float(_simulation.get_day_fraction())
 	return DayCycleConfig.FALLBACK_HOUR / 24.0
+
+# The moon's month counts simulation days; a scene with no simulation keeps day zero.
+func _current_day() -> int:
+	if _simulation != null and _simulation.has_method("get_current_day"):
+		return int(_simulation.get_current_day())
+	return 0
 
 func _apply_key_light(sample: DayCycleConfig.Sample) -> void:
 	if _sun == null:
@@ -314,8 +377,10 @@ func _apply_environment_palette(sample: DayCycleConfig.Sample) -> void:
 	)
 
 func _apply_shader_globals(sample: DayCycleConfig.Sample) -> void:
+	current_sun_elevation_deg = sample.sun_elevation_deg
 	RenderingServer.global_shader_parameter_set("scene_window_clock", Vector2(sample.day_fraction * 24.0, sample.sun_elevation_deg))
 	RenderingServer.global_shader_parameter_set("scene_sun_direction", sample.key_direction)
+	RenderingServer.global_shader_parameter_set("scene_celestial_basis", sample.celestial_basis)
 	RenderingServer.global_shader_parameter_set("scene_sun_color", sample.key_color)
 	RenderingServer.global_shader_parameter_set("scene_sky_color", sample.sky_horizon)
 	RenderingServer.global_shader_parameter_set("scene_ambient_strength", sample.ambient_energy)
@@ -326,9 +391,135 @@ func _apply_shader_globals(sample: DayCycleConfig.Sample) -> void:
 		"scene_ambient_desaturation", sample.ambient_desaturation
 	)
 
+# Numeric globals only: writing them never dirties the sky's radiance map, so the clouds can
+# drift every frame for the cost of a few calls.
+func _apply_weather_globals(sample: DayCycleConfig.Sample) -> void:
+	var clouds := FALLBACK_WEATHER_CLOUDS
+	var simulated := _simulation != null and _simulation.has_method("get_weather_clouds")
+	if simulated:
+		clouds = _simulation.get_weather_clouds()
+	RenderingServer.global_shader_parameter_set("weather_clouds", clouds)
+	var wind := Vector4(_local_wind_clock_s, 1.0, 0.0, 0.0)
+	if simulated:
+		wind = _simulation.get_weather_wind()
+	RenderingServer.global_shader_parameter_set("weather_wind", wind)
+	var wind_direction := FALLBACK_WIND_DIRECTION
+	var high_clouds := Vector4.ZERO
+	var rain := 0.0
+	if simulated:
+		wind_direction = _simulation.get_weather_wind_direction()
+		high_clouds = _simulation.get_weather_high_clouds()
+		rain = _simulation.get_weather_rain()
+	RenderingServer.global_shader_parameter_set("weather_wind_direction", wind_direction)
+	RenderingServer.global_shader_parameter_set("weather_rain", Vector4(rain, 0.0, 0.0, 0.0))
+	var sun_lit := 0.0 if sample.is_moonlit else 1.0
+	var sun: Vector3 = sample.sun_direction
+	# A scene with no simulation, such as the asset editor, keeps its sky but casts no cloud
+	# shadow: a fixed cloud would sit over its preview for good, and there only the building
+	# shader takes the shadow, not the editor ground.
+	RenderingServer.global_shader_parameter_set(
+		"weather_sun",
+		Vector4(sun.x, sun.y, sun.z, sun_lit if simulated and cloud_shadows_allowed else 0.0)
+	)
+	_apply_cloud_shadow_window(clouds, sun, simulated)
+	_apply_mist(sample, clouds, wind, simulated)
+	if _cloud_effect != null:
+		_cloud_effect.clouds = clouds
+		_cloud_effect.high_clouds = high_clouds
+		_cloud_effect.rain = rain
+		_cloud_effect.sun = Vector4(sun.x, sun.y, sun.z, sun_lit)
+		# The palette is sRGB, as the sky's source_color uniforms and the lights take it; the
+		# compute passes blend into the linear frame, so they get it converted.
+		_cloud_effect.shade = sample.cloud_shadow.srgb_to_linear()
+		_cloud_effect.light = sample.cloud_light.srgb_to_linear()
+		_cloud_effect.horizon = sample.sky_horizon.srgb_to_linear()
+
+# Centres the baked shadow window where the camera's ground casts its shadow on the deck and
+# snaps it to whole texels, so the bake does not crawl as the camera moves. The cloud effect bakes
+# it after this frame's opaque pass, so receivers read it next frame: the global published now is
+# last frame's window, the one the texture holds. Receivers outside it, or every receiver while
+# it is off, evaluate the weather map themselves.
+func _apply_cloud_shadow_window(clouds: Vector4, sun: Vector3, simulated: bool) -> void:
+	if _cloud_effect == null:
+		return
+	RenderingServer.global_shader_parameter_set("weather_cloud_shadow_window", _baked_shadow_window)
+	var window := Vector4.ZERO
+	_cloud_effect.shadow_window = Vector4.ZERO
+	var camera := get_viewport().get_camera_3d() if is_inside_tree() else null
+	var direction := sun.normalized()
+	if (camera != null and simulated and cloud_shadows_allowed and clouds.z > 0.0
+			and direction.y > CLOUD_SHADOW_MIN_SUN_Y):
+		var ground: Vector3 = (camera.get_focus_position() if camera.has_method("get_focus_position")
+			else camera.global_position)
+		var separation := CLOUD_SHADOW_CAST_M - ground.y
+		if separation > 0.0:
+			var side := WeatherCloudEffect.SHADOW_TEXELS * CLOUD_SHADOW_TEXEL_M
+			var centre := Vector2(ground.x, ground.z) + Vector2(direction.x, direction.z) * separation / direction.y
+			var corner := ((centre - Vector2(side, side) * 0.5) / CLOUD_SHADOW_TEXEL_M).floor() * CLOUD_SHADOW_TEXEL_M
+			_cloud_effect.shadow_window = Vector4(corner.x, corner.y, CLOUD_SHADOW_TEXEL_M, separation)
+			window = Vector4(corner.x, corner.y, 1.0 / side, 1.0)
+	_baked_shadow_window = window
+
+# Mist gathers on calm, clear mornings, when the ground cools under an open sky and the air is
+# still: a fair-weather breeze halves it, an overcast or stormy wind clears it, and a closed deck
+# that keeps the night warm thins it further.
+func _apply_mist(sample: DayCycleConfig.Sample, clouds: Vector4, wind: Vector4, simulated: bool) -> void:
+	if _mist_effect == null:
+		return
+	if simulated:
+		_refresh_mist_map()
+	var hour := fposmod(_current_day_fraction(), 1.0) * 24.0
+	var envelope := (smoothstep(MIST_HOURS[0], MIST_HOURS[1], hour)
+		* (1.0 - smoothstep(MIST_HOURS[2], MIST_HOURS[3], hour)))
+	var calm := clampf(1.5 - wind.y, 0.0, 1.0) * (1.0 - 0.6 * smoothstep(0.6, 1.0, clouds.z))
+	var density := MIST_EXTINCTION_PER_M * envelope * calm if simulated else 0.0
+	_mist_effect.density = density
+	_mist_effect.enabled = density > 0.0 and _mist_effect.map_texture != null
+	_mist_effect.scale_height = MIST_SCALE_HEIGHT_M
+	_mist_effect.wind_offset = Vector2(wind.z, wind.w)
+	_mist_effect.color = sample.fog_color.srgb_to_linear()
+	_mist_effect.sun = sample.sun_direction
+	_mist_effect.sun_color = sample.key_color.srgb_to_linear() if not sample.is_moonlit else Color.BLACK
+	# The glow towards a low sun is what makes mist read as mist and not as haze.
+	_mist_effect.sun_scatter = 0.6 * (1.0 - smoothstep(0.0, 25.0, sample.sun_elevation_deg))
+
+# Uploads the Rust mist map when the water or terrain it was built from has changed. Its level
+# comes multiplied by presence, so filtering and mipmaps weight it by where mist can lie and the
+# shader divides it back out, instead of averaging shore levels towards zero.
+func _refresh_mist_map() -> void:
+	var generation: int = _simulation.get_mist_map_generation()
+	if generation == _mist_map_generation:
+		return
+	_mist_map_generation = generation
+	var map: Dictionary = _simulation.get_mist_map()
+	var width: int = map.get("width", 0)
+	var height: int = map.get("height", 0)
+	var data: PackedFloat32Array = map.get("data", PackedFloat32Array())
+	var top: float = map.get("top_level", -INF)
+	if width <= 0 or height <= 0 or data.size() != width * height * 2 or top == -INF:
+		_mist_effect.map_texture = null
+		return
+	var image := Image.create_from_data(width, height, false, Image.FORMAT_RGF, data.to_byte_array())
+	image.generate_mipmaps()
+	_mist_effect.map_texture = ImageTexture.create_from_image(image)
+	_mist_effect.map_origin = Vector2(map.origin_x, map.origin_z)
+	_mist_effect.map_cell_m = map.cell_m
+	_mist_effect.map_size = Vector2i(width, height)
+	# Five scale heights above the highest lake, where the mist has thinned below a hundredth.
+	_mist_effect.ceiling = top + 5.0 * MIST_SCALE_HEIGHT_M
+
+func _applied_cloud_coverage() -> float:
+	if _simulation != null and _simulation.has_method("get_weather_clouds"):
+		return (_simulation.get_weather_clouds() as Vector4).z
+	return FALLBACK_WEATHER_CLOUDS.z
+
 func _apply_sky_palette(sample: DayCycleConfig.Sample) -> void:
+	# The cubemap also carries the clouds' mean cover, so a weather change refreshes it too; drift
+	# never does, and a transition does in a few steps.
+	var coverage := _applied_cloud_coverage()
 	if (
-		absf(sample.sun_elevation_deg - _sky_applied_elevation_deg) < SKY_UPDATE_MIN_DEG
+		absf(coverage - _sky_applied_coverage) < SKY_UPDATE_MIN_COVERAGE
+		and absf(sample.sun_elevation_deg - _sky_applied_elevation_deg) < SKY_UPDATE_MIN_DEG
 		and absf(
 			angle_difference(
 				deg_to_rad(sample.sun_azimuth_deg), deg_to_rad(_sky_applied_azimuth_deg)
@@ -338,8 +529,10 @@ func _apply_sky_palette(sample: DayCycleConfig.Sample) -> void:
 		return
 	_sky_applied_elevation_deg = sample.sun_elevation_deg
 	_sky_applied_azimuth_deg = sample.sun_azimuth_deg
+	_sky_applied_coverage = coverage
 	if _sky_material is ShaderMaterial:
 		var shader_sky := _sky_material as ShaderMaterial
+		shader_sky.set_shader_parameter("cloud_cover", coverage)
 		shader_sky.set_shader_parameter("sky_zenith_color", sample.sky_zenith)
 		shader_sky.set_shader_parameter("sky_horizon_color", sample.sky_horizon)
 		shader_sky.set_shader_parameter("sky_nadir_color", sample.sky_nadir)
@@ -353,14 +546,6 @@ func _apply_sky_palette(sample: DayCycleConfig.Sample) -> void:
 		shader_sky.set_shader_parameter("sun_halo_strength", sample.sun_halo_strength)
 		shader_sky.set_shader_parameter("moon_disk_direction", sample.moon_disk_direction)
 		shader_sky.set_shader_parameter("moon_disk_intensity", sample.moon_disk_intensity)
-	elif _sky_material is ProceduralSkyMaterial:
-		# Fallback path when the cloud panorama is missing. It has no cloud layer and no disk
-		# controls, so it carries the gradient only.
-		var procedural_sky := _sky_material as ProceduralSkyMaterial
-		procedural_sky.sky_top_color = sample.sky_zenith
-		procedural_sky.sky_horizon_color = sample.sky_horizon
-		procedural_sky.ground_horizon_color = sample.sky_horizon
-		procedural_sky.ground_bottom_color = sample.sky_nadir
 
 func _configure_environment(scene_root: Node) -> void:
 	var world_environment := scene_root.get_node_or_null("WorldEnvironment") as WorldEnvironment
@@ -384,6 +569,17 @@ func _configure_environment(scene_root: Node) -> void:
 	environment.fog_aerial_perspective = 0.0
 	environment.fog_sky_affect = 0.0
 	_distance_fade_environment = environment
+	_cloud_effect = WeatherCloudEffect.new()
+	_mist_effect = WeatherMistEffect.new()
+	var compositor := Compositor.new()
+	compositor.compositor_effects = [_cloud_effect, _mist_effect]
+	world_environment.compositor = compositor
+	RenderingServer.global_shader_parameter_set(
+		"weather_cloud_reflection", _cloud_effect.reflection_texture
+	)
+	RenderingServer.global_shader_parameter_set(
+		"weather_cloud_shadow_map", _cloud_effect.shadow_texture
+	)
 
 func _update_distance_fade() -> void:
 	if _distance_fade_environment == null or _distance_fade_terrain == null:
@@ -430,21 +626,9 @@ func _update_distance_fade() -> void:
 	_distance_fade_environment.fog_enabled = true
 
 func _create_hemisphere_sky() -> Sky:
-	var cloud_panorama := _load_cloud_panorama()
-	if cloud_panorama == null:
-		return _create_procedural_hemisphere_sky()
-
 	var material := ShaderMaterial.new()
 	material.shader = SKY_CLOUD_SHADER
-	material.set_shader_parameter("cloud_panorama", cloud_panorama)
 	material.set_shader_parameter("hemisphere_curve", SKY_HEMISPHERE_CURVE)
-	material.set_shader_parameter("panorama_rotation", SKY_CLOUD_PANORAMA_ROTATION)
-	material.set_shader_parameter("cloud_strength", SKY_CLOUD_STRENGTH)
-	material.set_shader_parameter(
-		"cloud_horizon_fade_start",
-		SKY_CLOUD_HORIZON_FADE_START
-	)
-	material.set_shader_parameter("cloud_horizon_fade_end", SKY_CLOUD_HORIZON_FADE_END)
 	material.set_shader_parameter("sun_curve", SKY_SUN_CURVE)
 	# The moon's appearance is fixed, so it is set here rather than rewritten every frame. Only
 	# its direction and brightness change with the cycle.
@@ -452,37 +636,6 @@ func _create_hemisphere_sky() -> Sky:
 	material.set_shader_parameter("moon_disk_deg", DayCycleConfig.MOON_DISK_DEG)
 	material.set_shader_parameter("moon_halo_deg", DayCycleConfig.MOON_HALO_DEG)
 	material.set_shader_parameter("moon_halo_strength", DayCycleConfig.MOON_HALO_STRENGTH)
-	_sky_material = material
-	return _build_sky(material)
-
-func _load_cloud_panorama() -> Texture2D:
-	if _cloud_panorama_cache != null:
-		return _cloud_panorama_cache
-	if not FileAccess.file_exists(SKY_CLOUD_PANORAMA_PATH):
-		push_warning("Cloud panorama is missing: %s" % SKY_CLOUD_PANORAMA_PATH)
-		return null
-	var image := Image.new()
-	var decode_error := image.load_jpg_from_buffer(
-		FileAccess.get_file_as_bytes(SKY_CLOUD_PANORAMA_PATH)
-	)
-	if decode_error != OK:
-		push_warning(
-			"Cloud panorama could not be decoded (%s): %s"
-			% [decode_error, SKY_CLOUD_PANORAMA_PATH]
-		)
-		return null
-	var mipmap_error := image.generate_mipmaps()
-	if mipmap_error != OK:
-		push_warning("Cloud panorama mipmaps could not be generated: %s" % mipmap_error)
-	_cloud_panorama_cache = ImageTexture.create_from_image(image)
-	return _cloud_panorama_cache
-
-func _create_procedural_hemisphere_sky() -> Sky:
-	var material := ProceduralSkyMaterial.new()
-	material.sky_curve = SKY_HEMISPHERE_CURVE
-	material.ground_curve = SKY_HEMISPHERE_CURVE
-	material.sun_curve = SKY_SUN_CURVE
-	material.use_debanding = true
 	_sky_material = material
 	return _build_sky(material)
 

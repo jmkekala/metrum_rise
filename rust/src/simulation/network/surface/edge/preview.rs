@@ -18,6 +18,7 @@ use crate::simulation::network::road_edit::{
     FinalizedRoadGeometry, PlannedRoadSplit, RoadTopologyPlan,
 };
 use crate::simulation::network::types::{EdgeClass, NodeType};
+use crate::simulation::network::validate::{RoadGeometryLimits, RoadGeometryViolation};
 use crate::simulation::network::{
     TransitNetwork, build_surface_edge, road_insert_surface_dirty_nodes, topology,
 };
@@ -35,6 +36,10 @@ const PREVIEW_TUNNEL_CLEARANCE_REASON: &str = "tunnel_clearance";
 const PREVIEW_SURFACE_GEOMETRY_REASON: &str = "surface_geometry_invalid";
 const PREVIEW_SAME_NODE_REASON: &str = "same_node_connection";
 const PREVIEW_TOO_SHORT_REASON: &str = "too_short";
+const PREVIEW_GRADE_CHANGE_REASON: &str = "road_grade_change";
+const PREVIEW_TIGHT_CURVE_REASON: &str = "road_tight_curve";
+const PREVIEW_JUNCTION_ANGLE_REASON: &str = "junction_arm_angle";
+const PREVIEW_JUNCTION_DEGREE_REASON: &str = "junction_degree";
 const PREVIEW_MIN_ENDPOINT_SEGMENT_M: f32 = 2.0;
 const PREVIEW_BRIDGE_GROUND_TOLERANCE_M: f32 = 0.05;
 
@@ -100,6 +105,11 @@ pub struct RoadPreviewValidation {
     pub clearance_m: f32,
     /// Required bridge/tunnel clearance at the sampled validation point.
     pub required_clearance_m: f32,
+    /// Measured value of the geometry check that refused the road (`ROAD-54`): grade change per
+    /// metre, curve radius in metres, junction arm angle in degrees or junction arm count.
+    pub geometry_measured: f32,
+    /// The limit that measurement broke, in the same unit.
+    pub geometry_limit: f32,
 }
 
 /// Temporary preview compile output for one road-tool stroke.
@@ -985,6 +995,20 @@ impl RoadSurfaceSystem {
         {
             return (
                 validation.with_invalid_reason(PREVIEW_SURFACE_GEOMETRY_REASON),
+                None,
+                None,
+                None,
+            );
+        }
+        if let Some(refused) = Self::edit_geometry_violation(
+            &validation_graph,
+            existing_graph,
+            new_edge_idx,
+            &splits,
+            &source_node_ids,
+        ) {
+            return (
+                Self::refuse_geometry(validation, &refused),
                 None,
                 None,
                 None,
@@ -1975,6 +1999,82 @@ impl RoadSurfaceSystem {
     }
 }
 
+impl RoadSurfaceSystem {
+    // The illegal geometry this edit adds (`validate::edit_violation`). The drawn road is the
+    // inserted edge and every piece split off it; pieces split off existing roads are theirs.
+    // Its endpoints are judged against what the same nodes were before. O(stroke points +
+    // splits + endpoint incidence).
+    fn edit_geometry_violation(
+        validation_graph: &RegionGraph,
+        existing_graph: &RegionGraph,
+        new_edge_idx: usize,
+        splits: &[PlannedRoadSplit],
+        source_node_ids: &HashMap<u32, u32>,
+    ) -> Option<RoadGeometryViolation> {
+        let mut stroke = vec![new_edge_idx];
+        for split in splits {
+            if stroke.contains(&split.edge_id) {
+                stroke.push(split.new_edge_id);
+            }
+        }
+        stroke.retain(|&id| !validation_graph.edge(id).deleted);
+        let source_of: HashMap<u32, u32> = source_node_ids
+            .iter()
+            .map(|(&source, &local)| (local, source))
+            .collect();
+        let mut nodes: Vec<(u32, Option<u32>)> = stroke
+            .iter()
+            .flat_map(|&id| {
+                let edge = validation_graph.edge(id);
+                [edge.start_node, edge.end_node]
+            })
+            .map(|node| {
+                let node = validation_graph.get_valid_node(node);
+                (node, source_of.get(&node).copied())
+            })
+            .collect();
+        nodes.sort_unstable();
+        nodes.dedup();
+        crate::simulation::network::validate::edit_violation(
+            validation_graph,
+            &stroke,
+            &nodes,
+            existing_graph,
+            &RoadGeometryLimits::default(),
+        )
+    }
+
+    fn refuse_geometry(
+        validation: RoadPreviewValidation,
+        violation: &RoadGeometryViolation,
+    ) -> RoadPreviewValidation {
+        use RoadGeometryViolation::*;
+        let (reason, measured, limit) = match *violation {
+            GradeChange {
+                measured, limit, ..
+            } => (PREVIEW_GRADE_CHANGE_REASON, measured, limit),
+            HorizontalRadius {
+                measured, limit, ..
+            } => (PREVIEW_TIGHT_CURVE_REASON, measured, limit),
+            JunctionArmAngle {
+                measured, limit, ..
+            } => (PREVIEW_JUNCTION_ANGLE_REASON, measured, limit),
+            JunctionDegree {
+                measured, limit, ..
+            } => (
+                PREVIEW_JUNCTION_DEGREE_REASON,
+                measured as f32,
+                limit as f32,
+            ),
+            Grade { .. } | DirectionKink { .. } => (PREVIEW_SURFACE_GEOMETRY_REASON, 0.0, 0.0),
+        };
+        let mut validation = validation.with_invalid_reason(reason);
+        validation.geometry_measured = measured;
+        validation.geometry_limit = limit;
+        validation
+    }
+}
+
 impl RoadPreviewValidation {
     /// Creates a successful validation result with the measured maximum grade.
     pub(crate) fn valid(max_grade: f32) -> Self {
@@ -2003,6 +2103,8 @@ impl RoadPreviewValidation {
             end_endpoint_support_delta_m: 0.0,
             clearance_m: 0.0,
             required_clearance_m: 0.0,
+            geometry_measured: 0.0,
+            geometry_limit: 0.0,
         }
     }
 

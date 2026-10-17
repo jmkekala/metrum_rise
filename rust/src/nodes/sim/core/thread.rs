@@ -24,6 +24,11 @@ use crate::nodes::sim::editing::BulldozeTarget;
 pub(crate) enum SimCommand {
     /// Update the simulation speed multiplier.
     SetSpeed(f32),
+    /// Move the weather to a chosen scenario over a duration in speed-scaled seconds; the
+    /// schedule stops.
+    SetWeather(crate::simulation::core::weather::WeatherScenario, f64),
+    /// Hand the weather to the seeded schedule, or take it away.
+    SetWeatherAutomatic(bool),
     /// Update the camera world-space AABB used for agent frustum culling.
     /// Values: (x_min, x_max, z_min, z_max) in world units, padded by ~200 m.
     SetCameraAabb(f32, f32, f32, f32),
@@ -115,6 +120,8 @@ pub(crate) fn run_sim_thread(
     let mut pending_speed = None;
     let mut pending_camera_aabb = None;
     let mut pending_cell_overlay_visible = None;
+    let mut pending_weather = None;
+    let mut pending_weather_automatic = None;
 
     loop {
         let frame_start = Instant::now();
@@ -148,6 +155,15 @@ pub(crate) fn run_sim_thread(
                 Ok(SimCommand::SetCellOverlayVisible(visible)) => {
                     commands_processed += 1;
                     pending_cell_overlay_visible = Some(visible);
+                }
+                Ok(SimCommand::SetWeather(scenario, duration_s)) => {
+                    commands_processed += 1;
+                    pending_weather = Some((scenario, duration_s));
+                    pending_weather_automatic = None;
+                }
+                Ok(SimCommand::SetWeatherAutomatic(automatic)) => {
+                    commands_processed += 1;
+                    pending_weather_automatic = Some(automatic);
                 }
                 Ok(SimCommand::PrepareCellChunk {
                     chunk,
@@ -352,6 +368,12 @@ pub(crate) fn run_sim_thread(
             }
             if let Some(visible) = pending_cell_overlay_visible.take() {
                 core.cell_overlay_visible = visible;
+            }
+            if let Some((scenario, duration_s)) = pending_weather.take() {
+                core.weather.choose(scenario, duration_s);
+            }
+            if let Some(automatic) = pending_weather_automatic.take() {
+                core.weather.set_automatic(automatic);
             }
             record_crash_phase_for_core(&core, "sim frame");
 

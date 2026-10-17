@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::simulation::economy::agents::MODE_WALK;
+use crate::simulation::economy::agents::lane_state::lane_for_mode;
 use crate::simulation::network::lanes::{LaneSystem, LaneType};
 use crate::simulation::save::schema::{
     CONTINUATION_SAVE_VERSION, LIVE_FRONTAGE_DELAY_SAVE_VERSION,
@@ -112,6 +113,13 @@ pub(in crate::simulation::save) fn restore_lane_references(
         let node = i64_to_usize(row.get(1)?)?;
         let from = i64_to_usize(row.get(2)?)?;
         let to = i64_to_usize(row.get(3)?)?;
+        // Saves from before footpath arms stopped counting as vehicle junction arms hold a
+        // connector where the road now links straight through. Agents on it replan below.
+        if let (Some(&from), Some(&to)) = (remap.get(&from), remap.get(&to))
+            && lanes.lanes[from].next_lanes.contains(&to)
+        {
+            continue;
+        }
         let id = remap
             .get(&from)
             .zip(remap.get(&to))
@@ -128,14 +136,27 @@ pub(in crate::simulation::save) fn restore_lane_references(
             })?;
         remap.insert(old, id);
     }
+    // Saves written before ROAD-65 can hold lane ids a terrain edit or undo had renumbered:
+    // a lane the save no longer lists, or one of the agent's mode owned by another edge or
+    // junction. Such an agent is taken off the network to replan rather than refusing the
+    // whole save. A lane of the wrong mode still refuses it (TRAFFIC-02).
+    let mut repaired = 0;
     for i in 0..agents.len() {
         let old = agents.current_lane_id[i];
         if old != usize::MAX {
-            let id = remap.get(&old).copied().ok_or_else(|| {
-                SaveLoadError::custom(format!("agent {i} has unknown saved lane {old}"))
-            })?;
-            validate_current_lane(agents, i, id, graph, lanes)?;
-            agents.current_lane_id[i] = id;
+            let mode = agents.transit_mode[i];
+            match remap.get(&old).copied() {
+                Some(id) if validate_current_lane(agents, i, id, graph, lanes).is_ok() => {
+                    agents.current_lane_id[i] = id;
+                }
+                Some(id) if lane_for_mode(lanes, id, mode).is_err() => {
+                    validate_current_lane(agents, i, id, graph, lanes)?;
+                }
+                _ => {
+                    clear_agent_travel_state(agents, i);
+                    repaired += 1;
+                }
+            }
         }
         let changing_from = agents.lane_change_from_lane_id[i];
         if changing_from != u32::MAX {
@@ -154,6 +175,12 @@ pub(in crate::simulation::save) fn restore_lane_references(
             .copied()
             .map(|id| id as u32)
             .unwrap_or(u32::MAX);
+    }
+    if repaired > 0 {
+        crate::debug_log!(
+            "save",
+            "loaded_agent_lane_repair agents={repaired}: stale lane ids sent to replan"
+        );
     }
     validate_loaded_planned_lane_ids(agents, lanes.lanes.len());
     if version >= CONTINUATION_SAVE_VERSION {

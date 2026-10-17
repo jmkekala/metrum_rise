@@ -6,7 +6,20 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 86;
+pub const SAVE_VERSION: i64 = 88;
+
+/// First version storing the weather: scenario, transition, cloud drift, wind clock and schedule.
+///
+/// A save below this one has no weather row and loads into settled fair weather with the
+/// default seed, which is the sky every city had before weather was saved.
+pub const WEATHER_SAVE_VERSION: i64 = 87;
+
+/// First version storing where the weather turned the wind and the high cloud layer: the
+/// transition's target wind and high cover, and the high layer's drift.
+///
+/// A save below this one, from version 87, moved to its target scenario's authored wind and high
+/// cover, and its high layer starts undrifted.
+pub const WEATHER_SKY_SAVE_VERSION: i64 = 88;
 
 /// First version retaining complete workplace commute quotes for exact continuation.
 pub const WORKPLACE_ROUTE_CACHE_SAVE_VERSION: i64 = 86;
@@ -135,6 +148,32 @@ CREATE TABLE yard_hedge_modules(parcel_id INTEGER, build_generation INTEGER, lay
 CREATE TABLE yard_planting_plants(parcel_id INTEGER, build_generation INTEGER, layer INTEGER,
                                   cell_x INTEGER, cell_z INTEGER, x REAL, z REAL, yaw REAL,
                                   scale REAL, species INTEGER, variant INTEGER);
+CREATE TABLE weather_state(
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    seed INTEGER NOT NULL,
+    target INTEGER NOT NULL,
+    from_wind_x REAL NOT NULL,
+    from_wind_z REAL NOT NULL,
+    from_coverage REAL NOT NULL,
+    from_optical_depth REAL NOT NULL,
+    transition_elapsed_s REAL NOT NULL,
+    transition_duration_s REAL NOT NULL,
+    cloud_offset_x REAL NOT NULL,
+    cloud_offset_z REAL NOT NULL,
+    wind_clock_s REAL NOT NULL,
+    automatic INTEGER NOT NULL,
+    event_index INTEGER NOT NULL,
+    until_event_h REAL NOT NULL
+);
+CREATE TABLE weather_sky(
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    from_high_cover REAL NOT NULL,
+    to_wind_x REAL NOT NULL,
+    to_wind_z REAL NOT NULL,
+    to_high_cover REAL NOT NULL,
+    high_offset_x REAL NOT NULL,
+    high_offset_z REAL NOT NULL
+);
 CREATE TABLE time_state(
     time_elapsed REAL NOT NULL,
     speed_multiplier REAL NOT NULL,

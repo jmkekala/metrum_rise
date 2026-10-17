@@ -78,12 +78,14 @@ impl NodeOwnershipPointIndex {
     }
 }
 
-pub(super) fn noded_owned_region_contour_with_point_index(
+/// Nodes a contour to retained points, optionally accepting the shared overlay-grid rounding bound.
+pub(in crate::simulation::network::surface::node::ownership) fn noded_owned_region_contour_with_point_index(
     contour: &NodeOverlayContour,
     point_index: &NodeOwnershipPointIndex,
+    exact_segment: bool,
 ) -> NodeOverlayContour {
     noded_owned_region_contour_with_edge_points(contour, |start, end, points| {
-        noded_owned_region_edge_points_with_index(start, end, point_index, true, points);
+        noded_owned_region_edge_points_with_index(start, end, point_index, exact_segment, points);
     })
 }
 

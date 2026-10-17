@@ -80,7 +80,12 @@ fn exit_oracle(
                     continue;
                 }
                 let target = id * 2 + usize::from(to != edge.start_node);
-                costs[target] = costs[target].min(cost + f64::from(edge.base_cost));
+                let edge_cost = if mask == TransitFlags::FOOT {
+                    CostCalculator::walk_cost_s(edge)
+                } else {
+                    edge.base_cost
+                };
+                costs[target] = costs[target].min(cost + f64::from(edge_cost));
             }
         }
     }
@@ -455,7 +460,11 @@ fn fractional_multimode_routes_match_independent_dijkstra_and_edge_witnesses() {
                                         edge.start_node
                                     };
                                     previous = id;
-                                    sum_cost += f64::from(edge.base_cost);
+                                    sum_cost += f64::from(if mask == TransitFlags::FOOT {
+                                        CostCalculator::walk_cost_s(edge)
+                                    } else {
+                                        edge.base_cost
+                                    });
                                     sum_distance += f64::from(edge.physical_length);
                                 }
                                 assert_eq!(node, end);

@@ -636,6 +636,11 @@ lot geometry alone, so the preview and a spawned building lay the same rows:
 - Planning samples each row every `0.25 m`: O(row length / 0.25 x surface vertices), on document
   changes only.
 
+The viewport's **Preview** button (`TOOLS-14`) replaces those boxes with the game's opaque hedge
+modules and vegetation materials. Rows still come from `plan_yard_hedge`; the shared `plan_row`
+then joins their corners and places their modules. The view represents an isolated flat lot, so
+neighboring buildings, roads, water and terrain slopes are not part of this authoring preview.
+
 When a zoned building is placed, the allocator queues its rows in world space; SimCore lays them
 with the same row code as the hedge brush (`plan_row`), row by row, so corners close and a row end
 near a neighbour's hedge joins it. A yard row keeps to its lot line while it joins (`VEG-22`): its
@@ -643,7 +648,13 @@ end moves only to where that line crosses a hedge, or to a hedge end on the line
 neighbour's corner tip half a hedge width off it, which used to tilt the row towards the street and
 push its corner modules onto the sidewalk, where they were refused. A module is skipped where any hedge facing the same way already
 stands within `2.5 m` across its row, so two adjoining yards share the hedge between them instead of
-planting two. The laid modules are ordinary authored vegetation, edited and removed by the brushes
+planting two. On a curved street, rigid lots splay apart and leave a wedge of lawn between their side
+lines (`ZONE-07`); there each yard moves its side row onto the wedge's centre line, which starts
+midway between the two front corners and runs midway between the two side directions, and its front
+and back rows run on to meet it. Both neighbours compute the same line, so the second shares the
+first's hedge. Neighbours are lots whose front corners stand within 4 m and whose sides turn less
+than 30° apart; on a straight street the shared line is the lot line itself. Hedges already laid in
+a save keep their shape until their building is rebuilt. The laid modules are ordinary authored vegetation, edited and removed by the brushes
 like any other, and recorded under the building's parcel id and build generation (save version
 `68`, table `yard_hedge_modules`). When the building is removed, its recorded modules go only if
 every one still stands as laid; if the player cut or rebuilt any of them the rest stays. Hedges the
@@ -690,6 +701,24 @@ vegetation, recorded per yard (save version `69`, table `yard_planting_plants`);
 standing goes with its building, and undoing a bulldoze plants the same set again. Plants the
 player added are never recorded. Planting costs O(area / spacing²) bounded clearance tests per
 area, each with a scan of the few dozen plants that area already planted, once per spawn.
+
+**Preview** also replaces planting washes with the trees, shrubs and flowers the shared Rust
+planting kernel accepts, keeping the same area order, spacing, wall/paving clearance and
+parcel/build-generation hash. The preview uses an incrementing synthetic parcel id with build
+generation zero. While active, the button becomes **Reroll**; each press requests another valid
+layout. **Exit preview** (or Escape) restores the exact editing meshes, labels, guide visibility
+and grid material. Inspector selection, document edits and theme changes exit preview before
+rebuilding the editing view. Lighting and camera controls remain available.
+
+The renderer uses `TreeSpecies` meshes/materials and the game's cosmetic variant, proportions and
+tint helpers. Editor-only guides, selection/hover overlays, scale reference, comparison mesh and
+labels are hidden. Paving and the house remain visible. Neither previewing nor rerolling changes
+the document, dirty flag, undo history or sandbox SimCore. Planning allocates only on these
+explicit actions; no per-tick or per-frame planning was added. The pure flat-lot planner uses the
+existing vegetation edit-cell index for scratch occupancy. Acceptance remains serial because
+each accepted plant and hedge row constrains the next. Work is local: O(V² + L × V + C × (V + P))
+for lot vertices V, hedge length L, candidate count C and accepted plants P in an area, plus
+bounded neighbor queries; no city-wide scans or new spatial index.
 
 ### Back Yards
 

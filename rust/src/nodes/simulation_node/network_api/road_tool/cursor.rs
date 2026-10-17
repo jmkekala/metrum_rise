@@ -3,7 +3,12 @@
 //! Cursor road-tool Godot API methods.
 
 use super::super::super::*;
-use crate::simulation::network::interaction::{NetworkSnap, NetworkSnapTarget};
+use crate::simulation::network::interaction::{
+    NetworkSnap, NetworkSnapTarget, StartDirection, road_start_direction, snap_stroke_angle,
+};
+
+// A stroke within this many degrees of a snap angle is pulled onto it.
+const ANGLE_SNAP_TOLERANCE_DEG: f32 = 4.0;
 
 #[godot_api(secondary)]
 impl SimulationNode {
@@ -28,8 +33,13 @@ impl SimulationNode {
     /// This combines visible-surface picking, zoning-grid snapping, network snapping,
     /// map-border snapping, and self-snapping so the Godot editor loop
     /// does not perform several bridge calls for every mouse frame.
-    /// Returns position, snap node/edge ids (-1 when absent), and the snapshot generation.
+    /// Returns position, snap node/edge ids (-1 when absent), the snapshot generation and whether
+    /// the stroke was angle-snapped.
     /// Pass the previous result back as `previous_snap` to retain a generation-checked target.
+    /// `angle_snap` is the reference direction (unit XZ). While the straight-road end is being
+    /// placed (`current_state` 2), a stroke from `start_pos` within 4 degrees of a 45-degree
+    /// multiple from the reference snaps onto it. A zero reference leaves the cursor free.
+    /// Network targets win over angle snapping.
     #[func]
     #[allow(clippy::too_many_arguments)]
     pub fn get_road_tool_cursor_pos(
@@ -47,6 +57,7 @@ impl SimulationNode {
         border_snap_dist_m: f32,
         previous_snap: VarDictionary,
         sticky_network_snap_release_dist_m: f32,
+        angle_snap: Vector3,
     ) -> Variant {
         let query = self.road_tool_query_snapshot.read().unwrap();
         let (world_w, world_h) = query.terrain.world_size();
@@ -143,6 +154,30 @@ impl SimulationNode {
             );
         }
 
+        if active
+            && current_state == 2
+            && !zoning_snap_enabled
+            && let Some(mut snapped) = snap_stroke_angle(
+                start_pos,
+                pos,
+                angle_snap,
+                ANGLE_SNAP_TOLERANCE_DEG.to_radians(),
+            )
+        {
+            snapped.y = Self::road_tool_cursor_height_at_xz(
+                &query,
+                snapped.x,
+                snapped.z,
+                altitude_offset_m,
+            );
+            let mut result = Self::road_tool_cursor_result(snapped, None, query.surface_generation);
+            if let Ok(mut dict) = result.try_to::<VarDictionary>() {
+                dict.set("angle_snapped", true);
+                result = dict.to_variant();
+            }
+            return result;
+        }
+
         if Self::road_tool_is_near_border(pos, half_w, half_h, border_snap_dist) {
             pos = Self::road_tool_snap_to_border(pos, half_w, half_h);
             pos.y = Self::road_tool_cursor_height_at_xz(&query, pos.x, pos.z, altitude_offset_m);
@@ -159,6 +194,41 @@ impl SimulationNode {
         }
 
         Self::road_tool_cursor_result(pos, None, query.surface_generation)
+    }
+
+    /// How a road started at `pos` should leave it, from the snap target the cursor returned
+    /// (`snap_node`/`snap_edge`, -1 when absent, checked against `surface_generation`): `kind` 1
+    /// continues a dead end along `direction` (unit XZ), 2 runs along the road through the start
+    /// (`direction` either sense), 0 has no direction (free ground or a junction). Reads only the
+    /// touched edges.
+    #[func]
+    pub fn get_road_tool_start_direction(
+        &self,
+        pos: Vector3,
+        snap_node: i64,
+        snap_edge: i64,
+        surface_generation: i64,
+    ) -> VarDictionary {
+        let query = self.road_tool_query_snapshot.read().unwrap();
+        let target = (u64::try_from(surface_generation).ok() == Some(query.surface_generation))
+            .then(|| {
+                u32::try_from(snap_node)
+                    .ok()
+                    .map(NetworkSnapTarget::Node)
+                    .or_else(|| usize::try_from(snap_edge).ok().map(NetworkSnapTarget::Edge))
+            })
+            .flatten();
+        let (kind, direction) = match target
+            .and_then(|target| road_start_direction(&query.region_graph, target, pos))
+        {
+            Some(StartDirection::Continue(direction)) => (1, direction),
+            Some(StartDirection::Along(direction)) => (2, direction),
+            None => (0, Vector3::ZERO),
+        };
+        let mut result = VarDictionary::new();
+        result.set("kind", kind);
+        result.set("direction", direction);
+        result
     }
 
     fn road_tool_cursor_result(

@@ -68,7 +68,16 @@ varying float volume_wrap;
 // stand of random yaws its response to the sun's direction averaged out to nothing.
 varying flat mat3 normal_to_view;
 
+// Share of direct sunlight the clouds let through to this tree.
+varying flat float cloud_sun;
+// Brightening of the crown by a gust turning its leaves (vegetation_gust_sheen).
+varying flat float gust_sheen;
+
 void vertex() {
+	cloud_sun = vegetation_cloud_sun(MODEL_MATRIX[3].xyz);
+	// Gusts only lean and light an impostor in strong wind; a calm skips the lookup.
+	float gust = weather_storminess() > 0.0 ? vegetation_gust(MODEL_MATRIX[3].xz) : 1.0;
+	gust_sheen = vegetation_gust_sheen(gust);
 	int layer = int(INSTANCE_CUSTOM.x);
 	vec3 centre = bounds_centre[layer];
 	vec3 camera_object = (inverse(MODEL_MATRIX) * vec4(CAMERA_POSITION_WORLD, 1.0)).xyz;
@@ -106,6 +115,22 @@ void vertex() {
 	}
 	vec3 offset = impostor_crop_offset(crop, right, up, UV);
 	VERTEX = centre + offset * bounds_size[layer] * growth;
+	// In strong wind the quad shears downwind with height, as the branched tree leans and sways,
+	// at its weights (none at the base, 0.8 at the crown top), the lean bending from the top. The instance basis is a rotation
+	// times a uniform scale, so its transpose over the scale squared undoes it.
+	// PROJECTION_MATRIX can read as zero in this vertex stage (see vegetation_wind.gdshaderinc);
+	// the gate takes the same projection term the near trees do.
+	float px_per_m = camera_projection_scale * VIEWPORT_SIZE.y * 0.5
+		/ max(distance(MODEL_MATRIX[3].xyz, CAMERA_POSITION_WORLD), 0.001);
+	vec2 shear = vegetation_wind_impostor_shear(MODEL_MATRIX[3].xz, gust, px_per_m);
+	if (shear != vec2(0.0)) {
+		float top = centre.y + 0.5 * bounds_size[layer] * growth;
+		float weight = 0.8 * clamp(VERTEX.y / max(top, 0.001), 0.0, 1.0);
+		vec2 direction = vegetation_wind_direction();
+		vec3 shear_world = vec3(direction.x, 0.0, direction.y)
+			* (shear.x * weight * weight / 0.8 + shear.y * weight);
+		VERTEX += transpose(mat3(MODEL_MATRIX)) * shear_world / dot(MODEL_MATRIX[0].xyz, MODEL_MATRIX[0].xyz);
+	}
 	NORMAL = view;
 	normal_to_view = mat3(VIEW_MATRIX) * MODEL_NORMAL_MATRIX;
 	frame_uv01 = vec4(project_frame(offset, cell0), project_frame(offset, cell1));
@@ -118,6 +143,10 @@ void vertex() {
 	frame_uv2_keep = vec4(project_frame(offset, cell2), vegetation_shadow_keep(view_distance_m),
 		2.0 * fract(INSTANCE_CUSTOM.x));
 	float crossfade = vegetation_crossfade(MODEL_MATRIX[3].xyz, MAIN_CAM_INV_VIEW_MATRIX[3].xyz);
+	// The water's reflection world holds impostors only, so every tree draws in full there.
+	if ((CAMERA_VISIBLE_LAYERS & (1u << 19u)) != 0u) {
+		crossfade = 1.0;
+	}
 	float far_fade = smoothstep(tree_far_begin_m, tree_far_end_m,
 		distance(MODEL_MATRIX[3].xyz, MAIN_CAM_INV_VIEW_MATRIX[3].xyz));
 	cell2_layer_fade = vec4(cell2, float(layer), crossfade);
@@ -135,30 +164,37 @@ float frame_lod(vec2 uv) {
 	return clamp(log2(max(footprint, 1.0)), 0.0, log2(FRAME_PX));
 }
 
-vec3 atlas_uv(vec2 uv, vec2 cell, float lod) {
-	float inset = 0.5 * exp2(ceil(lod)) / FRAME_PX;
+vec3 atlas_uv(vec2 uv, vec2 cell, float mip) {
+	float inset = 0.5 * exp2(mip) / FRAME_PX;
 	return vec3((cell + clamp(uv, vec2(inset), vec2(1.0 - inset))) / 8.0, cell2_layer_fade.z);
+}
+
+// Clamp each integer mip to its own frame, then blend. Clamping both taps using ceil(lod)
+// jumps the finer tap's UV at every integer LOD and makes reflected crowns change size.
+vec4 atlas_sample(sampler2DArray atlas, vec2 uv, vec2 cell, float lod) {
+	float lo = floor(lod);
+	float hi = min(lo + 1.0, log2(FRAME_PX));
+	return mix(textureLod(atlas, atlas_uv(uv, cell, lo), lo),
+		textureLod(atlas, atlas_uv(uv, cell, hi), hi), fract(lod));
 }
 
 void fragment() {
 	float lod0 = frame_lod(frame_uv01.xy);
 	float lod1 = frame_lod(frame_uv01.zw);
 	float lod2 = frame_lod(frame_uv2_keep.xy);
-	vec3 uv0 = atlas_uv(frame_uv01.xy, cells01.xy, lod0);
-	vec3 uv1 = atlas_uv(frame_uv01.zw, cells01.zw, lod1);
-	vec3 uv2 = atlas_uv(frame_uv2_keep.xy, cell2_layer_fade.xy, lod2);
-	vec4 albedo = textureLod(albedo_atlas, uv0, lod0) * weights.x
-		+ textureLod(albedo_atlas, uv1, lod1) * weights.y
-		+ textureLod(albedo_atlas, uv2, lod2) * weights.z;
-	vec3 n = (textureLod(normal_atlas, uv0, lod0).xyz * weights.x
-		+ textureLod(normal_atlas, uv1, lod1).xyz * weights.y
-		+ textureLod(normal_atlas, uv2, lod2).xyz * weights.z) * 2.0 - 1.0;
+	vec4 albedo = atlas_sample(albedo_atlas, frame_uv01.xy, cells01.xy, lod0) * weights.x
+		+ atlas_sample(albedo_atlas, frame_uv01.zw, cells01.zw, lod1) * weights.y
+		+ atlas_sample(albedo_atlas, frame_uv2_keep.xy, cell2_layer_fade.xy, lod2) * weights.z;
+	vec3 n = (atlas_sample(normal_atlas, frame_uv01.xy, cells01.xy, lod0).xyz * weights.x
+		+ atlas_sample(normal_atlas, frame_uv01.zw, cells01.zw, lod1).xyz * weights.y
+		+ atlas_sample(normal_atlas, frame_uv2_keep.xy, cell2_layer_fade.xy, lod2).xyz * weights.z) * 2.0 - 1.0;
 	float spread = 1.0 - clamp(length(n), 0.0, 1.0);
 	vec3 object_normal = normalize(mix(n, vec3(0.0, 1.0, 0.0), clamp(volume_lift_gain * spread, 0.0, 1.0)));
 	NORMAL = normalize(normal_to_view * object_normal);
 	// The near tree folds its instance tint into COLOR; the impostor carries the same tint.
 	vec3 tinted = albedo.rgb * tint_far.rgb * leaf_albedo_scale[int(cell2_layer_fade.z)];
-	float canopy_light = vegetation_canopy_combine(canopy_card.xy, vegetation_canopy_base(canopy_card.z, canopy_card.w));
+	float canopy_light = vegetation_canopy_combine(canopy_card.xy, vegetation_canopy_base(canopy_card.z, canopy_card.w))
+		* gust_sheen;
 	ALBEDO = tinted * canopy_light * impostor_radiance_match;
 	BACKLIGHT = vegetation_backlight(tinted) * canopy_light * impostor_radiance_match;
 	ROUGHNESS = 1.0;
@@ -174,6 +210,7 @@ void light() {
 	float shadow = vegetation_shadow(ATTENUATION, LIGHT_IS_DIRECTIONAL, frame_uv2_keep.z);
 	if (LIGHT_IS_DIRECTIONAL) {
 		shadow = min(shadow, vegetation_stand_sun(canopy_card.z, frame_uv2_keep.w));
+		shadow *= cloud_sun;
 	}
 	// No sun highlight, like the cards it replaces; see vegetation_wind_cards.gdshader.
 	DIFFUSE_LIGHT += vegetation_diffuse_light(NORMAL, LIGHT, LIGHT_COLOR, shadow, BACKLIGHT,

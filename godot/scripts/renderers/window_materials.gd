@@ -1,7 +1,10 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## Shared window material factory for gameplay batches and asset previews. Imports remain
-## immutable; feature-compatible shader programs and materials are reused across instances.
+## Shared material factory for gameplay batches and asset previews. Every building and vehicle
+## surface, and any other lit world surface authored as a BaseMaterial3D (retaining walls, rocks,
+## hedges), draws through `building_windows.gdshader`, whose light() lets the clouds dim the sun;
+## a surface with an emission texture also lights its windows. Imports remain immutable;
+## feature-compatible shader programs and materials are reused across instances.
 extends RefCounted
 
 const SOURCE := preload("res://scripts/shaders/building_windows.gdshader")
@@ -18,6 +21,7 @@ static func channel(index: int) -> Vector4:
 
 static func create(source: BaseMaterial3D, preview: bool = false, brightness: float = DEFAULT_BRIGHTNESS) -> ShaderMaterial:
 	var flags := ""
+	if source.emission_texture != null: flags += "#define WINDOW_EMISSION\n"
 	if source.normal_enabled: flags += "#define WINDOW_NORMAL\n"
 	if source.ao_enabled: flags += "#define WINDOW_AO\n"
 	if source.vertex_color_use_as_albedo: flags += "#define WINDOW_VERTEX_COLOR\n"
@@ -30,6 +34,8 @@ static func create(source: BaseMaterial3D, preview: bool = false, brightness: fl
 	var filtering: String = ["filter_nearest", "filter_linear", "filter_nearest_mipmap",
 		"filter_linear_mipmap", "filter_nearest_mipmap_anisotropic", "filter_linear_mipmap_anisotropic"][source.texture_filter]
 	code = code.replace("filter_linear_mipmap", filtering + (", repeat_enable" if source.texture_repeat else ", repeat_disable"))
+	if source.disable_receive_shadows:
+		code = code.replace("depth_draw_opaque", "depth_draw_opaque, shadows_disabled")
 	if source.no_depth_test:
 		code = code.replace("depth_draw_opaque", "depth_draw_opaque, depth_test_disabled")
 	if source.transparency == BaseMaterial3D.TRANSPARENCY_ALPHA_DEPTH_PRE_PASS:

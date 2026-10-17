@@ -12,6 +12,9 @@ extends Node3D
 
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 const PerfDebug := preload("res://scripts/core/perf_debug.gd")
+const WindowMaterials := preload("res://scripts/renderers/window_materials.gd")
+const VehicleLamps := preload("res://scripts/renderers/vehicle_lamps.gd")
+const VehicleHeadlights := preload("res://scripts/renderers/vehicle_headlights.gd")
 
 @onready var simulation_node = $"../SimulationNode"
 
@@ -34,6 +37,9 @@ const GLTF_COMPONENT_UNSIGNED_INT := 5125
 const GLTF_COMPONENT_FLOAT := 5126
 const GLTF_MODE_TRIANGLES := 4
 var _vehicle_glb_cache: Dictionary = {}
+var _headlights := VehicleHeadlights.new()
+# Lamp glow and beam materials, shared across vehicle models (vehicle_lamps.gd).
+var _lamp_materials: Dictionary = {}
 
 var debug_mesh_instance: MeshInstance3D
 var debug_mesh: ImmediateMesh
@@ -137,6 +143,7 @@ func _ready():
 
 
 	# --- Car MultiMeshes (Civilians) ---
+	add_child(_headlights)
 	var car_models = {
 		0: "res://assets/models/vehicles/civilian/sedan.glb",
 		1: "res://assets/models/vehicles/civilian/sedan-sports.glb",
@@ -145,10 +152,8 @@ func _ready():
 		4: "res://assets/models/vehicles/freight/delivery.glb"
 	}
 
-	# We'll create 5 color variations for each model by shifting UVs
-	# Each variation will have its own MMI node
-	# Keys in car_mmis will be: (vehicle_type * 10) + color_variant
-	var color_offsets = [0.0, 0.1, 0.2, 0.3, 0.4] # Horizontal UV shifts
+	# Original atlas palette variants; bucket keys stay (vehicle_type * 10) + variant.
+	var color_offsets = [0.0, 0.1, 0.2, 0.3, 0.4]
 	var car_colors = [
 		Color(0.22, 0.42, 0.78),
 		Color(0.72, 0.16, 0.14),
@@ -184,6 +189,11 @@ func _ready():
 		show_paths = true
 		print("Traffic visual debug overlay enabled (P toggles)")
 
+
+func _notification(what: int) -> void:
+	# A renderer that never entered the tree (tests) never parented its headlight pool.
+	if what == NOTIFICATION_PREDELETE and _headlights.get_parent() == null:
+		_headlights.free()
 
 func _process(delta):
 	if not PerfDebug.is_enabled():
@@ -269,6 +279,7 @@ func update_swarm(delta: float = 0.0):
 			mmi.multimesh.instance_count = count
 		if count > 0:
 			mmi.multimesh.buffer = buffer
+	_headlights.update(simulation_node, car_buffers)
 
 	if show_paths:
 		var data = simulation_node.get_agent_paths_debug()
@@ -407,7 +418,7 @@ func _build_vehicle_mesh_from_glb(
 	uv_shift: float,
 	target_height: float,
 	base_rotation: Vector3
-) -> Mesh:
+) -> ArrayMesh:
 	var doc: Dictionary = model.get("json", {})
 	var bin: PackedByteArray = model.get("bin", PackedByteArray())
 	var scenes: Array = doc.get("scenes", [])
@@ -458,6 +469,7 @@ func _build_vehicle_mesh_from_glb(
 		final_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 		final_mesh.surface_set_material(final_mesh.get_surface_count() - 1, material)
 
+	VehicleLamps.add_surfaces(final_mesh, model_path, _lamp_materials)
 	return final_mesh
 
 func _vehicle_glb_material(model_path: String) -> Material:
@@ -468,7 +480,8 @@ func _vehicle_glb_material(model_path: String) -> Material:
 	mat.metallic = 0.0
 	mat.cull_mode = BaseMaterial3D.CULL_BACK
 	mat.disable_receive_shadows = true
-	return mat
+	# Through the building shader, so the clouds dim the sun on cars as on the street.
+	return WindowMaterials.create(mat)
 
 func _collect_glb_node_surfaces(
 	doc: Dictionary,
@@ -761,14 +774,17 @@ func _add_procedural_car_variants(v_type: int, colors: Array) -> void:
 func _add_car_multimesh(v_type: int, variant_id: int, mesh: Mesh) -> bool:
 	if variant_id == 0:
 		var unique_contacts: Dictionary = {}
-		for surface in range(mesh.get_surface_count()):
+		# The body alone: lamp glows and the headlight volume are not ground contact or car extent.
+		var body_aabb: AABB = mesh.get_meta(VehicleLamps.BODY_AABB_META, mesh.get_aabb())
+		var body_surfaces: int = mesh.get_meta(VehicleLamps.BODY_SURFACES_META, mesh.get_surface_count())
+		for surface in range(body_surfaces):
 			var vertices: PackedVector3Array = mesh.surface_get_arrays(surface)[Mesh.ARRAY_VERTEX]
 			for vertex in vertices:
 				# Mesh loading has already moved its lowest point to y=0. This is a geometric
 				# tolerance for coincident bottom vertices, not a per-frame terrain probe.
 				if absf(vertex.y) <= 0.0001:
 					unique_contacts[vertex] = true
-		if not simulation_node.set_vehicle_ground_support(v_type, mesh.get_aabb(), PackedVector3Array(unique_contacts.keys())):
+		if not simulation_node.set_vehicle_ground_support(v_type, body_aabb, PackedVector3Array(unique_contacts.keys())):
 			push_warning("Invalid vehicle ground support geometry for type %d; using fallback" % v_type)
 			return false
 	var mmi = MultiMeshInstance3D.new()
@@ -788,6 +804,7 @@ func _add_car_multimesh(v_type: int, variant_id: int, mesh: Mesh) -> bool:
 
 	var key = (v_type * 10) + variant_id
 	car_mmis[key] = mmi
+	_headlights.register_model(key, mesh)
 	return true
 
 # Builds a car-shaped ArrayMesh from two boxes (body + cabin). No mesh files required.
@@ -818,8 +835,9 @@ func _build_car_mesh(body_color: Color) -> ArrayMesh:
 	mat.roughness = 0.8
 	mat.metallic = 0.0   # metallic without an HDR environment looks glassy/see-through
 	mat.disable_receive_shadows = true
-	mesh.surface_set_material(0, mat)
+	mesh.surface_set_material(0, WindowMaterials.create(mat))
 
+	VehicleLamps.add_surfaces(mesh, "procedural", _lamp_materials)
 	return mesh
 
 # Extracts and merges all surfaces from a Node hierarchy into an ArrayMesh.

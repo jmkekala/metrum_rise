@@ -7,7 +7,7 @@ extends SceneTree
 const Network := preload("res://scripts/tools/network_tool.gd")
 var failures := 0
 var viewport: SubViewport
-var material: StandardMaterial3D
+var material: Material
 var camera: Camera3D
 
 func _initialize() -> void:
@@ -95,7 +95,8 @@ func run() -> void:
 		expect(night[index] < day[index] * 0.5, "paint must dim with night lighting")
 		expect(local[index] > dark[index] + 0.05, "paint must receive local lights")
 	print("MARKING_SAMPLES dark=", dark, " day=", day, " night=", night, " local=", local)
-	if "--benchmark-markings" in OS.get_cmdline_user_args():
+	# The unshaded-versus-lit comparison only applies to the former StandardMaterial3D paint.
+	if "--benchmark-markings" in OS.get_cmdline_user_args() and material is BaseMaterial3D:
 		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 		RenderingServer.viewport_set_measure_render_time(viewport.get_viewport_rid(), true)
 		sun.light_energy = 1

@@ -735,6 +735,8 @@ impl SimulationNode {
             end_endpoint_support_delta_m: number("end_endpoint_support_delta_m"),
             clearance_m: number("clearance_m"),
             required_clearance_m: number("required_clearance_m"),
+            geometry_measured: number("geometry_measured"),
+            geometry_limit: number("geometry_limit"),
         }
     }
 
@@ -744,6 +746,8 @@ impl SimulationNode {
         dict.set("invalid_reason", validation.invalid_reason);
         dict.set("max_grade", validation.max_grade);
         dict.set("allowed_grade", validation.allowed_grade);
+        dict.set("geometry_measured", validation.geometry_measured);
+        dict.set("geometry_limit", validation.geometry_limit);
         dict.set("offending_span_start_m", validation.offending_span_start_m);
         dict.set("offending_span_end_m", validation.offending_span_end_m);
         dict.set("offending_span_run_m", validation.offending_span_run_m);
