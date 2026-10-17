@@ -1,6 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! Economy snapshots consumed by project planning and household diagnostics.
+//!
+//! The hourly demand pass composes its snapshot from the front of a sweep folded over the
+//! previous hour ([`rolling`], `SIM-02-I`). The construction-execution epoch, diagnostics and
+//! tests build one from the whole city at once.
+
+mod rolling;
+
+pub(crate) use rolling::SavedDemandSnapshot;
+#[cfg(test)]
+pub(super) use rolling::SnapshotBuffer;
+pub(super) use rolling::{DemandSnapshotSweep, SweepInputs};
 
 use super::config::DemandConfig;
 use super::credits::clamp01;
@@ -8,6 +19,7 @@ use super::spawn_need::OutputAbsorptionContext;
 use super::types::EPSILON;
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
+use crate::simulation::core::handles::HandleTable;
 use crate::simulation::economy::definitions::{
     EconomyProfileRuntime, EconomyProfileRuntimeKind, ResourceRuntimeId, RuntimeEconomyCatalog,
     RuntimeEconomyTuning,
@@ -19,34 +31,42 @@ use crate::simulation::economy::definitions::{
 use crate::simulation::economy::fiscal::{CityFiscalPolicy, tax_amount};
 use crate::simulation::economy::hiring::JobFunding;
 use crate::simulation::economy::households::{
-    Household, HouseholdSystem, active_worker_capacity_for_profile_with_floor_scale,
-    affordable_consumer_residents, commercial_activity_signal_for_city, household_is_housed,
-    household_reserve_days, output_area_scale_for_building,
+    CommercialActivitySums, CommercialActivityTerms, Household, HouseholdSystem,
+    active_worker_capacity_for_profile_with_floor_scale, affordable_consumer_residents,
+    commercial_activity_sums_for_city, household_is_housed, household_reserve_days,
+    output_area_scale_for_building,
 };
+use crate::simulation::economy::logistics::collect_connected_border_nodes;
 use crate::simulation::economy::reduction::ordered_fold;
 use crate::simulation::economy::resource_totals::{
     add_resource_amount, merge_resource_amounts, resource_amount,
 };
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::types::{NodeType, TransitFlags, TransitType};
+use crate::simulation::network::types::{TransitFlags, TransitType};
 use crate::simulation::zoning::ZoneType;
 use rayon::prelude::*;
-use std::sync::atomic::{AtomicU32, Ordering};
 
-#[derive(Clone, Debug)]
+/// Housed households per residential building and their smallest reserve days, keyed by the
+/// building's handle slot and generation, so a snapshot folded over an hour stays valid while
+/// buildings move in the dense store (`SIM-02-I`). Readers look a building up in O(1).
+#[derive(Clone, Debug, Default)]
 pub(super) struct ResidentialOccupantSnapshot {
-    pub(super) household_count_by_building: Vec<u32>,
-    pub(super) min_reserve_days_by_building: Vec<f32>,
+    // Per building handle slot; an entry of another generation belongs to a building that left.
+    entries: Vec<OccupantEntry>,
 }
 
-#[derive(Default)]
-/// Reusable atomics for the parallel residential occupant reduction.
-pub(super) struct ResidentialOccupantScratch {
-    /// Per-building live household counts during one snapshot reduction.
-    household_count_by_building: Vec<AtomicU32>,
-    /// Per-building minimum reserve-days value encoded as `f32::to_bits()`.
-    min_reserve_days_by_building: Vec<AtomicU32>,
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct OccupantEntry {
+    generation: u32,
+    households: u32,
+    min_reserve_days: f32,
 }
+
+const NO_OCCUPANTS: OccupantEntry = OccupantEntry {
+    generation: 0,
+    households: 0,
+    min_reserve_days: f32::INFINITY,
+};
 
 impl ResidentialOccupantSnapshot {
     #[cfg(test)]
@@ -58,101 +78,97 @@ impl ResidentialOccupantSnapshot {
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let tuning = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
-        let mut scratch = ResidentialOccupantScratch::default();
-        Self::from_runtime_with_catalog(
-            allocator,
-            households,
-            catalog.as_ref(),
-            tuning.as_ref(),
-            &mut scratch,
-        )
+        let mut occupants = Self::default();
+        for household in &households.households {
+            occupants.add_household(allocator, catalog.as_ref(), tuning.as_ref(), household);
+        }
+        occupants
     }
 
-    pub(super) fn from_runtime_with_catalog(
+    /// Housed households of the building at dense index `building_idx`. O(1).
+    pub(super) fn household_count(
+        &self,
         allocator: &BuildingAllocator,
-        households: &HouseholdSystem,
+        building_idx: usize,
+    ) -> u32 {
+        self.entry(allocator, building_idx).households
+    }
+
+    /// Smallest reserve days among those households; infinite without any. O(1).
+    pub(super) fn min_reserve_days(
+        &self,
+        allocator: &BuildingAllocator,
+        building_idx: usize,
+    ) -> f32 {
+        self.entry(allocator, building_idx).min_reserve_days
+    }
+
+    fn entry(&self, allocator: &BuildingAllocator, building_idx: usize) -> OccupantEntry {
+        let (slot, generation) = building_key(&allocator.building_handles, building_idx);
+        self.entries
+            .get(slot as usize)
+            .copied()
+            .filter(|entry| entry.generation == generation)
+            .unwrap_or(NO_OCCUPANTS)
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    // Counts a housed household at its home. O(1) amortized: the entries grow to the largest
+    // home handle slot and keep their storage when cleared.
+    fn add_household(
+        &mut self,
+        allocator: &BuildingAllocator,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
-        scratch: &mut ResidentialOccupantScratch,
-    ) -> Self {
-        scratch.reset(allocator.buildings.len());
-        let household_count_by_building = &scratch.household_count_by_building;
-        let min_reserve_days_by_building = &scratch.min_reserve_days_by_building;
-
-        households.households.par_iter().for_each(|household| {
-            if household.member_count == 0 || !household_is_housed(household, allocator) {
-                return;
-            }
-            let home_building_id = household.home_building_id;
-            household_count_by_building[home_building_id].fetch_add(1, Ordering::Relaxed);
-            atomic_min_f32(
-                &min_reserve_days_by_building[home_building_id],
-                household_reserve_days(catalog, tuning, household),
-            );
-        });
-
-        Self {
-            household_count_by_building: household_count_by_building
-                .iter()
-                .map(|count| count.load(Ordering::Relaxed))
-                .collect(),
-            min_reserve_days_by_building: min_reserve_days_by_building
-                .iter()
-                .map(|reserve| f32::from_bits(reserve.load(Ordering::Relaxed)))
-                .collect(),
-        }
-    }
-}
-
-impl ResidentialOccupantScratch {
-    fn reset(&mut self, building_count: usize) {
-        resize_atomic_u32_scratch(&mut self.household_count_by_building, building_count, 0);
-        resize_atomic_u32_scratch(
-            &mut self.min_reserve_days_by_building,
-            building_count,
-            f32::INFINITY.to_bits(),
-        );
-    }
-}
-
-fn atomic_min_f32(target: &AtomicU32, value: f32) {
-    let value = if value.is_finite() {
-        value.max(0.0)
-    } else {
-        f32::INFINITY
-    };
-    let value_bits = value.to_bits();
-    let mut current_bits = target.load(Ordering::Relaxed);
-    loop {
-        let current = f32::from_bits(current_bits);
-        if value >= current {
+        household: &Household,
+    ) {
+        if household.member_count == 0 || !household_is_housed(household, allocator) {
             return;
         }
-        match target.compare_exchange_weak(
-            current_bits,
-            value_bits,
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-        ) {
-            Ok(_) => return,
-            Err(next_bits) => current_bits = next_bits,
+        let (slot, generation) =
+            building_key(&allocator.building_handles, household.home_building_id);
+        let slot = slot as usize;
+        if slot >= self.entries.len() {
+            self.entries.resize(slot + 1, NO_OCCUPANTS);
         }
+        let entry = &mut self.entries[slot];
+        // The slot was reused since an earlier household of this fold counted its old building.
+        if entry.generation != generation {
+            *entry = OccupantEntry {
+                generation,
+                ..NO_OCCUPANTS
+            };
+        }
+        entry.households += 1;
+        let reserve_days = household_reserve_days(catalog, tuning, household);
+        let reserve_days = if reserve_days.is_finite() {
+            reserve_days.max(0.0)
+        } else {
+            f32::INFINITY
+        };
+        entry.min_reserve_days = entry.min_reserve_days.min(reserve_days);
     }
 }
 
-fn resize_atomic_u32_scratch(scratch: &mut Vec<AtomicU32>, len: usize, reset_value: u32) {
-    if scratch.len() > len {
-        scratch.truncate(len);
-    }
-    while scratch.len() < len {
-        scratch.push(AtomicU32::new(reset_value));
-    }
-    for slot in scratch {
-        slot.store(reset_value, Ordering::Relaxed);
+// Occupant key of the building at `dense`: its handle slot and generation, or for a building
+// appended to the store directly and not yet registered (tests, tools), the slot
+// `register_appended` gives it when no slot is free.
+fn building_key(handles: &HandleTable<Building>, dense: usize) -> (u32, u32) {
+    let handle = handles.handle(dense);
+    if handle.is_none() {
+        (
+            (handles.capacity() + dense - handles.registered()) as u32,
+            0,
+        )
+    } else {
+        (handle.index(), handle.generation())
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 /// A displaced household's eligibility and available labour, in household priority order.
 pub(super) struct UnhousedWorkforce {
     /// Current relocation affordability, evaluated by the ordinary household contract.
@@ -161,6 +177,30 @@ pub(super) struct UnhousedWorkforce {
     pub(super) workers: u32,
 }
 
+impl UnhousedWorkforce {
+    // Only displaced households need completion-time matching; the ordinary housed case is
+    // `None`.
+    fn of(
+        household: &Household,
+        allocator: &BuildingAllocator,
+        catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning,
+    ) -> Option<Self> {
+        (household.member_count > 0
+            && (household.adult_count > 0 || household.elder_count > 0)
+            && !household_is_housed(household, allocator))
+        .then(|| Self {
+            reserve_days: household_reserve_days(catalog, tuning, household),
+            workers: u32::from(
+                household
+                    .adult_count
+                    .saturating_sub(household.employed_adults),
+            ),
+        })
+    }
+}
+
+#[derive(Debug)]
 pub(super) struct DailyDemandSnapshot {
     /// Existing residents who must claim eligible future homes before prospective arrivals.
     pub(super) unhoused_workforce: Vec<UnhousedWorkforce>,
@@ -197,6 +237,30 @@ pub(super) struct DailyDemandSnapshot {
     pub(super) funded_worker_capacity: u32,
     pub(super) open_jobs_unfunded: u32,
     pub(super) output_absorption: OutputAbsorptionContext,
+}
+
+/// The city-wide folds a [`DailyDemandSnapshot`] is composed from: households, buildings, the
+/// commercial activity sums, the residents whose consumer basket recurring income pays for
+/// after the transfer claims on the treasury in household order, and the displaced households
+/// in that order.
+#[derive(Clone, Debug, Default)]
+pub(super) struct SnapshotTotals {
+    households: HouseholdSnapshotAccumulator,
+    buildings: BuildingSnapshotAccumulator,
+    activity: CommercialActivitySums,
+    affordable_residents: f64,
+    unhoused_workforce: Vec<UnhousedWorkforce>,
+}
+
+impl SnapshotTotals {
+    // Empties the totals and keeps their storage.
+    fn clear(&mut self) {
+        self.households = HouseholdSnapshotAccumulator::default();
+        self.buildings.clear();
+        self.activity = CommercialActivitySums::default();
+        self.affordable_residents = 0.0;
+        self.unhoused_workforce.clear();
+    }
 }
 
 impl DailyDemandSnapshot {
@@ -249,7 +313,8 @@ impl DailyDemandSnapshot {
         )
     }
 
-    /// Builds jobs and business purchases from the same freshly validated operation book.
+    /// Builds the whole snapshot at once from `job_funding`'s operation book: fixed parallel
+    /// chunks and ordered merges in dense order, O(households + buildings + nodes).
     #[allow(clippy::too_many_arguments)]
     pub(super) fn from_runtime_with_funding(
         allocator: &BuildingAllocator,
@@ -262,42 +327,68 @@ impl DailyDemandSnapshot {
         treasury_balance: f64,
         job_funding: &JobFunding,
     ) -> Self {
-        let mut commercial_profile_output_resources = Vec::new();
-        for profile in catalog.all_profiles() {
-            if !matches!(
-                profile.kind,
-                EconomyProfileRuntimeKind::Store | EconomyProfileRuntimeKind::ServiceStore
-            ) {
-                continue;
-            }
-            for output_port in &profile.outputs {
-                add_resource_amount(
-                    &mut commercial_profile_output_resources,
-                    output_port.resource_runtime_id,
-                    1.0,
-                );
-            }
-        }
-        let mut demand_sink_rates_by_resource = Vec::new();
-        for profile in catalog.all_profiles() {
-            if profile.kind != EconomyProfileRuntimeKind::DemandSink {
-                continue;
-            }
-            for input_port in &profile.inputs {
-                if resource_amount(
-                    &commercial_profile_output_resources,
-                    input_port.resource_runtime_id,
-                ) <= 0.0
-                {
-                    continue;
-                }
-                add_resource_amount(
-                    &mut demand_sink_rates_by_resource,
-                    input_port.resource_runtime_id,
-                    profile.consumption_rate_per_resident,
-                );
-            }
-        }
+        let demand_sink_rates_by_resource = demand_sink_rates_by_resource(catalog);
+        let activity_terms = CommercialActivityTerms::new(catalog);
+        let totals = SnapshotTotals {
+            households: collect_household_snapshot_accumulator(
+                allocator, households, catalog, tuning, config,
+            ),
+            buildings: collect_building_snapshot_accumulator(
+                allocator,
+                catalog,
+                fiscal_policy.income_tax_rate,
+                &demand_sink_rates_by_resource,
+                job_funding,
+            ),
+            activity: commercial_activity_sums_for_city(
+                catalog,
+                activity_terms,
+                &households.households,
+                allocator,
+            ),
+            affordable_residents: affordable_consumer_residents(
+                &households.households,
+                allocator,
+                catalog,
+                tuning,
+                fiscal_policy,
+                treasury_balance,
+            ),
+            // Indexed parallel collection preserves household priority.
+            unhoused_workforce: households
+                .households
+                .par_iter()
+                .filter_map(|household| {
+                    UnhousedWorkforce::of(household, allocator, catalog, tuning)
+                })
+                .collect(),
+        };
+        let mut borders = Vec::new();
+        collect_connected_border_nodes(graph, &mut borders);
+        Self::compose(
+            &totals,
+            households,
+            connected_road_border_count(graph, &borders),
+            catalog,
+            tuning,
+            fiscal_policy,
+            treasury_balance,
+        )
+    }
+
+    /// Composes a snapshot from city-wide totals and the values read when it is used: pending
+    /// arrivals, the connected borders, the fiscal policy's benefits and the treasury.
+    /// O(catalog profile ports + resources + displaced households).
+    pub(super) fn compose(
+        totals: &SnapshotTotals,
+        households: &HouseholdSystem,
+        connected_border_count: u32,
+        catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning,
+        fiscal_policy: &CityFiscalPolicy,
+        treasury_balance: f64,
+    ) -> Self {
+        let demand_sink_rates_by_resource = demand_sink_rates_by_resource(catalog);
         let mut daily_supply_cost_per_resident = 0.0_f32;
         for &(resource_runtime_id, consumption_rate_per_resident) in &demand_sink_rates_by_resource
         {
@@ -325,18 +416,12 @@ impl DailyDemandSnapshot {
                 catalog, tuning, 1.0,
             ) * tuning.owa_import_price_multiplier
             - daily_home_electricity_cost;
-        let commercial_activity_signal =
-            commercial_activity_signal_for_city(catalog, &households.households, allocator);
-        let household_accumulator =
-            collect_household_snapshot_accumulator(allocator, households, catalog, tuning, config);
+        let commercial_activity_signal = totals
+            .activity
+            .signal(CommercialActivityTerms::new(catalog));
+        let household_accumulator = &totals.households;
         let housed_resident_count = household_accumulator.housed_resident_count;
-        let building_accumulator = collect_building_snapshot_accumulator(
-            allocator,
-            catalog,
-            fiscal_policy.income_tax_rate,
-            &demand_sink_rates_by_resource,
-            job_funding,
-        );
+        let building_accumulator = &totals.buildings;
         let total_household_slots = building_accumulator.total_household_slots;
         let occupied_household_slots = building_accumulator.occupied_household_slots;
         let under_construction_household_slots =
@@ -347,10 +432,10 @@ impl DailyDemandSnapshot {
         let funded_worker_capacity = building_accumulator.funded_worker_capacity;
         let open_jobs_unfunded = building_accumulator.open_jobs_unfunded;
         let committed_commercial_output_capacity_by_resource =
-            building_accumulator.committed_commercial_output_capacity_by_resource;
-        let business_input_need_by_resource = building_accumulator.business_input_need_by_resource;
+            &building_accumulator.committed_commercial_output_capacity_by_resource;
+        let business_input_need_by_resource = &building_accumulator.business_input_need_by_resource;
         let committed_output_capacity_by_resource =
-            building_accumulator.committed_output_capacity_by_resource;
+            &building_accumulator.committed_output_capacity_by_resource;
         let existing_unemployed_member_count = household_accumulator
             .housed_unemployed_count
             .saturating_add(households.pending_arrivals.adults);
@@ -367,35 +452,14 @@ impl DailyDemandSnapshot {
         let zero_budget_household_count = household_accumulator.zero_budget_household_count;
         let persistent_exit_eligible_household_count =
             household_accumulator.persistent_exit_eligible_household_count;
-        let connected_border_count = graph
-            .nodes()
-            .iter()
-            .enumerate()
-            .filter(|(idx, node)| {
-                node.node_type == NodeType::Border
-                    && graph.node_adjacency(*idx as u32).iter().any(|&edge_idx| {
-                        let edge = graph.edge(edge_idx);
-                        !edge.deleted
-                            && edge.primary_type == TransitType::Road
-                            && (edge.allowed_types & TransitFlags::CAR) != 0
-                    })
-            })
-            .count() as u32;
         let mut output_absorption = OutputAbsorptionContext::from_resource_amounts(
             catalog.resource_count(),
-            &committed_output_capacity_by_resource,
+            committed_output_capacity_by_resource,
             &demand_sink_rates_by_resource,
             0,
-            &business_input_need_by_resource,
+            business_input_need_by_resource,
         );
-        let affordable_residents = affordable_consumer_residents(
-            &households.households,
-            allocator,
-            catalog,
-            tuning,
-            fiscal_policy,
-            treasury_balance,
-        );
+        let affordable_residents = totals.affordable_residents;
         for &(resource, rate) in &demand_sink_rates_by_resource {
             output_absorption
                 .add_demand_units(resource, (f64::from(rate) * affordable_residents) as f32);
@@ -422,7 +486,7 @@ impl DailyDemandSnapshot {
                 continue;
             }
             let committed_capacity = resource_amount(
-                &committed_commercial_output_capacity_by_resource,
+                committed_commercial_output_capacity_by_resource,
                 resource_runtime_id,
             );
             let committed_gap = (consumer_demand - committed_capacity).max(0.0);
@@ -471,25 +535,7 @@ impl DailyDemandSnapshot {
         );
 
         Self {
-            // Indexed parallel collection preserves household priority. Only displaced
-            // households need completion-time matching; the ordinary housed case is empty.
-            unhoused_workforce: households
-                .households
-                .par_iter()
-                .filter_map(|household| {
-                    (household.member_count > 0
-                        && (household.adult_count > 0 || household.elder_count > 0)
-                        && !household_is_housed(household, allocator))
-                    .then(|| UnhousedWorkforce {
-                        reserve_days: household_reserve_days(catalog, tuning, household),
-                        workers: u32::from(
-                            household
-                                .adult_count
-                                .saturating_sub(household.employed_adults),
-                        ),
-                    })
-                })
-                .collect(),
+            unhoused_workforce: totals.unhoused_workforce.clone(),
             vacant_household_slots,
             total_household_count,
             housed_household_count,
@@ -525,9 +571,69 @@ impl DailyDemandSnapshot {
     }
 }
 
+/// Connected borders among `borders` (as [`collect_connected_border_nodes`] lists them) that
+/// have a live road open to cars. O(borders × degree).
+pub(super) fn connected_road_border_count(graph: &RegionGraph, borders: &[u32]) -> u32 {
+    borders
+        .iter()
+        .filter(|&&node| {
+            graph.node_adjacency(node).iter().any(|&edge_idx| {
+                let edge = graph.edge(edge_idx);
+                !edge.deleted
+                    && edge.primary_type == TransitType::Road
+                    && (edge.allowed_types & TransitFlags::CAR) != 0
+            })
+        })
+        .count() as u32
+}
+
+// Household demand-sink rates of the resources stores sell.
+fn demand_sink_rates_by_resource(catalog: &RuntimeEconomyCatalog) -> Vec<(ResourceRuntimeId, f32)> {
+    let mut rates = Vec::new();
+    demand_sink_rates_into(catalog, &mut Vec::new(), &mut rates);
+    rates
+}
+
+// `demand_sink_rates_by_resource` into reused storage; `store_outputs` is scratch.
+// O(profile ports), allocation-free once warm.
+fn demand_sink_rates_into(
+    catalog: &RuntimeEconomyCatalog,
+    store_outputs: &mut Vec<(ResourceRuntimeId, f32)>,
+    rates: &mut Vec<(ResourceRuntimeId, f32)>,
+) {
+    store_outputs.clear();
+    rates.clear();
+    for profile in catalog.all_profiles() {
+        if !matches!(
+            profile.kind,
+            EconomyProfileRuntimeKind::Store | EconomyProfileRuntimeKind::ServiceStore
+        ) {
+            continue;
+        }
+        for output_port in &profile.outputs {
+            add_resource_amount(store_outputs, output_port.resource_runtime_id, 1.0);
+        }
+    }
+    for profile in catalog.all_profiles() {
+        if profile.kind != EconomyProfileRuntimeKind::DemandSink {
+            continue;
+        }
+        for input_port in &profile.inputs {
+            if resource_amount(store_outputs, input_port.resource_runtime_id) <= 0.0 {
+                continue;
+            }
+            add_resource_amount(
+                rates,
+                input_port.resource_runtime_id,
+                profile.consumption_rate_per_resident,
+            );
+        }
+    }
+}
+
 const BUILDING_SNAPSHOT_CHUNK_SIZE: usize = 1024;
 const HOUSEHOLD_SNAPSHOT_CHUNK_SIZE: usize = 2048;
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 struct BuildingSnapshotAccumulator {
     total_household_slots: u32,
     occupied_household_slots: u32,
@@ -544,6 +650,28 @@ struct BuildingSnapshotAccumulator {
 }
 
 impl BuildingSnapshotAccumulator {
+    // Zeroes the sums and keeps the resource lists' storage.
+    fn clear(&mut self) {
+        let mut cleared = Self {
+            committed_output_capacity_by_resource: std::mem::take(
+                &mut self.committed_output_capacity_by_resource,
+            ),
+            committed_commercial_output_capacity_by_resource: std::mem::take(
+                &mut self.committed_commercial_output_capacity_by_resource,
+            ),
+            business_input_need_by_resource: std::mem::take(
+                &mut self.business_input_need_by_resource,
+            ),
+            ..Self::default()
+        };
+        cleared.committed_output_capacity_by_resource.clear();
+        cleared
+            .committed_commercial_output_capacity_by_resource
+            .clear();
+        cleared.business_input_need_by_resource.clear();
+        *self = cleared;
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn absorb_building(
         &mut self,
@@ -785,7 +913,7 @@ fn collect_building_snapshot_accumulator(
     )
 }
 
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 struct HouseholdSnapshotAccumulator {
     housed_resident_count: u32,
     housed_unemployed_count: u32,

@@ -159,6 +159,7 @@ pub(crate) struct WagePayment {
 
 // Ends `agent_idx`'s assignment to `work` and updates the workplace's count. O(1).
 fn release_worker(
+    households: &mut [Household],
     agents: &mut AgentSystem,
     allocator: &mut BuildingAllocator,
     agent_idx: usize,
@@ -168,7 +169,36 @@ fn release_worker(
         work,
         allocator.buildings[work].worker_count.saturating_sub(1),
     );
-    agents.assign_work_building(agent_idx, usize::MAX, 0);
+    reassign_worker(households, agents, agent_idx, usize::MAX, 0);
+}
+
+// Assigns `agent_idx` to `work_building` (`usize::MAX` ends its job) and keeps its household's
+// employed adults with it, as callers keep the workplaces' counts: demand and the census read
+// the count between the household's hourly phases, whose recount also covers assignments that
+// bypass this (`SIM-02-I`). O(1).
+fn reassign_worker(
+    households: &mut [Household],
+    agents: &mut AgentSystem,
+    agent_idx: usize,
+    work_building: usize,
+    job_lock_days: u8,
+) {
+    let employed = |agents: &AgentSystem| {
+        age_group_can_work(agents.age_group[agent_idx])
+            && agents.work_building[agent_idx] != usize::MAX
+    };
+    let was_employed = employed(agents);
+    agents.assign_work_building(agent_idx, work_building, job_lock_days);
+    let is_employed = employed(agents);
+    if was_employed != is_employed
+        && let Some(household) = households.get_mut(agents.household_id[agent_idx])
+    {
+        household.employed_adults = if is_employed {
+            household.employed_adults.saturating_add(1)
+        } else {
+            household.employed_adults.saturating_sub(1)
+        };
+    }
 }
 
 impl HouseholdSystem {
@@ -300,7 +330,7 @@ impl HouseholdSystem {
         let profile = household_demand_profile(&catalog);
         let target_days = profile.stock_target_days;
 
-        eject_inactive_work_assignments(agents, allocator, &catalog);
+        eject_inactive_work_assignments(&mut self.households, agents, allocator, &catalog);
         let prep_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
 
@@ -484,6 +514,7 @@ impl HouseholdSystem {
         for plan in plans {
             apply_workplace_plan(
                 plan,
+                &mut self.households,
                 agents,
                 allocator,
                 &catalog,
@@ -572,7 +603,12 @@ impl HouseholdSystem {
                 ))
             })
             .collect();
-        enforce_worker_capacities(agents, allocator, &funded_capacity_by_building);
+        enforce_worker_capacities(
+            &mut self.households,
+            agents,
+            allocator,
+            &funded_capacity_by_building,
+        );
     }
 
     /// Pays wages into each employed agent's household budget.
@@ -585,15 +621,13 @@ impl HouseholdSystem {
         treasury_balance: &mut f64,
     ) -> f32 {
         let empty_logistics = ShipmentSystem::new();
-        let tax = self.pay_funded_daily_wages(
+        self.pay_funded_daily_wages(
             agents,
             allocator,
             income_tax_rate,
             treasury_balance,
             &empty_logistics,
-        );
-        self.count_employed_adults(agents);
-        tax
+        )
     }
 
     /// Every worker's daily wage at once, in agent order, as their daily phases would pay it
@@ -635,16 +669,19 @@ impl HouseholdSystem {
         income_tax
     }
 
-    /// Copies the latest census's funded jobs onto the buildings, where wages at each worker's
-    /// daily phase read them until the next census (`SIM-02-G`). O(buildings).
+    /// Copies the latest census's funded jobs and activity onto the buildings, where wages at
+    /// each worker's daily phase and the activity floor at each building's hourly phase read
+    /// them until the next census (`SIM-02-G`, `SIM-02-I`). O(buildings).
     pub(super) fn publish_funded_job_capacities(&self, allocator: &mut BuildingAllocator) {
         let capacities = &self.job_funding.capacities;
+        let activities = self.job_funding.activities();
         allocator
             .buildings
             .par_iter_mut()
             .enumerate()
             .for_each(|(building_idx, building)| {
                 building.funded_job_capacity = capacities.get(building_idx).copied().unwrap_or(0);
+                building.funded_activity = activities.get(building_idx).copied().unwrap_or(0.0);
             });
     }
 
@@ -677,7 +714,7 @@ impl HouseholdSystem {
             None
         };
         let Some(profile) = profile else {
-            release_worker(agents, allocator, agent_idx, work);
+            release_worker(&mut self.households, agents, allocator, agent_idx, work);
             return None;
         };
         let building = &allocator.buildings[work];
@@ -691,7 +728,7 @@ impl HouseholdSystem {
             && building.worker_count > capacity
             && building.paid_workers_in_window >= capacity
         {
-            release_worker(agents, allocator, agent_idx, work);
+            release_worker(&mut self.households, agents, allocator, agent_idx, work);
             agents.consecutive_unpaid_days[agent_idx] = 0;
             return None;
         }
@@ -725,7 +762,7 @@ impl HouseholdSystem {
             let unpaid = &mut agents.consecutive_unpaid_days[agent_idx];
             *unpaid = unpaid.saturating_add(1);
             if *unpaid >= JOB_UNPAID_ABANDON_DAYS {
-                release_worker(agents, allocator, agent_idx, work);
+                release_worker(&mut self.households, agents, allocator, agent_idx, work);
                 debug_log!(
                     "economy",
                     "agent_idx={} fired self from insolvent building={} due to consecutive unpaid days",
@@ -986,6 +1023,7 @@ fn insert_job_choice(
 
 fn apply_workplace_plan(
     plan: JobAssignmentPlan,
+    households: &mut [Household],
     agents: &mut AgentSystem,
     allocator: &mut BuildingAllocator,
     catalog: &RuntimeEconomyCatalog,
@@ -1046,7 +1084,8 @@ fn apply_workplace_plan(
             );
         }
         allocator.set_worker_count(job, allocator.buildings[job].worker_count.saturating_add(1));
-        agents.assign_work_building(plan.agent_idx, job, job_lock_days(plan.agent_idx, job));
+        let lock_days = job_lock_days(plan.agent_idx, job);
+        reassign_worker(households, agents, plan.agent_idx, job, lock_days);
         debug_log!(
             "economy",
             "agent_idx={} accepted job building={} zone={:?} score={:.2} income_pressure={:.2} stock_pressure={:.2}",
@@ -1062,6 +1101,7 @@ fn apply_workplace_plan(
 }
 
 fn eject_inactive_work_assignments(
+    households: &mut [Household],
     agents: &mut AgentSystem,
     allocator: &mut BuildingAllocator,
     catalog: &RuntimeEconomyCatalog,
@@ -1082,11 +1122,12 @@ fn eject_inactive_work_assignments(
     for i in ejected_agents {
         let work = agents.work_building[i];
         allocator.set_worker_count(work, allocator.buildings[work].worker_count.saturating_sub(1));
-        agents.assign_work_building(i, usize::MAX, 0);
+        reassign_worker(households, agents, i, usize::MAX, 0);
     }
 }
 
 fn enforce_worker_capacities(
+    households: &mut [Household],
     agents: &mut AgentSystem,
     allocator: &mut BuildingAllocator,
     active_capacity_by_building: &[Option<u32>],
@@ -1113,7 +1154,7 @@ fn enforce_worker_capacities(
             *kept_workers = kept_workers.saturating_add(1);
             continue;
         }
-        agents.assign_work_building(agent_idx, usize::MAX, 0);
+        reassign_worker(households, agents, agent_idx, usize::MAX, 0);
         agents.consecutive_unpaid_days[agent_idx] = 0;
     }
 

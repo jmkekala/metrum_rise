@@ -26,8 +26,8 @@ use crate::simulation::economy::households::{
     Household, HouseholdSystem, REPLENISHMENT_SHOPPING_TO_STORE,
 };
 use crate::simulation::economy::logistics::{
-    CarrierClass, FreightRequestFailure, FreightRequestKey, Shipment, ShipmentEndpoint,
-    ShipmentStatus, ShipmentSystem,
+    CarrierClass, FreightRequestFailure, FreightRequestKey, SavedSupplierRoll, SavedSupplierSweep,
+    Shipment, ShipmentEndpoint, ShipmentStatus, ShipmentSystem, SupplierRoll,
 };
 use crate::simulation::extraction::{ExtractorSite, ResourceExtractionSystem};
 use crate::simulation::grid::noise::NoiseSystem;
@@ -268,10 +268,76 @@ fn snapshot_test_building(
         unpaid_cash_wages_in_window: 0,
         recent_household_sales_value: 456.0,
         commercial_activity_floor_scale: 0.0,
+        service_sales_capacity: 0.0,
+        service_sales_profile_runtime_id: 0,
+        funded_activity: 0.0,
         work_area_scale: 1.0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
     }
+}
+
+#[test]
+fn non_canonical_vacancy_order_survives_save() {
+    let (_, edge) = snapshot_test_graph();
+    let mut allocator = BuildingAllocator::new();
+    let asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "vacancy_home",
+        ZoneClass::Residential,
+    );
+    for _ in 0..3 {
+        allocator
+            .buildings
+            .push(snapshot_test_building(edge, 0, asset.clone()));
+    }
+    allocator.rebuild_zone_index();
+    // Filling the first home and freeing a place moves it behind the others (`SIM-02`).
+    while allocator.buildings[0].occupancy < allocator.household_capacity(0) {
+        allocator.claim_vacancy(0);
+    }
+    allocator.release_vacancy(0);
+    let order = allocator.vacancy_index.clone();
+    assert_eq!(order[0], vec![2, 1, 0]);
+    let save = |allocator: &BuildingAllocator| {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(schema::SCHEMA).unwrap();
+        let tx = conn.transaction().unwrap();
+        world::save_vacancy_order(&tx, allocator).unwrap();
+        tx.commit().unwrap();
+        world::load_vacancy_order(&conn, allocator.buildings.len()).unwrap()
+    };
+    let saved = save(&allocator);
+    let mut loaded = allocator.clone();
+    loaded.rebuild_zone_index();
+    assert_eq!(loaded.vacancy_index[0], vec![0, 1, 2]);
+    loaded.restore_vacancy_order(&saved);
+    assert_eq!(loaded.vacancy_index, order);
+    assert_eq!(loaded.vacancy_pos, allocator.vacancy_pos);
+    assert!(!loaded.dirty_index);
+    // The restored order rebuilds the admission order that upkeep kept incrementally.
+    assert!(loaded.admission_order.same_as(&allocator.admission_order));
+
+    // Lists that do not hold exactly the loaded buildings' vacancies, as after the asset packs
+    // changed capacities, leave the rebuild in place.
+    let mut rebuilt = allocator.clone();
+    rebuilt.rebuild_zone_index();
+    let mut missing = saved.clone();
+    missing.lists[0].pop();
+    let mut repeated = saved.clone();
+    repeated.lists[0][0] = 1;
+    for mismatch in [missing, repeated] {
+        rebuilt.restore_vacancy_order(&mismatch);
+        assert_eq!(rebuilt.vacancy_index[0], vec![0, 1, 2]);
+    }
+
+    // A stale index keeps no order and is stale again after loading.
+    allocator.dirty_index = true;
+    let saved = save(&allocator);
+    assert!(saved.stale && saved.lists.iter().all(Vec::is_empty));
+    rebuilt.restore_vacancy_order(&saved);
+    assert!(rebuilt.dirty_index);
 }
 
 #[test]
@@ -505,6 +571,25 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     households.last_day_totals.private_payroll = 7.5;
     households.last_day_totals.utility_local_revenue = [0.0, 1.5, 0.75];
     households.coal_inventory_kg = 11.0;
+    // The hour in progress spans a save bit for bit (`SIM-02-I`).
+    households.electricity_hour.dispatch = 0.625;
+    households.electricity_hour.coverage = 0.875;
+    households.electricity_hour.demand_kwh = 0.1 + 0.2;
+    households.electricity_hour.capacity_kwh = 1.0 / 3.0;
+    households.electricity_hour.coal_burned_kg = 2.0_f64.sqrt();
+    households.electricity_hour.coal_stock_kg = 7.25;
+    households.service_sales.residents = 9;
+    households.service_sales.gross_revenue = 1.0 / 3.0;
+    households.service_sales.gross_by_resource = vec![0.0, 1.0 / 3.0];
+    households.service_sales.capacity_by_resource = vec![0.5, 0.1];
+    households.service_sales.drawable_by_resource = vec![0.0, 0.1 + 0.2];
+    households.service_sales.undrawn_by_resource = vec![-1e-9, 0.7_f64.sqrt()];
+    households.service_sales.hour_residents = 4;
+    households.service_sales.hour_capacity_by_resource = vec![0.25, 0.0];
+    households.service_sales.hour_collected = 1.0 / 7.0;
+    allocator.buildings[0].service_sales_capacity = 1.0 / 3.0;
+    allocator.buildings[0].service_sales_profile_runtime_id = 7;
+    allocator.buildings[0].funded_activity = 0.375;
     allocator.city_input_day.total = -2.5;
     allocator.city_input_day.power = -1.25;
     allocator.buildings[0].paid_workers_in_window = 3;
@@ -547,6 +632,20 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             terminal: true,
         },
     );
+    // A supplier index front and a sweep in progress (`SIM-02-I`), each saved sorted.
+    let supplier_roll = SavedSupplierRoll {
+        front: Some((
+            12,
+            vec![(1, 0, -1, 0, 1 << 32 | 3), (household_supplies, 2, 0, 5, 0)],
+        )),
+        sweep: Some(SavedSupplierSweep {
+            building_handles: 2,
+            hour: 13,
+            next_chunk: 480,
+            entries: vec![(1, 0, 0, 0, 0), (household_supplies, 1, 3, -2, 1)],
+        }),
+    };
+    logistics.supplier_roll = SupplierRoll::restore(supplier_roll.clone()).unwrap();
     let mut network_sys = TransitNetwork::new();
     network_sys.lane_system.rebuild(&mut graph);
     let planned_lane_id = network_sys.lane_system.edge_lanes[&edge_id][0] as u32;
@@ -725,6 +824,18 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         planned_day_index: 2,
         planned_minute_of_day: 180,
     });
+    // A finished demand snapshot sweep and part of the next (`SIM-02-I`).
+    for slot in 0..crate::simulation::core::scheduler::SLOTS_PER_HOUR + 37 {
+        demand.advance_snapshot_sweep(
+            slot,
+            &allocator,
+            &households,
+            &fiscal_policy,
+            treasury.balance,
+        );
+    }
+    let demand_snapshot = demand.saved_snapshot_sweep();
+    assert!(demand_snapshot.front.is_some() && demand_snapshot.sweep.is_some());
 
     let path = temp_path("round_trip");
     // Not the defaults: the generator parameters are the vegetation population, so a save that
@@ -782,6 +893,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
                 pending_demand_spawns: &pending_demand_spawns,
                 scheduler: crate::simulation::save::SavedScheduler {
                     environment,
+                    demand_snapshot: demand_snapshot.clone(),
                     ..Default::default()
                 },
                 allocator,
@@ -875,6 +987,60 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         );
     }
     assert_eq!(loaded.households.coal_inventory_kg, 11.0);
+    let (saved_hour, loaded_hour) = (
+        &households.electricity_hour,
+        &loaded.households.electricity_hour,
+    );
+    for (restored, saved) in [
+        (loaded_hour.demand_kwh, saved_hour.demand_kwh),
+        (loaded_hour.capacity_kwh, saved_hour.capacity_kwh),
+        (loaded_hour.coal_burned_kg, saved_hour.coal_burned_kg),
+        (loaded_hour.coal_stock_kg, saved_hour.coal_stock_kg),
+    ] {
+        assert_eq!(restored.to_bits(), saved.to_bits());
+    }
+    assert_eq!(
+        (loaded_hour.dispatch, loaded_hour.coverage),
+        (saved_hour.dispatch, saved_hour.coverage)
+    );
+    let (saved, restored) = (&households.service_sales, &loaded.households.service_sales);
+    assert_eq!(
+        (
+            restored.residents,
+            restored.hour_residents,
+            restored.gross_revenue
+        ),
+        (saved.residents, saved.hour_residents, saved.gross_revenue)
+    );
+    assert_eq!(
+        restored.hour_collected.to_bits(),
+        saved.hour_collected.to_bits()
+    );
+    for (restored, saved) in [
+        (&restored.gross_by_resource, &saved.gross_by_resource),
+        (&restored.capacity_by_resource, &saved.capacity_by_resource),
+        (
+            &restored.hour_capacity_by_resource,
+            &saved.hour_capacity_by_resource,
+        ),
+    ] {
+        assert_eq!(restored, saved);
+    }
+    for (restored, saved) in [
+        (&restored.drawable_by_resource, &saved.drawable_by_resource),
+        (&restored.undrawn_by_resource, &saved.undrawn_by_resource),
+    ] {
+        let bits = |values: &[f64]| values.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits(restored), bits(saved));
+    }
+    assert_eq!(
+        (
+            loaded.allocator.buildings[0].service_sales_capacity,
+            loaded.allocator.buildings[0].service_sales_profile_runtime_id,
+            loaded.allocator.buildings[0].funded_activity
+        ),
+        (1.0 / 3.0, 7, 0.375)
+    );
     assert_eq!(loaded.households.daily_ledgers()[0].paid_workers, 2);
     assert_eq!(loaded.households.housing_reviews, vec![first_household]);
     assert_eq!(loaded.households.exits, vec![first_household]);
@@ -1082,6 +1248,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     assert_eq!(loaded.pollution.back.data, pollution.back.data);
     assert_eq!(loaded.noise.back.data, noise.back.data);
     assert_eq!(loaded.scheduler.environment, environment);
+    assert_eq!(loaded.demand.saved_snapshot_sweep(), demand_snapshot);
     // The desirability back is rebuilt from the pollution and noise backs.
     assert_eq!(
         loaded.desirability.back.data[1],
@@ -1287,6 +1454,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         })
     );
     assert_eq!(loaded.logistics.shipments[0].freight_cost, 16.0);
+    assert_eq!(loaded.logistics.supplier_roll.saved(), supplier_roll);
 }
 
 #[test]
@@ -1404,6 +1572,9 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
         unpaid_cash_wages_in_window: 0,
         recent_household_sales_value: 0.0,
         commercial_activity_floor_scale: 0.0,
+        service_sales_capacity: 0.0,
+        service_sales_profile_runtime_id: 0,
+        funded_activity: 0.0,
         work_area_scale: 1.0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,

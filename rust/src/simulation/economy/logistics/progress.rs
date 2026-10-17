@@ -42,19 +42,22 @@ impl ShipmentSystem {
                 continue;
             }
             if !shipment_endpoints_ready(shipment, allocator, catalog) {
-                fail_shipment_before_dispatch(
-                    &mut self.shipments[idx],
-                    allocator,
-                    treasury_balance,
-                    self.hour_ticks + u32::from(retry_cooldown_hours),
-                );
+                let cooldown_until_tick = self.hour_ticks + u32::from(retry_cooldown_hours);
+                self.update_shipment(idx, |shipment| {
+                    fail_shipment_before_dispatch(
+                        shipment,
+                        allocator,
+                        treasury_balance,
+                        cooldown_until_tick,
+                    )
+                });
                 continue;
             }
             if let ShipmentEndpoint::Building(source_idx) = shipment.source {
                 allocator.buildings[source_idx]
                     .remove_inventory_units(shipment.resource_runtime_id, shipment.amount);
             }
-            self.shipments[idx].cargo_loaded = true;
+            self.update_shipment(idx, |shipment| shipment.cargo_loaded = true);
             self.held_dispatches.push(self.shipments[idx].id);
         }
     }
@@ -120,12 +123,15 @@ impl ShipmentSystem {
                 .operational_clock
                 .shipment_retry_cooldown_hours;
             return_loaded_cargo(&shipment, allocator);
-            fail_shipment_before_dispatch(
-                &mut self.shipments[idx],
-                allocator,
-                treasury_balance,
-                self.hour_ticks + u32::from(retry_cooldown_hours),
-            );
+            let cooldown_until_tick = self.hour_ticks + u32::from(retry_cooldown_hours);
+            self.update_shipment(idx, |shipment| {
+                fail_shipment_before_dispatch(
+                    shipment,
+                    allocator,
+                    treasury_balance,
+                    cooldown_until_tick,
+                )
+            });
             return false;
         };
         self.shipments[idx].carrier = agents.agent_handle(carrier_agent_id);
@@ -297,6 +303,7 @@ impl ShipmentSystem {
                 &mut on_delivery,
             );
         }
+        self.assert_reservations_current();
     }
 
     /// Test driver of one logistics hour with its trips taken at once: the hourly pass, then
@@ -335,6 +342,7 @@ impl ShipmentSystem {
             );
         }
         self.shipments.retain(|shipment| shipment.status.is_open());
+        self.assert_reservations_current();
     }
 
     // The carrier reached its destination: settle the cargo, then return or finish.
@@ -586,7 +594,9 @@ impl ShipmentSystem {
         graph: &RegionGraph,
     ) {
         if self.start_return_trip(shipment, allocator, agents, transit_network, graph) {
-            self.shipments[shipment_idx].status = ShipmentStatus::Returning;
+            self.update_shipment(shipment_idx, |shipment| {
+                shipment.status = ShipmentStatus::Returning;
+            });
             self.shipments[shipment_idx].queued_hours = 0;
         } else {
             self.finish_delivered_shipment(shipment_idx, shipment, agents);
@@ -600,7 +610,9 @@ impl ShipmentSystem {
         agents: &mut AgentSystem,
     ) {
         // Cargo already settled; retiring an empty carrier must not reverse the sale.
-        self.shipments[shipment_idx].status = ShipmentStatus::Fulfilled;
+        self.update_shipment(shipment_idx, |shipment| {
+            shipment.status = ShipmentStatus::Fulfilled;
+        });
         self.shipments[shipment_idx].carrier = AgentHandle::NONE;
         self.remove_carrier_agent(agents, shipment.carrier, shipment.id);
     }
@@ -727,7 +739,7 @@ impl ShipmentSystem {
             shipment.total_cost,
         );
 
-        self.shipments[shipment_idx].status = final_status;
+        self.update_shipment(shipment_idx, |shipment| shipment.status = final_status);
         self.shipments[shipment_idx].carrier = AgentHandle::NONE;
         self.remove_carrier_agent(agents, shipment.carrier, shipment.id);
     }

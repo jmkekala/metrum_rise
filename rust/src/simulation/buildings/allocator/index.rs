@@ -2,11 +2,23 @@
 
 //! Building search indices and vacancy management.
 
+use crate::debug_log;
 use crate::simulation::buildings::allocator::{BuildingAllocator, baseline_private_zone_slot};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::zoning::ZoneType;
 use godot::prelude::Vector3;
 use std::collections::HashMap;
+
+/// The vacancy lists as a save holds them (`SIM-02`): claims and releases leave them out of
+/// building order, admission, rehousing and the admission order read positions in them, and a
+/// rebuild recovers only building order.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SavedVacancyOrder {
+    /// The saved index was stale; its next reader rebuilds it, so no order is kept.
+    pub(crate) stale: bool,
+    /// Each vacancy list's building ids in order, by zone slot.
+    pub(crate) lists: [Vec<usize>; 3],
+}
 
 impl BuildingAllocator {
     /// Finds the nearest building centre strictly within the inspector's 30 m pick radius.
@@ -92,6 +104,48 @@ impl BuildingAllocator {
         }
         self.rebuild_admission_order();
         self.dirty_index = false;
+    }
+
+    /// Whether the vacancy lists may be stale: a stale index is rebuilt by its next reader.
+    pub(crate) fn vacancy_index_stale(&self) -> bool {
+        self.dirty_index || self.vacancy_pos.len() != self.buildings.len()
+    }
+
+    /// Restores a saved vacancy order over the index a load just rebuilt with the live asset
+    /// registry, so the loaded game picks the homes the saved one would. Where a saved list does
+    /// not hold exactly the rebuilt vacancies of its slot, the rebuild stands: the asset packs
+    /// changed capacities since the save, or a catalog refresh left the lists as they were. A
+    /// stale saved index stays rebuilt and is marked stale again, so its next reader rebuilds it
+    /// where the saved game's would. O(V log V).
+    pub(crate) fn restore_vacancy_order(&mut self, saved: &SavedVacancyOrder) {
+        if saved.stale {
+            self.dirty_index = true;
+            return;
+        }
+        let mut sorted = Vec::new();
+        for (slot, list) in saved.lists.iter().enumerate() {
+            sorted.clear();
+            sorted.extend_from_slice(list);
+            sorted.sort_unstable();
+            // A rebuild lists each slot's vacancies once, in building order.
+            if sorted != self.vacancy_index[slot] {
+                debug_log!(
+                    "save",
+                    "saved vacancy list {} holds {} homes against {} rebuilt; keeping the rebuild",
+                    slot,
+                    list.len(),
+                    self.vacancy_index[slot].len()
+                );
+                return;
+            }
+        }
+        for (slot, list) in saved.lists.iter().enumerate() {
+            self.vacancy_index[slot].clone_from(list);
+            for (position, &building_idx) in list.iter().enumerate() {
+                self.vacancy_pos[building_idx] = position;
+            }
+        }
+        self.rebuild_admission_order();
     }
 
     /// Adds the newest appended building to clean indices without scanning every building.
@@ -215,6 +269,7 @@ impl BuildingAllocator {
     }
 
     /// Predicts the vacancy claims made by forced rehousing without mutating allocator indices.
+    /// The caller rebuilds a stale index first, as the rehousing it predicts does.
     pub(crate) fn preview_vacancy_claims_except(
         &self,
         excluded_building: usize,

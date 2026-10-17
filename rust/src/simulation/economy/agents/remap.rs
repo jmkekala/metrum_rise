@@ -18,7 +18,8 @@ use std::collections::{HashMap, HashSet};
 const LANE_REATTACH_MAX_DIST_M: f32 = 30.0;
 
 impl AgentSystem {
-    /// Remaps household indices after a `swap_remove` in `HouseholdSystem`. O(A).
+    /// Remaps household indices after a `swap_remove` in `HouseholdSystem`, and moves the
+    /// renumbered households' member lists with them. O(A + mapping).
     pub fn remap_household_indices(&mut self, mapping: &HashMap<usize, usize>) {
         if mapping.is_empty() {
             return;
@@ -31,6 +32,7 @@ impl AgentSystem {
                     *household_id = new_id;
                 }
             });
+        self.remap_household_members(mapping);
     }
 
     /// Remaps building indices after a `swap_remove` in `BuildingAllocator`. O(A).

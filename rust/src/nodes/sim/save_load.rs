@@ -58,6 +58,7 @@ impl SimCore {
                         )
                     },
                     environment: self.environment_sweep,
+                    demand_snapshot: self.demand.saved_snapshot_sweep(),
                     events: events
                         .pending()
                         .into_iter()
@@ -88,11 +89,24 @@ impl SimCore {
         &mut self,
         path: &str,
     ) -> Result<Option<SavedCameraState>, String> {
-        let loaded = load_from_sqlite(&PathBuf::from(path), &self.allocator.registry)
+        let mut loaded = load_from_sqlite(&PathBuf::from(path), &self.allocator.registry)
             .map_err(|err| err.to_string())?;
         let events = restore_events(&loaded.scheduler, &loaded.time)?;
+        // Vacancy capacity and admission eligibility require the live asset registry; the saved
+        // vacancy order is restored over that rebuild (`SIM-02`).
+        std::mem::swap(&mut loaded.allocator.registry, &mut self.allocator.registry);
+        loaded.allocator.rebuild_zone_index();
+        loaded
+            .allocator
+            .restore_vacancy_order(&loaded.vacancy_order);
+        let stale_index = loaded.vacancy_order.stale;
         let camera = loaded.camera;
         self.apply_loaded_simulation(loaded, events);
+        // Loading itself reads the index, which rebuilds a stale one; it stays stale for the
+        // saved game's next reader.
+        if stale_index {
+            self.allocator.dirty_index = true;
+        }
         Ok(camera)
     }
 
@@ -114,12 +128,9 @@ impl SimCore {
         self.pending_demand_spawns = loaded.pending_demand_spawns;
         self.next_spawn_id = loaded.scheduler.next_spawn_id;
         self.events = events;
-        let mut new_allocator = loaded.allocator;
-        std::mem::swap(&mut new_allocator.registry, &mut self.allocator.registry);
-        self.allocator = new_allocator;
+        // The loaded allocator holds the live asset registry and its restored indices.
+        self.allocator = loaded.allocator;
         self.allocator.now_slot = self.time.absolute_slot();
-        // Vacancy capacity and admission eligibility require the restored asset registry.
-        self.allocator.rebuild_zone_index();
         // A live catalog with the saved lot sizes keeps the saved lots (`SIM-02-H`).
         let lot_sizes = self
             .allocator
@@ -131,6 +142,9 @@ impl SimCore {
         self.households = loaded.households;
         self.logistics = loaded.logistics;
         self.logistics.hour_ticks = loaded.scheduler.logistics_hour_ticks;
+        // The saved supplier index labels components as the loaded graph does (`SIM-02-I`).
+        self.logistics
+            .adopt_loaded_topology(&self.transit_network, &self.region_graph);
         self.resource_extraction = loaded.resource_extraction;
         self.agriculture = loaded.agriculture;
         self.agents = loaded.agents;

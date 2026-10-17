@@ -46,7 +46,7 @@ fn personal_service_demand_schedules_visible_barber_visit() {
         .push(make_household(0, 1000, 10.0, 10.0));
     let mut agents = AgentSystem::new();
     let visitor = agents.spawn_housed_agent(0, 0.0, 0.0);
-    agents.household_id[visitor] = 0;
+    agents.assign_household_id(visitor, 0);
 
     households.run_visible_service_visits_for_test(&mut agents, &allocator, &network, &graph, 0);
 
@@ -245,7 +245,7 @@ fn personal_service_visit_waits_when_household_needs_replenishment() {
     households.households.push(household);
     let mut agents = AgentSystem::new();
     let visitor = agents.spawn_housed_agent(0, 0.0, 0.0);
-    agents.household_id[visitor] = 0;
+    agents.assign_household_id(visitor, 0);
 
     households.run_visible_service_visits_for_test(&mut agents, &allocator, &network, &graph, 0);
 
@@ -292,7 +292,7 @@ fn health_essentials_service_does_not_spawn_pharmacy_visit_yet() {
         .push(make_household(0, 1000, 10.0, 10.0));
     let mut agents = AgentSystem::new();
     let visitor = agents.spawn_housed_agent(0, 0.0, 0.0);
-    agents.household_id[visitor] = 0;
+    agents.assign_household_id(visitor, 0);
 
     households.run_visible_service_visits_for_test(&mut agents, &allocator, &network, &graph, 0);
 
@@ -337,7 +337,7 @@ fn personal_service_visitor_returns_home_on_next_household_pass() {
     households.households.push(make_household(0, 2, 10.0, 10.0));
     let mut agents = AgentSystem::new();
     let visitor = agents.spawn_housed_agent(0, 0.0, 0.0);
-    agents.household_id[visitor] = 0;
+    agents.assign_household_id(visitor, 0);
     arrive_agent_at_building(&mut agents, visitor, 1, ACTIVITY_SHOPPING);
 
     households.run_visible_service_visits_for_test(&mut agents, &allocator, &network, &graph, 1);

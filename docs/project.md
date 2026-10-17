@@ -339,7 +339,13 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   sweep that runs through each day and publishes at its end, instead of at midnight, and dirty
   building lots regenerate one map region per slot instead of all at once in the hourly demand
   pass. Loading a game no longer re-derives every lot when the asset catalog is unchanged, which
-  was most of the stall in the first hour after a load (save format 94).
+  was most of the stall in the first hour after a load (save format 94). `SIM-02-I` part 1 (2026-10-17):
+  each household recounts its members at its own minute of the hour, and electricity, service
+  shopping and the shops' activity floor run per building and household, reading the city's
+  power coverage and shop prices of the hour before, so power and shop takings lag by an hour.
+  Freight finds suppliers listed an hour earlier, and demand plans on a snapshot swept over the
+  previous hour. A game saved mid-hour now continues exactly as one that was not saved (save
+  format 95).
 
 - **Starting treasury**: new games begin with 500,000, increased from 100,000. See
   [money source](economy.md#money-source); earlier balance runs retain their original starting capital.

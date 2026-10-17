@@ -7,11 +7,19 @@
 //! household consumption, utilities and shopping-leg timeouts, and the happiness cost of an
 //! empty household. Each slot visits the entities of one hourly phase in handle order, about
 //! N / 960 of them.
+//!
+//! Since `SIM-02-I` the city-wide hourly passes run there too: a building sets its activity
+//! floor from the hour's census before production, then draws its service sales and meters its
+//! electricity; a household buys services and meters its electricity. They read the city totals
+//! of the last finished hour, and the hour's last slot folds this hour's (`city hour`).
 
 use super::state::SimCore;
 use crate::simulation::core::phases::PHASES_PER_HOUR;
+use crate::simulation::core::scheduler::SLOTS_PER_HOUR;
 use crate::simulation::economy::definitions::load_runtime_economy_catalog;
-use crate::simulation::economy::households::produce_building_hour;
+use crate::simulation::economy::households::{
+    ElectricityProfiles, produce_building_hour, refresh_activity_floor,
+};
 
 // Hourly phase of `slot`.
 fn hour_phase(slot: u64) -> u32 {
@@ -19,7 +27,8 @@ fn hour_phase(slot: u64) -> u32 {
 }
 
 impl SimCore {
-    /// Production of the buildings whose hourly phase is `slot`'s.
+    /// The hour of the buildings whose hourly phase is `slot`'s: activity floor, production,
+    /// service sales and electricity.
     pub(super) fn run_building_hours(&mut self, slot: u64) {
         let handles = &mut self.allocator.building_handles;
         handles.register_appended(self.allocator.buildings.len());
@@ -29,17 +38,29 @@ impl SimCore {
             let catalog = load_runtime_economy_catalog().unwrap_or_else(|err| {
                 panic!("could not load built-in runtime economy catalog: {err}")
             });
+            let electricity = ElectricityProfiles::new(&catalog);
             for &handle in &phase {
                 let Some(building_idx) = self.allocator.building_handles.resolve(handle) else {
                     continue;
                 };
-                produce_building_hour(&catalog, &mut self.allocator.buildings[building_idx]);
+                let building = &mut self.allocator.buildings[building_idx];
+                refresh_activity_floor(&catalog, building);
+                produce_building_hour(&catalog, building);
                 self.agriculture
                     .produce_for_building(building_idx, &mut self.allocator, &catalog);
                 self.resource_extraction.produce_for_building(
                     building_idx,
                     &mut self.allocator,
                     &catalog,
+                );
+                self.households.settle_store_service_sales(
+                    &catalog,
+                    &mut self.allocator.buildings[building_idx],
+                );
+                self.households.run_building_electricity(
+                    &electricity,
+                    &mut self.allocator,
+                    building_idx,
                 );
             }
         }
@@ -70,13 +91,29 @@ impl SimCore {
         self.agent_phase_scratch = phase;
     }
 
-    /// Every entity's hour at once, phase by phase, for callers that step a whole operational
-    /// hour without the slot clock (tests and tools).
+    /// Folds the hour's city totals at its last slot, after every phase of the hour has run:
+    /// service-sales prices and pool and electricity dispatch and coverage for the next hour.
+    /// O(1) in the city's size.
+    pub(super) fn advance_city_hour(&mut self, slot: u64) {
+        if slot % SLOTS_PER_HOUR == SLOTS_PER_HOUR - 1 {
+            self.close_city_hour();
+        }
+    }
+
+    fn close_city_hour(&mut self) {
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        self.households.close_city_hour(&catalog);
+    }
+
+    /// Every entity's hour at once, phase by phase, then the hour's city totals, for callers
+    /// that step a whole operational hour without the slot clock (tests and tools).
     pub(super) fn run_every_hour_phase(&mut self) {
         for phase in 0..u64::from(PHASES_PER_HOUR) {
             self.run_building_hours(phase);
             self.run_household_hours(phase);
             self.run_agent_hours(phase);
         }
+        self.close_city_hour();
     }
 }

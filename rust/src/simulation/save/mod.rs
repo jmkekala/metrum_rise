@@ -6,7 +6,7 @@ use crate::nodes::sim::core::{
     CityServicePolicy, CityTreasury, DailyBudgetLedgerEntry, PendingDemandSpawnAction,
 };
 use crate::simulation::agriculture::AgricultureSystem;
-use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::buildings::allocator::{BuildingAllocator, SavedVacancyOrder};
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::handles::Handle;
 use crate::simulation::core::time::{
@@ -111,6 +111,9 @@ pub(crate) struct LoadedSimulation {
     /// Timing wheel and counters (`SIM-02`).
     pub scheduler: SavedScheduler,
     pub allocator: BuildingAllocator,
+    /// The saved vacancy lists' order, restored once the loaded index is rebuilt with the live
+    /// asset registry (`SIM-02`).
+    pub vacancy_order: SavedVacancyOrder,
     pub households: HouseholdSystem,
     pub logistics: ShipmentSystem,
     pub resource_extraction: ResourceExtractionSystem,
@@ -578,12 +581,16 @@ pub(crate) fn load_from_sqlite(
     demand.exit_eligible_today = demand_row.exit_eligible_today;
     let mut pending_demand_spawns = world::load_pending_demand_spawns(&conn)?;
     let scheduler = scheduler::load(&conn)?;
+    demand
+        .restore_snapshot_sweep(&scheduler.demand_snapshot)
+        .map_err(SaveLoadError::custom)?;
     let pollution = world::load_grid_system::<PollutionSystem>(&conn, &config, "pollution_state")?;
     let noise = world::load_grid_system::<NoiseSystem>(&conn, &config, "noise_state")?;
 
     let mut graph = network::load_graph(&conn)?;
     let (mut zoning, quarantined_parcels) = world::load_zoning(&conn, &config, &graph)?;
     let mut allocator = world::load_buildings(&conn, registry, &zoning.profiles)?;
+    let vacancy_order = world::load_vacancy_order(&conn, allocator.buildings.len())?;
     let mut households = world::load_households(&conn)?;
     let mut logistics = world::load_shipments(&conn)?;
     let mut resource_extraction =
@@ -734,6 +741,8 @@ pub(crate) fn load_from_sqlite(
     };
     let fiscal_policy = load_fiscal_policy(&conn)?;
     let budget_history = load_budget_history(&conn)?;
+    // Household member lists are derived, in canonical member order (`SIM-02-I`).
+    agents.rebuild_household_members();
     households.rebuild_household_shopping_access(&agents);
 
     Ok(LoadedSimulation {
@@ -755,6 +764,7 @@ pub(crate) fn load_from_sqlite(
         pending_demand_spawns,
         scheduler,
         allocator,
+        vacancy_order,
         households,
         logistics,
         resource_extraction,

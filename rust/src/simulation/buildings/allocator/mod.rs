@@ -25,6 +25,7 @@ pub(crate) use tests::support::indexed_test_building;
 pub(crate) use entrance::{
     BuildingEntranceKey, DemandSiteEntranceKey, FreightEntranceAccess, building_local_xz_basis,
 };
+pub(crate) use index::SavedVacancyOrder;
 pub(crate) use lifecycle::DemandBuildingActionExecution;
 pub(crate) use placement::BuildingSiteEnvironment;
 pub(crate) use placement::ExplicitServicePlacementPreview;
@@ -284,9 +285,19 @@ pub struct Building {
     /// Runtime-only activity cap of a store, service store or explicit work area: its funded
     /// share of full output from the latest job-funding census (`DEM-02`).
     ///
-    /// Each hour sets it from that hour's census, and production at the building's hourly phase
-    /// reads it until the next, so it is saved (`SIM-02-F`).
+    /// The building's hourly phase sets it from [`Self::funded_activity`] before production,
+    /// and it holds until the next phase, so it is saved (`SIM-02-F`, `SIM-02-I`).
     pub commercial_activity_floor_scale: f32,
+    /// Funded share of full output in the latest hourly census, copied like
+    /// [`Self::funded_job_capacity`] and saved, so the activity floor set at each hourly phase
+    /// never reads a census rebuilt on load (`SIM-02-I`).
+    pub funded_activity: f32,
+    /// Throughput a service store recorded at its last hourly phase; zero for any other
+    /// building. At its next phase the store draws its share of the service-sales pool by the
+    /// capacity this gives under [`Self::service_sales_profile_runtime_id`] (`SIM-02-I`).
+    pub service_sales_capacity: f32,
+    /// Economy profile [`Self::service_sales_capacity`] was recorded under.
+    pub service_sales_profile_runtime_id: u16,
     /// Cached scale from an explicit player-drawn production area to authored full-area capacity.
     ///
     /// `1.0` means one hectare of output and profile-defined worker density. Explicit farms and

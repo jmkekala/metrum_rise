@@ -4,9 +4,10 @@
 //! conservation invariant (`docs/simulation.md#behaviour-envelope-sim-02-a`).
 //!
 //! Inside the city money only moves between the treasury, building and household budgets and
-//! two escrows (a shopper's reserved purchase, a paid shipment in transit). Every site where
-//! money is created or destroyed records the signed amount here: positive enters the city.
-//! Gameplay and benchmark builds compile every [`record`] call to nothing.
+//! three escrows (a shopper's reserved purchase, a paid shipment in transit, the service-sales
+//! pool between households and stores). Every site where money is created or destroyed records
+//! the signed amount here: positive enters the city. Gameplay and benchmark builds compile
+//! every [`record`] call to nothing.
 
 /// One kind of money crossing the city boundary.
 #[cfg_attr(not(test), allow(dead_code))]

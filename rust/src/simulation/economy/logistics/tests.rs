@@ -61,6 +61,9 @@ fn benchmark_supplier_index() {
             })
             .collect();
         allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+        allocator
+            .building_handles
+            .register_appended(allocator.buildings.len());
         let reachable = components.building_components(&allocator, &graph, 0, TransitFlags::CAR);
         let mut samples = [0.0; 11];
         for sample in &mut samples {
@@ -736,6 +739,9 @@ fn make_building(
                     == crate::simulation::economy::definitions::EconomyProfileRuntimeKind::Store
             })
             .map_or(0.0, |profile| 1.0 / profile.worker_capacity as f32),
+        service_sales_capacity: 0.0,
+        service_sales_profile_runtime_id: 0,
+        funded_activity: 0.0,
         work_area_scale: 1.0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
@@ -908,6 +914,10 @@ fn recurring_receiving_windows_price_local_and_imported_goods_without_markup_on_
     assert!(outside[1].is_some());
     let reservations = logistics.build_reservation_views(catalog.resource_count());
     let components = ModeComponentIndex::build(&graph, TransitFlags::CAR);
+    // The dispatch index names suppliers by building handle.
+    allocator
+        .building_handles
+        .register_appended(allocator.buildings.len());
     let index = super::supplier_index::SupplierCandidateIndex::build(
         &allocator,
         &graph,
@@ -1128,6 +1138,10 @@ fn recurring_equal_route_quotes_match_dispatch_price_order_after_cached_search_a
     let mut logistics = ShipmentSystem::new();
     let reservations = logistics.build_reservation_views(catalog.resource_count());
     let components = ModeComponentIndex::build(&graph, TransitFlags::CAR);
+    // The dispatch index names suppliers by building handle.
+    allocator
+        .building_handles
+        .register_appended(allocator.buildings.len());
     let index = super::supplier_index::SupplierCandidateIndex::build(
         &allocator,
         &graph,
@@ -4122,7 +4136,7 @@ fn payload_limits_local_import_and_export_cargo_without_losing_stock_or_money() 
         let mut shipments = ShipmentSystem::new();
         let mut planning = super::planning::FreightPlanningContext::build(
             &mut shipments,
-            &allocator,
+            &mut allocator,
             &network,
             &graph,
         );
@@ -4431,7 +4445,7 @@ fn dispatch_uses_cheaper_import() {
     let mut shipments = ShipmentSystem::new();
     let mut planning = super::planning::FreightPlanningContext::build(
         &mut shipments,
-        &allocator,
+        &mut allocator,
         &network,
         &graph,
     );
@@ -5139,7 +5153,7 @@ fn supplier_index_lists_only_suppliers_with_an_unreserved_batch() {
     });
     let planning = super::planning::FreightPlanningContext::build(
         &mut shipments,
-        &allocator,
+        &mut allocator,
         &network,
         &graph,
     );
@@ -6132,7 +6146,7 @@ fn export_waits_until_its_cargo_pays_the_carrier_quote() {
     let mut shipments = ShipmentSystem::new();
     let mut planning = super::planning::FreightPlanningContext::build(
         &mut shipments,
-        &allocator,
+        &mut allocator,
         &network,
         &graph,
     );
@@ -6190,7 +6204,7 @@ fn owa_export_eta_uses_freight_timing_window() {
     let mut agents = AgentSystem::new();
     let mut planning = super::planning::FreightPlanningContext::build(
         &mut shipments,
-        &allocator,
+        &mut allocator,
         &network,
         &graph,
     );
@@ -6494,7 +6508,7 @@ fn local_export_holds_share_the_buyers_budget_across_recipe_inputs() {
     let mut shipments = ShipmentSystem::new();
     let mut planning = super::planning::FreightPlanningContext::build(
         &mut shipments,
-        &allocator,
+        &mut allocator,
         &network,
         &graph,
     );
@@ -6539,5 +6553,297 @@ fn city_input_refund_on_a_later_day_remains_in_net_spending() {
     assert_eq!(
         allocator.buildings[0].daily_city_funded_input_cost,
         -2_800.0
+    );
+}
+
+// Three stocked suppliers, one short of a batch and one mostly reserved, with a removal that
+// moves the last supplier to a lower dense index than its handle slot.
+fn rolling_supplier_fixture() -> (
+    RegionGraph,
+    TransitNetwork,
+    BuildingAllocator,
+    ShipmentSystem,
+) {
+    let (graph, network, industrial_edge, commercial_edge, _) = simple_graph_with_border();
+    let mut allocator = BuildingAllocator::new();
+    let industrial = register_test_asset(&mut allocator, "test", "roll_ind", ZoneClass::Industrial);
+    let commercial = register_test_asset(&mut allocator, "test", "roll_com", ZoneClass::Commercial);
+    for (x, zone, edge, asset, stock) in [
+        (
+            -50.0,
+            ZoneType::Industrial,
+            industrial_edge,
+            &industrial,
+            300.0,
+        ),
+        (
+            -40.0,
+            ZoneType::Industrial,
+            industrial_edge,
+            &industrial,
+            39.0,
+        ),
+        (
+            40.0,
+            ZoneType::Commercial,
+            commercial_edge,
+            &commercial,
+            0.0,
+        ),
+        (
+            -30.0,
+            ZoneType::Industrial,
+            industrial_edge,
+            &industrial,
+            300.0,
+        ),
+        (
+            -60.0,
+            ZoneType::Industrial,
+            industrial_edge,
+            &industrial,
+            300.0,
+        ),
+    ] {
+        let building = make_building(&allocator, x, zone, edge, asset, stock, 20_000.0);
+        allocator.buildings.push(building);
+    }
+    let len = allocator.buildings.len();
+    allocator.building_handles.register_appended(len);
+    allocator.building_handles.swap_remove(1, len);
+    allocator.buildings.swap_remove(1);
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    allocator.rebuild_zone_index();
+    let packaged_food = load_runtime_economy_catalog()
+        .unwrap()
+        .resource_runtime_id_for_id("packaged_food")
+        .unwrap();
+    let mut shipments = ShipmentSystem::new();
+    shipments.shipments.push(Shipment {
+        id: 1,
+        resource_runtime_id: packaged_food,
+        amount: 280.0,
+        source: ShipmentEndpoint::Building(3),
+        destination: ShipmentEndpoint::Building(2),
+        carrier_class: CarrierClass::Truck,
+        status: ShipmentStatus::InTransit,
+        carrier: crate::simulation::economy::agents::AgentHandle::NONE,
+        total_cost: 0.0,
+        freight_cost: 0.0,
+        eta_hours: 1,
+        queued_hours: 0,
+        cargo_loaded: false,
+    });
+    shipments.hour_ticks = 7;
+    (graph, network, allocator, shipments)
+}
+
+fn run_supplier_slots(
+    shipments: &mut ShipmentSystem,
+    slots: impl Iterator<Item = u64>,
+    allocator: &BuildingAllocator,
+    network: &TransitNetwork,
+    graph: &RegionGraph,
+) {
+    for slot in slots {
+        shipments.advance_supplier_sweep(slot, allocator, network, graph);
+    }
+}
+
+#[test]
+fn rolling_supplier_sweep_equals_a_fresh_index_and_the_dense_build() {
+    use super::supplier_index::SupplierCandidateIndex;
+    use crate::simulation::core::handles::Handle;
+    use crate::simulation::core::scheduler::SLOTS_PER_HOUR;
+    use crate::simulation::economy::accessibility::ReachableBucketEntry;
+    use crate::simulation::economy::households::saleable_output_stock;
+    let (graph, network, allocator, mut shipments) = rolling_supplier_fixture();
+    run_supplier_slots(
+        &mut shipments,
+        0..SLOTS_PER_HOUR,
+        &allocator,
+        &network,
+        &graph,
+    );
+    let generation = shipments.freight_topology.components_generation();
+    assert!(shipments.supplier_roll.take_front(7, generation).is_none());
+    let front = shipments
+        .supplier_roll
+        .take_front(8, generation)
+        .expect("the sweep finished the next hour's index");
+
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let payload = load_runtime_economy_tuning()
+        .unwrap()
+        .logistics
+        .truck_payload_kg;
+    let views = shipments.build_reservation_views(catalog.resource_count());
+    let components = shipments.freight_topology.components();
+    let fresh =
+        SupplierCandidateIndex::build(&allocator, &graph, &catalog, components, &views, payload);
+    assert_eq!(front.entries(), fresh.entries());
+
+    // The same members as the dense index built before `SIM-02-I`, once handles resolve.
+    let dense = SupplierCandidateIndex::build_filtered(
+        &allocator,
+        &graph,
+        &catalog,
+        components,
+        true,
+        |idx, resource| {
+            let building = &allocator.buildings[idx];
+            let profile = catalog
+                .profile_by_runtime_id(building.economy_profile_runtime_id)
+                .unwrap();
+            let available = (saleable_output_stock(&catalog, building, profile, resource)
+                - views.reserved_outbound_amount(idx, resource))
+            .max(0.0);
+            let batch = catalog
+                .resource_measure(resource)
+                .map_or(0.0, |measure| measure.shipment_batch_kg);
+            super::quantization::fills_one_batch(available, batch, payload)
+        },
+    );
+    let mut resolved: Vec<_> = front
+        .entries()
+        .into_iter()
+        .map(|(resource, entry)| {
+            let (component, chunk, item) = entry.parts();
+            let idx = allocator
+                .building_handles
+                .resolve(Handle::from_bits(item as u64))
+                .unwrap();
+            (resource, ReachableBucketEntry::new(component, chunk, idx))
+        })
+        .collect();
+    resolved.sort_unstable();
+    assert_eq!(resolved, dense.entries());
+    let suppliers: Vec<usize> = resolved.iter().map(|(_, entry)| entry.parts().2).collect();
+    assert_eq!(
+        suppliers,
+        [0, 1],
+        "two stocked suppliers; the moved one keeps its handle"
+    );
+
+    // A sweep started mid-hour, or one that misses a slot, publishes nothing.
+    for skipped in [0..100, 500..501] {
+        let (graph, network, allocator, mut shipments) = rolling_supplier_fixture();
+        let slots = (0..SLOTS_PER_HOUR).filter(|slot| !skipped.contains(slot));
+        run_supplier_slots(&mut shipments, slots, &allocator, &network, &graph);
+        let generation = shipments.freight_topology.components_generation();
+        assert!(shipments.supplier_roll.take_front(8, generation).is_none());
+    }
+}
+
+#[test]
+fn saved_supplier_sweep_continues_identically_after_loading() {
+    use super::supplier_index::SupplierRoll;
+    use crate::simulation::core::scheduler::SLOTS_PER_HOUR;
+    let (graph, network, mut allocator, mut original) = rolling_supplier_fixture();
+    run_supplier_slots(
+        &mut original,
+        0..SLOTS_PER_HOUR,
+        &allocator,
+        &network,
+        &graph,
+    );
+    original.hour_ticks = 8;
+    run_supplier_slots(&mut original, 0..480, &allocator, &network, &graph);
+    let saved = original.supplier_roll.saved();
+    assert!(
+        saved
+            .front
+            .as_ref()
+            .is_some_and(|(hour, entries)| *hour == 8 && !entries.is_empty())
+    );
+    assert!(
+        saved
+            .sweep
+            .as_ref()
+            .is_some_and(|sweep| sweep.next_chunk == 480 && !sweep.entries.is_empty())
+    );
+
+    let mut loaded = original.clone();
+    loaded.supplier_roll = SupplierRoll::restore(saved.clone()).unwrap();
+    assert_eq!(loaded.supplier_roll.saved(), saved);
+    loaded.adopt_loaded_topology(&network, &graph);
+    // A supplier the second half of the sweep folds sells out after the save.
+    let packaged_food = load_runtime_economy_catalog()
+        .unwrap()
+        .resource_runtime_id_for_id("packaged_food")
+        .unwrap();
+    allocator.buildings[1].set_inventory_units(packaged_food, 0.0);
+    for shipments in [&mut original, &mut loaded] {
+        run_supplier_slots(shipments, 480..SLOTS_PER_HOUR, &allocator, &network, &graph);
+    }
+    assert_eq!(loaded.supplier_roll.saved(), original.supplier_roll.saved());
+    let generation = loaded.freight_topology.components_generation();
+    let front = loaded.supplier_roll.take_front(9, generation).unwrap();
+    assert_eq!(
+        front.entries(),
+        original
+            .supplier_roll
+            .take_front(9, generation)
+            .unwrap()
+            .entries()
+    );
+    let suppliers: Vec<usize> = front
+        .entries()
+        .iter()
+        .map(|(_, entry)| entry.parts().2)
+        .collect();
+    assert_eq!(
+        suppliers,
+        [0],
+        "the sold-out supplier was folded after the save"
+    );
+}
+
+#[test]
+fn road_edit_retires_the_supplier_front_and_the_sweep_in_progress() {
+    use crate::simulation::core::scheduler::SLOTS_PER_HOUR;
+    use crate::simulation::pathing::cch::CchGraph;
+    let (graph, mut network, allocator, mut shipments) = rolling_supplier_fixture();
+    run_supplier_slots(
+        &mut shipments,
+        0..SLOTS_PER_HOUR,
+        &allocator,
+        &network,
+        &graph,
+    );
+    shipments.hour_ticks = 8;
+    run_supplier_slots(&mut shipments, 0..480, &allocator, &network, &graph);
+    let before = shipments.freight_topology.components_generation();
+    network.cch_graph = CchGraph::build(&graph);
+    run_supplier_slots(
+        &mut shipments,
+        480..SLOTS_PER_HOUR,
+        &allocator,
+        &network,
+        &graph,
+    );
+    let after = shipments.freight_topology.components_generation();
+    assert_ne!(after, before);
+    // The front's labels belong to the old components and the sweep was abandoned.
+    assert!(shipments.supplier_roll.take_front(8, after).is_none());
+    assert!(shipments.supplier_roll.take_front(9, after).is_none());
+    // The next pass builds its own index from the new components.
+    let mut allocator = allocator;
+    let planning = super::planning::FreightPlanningContext::build(
+        &mut shipments,
+        &mut allocator,
+        &network,
+        &graph,
+    );
+    assert!(
+        planning
+            .supplier_index
+            .buckets_for_resource(
+                load_runtime_economy_catalog()
+                    .unwrap()
+                    .resource_runtime_id_for_id("packaged_food")
+                    .unwrap()
+            )
+            .is_some()
     );
 }

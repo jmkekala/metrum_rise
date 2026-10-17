@@ -6,6 +6,7 @@ mod building_refs;
 mod daily;
 pub mod data;
 mod determinism;
+mod household_members;
 pub(crate) mod inspection;
 pub(crate) mod junction_stalls;
 pub(crate) mod lane_state;
@@ -17,6 +18,7 @@ pub mod tick;
 
 pub use data::{Agent, AgentSystem, AgentVec};
 pub(crate) use data::AgentHandle;
+pub(crate) use household_members::NO_MEMBER;
 
 use determinism::stable_index;
 

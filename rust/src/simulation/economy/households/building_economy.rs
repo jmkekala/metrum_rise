@@ -6,24 +6,21 @@ use super::HouseholdSystem;
 use super::data::DailyHouseholdLedger;
 use super::metrics::{
     OPERATIONAL_HOURS_PER_DAY, UTILITY_SERVICE_POWER, building_operation_factors,
-    consume_hourly_production_inputs, economy_profile_for_building, household_is_housed,
-    local_utility_service_costs, refresh_commercial_activity_floor, saleable_output_stock,
-    scaled_output_buffer_capacity_units_for_building, service_store_demand_rates_by_resource,
-    utility_service_index,
+    commercial_activity_floor, consume_hourly_production_inputs, economy_profile_for_building,
+    local_utility_service_costs, saleable_output_stock,
+    scaled_output_buffer_capacity_units_for_building, utility_service_index,
 };
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::economy::definitions::{
-    EconomyProfileRuntime, EconomyProfileRuntimeKind, ResourceRuntimeId, RuntimeEconomyCatalog,
-    RuntimeEconomyTuning, load_runtime_economy_catalog, load_runtime_economy_tuning,
+    EconomyProfileRuntime, EconomyProfileRuntimeKind, RuntimeEconomyCatalog, RuntimeEconomyTuning,
+    load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
 use crate::simulation::economy::fiscal::{
     CityFiscalPolicy, FiscalRevenue, daily_property_tax, tax_amount,
 };
 use crate::simulation::economy::logistics::ShipmentSystem;
-use crate::simulation::economy::resource_totals::{add_resource_amount, resource_amount};
 use crate::simulation::zoning::ZoneType;
-use rayon::prelude::*;
 use std::sync::Arc;
 
 const UTILITY_SERVICE_POWER_INDEX: usize = 0;
@@ -32,13 +29,6 @@ const UTILITY_SERVICE_SEWAGE_INDEX: usize = 2;
 const UTILITY_SERVICE_COUNT: usize = 3;
 const LIQUIDATION_UNIT_PRICE_EPSILON: f32 = 0.0001;
 const CITY_SERVICE_UTILITY_DEMAND_UNITS_PER_DAY: f32 = 1.0;
-
-#[derive(Clone, Copy, Debug)]
-struct ServiceStoreCapacity {
-    building_idx: usize,
-    resource_runtime_id: ResourceRuntimeId,
-    capacity_units_per_hour: f32,
-}
 
 impl HouseholdSystem {
     /// Settles building `building_idx`'s 24-hour window at its daily phase (`SIM-02-G`), in the
@@ -362,171 +352,41 @@ impl HouseholdSystem {
             .sum()
     }
 
-    pub(super) fn run_building_economy(&mut self, allocator: &mut BuildingAllocator) {
-        let catalog = load_runtime_economy_catalog()
-            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
-        refresh_commercial_activity_floor(&catalog, allocator, self.job_funding.activities());
-        // Service stores sell from one citywide pool until it becomes a rolling snapshot
-        // (`SIM-02-I`); every other producer runs its hour at its own phase (`SIM-02-F`).
-        self.settle_hourly_service_store_sales(allocator, &catalog);
-    }
-
-    /// Test driver of one building hour: the hourly pass, then every building's production
-    /// hour in dense order, as their phases would run it.
+    /// Every building's hourly phase in dense order (activity floor from the census,
+    /// production, service sales, electricity), every household's service purchases and
+    /// electricity, then the hour's end, as one hour of slots would run them. Farm and mine
+    /// output, which the simulation's phases add, is left to the caller.
     #[cfg(test)]
     pub(super) fn run_building_hour_for_test(&mut self, allocator: &mut BuildingAllocator) {
-        self.run_building_economy(allocator);
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
-        for building in &mut allocator.buildings {
-            produce_building_hour(&catalog, building);
-        }
-    }
-
-    fn settle_hourly_service_store_sales(
-        &mut self,
-        allocator: &mut BuildingAllocator,
-        catalog: &RuntimeEconomyCatalog,
-    ) {
-        let demand_rates = service_store_demand_rates_by_resource(catalog);
-        if demand_rates.is_empty() {
-            return;
-        }
-        let housed_residents: u32 = self
-            .households
-            .par_iter()
-            .filter(|household| household_is_housed(household, allocator))
-            .map(|household| u32::from(household.member_count))
-            .sum();
-        if housed_residents == 0 {
-            return;
-        }
-        let capacities = service_store_hourly_capacities(allocator, catalog);
-        if capacities.is_empty() {
-            return;
-        }
-
-        let mut capacity_by_resource = Vec::new();
-        for capacity in &capacities {
-            add_resource_amount(
-                &mut capacity_by_resource,
-                capacity.resource_runtime_id,
-                capacity.capacity_units_per_hour,
-            );
-        }
-
-        let mut gross_revenue_by_resource = Vec::new();
-        let mut gross_revenue = 0.0_f32;
-        for &(resource_runtime_id, rate_per_resident_per_day) in &demand_rates {
-            let hourly_demand_units = housed_residents as f32 * rate_per_resident_per_day.max(0.0)
-                / OPERATIONAL_HOURS_PER_DAY;
-            if hourly_demand_units <= 0.0 {
-                continue;
-            }
-            let capacity_units =
-                resource_amount(&capacity_by_resource, resource_runtime_id).max(0.0);
-            if capacity_units <= 0.0 {
-                continue;
-            }
-            let served_units = hourly_demand_units.min(capacity_units);
-            let unit_price = catalog
-                .unit_price_for_resource(resource_runtime_id)
-                .unwrap_or_else(|| {
-                    let resource_id = catalog
-                        .resource_id_for_runtime_id(resource_runtime_id)
-                        .unwrap_or("<unknown>");
-                    panic!("service resource '{resource_id}' has no catalog price")
-                });
-            let revenue = served_units * unit_price.max(0.0);
-            if revenue <= 0.0 {
-                continue;
-            }
-            gross_revenue += revenue;
-            add_resource_amount(&mut gross_revenue_by_resource, resource_runtime_id, revenue);
-        }
-        if gross_revenue <= 0.0 {
-            return;
-        }
-
-        let paid_revenue =
-            self.charge_households_for_aggregate_service_sales(allocator, gross_revenue);
-        if paid_revenue <= 0.0 {
-            return;
-        }
-        let paid_scale = (paid_revenue / gross_revenue).clamp(0.0, 1.0);
-        for capacity in capacities {
-            let total_resource_capacity =
-                resource_amount(&capacity_by_resource, capacity.resource_runtime_id);
-            if total_resource_capacity <= 0.0 {
-                continue;
-            }
-            let resource_revenue =
-                resource_amount(&gross_revenue_by_resource, capacity.resource_runtime_id);
-            if resource_revenue <= 0.0 {
-                continue;
-            }
-            let building_revenue = resource_revenue * paid_scale * capacity.capacity_units_per_hour
-                / total_resource_capacity;
-            if building_revenue <= 0.0 {
-                continue;
-            }
-            if let Some(building) = allocator.buildings.get_mut(capacity.building_idx) {
-                building.revenue += building_revenue;
-                building.operating_budget += building_revenue;
-                building.daily_household_sales_value += building_revenue;
-                if let Some(profile) =
-                    catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
-                {
-                    let full_hour_revenue = profile.base_rate_units_per_day
-                        / OPERATIONAL_HOURS_PER_DAY
-                        * profile.unit_price_currency;
-                    if full_hour_revenue > 0.0 {
-                        building.hourly_economy_activity =
-                            (building_revenue / full_hour_revenue).clamp(0.0, 1.0);
-                    }
-                }
-            }
-        }
-    }
-
-    fn charge_households_for_aggregate_service_sales(
-        &mut self,
-        allocator: &BuildingAllocator,
-        gross_revenue: f32,
-    ) -> f32 {
+        let profiles = super::electricity::ElectricityProfiles::new(&catalog);
         self.ensure_daily_ledger_len();
-        let total_housed_residents: u32 = self
-            .households
-            .iter()
-            .filter(|household| household_is_housed(household, allocator))
-            .map(|household| u32::from(household.member_count))
-            .sum();
-        if total_housed_residents == 0 {
-            return 0.0;
+        // The hour's census, as its pass would publish it.
+        let activities = self.job_funding.activities();
+        for (building_idx, building) in allocator.buildings.iter_mut().enumerate() {
+            building.funded_activity = activities.get(building_idx).copied().unwrap_or(0.0);
         }
-
-        let mut paid_total = 0.0_f32;
+        for building_idx in 0..allocator.buildings.len() {
+            let building = &mut allocator.buildings[building_idx];
+            refresh_activity_floor(&catalog, building);
+            produce_building_hour(&catalog, building);
+            self.settle_store_service_sales(&catalog, building);
+            self.run_building_electricity(&profiles, allocator, building_idx);
+        }
         for household_id in 0..self.households.len() {
-            if !household_is_housed(&self.households[household_id], allocator) {
-                continue;
-            }
-            let share = gross_revenue * self.households[household_id].member_count as f32
-                / total_housed_residents as f32;
-            if share <= 0.0 {
-                continue;
-            }
-            let paid = share.min(self.households[household_id].budget.max(0.0));
-            if paid <= 0.0 {
-                continue;
-            }
-            self.households[household_id].budget -= paid;
-            if let Some(ledger) = self.daily_ledgers.get_mut(household_id) {
-                ledger.shopping_spend += paid;
-            }
-            paid_total += paid;
+            self.buy_household_services(household_id, allocator);
+            self.record_household_electricity(&profiles, household_id, allocator);
         }
-        paid_total
+        self.close_city_hour(&catalog);
     }
+}
+
+/// `building`'s activity cap at its hourly phase, before production (`SIM-02-I`): from its
+/// funded share of output in the hour's census, as the census published it. O(1).
+pub(crate) fn refresh_activity_floor(catalog: &RuntimeEconomyCatalog, building: &mut Building) {
+    building.commercial_activity_floor_scale =
+        commercial_activity_floor(catalog, building, building.funded_activity);
 }
 
 /// What every daily settlement in one slot shares (`SIM-02-G`): catalog and tuning, utility
@@ -738,9 +598,9 @@ fn settle_building_profit_tax(
 }
 
 /// One operational hour of production at `building`, run at its hourly phase (`SIM-02-F`):
-/// inputs consumed and outputs stocked up to the output buffer. Power plants run in the hourly
-/// dispatch, explicit work areas through their sites and service stores in the citywide sale.
-/// O(ports).
+/// inputs consumed and outputs stocked up to the output buffer. Power plants generate in their
+/// electricity phase, explicit work areas through their sites and service stores sell through
+/// the service-sales pool (`SIM-02-I`). O(ports).
 pub(crate) fn produce_building_hour(catalog: &RuntimeEconomyCatalog, building: &mut Building) {
     let zone = building.zone_type;
     if building.broken
@@ -785,58 +645,6 @@ pub(crate) fn produce_building_hour(catalog: &RuntimeEconomyCatalog, building: &
             );
         }
     }
-}
-
-fn service_store_hourly_capacities(
-    allocator: &BuildingAllocator,
-    catalog: &RuntimeEconomyCatalog,
-) -> Vec<ServiceStoreCapacity> {
-    let mut capacities = allocator
-        .buildings
-        .par_iter()
-        .enumerate()
-        .fold(Vec::new, |mut local, (building_idx, building)| {
-            if building.broken
-                || building.economy_broken
-                || building.is_deserted
-                || building.is_under_construction()
-                || building.edge_idx == usize::MAX
-                || !matches!(building.zone_type, ZoneType::Commercial)
-            {
-                return local;
-            }
-            let Some(profile) = economy_profile_for_building(catalog, building) else {
-                return local;
-            };
-            if profile.kind != EconomyProfileRuntimeKind::ServiceStore {
-                return local;
-            }
-            let factors = building_operation_factors(catalog, building, profile);
-            if factors.throughput_factor <= 0.0 {
-                return local;
-            }
-            for output in &profile.outputs {
-                let capacity_units_per_hour = output.units_per_day.max(0.0)
-                    / OPERATIONAL_HOURS_PER_DAY
-                    * factors.throughput_factor;
-                if capacity_units_per_hour <= 0.0 {
-                    continue;
-                }
-                local.push(ServiceStoreCapacity {
-                    building_idx,
-                    resource_runtime_id: output.resource_runtime_id,
-                    capacity_units_per_hour,
-                });
-            }
-            local
-        })
-        .reduce(Vec::new, |mut left, mut right| {
-            left.append(&mut right);
-            left
-        });
-    capacities
-        .sort_unstable_by_key(|capacity| (capacity.resource_runtime_id, capacity.building_idx));
-    capacities
 }
 
 /// Sells output through emergency OWA liquidation while retaining shipment and upkeep reserves.

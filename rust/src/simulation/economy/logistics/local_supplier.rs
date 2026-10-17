@@ -3,6 +3,7 @@
 //! Local supplier search and shipment creation.
 
 use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::core::handles::Handle;
 use crate::simulation::economy::accessibility::{
     ModeComponentIndex, ReachableBucketScanEvent, lower_bound_travel_seconds,
 };
@@ -158,7 +159,8 @@ impl ShipmentSystem {
 }
 
 /// Finds an affordable reachable supplier through the existing component/spatial index.
-/// Both orders and export holds use this query and the same deterministic tie-breaking.
+/// Both orders and export holds use this query and the same deterministic tie-breaking. The
+/// index names suppliers by building handle; one that has left since it was indexed is skipped.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn find_local_supplier(
     dest_idx: usize,
@@ -195,9 +197,13 @@ pub(super) fn find_local_supplier(
         destination.center_x,
         destination.center_y,
         |event| match event {
-            ReachableBucketScanEvent::Item {
-                item_idx: candidate_idx,
-            } => {
+            ReachableBucketScanEvent::Item { item_idx } => {
+                let Some(candidate_idx) = allocator
+                    .building_handles
+                    .resolve(Handle::from_bits(item_idx as u64))
+                else {
+                    return true;
+                };
                 update_best_local_supplier_choice(
                     &mut best_choice,
                     candidate_idx,

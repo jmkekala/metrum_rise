@@ -153,19 +153,22 @@ pub struct Household {
     pub budget: f32,
     /// Current household stock buffer in `household_supplies`.
     pub stock: f32,
-    /// Cached linked population count. Rebuilt from resident agents every economy pass.
+    /// Cached member count, recounted from the household's members at its hourly phase.
     pub member_count: u16,
-    /// Cached number of child residents. Rebuilt from resident agents every economy pass.
+    /// Cached number of child residents, recounted at the household's hourly phase.
     pub child_count: u16,
-    /// Cached number of adult residents. Rebuilt from resident agents every economy pass.
+    /// Cached number of adult residents, recounted at the household's hourly phase.
     pub adult_count: u16,
-    /// Assigned adults at the latest membership pass; distinct from funded vacancies.
+    /// Assigned adults, kept by the job mutators and recounted at the household's hourly
+    /// phase; distinct from funded vacancies.
     pub(crate) employed_adults: u16,
-    /// Expected gross daily wages at that pass; unpaid or inactive jobs contribute nothing.
+    /// Expected gross daily wages at the household's latest hourly phase; unpaid or inactive
+    /// jobs contribute nothing.
     pub(crate) gross_daily_wages: f32,
-    /// Whether an adult/elder member can shop by car; rebuilt from saved resident agents.
+    /// Whether an adult/elder member can shop by car; recounted at the household's hourly
+    /// phase and rebuilt from saved resident agents on load.
     pub(crate) shopping_has_car: bool,
-    /// Cached number of elder residents. Rebuilt from resident agents every economy pass.
+    /// Cached number of elder residents, recounted at the household's hourly phase.
     pub elder_count: u16,
     /// Baseline daily consumption in `household_supplies / day / resident`.
     pub consumption_rate: f32,
@@ -228,15 +231,7 @@ pub struct HouseholdSystem {
     /// Service visitors held since SimCore last paced departures.
     pub(crate) held_visitors: Vec<AgentHandle>,
     pub(crate) job_funding: crate::simulation::economy::hiring::JobFunding,
-    pub(super) member_count_scratch: Vec<AtomicU32>,
-    pub(super) child_count_scratch: Vec<AtomicU32>,
-    pub(super) adult_count_scratch: Vec<AtomicU32>,
-    pub(super) elder_count_scratch: Vec<AtomicU32>,
     pub(super) shopping_car_scratch: Vec<AtomicU32>,
-    pub(super) worker_count_scratch: Vec<AtomicU32>,
-    pub(super) household_member_heads_scratch: Vec<usize>,
-    pub(super) household_member_next_scratch: Vec<usize>,
-    pub(super) has_unhoused_households: bool,
     pub(super) removal_candidates_scratch: Vec<(usize, f32, f32)>,
     pub(super) removal_selected_flags_scratch: Vec<bool>,
     pub(super) removal_agent_indices_scratch: Vec<usize>,
@@ -263,15 +258,18 @@ pub struct HouseholdSystem {
     /// Coal stocked at power plants at the latest hourly dispatch, for the budget report.
     pub(crate) coal_inventory_kg: f64,
     /// Households whose daily phase asked for a housing review, served by the next hour's pass
-    /// with fresh member links (`SIM-02-G`; a per-slot queue in `SIM-02-J`). Saved.
+    /// (`SIM-02-G`; a per-slot queue in `SIM-02-J`). Saved.
     pub(crate) housing_reviews: Vec<Handle<Household>>,
     /// Households that chose to leave at their daily phase, removed by the next hour's pass.
     /// Saved.
     pub(crate) exits: Vec<Handle<Household>>,
     pub(super) housing_review_scratch: Vec<usize>,
-    pub(super) electricity_residents_scratch: Vec<AtomicU32>,
-    pub(super) electricity_hour_scratch: Vec<super::electricity::HourlyBuildingElectricity>,
-    pub(super) electricity_totals_scratch: Vec<[f64; 4]>,
+    /// The last finished hour's electricity dispatch and coverage, and this hour's totals so
+    /// far (`SIM-02-I`). Saved.
+    pub(crate) electricity_hour: super::electricity::ElectricityHour,
+    /// Service-store sales aggregates and their money pool between hourly phases (`SIM-02-I`).
+    /// Saved.
+    pub(crate) service_sales: super::service_sales::ServiceSales,
     /// Closed building accounts retained until the current fiscal day is reported.
     pub(crate) removed_electricity: super::electricity::RemovedBuildingElectricity,
 }
@@ -293,15 +291,7 @@ impl HouseholdSystem {
             held_shoppers: Vec::new(),
             held_visitors: Vec::new(),
             job_funding: Default::default(),
-            member_count_scratch: Vec::new(),
-            child_count_scratch: Vec::new(),
-            adult_count_scratch: Vec::new(),
-            elder_count_scratch: Vec::new(),
             shopping_car_scratch: Vec::new(),
-            worker_count_scratch: Vec::new(),
-            household_member_heads_scratch: Vec::new(),
-            household_member_next_scratch: Vec::new(),
-            has_unhoused_households: false,
             removal_candidates_scratch: Vec::new(),
             removal_selected_flags_scratch: Vec::new(),
             removal_agent_indices_scratch: Vec::new(),
@@ -321,9 +311,8 @@ impl HouseholdSystem {
             housing_reviews: Vec::new(),
             exits: Vec::new(),
             housing_review_scratch: Vec::new(),
-            electricity_residents_scratch: Vec::new(),
-            electricity_hour_scratch: Vec::new(),
-            electricity_totals_scratch: Vec::new(),
+            electricity_hour: Default::default(),
+            service_sales: Default::default(),
             removed_electricity: Default::default(),
         }
     }
@@ -441,14 +430,6 @@ impl HouseholdSystem {
         self.pending_arrivals = PendingHouseholdArrivals::default();
         self.held_shoppers.clear();
         self.held_visitors.clear();
-        self.member_count_scratch.clear();
-        self.child_count_scratch.clear();
-        self.adult_count_scratch.clear();
-        self.elder_count_scratch.clear();
-        self.worker_count_scratch.clear();
-        self.household_member_heads_scratch.clear();
-        self.household_member_next_scratch.clear();
-        self.has_unhoused_households = false;
         self.removal_candidates_scratch.clear();
         self.removal_selected_flags_scratch.clear();
         self.removal_agent_indices_scratch.clear();
@@ -462,9 +443,8 @@ impl HouseholdSystem {
         self.coal_inventory_kg = 0.0;
         self.housing_reviews.clear();
         self.exits.clear();
-        self.electricity_residents_scratch.clear();
-        self.electricity_hour_scratch.clear();
-        self.electricity_totals_scratch.clear();
+        self.electricity_hour = Default::default();
+        self.service_sales = Default::default();
         self.removed_electricity = Default::default();
     }
 
@@ -674,40 +654,10 @@ impl HouseholdSystem {
         }
     }
 
-    /// Returns zeroed per-household counters for deterministic parallel membership rebuilds.
-    pub(super) fn reset_member_count_scratch(&mut self) -> &[AtomicU32] {
-        resize_atomic_scratch(&mut self.member_count_scratch, self.households.len());
-        &self.member_count_scratch
-    }
-
-    /// Returns zeroed per-household car-eligibility flags for the resident census.
+    /// Returns zeroed per-household car-eligibility flags for the load-time resident census.
     pub(super) fn reset_shopping_car_scratch(&mut self) -> &[AtomicU32] {
         resize_atomic_scratch(&mut self.shopping_car_scratch, self.households.len());
         &self.shopping_car_scratch
-    }
-
-    /// Returns zeroed per-household child counters for deterministic parallel reductions.
-    pub(super) fn reset_child_count_scratch(&mut self) -> &[AtomicU32] {
-        resize_atomic_scratch(&mut self.child_count_scratch, self.households.len());
-        &self.child_count_scratch
-    }
-
-    /// Returns zeroed per-household adult counters for deterministic parallel reductions.
-    pub(super) fn reset_adult_count_scratch(&mut self) -> &[AtomicU32] {
-        resize_atomic_scratch(&mut self.adult_count_scratch, self.households.len());
-        &self.adult_count_scratch
-    }
-
-    /// Returns zeroed per-household elder counters for deterministic parallel reductions.
-    pub(super) fn reset_elder_count_scratch(&mut self) -> &[AtomicU32] {
-        resize_atomic_scratch(&mut self.elder_count_scratch, self.households.len());
-        &self.elder_count_scratch
-    }
-
-    /// Returns zeroed per-building counters for deterministic parallel worker recounts.
-    pub(super) fn reset_worker_count_scratch(&mut self, building_count: usize) -> &[AtomicU32] {
-        resize_atomic_scratch(&mut self.worker_count_scratch, building_count);
-        &self.worker_count_scratch
     }
 
     /// Returns max-filled per-household shopper candidates for deterministic parallel reductions.

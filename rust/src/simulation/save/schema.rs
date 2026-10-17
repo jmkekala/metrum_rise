@@ -6,7 +6,7 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version, also the only one that loads (`SIM-02` broke older saves).
-pub const SAVE_VERSION: i64 = 94;
+pub const SAVE_VERSION: i64 = 95;
 
 /// Sentinel for an absent reference column.
 pub const NONE_REF: i64 = -1;
@@ -141,7 +141,10 @@ CREATE TABLE scheduler_state(
     environment_building_handles INTEGER NOT NULL,
     environment_edges INTEGER NOT NULL,
     environment_next_edge INTEGER NOT NULL,
-    environment_next_chunk INTEGER NOT NULL
+    environment_next_chunk INTEGER NOT NULL,
+    demand_snapshot_front BLOB,
+    demand_snapshot_next_chunk INTEGER NOT NULL,
+    demand_snapshot_back BLOB
 );
 CREATE TABLE timed_events(
     slot INTEGER NOT NULL,
@@ -288,7 +291,20 @@ CREATE TABLE buildings(
     commercial_activity_floor_scale REAL NOT NULL,
     paid_workers_in_window INTEGER NOT NULL,
     funded_job_capacity INTEGER NOT NULL,
-    unpaid_cash_wages_in_window INTEGER NOT NULL
+    unpaid_cash_wages_in_window INTEGER NOT NULL,
+    service_sales_capacity REAL NOT NULL,
+    service_sales_profile_runtime_id INTEGER NOT NULL,
+    funded_activity REAL NOT NULL
+);
+CREATE TABLE building_vacancy_state(
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    stale INTEGER NOT NULL
+);
+CREATE TABLE building_vacancies(
+    zone_slot INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    building_id INTEGER NOT NULL,
+    PRIMARY KEY(zone_slot, position)
 );
 CREATE TABLE building_inventories(
     building_id INTEGER NOT NULL,
@@ -331,6 +347,27 @@ CREATE TABLE electricity_day_state(
     last_day_totals TEXT NOT NULL,
     coal_inventory_kg REAL NOT NULL,
     city_input_day TEXT NOT NULL
+);
+CREATE TABLE city_hour_state(
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    electricity_dispatch REAL NOT NULL,
+    electricity_coverage REAL NOT NULL,
+    electricity_demand_kwh REAL NOT NULL,
+    electricity_capacity_kwh REAL NOT NULL,
+    electricity_coal_burned_kg REAL NOT NULL,
+    electricity_coal_stock_kg REAL NOT NULL,
+    service_residents INTEGER NOT NULL,
+    service_gross_revenue REAL NOT NULL,
+    service_hour_residents INTEGER NOT NULL,
+    service_hour_collected REAL NOT NULL
+);
+CREATE TABLE service_sales_resources(
+    resource_slot INTEGER PRIMARY KEY,
+    gross REAL NOT NULL,
+    capacity REAL NOT NULL,
+    drawable REAL NOT NULL,
+    undrawn REAL NOT NULL,
+    hour_capacity REAL NOT NULL
 );
 CREATE TABLE household_requests(
     kind INTEGER NOT NULL,
@@ -483,6 +520,24 @@ CREATE TABLE freight_request_failures(
     failures INTEGER NOT NULL,
     terminal INTEGER NOT NULL,
     PRIMARY KEY(destination_building_id, resource_runtime_id)
+);
+CREATE TABLE freight_supplier_sweep(
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    front_hour INTEGER NOT NULL,
+    sweep_building_handles INTEGER NOT NULL,
+    sweep_hour INTEGER NOT NULL,
+    sweep_next_chunk INTEGER NOT NULL
+);
+CREATE TABLE freight_supplier_entries(
+    buffer INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    resource_runtime_id INTEGER NOT NULL,
+    component INTEGER NOT NULL,
+    chunk_x INTEGER NOT NULL,
+    chunk_y INTEGER NOT NULL,
+    building_slot INTEGER NOT NULL,
+    building_generation INTEGER NOT NULL,
+    PRIMARY KEY(buffer, position)
 );
 CREATE TABLE agents(
     agent_id INTEGER PRIMARY KEY,

@@ -699,6 +699,287 @@ fn power_demolition_undo_restores_the_meter_and_refunds_only_its_bill() {
 }
 
 #[test]
+fn growing_town_continues_identically_after_a_mid_hour_save_load() {
+    let source = growing_town_mid_hour();
+    assert!(!source.core.allocator.dirty_index);
+    assert_continues_identically_after_reload(source, "growing");
+}
+
+#[test]
+fn stale_vacancy_index_continues_identically_after_a_save_load() {
+    let mut source = growing_town_mid_hour();
+    // The hour's last minute with a housing review queued and nothing else due to read the
+    // index before the hour: no construction start and no cell-lot region.
+    loop {
+        let core = &source.core;
+        let now = u64::from(core.time.day_index - 1) * 1440 + u64::from(core.time.minute_of_day);
+        if core.time.minute_of_day % 60 == 59
+            && !core.households.housing_reviews.is_empty()
+            && !core.zoning.has_dirty_cell_lots()
+            && core
+                .pending_demand_spawns
+                .iter()
+                .all(|pending| pending.due_minute > now + 1)
+        {
+            break;
+        }
+        assert!(
+            source.core.time.day_index < 5,
+            "no quiet hour end in two days"
+        );
+        source.core.step_frame(FRAME_DT_S);
+    }
+    // A player's placement. Every editing path reads the index before it returns, so a save
+    // normally finds it clean; this save is taken as if the placement had left it stale for
+    // its next reader, the hour's housing review before admission.
+    source
+        .core
+        .place_service_building_internal(COAL_POWER_PLANT, -560.0, 8.0)
+        .unwrap();
+    source.core.allocator.dirty_index = true;
+    assert!(source.core.allocator.dirty_index);
+    assert!(!source.core.households.housing_reviews.is_empty());
+    assert_continues_identically_after_reload(source, "stale");
+}
+
+// A starter town with a power plant, two days in and saved at mid-hour: homes have been claimed
+// and released, so the vacancy lists are no longer in building order, and households keep
+// arriving.
+fn growing_town_mid_hour() -> GrowthScenario {
+    let mut source = GrowthScenario::starter_town();
+    source
+        .core
+        .place_service_building_internal(COAL_POWER_PLANT, -700.0, 8.0)
+        .unwrap();
+    assert!(
+        source
+            .core
+            .set_building_service_funding_override_at(-700.0, 8.0, "electricity", 0.05)
+    );
+    source.run_days(2);
+    while !(10..=50).contains(&(source.core.time.minute_of_day % 60)) {
+        source.core.step_frame(FRAME_DT_S);
+    }
+    assert!(
+        source
+            .core
+            .allocator
+            .vacancy_index
+            .iter()
+            .any(|list| !list.is_sorted()),
+        "the fixture must save a vacancy order a rebuild would not recover"
+    );
+    source
+}
+
+// Saves `source`, loads it into a fresh town and steps both for a day, comparing homes, cash,
+// occupancy and the vacancy index every frame.
+fn assert_continues_identically_after_reload(mut source: GrowthScenario, name: &str) {
+    let path = std::env::temp_dir().join(format!(
+        "metrum-{name}-continuation-{}.sqlite",
+        std::process::id()
+    ));
+    source
+        .core
+        .save_game_internal(path.to_str().unwrap(), None)
+        .unwrap();
+    let mut loaded = GrowthScenario::starter_town();
+    loaded
+        .core
+        .load_game_internal(path.to_str().unwrap())
+        .unwrap();
+    std::fs::remove_file(path).unwrap();
+    loaded.core.time.speed_multiplier = source.core.time.speed_multiplier;
+    let target_day = source.core.time.day_index + 1;
+    loop {
+        let when = (source.core.time.day_index, source.core.time.minute_of_day);
+        let (a, b) = (&source.core.allocator, &loaded.core.allocator);
+        assert_eq!(a.dirty_index, b.dirty_index, "{when:?}");
+        // A stale index is rebuilt by its next reader in both games.
+        if !a.dirty_index {
+            assert_eq!(
+                (&a.vacancy_index, &a.vacancy_pos),
+                (&b.vacancy_index, &b.vacancy_pos),
+                "vacancies at {when:?}"
+            );
+            // The saved game's order is kept incrementally, the loaded one's rebuilt at load.
+            assert!(a.admission_order.same_as(&b.admission_order), "{when:?}");
+        }
+        if source.core.time.day_index >= target_day {
+            break;
+        }
+        source.core.step_frame(FRAME_DT_S);
+        loaded.core.step_frame(FRAME_DT_S);
+        let when = (source.core.time.day_index, source.core.time.minute_of_day);
+        assert_eq!(
+            source.core.agents.len(),
+            loaded.core.agents.len(),
+            "agents at {when:?}"
+        );
+        let (a, b) = (&source.core.households, &loaded.core.households);
+        assert_eq!(
+            a.households.len(),
+            b.households.len(),
+            "households at {when:?}"
+        );
+        for (x, y) in a.households.iter().zip(&b.households) {
+            assert_eq!(x.home_building_id, y.home_building_id, "home at {when:?}");
+            assert_eq!(x.budget.to_bits(), y.budget.to_bits(), "budget at {when:?}");
+        }
+        let (a, b) = (&source.core.allocator, &loaded.core.allocator);
+        assert_eq!(
+            a.buildings.len(),
+            b.buildings.len(),
+            "buildings at {when:?}"
+        );
+        for (x, y) in a.buildings.iter().zip(&b.buildings) {
+            assert_eq!(
+                (x.parcel_id, x.occupancy),
+                (y.parcel_id, y.occupancy),
+                "{when:?}"
+            );
+            assert_eq!(
+                x.operating_budget.to_bits(),
+                y.operating_budget.to_bits(),
+                "{when:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn city_hour_totals_continue_identically_after_a_mid_hour_save_load() {
+    let mut source = GrowthScenario::starter_town();
+    source
+        .core
+        .place_service_building_internal("kenney:building.power.coal_power_plant", -700.0, 8.0)
+        .unwrap();
+    assert!(
+        source
+            .core
+            .set_building_service_funding_override_at(-700.0, 8.0, "electricity", 0.05)
+    );
+    // The town is full by then: no arrival is still on its way.
+    source.run_days(10);
+    // Save with the hour's totals part-folded by the phases that already ran (`SIM-02-I`).
+    while !(10..=50).contains(&(source.core.time.minute_of_day % 60)) {
+        source.core.step_frame(FRAME_DT_S);
+    }
+    assert!(source.core.households.electricity_hour.demand_kwh > 0.0);
+    let path = std::env::temp_dir().join(format!(
+        "metrum-city-hour-continuation-{}.sqlite",
+        std::process::id()
+    ));
+    source
+        .core
+        .save_game_internal(path.to_str().unwrap(), None)
+        .unwrap();
+    let mut loaded = GrowthScenario::starter_town();
+    loaded
+        .core
+        .load_game_internal(path.to_str().unwrap())
+        .unwrap();
+    std::fs::remove_file(path).unwrap();
+    loaded.core.time.speed_multiplier = source.core.time.speed_multiplier;
+    // The census loading rebuilt must not feed the hour's remaining phases: the next hour's
+    // census replaces this one.
+    for building_idx in 0..loaded.core.allocator.buildings.len() {
+        loaded
+            .core
+            .households
+            .job_funding
+            .set_activity(building_idx, 0.0);
+    }
+    let hours = |core: &SimCore| core.time.day_index * 24 + u32::from(core.time.minute_of_day) / 60;
+    let target = hours(&source.core) + 3;
+    loop {
+        assert_city_hour_identical(&source.core, &loaded.core);
+        if hours(&source.core) >= target {
+            break;
+        }
+        source.core.step_frame(FRAME_DT_S);
+        loaded.core.step_frame(FRAME_DT_S);
+    }
+    assert!(source.core.households.electricity_hour.dispatch > 0.0);
+    assert!(source.core.households.service_sales.gross_revenue > 0.0);
+}
+
+// The hourly city totals, the sales pool and the cash and meters they move, bit for bit.
+fn assert_city_hour_identical(left: &SimCore, right: &SimCore) {
+    let (a, b) = (&left.households, &right.households);
+    let hour = |h: &crate::simulation::economy::households::HouseholdSystem| {
+        let e = &h.electricity_hour;
+        let s = &h.service_sales;
+        let mut bits = vec![
+            u64::from(e.dispatch.to_bits()),
+            u64::from(e.coverage.to_bits()),
+            e.demand_kwh.to_bits(),
+            e.capacity_kwh.to_bits(),
+            e.coal_burned_kg.to_bits(),
+            e.coal_stock_kg.to_bits(),
+            u64::from(s.residents),
+            u64::from(s.gross_revenue.to_bits()),
+            u64::from(s.hour_residents),
+            s.hour_collected.to_bits(),
+            h.coal_inventory_kg.to_bits(),
+            h.day_totals.coal_consumed_kg.to_bits(),
+        ];
+        for values in [
+            &s.gross_by_resource,
+            &s.capacity_by_resource,
+            &s.hour_capacity_by_resource,
+        ] {
+            bits.extend(values.iter().map(|v| u64::from(v.to_bits())));
+        }
+        for values in [&s.drawable_by_resource, &s.undrawn_by_resource] {
+            bits.extend(values.iter().map(|v| v.to_bits()));
+        }
+        bits
+    };
+    assert_eq!(hour(a), hour(b), "minute {}", left.time.minute_of_day);
+    assert_eq!(a.households.len(), b.households.len());
+    for (id, (x, y)) in a.households.iter().zip(&b.households).enumerate() {
+        let (lx, ly) = (&a.daily_ledgers()[id], &b.daily_ledgers()[id]);
+        assert_eq!(x.budget.to_bits(), y.budget.to_bits());
+        assert_eq!(
+            (lx.electricity.consumed_kwh, lx.electricity.local_kwh),
+            (ly.electricity.consumed_kwh, ly.electricity.local_kwh)
+        );
+    }
+    let (left, right) = (&left.allocator.buildings, &right.allocator.buildings);
+    assert_eq!(left.len(), right.len());
+    for (x, y) in left.iter().zip(right) {
+        assert_eq!(
+            [
+                x.operating_budget,
+                x.revenue,
+                x.daily_power_service_units,
+                x.daily_electricity.workplace.local_kwh,
+                x.daily_electricity.residential.local_kwh,
+                x.commercial_activity_floor_scale,
+                x.funded_activity,
+                x.service_sales_capacity,
+            ]
+            .map(f32::to_bits),
+            [
+                y.operating_budget,
+                y.revenue,
+                y.daily_power_service_units,
+                y.daily_electricity.workplace.local_kwh,
+                y.daily_electricity.residential.local_kwh,
+                y.commercial_activity_floor_scale,
+                y.funded_activity,
+                y.service_sales_capacity,
+            ]
+            .map(f32::to_bits),
+            "{}",
+            x.asset_id
+        );
+        assert_eq!(x.resource_inventory, y.resource_inventory);
+    }
+}
+
+#[test]
 #[ignore = "physical mid-day save continuation, with and without power-plant demolition"]
 fn electricity_save_continuation_preserves_bills_and_removed_meters() {
     for remove in [false, true] {

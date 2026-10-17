@@ -5,12 +5,6 @@
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::NodeType;
 
-pub(super) fn connected_border_nodes(graph: &RegionGraph) -> Vec<u32> {
-    let mut borders = Vec::new();
-    collect_connected_border_nodes(graph, &mut borders);
-    borders
-}
-
 /// Reuses gateway-list storage while detecting role changes which do not rebuild CCH.
 /// Discovery is O(nodes + border adjacency). The small ordered result is filled serially
 /// to reuse its capacity without allocating one filter buffer per parallel worker.

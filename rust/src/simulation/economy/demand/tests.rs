@@ -3,6 +3,7 @@
 //! Demand tests.
 
 mod alternatives;
+mod rolling_snapshot;
 
 use super::spawn_need::{
     OutputAbsorptionContext, commercial_market_covers_operation,
@@ -345,6 +346,9 @@ fn building(
         unpaid_cash_wages_in_window: 0,
         recent_household_sales_value: 0.0,
         commercial_activity_floor_scale: 0.0,
+        service_sales_capacity: 0.0,
+        service_sales_profile_runtime_id: 0,
+        funded_activity: 0.0,
         work_area_scale: 1.0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
@@ -2671,7 +2675,7 @@ fn deserted_residential_buildings_do_not_count_as_capacity_or_housed_households(
     assert_eq!(snapshot.vacant_household_slots, 0);
     assert_eq!(snapshot.housed_household_count, 0);
     assert_eq!(snapshot.unhoused_household_count, 1);
-    assert_eq!(occupants.household_count_by_building[0], 0);
+    assert_eq!(occupants.household_count(&allocator, 0), 0);
 }
 
 #[test]

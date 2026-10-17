@@ -142,6 +142,9 @@ pub struct RegionGraph {
     pub(in crate::simulation::network) adjacency: Vec<Vec<usize>>,
     /// Spatial acceleration structure for nodes: 16 m grid chunks -> node IDs.
     pub(in crate::simulation::network) spatial_node_grid: HashMap<(i32, i32), Vec<u32>>,
+    // Bumped by `set_node_type`, which changes a node's role without a topology edit (and so
+    // without a CCH rebuild); caches of node roles key on it.
+    node_role_revision: u64,
 }
 
 /// Local authoritative graph checkpoint used by the bounded undo history.
@@ -208,6 +211,7 @@ impl RegionGraph {
             spatial_edge_rt: RTree::new(),
             adjacency: Vec::new(),
             spatial_node_grid: HashMap::new(),
+            node_role_revision: 0,
         }
     }
 
@@ -456,6 +460,12 @@ impl RegionGraph {
     /// Sets the [`NodeType`] of the node at `node_id`.
     pub fn set_node_type(&mut self, node_id: u32, node_type: NodeType) {
         self.nodes[node_id as usize].node_type = node_type;
+        self.node_role_revision += 1;
+    }
+
+    /// Revision of node roles set outside topology edits; see [`Self::set_node_type`].
+    pub(crate) fn node_role_revision(&self) -> u64 {
+        self.node_role_revision
     }
 
     /// Sets the world-space position of the node at `node_id`.

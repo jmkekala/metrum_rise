@@ -11,16 +11,21 @@ fn each_household_runs_one_hour_per_hour_at_its_own_phase() {
     use crate::simulation::core::phases::PHASES_PER_HOUR;
 
     let mut households = HouseholdSystem::new();
-    for _ in 0..64 {
+    let mut agents = AgentSystem::new();
+    for household_id in 0..64 {
         households
             .households
             .push(make_household(usize::MAX, 2, 5.0, 3.0));
+        // The phase recounts the members before they consume.
+        for _ in 0..2 {
+            let member = agents.spawn_housed_agent(usize::MAX, 0.0, 0.0);
+            agents.assign_household_id(member, household_id);
+        }
     }
     households
         .handles
         .register_appended(households.households.len());
     let mut allocator = BuildingAllocator::new();
-    let mut agents = AgentSystem::new();
     let mut runs = vec![0_u32; households.households.len()];
     let mut phase = Vec::new();
     for slot in 0..PHASES_PER_HOUR {
@@ -211,7 +216,7 @@ fn child_at_home_does_not_carry_household_shopping_trip() {
     let child = 0;
     agents.age_group[child] = AGE_CHILD;
     let adult = agents.spawn_housed_agent(0, 0.0, 0.0);
-    agents.household_id[adult] = 0;
+    agents.assign_household_id(adult, 0);
     agents.current_building[adult] = 1;
     agents.transit[adult] = TRANSIT_IN_BUILDING;
     agents.activity[adult] = 2;
@@ -431,7 +436,7 @@ fn replenishment_search_cursor_reaches_next_store_window() {
 
     let mut agents = AgentSystem::new();
     let shopper = agents.spawn_housed_agent(0, 0.0, 0.0);
-    agents.household_id[shopper] = 0;
+    agents.assign_household_id(shopper, 0);
     agents.current_building[shopper] = 0;
     agents.transit[shopper] = TRANSIT_IN_BUILDING;
     agents.activity[shopper] = 0;
@@ -510,7 +515,7 @@ fn replenishment_search_cursor_window_wraps_supplier_index() {
 
     let mut agents = AgentSystem::new();
     let shopper = agents.spawn_housed_agent(0, 0.0, 0.0);
-    agents.household_id[shopper] = 0;
+    agents.assign_household_id(shopper, 0);
     agents.current_building[shopper] = 0;
     agents.transit[shopper] = TRANSIT_IN_BUILDING;
     agents.activity[shopper] = 0;

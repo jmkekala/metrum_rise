@@ -8,8 +8,11 @@ use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::{AgentHandle, AgentSystem};
 use crate::simulation::economy::definitions::{ResourceRuntimeId, load_runtime_economy_tuning};
 
+use super::planning::FreightTopology;
+use super::reservations::ReservationViews;
 use super::resource::refund_input_payment;
 use super::route_cache::FreightRouteCache;
+use super::supplier_index::SupplierRoll;
 
 /// A physical freight endpoint inside the city or at an outside-world border terminal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -186,6 +189,14 @@ pub struct ShipmentSystem {
     pub(super) freight_route_cache_cch_generation: u32,
     /// Customized network metric captured by the cached free-flow costs.
     pub(super) freight_route_cache_metric_revision: u64,
+    /// Reservation views kept in step with every shipment change (`SIM-02-I`); `None` until
+    /// first use and after a change they cannot follow. Derived, not saved.
+    pub(super) reservations: Option<ReservationViews>,
+    /// Border nodes, freight components and top freight speed, rebuilt only when the road
+    /// graph changes. Derived, not saved.
+    pub(super) freight_topology: FreightTopology,
+    /// Hour-long rolling build of the dispatch supplier index (`SIM-02-I`); saved.
+    pub(crate) supplier_roll: SupplierRoll,
 }
 
 /// Freight records removed when one building is bulldozed.
@@ -210,6 +221,9 @@ impl ShipmentSystem {
             freight_route_cache_entrance_revision: u64::MAX,
             freight_route_cache_cch_generation: u32::MAX,
             freight_route_cache_metric_revision: u64::MAX,
+            reservations: None,
+            freight_topology: FreightTopology::default(),
+            supplier_roll: SupplierRoll::default(),
         }
     }
 
@@ -269,6 +283,9 @@ impl ShipmentSystem {
     /// Reinserts freight state removed by building invalidation.
     pub(crate) fn restore_building_undo(&mut self, undo: ShipmentBuildingUndo) {
         for shipment in undo.shipments {
+            if let Some(views) = &mut self.reservations {
+                views.add_shipment(&shipment);
+            }
             let shipment_idx = self.shipments.partition_point(|job| job.id < shipment.id);
             self.shipments.insert(shipment_idx, shipment);
         }
@@ -292,6 +309,8 @@ impl ShipmentSystem {
         self.shipments.clear();
         self.next_shipment_id = 0;
         self.request_failures.clear();
+        self.reservations = None;
+        self.supplier_roll = SupplierRoll::default();
         self.invalidate_route_cache();
     }
 
@@ -313,6 +332,7 @@ impl ShipmentSystem {
 
     /// Remaps building references after a building swap-remove.
     pub fn remap_building_indices(&mut self, mapping: &HashMap<usize, usize>) {
+        self.remap_reservations(mapping);
         for shipment in &mut self.shipments {
             shipment.source.remap_building(mapping);
             shipment.destination.remap_building(mapping);
@@ -359,6 +379,7 @@ impl ShipmentSystem {
             if !touches_removed {
                 return true;
             }
+            Self::forget_shipment_reservations(&mut self.reservations, shipment);
 
             if shipment.status.reserves_cargo()
                 && let Some(destination_id) = shipment.destination.building_id()

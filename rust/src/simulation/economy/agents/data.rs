@@ -7,6 +7,7 @@
 //! [`AgentSystem`] uses a Structure-of-Arrays (SoA) layout provided by the `soa_derive` crate.
 //! This enables cache-friendly bulk iteration and ensures all fields are kept in sync.
 
+use super::household_members::HouseholdMembers;
 use super::inspection::{EndedInspection, InspectedAgent};
 use super::tick::{TripFailureLog, TripQueryScratch};
 use crate::simulation::core::handles::{Handle, HandleTable};
@@ -174,6 +175,9 @@ pub struct AgentSystem {
     pub(crate) handles: HandleTable<Agent>,
     /// Daily settlements run so far: the clock of job locks (`job_lock_until_day`). Saved.
     pub(crate) settlement_days: u32,
+    /// Each household's members in ascending agent index (`SIM-02-I`), kept by the lifecycle
+    /// and membership mutators. Derived: rebuilt on load.
+    pub(super) household_members: HouseholdMembers,
     /// Household arrival carriers that may still be on their way in (`SIM-02-E`); pending
     /// arrivals are recounted from it. Derived: rebuilt from the carriers on load.
     pub(crate) arrival_carriers: Vec<AgentHandle>,
@@ -281,6 +285,7 @@ impl AgentSystem {
             agents: AgentVec::new(),
             handles: HandleTable::default(),
             settlement_days: 0,
+            household_members: HouseholdMembers::default(),
             arrival_carriers: Vec::new(),
             held_arrivals: Vec::new(),
             sim_time: 0.0,

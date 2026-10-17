@@ -5,15 +5,12 @@
 use super::HouseholdSystem;
 use crate::debug_log;
 use crate::simulation::buildings::allocator::BuildingAllocator;
-#[cfg(test)]
-use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::fiscal::CityFiscalPolicy;
 
 impl HouseholdSystem {
     #[cfg(test)]
     pub(crate) fn pay_unemployment_benefits(
         &mut self,
-        agents: &AgentSystem,
         allocator: &BuildingAllocator,
         treasury_balance: &mut f64,
     ) {
@@ -22,19 +19,17 @@ impl HouseholdSystem {
             child_support_per_child_per_day: 0.0,
             ..Default::default()
         };
-        self.pay_household_transfers(agents, allocator, treasury_balance, &policy);
+        self.pay_household_transfers(allocator, treasury_balance, &policy);
     }
 
     /// Every household's transfers at once, as their daily phases would pay them.
     #[cfg(test)]
     pub(crate) fn pay_household_transfers(
         &mut self,
-        agents: &AgentSystem,
         allocator: &BuildingAllocator,
         treasury_balance: &mut f64,
         policy: &CityFiscalPolicy,
     ) {
-        self.count_employed_adults(agents);
         self.ensure_daily_ledger_len();
         for household_id in 0..self.households.len() {
             self.pay_household_transfer(household_id, allocator, treasury_balance, policy);
@@ -42,8 +37,8 @@ impl HouseholdSystem {
     }
 
     /// Pays household `household_id`'s daily transfers at its daily phase (`SIM-02-G`):
-    /// unemployment benefit for its adults without a job at the latest hourly count, pensions
-    /// and child support, while the treasury holds cash. When the treasury runs out, slot order
+    /// unemployment benefit for its adults not paid a wage in its window, pensions and child
+    /// support, while the treasury holds cash. When the treasury runs out, slot order
     /// decides who is paid. O(1).
     pub(super) fn pay_household_transfer(
         &mut self,

@@ -40,4 +40,5 @@ pub(crate) use self::resource::{
     freight_goods_multiplier, imported_input_unit_price,
 };
 pub(crate) use self::routing::collect_connected_border_nodes;
+pub(crate) use self::supplier_index::{SavedSupplierRoll, SavedSupplierSweep, SupplierRoll};
 pub(crate) use self::timing::freight_price_phase;

@@ -31,6 +31,7 @@ pub(crate) use diagnostics::{
     BuildingActionDiagnosticsByUse, HouseholdAdmissionDiagnostics, HouseholdRemovalDiagnostics,
 };
 pub(crate) use execution::DemandLevelChangeGuard;
+pub(crate) use snapshot::SavedDemandSnapshot;
 pub use system::DemandSystem;
 #[cfg(test)]
 pub(crate) use system::VERIFY_LIVE_PASSES;

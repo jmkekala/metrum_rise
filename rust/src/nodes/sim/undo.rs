@@ -259,6 +259,11 @@ impl SimCore {
             .count();
 
         let mut building_ids = BTreeSet::from([building_idx, last_idx]);
+        // The preview reads the vacancy list the removal's rehousing will claim from, which
+        // rebuilds a stale index first (`SIM-02`).
+        if self.allocator.dirty_index {
+            self.allocator.rebuild_zone_index();
+        }
         building_ids.extend(
             self.allocator
                 .preview_vacancy_claims_except(building_idx, rehoused_household_count),
@@ -824,6 +829,8 @@ impl SimCore {
         for (agent_idx, agent) in undo.agents {
             self.agents.agents.replace(agent_idx, agent);
         }
+        // Restored records and the agents they displaced changed slots directly.
+        self.agents.rebuild_household_members();
         self.agents.invalidate_lane_bucket_snapshot();
 
         self.households.restore_building_undo(undo.households);

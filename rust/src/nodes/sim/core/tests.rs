@@ -1066,6 +1066,9 @@ fn add_test_complete_building(core: &mut SimCore, asset_id: String, zone_type: Z
         unpaid_cash_wages_in_window: 0,
         recent_household_sales_value: 0.0,
         commercial_activity_floor_scale: 0.0,
+        service_sales_capacity: 0.0,
+        service_sales_profile_runtime_id: 0,
+        funded_activity: 0.0,
         work_area_scale: 1.0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
@@ -1451,6 +1454,50 @@ fn hourly_planning_does_not_queue_the_same_parcel_twice() {
         .collect();
     parcels.sort_unstable();
     assert!(parcels.windows(2).all(|pair| pair[0] != pair[1]));
+}
+
+#[test]
+fn hourly_passes_read_the_previous_hours_demand_sweep_and_whole_hours_the_current_city() {
+    use crate::simulation::core::scheduler::SLOTS_PER_HOUR;
+    let mut core = test_core();
+    add_test_border_road(&mut core);
+    let home = register_test_asset(&mut core.allocator, "swept_home", ZoneType::Residential);
+    for _ in 0..2 {
+        add_test_complete_building(&mut core, home.clone(), ZoneType::Residential);
+    }
+    let capacity = core.allocator.household_capacity(0);
+    assert_eq!(core.allocator.household_capacity(1), capacity);
+    let vacant = |core: &SimCore| {
+        core.demand
+            .last_admission_debug_summary()
+            .vacant_household_slots
+    };
+    core.align_events_to_clock();
+    let mut slot = core.time.absolute_slot();
+    let hour = slot.div_ceil(SLOTS_PER_HOUR) * SLOTS_PER_HOUR;
+    let mut report = super::frame::FrameStepReport::default();
+    let mut step_to = |core: &mut SimCore, end: u64| {
+        while slot < end {
+            slot += 1;
+            core.step_slot(slot, &mut report, &mut ());
+        }
+    };
+    // The first pass has no front and builds one from the city.
+    step_to(&mut core, hour);
+    assert_eq!(vacant(&core), 2 * capacity);
+    // A home that fails after its chunk of the sweep counts until the next hour's sweep.
+    step_to(&mut core, hour + 600);
+    core.allocator.buildings[0].broken = true;
+    step_to(&mut core, hour + SLOTS_PER_HOUR);
+    assert_eq!(vacant(&core), 2 * capacity);
+    step_to(&mut core, hour + 2 * SLOTS_PER_HOUR);
+    assert_eq!(vacant(&core), capacity);
+    // A whole hour without the slot clock plans on the city as it is.
+    let last = core.allocator.buildings.len() - 1;
+    core.allocator.buildings[last].broken = true;
+    let (day_index, minute_of_day) = super::schedule::slot_calendar(hour + 3 * SLOTS_PER_HOUR);
+    core.simulate_operational_hour_internal(day_index, minute_of_day);
+    assert_eq!(vacant(&core), 0);
 }
 
 fn construction_execution_fixture() -> (SimCore, Vec<DemandSpawnAction>, Vec<DemandSpawnAction>) {

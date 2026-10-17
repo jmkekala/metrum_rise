@@ -90,6 +90,8 @@ impl ShipmentSystem {
         phase_start = Instant::now();
         self.shipments.retain(|shipment| shipment.status.is_open());
         let retain_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        #[cfg(test)]
+        self.assert_reservations_current();
         if timing_enabled {
             debug_log!(
                 timing_category,

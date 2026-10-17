@@ -148,6 +148,8 @@ impl HouseholdSystem {
             let resident_idx = agents.spawn_housed_agent_with_age_group(home, x, y, age_group);
             agents.assign_household_id(resident_idx, household_id);
         }
+        // Counted from its members at once, as a reload rebuilds its car access from them.
+        self.recount_household(household_id, agents, allocator, &catalog);
         for category in [crate::debug::Channel::Economy, crate::debug::Channel::Spawn] {
             debug_log!(
                 category,

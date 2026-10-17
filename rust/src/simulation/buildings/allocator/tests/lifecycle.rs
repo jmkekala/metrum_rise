@@ -786,7 +786,7 @@ fn test_hourly_startup_admission_avoids_zero_rounding() {
     );
     for _ in 0..2 {
         let idx = agents.spawn_housed_agent(0, 0.0, 0.0);
-        agents.household_id[idx] = household_id;
+        agents.assign_household_id(idx, household_id);
     }
     households.households[household_id].budget = 1_000.0;
     households.households[household_id].stock = 6.0;

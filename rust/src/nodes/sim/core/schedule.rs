@@ -6,8 +6,9 @@
 //! [`SimCore::step_frame`] reports the slots the clock crossed; each runs here in order. The
 //! timing wheel fires first, then the fixed-slot systems: until `SIM-02-K` the re-hosted
 //! operational hour, and the calendar close. The entities of the slot's hourly and daily phases
-//! follow, then the cell-lot queue and one chunk each of the rolling road length and
-//! environment sweep.
+//! follow, then the cell-lot queue, one chunk each of the rolling road length, environment
+//! sweep, freight supplier index and demand snapshot, and at an hour's last slot the hour's
+//! city totals.
 
 use std::time::Instant;
 
@@ -48,6 +49,14 @@ pub(crate) enum SimSystem {
     RoadLength,
     /// One chunk of the day-long sweep of pollution, noise and desirability (`SIM-02-H`).
     EnvironmentGrids,
+    /// One chunk of the hour-long sweep of the freight supplier index (`SIM-02-I`).
+    FreightSuppliers,
+    /// One chunk of the hour-long sweep of the demand snapshot (`SIM-02-I`).
+    DemandSnapshot,
+    /// The hour's city totals, which the hourly phases fold: at its last slot they become the
+    /// next hour's electricity dispatch and coverage and service-sales prices and pool
+    /// (`SIM-02-I`).
+    CityHour,
 }
 
 /// Something that must happen at a given slot.
@@ -241,6 +250,39 @@ pub(crate) fn simulation_schedule() -> Schedule<SimSystem> {
             cost: Cost::Chunk,
             tier: Tier::Full,
         },
+        Declaration {
+            system: SimSystem::FreightSuppliers,
+            name: "freight suppliers",
+            kind: SystemKind::Rolling {
+                period: Period::Hour,
+            },
+            reads: state::BUILDINGS | state::LOGISTICS | state::NETWORK,
+            writes: state::LOGISTICS,
+            cost: Cost::Chunk,
+            tier: Tier::Full,
+        },
+        Declaration {
+            system: SimSystem::DemandSnapshot,
+            name: "demand snapshot",
+            kind: SystemKind::Rolling {
+                period: Period::Hour,
+            },
+            reads: state::BUILDINGS | state::HOUSEHOLDS | state::TREASURY | state::DEMAND,
+            writes: state::DEMAND,
+            cost: Cost::Chunk,
+            tier: Tier::Full,
+        },
+        Declaration {
+            system: SimSystem::CityHour,
+            name: "city hour",
+            kind: SystemKind::Rolling {
+                period: Period::Hour,
+            },
+            reads: state::HOUSEHOLDS,
+            writes: state::HOUSEHOLDS,
+            cost: Cost::Chunk,
+            tier: Tier::Full,
+        },
     ])
 }
 
@@ -304,6 +346,9 @@ impl SimCore {
                 }
                 SimSystem::RoadLength => self.road_length.advance(slot, &self.region_graph),
                 SimSystem::EnvironmentGrids => self.advance_environment_sweep(slot),
+                SimSystem::FreightSuppliers => self.advance_freight_supplier_sweep(slot),
+                SimSystem::DemandSnapshot => self.advance_demand_snapshot(slot),
+                SimSystem::CityHour => self.advance_city_hour(slot),
             }
         }
         self.schedule_construction_completions();

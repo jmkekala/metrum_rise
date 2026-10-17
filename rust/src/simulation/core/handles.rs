@@ -273,6 +273,12 @@ impl<K> HandleTable<K> {
         self.slots.len()
     }
 
+    /// Entities with a handle: the store's first entities, up to those appended since the last
+    /// [`Self::register_appended`].
+    pub(crate) fn registered(&self) -> usize {
+        self.dense_slots.len()
+    }
+
     /// Dense index of the entity in handle slot `index`, whatever its generation; `None` while
     /// the slot is free or beyond the capacity.
     pub(crate) fn dense_at(&self, index: usize) -> Option<usize> {

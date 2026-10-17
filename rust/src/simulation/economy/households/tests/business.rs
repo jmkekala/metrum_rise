@@ -26,11 +26,11 @@ fn unemployment_timer_advances_when_treasury_is_empty_and_requires_valid_home() 
 
     let mut agents = AgentSystem::new();
     let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
-    agents.household_id[agent] = 0;
+    agents.assign_household_id(agent, 0);
     agents.work_building[agent] = usize::MAX;
 
     let mut treasury = 0.0;
-    households.pay_unemployment_benefits(&agents, &allocator, &mut treasury);
+    households.pay_unemployment_benefits(&allocator, &mut treasury);
     assert_eq!(households.households[0].unemployment_days_elapsed, 1);
     assert_eq!(households.daily_ledgers()[0].transfer_claim, 30.0);
     assert_eq!(households.daily_ledgers()[0].transfer_income(), 0.0);
@@ -38,7 +38,7 @@ fn unemployment_timer_advances_when_treasury_is_empty_and_requires_valid_home() 
     households.households[0].unemployment_days_elapsed = 0;
     allocator.buildings[0].broken = true;
     treasury = 1_000.0;
-    households.pay_unemployment_benefits(&agents, &allocator, &mut treasury);
+    households.pay_unemployment_benefits(&allocator, &mut treasury);
     assert_eq!(households.households[0].unemployment_days_elapsed, 0);
 }
 
@@ -62,7 +62,7 @@ fn adults_not_paid_a_wage_in_the_window_draw_unemployment_benefit() {
         let mut household = make_household(0, 2, 0.0, 0.0);
         household.adult_count = 2;
         household.child_count = 0;
-        // The hourly count still lists both adults as employed; only paid wages count.
+        // The employed count still lists both adults; only paid wages count.
         household.employed_adults = 2;
         households.households.push(household);
         households.restore_paid_workers(paid, paid as u16);
@@ -105,7 +105,6 @@ fn single_elder_receives_pension_without_work_or_unemployment() {
         0.0,
     ));
 
-    let agents = AgentSystem::new();
     let mut treasury = 1_000.0;
     let policy = crate::simulation::economy::fiscal::CityFiscalPolicy {
         unemployment_benefit_per_adult_per_day: 30.0,
@@ -114,7 +113,7 @@ fn single_elder_receives_pension_without_work_or_unemployment() {
         ..Default::default()
     };
 
-    households.pay_household_transfers(&agents, &allocator, &mut treasury, &policy);
+    households.pay_household_transfers(&allocator, &mut treasury, &policy);
 
     assert_eq!(households.households[0].budget, 30.0);
     assert_eq!(
@@ -235,9 +234,9 @@ fn membership_rebuild_does_not_materialize_missing_household_ids() {
     let mut households = HouseholdSystem::new();
     let mut agents = AgentSystem::new();
     let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
-    agents.household_id[agent] = usize::MAX;
+    agents.assign_household_id(agent, usize::MAX);
 
-    households.rebuild_household_and_worker_counts(&agents, &mut BuildingAllocator::new());
+    households.recount_every_household(&agents, &BuildingAllocator::new());
 
     assert!(households.households.is_empty());
     assert_eq!(agents.household_id[agent], usize::MAX);
@@ -493,7 +492,10 @@ fn service_store_sales_use_staffed_aggregate_household_demand() {
     // The census funded the two staffed workers' half of the barber's output.
     households.job_funding.set_activity(1, 0.5);
 
-    households.run_building_economy(&mut allocator);
+    // The first hour prices the sale, the second's household phase pays into the pool and the
+    // third's store phase draws it (`SIM-02-I`).
+    households.run_building_hour_for_test(&mut allocator);
+    households.run_building_hour_for_test(&mut allocator);
 
     let service_unit_price = catalog
         .unit_price_for_resource(personal_services)
@@ -504,16 +506,18 @@ fn service_store_sales_use_staffed_aggregate_household_demand() {
         .consumption_rate_per_resident;
     let expected_revenue = 100.0 * demand_rate / 24.0 * service_unit_price;
     assert!(
+        (households.households[0].budget - (10.0 - expected_revenue)).abs() < 0.001,
+        "aggregate service sales should debit household budget"
+    );
+    assert_eq!(allocator.buildings[1].revenue, 0.0);
+    households.run_building_hour_for_test(&mut allocator);
+    assert!(
         (allocator.buildings[1].revenue - expected_revenue).abs() < 0.001,
         "service revenue should be demand-capped and capacity-share credited"
     );
     assert!(
         (allocator.buildings[1].operating_budget - expected_revenue).abs() < 0.001,
         "service revenue should fund the commercial building budget"
-    );
-    assert!(
-        (households.households[0].budget - (10.0 - expected_revenue)).abs() < 0.001,
-        "aggregate service sales should debit household budget"
     );
     assert_eq!(
         allocator.buildings[1].inventory_units(personal_services),
@@ -627,7 +631,7 @@ fn service_store_wage_pass_sheds_workers_above_funded_capacity() {
         agents.spawn_housed_agent(0, 0.0, 0.0),
     ];
     for agent in workers {
-        agents.household_id[agent] = 0;
+        agents.assign_household_id(agent, 0);
         agents.transit[agent] = TRANSIT_IN_BUILDING;
         agents.current_building[agent] = 0;
         agents.assign_work_building(agent, 1, 0);
@@ -685,7 +689,7 @@ fn service_store_fake_inventory_cannot_liquidate_for_payroll() {
 
     let mut agents = AgentSystem::new();
     let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
-    agents.household_id[agent] = 0;
+    agents.assign_household_id(agent, 0);
     agents.transit[agent] = TRANSIT_IN_BUILDING;
     agents.current_building[agent] = 0;
     agents.assign_work_building(agent, 1, 0);
@@ -745,7 +749,7 @@ fn explicit_work_area_wages_keep_funded_workers_and_release_them_when_area_shrin
     let mut workers = Vec::new();
     for _ in 0..8 {
         let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
-        agents.household_id[agent] = 0;
+        agents.assign_household_id(agent, 0);
         agents.transit[agent] = TRANSIT_IN_BUILDING;
         agents.current_building[agent] = 0;
         agents.assign_work_building(agent, 1, 0);
@@ -936,6 +940,8 @@ fn utility_provider_must_have_workers_before_receiving_service_revenue() {
         .resource_runtime_id_for_id("coal")
         .expect("coal resource");
     allocator.buildings[1].set_inventory_units(coal, 10.0);
+    // Plants generate at the last hour's dispatch (`SIM-02-I`).
+    households.run_electricity_hour(&mut allocator);
     households.run_electricity_hour(&mut allocator);
     households.settle_daily_utilities(&mut allocator, &logistics, &mut treasury_balance);
     assert!(allocator.buildings[1].revenue > 0.0);
@@ -1435,7 +1441,7 @@ fn city_service_wages_debit_treasury_not_building_budget() {
 
     let mut agents = AgentSystem::new();
     let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
-    agents.household_id[agent] = 0;
+    agents.assign_household_id(agent, 0);
     agents.transit[agent] = TRANSIT_IN_BUILDING;
     agents.current_building[agent] = 0;
     agents.assign_work_building(agent, 1, 0);
@@ -1453,7 +1459,7 @@ fn city_service_wages_debit_treasury_not_building_budget() {
     water.operating_budget = 0.0;
     allocator.buildings.push(water);
     let water_worker = agents.spawn_housed_agent(0, 0.0, 0.0);
-    agents.household_id[water_worker] = 0;
+    agents.assign_household_id(water_worker, 0);
     agents.assign_work_building(water_worker, 2, 0);
 
     households.job_funding.capacities = vec![0, 1, 1];
@@ -1512,7 +1518,7 @@ fn power_service_funding_sheds_workers_to_funded_capacity() {
     let a0 = agents.spawn_housed_agent(0, 0.0, 0.0);
     let a1 = agents.spawn_housed_agent(0, 0.0, 0.0);
     for agent in [a0, a1] {
-        agents.household_id[agent] = 0;
+        agents.assign_household_id(agent, 0);
         agents.transit[agent] = TRANSIT_IN_BUILDING;
         agents.current_building[agent] = 0;
         agents.assign_work_building(agent, 1, 0);

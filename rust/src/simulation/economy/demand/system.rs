@@ -13,7 +13,8 @@ use super::diagnostics::{
     BuildingActionDiagnosticsByUse, HouseholdAdmissionDiagnostics, HouseholdRemovalDiagnostics,
 };
 use super::snapshot::{
-    DailyDemandSnapshot, ResidentialOccupantScratch, ResidentialOccupantSnapshot,
+    DailyDemandSnapshot, DemandSnapshotSweep, SavedDemandSnapshot, SweepInputs,
+    connected_road_border_count,
 };
 use super::supply::SiteSupply;
 use super::types::DEMAND_HOURLY_CADENCE_FRACTION;
@@ -48,7 +49,8 @@ pub struct DemandSystem {
     pub(super) last_admission_diagnostics: HouseholdAdmissionDiagnostics,
     pub(super) last_removal_diagnostics: HouseholdRemovalDiagnostics,
     pub(super) last_building_action_diagnostics: BuildingActionDiagnosticsByUse,
-    pub(super) residential_occupant_scratch: ResidentialOccupantScratch,
+    /// The demand snapshot folded over the previous hour (`SIM-02-I`); saved.
+    pub(super) snapshot_sweep: DemandSnapshotSweep,
     pub(super) workforce_reservations: super::workforce::WorkforceReservations,
     pub(super) construction_execution: super::execution::ConstructionExecution,
     pub(super) queued_construction: Vec<super::queued::QueuedConstruction>,
@@ -121,7 +123,7 @@ impl DemandSystem {
             last_admission_diagnostics: HouseholdAdmissionDiagnostics::default(),
             last_removal_diagnostics: HouseholdRemovalDiagnostics::default(),
             last_building_action_diagnostics: BuildingActionDiagnosticsByUse::default(),
-            residential_occupant_scratch: ResidentialOccupantScratch::default(),
+            snapshot_sweep: DemandSnapshotSweep::default(),
             workforce_reservations: super::workforce::WorkforceReservations::default(),
             construction_execution: super::execution::ConstructionExecution::default(),
             queued_construction: Vec::new(),
@@ -190,6 +192,8 @@ impl DemandSystem {
         network.lane_system.rebuild(&mut routing_graph);
         let graph = &routing_graph;
         network.rebuild_cch_and_check(graph);
+        // A whole hour without the slot clock plans on a snapshot of the current state.
+        self.discard_snapshot_front();
         self.run_hourly_pass_with_policy(
             allocator,
             households,
@@ -331,25 +335,28 @@ impl DemandSystem {
             );
         }
         lap(2);
-        let mut snapshot = DailyDemandSnapshot::from_runtime_with_funding(
+        // The snapshot swept over the previous hour, with the entities created since
+        // (`SIM-02-I`); a world without one builds it now from the census this pass plans with.
+        let front = self.snapshot_sweep.take_front(&SweepInputs {
             allocator,
             households,
-            graph,
-            &self.config,
+            job_funding: funded_jobs,
+            config: &self.config,
+            catalog: catalog.as_ref(),
+            tuning: economy_tuning.as_ref(),
+            policy: fiscal_policy,
+            treasury: treasury_balance,
+        });
+        let mut snapshot = DailyDemandSnapshot::compose(
+            &front.totals,
+            households,
+            connected_road_border_count(graph, &borders),
             catalog.as_ref(),
             economy_tuning.as_ref(),
             fiscal_policy,
             treasury_balance,
-            funded_jobs,
         );
         snapshot.reserve_queued_construction(catalog.as_ref(), &self.queued_construction);
-        let residential_occupants = ResidentialOccupantSnapshot::from_runtime_with_catalog(
-            allocator,
-            households,
-            catalog.as_ref(),
-            economy_tuning.as_ref(),
-            &mut self.residential_occupant_scratch,
-        );
 
         self.admission_budget = HouseholdAdmissionBudget::from_snapshot(&snapshot, &self.config);
         // This is execution capacity, not approval of the preview household. Each actual
@@ -403,11 +410,12 @@ impl DemandSystem {
             catalog.as_ref(),
             economy_tuning.as_ref(),
             fiscal_policy,
-            &residential_occupants,
+            &front.occupants,
             DEMAND_HOURLY_CADENCE_FRACTION,
             environment,
             supply,
         );
+        self.snapshot_sweep.restore_front(front);
         lap(6);
         if reuse_funding {
             reservations.end_live_pass(&mut inputs, allocator, graph);
@@ -445,6 +453,52 @@ impl DemandSystem {
         self.freight_border_nodes = borders;
         self.admission_budget
             .reserve_worker_homes(self.workforce_reservations.unreserved_ready_homes());
+    }
+
+    /// Slot `slot`'s chunk of the hour-long demand snapshot sweep (`SIM-02-I`): a share of the
+    /// households and buildings, read with the live census. The caller registers appended
+    /// entities' handles first. O(households/960 + buildings/960).
+    pub(crate) fn advance_snapshot_sweep(
+        &mut self,
+        slot: u64,
+        allocator: &BuildingAllocator,
+        households: &HouseholdSystem,
+        fiscal_policy: &CityFiscalPolicy,
+        treasury_balance: f64,
+    ) {
+        self.snapshot_sweep.advance(
+            slot,
+            &SweepInputs {
+                allocator,
+                households,
+                job_funding: &households.job_funding,
+                config: &self.config,
+                catalog: &self.runtime_catalog,
+                tuning: &self.runtime_tuning,
+                policy: fiscal_policy,
+                treasury: treasury_balance,
+            },
+        );
+    }
+
+    /// Drops the snapshot front, so the next hourly pass builds one from the current state: for
+    /// callers that step a whole hour without the slot clock (`SIM-02-I`).
+    pub(crate) fn discard_snapshot_front(&mut self) {
+        self.snapshot_sweep.discard_front();
+    }
+
+    /// The snapshot sweep's saved form.
+    pub(crate) fn saved_snapshot_sweep(&self) -> SavedDemandSnapshot {
+        self.snapshot_sweep.save()
+    }
+
+    /// Restores a saved snapshot sweep; a malformed buffer is an error.
+    pub(crate) fn restore_snapshot_sweep(
+        &mut self,
+        saved: &SavedDemandSnapshot,
+    ) -> Result<(), String> {
+        self.snapshot_sweep = DemandSnapshotSweep::restore(saved)?;
+        Ok(())
     }
 
     /// Rebuilds household diagnostics from runtime state without advancing action budgets.

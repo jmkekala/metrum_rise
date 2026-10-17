@@ -239,7 +239,8 @@ fn scratch_save_path(label: &str) -> PathBuf {
 // Invariants
 
 /// Money held inside the city outside the treasury: business and household cash, shoppers'
-/// reserved purchases and paid shipments still travelling to a building.
+/// reserved purchases, paid shipments still travelling to a building and the service-sales pool
+/// between households and stores (`SIM-02-I`).
 fn private_cash(core: &SimCore) -> f64 {
     let buildings: f64 = core
         .allocator
@@ -270,7 +271,7 @@ fn private_cash(core: &SimCore) -> f64 {
         })
         .map(|s| f64::from(s.total_cost))
         .sum();
-    buildings + households + escrow
+    buildings + households + escrow + core.households.service_sales.money()
 }
 
 /// Running money-conservation check: the change of city money between two checks must equal

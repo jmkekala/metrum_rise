@@ -575,12 +575,37 @@ impl SimCore {
 
 impl SimCore {
     /// Executes one coarse operational-hour economy step before the daily settlement boundary.
-    /// Every entity's hour runs at once after the pass, then the cell-lot queue serves the
-    /// hour's quota, as the slots of the hour would.
+    /// The demand pass plans on a snapshot of the whole city taken after the hour's census
+    /// instead of the one the slots would have swept. Every entity's hour runs at once after
+    /// the pass, then the cell-lot queue serves the hour's quota and one whole freight supplier
+    /// sweep runs, as the slots of the hour would.
     pub fn simulate_operational_hour_internal(&mut self, day_index: u32, minute_of_day: u16) {
+        self.demand.discard_snapshot_front();
         self.simulate_operational_hour_observed(day_index, minute_of_day, &mut ());
         self.run_every_hour_phase();
         self.serve_cell_lot_queue(CELL_LOT_QUOTA as usize * SLOTS_PER_HOUR as usize);
+        self.allocator
+            .building_handles
+            .register_appended(self.allocator.buildings.len());
+        self.logistics.run_whole_supplier_sweep(
+            &self.allocator,
+            &self.transit_network,
+            &self.region_graph,
+        );
+    }
+
+    /// Slot `slot`'s chunk of the rolling freight supplier index (`SIM-02-I`) that the next
+    /// hour's freight planning reads.
+    pub(super) fn advance_freight_supplier_sweep(&mut self, slot: u64) {
+        self.allocator
+            .building_handles
+            .register_appended(self.allocator.buildings.len());
+        self.logistics.advance_supplier_sweep(
+            slot,
+            &self.allocator,
+            &self.transit_network,
+            &self.region_graph,
+        );
     }
 
     pub(super) fn simulate_operational_hour_observed(
@@ -963,6 +988,23 @@ impl SimCore {
             &self.allocator,
             &self.region_graph,
             &self.config,
+        );
+    }
+
+    /// Slot `slot`'s chunk of the hour-long demand snapshot sweep (`SIM-02-I`).
+    pub(super) fn advance_demand_snapshot(&mut self, slot: u64) {
+        self.allocator
+            .building_handles
+            .register_appended(self.allocator.buildings.len());
+        self.households
+            .handles
+            .register_appended(self.households.households.len());
+        self.demand.advance_snapshot_sweep(
+            slot,
+            &self.allocator,
+            &self.households,
+            &self.fiscal_policy,
+            self.treasury.balance,
         );
     }
 

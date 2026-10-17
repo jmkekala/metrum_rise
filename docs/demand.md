@@ -196,6 +196,10 @@ This section describes the current cadence. Its replacement is planned in
 - **Frozen inputs:** a pass's inputs are fixed. Its changes affect the next operational hour and
   each entity's next hourly phase. The pass runs before the phases of its slot, so it sees every
   building and household exactly one hour on (`SIM-02-F`).
+- **Snapshot:** the pass plans on the demand snapshot the previous hour's rolling sweep built,
+  plus the buildings and households created since that sweep began (`SIM-02-I`,
+  [`simulation.md`](simulation.md#snapshots)): each entity as it stood at its chunk of that
+  hour, read with that hour's census. Construction execution builds its own current snapshot.
   A household admitted by an hourly pass cannot claim an exit: exits need at least two unhoused
   days.
 

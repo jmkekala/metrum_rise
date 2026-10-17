@@ -104,8 +104,7 @@ pub(super) fn residential_upgrade_viable(
     if occupancy_ratio + EPSILON < min_occupancy_ratio {
         return false;
     }
-    if building.occupancy > 0
-        && residential_occupants.household_count_by_building[building_idx] == 0
+    if building.occupancy > 0 && residential_occupants.household_count(allocator, building_idx) == 0
     {
         return false;
     }
@@ -115,7 +114,7 @@ pub(super) fn residential_upgrade_viable(
             .residential_move_in_min_reserve_days_by_level,
         target_building.level,
     );
-    let min_reserve_days = residential_occupants.min_reserve_days_by_building[building_idx];
+    let min_reserve_days = residential_occupants.min_reserve_days(allocator, building_idx);
     if building.occupancy > 0 && min_reserve_days + EPSILON < required_reserve_days {
         return false;
     }
@@ -146,8 +145,7 @@ pub(super) fn residential_downgrade_viable(
     if occupancy_ratio > max_occupancy_ratio + EPSILON {
         return false;
     }
-    if building.occupancy > 0
-        && residential_occupants.household_count_by_building[building_idx] == 0
+    if building.occupancy > 0 && residential_occupants.household_count(allocator, building_idx) == 0
     {
         return false;
     }

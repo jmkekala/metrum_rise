@@ -363,6 +363,9 @@ impl DemandSystem {
                 Some(&households.job_funding),
                 (now % 1440) as u16,
             );
+            // Placement validates against the current city and this epoch's census, not the
+            // hourly pass's rolling snapshot (`SIM-02-I`): an hour-old workforce would let
+            // successive epochs reserve the same unemployed adults.
             let mut snapshot = DailyDemandSnapshot::from_runtime_with_funding(
                 allocator,
                 households,

@@ -38,5 +38,6 @@ mod farms;
 mod housing;
 mod machinery;
 mod replenishment;
+mod service_sales;
 mod service_visits;
 mod support;

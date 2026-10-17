@@ -4,6 +4,7 @@
 
 use super::candidate_visits::CandidateVisits;
 use super::data::{DailyHouseholdLedger, Household, HouseholdSystem};
+use super::electricity::ElectricityProfiles;
 use super::metrics::{
     OPERATIONAL_HOURS_PER_DAY, economy_profile_for_building, household_demand_profile,
     household_supply_resource_runtime_id, household_supply_unit_price, stable_hash64, stock_days,
@@ -642,8 +643,9 @@ impl HouseholdSystem {
     }
 
     /// Runs the hour of every household whose hourly phase falls in this slot (`SIM-02-F`):
-    /// consumption, utilities, the replenishment state's hourly transitions and the timeout of
-    /// a shopping leg still under way. O(households in the phase).
+    /// the recount of its members, service purchases and metered electricity (`SIM-02-I`),
+    /// consumption, utilities, the replenishment state's hourly transitions and the timeout of a
+    /// shopping leg still under way. O(members of the households in the phase).
     pub(crate) fn run_household_phase(
         &mut self,
         phase_households: &[Handle<Household>],
@@ -665,11 +667,17 @@ impl HouseholdSystem {
         let terminal_failure_count = tuning
             .operational_clock
             .household_replenishment_terminal_failure_count;
+        let electricity = ElectricityProfiles::new(&catalog);
         self.ensure_daily_ledger_len();
+        agents.register_appended_household_members();
         for &handle in phase_households {
             let Some(hid) = self.handles.resolve(handle) else {
                 continue;
             };
+            self.recount_household(hid, agents, allocator, &catalog);
+            // Services first, as the citywide sale on the hour charged before the phases did.
+            self.buy_household_services(hid, allocator);
+            self.record_household_electricity(&electricity, hid, allocator);
             progress_household_hour(
                 &mut self.households[hid],
                 &mut self.daily_ledgers[hid],

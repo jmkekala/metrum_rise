@@ -32,10 +32,11 @@ impl AgentSystem {
         self.agents.cached_work_profile_index[agent_idx] = u16::MAX;
     }
 
-    /// Assigns an agent to a household without touching movement state.
+    /// Assigns an agent to a household (`usize::MAX` for none) without touching movement state,
+    /// keeping the household member lists sorted. O(household sizes).
     pub(crate) fn assign_household_id(&mut self, agent_idx: usize, household_id: usize) {
         if agent_idx < self.agents.len() {
-            self.agents.household_id[agent_idx] = household_id;
+            self.set_household_membership(agent_idx, household_id);
         }
     }
 
@@ -50,7 +51,7 @@ impl AgentSystem {
         if agent_idx >= self.agents.len() {
             return;
         }
-        self.agents.household_id[agent_idx] = household_id;
+        self.set_household_membership(agent_idx, household_id);
         self.agents.age_group[agent_idx] = age_group;
         self.agents.pending_household_size[agent_idx] = 0;
         self.agents.pending_household_adults[agent_idx] = 0;
@@ -632,6 +633,10 @@ impl AgentSystem {
         excluded_building: usize,
     ) -> Option<usize> {
         let residential_slot = baseline_private_zone_slot(ZoneType::Residential)?;
+        // A stale index is rebuilt by its first reader, wherever that is (`SIM-02`).
+        if allocator.dirty_index {
+            allocator.rebuild_zone_index();
+        }
         let building_idx = allocator.vacancy_index[residential_slot]
             .iter()
             .copied()
@@ -819,10 +824,33 @@ mod tests {
             unpaid_cash_wages_in_window: 0,
             recent_household_sales_value: 0.0,
             commercial_activity_floor_scale: 0.0,
+            service_sales_capacity: 0.0,
+            service_sales_profile_runtime_id: 0,
+            funded_activity: 0.0,
             work_area_scale: 1.0,
             pending_redevelopment: false,
             rezone_grace_days_remaining: 0,
         }
+    }
+
+    #[test]
+    fn forced_rehoming_rebuilds_a_stale_vacancy_index_first() {
+        let mut allocator = BuildingAllocator::new();
+        let asset_id = register_residential_test_asset(&mut allocator, "stale_home");
+        for (x, t) in [(25.0, 0.25), (75.0, 0.75)] {
+            allocator
+                .buildings
+                .push(create_test_building(0, &asset_id, x, t, 0));
+        }
+        allocator.rebuild_zone_index();
+        // A stale list that misses the first home: a reader must not trust it (`SIM-02`).
+        allocator.vacancy_index[0] = vec![1];
+        allocator.dirty_index = true;
+        assert_eq!(
+            AgentSystem::claim_available_home_except(&mut allocator, usize::MAX),
+            Some(0)
+        );
+        assert!(!allocator.dirty_index);
     }
 
     #[test]

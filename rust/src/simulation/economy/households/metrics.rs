@@ -13,13 +13,12 @@ use crate::simulation::economy::definitions::{
     RuntimeResourcePort,
 };
 use crate::simulation::economy::reduction::ordered_fold;
-use crate::simulation::economy::resource_totals::{add_resource_amount, resource_amount};
+use crate::simulation::economy::resource_totals::add_resource_amount;
 use crate::simulation::work_area::{
     minimum_work_area_workers, profile_kind_uses_explicit_work_area, sanitize_work_area_scale,
     scaled_work_area_worker_capacity,
 };
 use crate::simulation::zoning::ZoneType;
-use rayon::prelude::*;
 
 const MAX_STARTER_IMMIGRANT_HOUSEHOLD_SIZE: u16 = 6;
 const STARTER_IMMIGRANT_HOUSEHOLD_SIZE_BUCKETS: [u16; 16] =
@@ -115,24 +114,116 @@ pub(crate) fn affordable_consumer_residents(
     policy: &crate::simulation::economy::fiscal::CityFiscalPolicy,
     treasury_balance: f64,
 ) -> f64 {
-    let basket = consumer_basket_cost(catalog, policy.household_vat_rate);
+    let terms = ConsumerBudgetTerms::new(catalog, tuning, policy);
+    let mut treasury = treasury_balance.max(0.0);
     let mut equivalent_residents = 0.0;
-    visit_consumer_budgets(
-        households,
-        allocator,
-        catalog,
-        tuning,
-        policy,
-        treasury_balance,
-        |_, members, spending| {
-            equivalent_residents += if basket > 0.0 {
-                (spending / basket).min(f64::from(members))
-            } else {
-                f64::from(members)
-            };
-        },
-    );
+    for household in households {
+        if let Some(residents) =
+            terms.affordable_residents(household, allocator, policy, &mut treasury)
+        {
+            equivalent_residents += residents;
+        }
+    }
     equivalent_residents
+}
+
+/// Catalog and policy terms of one consumer budget walk: the gross basket and the imported
+/// utility bills. A rolling snapshot builds them per chunk and walks its households a chunk at
+/// a time with its own running treasury (`SIM-02-I`). O(profile ports), allocation-free.
+#[derive(Clone, Copy)]
+pub(crate) struct ConsumerBudgetTerms {
+    basket: f64,
+    base_utility: f32,
+    member_utility: f32,
+}
+
+impl ConsumerBudgetTerms {
+    /// Terms at the current catalog, tuning and policy.
+    pub(crate) fn new(
+        catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning,
+        policy: &crate::simulation::economy::fiscal::CityFiscalPolicy,
+    ) -> Self {
+        let base_utility = household_daily_utility_allowance(catalog, tuning, 0.0)
+            * tuning.owa_import_price_multiplier;
+        let member_utility = household_daily_utility_allowance(catalog, tuning, 1.0)
+            * tuning.owa_import_price_multiplier
+            - base_utility;
+        Self {
+            basket: consumer_basket_cost(catalog, policy.household_vat_rate),
+            base_utility,
+            member_utility,
+        }
+    }
+
+    /// One household's residents whose basket its recurring budget pays for, after it claims
+    /// its transfers from `treasury` in settlement order; `None` without members or a home,
+    /// whose claims still draw on `treasury`. O(1).
+    pub(crate) fn affordable_residents(
+        &self,
+        household: &Household,
+        allocator: &BuildingAllocator,
+        policy: &crate::simulation::economy::fiscal::CityFiscalPolicy,
+        treasury: &mut f64,
+    ) -> Option<f64> {
+        let spending = self.budget(household, allocator, policy, treasury)?;
+        let members = f64::from(household.member_count);
+        Some(if self.basket > 0.0 {
+            (spending / self.basket).min(members)
+        } else {
+            members
+        })
+    }
+
+    // One household's step of the walk: its transfer claims on `treasury`, then, when housed,
+    // its recurring goods budget including VAT.
+    fn budget(
+        &self,
+        household: &Household,
+        allocator: &BuildingAllocator,
+        policy: &crate::simulation::economy::fiscal::CityFiscalPolicy,
+        treasury: &mut f64,
+    ) -> Option<f64> {
+        use crate::simulation::economy::fiscal::{daily_property_tax, tax_amount};
+        if household.member_count == 0 {
+            return None;
+        }
+        let housed = household_is_housed(household, allocator);
+        let unemployed = household
+            .adult_count
+            .saturating_sub(household.employed_adults);
+        if housed && household.unemployment_days_elapsed < policy.unemployment_max_days {
+            super::benefits::pay_transfer_claim(
+                treasury,
+                f32::from(unemployed) * policy.unemployment_benefit_per_adult_per_day.max(0.0),
+            );
+        }
+        let pension = super::benefits::pay_transfer_claim(
+            treasury,
+            f32::from(household.elder_count) * policy.pension_per_elder_per_day.max(0.0),
+        );
+        let child_support = super::benefits::pay_transfer_claim(
+            treasury,
+            f32::from(household.child_count) * policy.child_support_per_child_per_day.max(0.0),
+        );
+        if !housed {
+            return None;
+        }
+        let members = f64::from(household.member_count);
+        let gross = household.gross_daily_wages.max(0.0);
+        let income = f64::from(gross - tax_amount(gross, policy.income_tax_rate))
+            + f64::from(pension)
+            + f64::from(child_support);
+        let home = &allocator.buildings[household.home_building_id];
+        let bills = f64::from(self.base_utility)
+            + members * f64::from(self.member_utility)
+            + f64::from(daily_property_tax(
+                ZoneType::Residential,
+                home.level,
+                policy,
+            ));
+        Some((income - bills).max(0.0))
+    }
 }
 
 /// Gross cost of one resident's authored daily consumer basket at catalog prices.
@@ -168,52 +259,12 @@ pub(crate) fn visit_consumer_budgets(
     treasury_balance: f64,
     mut visitor: impl FnMut(usize, u16, f64),
 ) {
-    use crate::simulation::economy::fiscal::{daily_property_tax, tax_amount};
-    let base_utility = household_daily_utility_allowance(catalog, tuning, 0.0)
-        * tuning.owa_import_price_multiplier;
-    let member_utility = household_daily_utility_allowance(catalog, tuning, 1.0)
-        * tuning.owa_import_price_multiplier
-        - base_utility;
+    let terms = ConsumerBudgetTerms::new(catalog, tuning, policy);
     let mut treasury = treasury_balance.max(0.0);
     for (index, household) in households.iter().enumerate() {
-        if household.member_count == 0 {
-            continue;
+        if let Some(spending) = terms.budget(household, allocator, policy, &mut treasury) {
+            visitor(index, household.member_count, spending);
         }
-        let housed = household_is_housed(household, allocator);
-        let unemployed = household
-            .adult_count
-            .saturating_sub(household.employed_adults);
-        if housed && household.unemployment_days_elapsed < policy.unemployment_max_days {
-            super::benefits::pay_transfer_claim(
-                &mut treasury,
-                f32::from(unemployed) * policy.unemployment_benefit_per_adult_per_day.max(0.0),
-            );
-        }
-        let pension = super::benefits::pay_transfer_claim(
-            &mut treasury,
-            f32::from(household.elder_count) * policy.pension_per_elder_per_day.max(0.0),
-        );
-        let child_support = super::benefits::pay_transfer_claim(
-            &mut treasury,
-            f32::from(household.child_count) * policy.child_support_per_child_per_day.max(0.0),
-        );
-        if !housed {
-            continue;
-        }
-        let members = f64::from(household.member_count);
-        let gross = household.gross_daily_wages.max(0.0);
-        let income = f64::from(gross - tax_amount(gross, policy.income_tax_rate))
-            + f64::from(pension)
-            + f64::from(child_support);
-        let home = &allocator.buildings[household.home_building_id];
-        let bills = f64::from(base_utility)
-            + members * f64::from(member_utility)
-            + f64::from(daily_property_tax(
-                ZoneType::Residential,
-                home.level,
-                policy,
-            ));
-        visitor(index, household.member_count, (income - bills).max(0.0));
     }
 }
 
@@ -274,105 +325,171 @@ fn is_service_scaled_commercial_store(
         && matches!(profile.kind, EconomyProfileRuntimeKind::ServiceStore)
 }
 
+#[cfg(test)]
 pub(crate) fn commercial_activity_signal_for_city(
     catalog: &RuntimeEconomyCatalog,
     households: &[Household],
     allocator: &BuildingAllocator,
 ) -> CommercialActivitySignal {
-    let household_profile = household_demand_profile(catalog);
-    let household_supply_resource = household_supply_resource_runtime_id(catalog);
-    let recovery_days = household_profile.stock_target_days.max(1.0);
-    let (daily_consumption, stock_gap) = ordered_fold(
+    let terms = CommercialActivityTerms::new(catalog);
+    commercial_activity_sums_for_city(catalog, terms, households, allocator).signal(terms)
+}
+
+/// The sums of [`commercial_activity_signal_for_city`] in fixed parallel chunks and ordered
+/// merges, households and buildings each in dense order. O(households + buildings).
+pub(crate) fn commercial_activity_sums_for_city(
+    catalog: &RuntimeEconomyCatalog,
+    terms: CommercialActivityTerms,
+    households: &[Household],
+    allocator: &BuildingAllocator,
+) -> CommercialActivitySums {
+    let merge =
+        |left: CommercialActivitySums, right: CommercialActivitySums| CommercialActivitySums {
+            daily_consumption: left.daily_consumption + right.daily_consumption,
+            stock_gap: left.stock_gap + right.stock_gap,
+            retail_stock: left.retail_stock + right.retail_stock,
+        };
+    let housed = ordered_fold(
         households,
         ACTIVITY_CHUNK_SIZE,
-        || (0.0, 0.0),
-        |(consumption, gap), _, household| {
-            if !household_is_housed(household, allocator) {
-                return;
-            }
-            let daily_consumption =
-                household.member_count as f32 * household.consumption_rate.max(0.0);
-            let target_stock = daily_consumption * household_profile.stock_target_days.max(0.0);
-            let incoming = if matches!(
-                household.replenishment_state,
-                REPLENISHMENT_SHOPPING_TO_STORE | REPLENISHMENT_SHOPPING_RETURNING
-            ) {
-                household.reserved_amount.max(0.0)
-            } else {
-                0.0
-            };
-            let stock_gap = (target_stock - household.stock.max(0.0) - incoming).max(0.0);
-            *consumption += daily_consumption;
-            *gap += stock_gap;
-        },
-        |left, right| (left.0 + right.0, left.1 + right.1),
+        CommercialActivitySums::default,
+        |sums, _, household| sums.add_household(terms, household, allocator),
+        merge,
     );
-    let retail_stock = ordered_fold(
+    let retail = ordered_fold(
         &allocator.buildings,
         ACTIVITY_CHUNK_SIZE,
-        || 0.0,
-        |stock, _, building| {
-            if building.broken
-                || building.economy_broken
-                || building.is_deserted
-                || building.is_under_construction()
-            {
-                return;
-            }
-            let Some(profile) = economy_profile_for_building(catalog, building) else {
-                return;
-            };
-            if !is_sales_scaled_commercial_store(building, profile) {
-                return;
-            }
-            *stock += building.inventory_units(household_supply_resource);
-        },
-        |left, right| left + right,
+        CommercialActivitySums::default,
+        |sums, _, building| sums.add_building(terms, catalog, building),
+        merge,
     );
-    // A household shortage is not new production demand when its goods already
-    // exist at a shop or in a shopper's reservation. Recover only the remaining gap.
-    let demand_units_per_day =
-        daily_consumption + (stock_gap - retail_stock).max(0.0) / recovery_days;
-    CommercialActivitySignal {
-        household_supply_resource_runtime_id: household_supply_resource,
-        demand_units_per_day,
+    CommercialActivitySums {
+        retail_stock: retail.retail_stock,
+        ..housed
     }
 }
 
-/// Household service demand shared by activity scaling and hourly sales settlement.
-pub(super) fn service_store_demand_rates_by_resource(
-    catalog: &RuntimeEconomyCatalog,
-) -> Vec<(ResourceRuntimeId, f32)> {
-    let mut demand_rates = Vec::new();
-    let mut service_resources = Vec::new();
-    for profile in catalog.all_profiles() {
-        if profile.kind != EconomyProfileRuntimeKind::ServiceStore {
-            continue;
-        }
-        for output in &profile.outputs {
-            add_resource_amount(&mut service_resources, output.resource_runtime_id, 1.0);
+/// Catalog terms of the commercial activity signal, looked up once per fold.
+#[derive(Clone, Copy)]
+pub(crate) struct CommercialActivityTerms {
+    stock_target_days: f32,
+    household_supply: ResourceRuntimeId,
+}
+
+impl CommercialActivityTerms {
+    /// The household demand profile's stock target and the household supply resource.
+    pub(crate) fn new(catalog: &RuntimeEconomyCatalog) -> Self {
+        Self {
+            stock_target_days: household_demand_profile(catalog).stock_target_days,
+            household_supply: household_supply_resource_runtime_id(catalog),
         }
     }
-    if service_resources.is_empty() {
-        return demand_rates;
+}
+
+/// Sums behind [`commercial_activity_signal_for_city`], which a rolling snapshot folds entity
+/// by entity (`SIM-02-I`): housed households' daily supply consumption and their stock gap net
+/// of shoppers' reservations, and the household supplies stocked at operating sales-scaled
+/// stores.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct CommercialActivitySums {
+    pub(crate) daily_consumption: f32,
+    pub(crate) stock_gap: f32,
+    pub(crate) retail_stock: f32,
+}
+
+impl CommercialActivitySums {
+    /// Adds a household; one without an operational home adds nothing. O(1).
+    pub(crate) fn add_household(
+        &mut self,
+        terms: CommercialActivityTerms,
+        household: &Household,
+        allocator: &BuildingAllocator,
+    ) {
+        if !household_is_housed(household, allocator) {
+            return;
+        }
+        let daily_consumption = household.member_count as f32 * household.consumption_rate.max(0.0);
+        let target_stock = daily_consumption * terms.stock_target_days.max(0.0);
+        let incoming = if matches!(
+            household.replenishment_state,
+            REPLENISHMENT_SHOPPING_TO_STORE | REPLENISHMENT_SHOPPING_RETURNING
+        ) {
+            household.reserved_amount.max(0.0)
+        } else {
+            0.0
+        };
+        let stock_gap = (target_stock - household.stock.max(0.0) - incoming).max(0.0);
+        self.daily_consumption += daily_consumption;
+        self.stock_gap += stock_gap;
     }
 
-    for profile in catalog.all_profiles() {
+    /// Adds a building's household supplies when it is an operating sales-scaled store. O(1).
+    pub(crate) fn add_building(
+        &mut self,
+        terms: CommercialActivityTerms,
+        catalog: &RuntimeEconomyCatalog,
+        building: &Building,
+    ) {
+        if building.broken
+            || building.economy_broken
+            || building.is_deserted
+            || building.is_under_construction()
+        {
+            return;
+        }
+        let Some(profile) = economy_profile_for_building(catalog, building) else {
+            return;
+        };
+        if !is_sales_scaled_commercial_store(building, profile) {
+            return;
+        }
+        self.retail_stock += building.inventory_units(terms.household_supply);
+    }
+
+    /// Daily consumption plus the stock gap that retail stock does not cover, recovered over
+    /// the stock target. O(1).
+    pub(crate) fn signal(&self, terms: CommercialActivityTerms) -> CommercialActivitySignal {
+        // A household shortage is not new production demand when its goods already
+        // exist at a shop or in a shopper's reservation. Recover only the remaining gap.
+        let demand_units_per_day = self.daily_consumption
+            + (self.stock_gap - self.retail_stock).max(0.0) / terms.stock_target_days.max(1.0);
+        CommercialActivitySignal {
+            household_supply_resource_runtime_id: terms.household_supply,
+            demand_units_per_day,
+        }
+    }
+}
+
+/// Fills `rates` with each service resource's daily purchases per resident, summed over the
+/// demand-sink profiles in first-seen order: the household side of service-store sales.
+/// O(profiles²) over the small catalog; reuses `rates`.
+pub(super) fn service_store_demand_rates_by_resource(
+    catalog: &RuntimeEconomyCatalog,
+    rates: &mut Vec<(ResourceRuntimeId, f32)>,
+) {
+    rates.clear();
+    let profiles = catalog.all_profiles();
+    for profile in profiles {
         if profile.kind != EconomyProfileRuntimeKind::DemandSink {
             continue;
         }
         for input in &profile.inputs {
-            if resource_amount(&service_resources, input.resource_runtime_id) <= 0.0 {
-                continue;
+            let sold_by_service_stores = profiles.iter().any(|store| {
+                store.kind == EconomyProfileRuntimeKind::ServiceStore
+                    && store
+                        .outputs
+                        .iter()
+                        .any(|output| output.resource_runtime_id == input.resource_runtime_id)
+            });
+            if sold_by_service_stores {
+                add_resource_amount(
+                    rates,
+                    input.resource_runtime_id,
+                    profile.consumption_rate_per_resident.max(0.0),
+                );
             }
-            add_resource_amount(
-                &mut demand_rates,
-                input.resource_runtime_id,
-                profile.consumption_rate_per_resident.max(0.0),
-            );
         }
     }
-    demand_rates
 }
 
 /// Returns whole physical worker slots before market or payroll limits, including field area.
@@ -392,42 +509,49 @@ pub(crate) fn physical_worker_capacity_for_profile(
     }
 }
 
-/// Caches each workplace's activity cap from its funded census activity (`store_activity`,
-/// indexed by building): goods and service stores, and explicit work areas. The census already
-/// sizes each to the reachable customers, buyers or exports it reserved and can finance; a
-/// citywide demand ratio would also cap the businesses those customers chose. O(buildings).
+/// A workplace's activity cap from its funded census `activity` (`DEM-02`): goods and service
+/// stores, and explicit work areas; zero for any other building and for one that cannot
+/// operate. The census already sizes each to the reachable customers, buyers or exports it
+/// reserved and can finance; a citywide demand ratio would also cap the businesses those
+/// customers chose. Each building sets its own at its hourly phase (`SIM-02-I`). O(1).
+pub(crate) fn commercial_activity_floor(
+    catalog: &RuntimeEconomyCatalog,
+    building: &Building,
+    activity: f32,
+) -> f32 {
+    if building.broken
+        || building.economy_broken
+        || building.is_deserted
+        || building.is_under_construction()
+    {
+        return 0.0;
+    }
+    let Some(profile) = economy_profile_for_building(catalog, building) else {
+        return 0.0;
+    };
+    if is_sales_scaled_commercial_store(building, profile)
+        || is_service_scaled_commercial_store(building, profile)
+        || profile_kind_uses_explicit_work_area(profile.kind)
+    {
+        activity.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+/// Sets every building's activity cap from `store_activity` (indexed by building) at once, as
+/// their hourly phases would.
+#[cfg(test)]
 pub(crate) fn refresh_commercial_activity_floor(
     catalog: &RuntimeEconomyCatalog,
     allocator: &mut BuildingAllocator,
     store_activity: &[f32],
 ) {
-    allocator
-        .buildings
-        .par_iter_mut()
-        .enumerate()
-        .for_each(|(index, building)| {
-            building.commercial_activity_floor_scale = 0.0;
-            if building.broken
-                || building.economy_broken
-                || building.is_deserted
-                || building.is_under_construction()
-            {
-                return;
-            }
-            let Some(profile) = economy_profile_for_building(catalog, building) else {
-                return;
-            };
-            if is_sales_scaled_commercial_store(building, profile)
-                || is_service_scaled_commercial_store(building, profile)
-                || profile_kind_uses_explicit_work_area(profile.kind)
-            {
-                building.commercial_activity_floor_scale = store_activity
-                    .get(index)
-                    .copied()
-                    .unwrap_or(0.0)
-                    .clamp(0.0, 1.0);
-            }
-        });
+    for (index, building) in allocator.buildings.iter_mut().enumerate() {
+        let activity = store_activity.get(index).copied().unwrap_or(0.0);
+        building.commercial_activity_floor_scale =
+            commercial_activity_floor(catalog, building, activity);
+    }
 }
 
 fn commercial_activity_scale_with_floor(

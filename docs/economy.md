@@ -100,17 +100,23 @@ crossed:
    about 1/960 of the city per slot, and one daily phase per day, about 1/23,040. Readers see
    the environment grids the previous day's sweep finished at its last slot.
 
-Household hour (`households/tick.rs`): count the households still arriving; rebuild membership
-and worker counts; rehouse unhoused households; the funding census; the activity floor and
-service-store sales; electricity dispatch; logistics; replenishment and service-visit planning;
-job search against the census; the employed-adult counts. Every reader that hour sees a census
-of the state the previous hour's phases left.
+Household hour (`households/tick.rs`): count the households still arriving; rehouse unhoused
+households; the funding census; logistics; replenishment and service-visit planning; job search
+against the census. Every reader that hour sees a census of the state the previous hour's phases
+left. Membership is a maintained list of each household's members (`SIM-02-I`): each household
+recounts its members, car access, stock days, employed adults and expected wages at its own
+hourly phase, a job change also updates the household's employed adults at once, and
+buildings' worker counts follow every job change.
 
-Hourly phases (`nodes/sim/core/entity_phases.rs`): a building produces and consumes its recipe
-inputs, and a farm or mine adds its output; a household consumes supplies, pays utilities and
-times out a stalled shopping leg; an agent whose household pantry is empty loses happiness.
-Electricity dispatch on the hour bills the activity each building recorded at its phase in the
-previous hour.
+Hourly phases (`nodes/sim/core/entity_phases.rs`): a building sets its activity floor from the
+hour's census, produces and consumes its recipe inputs, and a farm or mine adds its output; a
+service store then draws its sales and the building meters its electricity, a power plant
+generating at the last hour's dispatch. A household recounts its members, buys services, meters
+its electricity, consumes supplies, pays utilities and times out a stalled shopping leg; an
+agent whose household pantry is empty loses happiness. Phases read the city totals of the last
+finished hour: power dispatch and coverage, and the residents, store capacity and prices of
+service sales. The hour's last slot folds the hour's own totals for the next hour (`city
+hour`, `SIM-02-I`).
 
 Trips decided on the hour do not leave on it (`SIM-02-E`,
 [`simulation.md`](simulation.md#deadlines-and-timed-events)). Freight carriers, shoppers,
@@ -132,8 +138,8 @@ Daily phases (`nodes/sim/core/entity_days.rs`), each over the entity's own 24-ho
 3. **Agent:** the wage, paid while the workplace has paid fewer than its funded jobs in its own
    window, and the daily happiness update.
 
-The next hour serves the queued housing reviews and exits, which need the member links of the
-hourly membership count. Wages read the funded jobs the last hourly census copied onto each
+The next hour serves the queued housing reviews and exits, walking each household's member
+list. Wages read the funded jobs the last hourly census copied onto each
 building; water and sewage coverage is whether a provider settled operational in the last
 closed day. Complete commute quotes expire 24 workplace passes after they were added; bounded
 network-only legs remain valid until their CCH or lane revision changes. Every payment also
@@ -381,8 +387,8 @@ freight_cost = dispatch_fee (4) + round_trip_vehicle_hours × vehicle_hour_cost 
 ### Representation and composition
 
 - Households are explicit runtime records anchored to a residential home or a farm's single home
-  slot. Linked resident agents are the authoritative membership; cached counts are rebuilt from
-  agents.
+  slot. Linked resident agents are the authoritative membership; each household's cached
+  counts are recounted from its member list at its hourly phase.
 - Age groups: a **child** consumes and cannot work or shop; an **adult** works and shops; an
   **elder** shops and does not work.
 - Composition is deterministic at admission:
@@ -425,6 +431,12 @@ freight_cost = dispatch_fee (4) + round_trip_vehicle_hours × vehicle_hour_cost 
 
 Service stores sell aggregate capacity each hour. Resident demand is capped by staffed capacity,
 households are debited proportionally, and revenue goes to service stores by capacity share.
+Since `SIM-02-I` this runs through a money pool (`households/service_sales.rs`): each housed
+household pays at its hourly phase its members' share of the gross revenue the last finished
+hour's residents and store capacity allowed, up to its budget; each store at its phase draws its
+share of the pool the last hour collected, by the capacity it recorded in that hour, which sets
+its activity for its electricity meter. Money a removed store did not draw carries into the next
+pool. The pool is saved and counted with city cash by the money-conservation checks.
 
 A service store's active worker slots follow its own funded census activity: the share of output
 its reachable, affordable households reserved. There is no inventory, freight, VAT or
@@ -451,8 +463,9 @@ household_reserve_days = household_budget / max(household_daily_essential_cost, 
   active shopping trip through the normal refund rules and releases the shopper; once the
   household is rehoused, a member away from home and work goes to the new home after its
   current trip.
-- Unhoused households try to rehouse after each hourly membership census, claiming real
-  vacancies before arrivals can. This costs O(1) when everyone is housed.
+- Unhoused households try to rehouse at each operational hour, claiming real vacancies before
+  arrivals can. A parallel check over the households finds whether any is unhoused (`SIM-02-J`
+  turns rehousing into a queue).
 - `unhoused_days_elapsed` counts consecutive settled days without a home. Demand's exit policy
   interprets it ([`demand.md`](demand.md#household-removal)).
 
@@ -625,7 +638,9 @@ freight.
 
 - **Power** is dispatched hourly against metered kWh demand. Connected plants generate the least
   of demand, staffed capacity (50 kW per worker) and available coal (0.45 kg/kWh). Unmet demand
-  is imported.
+  is imported. Each phase meters with the last finished hour's coverage and each plant generates
+  that hour's dispatch of its current capacity (`SIM-02-I`), so a change in demand or capacity
+  reaches both one hour later. A home's standby load splits equally among its household places.
 - **Water and sewage** are local when a staffed connected provider settled operational in the
   last closed calendar day; otherwise they fall back to the `OWA`. Providers share that day's
   local receipts (`SIM-02-G`).
@@ -665,7 +680,10 @@ freight.
   `max(6, 4 × eta_hours + 2)` operational hours.
 - **Supplier search:** `SupplierCandidateIndex` lists a supplier under a resource only while its
   unreserved stock fills one batch. Searches scan chunk rings outward from the buyer and stop at
-  the nearest qualifying supplier, so an empty search ends at once (`ECON-15`).
+  the nearest qualifying supplier, so an empty search ends at once (`ECON-15`). The index is a
+  rolling snapshot (`SIM-02-I`): an hourly freight pass reads the listing the previous hour's
+  sweep built, each supplier as it stood at its slot of that hour, and the choice still checks
+  the supplier's live stock.
 - **Routing:** freight routes use the exact car-access abstraction of the entrance cache, with
   direct same-lane frontage travel when the exact points are in forward order.
 - **Border quote preparation:** retain the existing per-border network tables for dispatch,

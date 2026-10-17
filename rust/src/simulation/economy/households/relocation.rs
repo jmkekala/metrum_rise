@@ -16,13 +16,12 @@ use crate::simulation::buildings::allocator::{
 use crate::simulation::economy::accessibility::{
     chunk_for_point, min_possible_ring_distance_sq, scan_ring_chunks,
 };
-use crate::simulation::economy::agents::AgentSystem;
+use crate::simulation::economy::agents::{AgentSystem, NO_MEMBER};
 use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
 use crate::simulation::zoning::ZoneType;
-
-const NO_MEMBER: usize = usize::MAX;
+use rayon::prelude::*;
 
 #[derive(Default)]
 struct HousingResolutionDiagnostics {
@@ -367,15 +366,15 @@ fn squared_distance_to_building(origin_x: f32, origin_y: f32, building: &Buildin
 
 impl HouseholdSystem {
     /// Rehouses existing residents before hourly job and arrival planning can claim their homes.
-    /// Called immediately after the membership census, reusing its member links. Shared vacancy
-    /// claims are serial in household order: O(H + U*(levels + log V) + moved members), with no
-    /// vacancy scan or new scratch allocation. The common fully housed case returns in O(1).
+    /// Shared vacancy claims are serial in household order: O(H + U*(levels + log V) + moved
+    /// members), with no vacancy scan or new scratch allocation. The common fully housed case
+    /// costs one parallel O(H) check.
     pub(super) fn rehouse_unhoused_before_growth(
         &mut self,
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
     ) {
-        if !self.has_unhoused_households {
+        if !self.any_unhoused_household(allocator) {
             return;
         }
         if allocator.dirty_index {
@@ -385,8 +384,6 @@ impl HouseholdSystem {
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let tuning = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
-        let heads = std::mem::take(&mut self.household_member_heads_scratch);
-        let next = std::mem::take(&mut self.household_member_next_scratch);
         for household_id in 0..self.households.len() {
             let household = &self.households[household_id];
             if household.member_count == 0
@@ -410,43 +407,34 @@ impl HouseholdSystem {
                 if old_home < allocator.buildings.len() {
                     allocator.release_vacancy(old_home);
                 }
-                self.occupy_household_home(
-                    household_id,
-                    old_home,
-                    home,
-                    agents,
-                    allocator,
-                    &heads,
-                    &next,
-                );
+                self.occupy_household_home(household_id, old_home, home, agents, allocator);
             }
         }
-        self.household_member_heads_scratch = heads;
-        self.household_member_next_scratch = next;
     }
 
-    /// Housing affordability, relocation and eviction of every household at once, with a fresh
-    /// member index, as their daily phases would queue them.
+    // Whether a household with members lacks a usable home, from the member counts of its last
+    // hourly phase and the live home. Reads only saved state, so a reloaded game decides the
+    // same. O(H) parallel, stopping at the first one; `SIM-02-J` replaces it with a queue.
+    fn any_unhoused_household(&self, allocator: &BuildingAllocator) -> bool {
+        self.households.par_iter().any(|household| {
+            household.member_count > 0 && !household_is_housed(household, allocator)
+        })
+    }
+
+    /// Housing affordability, relocation and eviction of every household at once, as their
+    /// daily phases would queue them.
     #[cfg(test)]
     pub(super) fn resolve_household_housing(
         &mut self,
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
     ) {
-        let (heads, next) = build_household_member_index(
-            agents,
-            self.households.len(),
-            std::mem::take(&mut self.household_member_heads_scratch),
-            std::mem::take(&mut self.household_member_next_scratch),
-        );
         let household_ids: Vec<usize> = (0..self.households.len()).collect();
-        self.resolve_housing_of(&household_ids, agents, allocator, &heads, &next);
-        self.household_member_heads_scratch = heads;
-        self.household_member_next_scratch = next;
+        self.resolve_housing_of(&household_ids, agents, allocator);
     }
 
     /// Serves the housing reviews that households' daily phases queued (`SIM-02-G`), in queue
-    /// order. Called right after the hour's membership census, reusing its member links.
+    /// order, moving members along their households' member lists.
     /// O(V log V + reviews x (levels + log V) + moved members) for V vacant homes.
     pub(super) fn review_queued_housing(
         &mut self,
@@ -463,11 +451,7 @@ impl HouseholdSystem {
                 .drain(..)
                 .filter_map(|handle| self.handles.resolve(handle)),
         );
-        let heads = std::mem::take(&mut self.household_member_heads_scratch);
-        let next = std::mem::take(&mut self.household_member_next_scratch);
-        self.resolve_housing_of(&household_ids, agents, allocator, &heads, &next);
-        self.household_member_heads_scratch = heads;
-        self.household_member_next_scratch = next;
+        self.resolve_housing_of(&household_ids, agents, allocator);
         self.housing_review_scratch = household_ids;
     }
 
@@ -476,13 +460,15 @@ impl HouseholdSystem {
         household_ids: &[usize],
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
-        household_member_heads: &[usize],
-        household_member_next: &[usize],
     ) {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let config = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        // A stale index is rebuilt by its first reader, wherever that is (`SIM-02`).
+        if allocator.dirty_index {
+            allocator.rebuild_zone_index();
+        }
         let mut vacancy_planner = VacancyPlanner::new(allocator);
 
         let mut diagnostics = HousingResolutionDiagnostics::default();
@@ -504,8 +490,6 @@ impl HouseholdSystem {
                         agents,
                         allocator,
                         &mut vacancy_planner,
-                        household_member_heads,
-                        household_member_next,
                     );
                     diagnostics.evicted = diagnostics.evicted.saturating_add(1);
                 }
@@ -538,8 +522,6 @@ impl HouseholdSystem {
                         agents,
                         allocator,
                         &mut vacancy_planner,
-                        household_member_heads,
-                        household_member_next,
                     );
                     diagnostics.relocated_unhoused =
                         diagnostics.relocated_unhoused.saturating_add(1);
@@ -578,8 +560,6 @@ impl HouseholdSystem {
                         agents,
                         allocator,
                         &mut vacancy_planner,
-                        household_member_heads,
-                        household_member_next,
                     );
                     diagnostics.relocated_upgrade = diagnostics.relocated_upgrade.saturating_add(1);
                 }
@@ -612,8 +592,6 @@ impl HouseholdSystem {
                     agents,
                     allocator,
                     &mut vacancy_planner,
-                    household_member_heads,
-                    household_member_next,
                 );
                 diagnostics.relocated_failed_stay =
                     diagnostics.relocated_failed_stay.saturating_add(1);
@@ -624,8 +602,6 @@ impl HouseholdSystem {
                     agents,
                     allocator,
                     &mut vacancy_planner,
-                    household_member_heads,
-                    household_member_next,
                 );
                 diagnostics.evicted = diagnostics.evicted.saturating_add(1);
             }
@@ -650,7 +626,6 @@ impl HouseholdSystem {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn relocate_household(
         &mut self,
         household_id: usize,
@@ -659,8 +634,6 @@ impl HouseholdSystem {
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
         vacancy_planner: &mut VacancyPlanner,
-        household_member_heads: &[usize],
-        household_member_next: &[usize],
     ) {
         if household_id >= self.households.len() || new_home >= allocator.buildings.len() {
             return;
@@ -669,18 +642,9 @@ impl HouseholdSystem {
             allocator.release_vacancy(old_home);
             vacancy_planner.release_home(allocator, old_home);
         }
-        self.occupy_household_home(
-            household_id,
-            old_home,
-            new_home,
-            agents,
-            allocator,
-            household_member_heads,
-            household_member_next,
-        );
+        self.occupy_household_home(household_id, old_home, new_home, agents, allocator);
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn occupy_household_home(
         &mut self,
         household_id: usize,
@@ -688,8 +652,6 @@ impl HouseholdSystem {
         new_home: usize,
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
-        household_member_heads: &[usize],
-        household_member_next: &[usize],
     ) {
         allocator.claim_vacancy(new_home);
 
@@ -697,10 +659,7 @@ impl HouseholdSystem {
         self.households[household_id].stay_failure_days = 0;
         self.households[household_id].unhoused_days_elapsed = 0;
 
-        let mut agent_idx = household_member_heads
-            .get(household_id)
-            .copied()
-            .unwrap_or(NO_MEMBER);
+        let mut agent_idx = agents.first_household_member(household_id);
         while agent_idx != NO_MEMBER {
             agents.relocate_household_member_home(
                 agent_idx,
@@ -708,14 +667,10 @@ impl HouseholdSystem {
                 new_home,
                 old_home < allocator.buildings.len(),
             );
-            agent_idx = household_member_next
-                .get(agent_idx)
-                .copied()
-                .unwrap_or(NO_MEMBER);
+            agent_idx = agents.next_household_member(agent_idx);
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn evict_household(
         &mut self,
         household_id: usize,
@@ -723,8 +678,6 @@ impl HouseholdSystem {
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
         vacancy_planner: &mut VacancyPlanner,
-        household_member_heads: &[usize],
-        household_member_next: &[usize],
     ) {
         if household_id >= self.households.len() {
             return;
@@ -740,40 +693,12 @@ impl HouseholdSystem {
         household.stay_failure_days = 0;
         household.unhoused_days_elapsed = 0;
 
-        let mut agent_idx = household_member_heads
-            .get(household_id)
-            .copied()
-            .unwrap_or(NO_MEMBER);
+        let mut agent_idx = agents.first_household_member(household_id);
         while agent_idx != NO_MEMBER {
             agents.evict_household_member_home(agent_idx, old_home);
-            agent_idx = household_member_next
-                .get(agent_idx)
-                .copied()
-                .unwrap_or(NO_MEMBER);
+            agent_idx = agents.next_household_member(agent_idx);
         }
     }
-}
-
-/// Reuses linked-list storage for deterministic member order without per-household allocations.
-pub(super) fn build_household_member_index(
-    agents: &AgentSystem,
-    household_count: usize,
-    mut household_member_heads: Vec<usize>,
-    mut household_member_next: Vec<usize>,
-) -> (Vec<usize>, Vec<usize>) {
-    household_member_heads.clear();
-    household_member_heads.resize(household_count, NO_MEMBER);
-    household_member_next.clear();
-    household_member_next.resize(agents.len(), NO_MEMBER);
-    for agent_idx in (0..agents.len()).rev() {
-        let household_id = agents.household_id[agent_idx];
-        if household_id >= household_count {
-            continue;
-        }
-        household_member_next[agent_idx] = household_member_heads[household_id];
-        household_member_heads[household_id] = agent_idx;
-    }
-    (household_member_heads, household_member_next)
 }
 
 #[cfg(test)]

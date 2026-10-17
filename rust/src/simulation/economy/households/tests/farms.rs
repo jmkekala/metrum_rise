@@ -131,7 +131,7 @@ fn incoming_households_keep_their_approved_members_when_arrivals_reverse() {
     agents.transit[first] = TRANSIT_IN_BUILDING;
     households.materialize_arrived_household_carriers(&mut agents, &allocator);
     assert_eq!(households.pending_arrivals.households, 0);
-    households.rebuild_household_and_worker_counts(&agents, &mut allocator);
+    households.recount_every_household(&agents, &allocator);
     for (household, approved) in households.households.iter().zip([second_mix, first_mix]) {
         assert_eq!(household.adult_count, approved.adult_count);
         assert_eq!(household.elder_count, approved.elder_count);
@@ -156,7 +156,7 @@ fn farm_carrier_materializes_one_normal_household_once() {
             .0,
         0
     );
-    households.rebuild_household_and_worker_counts(&agents, &mut allocator);
+    households.recount_every_household(&agents, &allocator);
     assert_eq!(households.households.len(), 1);
     assert_eq!(allocator.buildings[0].occupancy, 1);
     assert!(agents.home_building.iter().all(|&home| home == 0));
@@ -186,7 +186,7 @@ fn unhoused_family_can_claim_farm_but_not_a_second_household() {
             agents.assign_household_id(agent, id);
         }
     }
-    households.rebuild_household_and_worker_counts(&agents, &mut allocator);
+    households.recount_every_household(&agents, &allocator);
     households.resolve_household_housing(&mut agents, &mut allocator);
     assert_eq!(households.households[0].home_building_id, 0);
     assert_eq!(households.households[1].home_building_id, usize::MAX);
@@ -233,10 +233,10 @@ fn farm_family_works_on_site_and_larger_fields_hire_commuters() {
         agents.assign_household_id(id, 1);
         agents.schedule_seed[id] = 0;
     }
-    households.rebuild_household_and_worker_counts(&agents, &mut allocator);
+    households.recount_every_household(&agents, &allocator);
     let policy = CityFiscalPolicy::default();
     let mut treasury = 100_000.0;
-    households.pay_household_transfers(&agents, &allocator, &mut treasury, &policy);
+    households.pay_household_transfers(&allocator, &mut treasury, &policy);
     assert_eq!(
         households.households[1].budget,
         2.0 * policy.unemployment_benefit_per_adult_per_day

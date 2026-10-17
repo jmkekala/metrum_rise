@@ -5,6 +5,7 @@
 
 use super::{SaveLoadError, SaveLoadResult, i64_to_u16, i64_to_u32, i64_to_u64, u64_to_i64};
 use crate::simulation::core::scheduler::SLOTS_PER_DAY;
+use crate::simulation::economy::demand::SavedDemandSnapshot;
 use crate::simulation::grid::sweep::{EnvironmentSweep, SweepCapacities};
 use crate::simulation::network::graph::RegionGraph;
 use rusqlite::{Connection, Transaction, params};
@@ -29,6 +30,8 @@ pub(crate) struct SavedScheduler {
     /// Rolling environment sweep (`SIM-02-H`) with live edge indices; `save` stores them as
     /// indices into the saved edges, which leave out deleted ones.
     pub(crate) environment: EnvironmentSweep,
+    /// Rolling demand snapshot (`SIM-02-I`); its buffers are encoded by the demand system.
+    pub(crate) demand_snapshot: SavedDemandSnapshot,
     /// `(slot, seq, kind, a)` per pending event, in firing order; `kind` and `a` are owned by
     /// the simulation's event type.
     pub(crate) events: Vec<(u64, u64, u16, u64)>,
@@ -49,8 +52,13 @@ pub(super) fn save(
         ),
         None => (-1, 0),
     };
+    let demand = &scheduler.demand_snapshot;
+    let (demand_next_chunk, demand_back) = match &demand.sweep {
+        Some((next_chunk, back)) => (u64_to_i64(*next_chunk)?, Some(back)),
+        None => (-1, None),
+    };
     tx.execute(
-        "INSERT INTO scheduler_state(singleton, next_slot, next_event_seq, next_spawn_id, logistics_hour_ticks, agent_settlement_days, road_length_front_m, road_length_back_mm, road_length_edges, road_length_next_edge, road_length_measured, environment_building_handles, environment_edges, environment_next_edge, environment_next_chunk) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+        "INSERT INTO scheduler_state(singleton, next_slot, next_event_seq, next_spawn_id, logistics_hour_ticks, agent_settlement_days, road_length_front_m, road_length_back_mm, road_length_edges, road_length_next_edge, road_length_measured, environment_building_handles, environment_edges, environment_next_edge, environment_next_chunk, demand_snapshot_front, demand_snapshot_next_chunk, demand_snapshot_back) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
         params![
             u64_to_i64(scheduler.next_slot)?,
             u64_to_i64(scheduler.next_event_seq)?,
@@ -69,6 +77,9 @@ pub(super) fn save(
             environment_edges,
             u64_to_i64(saved_edge(environment.next_edge))?,
             u64_to_i64(environment.next_chunk)?,
+            demand.front,
+            demand_next_chunk,
+            demand_back,
         ],
     )?;
     let mut events =
@@ -127,6 +138,7 @@ pub(super) fn load(conn: &Connection) -> SaveLoadResult<SavedScheduler> {
             row.5.4 != 0,
         ),
         environment: load_environment(conn)?,
+        demand_snapshot: load_demand_snapshot(conn)?,
         events: Vec::new(),
     };
     let mut stmt = conn.prepare("SELECT slot, seq, kind, a FROM timed_events ORDER BY slot, seq")?;
@@ -149,6 +161,24 @@ pub(super) fn load(conn: &Connection) -> SaveLoadResult<SavedScheduler> {
         ));
     }
     Ok(scheduler)
+}
+
+fn load_demand_snapshot(conn: &Connection) -> SaveLoadResult<SavedDemandSnapshot> {
+    let (front, next_chunk, back): (Option<Vec<u8>>, i64, Option<Vec<u8>>) = conn.query_row(
+        "SELECT demand_snapshot_front, demand_snapshot_next_chunk, demand_snapshot_back FROM scheduler_state WHERE singleton = 1",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    let sweep = match (next_chunk, back) {
+        (-1, _) => None,
+        (_, None) => {
+            return Err(SaveLoadError::custom(
+                "demand snapshot sweep without its back buffer",
+            ));
+        }
+        (next_chunk, Some(back)) => Some((i64_to_u64(next_chunk)?, back)),
+    };
+    Ok(SavedDemandSnapshot { front, sweep })
 }
 
 // Index of live edge `index` among the saved edges, which leave out deleted ones; an index past

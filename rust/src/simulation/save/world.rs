@@ -5,7 +5,7 @@
 use crate::nodes::sim::core::PendingDemandSpawnAction;
 use crate::simulation::agriculture::{AgricultureSystem, FieldSite, validate_field_polygon_world};
 use crate::simulation::buildings::allocator::resolve_building_economy_profile_binding;
-use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
+use crate::simulation::buildings::allocator::{Building, BuildingAllocator, SavedVacancyOrder};
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::definitions::{
@@ -16,8 +16,8 @@ use crate::simulation::economy::households::{
     Household, HouseholdSystem,
 };
 use crate::simulation::economy::logistics::{
-    CarrierClass, FreightRequestFailure, FreightRequestKey, Shipment, ShipmentEndpoint,
-    ShipmentStatus, ShipmentSystem,
+    CarrierClass, FreightRequestFailure, FreightRequestKey, SavedSupplierRoll, SavedSupplierSweep,
+    Shipment, ShipmentEndpoint, ShipmentStatus, ShipmentSystem, SupplierRoll,
 };
 use crate::simulation::extraction::{
     ExtractorSite, ResourceExtractionSystem, validate_extractor_polygon_world,
@@ -265,7 +265,7 @@ pub(super) fn save_world(
     super::cell_zoning::save(tx, zoning, maps)?;
 
     // Buildings
-    let mut bld_stmt = tx.prepare("INSERT INTO buildings(building_id, parcel_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, service_funding_override, revenue, operating_budget, profit_tax_budget_baseline, last_day_profit, shipment_cooldown_until_tick, width, depth, asset_id, level, construction_total_hours, construction_complete_slot, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress, daily_household_sales_value, daily_power_service_units, daily_power_served_units, recent_power_service_units, recent_power_served_units, recent_household_sales_value, support_height_m, build_generation, electricity_usage, hourly_economy_activity, commercial_activity_floor_scale, paid_workers_in_window, funded_job_capacity, unpaid_cash_wages_in_window) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41)")?;
+    let mut bld_stmt = tx.prepare("INSERT INTO buildings(building_id, parcel_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, service_funding_override, revenue, operating_budget, profit_tax_budget_baseline, last_day_profit, shipment_cooldown_until_tick, width, depth, asset_id, level, construction_total_hours, construction_complete_slot, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress, daily_household_sales_value, daily_power_service_units, daily_power_served_units, recent_power_service_units, recent_power_served_units, recent_household_sales_value, support_height_m, build_generation, electricity_usage, hourly_economy_activity, commercial_activity_floor_scale, paid_workers_in_window, funded_job_capacity, unpaid_cash_wages_in_window, service_sales_capacity, service_sales_profile_runtime_id, funded_activity) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44)")?;
     let mut inventory_stmt = tx.prepare(
         "INSERT INTO building_inventories(building_id, resource_runtime_id, amount) VALUES (?1, ?2, ?3)",
     )?;
@@ -335,6 +335,9 @@ pub(super) fn save_world(
             i64::from(b.paid_workers_in_window),
             i64::from(b.funded_job_capacity),
             i64::from(b.unpaid_cash_wages_in_window),
+            b.service_sales_capacity,
+            i64::from(b.service_sales_profile_runtime_id),
+            b.funded_activity,
         ])?;
         for (slot, amount) in b.resource_inventory.iter().enumerate() {
             if *amount <= 0.0 {
@@ -343,6 +346,7 @@ pub(super) fn save_world(
             inventory_stmt.execute(params![saved_bid_db, i64::from(slot as u16 + 1), *amount])?;
         }
     }
+    save_vacancy_order(tx, buildings)?;
     save_resource_extraction(tx, resource_extraction, maps)?;
     save_agriculture(tx, agriculture, maps)?;
     if !households.removed_electricity.is_valid() {
@@ -360,6 +364,42 @@ pub(super) fn save_world(
             to_json(&buildings.city_input_day)?,
         ],
     )?;
+    // The hour in progress spans a save: the hourly phases read the last finished hour's totals
+    // and fold their own (`SIM-02-I`).
+    if !households.electricity_hour.is_valid() || !households.service_sales.is_valid() {
+        return Err(SaveLoadError::custom("invalid city hour state"));
+    }
+    // REAL columns keep every float bit for bit.
+    let electricity = &households.electricity_hour;
+    let sales = &households.service_sales;
+    tx.execute(
+        "INSERT INTO city_hour_state(singleton, electricity_dispatch, electricity_coverage, electricity_demand_kwh, electricity_capacity_kwh, electricity_coal_burned_kg, electricity_coal_stock_kg, service_residents, service_gross_revenue, service_hour_residents, service_hour_collected) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            electricity.dispatch,
+            electricity.coverage,
+            electricity.demand_kwh,
+            electricity.capacity_kwh,
+            electricity.coal_burned_kg,
+            electricity.coal_stock_kg,
+            i64::from(sales.residents),
+            sales.gross_revenue,
+            i64::from(sales.hour_residents),
+            sales.hour_collected,
+        ],
+    )?;
+    let mut sales_stmt = tx.prepare(
+        "INSERT INTO service_sales_resources(resource_slot, gross, capacity, drawable, undrawn, hour_capacity) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )?;
+    for slot in 0..sales.gross_by_resource.len() {
+        sales_stmt.execute(params![
+            usize_to_i64(slot)?,
+            sales.gross_by_resource[slot],
+            sales.capacity_by_resource[slot],
+            sales.drawable_by_resource[slot],
+            sales.undrawn_by_resource[slot],
+            sales.hour_capacity_by_resource[slot],
+        ])?;
+    }
     // Requests the households' daily phases left for the next hour (`SIM-02-G`).
     let mut request_stmt = tx.prepare(
         "INSERT INTO household_requests(kind, sequence, household_slot, household_generation) VALUES (?1, ?2, ?3, ?4)",
@@ -471,8 +511,105 @@ pub(super) fn save_world(
             if failure.terminal { 1_i64 } else { 0_i64 },
         ])?;
     }
+    save_supplier_roll(tx, &logistics.supplier_roll.saved())?;
 
     Ok(())
+}
+
+// The front's entries are buffer 0 and the sweep's buffer 1, each in its own order; building
+// handles split into slot and generation as other saved handles do.
+fn save_supplier_roll(tx: &Transaction, roll: &SavedSupplierRoll) -> SaveLoadResult<()> {
+    let (sweep_handles, sweep_hour, sweep_next_chunk) = match &roll.sweep {
+        Some(sweep) => (
+            u64_to_i64(sweep.building_handles)?,
+            i64::from(sweep.hour),
+            u64_to_i64(sweep.next_chunk)?,
+        ),
+        None => (NONE_REF, 0, 0),
+    };
+    tx.execute(
+        "INSERT INTO freight_supplier_sweep(singleton, front_hour, sweep_building_handles, sweep_hour, sweep_next_chunk) VALUES (1, ?1, ?2, ?3, ?4)",
+        params![
+            roll.front
+                .as_ref()
+                .map_or(NONE_REF, |&(hour, _)| i64::from(hour)),
+            sweep_handles,
+            sweep_hour,
+            sweep_next_chunk,
+        ],
+    )?;
+    let mut stmt = tx.prepare("INSERT INTO freight_supplier_entries(buffer, position, resource_runtime_id, component, chunk_x, chunk_y, building_slot, building_generation) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)")?;
+    let front = roll.front.as_ref().map(|(_, entries)| entries.as_slice());
+    let back = roll.sweep.as_ref().map(|sweep| sweep.entries.as_slice());
+    for (buffer, entries) in [(0_i64, front), (1, back)] {
+        for (position, &(resource, component, x, y, building)) in
+            entries.unwrap_or_default().iter().enumerate()
+        {
+            stmt.execute(params![
+                buffer,
+                usize_to_i64(position)?,
+                i64::from(resource),
+                i64::from(component),
+                i64::from(x),
+                i64::from(y),
+                i64::from((building >> 32) as u32),
+                i64::from(building as u32),
+            ])?;
+        }
+    }
+    Ok(())
+}
+
+fn load_supplier_roll(conn: &Connection) -> SaveLoadResult<SupplierRoll> {
+    let (front_hour, sweep_handles, sweep_hour, sweep_next_chunk): (i64, i64, i64, i64) = conn
+        .query_row(
+            "SELECT front_hour, sweep_building_handles, sweep_hour, sweep_next_chunk FROM freight_supplier_sweep WHERE singleton = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+    let mut buffers = [Vec::new(), Vec::new()];
+    let mut stmt = conn.prepare("SELECT buffer, resource_runtime_id, component, chunk_x, chunk_y, building_slot, building_generation FROM freight_supplier_entries ORDER BY buffer, position")?;
+    let mut rows = stmt.query([])?;
+    let chunk = |value: i64| {
+        i32::try_from(value).map_err(|_| SaveLoadError::custom("supplier chunk out of range"))
+    };
+    while let Some(row) = rows.next()? {
+        let entries = usize::try_from(row.get::<_, i64>(0)?)
+            .ok()
+            .and_then(|buffer| buffers.get_mut(buffer))
+            .ok_or_else(|| SaveLoadError::custom("invalid supplier index buffer"))?;
+        entries.push((
+            i64_to_u16(row.get(1)?)?,
+            i64_to_u32(row.get(2)?)?,
+            chunk(row.get(3)?)?,
+            chunk(row.get(4)?)?,
+            u64::from(i64_to_u32(row.get(5)?)?) << 32 | u64::from(i64_to_u32(row.get(6)?)?),
+        ));
+    }
+    let [front, back] = buffers;
+    if (front_hour == NONE_REF && !front.is_empty())
+        || (sweep_handles == NONE_REF && !back.is_empty())
+    {
+        return Err(SaveLoadError::custom(
+            "supplier index entries without their buffer",
+        ));
+    }
+    let saved = SavedSupplierRoll {
+        front: match front_hour {
+            NONE_REF => None,
+            hour => Some((i64_to_u32(hour)?, front)),
+        },
+        sweep: match sweep_handles {
+            NONE_REF => None,
+            handles => Some(SavedSupplierSweep {
+                building_handles: i64_to_u64(handles)?,
+                hour: i64_to_u32(sweep_hour)?,
+                next_chunk: i64_to_u64(sweep_next_chunk)?,
+                entries: back,
+            }),
+        },
+    };
+    SupplierRoll::restore(saved).map_err(SaveLoadError::custom)
 }
 
 fn save_resource_deposits(
@@ -861,8 +998,9 @@ pub(super) fn load_buildings(
     //      31=recent_power_served_units 32=recent_household_sales_value 33=support_height_m
     //      34=build_generation 35=electricity_usage 36=hourly_economy_activity
     //      37=commercial_activity_floor_scale 38=paid_workers_in_window 39=funded_job_capacity
-    //      40=unpaid_cash_wages_in_window
-    let mut stmt = conn.prepare("SELECT building_id, parcel_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, service_funding_override, revenue, operating_budget, profit_tax_budget_baseline, last_day_profit, shipment_cooldown_until_tick, width, depth, asset_id, level, construction_total_hours, construction_complete_slot, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress, daily_household_sales_value, daily_power_service_units, daily_power_served_units, recent_power_service_units, recent_power_served_units, recent_household_sales_value, support_height_m, build_generation, electricity_usage, hourly_economy_activity, commercial_activity_floor_scale, paid_workers_in_window, funded_job_capacity, unpaid_cash_wages_in_window FROM buildings ORDER BY building_id")?;
+    //      40=unpaid_cash_wages_in_window 41=service_sales_capacity
+    //      42=service_sales_profile_runtime_id 43=funded_activity
+    let mut stmt = conn.prepare("SELECT building_id, parcel_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, service_funding_override, revenue, operating_budget, profit_tax_budget_baseline, last_day_profit, shipment_cooldown_until_tick, width, depth, asset_id, level, construction_total_hours, construction_complete_slot, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress, daily_household_sales_value, daily_power_service_units, daily_power_served_units, recent_power_service_units, recent_power_served_units, recent_household_sales_value, support_height_m, build_generation, electricity_usage, hourly_economy_activity, commercial_activity_floor_scale, paid_workers_in_window, funded_job_capacity, unpaid_cash_wages_in_window, service_sales_capacity, service_sales_profile_runtime_id, funded_activity FROM buildings ORDER BY building_id")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let bid = i64_to_usize(row.get(0)?)?;
@@ -893,6 +1031,16 @@ pub(super) fn load_buildings(
             electricity_usage.1.residential,
         ] {
             validate_electricity_usage(usage)?;
+        }
+        let service_sales_capacity: f32 = row.get(41)?;
+        let funded_activity: f32 = row.get(43)?;
+        if ![service_sales_capacity, funded_activity]
+            .iter()
+            .all(|v| v.is_finite() && *v >= 0.0)
+        {
+            return Err(SaveLoadError::custom(
+                "invalid hourly sales or census activity",
+            ));
         }
         allocator.buildings.push(Building {
             build_generation: i64_to_u32(row.get(34)?)?,
@@ -937,18 +1085,22 @@ pub(super) fn load_buildings(
             daily_power_service_units: row.get::<_, f32>(28)?,
             daily_electricity: electricity_usage.0,
             recent_electricity: electricity_usage.1,
-            // Production at each building's hour phase sets this and the hourly electricity pass
-            // reads it, so it spans a save.
+            // Production sets it and electricity resets it in the same building phase
+            // (`SIM-02-I`), so a save between phases holds zero.
             hourly_economy_activity: row.get(36)?,
             daily_power_served_units: row.get::<_, f32>(29)?,
             recent_power_service_units: row.get::<_, f32>(30)?,
             recent_power_served_units: row.get::<_, f32>(31)?,
             recent_household_sales_value: row.get(32)?,
-            // Set at the hour boundary and read by production at each building's phase.
+            // Set at each building's phase and read until its next one.
             commercial_activity_floor_scale: row.get(37)?,
+            // A service store draws its sales at its next phase by this capacity (`SIM-02-I`).
+            service_sales_capacity,
+            service_sales_profile_runtime_id: i64_to_u16(row.get(42)?)?,
             // Daily settlement windows span saves (`SIM-02-G`).
             paid_workers_in_window: i64_to_u32(row.get(38)?)?,
             funded_job_capacity: i64_to_u32(row.get(39)?)?,
+            funded_activity,
             unpaid_cash_wages_in_window: i64_to_u32(row.get(40)?)?,
             work_area_scale: initial_work_area_scale(zone_type, profile_kind),
             pending_redevelopment: row.get::<_, i64>(23)? != 0,
@@ -1114,6 +1266,113 @@ pub(super) fn load_agriculture(
     Ok(AgricultureSystem::from_sites(sites))
 }
 
+// The hour in progress: the last finished hour's electricity and service-sales totals, this
+// hour's so far and the sales pool (`SIM-02-I`).
+fn load_city_hour(conn: &Connection, households: &mut HouseholdSystem) -> SaveLoadResult<()> {
+    let electricity = &mut households.electricity_hour;
+    let sales = &mut households.service_sales;
+    let (residents, hour_residents): (i64, i64) = conn.query_row(
+        "SELECT electricity_dispatch, electricity_coverage, electricity_demand_kwh, electricity_capacity_kwh, electricity_coal_burned_kg, electricity_coal_stock_kg, service_residents, service_gross_revenue, service_hour_residents, service_hour_collected FROM city_hour_state WHERE singleton = 1",
+        [],
+        |row| {
+            electricity.dispatch = row.get(0)?;
+            electricity.coverage = row.get(1)?;
+            electricity.demand_kwh = row.get(2)?;
+            electricity.capacity_kwh = row.get(3)?;
+            electricity.coal_burned_kg = row.get(4)?;
+            electricity.coal_stock_kg = row.get(5)?;
+            sales.gross_revenue = row.get(7)?;
+            sales.hour_collected = row.get(9)?;
+            Ok((row.get(6)?, row.get(8)?))
+        },
+    )?;
+    sales.residents = i64_to_u32(residents)?;
+    sales.hour_residents = i64_to_u32(hour_residents)?;
+    let mut stmt = conn.prepare(
+        "SELECT resource_slot, gross, capacity, drawable, undrawn, hour_capacity FROM service_sales_resources ORDER BY resource_slot",
+    )?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        if i64_to_usize(row.get(0)?)? != sales.gross_by_resource.len() {
+            return Err(SaveLoadError::custom(
+                "non-contiguous service sales resources",
+            ));
+        }
+        sales.gross_by_resource.push(row.get(1)?);
+        sales.capacity_by_resource.push(row.get(2)?);
+        sales.drawable_by_resource.push(row.get(3)?);
+        sales.undrawn_by_resource.push(row.get(4)?);
+        sales.hour_capacity_by_resource.push(row.get(5)?);
+    }
+    if !electricity.is_valid() || !sales.is_valid() {
+        return Err(SaveLoadError::custom("invalid city hour state"));
+    }
+    Ok(())
+}
+
+// The vacancy lists' order, which claims and releases leave out of building order (`SIM-02`).
+// Buildings save in dense order, so a building's saved id is its index. A stale index keeps no
+// order: its next reader rebuilds it.
+pub(super) fn save_vacancy_order(
+    tx: &Transaction,
+    buildings: &BuildingAllocator,
+) -> SaveLoadResult<()> {
+    let stale = buildings.vacancy_index_stale();
+    tx.execute(
+        "INSERT INTO building_vacancy_state(singleton, stale) VALUES (1, ?1)",
+        [i64::from(stale)],
+    )?;
+    if stale {
+        return Ok(());
+    }
+    let mut stmt = tx.prepare(
+        "INSERT INTO building_vacancies(zone_slot, position, building_id) VALUES (?1, ?2, ?3)",
+    )?;
+    for (slot, list) in buildings.vacancy_index.iter().enumerate() {
+        for (position, &building_idx) in list.iter().enumerate() {
+            stmt.execute(params![
+                usize_to_i64(slot)?,
+                usize_to_i64(position)?,
+                usize_to_i64(building_idx)?,
+            ])?;
+        }
+    }
+    Ok(())
+}
+
+/// Loads the saved vacancy order; the caller restores it over the index rebuilt with the live
+/// asset registry (`BuildingAllocator::restore_vacancy_order`).
+pub(super) fn load_vacancy_order(
+    conn: &Connection,
+    building_count: usize,
+) -> SaveLoadResult<SavedVacancyOrder> {
+    let mut saved = SavedVacancyOrder {
+        stale: conn.query_row(
+            "SELECT stale FROM building_vacancy_state WHERE singleton = 1",
+            [],
+            |row| row.get::<_, i64>(0),
+        )? != 0,
+        ..Default::default()
+    };
+    let mut stmt = conn.prepare(
+        "SELECT zone_slot, position, building_id FROM building_vacancies ORDER BY zone_slot, position",
+    )?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let slot = i64_to_usize(row.get(0)?)?;
+        let position = i64_to_usize(row.get(1)?)?;
+        let building_idx = i64_to_usize(row.get(2)?)?;
+        let Some(list) = saved.lists.get_mut(slot) else {
+            return Err(SaveLoadError::custom("invalid vacancy zone slot"));
+        };
+        if saved.stale || position != list.len() || building_idx >= building_count {
+            return Err(SaveLoadError::custom("invalid vacancy order"));
+        }
+        list.push(building_idx);
+    }
+    Ok(saved)
+}
+
 pub(super) fn load_households(conn: &Connection) -> SaveLoadResult<HouseholdSystem> {
     let mut households = HouseholdSystem::new();
     let (removed, day, last_day, coal): (String, String, String, f64) = conn.query_row(
@@ -1130,6 +1389,7 @@ pub(super) fn load_households(conn: &Connection) -> SaveLoadResult<HouseholdSyst
             "invalid removed-building electricity account",
         ));
     }
+    load_city_hour(conn, &mut households)?;
     let mut stmt = conn.prepare("SELECT household_id, home_building, budget, stock, member_count, child_count, adult_count, elder_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, replenishment_failure_count, reserved_store_building_id, reserved_amount, reserved_total_cost, shopping_agent_slot, shopping_agent_generation, shopping_timeout_hours_remaining, replenishment_search_cursor, stay_failure_days, unhoused_days_elapsed, replenishment_offset_hours, unemployment_days_elapsed, power_consumption_cost, water_consumption_cost, sewage_consumption_cost, electricity_account, gross_daily_wages, employed_adults, paid_workers_in_window FROM households ORDER BY household_id")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
@@ -1303,6 +1563,7 @@ pub(super) fn load_shipments(conn: &Connection) -> SaveLoadResult<ShipmentSystem
             },
         );
     }
+    logistics.supplier_roll = load_supplier_roll(conn)?;
     Ok(logistics)
 }
 

@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! Operational-hour household economy orchestration. Daily settlement runs per entity at
-//! each one's daily phase (`households/settlement.rs`).
+//! each one's daily phase (`households/settlement.rs`). Each household recounts its members at
+//! its hourly phase (`households/membership.rs`); the activity floor, service sales and
+//! electricity also run at each entity's hourly phase, folded at the hour's last slot
+//! (`SIM-02-I`).
 
 use super::HouseholdSystem;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::AgentSystem;
+use crate::simulation::economy::definitions::RuntimeEconomyCatalog;
 use crate::simulation::economy::fiscal::CityFiscalPolicy;
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::network::TransitNetwork;
@@ -14,7 +18,7 @@ use crate::{debug, debug_log};
 use std::time::Instant;
 
 impl HouseholdSystem {
-    /// Runs one operational-hour household pass for membership, production, logistics, and labor.
+    /// Runs one operational-hour household pass for housing, production, logistics, and labor.
     /// Trips started here leave at paced slots and settle when they arrive (`SIM-02-E`).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn operational_hour_tick(
@@ -43,16 +47,21 @@ impl HouseholdSystem {
         let pending_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
         self.debug_validate_agent_household_refs(agents);
+        // Agents a loader or tool appended directly join their lists before housing walks them.
+        agents.register_appended_household_members();
+        #[cfg(test)]
+        agents.assert_household_members_match_rebuild();
         let validate_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
-        self.rebuild_household_and_worker_counts(agents, allocator);
+        // Member counts and wages come from each household's last hourly phase (`SIM-02-I`).
         self.rehouse_unhoused_before_growth(agents, allocator);
-        // Reviews queued by the daily phases since the last hour, with the same member links.
+        // Reviews queued by the daily phases since the last hour.
         self.review_queued_housing(agents, allocator);
-        let counts_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        let housing_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
-        // The census comes first, so the activity floor, store sales, restock and visit
-        // planning and hiring all read a census of this hour's state (`SIM-02-F`).
+        // The census comes first, so restock and visit planning and hiring read a census of
+        // this hour's state (`SIM-02-F`), and so do the activity floors the building phases
+        // set during the hour (`SIM-02-I`).
         self.refresh_funding_census(
             allocator,
             logistics,
@@ -64,10 +73,6 @@ impl HouseholdSystem {
             minute_of_day,
         );
         let census_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
-        phase_start = Instant::now();
-        self.run_building_economy(allocator);
-        self.run_electricity_hour(allocator);
-        let building_economy_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
         logistics.hourly_tick(
             allocator,
@@ -97,13 +102,10 @@ impl HouseholdSystem {
             minute_of_day,
         );
         let workplace_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
-        phase_start = Instant::now();
-        self.count_employed_adults(agents);
-        let money_sync_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         if timing_enabled {
             debug_log!(
                 timing_category,
-                "operational_hour_detail absolute_hour={} minute={} pending_households={} pending_adults={} agents={} buildings={} households={} pending_ms={:.3} validate_ms={:.3} counts_ms={:.3} census_ms={:.3} building_economy_ms={:.3} logistics_ms={:.3} household_hour_ms={:.3} workplace_ms={:.3} money_sync_ms={:.3} total_ms={:.3}",
+                "operational_hour_detail absolute_hour={} minute={} pending_households={} pending_adults={} agents={} buildings={} households={} pending_ms={:.3} validate_ms={:.3} housing_ms={:.3} census_ms={:.3} logistics_ms={:.3} household_hour_ms={:.3} workplace_ms={:.3} total_ms={:.3}",
                 absolute_hour,
                 minute_of_day,
                 self.pending_arrivals.households,
@@ -113,15 +115,21 @@ impl HouseholdSystem {
                 self.households.len(),
                 pending_ms,
                 validate_ms,
-                counts_ms,
+                housing_ms,
                 census_ms,
-                building_economy_ms,
                 logistics_ms,
                 household_hour_ms,
                 workplace_ms,
-                money_sync_ms,
                 total_start.elapsed().as_secs_f64() * 1000.0,
             );
         }
+    }
+
+    /// Ends the hour's city totals at its last slot, after every phase of the hour
+    /// (`SIM-02-I`): the service-sales prices and pool, then electricity dispatch and coverage,
+    /// for the next hour. O(profiles² + resources).
+    pub(crate) fn close_city_hour(&mut self, catalog: &RuntimeEconomyCatalog) {
+        self.service_sales.close_hour(catalog);
+        self.close_electricity_hour();
     }
 }

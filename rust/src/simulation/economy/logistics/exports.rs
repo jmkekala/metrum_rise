@@ -309,7 +309,7 @@ impl ShipmentSystem {
                     continue;
                 };
                 remaining_budget = (remaining_budget - choice.total_cost).max(0.0);
-                planning.reservations.record_local_shipment(
+                planning.reservations.record_hold(
                     choice.supplier_idx,
                     dest_idx,
                     input_port.resource_runtime_id,

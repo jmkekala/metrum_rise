@@ -89,6 +89,9 @@ pub(super) fn make_building(
         unpaid_cash_wages_in_window: 0,
         recent_household_sales_value: 0.0,
         commercial_activity_floor_scale: 0.0,
+        service_sales_capacity: 0.0,
+        service_sales_profile_runtime_id: 0,
+        funded_activity: 0.0,
         work_area_scale: 1.0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
@@ -333,7 +336,7 @@ pub(super) fn setup_replenishment_world(
 
     let mut agents = AgentSystem::new();
     let shopper = agents.spawn_housed_agent(0, 0.0, 0.0);
-    agents.household_id[shopper] = 0;
+    agents.assign_household_id(shopper, 0);
     agents.current_building[shopper] = 0;
     agents.transit[shopper] = TRANSIT_IN_BUILDING;
     agents.activity[shopper] = 0;

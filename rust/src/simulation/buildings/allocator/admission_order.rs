@@ -26,6 +26,23 @@ pub(crate) struct AdmissionOrder {
 }
 
 impl AdmissionOrder {
+    /// Whether `other` orders the same vacancies the same way; groups emptied by incremental
+    /// upkeep count as absent.
+    #[cfg(test)]
+    pub(crate) fn same_as(&self, other: &Self) -> bool {
+        fn groups<T: Ord>(groups: &[BTreeSet<T>]) -> &[BTreeSet<T>] {
+            let used = groups
+                .iter()
+                .rposition(|group| !group.is_empty())
+                .map_or(0, |i| i + 1);
+            &groups[..used]
+        }
+        self.sizes == other.sizes
+            && self.homes == other.homes
+            && groups(&self.by_size) == groups(&other.by_size)
+            && groups(&self.by_level) == groups(&other.by_level)
+    }
+
     /// Whether this order describes a vacancy list of `vacancies` entries.
     pub(super) fn covers(&self, vacancies: usize) -> bool {
         self.sizes.len() == vacancies
@@ -138,6 +155,7 @@ impl BuildingAllocator {
 
     /// Finds the highest eligible residential level and then the lowest building ID.
     /// Uses the existing vacancy lifecycle; O(levels + log V), without scanning vacant homes.
+    /// The caller rebuilds a stale index first.
     pub(crate) fn first_rehousing_vacancy(&self, eligible: impl Fn(u8) -> bool) -> Option<usize> {
         self.admission_order
             .by_level
