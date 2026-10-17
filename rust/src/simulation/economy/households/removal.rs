@@ -16,6 +16,7 @@ use crate::simulation::economy::definitions::{
     RuntimeEconomyCatalog, RuntimeEconomyTuning, load_runtime_economy_catalog,
     load_runtime_economy_tuning,
 };
+#[cfg(test)]
 use rayon::prelude::*;
 
 /// Household-specific conditions for leaving after an unsuccessful rehousing period.
@@ -48,6 +49,59 @@ impl HouseholdExitPolicy {
 }
 
 impl HouseholdSystem {
+    /// Whether household `household_id` may leave under `exit_policy` now, checked at its daily
+    /// phase (`SIM-02-G`). O(1).
+    pub(crate) fn exit_eligible(
+        &self,
+        household_id: usize,
+        exit_policy: HouseholdExitPolicy,
+        allocator: &BuildingAllocator,
+    ) -> bool {
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        let tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        exit_policy.is_eligible(&self.households[household_id], allocator, &catalog, &tuning)
+    }
+
+    /// Removes the households whose daily phase chose to leave since the last hour, in the
+    /// next hour's pass (`SIM-02-G`; a paced queue in `SIM-02-J`). A household that recovered
+    /// meanwhile stays. Returns how many left. O(agents + exits) when any are queued.
+    pub(crate) fn remove_queued_exits(
+        &mut self,
+        exit_policy: HouseholdExitPolicy,
+        agents: &mut AgentSystem,
+        allocator: &mut BuildingAllocator,
+    ) -> u32 {
+        if self.exits.is_empty() {
+            return 0;
+        }
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        let tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        let mut ids = Vec::with_capacity(self.exits.len());
+        for handle in std::mem::take(&mut self.exits) {
+            if let Some(household_id) = self.handles.resolve(handle)
+                && exit_policy.is_eligible(
+                    &self.households[household_id],
+                    allocator,
+                    &catalog,
+                    &tuning,
+                )
+            {
+                ids.push(household_id);
+            }
+        }
+        if ids.is_empty() {
+            return 0;
+        }
+        self.remove_households(&mut ids, agents, allocator)
+    }
+
+    /// Removes up to `households_to_remove_today` eligible households at once, those with the
+    /// fewest reserve days first.
+    #[cfg(test)]
     pub(crate) fn execute_demand_household_removal(
         &mut self,
         households_to_remove_today: u32,

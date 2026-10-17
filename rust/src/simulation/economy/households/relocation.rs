@@ -425,27 +425,68 @@ impl HouseholdSystem {
         self.household_member_next_scratch = next;
     }
 
+    /// Housing affordability, relocation and eviction of every household at once, with a fresh
+    /// member index, as their daily phases would queue them.
+    #[cfg(test)]
     pub(super) fn resolve_household_housing(
         &mut self,
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
     ) {
+        let (heads, next) = build_household_member_index(
+            agents,
+            self.households.len(),
+            std::mem::take(&mut self.household_member_heads_scratch),
+            std::mem::take(&mut self.household_member_next_scratch),
+        );
+        let household_ids: Vec<usize> = (0..self.households.len()).collect();
+        self.resolve_housing_of(&household_ids, agents, allocator, &heads, &next);
+        self.household_member_heads_scratch = heads;
+        self.household_member_next_scratch = next;
+    }
+
+    /// Serves the housing reviews that households' daily phases queued (`SIM-02-G`), in queue
+    /// order. Called right after the hour's membership census, reusing its member links.
+    /// O(V log V + reviews x (levels + log V) + moved members) for V vacant homes.
+    pub(super) fn review_queued_housing(
+        &mut self,
+        agents: &mut AgentSystem,
+        allocator: &mut BuildingAllocator,
+    ) {
+        if self.housing_reviews.is_empty() {
+            return;
+        }
+        let mut household_ids = std::mem::take(&mut self.housing_review_scratch);
+        household_ids.clear();
+        household_ids.extend(
+            self.housing_reviews
+                .drain(..)
+                .filter_map(|handle| self.handles.resolve(handle)),
+        );
+        let heads = std::mem::take(&mut self.household_member_heads_scratch);
+        let next = std::mem::take(&mut self.household_member_next_scratch);
+        self.resolve_housing_of(&household_ids, agents, allocator, &heads, &next);
+        self.household_member_heads_scratch = heads;
+        self.household_member_next_scratch = next;
+        self.housing_review_scratch = household_ids;
+    }
+
+    fn resolve_housing_of(
+        &mut self,
+        household_ids: &[usize],
+        agents: &mut AgentSystem,
+        allocator: &mut BuildingAllocator,
+        household_member_heads: &[usize],
+        household_member_next: &[usize],
+    ) {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let config = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
-        let member_heads_scratch = std::mem::take(&mut self.household_member_heads_scratch);
-        let member_next_scratch = std::mem::take(&mut self.household_member_next_scratch);
-        let (household_member_heads, household_member_next) = build_household_member_index(
-            agents,
-            self.households.len(),
-            member_heads_scratch,
-            member_next_scratch,
-        );
         let mut vacancy_planner = VacancyPlanner::new(allocator);
 
         let mut diagnostics = HousingResolutionDiagnostics::default();
-        for household_id in 0..self.households.len() {
+        for &household_id in household_ids {
             let household = &self.households[household_id];
             if household.member_count == 0 {
                 continue;
@@ -463,8 +504,8 @@ impl HouseholdSystem {
                         agents,
                         allocator,
                         &mut vacancy_planner,
-                        &household_member_heads,
-                        &household_member_next,
+                        household_member_heads,
+                        household_member_next,
                     );
                     diagnostics.evicted = diagnostics.evicted.saturating_add(1);
                 }
@@ -497,8 +538,8 @@ impl HouseholdSystem {
                         agents,
                         allocator,
                         &mut vacancy_planner,
-                        &household_member_heads,
-                        &household_member_next,
+                        household_member_heads,
+                        household_member_next,
                     );
                     diagnostics.relocated_unhoused =
                         diagnostics.relocated_unhoused.saturating_add(1);
@@ -537,8 +578,8 @@ impl HouseholdSystem {
                         agents,
                         allocator,
                         &mut vacancy_planner,
-                        &household_member_heads,
-                        &household_member_next,
+                        household_member_heads,
+                        household_member_next,
                     );
                     diagnostics.relocated_upgrade = diagnostics.relocated_upgrade.saturating_add(1);
                 }
@@ -571,8 +612,8 @@ impl HouseholdSystem {
                     agents,
                     allocator,
                     &mut vacancy_planner,
-                    &household_member_heads,
-                    &household_member_next,
+                    household_member_heads,
+                    household_member_next,
                 );
                 diagnostics.relocated_failed_stay =
                     diagnostics.relocated_failed_stay.saturating_add(1);
@@ -583,8 +624,8 @@ impl HouseholdSystem {
                     agents,
                     allocator,
                     &mut vacancy_planner,
-                    &household_member_heads,
-                    &household_member_next,
+                    household_member_heads,
+                    household_member_next,
                 );
                 diagnostics.evicted = diagnostics.evicted.saturating_add(1);
             }
@@ -607,9 +648,6 @@ impl HouseholdSystem {
             diagnostics.evicted,
             diagnostics.still_unhoused,
         );
-
-        self.household_member_heads_scratch = household_member_heads;
-        self.household_member_next_scratch = household_member_next;
     }
 
     #[allow(clippy::too_many_arguments)]

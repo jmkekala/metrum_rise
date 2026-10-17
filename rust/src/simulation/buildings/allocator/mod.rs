@@ -271,6 +271,16 @@ pub struct Building {
     /// Commercial staffing and input targets use this as a cheap demand signal instead of
     /// assuming every shop should immediately operate at full authored capacity.
     pub recent_household_sales_value: f32,
+    /// Workers paid since the building's last daily phase; at most its funded jobs are paid in
+    /// one 24-hour window (`SIM-02-G`).
+    pub paid_workers_in_window: u32,
+    /// Funded live jobs from the latest hourly census, which wages at each worker's daily phase
+    /// read. Copied and saved so a reload does not depend on a rebuilt census (`SIM-02-G`).
+    pub funded_job_capacity: u32,
+    /// Wages left unpaid since the building's last daily phase because it had no cash even
+    /// after selling output: a private business that cannot meet its payroll is insolvent, as
+    /// it was when the midnight payroll ran before the bills (`SIM-02-G`).
+    pub unpaid_cash_wages_in_window: u32,
     /// Runtime-only activity cap of a store, service store or explicit work area: its funded
     /// share of full output from the latest job-funding census (`DEM-02`).
     ///
@@ -323,6 +333,17 @@ impl Default for BuildingEntrance {
     }
 }
 
+/// Treasury purchases of city-service inputs over one calendar day, posted when a purchase is
+/// paid or refunded (`SIM-02-G`). O(1) per posting.
+#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CityInputDay {
+    /// Net purchases by every city service.
+    pub(crate) total: f64,
+    /// The power plants' share.
+    pub(crate) power: f64,
+}
+
 /// Manages the full lifecycle of [`Building`]s.
 #[derive(Clone)]
 pub struct BuildingAllocator {
@@ -358,6 +379,10 @@ pub struct BuildingAllocator {
     /// Construction deadlines set since SimCore last scheduled their completion events, in
     /// placement order.
     pub(crate) pending_construction: Vec<(Handle<Building>, u64)>,
+    /// Treasury purchases of city-service inputs during the calendar day so far (`SIM-02-G`).
+    pub(crate) city_input_day: CityInputDay,
+    /// Purchases of the last closed calendar day, read by its budget report.
+    pub(crate) last_city_input_day: CityInputDay,
     /// Yard hedges to lay and remove, in the order the buildings were placed and removed.
     pub(crate) pending_yards: Vec<yard::YardEvent>,
     /// Recent in-place level changes, read by the renderer to animate the replacement.
@@ -735,6 +760,8 @@ impl BuildingAllocator {
             pending_production_site_removals: Vec::new(),
             now_slot: 0,
             pending_construction: Vec::new(),
+            city_input_day: CityInputDay::default(),
+            last_city_input_day: CityInputDay::default(),
             pending_yards: Vec::new(),
             level_changes: LevelChangeLog::default(),
             max_lot_radius_cells: 0.0,
@@ -787,6 +814,30 @@ impl BuildingAllocator {
             &network.lane_system,
         );
 
+        self.repair_derived_caches(zoning, network, graph);
+        self.dirty = false;
+    }
+
+    /// Repairs derived state after daily phases removed buildings (`SIM-02-G`): the building
+    /// revision, then the caches [`Self::maintain`] repairs. O(buildings), only in a slot that
+    /// removed one.
+    pub(crate) fn finish_phase_removals(
+        &mut self,
+        zoning: &ZoningSystem,
+        network: &mut crate::simulation::network::TransitNetwork,
+        graph: &mut RegionGraph,
+    ) {
+        self.bump_building_ref_revision();
+        self.entrances_dirty = true;
+        self.repair_derived_caches(zoning, network, graph);
+    }
+
+    fn repair_derived_caches(
+        &mut self,
+        zoning: &ZoningSystem,
+        network: &mut crate::simulation::network::TransitNetwork,
+        graph: &mut RegionGraph,
+    ) {
         network.rebuild_pathing_if_dirty(graph);
 
         if self.entrances_dirty || self.entrances.len() != self.buildings.len() {
@@ -799,8 +850,6 @@ impl BuildingAllocator {
         if self.dirty_index {
             self.rebuild_zone_index();
         }
-
-        self.dirty = false;
     }
 
     #[cfg(test)]
@@ -1012,23 +1061,52 @@ impl BuildingAllocator {
         self.registry.household_capacity(&b.asset_id)
     }
 
-    /// Resets daily economy accumulators on every building.
-    ///
-    /// Called once per day after the demand snapshot has been taken, so the next day's
-    /// logistics and household sales ticks accumulate against a clean baseline.
+    /// Rolls building `building_idx`'s daily accumulators at its daily phase (`SIM-02-G`): the
+    /// finished 24-hour window becomes its `recent_*` values and the next window starts empty.
+    /// O(1).
+    pub(crate) fn roll_daily_accumulators(&mut self, building_idx: usize) {
+        let building = &mut self.buildings[building_idx];
+        building.daily_owa_input_value = 0.0;
+        building.daily_local_input_value = 0.0;
+        building.daily_city_funded_input_cost = 0.0;
+        building.recent_household_sales_value = building.daily_household_sales_value.max(0.0);
+        building.daily_household_sales_value = 0.0;
+        building.recent_power_service_units = building.daily_power_service_units.max(0.0);
+        building.daily_power_service_units = 0.0;
+        building.recent_electricity = std::mem::take(&mut building.daily_electricity);
+        building.recent_power_served_units = building.daily_power_served_units.max(0.0);
+        building.daily_power_served_units = 0.0;
+        building.paid_workers_in_window = 0;
+        building.unpaid_cash_wages_in_window = 0;
+    }
+
+    /// Rolls every building's daily accumulators at once, as their daily phases would.
+    #[cfg(test)]
     pub(crate) fn reset_daily_input_accumulators(&mut self) {
-        for building in &mut self.buildings {
-            building.daily_owa_input_value = 0.0;
-            building.daily_local_input_value = 0.0;
-            building.daily_city_funded_input_cost = 0.0;
-            building.recent_household_sales_value = building.daily_household_sales_value.max(0.0);
-            building.daily_household_sales_value = 0.0;
-            building.recent_power_service_units = building.daily_power_service_units.max(0.0);
-            building.daily_power_service_units = 0.0;
-            building.recent_electricity = std::mem::take(&mut building.daily_electricity);
-            building.recent_power_served_units = building.daily_power_served_units.max(0.0);
-            building.daily_power_served_units = 0.0;
+        for building_idx in 0..self.buildings.len() {
+            self.roll_daily_accumulators(building_idx);
         }
+    }
+
+    /// Posts a city service's input purchase (negative for a refund) into the calendar day's
+    /// totals, independent of the building's own window (`SIM-02-G`). O(1).
+    pub(crate) fn record_city_input_purchase(&mut self, building_idx: usize, amount: f64) {
+        let power = self.buildings.get(building_idx).is_some_and(|building| {
+            load_runtime_economy_catalog().is_ok_and(|catalog| {
+                catalog
+                    .profile_by_runtime_id(building.economy_profile_runtime_id)
+                    .is_some_and(|profile| profile.utility_service.as_deref() == Some("power"))
+            })
+        });
+        self.city_input_day.total += amount;
+        if power {
+            self.city_input_day.power += amount;
+        }
+    }
+
+    /// Ends the calendar day's city input purchases for its budget report. O(1).
+    pub(crate) fn close_city_input_day(&mut self) {
+        self.last_city_input_day = std::mem::take(&mut self.city_input_day);
     }
 
     /// Returns the target floor area per household for a building.

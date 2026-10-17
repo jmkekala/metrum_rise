@@ -724,6 +724,9 @@ fn make_building(
         daily_power_served_units: 0.0,
         recent_power_service_units: 0.0,
         recent_power_served_units: 0.0,
+        paid_workers_in_window: 0,
+        funded_job_capacity: 0,
+        unpaid_cash_wages_in_window: 0,
         recent_household_sales_value: 0.0,
         // Freight fixtures model a store serving enough demand for one worker.
         commercial_activity_floor_scale: catalog

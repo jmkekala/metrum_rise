@@ -182,142 +182,16 @@ impl BuildingAllocator {
         let mut removed_any = false;
         let mut i = 0;
         while i < self.buildings.len() {
-            let compatibility = {
-                let b = &self.buildings[i];
-                let edge_ok = b.edge_idx < graph.edge_count() && !graph.edge(b.edge_idx).deleted;
-                if !edge_ok || graph.edge(b.edge_idx).no_building_spawn {
-                    None
-                } else {
-                    match self.registry.get(&b.asset_id) {
-                        Some(entry) => match entry.manifest.building.as_ref() {
-                            Some(asset_building) if asset_building.is_zoned_private() => {
-                                match (asset_building.zone_type, asset_building.density_key()) {
-                                    (Some(asset_zone_class), Some(asset_density)) => {
-                                        if let Some(parcel) = zoning.parcel_by_raw_id(b.parcel_id) {
-                                            if parcel.edge_idx() != b.edge_idx {
-                                                None
-                                            } else {
-                                                let expected_zone_type =
-                                                    zone_class_to_zone_type(asset_zone_class);
-                                                let width_m = b.width_cells as f32
-                                                    * zoning.config.zone_cell_m;
-                                                let depth_m = b.depth_cells as f32
-                                                    * zoning.config.zone_cell_m;
-                                                let compatible = width_m
-                                                    <= parcel.frontage_m() + f32::EPSILON
-                                                    && depth_m <= parcel.depth_m() + f32::EPSILON
-                                                    && zoning.profiles.asset_is_legal(
-                                                        parcel.zone_profile_runtime_id(),
-                                                        expected_zone_type,
-                                                        asset_density,
-                                                        &entry.manifest.tags,
-                                                    );
-                                                Some(compatible)
-                                            }
-                                        } else {
-                                            None
-                                        }
-                                    }
-                                    _ => None,
-                                }
-                            }
-                            Some(_) => Some(true),
-                            None => None,
-                        },
-                        None => None,
-                    }
-                }
-            };
-            let was_pending_redevelopment = self.buildings[i].pending_redevelopment;
-            let remove = match compatibility {
-                None => true,
-                Some(true) => {
-                    let building = &mut self.buildings[i];
-                    building.pending_redevelopment = false;
-                    building.rezone_grace_days_remaining = 0;
-                    false
-                }
-                Some(false) => {
-                    let building = &mut self.buildings[i];
-                    if !building.pending_redevelopment {
-                        building.pending_redevelopment = true;
-                        building.rezone_grace_days_remaining = REZONE_GRACE_DAYS;
-                        false
-                    } else {
-                        building.rezone_grace_days_remaining = building
-                            .rezone_grace_days_remaining
-                            .saturating_sub(elapsed_days);
-                        building.rezone_grace_days_remaining == 0
-                    }
-                }
-            };
-
-            if !self.dirty_index
-                && was_pending_redevelopment != self.buildings[i].pending_redevelopment
-            {
-                self.admission_occupancy_changed(i);
-            }
-
-            if remove {
-                let b = &self.buildings[i];
-                let b_parcel_id = b.parcel_id;
-                let b_zone = b.zone_type;
-                let removed_site_bounds = self.site_world_bounds(i);
-                self.record_building_site_change(i, removed_site_bounds);
-                if let Some(zone_idx) = baseline_private_zone_slot(b_zone) {
-                    self.dirty_zones[zone_idx] = true;
-                }
-                zoning.clear_parcel_occupancy(b_parcel_id);
-
-                agents.evict_building(i);
-                households.invalidate_building(i, self);
-                logistics.invalidate_building(i, self, agents, treasury_balance);
-                let city_owned = self.is_city_service_building(&self.buildings[i]);
-                households.close_building_electricity(
-                    &mut self.buildings[i],
-                    city_owned,
-                    treasury_balance,
-                );
-                let last_idx = self.buildings.len() - 1;
-                if i < last_idx {
-                    if let Some(zone_idx) =
-                        baseline_private_zone_slot(self.buildings[last_idx].zone_type)
-                    {
-                        self.dirty_zones[zone_idx] = true;
-                    }
-                    let mut mapping = std::collections::HashMap::new();
-                    mapping.insert(last_idx, i);
-                    agents.remap_building_indices(&mapping);
-                    households.remap_building_indices(&mapping);
-                    logistics.remap_building_indices(&mapping);
-                    zoning.remap_parcel_occupancy(self.buildings[last_idx].parcel_id, last_idx, i);
-                }
-
-                self.field_clearance.remove_and_remap(i, last_idx);
-                self.record_production_site_removal(i, last_idx);
-                self.queue_yard_removal(i);
-                crate::debug::money::record_change(
-                    crate::debug::money::MoneyFlow::RemovedBuildingCash,
-                    self.buildings[i].operating_budget,
-                    0.0,
-                );
-                self.building_handles.swap_remove(i, self.buildings.len());
-                self.buildings.swap_remove(i);
-                crate::debug::work::add(crate::debug::work::Work::BuildingsRemoved, 1);
-                self.remove_building_site_client(i);
-                if let Some(bounds) = removed_site_bounds {
-                    debug_log!(
-                        "economy",
-                        "building site removed by cleanup: building_idx={} bounds=({:.1},{:.1})-({:.1},{:.1})",
-                        i,
-                        bounds.0,
-                        bounds.1,
-                        bounds.2,
-                        bounds.3
-                    );
-                }
-                self.dirty_index = true;
-                self.entrances_dirty = true;
+            if self.expire_incompatible_building(
+                i,
+                elapsed_days,
+                zoning,
+                agents,
+                households,
+                logistics,
+                treasury_balance,
+                graph,
+            ) {
                 removed_any = true;
             } else {
                 i += 1;
@@ -327,6 +201,157 @@ impl BuildingAllocator {
             self.bump_building_ref_revision();
             self.rebuild_entrance_cache(graph, lanes);
         }
+    }
+
+    /// Checks building `i`'s attachment and zoning compatibility, advancing an incompatible
+    /// building's grace by `elapsed_days`, and swap-removes it when its attachment is gone or
+    /// its grace has run out. Daily phases call it with one day (`SIM-02-G`); the caller then
+    /// bumps the building revision and rebuilds the entrance cache once. Returns whether the
+    /// building was removed. O(1), plus the removal's reference repairs.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn expire_incompatible_building(
+        &mut self,
+        i: usize,
+        elapsed_days: u8,
+        zoning: &mut ZoningSystem,
+        agents: &mut AgentSystem,
+        households: &mut HouseholdSystem,
+        logistics: &mut ShipmentSystem,
+        treasury_balance: &mut f64,
+        graph: &RegionGraph,
+    ) -> bool {
+        let compatibility = {
+            let b = &self.buildings[i];
+            let edge_ok = b.edge_idx < graph.edge_count() && !graph.edge(b.edge_idx).deleted;
+            if !edge_ok || graph.edge(b.edge_idx).no_building_spawn {
+                None
+            } else {
+                match self.registry.get(&b.asset_id) {
+                    Some(entry) => match entry.manifest.building.as_ref() {
+                        Some(asset_building) if asset_building.is_zoned_private() => {
+                            match (asset_building.zone_type, asset_building.density_key()) {
+                                (Some(asset_zone_class), Some(asset_density)) => {
+                                    if let Some(parcel) = zoning.parcel_by_raw_id(b.parcel_id) {
+                                        if parcel.edge_idx() != b.edge_idx {
+                                            None
+                                        } else {
+                                            let expected_zone_type =
+                                                zone_class_to_zone_type(asset_zone_class);
+                                            let width_m =
+                                                b.width_cells as f32 * zoning.config.zone_cell_m;
+                                            let depth_m =
+                                                b.depth_cells as f32 * zoning.config.zone_cell_m;
+                                            let compatible = width_m
+                                                <= parcel.frontage_m() + f32::EPSILON
+                                                && depth_m <= parcel.depth_m() + f32::EPSILON
+                                                && zoning.profiles.asset_is_legal(
+                                                    parcel.zone_profile_runtime_id(),
+                                                    expected_zone_type,
+                                                    asset_density,
+                                                    &entry.manifest.tags,
+                                                );
+                                            Some(compatible)
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                }
+                                _ => None,
+                            }
+                        }
+                        Some(_) => Some(true),
+                        None => None,
+                    },
+                    None => None,
+                }
+            }
+        };
+        let was_pending_redevelopment = self.buildings[i].pending_redevelopment;
+        let remove = match compatibility {
+            None => true,
+            Some(true) => {
+                let building = &mut self.buildings[i];
+                building.pending_redevelopment = false;
+                building.rezone_grace_days_remaining = 0;
+                false
+            }
+            Some(false) => {
+                let building = &mut self.buildings[i];
+                if !building.pending_redevelopment {
+                    building.pending_redevelopment = true;
+                    building.rezone_grace_days_remaining = REZONE_GRACE_DAYS;
+                    false
+                } else {
+                    building.rezone_grace_days_remaining = building
+                        .rezone_grace_days_remaining
+                        .saturating_sub(elapsed_days);
+                    building.rezone_grace_days_remaining == 0
+                }
+            }
+        };
+
+        if !self.dirty_index && was_pending_redevelopment != self.buildings[i].pending_redevelopment
+        {
+            self.admission_occupancy_changed(i);
+        }
+
+        if !remove {
+            return false;
+        }
+        let b = &self.buildings[i];
+        let b_parcel_id = b.parcel_id;
+        let b_zone = b.zone_type;
+        let removed_site_bounds = self.site_world_bounds(i);
+        self.record_building_site_change(i, removed_site_bounds);
+        if let Some(zone_idx) = baseline_private_zone_slot(b_zone) {
+            self.dirty_zones[zone_idx] = true;
+        }
+        zoning.clear_parcel_occupancy(b_parcel_id);
+
+        agents.evict_building(i);
+        households.invalidate_building(i, self);
+        logistics.invalidate_building(i, self, agents, treasury_balance);
+        let city_owned = self.is_city_service_building(&self.buildings[i]);
+        households.close_building_electricity(&mut self.buildings[i], city_owned, treasury_balance);
+        let last_idx = self.buildings.len() - 1;
+        if i < last_idx {
+            if let Some(zone_idx) = baseline_private_zone_slot(self.buildings[last_idx].zone_type) {
+                self.dirty_zones[zone_idx] = true;
+            }
+            let mut mapping = std::collections::HashMap::new();
+            mapping.insert(last_idx, i);
+            agents.remap_building_indices(&mapping);
+            households.remap_building_indices(&mapping);
+            logistics.remap_building_indices(&mapping);
+            zoning.remap_parcel_occupancy(self.buildings[last_idx].parcel_id, last_idx, i);
+        }
+
+        self.field_clearance.remove_and_remap(i, last_idx);
+        self.record_production_site_removal(i, last_idx);
+        self.queue_yard_removal(i);
+        crate::debug::money::record_change(
+            crate::debug::money::MoneyFlow::RemovedBuildingCash,
+            self.buildings[i].operating_budget,
+            0.0,
+        );
+        self.building_handles.swap_remove(i, self.buildings.len());
+        self.buildings.swap_remove(i);
+        crate::debug::work::add(crate::debug::work::Work::BuildingsRemoved, 1);
+        self.remove_building_site_client(i);
+        if let Some(bounds) = removed_site_bounds {
+            debug_log!(
+                "economy",
+                "building site removed by cleanup: building_idx={} bounds=({:.1},{:.1})-({:.1},{:.1})",
+                i,
+                bounds.0,
+                bounds.1,
+                bounds.2,
+                bounds.3
+            );
+        }
+        self.dirty_index = true;
+        self.entrances_dirty = true;
+        true
     }
 
     /// Launches bounded arrival candidates after demand claims their actual income requirements.

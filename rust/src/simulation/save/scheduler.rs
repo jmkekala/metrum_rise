@@ -7,7 +7,7 @@ use super::{SaveLoadError, SaveLoadResult, i64_to_u16, i64_to_u32, i64_to_u64, u
 use rusqlite::{Connection, Transaction, params};
 
 /// The timing wheel and its counters as saved.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct SavedScheduler {
     /// First slot the wheel has not popped.
     pub(crate) next_slot: u64,
@@ -19,6 +19,10 @@ pub(crate) struct SavedScheduler {
     pub(crate) logistics_hour_ticks: u32,
     /// Clock of job locks (`AgentSystem::settlement_days`).
     pub(crate) agent_settlement_days: u32,
+    /// Rolling road length for daily upkeep (`SIM-02-G`): last finished sweep in metres,
+    /// current sweep in millimetres, edges frozen for it (saved as -1 before the first sweep)
+    /// and the next edge, both in saved edge numbering, and whether a sweep has finished.
+    pub(crate) road_length: (f64, i64, Option<u64>, u64, bool),
     /// `(slot, seq, kind, a)` per pending event, in firing order; `kind` and `a` are owned by
     /// the simulation's event type.
     pub(crate) events: Vec<(u64, u64, u16, u64)>,
@@ -26,13 +30,21 @@ pub(crate) struct SavedScheduler {
 
 pub(super) fn save(tx: &Transaction, scheduler: &SavedScheduler) -> SaveLoadResult<()> {
     tx.execute(
-        "INSERT INTO scheduler_state(singleton, next_slot, next_event_seq, next_spawn_id, logistics_hour_ticks, agent_settlement_days) VALUES (1, ?1, ?2, ?3, ?4, ?5)",
+        "INSERT INTO scheduler_state(singleton, next_slot, next_event_seq, next_spawn_id, logistics_hour_ticks, agent_settlement_days, road_length_front_m, road_length_back_mm, road_length_edges, road_length_next_edge, road_length_measured) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             u64_to_i64(scheduler.next_slot)?,
             u64_to_i64(scheduler.next_event_seq)?,
             u64_to_i64(scheduler.next_spawn_id)?,
             i64::from(scheduler.logistics_hour_ticks),
             i64::from(scheduler.agent_settlement_days),
+            scheduler.road_length.0,
+            scheduler.road_length.1,
+            match scheduler.road_length.2 {
+                Some(edges) => u64_to_i64(edges)?,
+                None => -1,
+            },
+            u64_to_i64(scheduler.road_length.3)?,
+            i64::from(scheduler.road_length.4),
         ],
     )?;
     let mut events =
@@ -48,11 +60,30 @@ pub(super) fn save(tx: &Transaction, scheduler: &SavedScheduler) -> SaveLoadResu
     Ok(())
 }
 
+// front_m, back_mm, frozen edges (-1 before a sweep), next edge, measured.
+type SavedRoadLengthRow = (f64, i64, i64, i64, i64);
+
 pub(super) fn load(conn: &Connection) -> SaveLoadResult<SavedScheduler> {
-    let row: (i64, i64, i64, i64, i64) = conn.query_row(
-        "SELECT next_slot, next_event_seq, next_spawn_id, logistics_hour_ticks, agent_settlement_days FROM scheduler_state WHERE singleton = 1",
+    // Clock and event counters, then the road-length sweep columns.
+    let row: (i64, i64, i64, i64, i64, SavedRoadLengthRow) = conn.query_row(
+        "SELECT next_slot, next_event_seq, next_spawn_id, logistics_hour_ticks, agent_settlement_days, road_length_front_m, road_length_back_mm, road_length_edges, road_length_next_edge, road_length_measured FROM scheduler_state WHERE singleton = 1",
         [],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                (
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                ),
+            ))
+        },
     )?;
     let mut scheduler = SavedScheduler {
         next_slot: i64_to_u64(row.0)?,
@@ -60,6 +91,17 @@ pub(super) fn load(conn: &Connection) -> SaveLoadResult<SavedScheduler> {
         next_spawn_id: i64_to_u64(row.2)?,
         logistics_hour_ticks: i64_to_u32(row.3)?,
         agent_settlement_days: i64_to_u32(row.4)?,
+        road_length: (
+            row.5.0,
+            row.5.1,
+            if row.5.2 == -1 {
+                None
+            } else {
+                Some(i64_to_u64(row.5.2)?)
+            },
+            i64_to_u64(row.5.3)?,
+            row.5.4 != 0,
+        ),
         events: Vec::new(),
     };
     let mut stmt = conn.prepare("SELECT slot, seq, kind, a FROM timed_events ORDER BY slot, seq")?;

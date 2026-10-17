@@ -8,7 +8,8 @@ use crate::simulation::grid::pollution::PollutionSystem;
 use rayon::prelude::*;
 
 impl AgentSystem {
-    /// Update per-day agent state: home/work bonuses and pollution penalties.
+    /// Update per-day agent state of every agent at once: home/work bonuses and pollution
+    /// penalties, as their daily phases would.
     pub fn daily_update(
         &mut self,
         pollution: &PollutionSystem,
@@ -26,23 +27,54 @@ impl AgentSystem {
             // Daily work per agent is small; keep contiguous runs large enough to amortize dispatch.
             .with_min_len(8_192)
             .for_each(|(happiness, &x, &z, &transit, &activity)| {
-                if transit == TRANSIT_IN_BUILDING && activity == 0 {
-                    *happiness += 1.0;
-                }
-
-                let (gx_raw, gy_raw) = config.world_to_env_grid(x, z);
-                let gx = gx_raw.round() as i32;
-                let gy = gy_raw.round() as i32;
-                if gx >= 0
-                    && gy >= 0
-                    && let Some(p) = pollution.grid.get(gx as usize, gy as usize)
-                {
-                    *happiness -= p * 0.1;
-                }
-
-                *happiness = happiness.clamp(0.0, 100.0);
+                *happiness =
+                    daily_happiness(*happiness, x, z, transit, activity, pollution, config);
             });
     }
+
+    /// Agent `agent_idx`'s daily state at its daily phase (`SIM-02-G`): a bonus for being home
+    /// and the pollution where it stands. O(1).
+    pub(crate) fn daily_update_agent(
+        &mut self,
+        agent_idx: usize,
+        pollution: &PollutionSystem,
+        config: &crate::simulation::core::config::WorldConfig,
+    ) {
+        let agents = &mut self.agents;
+        agents.happiness[agent_idx] = daily_happiness(
+            agents.happiness[agent_idx],
+            agents.pos_x[agent_idx],
+            agents.pos_y[agent_idx],
+            agents.transit[agent_idx],
+            agents.activity[agent_idx],
+            pollution,
+            config,
+        );
+    }
+}
+
+fn daily_happiness(
+    mut happiness: f32,
+    x: f32,
+    z: f32,
+    transit: u8,
+    activity: u8,
+    pollution: &PollutionSystem,
+    config: &crate::simulation::core::config::WorldConfig,
+) -> f32 {
+    if transit == TRANSIT_IN_BUILDING && activity == 0 {
+        happiness += 1.0;
+    }
+    let (gx_raw, gy_raw) = config.world_to_env_grid(x, z);
+    let gx = gx_raw.round() as i32;
+    let gy = gy_raw.round() as i32;
+    if gx >= 0
+        && gy >= 0
+        && let Some(p) = pollution.grid.get(gx as usize, gy as usize)
+    {
+        happiness -= p * 0.1;
+    }
+    happiness.clamp(0.0, 100.0)
 }
 
 #[cfg(test)]

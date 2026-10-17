@@ -4,9 +4,9 @@
 //! `docs/simulation.md#scheduler`).
 //!
 //! [`SimCore::step_frame`] reports the slots the clock crossed; each runs here in order. The
-//! timing wheel fires first, then the fixed-slot systems. Until `SIM-02-K`, the operational
-//! hour and the daily settlement are re-hosted unchanged as fixed-slot systems at the slots
-//! where they ran before.
+//! timing wheel fires first, then the fixed-slot systems: until `SIM-02-K` the re-hosted
+//! operational hour and environment grids, and the calendar close. The entities of the slot's
+//! hourly and daily phases follow, then one chunk of the rolling road length.
 
 use std::time::Instant;
 
@@ -25,16 +25,26 @@ use super::trips::TripEvent;
 pub(crate) enum SimSystem {
     /// Fires the slot's timed events.
     TimedEvents,
-    /// Today's operational hour, with the hourly demand pass except at midnight.
+    /// Pollution, noise and desirability, a midnight pass until rolling sweeps (`SIM-02-H`).
+    EnvironmentGrids,
+    /// Today's operational hour, with the hourly demand pass.
     OperationalHour,
-    /// Today's daily settlement, with the midnight demand pass.
-    DailySettlement,
+    /// The calendar close: the city's day totals become the day's budget report.
+    CalendarClose,
     /// Production of the buildings in the slot's hourly phase.
     BuildingHours,
     /// Consumption, utilities and leg timeouts of the households in the slot's hourly phase.
     HouseholdHours,
     /// Happiness of the agents in the slot's hourly phase.
     AgentHours,
+    /// Daily settlement of the buildings in the slot's daily phase.
+    BuildingDays,
+    /// Daily settlement of the households in the slot's daily phase.
+    HouseholdDays,
+    /// Wages and daily happiness of the agents in the slot's daily phase.
+    AgentDays,
+    /// One chunk of the rolling road length that daily upkeep reads.
+    RoadLength,
 }
 
 /// Something that must happen at a given slot.
@@ -95,6 +105,18 @@ pub(crate) fn simulation_schedule() -> Schedule<SimSystem> {
             tier: Tier::Full,
         },
         Declaration {
+            system: SimSystem::EnvironmentGrids,
+            name: "environment grids",
+            kind: SystemKind::FixedSlot {
+                period: Period::Day,
+                offset: 0,
+            },
+            reads: state::BUILDINGS | state::NETWORK | state::GRIDS,
+            writes: state::GRIDS,
+            cost: Cost::LegacyBoundary,
+            tier: Tier::Full,
+        },
+        Declaration {
             system: SimSystem::OperationalHour,
             name: "operational hour",
             kind: SystemKind::FixedSlot {
@@ -107,15 +129,19 @@ pub(crate) fn simulation_schedule() -> Schedule<SimSystem> {
             tier: Tier::Full,
         },
         Declaration {
-            system: SimSystem::DailySettlement,
-            name: "daily settlement",
+            system: SimSystem::CalendarClose,
+            name: "calendar close",
             kind: SystemKind::FixedSlot {
                 period: Period::Day,
                 offset: 0,
             },
-            reads: state::ALL,
-            writes: state::ALL,
-            cost: Cost::LegacyBoundary,
+            reads: state::HOUSEHOLDS | state::BUILDINGS | state::DEMAND | state::TREASURY,
+            writes: state::HOUSEHOLDS
+                | state::BUILDINGS
+                | state::AGENTS
+                | state::DEMAND
+                | state::TREASURY,
+            cost: Cost::Constant,
             tier: Tier::Full,
         },
         Declaration {
@@ -149,6 +175,54 @@ pub(crate) fn simulation_schedule() -> Schedule<SimSystem> {
             reads: state::HOUSEHOLDS,
             writes: state::AGENTS,
             cost: Cost::Phase,
+            tier: Tier::Full,
+        },
+        Declaration {
+            system: SimSystem::BuildingDays,
+            name: "building days",
+            kind: SystemKind::EntityPhase {
+                period: Period::Day,
+            },
+            reads: state::BUILDINGS
+                | state::ZONING
+                | state::NETWORK
+                | state::HOUSEHOLDS
+                | state::TREASURY,
+            writes: state::ALL,
+            cost: Cost::Phase,
+            tier: Tier::Full,
+        },
+        Declaration {
+            system: SimSystem::HouseholdDays,
+            name: "household days",
+            kind: SystemKind::EntityPhase {
+                period: Period::Day,
+            },
+            reads: state::HOUSEHOLDS | state::BUILDINGS | state::DEMAND | state::TREASURY,
+            writes: state::HOUSEHOLDS | state::DEMAND | state::TREASURY,
+            cost: Cost::Phase,
+            tier: Tier::Full,
+        },
+        Declaration {
+            system: SimSystem::AgentDays,
+            name: "agent days",
+            kind: SystemKind::EntityPhase {
+                period: Period::Day,
+            },
+            reads: state::AGENTS | state::BUILDINGS | state::GRIDS | state::TREASURY,
+            writes: state::AGENTS | state::BUILDINGS | state::HOUSEHOLDS | state::TREASURY,
+            cost: Cost::Phase,
+            tier: Tier::Full,
+        },
+        Declaration {
+            system: SimSystem::RoadLength,
+            name: "road length",
+            kind: SystemKind::Rolling {
+                period: Period::Day,
+            },
+            reads: state::NETWORK,
+            writes: state::TREASURY,
+            cost: Cost::Chunk,
             tier: Tier::Full,
         },
     ])
@@ -191,13 +265,19 @@ impl SimCore {
                         self.print_sim_console_summary(day_index, minute_of_day);
                     }
                 }
-                SimSystem::DailySettlement => {
-                    let daily_start = Instant::now();
-                    record_crash_phase_for_core(self, "daily tick");
-                    run_sim_phase("daily tick", || {
-                        self.simulate_tick_observed(day_index, observer)
+                SimSystem::EnvironmentGrids => {
+                    let grids_start = Instant::now();
+                    record_crash_phase_for_core(self, "environment grids");
+                    run_sim_phase("environment grids", || self.run_environment_grids());
+                    report.daily_ms += grids_start.elapsed().as_secs_f64() * 1000.0;
+                }
+                SimSystem::CalendarClose => {
+                    let close_start = Instant::now();
+                    record_crash_phase_for_core(self, "calendar close");
+                    run_sim_phase("calendar close", || {
+                        self.close_calendar_day(day_index, observer)
                     });
-                    report.daily_ms += daily_start.elapsed().as_secs_f64() * 1000.0;
+                    report.daily_ms += close_start.elapsed().as_secs_f64() * 1000.0;
                     report.daily_ticks += 1;
                     if crate::debug::Channel::Sim.enabled() {
                         self.print_sim_console_summary(day_index, minute_of_day);
@@ -206,6 +286,10 @@ impl SimCore {
                 SimSystem::BuildingHours => self.run_building_hours(slot),
                 SimSystem::HouseholdHours => self.run_household_hours(slot),
                 SimSystem::AgentHours => self.run_agent_hours(slot),
+                SimSystem::BuildingDays => self.run_building_days(slot, observer),
+                SimSystem::HouseholdDays => self.run_household_days(slot, observer),
+                SimSystem::AgentDays => self.run_agent_days(slot, observer),
+                SimSystem::RoadLength => self.road_length.advance(slot, &self.region_graph),
             }
         }
         self.schedule_construction_completions();

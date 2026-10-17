@@ -60,11 +60,14 @@ pub(crate) enum SystemKind {
     /// One call per slot for the entities whose `period` phase falls in it, so each entity is
     /// visited once per period (`docs/simulation.md#phases`).
     EntityPhase { period: Period },
+    /// One chunk per slot of a sum over the whole city that finishes once per `period`
+    /// (`docs/simulation.md#snapshots`).
+    Rolling { period: Period },
 }
 
 impl SystemKind {
-    // Per-slot order: events, fixed-slot systems, then hourly before daily entity phases;
-    // declaration order within a kind.
+    // Per-slot order: events, fixed-slot systems, hourly before daily entity phases, then
+    // rolling chunks; declaration order within a kind.
     fn order(self) -> u8 {
         match self {
             Self::Events => 0,
@@ -75,13 +78,14 @@ impl SystemKind {
             Self::EntityPhase {
                 period: Period::Day,
             } => 3,
+            Self::Rolling { .. } => 4,
         }
     }
 
     /// Whether a declaration of this kind runs in `slot`.
     pub(crate) fn due(self, slot: u64) -> bool {
         match self {
-            Self::Events | Self::EntityPhase { .. } => true,
+            Self::Events | Self::EntityPhase { .. } | Self::Rolling { .. } => true,
             Self::FixedSlot { period, offset } => slot % period.slots() == offset,
         }
     }
@@ -96,6 +100,10 @@ pub(crate) enum Cost {
     LegacyBoundary,
     /// Proportional to the entities whose phase falls in the slot: O(N / slots per period).
     Phase,
+    /// One chunk of a rolling sum: O(N / slots per period).
+    Chunk,
+    /// Independent of the city's size: O(1) or O(zones).
+    Constant,
 }
 
 /// Simulation tier a declaration serves.
@@ -188,7 +196,7 @@ impl<S: Copy> Schedule<S> {
                         declaration.name
                     );
                     assert!(
-                        matches!(declaration.cost, Cost::LegacyBoundary),
+                        matches!(declaration.cost, Cost::LegacyBoundary | Cost::Constant),
                         "{} runs at a fixed slot without a bounded cost",
                         declaration.name
                     );
@@ -203,6 +211,12 @@ impl<S: Copy> Schedule<S> {
                     declaration.cost,
                     Cost::Phase,
                     "{} must cost its phase's entities",
+                    declaration.name
+                ),
+                SystemKind::Rolling { .. } => assert_eq!(
+                    declaration.cost,
+                    Cost::Chunk,
+                    "{} must cost one chunk",
                     declaration.name
                 ),
             }

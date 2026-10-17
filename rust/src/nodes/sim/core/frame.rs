@@ -27,13 +27,20 @@ pub(super) trait EconomyObserver {
         _allocator: &crate::simulation::buildings::allocator::BuildingAllocator,
     ) {
     }
-    fn wages_paid(
+    /// A worker's wage paid at its daily phase (`SIM-02-G`).
+    fn wage_paid(
         &mut self,
-        _agents: &crate::simulation::economy::agents::AgentSystem,
-        _allocator: &crate::simulation::buildings::allocator::BuildingAllocator,
+        _core: &SimCore,
+        _payment: crate::simulation::economy::households::WagePayment,
     ) {
     }
-    fn household_settlement(&mut self, _core: &SimCore) {}
+    /// A building is about to settle its 24-hour window at its daily phase.
+    fn building_day_opened(&mut self, _core: &SimCore, _building_idx: usize) {}
+    /// A building settled its 24-hour window; its accumulators still hold the window.
+    fn building_day_closed(&mut self, _core: &SimCore, _building_idx: usize) {}
+    /// A household settled its 24-hour window; its ledger still holds the window.
+    fn household_day_closed(&mut self, _core: &SimCore, _household_id: usize) {}
+    /// The calendar close: the city's day totals are the last day's.
     fn day_closed(&mut self, _core: &SimCore) {}
 }
 

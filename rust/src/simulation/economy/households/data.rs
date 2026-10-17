@@ -54,6 +54,9 @@ pub(crate) struct DailyHouseholdLedger {
     pub(crate) sewage_consumption_cost: f32,
     /// Unemployed adult count observed by the daily benefit pass.
     pub(crate) unemployed_adults: u16,
+    /// Members paid a wage in this window; the household's other adults draw unemployment
+    /// benefit at its daily phase (`SIM-02-G`).
+    pub(crate) paid_workers: u16,
     /// Shopper tasks completed during the ledger window.
     pub(crate) shopper_trips_completed: u16,
     /// Shopper tasks failed during the ledger window.
@@ -97,12 +100,46 @@ pub(crate) struct DailyPowerSettlementSummary {
 }
 
 /// Actual city-funded payroll settled during the latest fiscal day.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct CityServiceWages {
     /// Wages paid by the treasury across all city services.
     pub(crate) total: f32,
     /// Portion paid to power-plant employees, used by the electricity ledger.
     pub(crate) power: f32,
+}
+
+/// City-wide flows of one calendar day, posted as each entity settles at its own daily phase
+/// (`SIM-02-G`, `docs/simulation.md#phases`). The calendar close keeps the finished day for the
+/// budget report and the next day's pooled reads, then starts an empty one. O(1) per posting.
+#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CityDayTotals {
+    /// Utility and electricity bills: local receipts, city-service costs and delivered units.
+    pub(crate) power: DailyPowerSettlementSummary,
+    /// Wages the treasury paid to city-service workers.
+    pub(crate) city_service_wages: CityServiceWages,
+    /// Gross wages paid by private employers.
+    pub(crate) private_payroll: f64,
+    /// Unemployment benefits paid from the treasury.
+    pub(crate) unemployment_benefits: f64,
+    /// Pensions paid from the treasury.
+    pub(crate) pensions: f64,
+    /// Child support paid from the treasury.
+    pub(crate) child_support: f64,
+    /// Coal burned by power plants in the day's hourly dispatches.
+    pub(crate) coal_consumed_kg: f64,
+    /// Operational providers that settled, by utility service; the next day's water and sewage
+    /// coverage reads it.
+    pub(crate) utility_providers: [u32; 3],
+    /// Local water and sewage revenue by service, shared among the next day's providers.
+    pub(crate) utility_local_revenue: [f32; 3],
+}
+
+impl CityDayTotals {
+    /// Treasury transfers paid to households during the day.
+    pub(crate) fn transfers(&self) -> f64 {
+        self.unemployment_benefits + self.pensions + self.child_support
+    }
 }
 
 /// Explicit household runtime record anchored to a residential building.
@@ -205,6 +242,11 @@ pub struct HouseholdSystem {
     pub(super) removal_agent_indices_scratch: Vec<usize>,
     pub(super) shopper_candidate_scratch: Vec<AtomicUsize>,
     pub(super) workplace_route_cache: super::employment::WorkplaceRouteCache,
+    // The quotes in insertion order with the workplace pass that added each; a quote expires
+    // a day of passes later, so the cache holds about one day's searches (`SIM-02-G`).
+    pub(super) workplace_route_cache_order:
+        std::collections::VecDeque<(u32, super::employment::WorkplaceRouteCacheKey)>,
+    pub(super) workplace_route_cache_pass: u32,
     pub(super) workplace_route_cache_building_revision: u64,
     pub(super) workplace_route_cache_entrance_revision: u64,
     pub(super) workplace_route_cache_cch_generation: u32,
@@ -214,11 +256,22 @@ pub struct HouseholdSystem {
     // Sorted workplace keys keep the same scratch owner regardless of Rayon scheduling.
     pub(super) workplace_query_shards: Vec<super::employment::WorkplaceQueryShard>,
     pub(super) daily_ledgers: Vec<DailyHouseholdLedger>,
-    pub(super) last_power_settlement: DailyPowerSettlementSummary,
-    pub(super) last_city_service_wages: CityServiceWages,
+    /// Flows of the calendar day so far (`SIM-02-G`).
+    pub(crate) day_totals: CityDayTotals,
+    /// Flows of the last closed calendar day, removed buildings included.
+    pub(crate) last_day_totals: CityDayTotals,
+    /// Coal stocked at power plants at the latest hourly dispatch, for the budget report.
+    pub(crate) coal_inventory_kg: f64,
+    /// Households whose daily phase asked for a housing review, served by the next hour's pass
+    /// with fresh member links (`SIM-02-G`; a per-slot queue in `SIM-02-J`). Saved.
+    pub(crate) housing_reviews: Vec<Handle<Household>>,
+    /// Households that chose to leave at their daily phase, removed by the next hour's pass.
+    /// Saved.
+    pub(crate) exits: Vec<Handle<Household>>,
+    pub(super) housing_review_scratch: Vec<usize>,
     pub(super) electricity_residents_scratch: Vec<AtomicU32>,
     pub(super) electricity_hour_scratch: Vec<super::electricity::HourlyBuildingElectricity>,
-    pub(super) electricity_totals_scratch: Vec<[f64; 2]>,
+    pub(super) electricity_totals_scratch: Vec<[f64; 4]>,
     /// Closed building accounts retained until the current fiscal day is reported.
     pub(crate) removed_electricity: super::electricity::RemovedBuildingElectricity,
 }
@@ -254,14 +307,20 @@ impl HouseholdSystem {
             removal_agent_indices_scratch: Vec::new(),
             shopper_candidate_scratch: Vec::new(),
             workplace_route_cache: Default::default(),
+            workplace_route_cache_order: Default::default(),
+            workplace_route_cache_pass: 0,
             workplace_route_cache_building_revision: u64::MAX,
             workplace_route_cache_entrance_revision: u64::MAX,
             workplace_route_cache_cch_generation: u32::MAX,
             workplace_network_quotes: Default::default(),
             workplace_query_shards: Vec::new(),
             daily_ledgers: Vec::new(),
-            last_power_settlement: DailyPowerSettlementSummary::default(),
-            last_city_service_wages: CityServiceWages::default(),
+            day_totals: CityDayTotals::default(),
+            last_day_totals: CityDayTotals::default(),
+            coal_inventory_kg: 0.0,
+            housing_reviews: Vec::new(),
+            exits: Vec::new(),
+            housing_review_scratch: Vec::new(),
             electricity_residents_scratch: Vec::new(),
             electricity_hour_scratch: Vec::new(),
             electricity_totals_scratch: Vec::new(),
@@ -320,6 +379,7 @@ impl HouseholdSystem {
 
     fn invalidate_workplace_route_cache(&mut self) {
         self.workplace_route_cache.clear();
+        self.workplace_route_cache_order.clear();
         self.workplace_route_cache_building_revision = u64::MAX;
         self.workplace_route_cache_entrance_revision = u64::MAX;
         self.workplace_route_cache_cch_generation = u32::MAX;
@@ -334,13 +394,19 @@ impl HouseholdSystem {
         )
     }
 
-    /// Iterates complete workplace quotes for deterministic save serialization.
+    /// Iterates complete workplace quotes with the pass that added each, for deterministic
+    /// save serialization.
     pub(crate) fn workplace_route_cache_entries(
         &self,
-    ) -> impl Iterator<Item = ((usize, usize, bool), Option<u16>)> + '_ {
-        self.workplace_route_cache
+    ) -> impl Iterator<Item = ((usize, usize, bool), Option<u16>, u32)> + '_ {
+        self.workplace_route_cache_order
             .iter()
-            .map(|(&key, &value)| (key, value))
+            .map(|&(pass, key)| (key, self.workplace_route_cache[&key], pass))
+    }
+
+    /// The workplace pass counter quotes are stamped with.
+    pub(crate) fn workplace_route_cache_pass(&self) -> u32 {
+        self.workplace_route_cache_pass
     }
 
     /// Restores complete workplace quotes after the loaded topology has been rebuilt.
@@ -349,11 +415,20 @@ impl HouseholdSystem {
         building_revision: u64,
         entrance_revision: u64,
         cch_generation: u32,
-        entries: Vec<((usize, usize, bool), Option<u16>)>,
+        mut entries: Vec<(super::employment::WorkplaceRouteCacheKey, Option<u16>, u32)>,
+        pass: u32,
     ) {
+        // Quotes of one pass expire together, so their order within it is immaterial.
+        entries.sort_unstable_by_key(|&(key, _, stamp)| (pass.wrapping_sub(stamp), key));
+        entries.reverse();
         self.workplace_route_cache.clear();
+        self.workplace_route_cache_order.clear();
         self.workplace_route_cache.reserve(entries.len());
-        self.workplace_route_cache.extend(entries);
+        for (key, value, stamp) in entries {
+            self.workplace_route_cache.insert(key, value);
+            self.workplace_route_cache_order.push_back((stamp, key));
+        }
+        self.workplace_route_cache_pass = pass;
         self.workplace_route_cache_building_revision = building_revision;
         self.workplace_route_cache_entrance_revision = entrance_revision;
         self.workplace_route_cache_cch_generation = cch_generation;
@@ -382,8 +457,11 @@ impl HouseholdSystem {
         self.workplace_network_quotes = Default::default();
         self.workplace_query_shards.clear();
         self.daily_ledgers.clear();
-        self.last_power_settlement = DailyPowerSettlementSummary::default();
-        self.last_city_service_wages = CityServiceWages::default();
+        self.day_totals = CityDayTotals::default();
+        self.last_day_totals = CityDayTotals::default();
+        self.coal_inventory_kg = 0.0;
+        self.housing_reviews.clear();
+        self.exits.clear();
         self.electricity_residents_scratch.clear();
         self.electricity_hour_scratch.clear();
         self.electricity_totals_scratch.clear();
@@ -496,6 +574,12 @@ impl HouseholdSystem {
         ledger.sewage_consumption_cost = paid[2];
     }
 
+    /// Restores the number of members paid a wage in the household's open window.
+    pub(crate) fn restore_paid_workers(&mut self, household_id: usize, paid_workers: u16) {
+        self.ensure_daily_ledger_len();
+        self.daily_ledgers[household_id].paid_workers = paid_workers;
+    }
+
     /// Restores physical power meters and collected local payments without charging again.
     pub(crate) fn restore_electricity_account(
         &mut self,
@@ -511,24 +595,64 @@ impl HouseholdSystem {
         ledger.power_local_payment = local_payment;
     }
 
-    /// Returns the most recently completed daily electricity settlement summary.
+    /// Returns the electricity and utility settlement of the last closed calendar day.
     pub(crate) fn last_power_settlement(&self) -> DailyPowerSettlementSummary {
-        self.last_power_settlement
+        self.last_day_totals.power
     }
 
-    /// Returns actual city payroll and its electricity subtotal for the latest fiscal day.
+    /// Returns actual city payroll and its electricity subtotal for the last closed day.
     pub(crate) fn last_city_service_wages(&self) -> CityServiceWages {
-        self.last_city_service_wages
+        self.last_day_totals.city_service_wages
     }
 
-    /// Starts the next household accounting window after daily settlement and reporting.
+    /// Ends the calendar day: the day's totals, with the bills of buildings removed during it,
+    /// become the last day, and an empty day starts (`SIM-02-G`). O(1).
+    pub(crate) fn close_calendar_day(&mut self) {
+        let mut closed = std::mem::take(&mut self.day_totals);
+        let removed = std::mem::take(&mut self.removed_electricity).settlement;
+        let power = &mut closed.power;
+        power.demand_units += removed.demand_units;
+        power.supply_units += removed.supply_units;
+        power.served_units += removed.served_units;
+        power.household_local_revenue += removed.household_local_revenue;
+        power.private_local_revenue += removed.private_local_revenue;
+        power.city_service_local_cost += removed.city_service_local_cost;
+        power.utility_local_revenue += removed.utility_local_revenue;
+        power.city_service_utility_local_cost += removed.city_service_utility_local_cost;
+        power.city_service_utility_owa_cost += removed.city_service_utility_owa_cost;
+        power.power_auxiliary_local_cost += removed.power_auxiliary_local_cost;
+        power.power_upkeep_utility_cost += removed.power_upkeep_utility_cost;
+        power.coverage = if power.demand_units > 0.0 {
+            (power.served_units / power.demand_units).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        self.last_day_totals = closed;
+    }
+
+    /// Ends household `household_id`'s 24-hour ledger window at its daily phase: the budget
+    /// after settlement. O(1).
+    pub(super) fn finish_household_window(&mut self, household_id: usize) {
+        self.daily_ledgers[household_id].budget_after = self.households[household_id].budget;
+    }
+
+    /// Starts household `household_id`'s next ledger window after its settlement was reported.
+    /// O(1).
+    pub(crate) fn open_household_window(&mut self, household_id: usize) {
+        let budget = self.households[household_id].budget;
+        self.daily_ledgers[household_id] = DailyHouseholdLedger {
+            budget_before: budget,
+            budget_after: budget,
+            ..Default::default()
+        };
+    }
+
+    /// Starts every household's next ledger window at once, as if each had settled.
+    #[cfg(test)]
     pub(crate) fn reset_daily_ledgers(&mut self) {
-        self.removed_electricity = Default::default();
         self.ensure_daily_ledger_len();
-        for (ledger, household) in self.daily_ledgers.iter_mut().zip(&self.households) {
-            *ledger = DailyHouseholdLedger::default();
-            ledger.budget_before = household.budget;
-            ledger.budget_after = household.budget;
+        for household_id in 0..self.households.len() {
+            self.open_household_window(household_id);
         }
     }
 
@@ -547,21 +671,6 @@ impl HouseholdSystem {
                 };
                 self.daily_ledgers.push(ledger);
             }
-        }
-    }
-
-    pub(super) fn begin_daily_ledger_settlement(&mut self) {
-        self.ensure_daily_ledger_len();
-        for (ledger, household) in self.daily_ledgers.iter_mut().zip(&self.households) {
-            ledger.budget_after = household.budget;
-            ledger.unemployed_adults = 0;
-        }
-    }
-
-    pub(super) fn finish_daily_ledger_settlement(&mut self) {
-        self.ensure_daily_ledger_len();
-        for (ledger, household) in self.daily_ledgers.iter_mut().zip(&self.households) {
-            ledger.budget_after = household.budget;
         }
     }
 

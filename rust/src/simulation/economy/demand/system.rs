@@ -6,7 +6,9 @@ use super::UseTuningF32;
 use super::actions::DemandBuildingActionPlan;
 use super::admission::HouseholdAdmissionBudget;
 use super::config::{DemandConfig, load_builtin_demand_config};
-use super::credits::{advance_persistent_exit_credit, clamp01};
+#[cfg(test)]
+use super::credits::advance_persistent_exit_credit;
+use super::credits::clamp01;
 use super::diagnostics::{
     BuildingActionDiagnosticsByUse, HouseholdAdmissionDiagnostics, HouseholdRemovalDiagnostics,
 };
@@ -34,8 +36,11 @@ pub struct DemandSystem {
     pub(super) runtime_tuning: Arc<RuntimeEconomyTuning>,
     pub(crate) cheat_max_demands_enabled: bool,
     pub(crate) households_to_admit_today: u32,
+    /// Departures released so far in the calendar day (`SIM-02-G`).
     pub(crate) households_to_remove_today: u32,
     pub(crate) persistent_exit_action_credit: f32,
+    /// Whether any household was eligible to leave at its daily phase in the calendar day.
+    pub(crate) exit_eligible_today: bool,
     pub(crate) upgrade_action_credit: UseTuningF32,
     pub(crate) downgrade_action_credit: UseTuningF32,
     pub(crate) despawn_action_credit: UseTuningF32,
@@ -108,6 +113,7 @@ impl DemandSystem {
             households_to_admit_today: 0,
             households_to_remove_today: 0,
             persistent_exit_action_credit: 0.0,
+            exit_eligible_today: false,
             upgrade_action_credit: UseTuningF32::default(),
             downgrade_action_credit: UseTuningF32::default(),
             despawn_action_credit: UseTuningF32::default(),
@@ -542,8 +548,41 @@ impl DemandSystem {
         self.last_removal_diagnostics.removed_household_ratio = removed_household_ratio;
     }
 
+    /// Accrues one eligible household's share of the daily exit budget at its daily phase and
+    /// reports whether it leaves now (`SIM-02-G`): each eligible household adds
+    /// `persistent_exit_daily_fraction`, every whole unit of credit releases one departure, and
+    /// at most `max_household_removals_per_day` leave per calendar day. O(1).
+    pub(crate) fn claim_household_exit(&mut self) -> bool {
+        self.exit_eligible_today = true;
+        self.persistent_exit_action_credit += self
+            .config
+            .household_action
+            .persistent_exit_daily_fraction
+            .max(0.0);
+        if self.persistent_exit_action_credit < 1.0
+            || self.households_to_remove_today
+                >= self.config.action_budget.max_household_removals_per_day
+        {
+            return false;
+        }
+        self.persistent_exit_action_credit -= 1.0;
+        self.households_to_remove_today += 1;
+        true
+    }
+
+    /// Ends the calendar day's exit budget: credit lapses when no household was eligible, and
+    /// the daily departure limit starts again. O(1).
+    pub(crate) fn close_exit_day(&mut self) {
+        if !self.exit_eligible_today {
+            self.persistent_exit_action_credit = 0.0;
+        }
+        self.exit_eligible_today = false;
+        self.households_to_remove_today = 0;
+    }
+
     /// Plans household-specific departures without rebuilding the business market.
     /// O(households), using the same parallel census and exit policy as hourly diagnostics.
+    #[cfg(test)]
     pub(crate) fn run_daily_pass(
         &mut self,
         allocator: &BuildingAllocator,

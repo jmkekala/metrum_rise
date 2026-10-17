@@ -329,7 +329,13 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   `SIM-02-F` (2026-10-16): each building produces, each household eats and uses its utilities,
   and each resident feels hunger at its own minute of the hour, not all at :00. City-wide
   store sales and electricity dispatch still settle on the hour, and electricity bills the
-  activity of the hour before (save format 92).
+  activity of the hour before (save format 92). `SIM-02-G` (2026-10-16): midnight no longer
+  settles the city. Each building, household and worker settles its own 24-hour window at its
+  own minute of the day (wages, taxes, transfers, bills, bankruptcy, rezoning grace), the
+  budget report sums payments as they happen, and 00:00 keeps only the calendar close and,
+  until `SIM-02-H`, the pollution, noise and desirability update (save format 93). A business
+  that cannot pay its workers two days running goes bankrupt, and an adult not paid a wage that
+  day draws unemployment benefit.
 
 - **Starting treasury**: new games begin with 500,000, increased from 100,000. See
   [money source](economy.md#money-source); earlier balance runs retain their original starting capital.

@@ -185,7 +185,7 @@ pub(super) fn save_world(
     let downgrade_action_credit = demand.downgrade_action_credit.as_array();
     let despawn_action_credit = demand.despawn_action_credit.as_array();
     tx.execute(
-        "INSERT INTO demand_state(households_to_admit_today, households_to_remove_today, persistent_exit_action_credit, upgrade_action_credit_residential, upgrade_action_credit_commercial, upgrade_action_credit_industrial, downgrade_action_credit_residential, downgrade_action_credit_commercial, downgrade_action_credit_industrial, despawn_action_credit_residential, despawn_action_credit_commercial, despawn_action_credit_industrial, cheat_max_demands_enabled) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        "INSERT INTO demand_state(households_to_admit_today, households_to_remove_today, persistent_exit_action_credit, upgrade_action_credit_residential, upgrade_action_credit_commercial, upgrade_action_credit_industrial, downgrade_action_credit_residential, downgrade_action_credit_commercial, downgrade_action_credit_industrial, despawn_action_credit_residential, despawn_action_credit_commercial, despawn_action_credit_industrial, cheat_max_demands_enabled, exit_eligible_today) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         params![
             i64::from(demand.households_to_admit_today),
             i64::from(demand.households_to_remove_today),
@@ -200,6 +200,7 @@ pub(super) fn save_world(
             despawn_action_credit[1],
             despawn_action_credit[2],
             bool_to_db(demand.cheat_max_demands_enabled),
+            bool_to_db(demand.exit_eligible_today),
         ],
     )?;
     let mut pending_spawn_stmt = tx.prepare(
@@ -262,7 +263,7 @@ pub(super) fn save_world(
     super::cell_zoning::save(tx, zoning, maps)?;
 
     // Buildings
-    let mut bld_stmt = tx.prepare("INSERT INTO buildings(building_id, parcel_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, service_funding_override, revenue, operating_budget, profit_tax_budget_baseline, last_day_profit, shipment_cooldown_until_tick, width, depth, asset_id, level, construction_total_hours, construction_complete_slot, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress, daily_household_sales_value, daily_power_service_units, daily_power_served_units, recent_power_service_units, recent_power_served_units, recent_household_sales_value, support_height_m, build_generation, electricity_usage, hourly_economy_activity, commercial_activity_floor_scale) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38)")?;
+    let mut bld_stmt = tx.prepare("INSERT INTO buildings(building_id, parcel_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, service_funding_override, revenue, operating_budget, profit_tax_budget_baseline, last_day_profit, shipment_cooldown_until_tick, width, depth, asset_id, level, construction_total_hours, construction_complete_slot, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress, daily_household_sales_value, daily_power_service_units, daily_power_served_units, recent_power_service_units, recent_power_served_units, recent_household_sales_value, support_height_m, build_generation, electricity_usage, hourly_economy_activity, commercial_activity_floor_scale, paid_workers_in_window, funded_job_capacity, unpaid_cash_wages_in_window) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41)")?;
     let mut inventory_stmt = tx.prepare(
         "INSERT INTO building_inventories(building_id, resource_runtime_id, amount) VALUES (?1, ?2, ?3)",
     )?;
@@ -329,6 +330,9 @@ pub(super) fn save_world(
             .map_err(|err| SaveLoadError::custom(err.to_string()))?,
             b.hourly_economy_activity,
             b.commercial_activity_floor_scale,
+            i64::from(b.paid_workers_in_window),
+            i64::from(b.funded_job_capacity),
+            i64::from(b.unpaid_cash_wages_in_window),
         ])?;
         for (slot, amount) in b.resource_inventory.iter().enumerate() {
             if *amount <= 0.0 {
@@ -345,11 +349,26 @@ pub(super) fn save_world(
         ));
     }
     tx.execute(
-        "INSERT INTO electricity_day_state(singleton, removed_buildings) VALUES (1, ?1)",
-        [serde_json::to_string(&households.removed_electricity)
-            .map_err(|err| SaveLoadError::custom(err.to_string()))?],
+        "INSERT INTO electricity_day_state(singleton, removed_buildings, day_totals, last_day_totals, coal_inventory_kg, city_input_day) VALUES (1, ?1, ?2, ?3, ?4, ?5)",
+        params![
+            to_json(&households.removed_electricity)?,
+            to_json(&households.day_totals)?,
+            to_json(&households.last_day_totals)?,
+            households.coal_inventory_kg,
+            to_json(&buildings.city_input_day)?,
+        ],
     )?;
-    let mut household_stmt = tx.prepare("INSERT INTO households(household_id, home_building, budget, stock, member_count, child_count, adult_count, elder_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, replenishment_failure_count, reserved_store_building_id, reserved_amount, reserved_total_cost, shopping_agent_slot, shopping_agent_generation, shopping_timeout_hours_remaining, replenishment_search_cursor, stay_failure_days, unhoused_days_elapsed, replenishment_offset_hours, unemployment_days_elapsed, power_consumption_cost, water_consumption_cost, sewage_consumption_cost, electricity_account, gross_daily_wages, employed_adults) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)")?;
+    // Requests the households' daily phases left for the next hour (`SIM-02-G`).
+    let mut request_stmt = tx.prepare(
+        "INSERT INTO household_requests(kind, sequence, household_slot, household_generation) VALUES (?1, ?2, ?3, ?4)",
+    )?;
+    for (kind, requests) in [(0_i64, &households.housing_reviews), (1, &households.exits)] {
+        for (sequence, &handle) in requests.iter().enumerate() {
+            let (slot, generation) = handle_to_db(handle);
+            request_stmt.execute(params![kind, sequence as i64, slot, generation])?;
+        }
+    }
+    let mut household_stmt = tx.prepare("INSERT INTO households(household_id, home_building, budget, stock, member_count, child_count, adult_count, elder_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, replenishment_failure_count, reserved_store_building_id, reserved_amount, reserved_total_cost, shopping_agent_slot, shopping_agent_generation, shopping_timeout_hours_remaining, replenishment_search_cursor, stay_failure_days, unhoused_days_elapsed, replenishment_offset_hours, unemployment_days_elapsed, power_consumption_cost, water_consumption_cost, sewage_consumption_cost, electricity_account, gross_daily_wages, employed_adults, paid_workers_in_window) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31)")?;
     for (hid, household) in households.households.iter().enumerate() {
         let ledger = households
             .daily_ledgers()
@@ -410,6 +429,7 @@ pub(super) fn save_world(
             .map_err(|err| SaveLoadError::custom(err.to_string()))?,
             household.gross_daily_wages,
             i64::from(household.employed_adults),
+            i64::from(ledger.paid_workers),
         ])?;
     }
 
@@ -837,8 +857,9 @@ pub(super) fn load_buildings(
     //      29=daily_power_served_units 30=recent_power_service_units
     //      31=recent_power_served_units 32=recent_household_sales_value 33=support_height_m
     //      34=build_generation 35=electricity_usage 36=hourly_economy_activity
-    //      37=commercial_activity_floor_scale
-    let mut stmt = conn.prepare("SELECT building_id, parcel_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, service_funding_override, revenue, operating_budget, profit_tax_budget_baseline, last_day_profit, shipment_cooldown_until_tick, width, depth, asset_id, level, construction_total_hours, construction_complete_slot, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress, daily_household_sales_value, daily_power_service_units, daily_power_served_units, recent_power_service_units, recent_power_served_units, recent_household_sales_value, support_height_m, build_generation, electricity_usage, hourly_economy_activity, commercial_activity_floor_scale FROM buildings ORDER BY building_id")?;
+    //      37=commercial_activity_floor_scale 38=paid_workers_in_window 39=funded_job_capacity
+    //      40=unpaid_cash_wages_in_window
+    let mut stmt = conn.prepare("SELECT building_id, parcel_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, service_funding_override, revenue, operating_budget, profit_tax_budget_baseline, last_day_profit, shipment_cooldown_until_tick, width, depth, asset_id, level, construction_total_hours, construction_complete_slot, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress, daily_household_sales_value, daily_power_service_units, daily_power_served_units, recent_power_service_units, recent_power_served_units, recent_household_sales_value, support_height_m, build_generation, electricity_usage, hourly_economy_activity, commercial_activity_floor_scale, paid_workers_in_window, funded_job_capacity, unpaid_cash_wages_in_window FROM buildings ORDER BY building_id")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let bid = i64_to_usize(row.get(0)?)?;
@@ -922,6 +943,10 @@ pub(super) fn load_buildings(
             recent_household_sales_value: row.get(32)?,
             // Set at the hour boundary and read by production at each building's phase.
             commercial_activity_floor_scale: row.get(37)?,
+            // Daily settlement windows span saves (`SIM-02-G`).
+            paid_workers_in_window: i64_to_u32(row.get(38)?)?,
+            funded_job_capacity: i64_to_u32(row.get(39)?)?,
+            unpaid_cash_wages_in_window: i64_to_u32(row.get(40)?)?,
             work_area_scale: initial_work_area_scale(zone_type, profile_kind),
             pending_redevelopment: row.get::<_, i64>(23)? != 0,
             rezone_grace_days_remaining: i64_to_u8(row.get(24)?)?,
@@ -942,6 +967,12 @@ pub(super) fn load_buildings(
         };
         building.set_inventory_units(resource_runtime_id, amount);
     }
+    let city_input_day: String = conn.query_row(
+        "SELECT city_input_day FROM electricity_day_state WHERE singleton = 1",
+        [],
+        |row| row.get(0),
+    )?;
+    allocator.city_input_day = from_json(&city_input_day)?;
     Ok(allocator)
 }
 
@@ -1082,19 +1113,21 @@ pub(super) fn load_agriculture(
 
 pub(super) fn load_households(conn: &Connection) -> SaveLoadResult<HouseholdSystem> {
     let mut households = HouseholdSystem::new();
-    let json: String = conn.query_row(
-        "SELECT removed_buildings FROM electricity_day_state WHERE singleton = 1",
+    let (removed, day, last_day, coal): (String, String, String, f64) = conn.query_row(
+        "SELECT removed_buildings, day_totals, last_day_totals, coal_inventory_kg FROM electricity_day_state WHERE singleton = 1",
         [],
-        |row| row.get(0),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
     )?;
-    households.removed_electricity =
-        serde_json::from_str(&json).map_err(|err| SaveLoadError::custom(err.to_string()))?;
+    households.removed_electricity = from_json(&removed)?;
+    households.day_totals = from_json(&day)?;
+    households.last_day_totals = from_json(&last_day)?;
+    households.coal_inventory_kg = coal;
     if !households.removed_electricity.is_valid() {
         return Err(SaveLoadError::custom(
             "invalid removed-building electricity account",
         ));
     }
-    let mut stmt = conn.prepare("SELECT household_id, home_building, budget, stock, member_count, child_count, adult_count, elder_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, replenishment_failure_count, reserved_store_building_id, reserved_amount, reserved_total_cost, shopping_agent_slot, shopping_agent_generation, shopping_timeout_hours_remaining, replenishment_search_cursor, stay_failure_days, unhoused_days_elapsed, replenishment_offset_hours, unemployment_days_elapsed, power_consumption_cost, water_consumption_cost, sewage_consumption_cost, electricity_account, gross_daily_wages, employed_adults FROM households ORDER BY household_id")?;
+    let mut stmt = conn.prepare("SELECT household_id, home_building, budget, stock, member_count, child_count, adult_count, elder_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, replenishment_failure_count, reserved_store_building_id, reserved_amount, reserved_total_cost, shopping_agent_slot, shopping_agent_generation, shopping_timeout_hours_remaining, replenishment_search_cursor, stay_failure_days, unhoused_days_elapsed, replenishment_offset_hours, unemployment_days_elapsed, power_consumption_cost, water_consumption_cost, sewage_consumption_cost, electricity_account, gross_daily_wages, employed_adults, paid_workers_in_window FROM households ORDER BY household_id")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let hid = i64_to_usize(row.get(0)?)?;
@@ -1156,6 +1189,7 @@ pub(super) fn load_households(conn: &Connection) -> SaveLoadResult<HouseholdSyst
             return Err(SaveLoadError::custom("invalid household utility payment"));
         }
         households.restore_utility_payments(hid, paid);
+        households.restore_paid_workers(hid, i64_to_u16(row.get(30)?)?);
         {
             let json: String = row.get(27)?;
             let (usage, arrears, unpaid, local): (
@@ -1176,6 +1210,18 @@ pub(super) fn load_households(conn: &Connection) -> SaveLoadResult<HouseholdSyst
             }
             households.households[hid].power_arrears = arrears;
             households.restore_electricity_account(hid, usage, unpaid, local);
+        }
+    }
+    let mut stmt = conn.prepare(
+        "SELECT kind, household_slot, household_generation FROM household_requests ORDER BY kind, sequence",
+    )?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let handle = handle_from_db(row.get(1)?, row.get(2)?)?;
+        match row.get::<_, i64>(0)? {
+            0 => households.housing_reviews.push(handle),
+            1 => households.exits.push(handle),
+            _ => return Err(SaveLoadError::custom("unknown household request kind")),
         }
     }
     Ok(households)
@@ -1406,4 +1452,13 @@ fn validate_reserve_density(density: f32) -> SaveLoadResult<()> {
         return Err(SaveLoadError::custom("invalid extractor reserve density"));
     }
     Ok(())
+}
+
+// Day-state rows are small serde records.
+fn to_json<T: serde::Serialize>(value: &T) -> SaveLoadResult<String> {
+    serde_json::to_string(value).map_err(|err| SaveLoadError::custom(err.to_string()))
+}
+
+fn from_json<T: serde::de::DeserializeOwned>(json: &str) -> SaveLoadResult<T> {
+    serde_json::from_str(json).map_err(|err| SaveLoadError::custom(err.to_string()))
 }

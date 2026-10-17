@@ -5,8 +5,8 @@
 use super::data::AgentSystem;
 use super::tick::{BuiltTripPlan, plan_building_origin_trip, plan_building_to_border_trip};
 use super::{
-    ACCESS_FREIGHT_BORDER_DESTINATION, ACTIVITY_HOME, MODE_CAR, MODE_WALK, TRANSIT_ACCESS_INGRESS,
-    TRANSIT_IN_BUILDING, TRANSIT_NETWORK, age_group_can_work,
+    ACCESS_FREIGHT_BORDER_DESTINATION, ACTIVITY_HOME, ACTIVITY_SHOPPING, MODE_CAR, MODE_WALK,
+    TRANSIT_ACCESS_INGRESS, TRANSIT_IN_BUILDING, TRANSIT_NETWORK, age_group_can_work,
 };
 use crate::config::AGENT_DRIVEWAY_SPEED_MS;
 use crate::simulation::buildings::allocator::{BuildingAllocator, baseline_private_zone_slot};
@@ -107,10 +107,13 @@ impl AgentSystem {
                 self.agents.planned_target_building[agent_idx] = new_home;
                 needs_replan = true;
             }
-            if !old_home_live
-                && self.agents.current_building[agent_idx] == usize::MAX
-                && self.agents.target_building[agent_idx] == usize::MAX
-            {
+            let current = self.agents.current_building[agent_idx];
+            let target = self.agents.target_building[agent_idx];
+            let work = self.agents.work_building[agent_idx];
+            let bound_home_or_work = current == new_home
+                || target == new_home
+                || (work != usize::MAX && (current == work || target == work));
+            if !old_home_live && current == usize::MAX && target == usize::MAX {
                 self.agents.target_building[agent_idx] = new_home;
                 self.agents.planned_target_building[agent_idx] = new_home;
                 self.agents.activity[agent_idx] = 0;
@@ -120,6 +123,16 @@ impl AgentSystem {
                     self.agents.transit[agent_idx] = TRANSIT_ACCESS_INGRESS;
                 }
                 needs_replan = true;
+            } else if !old_home_live
+                && !bound_home_or_work
+                && self.agents.planned_target_building[agent_idx] == usize::MAX
+                && self.agents.activity[agent_idx] != ACTIVITY_SHOPPING
+            {
+                // A member evicted while away (a shopper released at or on the way to the
+                // store) goes to the new home after its current trip: the schedule only moves
+                // agents at home or at work.
+                self.agents.planned_target_building[agent_idx] = new_home;
+                self.agents.planned_activity[agent_idx] = ACTIVITY_HOME;
             }
             if needs_replan {
                 self.clear_access_plan_and_path(agent_idx);
@@ -156,6 +169,11 @@ impl AgentSystem {
             }
             if self.agents.planned_target_building[agent_idx] == old_home {
                 self.agents.planned_target_building[agent_idx] = usize::MAX;
+                // The eviction cancelled this shopper's trip and its return home; the schedule
+                // skips an agent shopping still owns, so hand it back explicitly.
+                if self.agents.activity[agent_idx] == ACTIVITY_SHOPPING {
+                    self.agents.activity[agent_idx] = ACTIVITY_HOME;
+                }
                 needs_replan = true;
             }
             if needs_replan {
@@ -796,6 +814,9 @@ mod tests {
             daily_power_served_units: 0.0,
             recent_power_service_units: 0.0,
             recent_power_served_units: 0.0,
+            paid_workers_in_window: 0,
+            funded_job_capacity: 0,
+            unpaid_cash_wages_in_window: 0,
             recent_household_sales_value: 0.0,
             commercial_activity_floor_scale: 0.0,
             work_area_scale: 1.0,

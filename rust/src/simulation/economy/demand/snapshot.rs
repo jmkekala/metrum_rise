@@ -888,6 +888,7 @@ fn collect_household_snapshot_accumulator(
 }
 
 /// Reuses the household census for daily exits without evaluating unrelated business markets.
+#[cfg(test)]
 pub(super) fn collect_household_removal_diagnostics(
     allocator: &BuildingAllocator,
     households: &HouseholdSystem,

@@ -84,15 +84,20 @@ crossed:
 1. Each minute: the next queued private construction start, at most one per minute, and any
    construction site whose deadline falls in that slot completes
    ([`simulation.md`](simulation.md#deadlines-and-timed-events)).
-2. Each whole hour: the **operational hour**, the pooled household hour (below).
-3. At minutes other than 0, the **hourly demand pass**: project planning, household admission and
-   immediate building actions ([`demand.md`](demand.md#cadence-and-handoff)).
-4. At minute 0, after the operational hour: the **daily tick**: allocator maintenance, the daily
-   settlement (below), road upkeep, the daily demand pass, household removals, then the minute-0
-   hourly demand pass. Daily tax buckets roll into the report only after all of these.
-5. Each slot, after everything above: the **hourly phases** of the buildings, households and
-   agents whose phase falls in it (`SIM-02-F`, [`simulation.md`](simulation.md#phases)). Each
-   entity has one per hour, about 1/960 of the city per slot.
+2. Each whole hour: the **operational hour**: the households whose exit was claimed at their
+   daily phase leave if they still may, then the pooled household hour (below), then the
+   **hourly demand pass**: project planning, household admission and immediate building actions
+   ([`demand.md`](demand.md#cadence-and-handoff)). 00:00 is an ordinary hour (`SIM-02-G`).
+3. At 00:00, before the hour: pollution, noise and desirability are recomputed (until
+   `SIM-02-H`). After the hour, the **calendar close**: the day's running totals become the
+   budget report, the tax window rolls, road upkeep is charged from the rolling road length and
+   the day's exit budget resets. It costs O(zones); the 00:00 hour still belongs to the closing
+   day.
+4. Each slot, after everything above: the **hourly phases** of the buildings, households and
+   agents whose phase falls in it (`SIM-02-F`), then their **daily phases** (`SIM-02-G`), then
+   one chunk of the rolling road-length sum ([`simulation.md`](simulation.md#phases)). Each
+   entity has one hourly phase per hour, about 1/960 of the city per slot, and one daily phase
+   per day, about 1/23,040.
 
 Household hour (`households/tick.rs`): count the households still arriving; rebuild membership
 and worker counts; rehouse unhoused households; the funding census; the activity floor and
@@ -113,17 +118,25 @@ evenly over the following hour. Each trip is then checked as it travels (every o
 minutes, growing with its time on the road) and settles when it arrives: a delivery, a store pickup, a shopper's return or a household moving in no longer
 waits for the next hour. Leg timeouts still count operational hours.
 
-Daily settlement, in fixed order:
+Daily phases (`nodes/sim/core/entity_days.rs`), each over the entity's own 24-hour window:
 
-1. Bankruptcy check (buildings that ended yesterday in distress and are still negative).
-2. Wages, within the funded census capacity.
-3. Household transfers.
-4. Property tax.
-5. Utility bills, then distress liquidation of negative private budgets.
-6. Business profit tax.
-7. Housing affordability, relocation and eviction.
-8. Daily workplace pass (complete commute quotes are dropped first; bounded network-only legs
-   remain valid until their CCH or lane revision changes).
+1. **Building:** the zoning compatibility check and its rezoning grace; then the bankruptcy check
+   (a building that ended its last window in distress and is still negative), property tax,
+   water, sewage and electricity bills, distress liquidation of a negative private budget, and
+   business profit tax. Its daily accumulators then roll into the `recent_*` values.
+2. **Household:** transfers, residential property tax, water, sewage and electricity bills; the
+   ledger window closes and the next opens. The household then queues a housing review
+   (affordability, relocation, eviction) and, if it may leave, claims its share of the day's
+   exit budget.
+3. **Agent:** the wage, paid while the workplace has paid fewer than its funded jobs in its own
+   window, and the daily happiness update.
+
+The next hour serves the queued housing reviews and exits, which need the member links of the
+hourly membership count. Wages read the funded jobs the last hourly census copied onto each
+building; water and sewage coverage is whether a provider settled operational in the last
+closed day. Complete commute quotes expire 24 workplace passes after they were added; bounded
+network-only legs remain valid until their CCH or lane revision changes. Every payment also
+posts into the calendar day's totals, which the close reports in O(1).
 
 Demand never reads half-updated economy state. Buildings or households changed by a demand pass
 take effect in the next operational hour.
@@ -290,7 +303,7 @@ the live policy.
 | --- | ---: | --- |
 | Income tax | 12% | Withheld from gross wages. An employer that cannot pay the gross wage pays neither wage nor tax. |
 | Household VAT | 8% | Added to store purchases, reserved with the shopping payment and collected at pickup. Seller revenue excludes it. Business purchases pay none. |
-| Business profit tax | 10% | Daily, on `max(0, operating_budget − baseline)` after the day's flows; the baseline then resets. No loss carryforward; startup equity is never taxed. |
+| Business profit tax | 10% | At the building's daily phase, on `max(0, operating_budget − baseline)` after its window's flows; the baseline then resets. No loss carryforward; startup equity is never taxed. |
 | Property tax | 2 / 25 / 35 per day | Per occupied home / active commercial / active industrial building, × 1.75 per level above 1. City-owned and unzoned buildings pay none. |
 | Unemployment benefit | 30/day | Per unemployed adult, for at most `unemployment_max_days` (30) |
 | Pension | 30/day | Per elder |
@@ -301,8 +314,11 @@ Pending transaction taxes roll into the report at the daily close.
 
 ### Household transfer payments
 
-Transfers are paid daily, after wages and before housing checks, in stable household order
-(`households/benefits.rs`).
+Transfers are paid at each household's daily phase, before its property tax and bills and
+before its housing review (`households/benefits.rs`, `SIM-02-G`). Unemployed adults are the
+household's adults minus the members paid a wage in its 24-hour window, so a worker whose
+insolvent employer could not pay draws the benefit at once. When the treasury runs short, slot
+order decides who is paid.
 
 - Unemployment benefit stops once every adult is employed (resetting the counter) or after the
   maximum duration. Exhausting it does not by itself cause departure.
@@ -431,7 +447,9 @@ household_reserve_days = household_budget / max(household_daily_essential_cost, 
   distance, then lower building ID, and found by chunk-ring search. A household that still
   passes may move only to a strictly higher level.
 - With no affordable vacancy the household is evicted and becomes unhoused. Eviction cancels an
-  active shopping trip through the normal refund rules.
+  active shopping trip through the normal refund rules and releases the shopper; once the
+  household is rehoused, a member away from home and work goes to the new home after its
+  current trip.
 - Unhoused households try to rehouse after each hourly membership census, claiming real
   vacancies before arrivals can. This costs O(1) when everyone is housed.
 - `unhoused_days_elapsed` counts consecutive settled days without a home. Demand's exit policy
@@ -447,7 +465,7 @@ lifecycle.
 
 ## Funding census (`ECON-17`)
 
-`JobFunding` (`hiring.rs`) is rebuilt in every hourly and daily workplace pass. It is the single
+`JobFunding` (`hiring.rs`) is rebuilt in every hourly workplace pass. It is the single
 answer to "how much of this operation can run":
 
 - **Capacities:** the largest workforce whose forecast recurring sales cover operating costs, and
@@ -474,9 +492,11 @@ answer to "how much of this operation can run":
   private employers advertise no live jobs.
 
 Hiring, daily payroll, worker shedding, store output, construction viability and household
-admission all read this census. Daily payroll pays at most the census capacity, bounded by the
-physical workplace. Service stores and explicit work areas release workers above it; other unpaid
-workers quit after 2 unpaid days.
+admission all read this census. Each census copies every building's funded jobs onto it
+(`funded_job_capacity`, saved). A worker is paid at its own daily phase while its workplace has
+paid fewer than those jobs, bounded by the physical workplace, in the workplace's own window
+(`SIM-02-G`). Service stores and explicit work areas release the workers whose phases come after
+their funded jobs were paid; other unpaid workers quit after 2 unpaid days.
 
 Costs: market aggregation is O(B·ports + households·categories) in fixed parallel chunks.
 Household and supplier claims commit serially through the existing component and chunk indices.
@@ -527,11 +547,10 @@ reused between hours.
 Two caches serve the search:
 
 - **Route cache:** commute seconds by `(home, work, car)`, cleared on any building, entrance or
-  CCH change and dropped daily.
+  CCH change. Each quote expires 24 workplace passes (hours) after it was added (`SIM-02-G`).
 - **Network legs** (`SharedNetworkQuotes`): the road-network part of each commute, shared by
   every worker thread across hours. A car leg uses the cost-only CCH query; a walking leg keeps
-  the path for the pedestrian connector check. It is emptied on a CCH or lane change and dropped
-  daily.
+  the path for the pedestrian connector check. It is emptied on a CCH or lane change.
 
 Neither cache changes a result.
 
@@ -606,8 +625,9 @@ freight.
 - **Power** is dispatched hourly against metered kWh demand. Connected plants generate the least
   of demand, staffed capacity (50 kW per worker) and available coal (0.45 kg/kWh). Unmet demand
   is imported.
-- **Water and sewage** are local when a staffed connected provider operates; otherwise they fall
-  back to the `OWA`.
+- **Water and sewage** are local when a staffed connected provider settled operational in the
+  last closed calendar day; otherwise they fall back to the `OWA`. Providers share that day's
+  local receipts (`SIM-02-G`).
 - **Bills:** `local share × local price + missing share × local price × 1.25`. Local prices are
   0.20/kWh, 2.0/m³ water and 1.5/m³ sewage.
 - **Rates:** electricity per profile (`electricity = {idle, operating, per_resident}`):
@@ -675,16 +695,21 @@ shopping or utilities until completion.
 ## Building Bankruptcy
 
 This applies to private commercial, industrial, field, extractor and privately operated utility
-businesses; city-owned facilities are excluded. Daily, in settlement order:
+businesses; city-owned facilities are excluded. At the building's daily phase, in settlement
+order (`SIM-02-G`):
 
-1. **Check:** if yesterday ended in `budget_distress` and the budget is still negative, mark
-   `is_deserted`. A building always gets one full distress day first.
-2. **Wages:** pay each worker from the budget. When cash is short, first sell enough unreserved
-   output at distress price (`catalog × owa_distress_liquidation_multiplier` = 0.25) to cover the
-   wage. Otherwise the worker goes unpaid, and wages never push the budget negative.
-3. **Utilities:** charged even into a negative budget.
-4. **Distress:** if the budget is negative, liquidate all unreserved output at distress price and
-   set `budget_distress`; otherwise clear it.
+1. **Check:** if its last window ended in `budget_distress` and this one is insolvent too, mark
+   `is_deserted`. A building always gets one full distress window first. A window is insolvent
+   when the budget is negative or a wage went unpaid for lack of cash after selling output.
+2. **Utilities:** charged even into a negative budget.
+3. **Distress:** if the budget is negative, liquidate all output on hand at distress price
+   (`catalog × owa_distress_liquidation_multiplier` = 0.25) and set `budget_distress`; a window
+   that left a wage unpaid for lack of cash sets it too; otherwise clear it. Cargo a shipment has
+   loaded has already left the stock.
+
+**Wages** are paid at each worker's own daily phase from the budget. When cash is short, the
+employer first sells enough output at distress price to cover the wage. Otherwise the worker
+goes unpaid, and wages never push the budget negative.
 
 Desertion is permanent. A deserted building leaves supplier search, hiring, production and demand
 capacity; its workers are ejected at the start of the next workplace pass. Clearing empty deserted

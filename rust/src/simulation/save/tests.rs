@@ -262,6 +262,9 @@ fn snapshot_test_building(
         daily_power_served_units: 77.0,
         recent_power_service_units: 79.0,
         recent_power_served_units: 76.0,
+        paid_workers_in_window: 0,
+        funded_job_capacity: 0,
+        unpaid_cash_wages_in_window: 0,
         recent_household_sales_value: 456.0,
         commercial_activity_floor_scale: 0.0,
         work_area_scale: 1.0,
@@ -483,9 +486,25 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     allocator.buildings[0].daily_city_funded_input_cost = 17.25;
     households.removed_electricity.settlement.demand_units = 12.0;
     households.removed_electricity.settlement.served_units = 10.0;
-    households.removed_electricity.city_input_cost = -2.5;
-    households.removed_electricity.power_input_cost = -2.5;
-    households.removed_electricity.coal_consumed_kg = 4.5;
+    // Daily settlement windows and the calendar day's totals span a save (`SIM-02-G`).
+    households.day_totals.coal_consumed_kg = 4.5;
+    households.day_totals.unemployment_benefits = 3.25;
+    households.day_totals.utility_providers = [0, 1, 2];
+    households.last_day_totals.private_payroll = 7.5;
+    households.last_day_totals.utility_local_revenue = [0.0, 1.5, 0.75];
+    households.coal_inventory_kg = 11.0;
+    allocator.city_input_day.total = -2.5;
+    allocator.city_input_day.power = -1.25;
+    allocator.buildings[0].paid_workers_in_window = 3;
+    allocator.buildings[0].funded_job_capacity = 4;
+    allocator.buildings[0].unpaid_cash_wages_in_window = 5;
+    households.restore_paid_workers(0, 2);
+    households
+        .handles
+        .register_appended(households.households.len());
+    let first_household = households.handles.handle(0);
+    households.housing_reviews.push(first_household);
+    households.exits.push(first_household);
     let mut logistics = ShipmentSystem::new();
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
     let household_supplies = catalog
@@ -827,6 +846,37 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     assert_eq!(
         serde_json::to_string(&loaded.households.removed_electricity).unwrap(),
         serde_json::to_string(&households.removed_electricity).unwrap(),
+    );
+    for (loaded, saved) in [
+        (&loaded.households.day_totals, &households.day_totals),
+        (
+            &loaded.households.last_day_totals,
+            &households.last_day_totals,
+        ),
+    ] {
+        assert_eq!(
+            serde_json::to_string(loaded).unwrap(),
+            serde_json::to_string(saved).unwrap()
+        );
+    }
+    assert_eq!(loaded.households.coal_inventory_kg, 11.0);
+    assert_eq!(loaded.households.daily_ledgers()[0].paid_workers, 2);
+    assert_eq!(loaded.households.housing_reviews, vec![first_household]);
+    assert_eq!(loaded.households.exits, vec![first_household]);
+    assert_eq!(
+        (
+            loaded.allocator.city_input_day.total,
+            loaded.allocator.city_input_day.power
+        ),
+        (-2.5, -1.25)
+    );
+    assert_eq!(
+        (
+            loaded.allocator.buildings[0].paid_workers_in_window,
+            loaded.allocator.buildings[0].funded_job_capacity,
+            loaded.allocator.buildings[0].unpaid_cash_wages_in_window
+        ),
+        (3, 4, 5)
     );
     assert_eq!(
         loaded.allocator.buildings[0]
@@ -1314,6 +1364,9 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
         daily_power_served_units: 0.0,
         recent_power_service_units: 0.0,
         recent_power_served_units: 0.0,
+        paid_workers_in_window: 0,
+        funded_job_capacity: 0,
+        unpaid_cash_wages_in_window: 0,
         recent_household_sales_value: 0.0,
         commercial_activity_floor_scale: 0.0,
         work_area_scale: 1.0,

@@ -15,6 +15,7 @@ mod relocation;
 mod removal;
 mod replenishment;
 mod service_visits;
+mod settlement;
 #[cfg(test)]
 mod tests;
 mod tick;
@@ -22,6 +23,7 @@ mod tick;
 pub(crate) use building_economy::produce_building_hour;
 pub(crate) use data::{DailyPowerSettlementSummary, HouseholdBuildingUndo};
 pub use data::{Household, HouseholdSystem};
+pub(crate) use employment::{WORKPLACE_QUOTE_PASSES, WagePayment};
 pub(crate) use removal::HouseholdExitPolicy;
 pub use replenishment::{
     REPLENISHMENT_COOLDOWN, REPLENISHMENT_FAILED_TERMINAL, REPLENISHMENT_FULFILLED,

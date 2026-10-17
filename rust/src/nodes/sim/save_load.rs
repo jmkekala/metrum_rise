@@ -46,6 +46,17 @@ impl SimCore {
                     next_spawn_id: self.next_spawn_id,
                     logistics_hour_ticks: self.logistics.hour_ticks,
                     agent_settlement_days: self.agents.settlement_days,
+                    road_length: {
+                        let (edges, next_edge) =
+                            self.road_length.saved_positions(&self.region_graph);
+                        (
+                            self.road_length.front_m,
+                            self.road_length.back_mm,
+                            edges,
+                            next_edge,
+                            self.road_length.measured,
+                        )
+                    },
                     events: events
                         .pending()
                         .into_iter()
@@ -119,6 +130,14 @@ impl SimCore {
         self.agriculture = loaded.agriculture;
         self.agents = loaded.agents;
         self.agents.settlement_days = loaded.scheduler.agent_settlement_days;
+        let (front_m, back_mm, sweep_edges, next_edge, measured) = loaded.scheduler.road_length;
+        self.road_length = super::core::RoadLengthRoll {
+            front_m,
+            back_mm,
+            sweep_edges,
+            next_edge,
+            measured,
+        };
         self.agents.rebuild_arrival_carriers();
         self.treasury = loaded.treasury;
         self.service_policy = loaded.service_policy;

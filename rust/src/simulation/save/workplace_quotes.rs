@@ -10,11 +10,13 @@ use crate::simulation::network::TransitNetwork;
 use rusqlite::{Connection, Transaction, params};
 use std::cmp::Ordering;
 
-const MAGIC: [u8; 4] = *b"WRC1";
-const HEADER_BYTES: usize = 12;
-// Little-endian home/work IDs (u64 each), car flag, presence flag, then u16 seconds.
-const ENTRY_BYTES: usize = 20;
-type QuoteEntry = ((usize, usize, bool), Option<u16>);
+const MAGIC: [u8; 4] = *b"WRC2";
+// Magic, entry count (u64) and the workplace pass counter (u32).
+const HEADER_BYTES: usize = 16;
+// Little-endian home/work IDs (u64 each), car flag, presence flag, u16 seconds, then the u32
+// pass that added the quote (`SIM-02-G`).
+const ENTRY_BYTES: usize = 24;
+type QuoteEntry = ((usize, usize, bool), Option<u16>, u32);
 
 /// Writes the complete workplace quotes that were built against the current topology.
 pub(super) fn save(
@@ -36,14 +38,14 @@ pub(super) fn save(
     };
     if entries
         .iter()
-        .any(|((home, work, _), _)| *home >= maps.building_count || *work >= maps.building_count)
+        .any(|((home, work, _), _, _)| *home >= maps.building_count || *work >= maps.building_count)
     {
         return Err(super::SaveLoadError::custom(
             "workplace quote references missing building",
         ));
     }
     entries.sort_unstable_by(|left, right| compare_key(left.0, right.0));
-    let blob = encode(&entries)?;
+    let blob = encode(&entries, households.workplace_route_cache_pass())?;
     let entrance_keys = serde_json::to_vec(
         &allocator
             .entrances
@@ -86,12 +88,13 @@ pub(super) fn load(
     if row.1 != current_entrance_keys {
         return Ok(());
     }
-    let entries = decode(&row.0, allocator.buildings.len())?;
+    let (entries, pass) = decode(&row.0, allocator.buildings.len())?;
     households.restore_workplace_route_cache(
         allocator.building_ref_revision(),
         allocator.entrance_ref_revision(),
         network.cch_graph.build_generation,
         entries,
+        pass,
     );
     Ok(())
 }
@@ -103,7 +106,7 @@ fn compare_key(left: (usize, usize, bool), right: (usize, usize, bool)) -> Order
         .then_with(|| left.2.cmp(&right.2))
 }
 
-fn encode(entries: &[QuoteEntry]) -> SaveLoadResult<Vec<u8>> {
+fn encode(entries: &[QuoteEntry], pass: u32) -> SaveLoadResult<Vec<u8>> {
     let entry_count = u64::try_from(entries.len())
         .map_err(|_| super::SaveLoadError::custom("workplace quote count overflows u64"))?;
     let capacity = HEADER_BYTES
@@ -117,7 +120,8 @@ fn encode(entries: &[QuoteEntry]) -> SaveLoadResult<Vec<u8>> {
     let mut blob = Vec::with_capacity(capacity);
     blob.extend_from_slice(&MAGIC);
     blob.extend_from_slice(&entry_count.to_le_bytes());
-    for &((home, work, has_car), value) in entries {
+    blob.extend_from_slice(&pass.to_le_bytes());
+    for &((home, work, has_car), value, stamp) in entries {
         blob.extend_from_slice(
             &u64::try_from(home)
                 .map_err(|_| super::SaveLoadError::custom("home building overflows u64"))?
@@ -139,11 +143,12 @@ fn encode(entries: &[QuoteEntry]) -> SaveLoadResult<Vec<u8>> {
                 blob.extend_from_slice(&0_u16.to_le_bytes());
             }
         }
+        blob.extend_from_slice(&stamp.to_le_bytes());
     }
     Ok(blob)
 }
 
-fn decode(blob: &[u8], building_count: usize) -> SaveLoadResult<Vec<QuoteEntry>> {
+fn decode(blob: &[u8], building_count: usize) -> SaveLoadResult<(Vec<QuoteEntry>, u32)> {
     if blob.len() < HEADER_BYTES || blob[..4] != MAGIC {
         return Err(super::SaveLoadError::custom(
             "invalid workplace quote blob header",
@@ -155,6 +160,11 @@ fn decode(blob: &[u8], building_count: usize) -> SaveLoadResult<Vec<QuoteEntry>>
             .expect("workplace quote header has a fixed length"),
     ))
     .map_err(|_| super::SaveLoadError::custom("workplace quote count overflows usize"))?;
+    let pass = u32::from_le_bytes(
+        blob[12..16]
+            .try_into()
+            .expect("workplace quote header has a fixed length"),
+    );
     let expected_len = HEADER_BYTES
         .checked_add(
             count
@@ -214,11 +224,17 @@ fn decode(blob: &[u8], building_count: usize) -> SaveLoadResult<Vec<QuoteEntry>>
                 ));
             }
         };
+        let stamp = u32::from_le_bytes(blob[offset + 20..offset + 24].try_into().unwrap());
+        if pass.wrapping_sub(stamp)
+            >= crate::simulation::economy::households::WORKPLACE_QUOTE_PASSES
+        {
+            return Err(super::SaveLoadError::custom("expired workplace quote"));
+        }
         previous = Some(key);
-        entries.push((key, value));
+        entries.push((key, value, stamp));
         offset += ENTRY_BYTES;
     }
-    Ok(entries)
+    Ok((entries, pass))
 }
 
 #[cfg(test)]
@@ -232,31 +248,35 @@ mod tests {
     #[test]
     fn quote_blob_roundtrips_sorted_entries() {
         let entries = vec![
-            ((2, 4, false), None),
-            ((2, 4, true), Some(65535)),
-            ((8, 1, false), Some(37)),
+            ((2, 4, false), None, 7),
+            ((2, 4, true), Some(65535), 9),
+            ((8, 1, false), Some(37), 8),
         ];
-        let blob = encode(&entries).unwrap();
-        assert_eq!(decode(&blob, 9).unwrap(), entries);
+        let blob = encode(&entries, 9).unwrap();
+        assert_eq!(decode(&blob, 9).unwrap(), (entries, 9));
     }
 
     #[test]
     fn quote_blob_rejects_bad_order_and_length() {
-        let entries = vec![((1, 2, false), Some(4)), ((1, 2, true), None)];
-        let mut blob = encode(&entries).unwrap();
+        let entries = vec![((1, 2, false), Some(4), 3), ((1, 2, true), None, 3)];
+        let mut blob = encode(&entries, 3).unwrap();
         blob.pop();
         assert!(decode(&blob, 3).is_err());
 
-        let mut blob = encode(&entries).unwrap();
+        let mut blob = encode(&entries, 3).unwrap();
         blob[HEADER_BYTES + ENTRY_BYTES + 16] = 0;
         assert!(decode(&blob, 3).is_err());
 
-        let mut blob = encode(&entries).unwrap();
+        let mut blob = encode(&entries, 3).unwrap();
         blob[HEADER_BYTES + 16] = 2;
         assert!(decode(&blob, 3).is_err());
 
-        let mut blob = encode(&entries).unwrap();
+        let mut blob = encode(&entries, 3).unwrap();
         blob[HEADER_BYTES + 17] = 2;
+        assert!(decode(&blob, 3).is_err());
+
+        // A quote a day of passes old has expired.
+        let blob = encode(&entries, 27).unwrap();
         assert!(decode(&blob, 3).is_err());
     }
 
@@ -275,15 +295,16 @@ mod tests {
         let allocator = test_allocator(2);
         let network = TransitNetwork::new();
         let entries = vec![
-            ((0, 1, false), None),
-            ((0, 1, true), Some(65535)),
-            ((1, 0, false), Some(37)),
+            ((0, 1, false), None, 4),
+            ((0, 1, true), Some(65535), 6),
+            ((1, 0, false), Some(37), 5),
         ];
         households.restore_workplace_route_cache(
             allocator.building_ref_revision(),
             allocator.entrance_ref_revision(),
             network.cch_graph.build_generation,
             entries.clone(),
+            6,
         );
         let maps = SnapshotMaps {
             node_old_to_new: Default::default(),
@@ -337,12 +358,13 @@ mod tests {
         let mut households = HouseholdSystem::new();
         let allocator = test_allocator(2);
         let network = TransitNetwork::new();
-        let entries = vec![((0, 1, false), Some(37))];
+        let entries = vec![((0, 1, false), Some(37), 0)];
         households.restore_workplace_route_cache(
             allocator.building_ref_revision(),
             allocator.entrance_ref_revision(),
             network.cch_graph.build_generation,
             entries.clone(),
+            0,
         );
         let maps = SnapshotMaps {
             node_old_to_new: Default::default(),
@@ -406,7 +428,8 @@ mod tests {
             u64::MAX,
             u64::MAX,
             u32::MAX,
-            vec![((0, 0, false), Some(12))],
+            vec![((0, 0, false), Some(12), 0)],
+            0,
         );
         let allocator = BuildingAllocator::new();
         let network = TransitNetwork::new();
@@ -425,7 +448,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert!(decode(&blob, 1).unwrap().is_empty());
+        assert!(decode(&blob, 1).unwrap().0.is_empty());
     }
 
     #[test]
@@ -464,7 +487,8 @@ mod tests {
             allocator.building_ref_revision(),
             allocator.entrance_ref_revision(),
             network.cch_graph.build_generation,
-            vec![((2, 0, false), Some(12))],
+            vec![((2, 0, false), Some(12), 0)],
+            0,
         );
         let maps = SnapshotMaps {
             node_old_to_new: Default::default(),

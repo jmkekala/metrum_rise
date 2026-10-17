@@ -176,6 +176,7 @@ pub(super) fn reserve_input_payment(
         .get(dest_idx)
         .is_some_and(|building| allocator.is_city_service_building(building));
     if city_funded {
+        allocator.record_city_input_purchase(dest_idx, f64::from(total_cost));
         if let Some(destination) = allocator.buildings.get_mut(dest_idx) {
             destination.daily_city_funded_input_cost += total_cost;
         }
@@ -196,6 +197,7 @@ pub(super) fn refund_input_payment(
         .get(dest_idx)
         .is_some_and(|building| allocator.is_city_service_building(building));
     if city_funded {
+        allocator.record_city_input_purchase(dest_idx, -f64::from(total_cost));
         if let Some(destination) = allocator.buildings.get_mut(dest_idx) {
             destination.daily_city_funded_input_cost -= total_cost;
         }

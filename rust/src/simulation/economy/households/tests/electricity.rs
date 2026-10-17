@@ -138,7 +138,6 @@ fn electricity_delivery_survives_empty_wallets_and_unpaid_bills_remain_visible()
 fn demolished_plant_preserves_delivered_power_fuel_and_customer_bills() {
     let (mut households, mut allocator, plant) = town(1, 100.0);
     let mut treasury = -1000.0;
-    allocator.buildings[plant].daily_city_funded_input_cost = 1000.0;
     for _ in 0..12 {
         households.run_electricity_hour(&mut allocator);
     }
@@ -153,25 +152,25 @@ fn demolished_plant_preserves_delivered_power_fuel_and_customer_bills() {
     assert!((summary.served_units - 482.5).abs() < 0.01);
     assert!((treasury - (-1000.0 + 93.5)).abs() < 0.01);
     assert!((households.daily_ledgers()[0].power_consumption_cost - 2.475).abs() < 0.001);
-    assert_eq!(households.removed_electricity.power_input_cost, 1000.0);
-    assert!((households.removed_electricity.coal_consumed_kg - 217.125).abs() < 0.01);
+    // The coal burned before the removal stays in the day's report (`SIM-02-G`).
+    assert!((households.last_day_totals.coal_consumed_kg - 217.125).abs() < 0.01);
 }
 
 #[test]
-fn midnight_removal_does_not_charge_an_already_settled_plant_twice() {
+fn removal_after_its_daily_phase_does_not_charge_a_plant_twice() {
     let (mut households, mut allocator, plant) = town(1, 100.0);
     for _ in 0..24 {
         households.run_electricity_hour(&mut allocator);
     }
     let mut treasury = 0.0;
     households.settle_daily_electricity(&mut allocator, &mut treasury);
+    // The plant's daily phase settled its window and rolled its meter.
+    allocator.roll_daily_accumulators(plant);
     let paid = treasury;
     households.close_building_electricity(&mut allocator.buildings[plant], true, &mut treasury);
     assert_eq!(treasury, paid);
     assert_eq!(households.removed_electricity.settlement.supply_units, 0.0);
-    assert!((households.removed_electricity.coal_consumed_kg - 434.25).abs() < 0.01);
-    households.reset_daily_ledgers();
-    assert_eq!(households.removed_electricity.coal_consumed_kg, 0.0);
+    assert!((households.last_day_totals.coal_consumed_kg - 434.25).abs() < 0.01);
 }
 
 #[test]

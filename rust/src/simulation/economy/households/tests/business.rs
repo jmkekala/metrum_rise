@@ -43,6 +43,46 @@ fn unemployment_timer_advances_when_treasury_is_empty_and_requires_valid_home() 
 }
 
 #[test]
+fn adults_not_paid_a_wage_in_the_window_draw_unemployment_benefit() {
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "paid_window_res",
+        ZoneClass::Residential,
+    );
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    let mut households = HouseholdSystem::new();
+    for paid in [0, 1, 2] {
+        let mut household = make_household(0, 2, 0.0, 0.0);
+        household.adult_count = 2;
+        household.child_count = 0;
+        // The hourly count still lists both adults as employed; only paid wages count.
+        household.employed_adults = 2;
+        households.households.push(household);
+        households.restore_paid_workers(paid, paid as u16);
+    }
+    let policy = crate::simulation::economy::fiscal::CityFiscalPolicy {
+        unemployment_benefit_per_adult_per_day: 30.0,
+        pension_per_elder_per_day: 0.0,
+        child_support_per_child_per_day: 0.0,
+        ..Default::default()
+    };
+    let mut treasury = 1_000.0;
+    for household_id in 0..3 {
+        households.pay_household_transfer(household_id, &allocator, &mut treasury, &policy);
+    }
+    let benefit = |id: usize| households.daily_ledgers()[id].unemployment_benefit_income;
+    assert_eq!([benefit(0), benefit(1), benefit(2)], [60.0, 30.0, 0.0]);
+    assert_eq!(households.households[2].unemployment_days_elapsed, 0);
+}
+
+#[test]
 fn single_elder_receives_pension_without_work_or_unemployment() {
     let mut households = HouseholdSystem::new();
     let mut elder_household = make_household(0, 1, 0.0, 1.0);
@@ -204,7 +244,7 @@ fn membership_rebuild_does_not_materialize_missing_household_ids() {
 }
 
 #[test]
-fn forced_liquidation_sells_only_unreserved_inventory() {
+fn forced_liquidation_sells_stock_on_hand_not_loaded_cargo() {
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
     let tuning = load_runtime_economy_tuning().expect("runtime economy tuning");
     let household_supplies = catalog
@@ -222,7 +262,7 @@ fn forced_liquidation_sells_only_unreserved_inventory() {
         0.0,
         ZoneType::Commercial,
         &commercial_asset,
-        50.0,
+        30.0,
     ));
     allocator.buildings[0].operating_budget = -10.0;
 
@@ -240,7 +280,9 @@ fn forced_liquidation_sells_only_unreserved_inventory() {
         freight_cost: 0.0,
         eta_hours: 1,
         queued_hours: 0,
-        cargo_loaded: false,
+        // The logistics hour loads every shipment it plans, so a building's daily phase only
+        // sees cargo that has already left its stock (`SIM-02-G`).
+        cargo_loaded: true,
     });
 
     let mut households = HouseholdSystem::new();
@@ -252,8 +294,9 @@ fn forced_liquidation_sells_only_unreserved_inventory() {
 
     assert_eq!(
         allocator.buildings[0].inventory_units(household_supplies),
-        20.0
+        0.0
     );
+    assert_eq!(logistics.shipments[0].amount, 20.0);
     let household_supply_unit_price = catalog
         .unit_price_for_resource(household_supplies)
         .expect("household supplies unit price");
@@ -1083,6 +1126,36 @@ fn explicit_work_area_negative_budget_enters_distress() {
     assert!(allocator.buildings[0].budget_distress);
     households.run_bankruptcy_check(&mut allocator);
     assert!(allocator.buildings[0].is_deserted);
+}
+
+#[test]
+fn an_employer_that_cannot_pay_wages_two_windows_running_deserts() {
+    for unpaid_again in [false, true] {
+        let mut allocator = BuildingAllocator::new();
+        let commercial_asset = register_test_asset(
+            &mut allocator,
+            "test",
+            "unpaid_payroll_store",
+            ZoneClass::Commercial,
+        );
+        let mut store = make_building(0.0, ZoneType::Commercial, &commercial_asset, 0.0);
+        // Positive cash, yet a wage went unpaid in the window for lack of it.
+        store.operating_budget = 1_000.0;
+        store.unpaid_cash_wages_in_window = 1;
+        allocator.buildings.push(store);
+
+        let logistics = ShipmentSystem::new();
+        let mut households = HouseholdSystem::new();
+        let mut treasury_balance = 0.0;
+        households.settle_daily_utilities(&mut allocator, &logistics, &mut treasury_balance);
+        assert!(allocator.buildings[0].budget_distress);
+        allocator.roll_daily_accumulators(0);
+        assert_eq!(allocator.buildings[0].unpaid_cash_wages_in_window, 0);
+
+        allocator.buildings[0].unpaid_cash_wages_in_window = u32::from(unpaid_again);
+        households.run_bankruptcy_check(&mut allocator);
+        assert_eq!(allocator.buildings[0].is_deserted, unpaid_again);
+    }
 }
 
 #[test]

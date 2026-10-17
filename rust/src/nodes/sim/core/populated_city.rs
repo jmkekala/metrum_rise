@@ -61,8 +61,10 @@ const DISTRICTS: [ZoneType; 8] = [
     ZoneType::Residential,
 ];
 // Construction is free and the treasury never runs out, so city services stay funded in every
-// tier; solvency is the growth scenario's measure, not this one.
-const FUNDED_TREASURY: f64 = 1.0e15;
+// tier; solvency is the growth scenario's measure, not this one. A 100k city spends about 1e6 a
+// day, and at 1e10 an f64 still resolves 2e-6: at 1e15 every posting rounded to 0.125, which
+// broke money conservation once settlement posted per entity (`SIM-02-G`).
+const FUNDED_TREASURY: f64 = 1.0e10;
 const WARM_UP_DAYS: u32 = 2;
 // One border trunk per this many residents. Imports cross the border on the roads alone, so a
 // single trunk could not supply a 100k city's industry; 10k keeps its one trunk.

@@ -3652,3 +3652,29 @@ fn benchmark_consumer_income_forecast() {
 }
 
 mod markets;
+
+#[test]
+fn workplace_quotes_expire_a_day_of_passes_after_they_were_added() {
+    let mut households = HouseholdSystem::new();
+    households.restore_workplace_route_cache(
+        0,
+        0,
+        0,
+        vec![((0, 1, false), Some(60), 0), ((1, 0, true), None, 3)],
+        3,
+    );
+    for _ in 0..20 {
+        households.expire_workplace_route_cache();
+    }
+    assert_eq!(households.workplace_route_cache_entries().count(), 2);
+    households.expire_workplace_route_cache();
+    let left: Vec<_> = households
+        .workplace_route_cache_entries()
+        .map(|entry| entry.0)
+        .collect();
+    assert_eq!(left, vec![(1, 0, true)]);
+    for _ in 0..3 {
+        households.expire_workplace_route_cache();
+    }
+    assert_eq!(households.workplace_route_cache_entries().count(), 0);
+}

@@ -827,6 +827,71 @@ fn failed_stay_rule_evicts_household_when_no_affordable_home_exists() {
 }
 
 #[test]
+fn evicting_a_household_hands_its_shopper_at_a_store_back_to_the_schedule() {
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let supplies = catalog
+        .resource_runtime_id_for_id("household_supplies")
+        .expect("household supplies resource");
+    let mut households = HouseholdSystem::new();
+    let mut household = make_household(0, 1, 0.5, 1.0);
+    household.stay_failure_days = 1;
+    households.households.push(household);
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "evict_shop_res",
+        ZoneClass::Residential,
+    );
+    let store_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "evict_shop_store",
+        ZoneClass::Commercial,
+    );
+    let mut home = make_building(0.0, ZoneType::Residential, &residential_asset, 0.0);
+    home.level = 2;
+    home.occupancy = 1;
+    allocator.buildings.push(home);
+    allocator
+        .buildings
+        .push(make_building(50.0, ZoneType::Commercial, &store_asset, 0.0));
+    allocator.rebuild_zone_index();
+
+    let mut agents = AgentSystem::new();
+    let shopper = agents.spawn_housed_agent(0, 0.0, 0.0);
+    agents.household_id[shopper] = 0;
+    agents.current_building[shopper] = 1;
+    agents.transit[shopper] = TRANSIT_IN_BUILDING;
+    agents.activity[shopper] = crate::simulation::economy::agents::ACTIVITY_SHOPPING;
+    let household = &mut households.households[0];
+    household.replenishment_state = REPLENISHMENT_SHOPPING_TO_STORE;
+    household.shopping_agent = agents.agent_handle(shopper);
+    household.reserved_store_building_id = 1;
+    household.reserved_amount = 2.0;
+
+    households.resolve_household_housing(&mut agents, &mut allocator);
+
+    assert_eq!(households.households[0].home_building_id, usize::MAX);
+    assert_eq!(allocator.buildings[1].inventory_units(supplies), 2.0);
+    // Shopping released the agent: it used to stay in the store with the shopping activity and
+    // no trip, and its household never shopped again.
+    assert_eq!(agents.current_building[shopper], 1);
+    assert_ne!(
+        agents.activity[shopper],
+        crate::simulation::economy::agents::ACTIVITY_SHOPPING
+    );
+    // The schedule moves only agents at home or at work, so rehousing sends it home.
+    agents.relocate_household_member_home(shopper, usize::MAX, 0, false);
+    assert_eq!(agents.planned_target_building[shopper], 0);
+    assert_eq!(
+        agents.planned_activity[shopper],
+        crate::simulation::economy::agents::ACTIVITY_HOME
+    );
+}
+
+#[test]
 fn evicted_unhoused_household_keeps_membership_until_demand_removal() {
     let mut households = HouseholdSystem::new();
     let mut household = make_household(0, 2, 0.5, 1.0);

@@ -340,6 +340,9 @@ fn building(
         daily_power_served_units: 0.0,
         recent_power_service_units: 0.0,
         recent_power_served_units: 0.0,
+        paid_workers_in_window: 0,
+        funded_job_capacity: 0,
+        unpaid_cash_wages_in_window: 0,
         recent_household_sales_value: 0.0,
         commercial_activity_floor_scale: 0.0,
         work_area_scale: 1.0,
@@ -2200,6 +2203,31 @@ fn newly_displaced_households_do_not_leave_even_when_most_of_the_city_is_unhouse
     demand.record_household_removal_execution(2);
 
     assert_eq!(demand.last_removal_diagnostics.removed_households, 2);
+}
+
+#[test]
+fn exits_claimed_at_daily_phases_keep_the_daily_fraction_and_limit() {
+    let mut demand = DemandSystem::new();
+    let fraction = demand
+        .config
+        .household_action
+        .persistent_exit_daily_fraction;
+    let limit = demand.config.action_budget.max_household_removals_per_day;
+    // Eight eligible phases release eight times the daily fraction, as one daily pass would.
+    let released = (0..8).filter(|_| demand.claim_household_exit()).count() as f32;
+    assert_eq!(released, (8.0 * fraction).floor());
+    demand.close_exit_day();
+    assert_eq!(demand.households_to_remove_today, 0);
+    // The daily limit holds however many households are eligible; credit carries over.
+    let released = (0..10_000)
+        .filter(|_| demand.claim_household_exit())
+        .count() as u32;
+    assert_eq!(released, limit);
+    assert!(demand.persistent_exit_action_credit >= 1.0);
+    demand.close_exit_day();
+    // A day without an eligible household lets the credit lapse.
+    demand.close_exit_day();
+    assert_eq!(demand.persistent_exit_action_credit, 0.0);
 }
 
 #[test]

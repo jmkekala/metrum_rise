@@ -179,13 +179,14 @@ later viable proposal is not hidden.
 This section describes the current cadence. Its replacement is planned in
 [`simulation.md`](simulation.md#sim-02-scheduler-refactor) (`SIM-02`).
 
-- **Hourly demand pass:** runs after each completed operational hour at minutes other than 0
-  (`SimCore::execute_hourly_demand_pass`). It plans projects, admits households, executes level
+- **Hourly demand pass:** runs after every completed operational hour, 00:00 included
+  (`SimCore::execute_hourly_demand_pass`, `SIM-02-G`). It plans projects, admits households, executes level
   changes and clearances, and queues new construction. Its proposals are provisional: the live
   economic books it plans on are restored before it returns.
-- **Daily pass:** runs at minute 0, after the daily economy settlement. It plans household
-  departures from the settled snapshot; removals execute at once. The minute-0 hourly demand pass
-  then runs, so each day has 24 hourly slices without reading pre-settlement state.
+- **Household exits:** each household checks its own exit eligibility at its daily phase, after
+  its settlement, and claims its share of the day's exit budget
+  ([Household removal](#household-removal)). The next operational hour removes the claimed
+  households before its household hour. There is no daily pass (`SIM-02-G`).
 - **Construction queue:** new construction is queued and started one project per authored minute,
   each start a timed event (`SIM-02-C`). A site completes at its own slot, its duration after the
   start (`SIM-02-D`). The workforce calendar counts every site, placed, queued or proposed, as
@@ -193,7 +194,8 @@ This section describes the current cadence. Its replacement is planned in
 - **Frozen inputs:** a pass's inputs are fixed. Its changes affect the next operational hour and
   each entity's next hourly phase. The pass runs before the phases of its slot, so it sees every
   building and household exactly one hour on (`SIM-02-F`).
-  Hourly admissions are never eligible for removals already selected from that day's settlement.
+  A household admitted by an hourly pass cannot claim an exit: exits need at least two unhoused
+  days.
 
 ## Authored tuning
 
@@ -268,7 +270,7 @@ The **empty-town bootstrap** offers the first home when the city has a border an
 
 ## Household removal
 
-`demand/system.rs::run_daily_pass` and `households/removal.rs`. Departure eligibility belongs to
+`demand/system.rs::claim_household_exit` and `households/removal.rs`. Departure eligibility belongs to
 each household (`HouseholdExitPolicy`). A household may leave only while it has no home, and
 then only if one of these holds:
 
@@ -276,13 +278,16 @@ then only if one of these holds:
 - it has been unhoused for at least `persistent_exit_destitute_unhoused_days` (2), its pantry is
   at most 0.25 days and its reserve is under 1 day.
 
-Housed households never qualify, and citywide crisis pressure plays no part. The daily credit
-adds `eligible × 0.25`, capped by eligibility and by 48 per day.
+Housed households never qualify, and citywide crisis pressure plays no part. At its daily phase
+an eligible household adds 0.25 (`persistent_exit_daily_fraction`) to the exit credit; each whole
+unit of credit releases the household that completed it, at most 48 per calendar day. The
+credit lapses at a calendar close when no household was eligible that day. Each claim is O(1)
+(`SIM-02-G`).
 
-Execution rechecks the same policy against live state, so a household that recovered stays. It
-then ranks the remaining candidates by lower reserve days, lower pantry days and lower household
-ID, and removes them in descending ID order through the existing lifecycle. Unused slots are
-never filled with other households. Eligibility is an O(H) parallel pass; ranking is O(E log E).
+The next operational hour removes the released households in release order through the
+existing lifecycle, after rechecking the same policy against live state, so a household that
+recovered stays. Departures therefore follow the households' phases, not lowest reserve first.
+Unused releases are never passed to other households.
 
 ## Private construction
 
@@ -473,8 +478,10 @@ Debug filters `economy` and `spawn` log the per-pass details.
 ## Saved state
 
 The save stores:
-- `households_to_admit_today` and `households_to_remove_today`;
-- the household exit credit;
+- `households_to_admit_today` and `households_to_remove_today` (departures released today);
+- the household exit credit and whether any household was eligible to leave today;
+- the households released to leave and queued for a housing review, in order, by handle
+  (`household_requests`);
 - the upgrade, downgrade and clearance credits per use;
 - the cheat flag;
 - the pending construction queue.

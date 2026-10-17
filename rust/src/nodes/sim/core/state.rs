@@ -8,6 +8,7 @@ use std::time::Instant;
 
 use super::budget::{
     CityServicePolicy, CityTreasury, DailyBudgetLedgerEntry, ROAD_UPKEEP_PER_METER_PER_DAY,
+    RoadLengthRoll,
 };
 use super::frame::EconomyObserver;
 use super::schedule::{SimEvent, SimSystem, simulation_schedule};
@@ -186,6 +187,8 @@ pub struct SimCore {
     pub(crate) household_phase_scratch:
         Vec<Handle<crate::simulation::economy::households::Household>>,
     pub(crate) agent_phase_scratch: Vec<crate::simulation::economy::agents::AgentHandle>,
+    /// Rolling sum of the road network's length for daily upkeep (`SIM-02-G`); saved.
+    pub(crate) road_length: RoadLengthRoll,
     /// Building placement and vacancy index.
     pub allocator: BuildingAllocator,
     /// Agent FSM in Structure-of-Arrays layout.
@@ -335,6 +338,7 @@ impl SimCore {
             building_phase_scratch: Vec::new(),
             household_phase_scratch: Vec::new(),
             agent_phase_scratch: Vec::new(),
+            road_length: RoadLengthRoll::default(),
             allocator: BuildingAllocator::new_at_slot(next_slot - 1),
             agents: AgentSystem::new(),
             households: HouseholdSystem::new(),
@@ -585,6 +589,16 @@ impl SimCore {
         // Production, farms, mines and household consumption run at each entity's hourly
         // phase (`SIM-02-F`).
         self.transit_network.publish_frontage_prices();
+        // Households whose daily phase chose to leave since the last hour (`SIM-02-G`).
+        let removed_households = self.households.remove_queued_exits(
+            self.demand.household_exit_policy(),
+            &mut self.agents,
+            &mut self.allocator,
+        );
+        if removed_households > 0 {
+            self.demand
+                .record_household_removal_execution(removed_households);
+        }
         let service_funding_by_building = self.electricity_funding_by_building();
         self.households.operational_hour_tick(
             &mut self.agents,
@@ -600,10 +614,8 @@ impl SimCore {
         );
         // Capture receipts before demand can remove or replace their building.
         observer.hourly_economy(self);
-        if minute_of_day != 0 {
-            self.execute_hourly_demand_pass(day_index, minute_of_day);
-            observer.buildings_changed(self);
-        }
+        self.execute_hourly_demand_pass(day_index, minute_of_day);
+        observer.buildings_changed(self);
         self.schedule_trip_departures(absolute_slot(day_index, minute_of_day, 0));
     }
 
@@ -916,141 +928,56 @@ impl SimCore {
     }
 
     /// Executes one full economy / daily tick (called once per in-game day).
+    /// Steps a whole day's settlement at once for tools and tests: the environment grids, every
+    /// entity's daily phase in order, then the calendar close, as the slots of a day would.
     pub fn simulate_tick_internal(&mut self, day_index: u32) {
-        self.simulate_tick_observed(day_index, &mut ());
-    }
-
-    pub(super) fn simulate_tick_observed(
-        &mut self,
-        day_index: u32,
-        observer: &mut impl EconomyObserver,
-    ) {
         #[cfg(test)]
         let _contract_phase = crate::debug::work::phases::enter("settlement");
-        let tick_start = Instant::now();
+        self.run_environment_grids();
+        self.run_every_day_phase(&mut ());
+        self.close_calendar_day(day_index, &mut ());
+    }
 
-        debug_log!(
-            "economy",
-            "daily tick start: buildings={} households={} agents={}",
-            self.allocator.buildings.len(),
-            self.households
-                .households
-                .iter()
-                .filter(|h| h.member_count > 0)
-                .count(),
-            self.agents.len(),
-        );
-        self.allocator.maintain(
-            1,
-            &mut self.zoning,
-            &mut self.agents,
-            &mut self.households,
-            &mut self.logistics,
-            &mut self.treasury.balance,
-            &mut self.transit_network,
-            &mut self.region_graph,
-        );
-        self.publish_pending_building_site_changes();
-        observer.buildings_changed(self);
-        // Drain building dirty-zone flags → mark matching flow fields for rebuild.
-        {
-            use crate::simulation::buildings::allocator::BASELINE_PRIVATE_ZONES;
-            for (zone_idx, zone) in BASELINE_PRIVATE_ZONES.iter().enumerate() {
-                if self.allocator.dirty_zones[zone_idx] {
-                    self.allocator.dirty_zones[zone_idx] = false;
-                    self.transit_network.flow_fields.mark_zone_dirty(*zone);
-                }
-            }
-        }
-
+    /// Pollution, noise and desirability, still a midnight pass until rolling sweeps
+    /// (`SIM-02-H`).
+    pub(super) fn run_environment_grids(&mut self) {
         self.pollution.tick(&self.allocator, &self.config);
         self.noise
             .tick(&self.allocator, &self.region_graph, &self.config);
         self.desirability.tick(&self.pollution, &self.noise);
-        let service_funding_by_building = self.electricity_funding_by_building();
-        let fiscal_revenue = self.households.daily_settlement_tick(
-            &mut self.agents,
-            &mut self.allocator,
-            &mut self.logistics,
-            &self.transit_network,
-            &self.region_graph,
-            &mut self.treasury.balance,
-            &service_funding_by_building,
-            &self.fiscal_policy,
-            |agents, allocator| observer.wages_paid(agents, allocator),
-        );
-        self.collect_fiscal_revenue(fiscal_revenue);
-        // Household swap-removal below also removes its ledger; observe paid flows first.
-        observer.household_settlement(self);
-        // City treasury: settle daily road upkeep on the fiscal cadence.
-        let road_length_m: f64 = self
-            .region_graph
-            .edges()
-            .iter()
-            .filter(|e| !e.deleted)
-            .map(|e| e.physical_length as f64)
-            .sum();
+    }
+
+    /// The calendar close at the start of a day, before any daily phase of the new day
+    /// (`SIM-02-G`): every entity has settled once since the last close, and the city's day
+    /// totals become the day's budget report. Road upkeep reads the rolling road length. O(1)
+    /// apart from debug reports.
+    pub(super) fn close_calendar_day(
+        &mut self,
+        day_index: u32,
+        observer: &mut impl EconomyObserver,
+    ) {
+        let close_start = Instant::now();
+        // Job locks count calendar days (`SIM-02-D`).
+        self.agents.settlement_days += 1;
+        self.households.close_calendar_day();
+        self.allocator.close_city_input_day();
+        let road_length_m = self.road_length.length_m(&self.region_graph);
         self.treasury
             .settle_daily_upkeep(road_length_m * ROAD_UPKEEP_PER_METER_PER_DAY);
-        self.demand
-            .run_daily_pass(&self.allocator, &self.households);
-        let removed_households = self.households.execute_demand_household_removal(
-            self.demand.households_to_remove_today,
-            self.demand.household_exit_policy(),
-            &mut self.agents,
-            &mut self.allocator,
-        );
-        self.demand
-            .record_household_removal_execution(removed_households);
+        let removed_households = self.demand.households_to_remove_today;
         self.demand
             .log_daily_household_action_diagnostics(day_index);
-        self.execute_hourly_demand_pass(day_index, 0);
-        self.schedule_trip_departures(absolute_slot(day_index, 0, 0));
-        // Minute 0 is the deterministic closing boundary: operational-hour work,
-        // daily settlement, and midnight demand all post before the daily tax
-        // buckets roll into the report.
+        self.demand.close_exit_day();
         self.treasury.finalize_daily_tax_window();
         self.record_daily_budget_ledger(day_index);
         self.log_daily_city_flow_diagnostics(day_index, removed_households);
         observer.day_closed(self);
         self.debug_household_admissions_since_daily = 0;
         self.print_daily_building_economy(day_index);
-        self.households.reset_daily_ledgers();
-        // Reset OWA/local input accumulators after the daily and midnight demand snapshots have
-        // been taken.
-        self.allocator.reset_daily_input_accumulators();
-        debug_log!(
-            "economy",
-            "daily tick end: buildings={} households={} agents={} admit={} remove={} planned_spawns=({}/{}/{}) upgrades=({}/{}/{}) downgrades=({}/{}/{}) despawns=({}/{}/{}) treasury={:.0}",
-            self.allocator.buildings.len(),
-            self.households
-                .households
-                .iter()
-                .filter(|h| h.member_count > 0)
-                .count(),
-            self.agents.len(),
-            self.demand.households_to_admit_today,
-            self.demand.households_to_remove_today,
-            self.demand.building_actions.residential.spawns.len(),
-            self.demand.building_actions.commercial.spawns.len(),
-            self.demand.building_actions.industrial.spawns.len(),
-            self.demand.building_actions.residential.upgrades.len(),
-            self.demand.building_actions.commercial.upgrades.len(),
-            self.demand.building_actions.industrial.upgrades.len(),
-            self.demand.building_actions.residential.downgrades.len(),
-            self.demand.building_actions.commercial.downgrades.len(),
-            self.demand.building_actions.industrial.downgrades.len(),
-            self.demand.building_actions.residential.despawns.len(),
-            self.demand.building_actions.commercial.despawns.len(),
-            self.demand.building_actions.industrial.despawns.len(),
-            self.treasury.balance,
-        );
-        self.agents.daily_update(&self.pollution, &self.config);
         self.agents
             .pathfind_count
             .store(0, std::sync::atomic::Ordering::Relaxed);
-
-        self.last_tick_duration = tick_start.elapsed().as_secs_f64() * 1000.0;
+        self.last_tick_duration = close_start.elapsed().as_secs_f64() * 1000.0;
     }
 
     pub(super) fn execute_hourly_demand_pass(&mut self, day_index: u32, minute_of_day: u16) {

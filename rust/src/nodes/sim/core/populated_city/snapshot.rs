@@ -91,7 +91,9 @@ fn ensure_fixture(residents: u32, cache_dir: &Path, fixture: Fixture) -> Option<
     let mut loaded = load_snapshot_from_path(residents, &temporary_path, fixture);
     let building_revision = city.core.allocator.building_ref_revision();
     assert_exact_continuation(&mut city, &mut loaded, fixture);
-    if matches!(residents, 10_000 | 30_000) {
+    // At 10k the healthy city has almost no failed businesses to rebuild since settlement moved to
+    // each building's own phase (`SIM-02-G`), so the 30k tier carries this check.
+    if residents == 30_000 {
         assert_ne!(
             city.core.allocator.building_ref_revision(),
             building_revision,

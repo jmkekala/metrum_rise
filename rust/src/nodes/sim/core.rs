@@ -9,6 +9,7 @@
 //! read of local surface indices; a busy core falls back to supported snapshot poses.
 
 mod budget;
+mod entity_days;
 mod entity_phases;
 mod frame;
 mod populated_city;
@@ -42,8 +43,8 @@ pub use state::SimCore;
 pub(crate) use thread::SimCommand;
 
 pub(crate) use budget::{
-    DailyBudgetLedgerEntry, ROAD_BUILD_COST_PER_METER, SERVICE_BUILD_COST_PER_LOT_CELL,
-    SERVICE_POLICY_ELECTRICITY,
+    DailyBudgetLedgerEntry, ROAD_BUILD_COST_PER_METER, RoadLengthRoll,
+    SERVICE_BUILD_COST_PER_LOT_CELL, SERVICE_POLICY_ELECTRICITY,
 };
 pub(crate) use road_preview::{
     RoadPreviewRequest, RoadPreviewSender, RoadPreviewSnapshot, RoadPreviewWorkerContext,

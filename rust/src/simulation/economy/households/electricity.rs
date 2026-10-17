@@ -19,24 +19,17 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 const CHUNK: usize = 512;
 
-/// Closed building meters and bills awaiting the fiscal day's report, including demolition.
+/// Final bills of the buildings removed during the calendar day, kept apart from the day's
+/// totals so undoing a removal restores exactly that building's share (`SIM-02-G`).
 #[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RemovedBuildingElectricity {
-    // Midnight demand may remove a building after its bill was already collected.
-    settled: bool,
-    /// Already settled workplace payments and delivered energy from removed buildings.
+    /// Workplace payments and delivered energy of removed buildings' open windows.
     pub(crate) settlement: DailyPowerSettlementSummary,
-    /// Net city input purchases/refunds for removed providers, across all services.
-    pub(crate) city_input_cost: f64,
-    /// Portion of those purchases/refunds attributable to power plants.
-    pub(crate) power_input_cost: f64,
-    /// Coal physically consumed before a power plant was removed.
-    pub(crate) coal_consumed_kg: f64,
 }
 
 impl RemovedBuildingElectricity {
-    /// Validates saved physical totals and payments; net input refunds may be negative.
+    /// Validates saved physical totals and payments.
     pub(crate) fn is_valid(self) -> bool {
         let s = self.settlement;
         [
@@ -57,10 +50,6 @@ impl RemovedBuildingElectricity {
         .all(|v| v.is_finite() && *v >= 0.0)
             && s.served_units <= s.demand_units + 0.001
             && s.coverage <= 1.0
-            && self.city_input_cost.is_finite()
-            && self.power_input_cost.is_finite()
-            && self.coal_consumed_kg.is_finite()
-            && self.coal_consumed_kg >= 0.0
     }
 }
 
@@ -70,6 +59,9 @@ pub(super) struct HourlyBuildingElectricity {
     residential_kwh: f32,
     capacity_kwh: f32,
     staffed_fraction: f32,
+    // Coal a power plant would burn at full dispatch, and its coal stock before burning.
+    capacity_coal_kg: f32,
+    coal_stock_kg: f32,
 }
 
 fn active(building: &Building) -> bool {
@@ -81,8 +73,9 @@ fn active(building: &Building) -> bool {
 }
 
 impl HouseholdSystem {
-    /// Closes a removed building's meter in O(1), retaining its day totals and collected bills.
-    /// Call after freight refunds and before removal; undo restores this state with the building.
+    /// Bills a removed building's open electricity window in O(1), retaining the bill for the
+    /// day's report. Call after freight refunds and before removal; undo restores this state
+    /// with the building.
     pub(crate) fn close_building_electricity(
         &mut self,
         building: &mut Building,
@@ -92,41 +85,15 @@ impl HouseholdSystem {
         let catalog = load_runtime_economy_catalog().expect("validated economy catalog");
         let tuning = load_runtime_economy_tuning().expect("validated economy tuning");
         let price = super::metrics::local_utility_service_costs(&catalog)[0];
-        let removed = &mut self.removed_electricity;
-        let previous_receipts =
-            removed.settlement.private_local_revenue + removed.settlement.city_service_local_cost;
-        if !removed.settled {
-            settle_building_electricity(
-                building,
-                city_owned,
-                &catalog,
-                price,
-                tuning.owa_import_price_multiplier,
-                treasury,
-                &mut removed.settlement,
-            );
-            removed.settlement.utility_local_revenue = removed.settlement.private_local_revenue
-                + removed.settlement.city_service_local_cost;
-            let receipts =
-                f64::from(removed.settlement.utility_local_revenue) - f64::from(previous_receipts);
-            *treasury += receipts;
-            crate::debug::money::record(crate::debug::money::MoneyFlow::OutsideUtilities, receipts);
-        }
-        removed.city_input_cost += f64::from(building.daily_city_funded_input_cost);
-        if let Some(profile) = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
-            && profile.utility_service.as_deref() == Some("power")
-        {
-            removed.power_input_cost += f64::from(building.daily_city_funded_input_cost);
-            let coal = catalog
-                .resource_runtime_id_for_id("coal")
-                .expect("coal resource");
-            if let Some(port) = profile.input_port(coal) {
-                removed.coal_consumed_kg += f64::from(
-                    port.units_per_day * building.daily_power_service_units
-                        / profile.base_rate_units_per_day,
-                );
-            }
-        }
+        collect_building_electricity(
+            building,
+            city_owned,
+            &catalog,
+            price,
+            tuning.owa_import_price_multiplier,
+            treasury,
+            &mut self.removed_electricity.settlement,
+        );
         building.daily_electricity = Default::default();
         building.daily_power_service_units = 0.0;
         building.daily_power_served_units = 0.0;
@@ -221,6 +188,8 @@ impl HouseholdSystem {
                     } else {
                         0.0
                     };
+                    hour.capacity_coal_kg = hour.capacity_kwh * fuel_per_kwh;
+                    hour.coal_stock_kg = building.inventory_units(coal).max(0.0);
                 } else if authored.is_none()
                     || profile.kind == EconomyProfileRuntimeKind::Unsupported
                 {
@@ -238,21 +207,25 @@ impl HouseholdSystem {
 
         // Indexed chunks fix floating-point addition order independently of Rayon scheduling.
         self.electricity_totals_scratch
-            .resize(count.div_ceil(CHUNK), [0.0; 2]);
+            .resize(count.div_ceil(CHUNK), [0.0; 4]);
         self.electricity_totals_scratch
             .par_iter_mut()
             .zip(self.electricity_hour_scratch.par_chunks(CHUNK))
             .for_each(|(total, chunk)| {
-                *total = [0.0; 2];
+                *total = [0.0; 4];
                 for hour in chunk {
                     total[0] += f64::from(hour.workplace_kwh + hour.residential_kwh);
                     total[1] += f64::from(hour.capacity_kwh);
+                    total[2] += f64::from(hour.capacity_coal_kg);
+                    total[3] += f64::from(hour.coal_stock_kg);
                 }
             });
-        let [demand, capacity] = self
+        let [demand, capacity, capacity_coal, coal_stock] = self
             .electricity_totals_scratch
             .iter()
-            .fold([0.0; 2], |a, b| [a[0] + b[0], a[1] + b[1]]);
+            .fold([0.0; 4], |a, b| {
+                [a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3]]
+            });
         let generated = demand.min(capacity);
         let dispatch = if capacity > 0.0 {
             (generated / capacity) as f32
@@ -264,6 +237,10 @@ impl HouseholdSystem {
         } else {
             0.0
         };
+        // The budget report reads the day's burn and the stock left after this dispatch.
+        let burned = capacity_coal * f64::from(dispatch);
+        self.day_totals.coal_consumed_kg += burned;
+        self.coal_inventory_kg = (coal_stock - burned).max(0.0);
         allocator
             .buildings
             .par_iter_mut()
@@ -314,6 +291,75 @@ impl HouseholdSystem {
             });
     }
 
+    /// Bills household `household_id`'s electricity window at its daily phase (`SIM-02-G`): the
+    /// bill joins its arrears, the budget pays what it can, and the local share goes to the
+    /// treasury. O(1).
+    pub(super) fn settle_household_electricity(
+        &mut self,
+        household_id: usize,
+        price: f32,
+        imports: f32,
+        treasury: &mut f64,
+    ) {
+        let household = &mut self.households[household_id];
+        let ledger = &mut self.daily_ledgers[household_id];
+        let bill = ledger.electricity.bill(price, imports);
+        household.power_arrears.local += bill.local;
+        household.power_arrears.imported += bill.imported;
+        let before = household.budget;
+        let paid = household.power_arrears.pay(&mut household.budget);
+        crate::debug::money::record_change(
+            crate::debug::money::MoneyFlow::OutsideUtilities,
+            before,
+            household.budget,
+        );
+        ledger.power_consumption_cost += paid.total();
+        ledger.power_local_payment = paid.local;
+        ledger.power_unpaid_cost = household.power_arrears.total();
+        let power = &mut self.day_totals.power;
+        power.household_local_revenue += paid.local;
+        power.utility_local_revenue += paid.local;
+        *treasury += f64::from(paid.local);
+        crate::debug::money::record(
+            crate::debug::money::MoneyFlow::OutsideUtilities,
+            f64::from(paid.local),
+        );
+    }
+
+    /// Bills `building`'s electricity window at its daily phase (`SIM-02-G`). A power plant
+    /// first books its share of the last closed day's electricity receipts as revenue,
+    /// pro rata to the energy it supplied in its own window. O(1).
+    pub(super) fn settle_building_electricity_day(
+        &mut self,
+        building: &mut Building,
+        city_owned: bool,
+        catalog: &RuntimeEconomyCatalog,
+        price: f32,
+        imports: f32,
+        treasury: &mut f64,
+    ) {
+        let last = self.last_day_totals.power;
+        if last.supply_units > 0.0 {
+            let receipts = last.household_local_revenue
+                + last.private_local_revenue
+                + last.city_service_local_cost
+                - last.power_auxiliary_local_cost;
+            building.revenue += receipts * building.daily_power_service_units / last.supply_units;
+        }
+        collect_building_electricity(
+            building,
+            city_owned,
+            catalog,
+            price,
+            imports,
+            treasury,
+            &mut self.day_totals.power,
+        );
+    }
+
+    /// Bills every household and building at once, as their daily phases would, and closes
+    /// the day; returns the closed day's electricity and utility summary.
+    #[cfg(test)]
     pub(super) fn settle_daily_electricity(
         &mut self,
         allocator: &mut BuildingAllocator,
@@ -324,70 +370,45 @@ impl HouseholdSystem {
         let price = super::metrics::local_utility_service_costs(&catalog)[0];
         let imports = tuning.owa_import_price_multiplier;
         self.ensure_daily_ledger_len();
-        self.households
-            .par_iter_mut()
-            .zip(self.daily_ledgers.par_iter_mut())
-            .for_each(|(household, ledger)| {
-                let bill = ledger.electricity.bill(price, imports);
-                household.power_arrears.local += bill.local;
-                household.power_arrears.imported += bill.imported;
-                let before = household.budget;
-                let paid = household.power_arrears.pay(&mut household.budget);
-                crate::debug::money::record_change(
-                    crate::debug::money::MoneyFlow::OutsideUtilities,
-                    before,
-                    household.budget,
-                );
-                ledger.power_consumption_cost += paid.total();
-                ledger.power_local_payment = paid.local;
-                ledger.power_unpaid_cost = household.power_arrears.total();
-            });
-        // Daily cash settlement already uses an ordered serial ledger. Keep its reduction order;
-        // all hourly demand/dispatch work above is parallel and reuses scratch storage.
-        let mut summary = self.removed_electricity.settlement;
-        for ledger in &self.daily_ledgers {
-            summary.household_local_revenue += ledger.power_local_payment;
+        for household_id in 0..self.households.len() {
+            self.settle_household_electricity(household_id, price, imports, treasury);
         }
         for building in &mut allocator.buildings {
             let city_owned = allocator.registry.is_city_service_asset(&building.asset_id);
-            settle_building_electricity(
+            collect_building_electricity(
                 building,
                 city_owned,
                 &catalog,
                 price,
                 imports,
                 treasury,
-                &mut summary,
+                &mut self.day_totals.power,
             );
         }
-        summary.coverage = if summary.demand_units > 0.0 {
-            (summary.served_units / summary.demand_units).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        summary.utility_local_revenue = summary.household_local_revenue
-            + summary.private_local_revenue
-            + summary.city_service_local_cost;
-        summary.city_service_utility_local_cost = summary.city_service_local_cost;
-        let receipts = f64::from(summary.utility_local_revenue)
-            - f64::from(self.removed_electricity.settlement.utility_local_revenue);
-        *treasury += receipts;
-        crate::debug::money::record(crate::debug::money::MoneyFlow::OutsideUtilities, receipts);
-        if summary.supply_units > 0.0 {
-            allocator.buildings.par_iter_mut().for_each(|building| {
-                building.revenue += (summary.utility_local_revenue
-                    - summary.power_auxiliary_local_cost)
-                    * building.daily_power_service_units
-                    / summary.supply_units;
-            });
+        self.day_totals.power.city_service_utility_local_cost =
+            self.day_totals.power.city_service_local_cost;
+        self.close_calendar_day();
+        // Same-day revenue shares, as the providers' phases would book them the next day.
+        let last = self.last_day_totals.power;
+        if last.supply_units > 0.0 {
+            let receipts = last.household_local_revenue
+                + last.private_local_revenue
+                + last.city_service_local_cost
+                - last.power_auxiliary_local_cost;
+            for building in &mut allocator.buildings {
+                building.revenue +=
+                    receipts * building.daily_power_service_units / last.supply_units;
+            }
         }
-        self.removed_electricity.settled = true;
-        summary
+        last
     }
 }
 
-// Shared by midnight billing and the final bill before a building disappears.
-fn settle_building_electricity(
+// Bills one building's electricity window into `summary`: city-owned buildings pay from the
+// treasury, private ones from their budget, even into deficit. The local share of what was
+// paid returns to the treasury. Shared by the daily phase and the final bill of a building that
+// is removed. O(1).
+fn collect_building_electricity(
     building: &mut Building,
     city_owned: bool,
     catalog: &RuntimeEconomyCatalog,
@@ -401,13 +422,14 @@ fn settle_building_electricity(
     summary.supply_units += building.daily_power_service_units;
     summary.served_units += use_.workplace.local_kwh + use_.residential.local_kwh;
     let bill = use_.workplace.bill(price, imports);
-    if city_owned {
+    let receipts = if city_owned {
         *treasury -= f64::from(bill.total());
         crate::debug::money::record(
             crate::debug::money::MoneyFlow::OutsideUtilities,
             -f64::from(bill.total()),
         );
         summary.city_service_local_cost += bill.local;
+        summary.city_service_utility_local_cost += bill.local;
         summary.city_service_utility_owa_cost += bill.imported;
         if catalog
             .profile_by_runtime_id(building.economy_profile_runtime_id)
@@ -416,13 +438,15 @@ fn settle_building_electricity(
             summary.power_auxiliary_local_cost += bill.local;
             summary.power_upkeep_utility_cost += bill.imported;
         }
+        bill.local
     } else {
         let paid_fraction = if bill.total() > 0.0 {
             (building.operating_budget.max(0.0) / bill.total()).min(1.0)
         } else {
             0.0
         };
-        summary.private_local_revenue += bill.local * paid_fraction;
+        let receipts = bill.local * paid_fraction;
+        summary.private_local_revenue += receipts;
         // Unpaid business costs become the existing operating deficit/distress signal.
         let before = building.operating_budget;
         building.operating_budget -= bill.total();
@@ -431,5 +455,12 @@ fn settle_building_electricity(
             before,
             building.operating_budget,
         );
-    }
+        receipts
+    };
+    summary.utility_local_revenue += receipts;
+    *treasury += f64::from(receipts);
+    crate::debug::money::record(
+        crate::debug::money::MoneyFlow::OutsideUtilities,
+        f64::from(receipts),
+    );
 }

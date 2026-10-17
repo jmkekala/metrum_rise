@@ -6,7 +6,7 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version, also the only one that loads (`SIM-02` broke older saves).
-pub const SAVE_VERSION: i64 = 92;
+pub const SAVE_VERSION: i64 = 93;
 
 /// Sentinel for an absent reference column.
 pub const NONE_REF: i64 = -1;
@@ -113,7 +113,8 @@ CREATE TABLE demand_state(
     despawn_action_credit_residential REAL NOT NULL,
     despawn_action_credit_commercial REAL NOT NULL,
     despawn_action_credit_industrial REAL NOT NULL,
-    cheat_max_demands_enabled INTEGER NOT NULL
+    cheat_max_demands_enabled INTEGER NOT NULL,
+    exit_eligible_today INTEGER NOT NULL
 );
 CREATE TABLE pending_demand_spawns(
     sequence INTEGER PRIMARY KEY,
@@ -131,7 +132,12 @@ CREATE TABLE scheduler_state(
     next_event_seq INTEGER NOT NULL,
     next_spawn_id INTEGER NOT NULL,
     logistics_hour_ticks INTEGER NOT NULL,
-    agent_settlement_days INTEGER NOT NULL
+    agent_settlement_days INTEGER NOT NULL,
+    road_length_front_m REAL NOT NULL,
+    road_length_back_mm INTEGER NOT NULL,
+    road_length_edges INTEGER NOT NULL,
+    road_length_next_edge INTEGER NOT NULL,
+    road_length_measured INTEGER NOT NULL
 );
 CREATE TABLE timed_events(
     slot INTEGER NOT NULL,
@@ -263,7 +269,10 @@ CREATE TABLE buildings(
     build_generation INTEGER NOT NULL DEFAULT 0,
     electricity_usage TEXT NOT NULL,
     hourly_economy_activity REAL NOT NULL,
-    commercial_activity_floor_scale REAL NOT NULL
+    commercial_activity_floor_scale REAL NOT NULL,
+    paid_workers_in_window INTEGER NOT NULL,
+    funded_job_capacity INTEGER NOT NULL,
+    unpaid_cash_wages_in_window INTEGER NOT NULL
 );
 CREATE TABLE building_inventories(
     building_id INTEGER NOT NULL,
@@ -301,7 +310,18 @@ CREATE TABLE agriculture_field_site_points(
 );
 CREATE TABLE electricity_day_state(
     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
-    removed_buildings TEXT NOT NULL
+    removed_buildings TEXT NOT NULL,
+    day_totals TEXT NOT NULL,
+    last_day_totals TEXT NOT NULL,
+    coal_inventory_kg REAL NOT NULL,
+    city_input_day TEXT NOT NULL
+);
+CREATE TABLE household_requests(
+    kind INTEGER NOT NULL,
+    sequence INTEGER NOT NULL,
+    household_slot INTEGER NOT NULL,
+    household_generation INTEGER NOT NULL,
+    PRIMARY KEY(kind, sequence)
 );
 CREATE TABLE households(
     household_id INTEGER PRIMARY KEY,
@@ -333,7 +353,8 @@ CREATE TABLE households(
     sewage_consumption_cost REAL NOT NULL,
     electricity_account TEXT NOT NULL,
     gross_daily_wages REAL NOT NULL,
-    employed_adults INTEGER NOT NULL
+    employed_adults INTEGER NOT NULL,
+    paid_workers_in_window INTEGER NOT NULL
 );
 CREATE TABLE city_treasury(
     balance REAL NOT NULL,

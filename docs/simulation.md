@@ -8,7 +8,8 @@ simulation tiers. Economy and growth rules stay in [`economy.md`](economy.md) an
 **Status:** `SIM-02` in progress. `SIM-02-A` (guards and pre-refactor baseline), `SIM-02-B`
 (save cutover and handles), `SIM-02-C` (slot clock, scheduler, timing wheel and phases),
 `SIM-02-D` (passive deadlines and construction completion), `SIM-02-E` (trips as timed
-events) and `SIM-02-F` (per-entity hourly economy) are done; see the
+events), `SIM-02-F` (per-entity hourly economy) and `SIM-02-G` (per-entity daily settlement)
+are done; see the
 [`SIM-02-A` baseline](#sim-02-a-guards-and-pre-refactor-baseline) and the
 [step results](#step-results). Until each migration step lands,
 the current cadence in
@@ -170,6 +171,18 @@ re-hosted hour in every slot (`nodes/sim/core/entity_phases.rs`): `building_hour
 `household_hours` and `agent_hours`. A caller that steps a whole operational hour without the
 slot clock (tests and tools) runs the pooled hour and then every phase in order.
 
+**Implemented in `SIM-02-G`.** Three daily `EntityPhase` systems follow the hourly ones:
+`building_days`, `household_days` and `agent_days` (`nodes/sim/core/entity_days.rs`). The
+calendar close is a `FixedSlot` costing `Constant` (O(1) or O(zones), which the schedule now
+accepts for fixed slots). It is declared after the operational hour, so in each day's slot 0 it
+runs after the 00:00 hour, which still belongs to the closing day, and before any daily phase
+of the new day: every entity has settled exactly once since the previous close. Pollution,
+noise and desirability remain a legacy midnight pass (`environment grids`), declared before the
+hour, until `SIM-02-H`. A `Rolling { period }` kind costs one `Chunk` per slot
+and runs after the phases; the rolling road length is its first system. Tools and tests that
+step a whole day run the environment grids, every entity's daily phase in order, then the
+close.
+
 ### Phases
 
 - Each building and household has a daily phase `d` in `0..23,040`, a stable hash of its seed:
@@ -205,6 +218,25 @@ slot clock (tests and tools) runs the pooled hour and then every phase in order.
     counts, so the activity floor, store sales, restock and visit planning and hiring all read
     a census of the state the previous hour's phases left. A census rebuilt on load therefore
     never feeds the simulation.
+- **Implemented in `SIM-02-G`:** slot `s` also visits the handles of daily phase `s mod 23,040`.
+  Each entity settles its own 24-hour window there instead of at midnight.
+  - **Buildings:** the zoning check and rezoning grace; then, in the order of
+    [`economy.md § Building Bankruptcy`](economy.md#building-bankruptcy), the bankruptcy check,
+    property tax, water, sewage and electricity bills, distress liquidation and business profit
+    tax. Its daily accumulators then roll into the `recent_*` values.
+  - **Households:** transfers, residential property tax, water, sewage and electricity bills;
+    the ledger window then closes and the next one opens. The household also queues a housing
+    review and, if it may leave, claims its share of the day's exit budget.
+  - **Agents:** the wage, paid while the workplace has paid fewer than its funded jobs in its
+    own window, and the daily happiness update.
+  - **Served by the next hour:** housing reviews and exits, which need the member links the
+    hourly membership census builds (`SIM-02-J` turns them into per-slot queues).
+  - **Reads one period old:** wages read the funded jobs the last hourly census copied onto
+    each building. Water and sewage coverage is whether an operational provider settled in the
+    last closed day, and providers' revenue shares come from that day's receipts.
+  - **City totals:** every payment also posts into the calendar day's totals
+    (`CityDayTotals`, `CityInputDay`). The close keeps them as the last day for the budget
+    report in O(1), and daily road upkeep reads the rolling road length.
 
 ### Deadlines and timed events
 
@@ -672,6 +704,83 @@ on a fresh `$ARTIFACTS` directory.
   clippy is clean. New: each household's hour runs once per hour, at its own phase and no
   other. The save/reload continuation test covers the two new building columns.
 
+#### `SIM-02-G` — per-entity daily settlement (2026-10-17)
+
+- **Save format 93:** buildings save `paid_workers_in_window`, `funded_job_capacity` and
+  `unpaid_cash_wages_in_window`;
+  households save `paid_workers_in_window`; the electricity day state saves the running and last
+  day totals, the coal stock and the city input day; `household_requests` holds the queued
+  housing reviews and exits by handle; `scheduler_state` saves the rolling road-length sweep; the
+  demand state saves whether a household was eligible to leave today; the workplace quote cache
+  saves the pass that added each quote (`WRC2`). The Kuopio fixture gained the columns, an empty
+  `WRC2` quote cache and its hash in `placements.json`.
+- **Envelope and bursts** (`tools/sim02_gate.py envelope determinism --bursts
+  departures,settlements --binary "$TEST_BINARY"`, `RAYON_NUM_THREADS=8`): busiest-hour
+  settlement shares are 7.1–7.9% on every workload (limit 10%; 100% before). At 32× a frame
+  crosses about 32 minutes and its settlements count in the hour it ends in, so an even spread
+  reads up to about twice 1/24. Busiest-minute departure shares are 2.0–3.3% (limit 5%). Money
+  residuals are at most 0.9 an hour (30k baseline 40.6 on `SIM-02-F`; see the fixture treasury
+  decision) and no invariant is violated. Out of band:
+  - Fiscal stress, employment rate 0.077 at 10k and 0.079 at 30k against about 0.052. The
+    collapse after the tax rise now spreads over day 5 as each building settles at its own phase
+    (3,291 employed at that day's sample at 10k against 10 on `SIM-02-F`), so one of the 14
+    samples still counts a third of the jobs.
+  - Fiscal stress, final employment rate 0.58% at 10k and 0.74% at 30k against 0.36–0.39% and
+    0.15–0.34%: about 60 and 220 people still working in the collapsed cities instead of about 40
+    and 60, the near-zero value earlier steps also left out of band.
+  - Fiscal stress at 10k, deliveries 12.74 per 1,000 buildings a day against a low edge of 13.05
+    (13.12 on `SIM-02-F`, 13.31 on `SIM-02-E`): the drift of earlier steps continues.
+  - Three first-build differences were found and fixed (see
+    [Decided while unattended](#decided-while-unattended)): unhoused households in fiscal
+    stress (unemployment benefit now follows paid wages); businesses that never went bankrupt
+    (baseline 30k: 6 bankruptcies against 113 on `SIM-02-F`, now 67; final employment 0.630,
+    below its band, now back in it); and two households in the year-long producer town whose
+    shopper was stranded in a store after an eviction.
+- **Determinism:** repeat run, 1 and 3 workers and save/reload continuation are identical (10k,
+  three days).
+- **`PERF-07`** (`tools/sim02_gate.py perf07 --cpus 0,2,4,6,8,10,12,14 --binary "$TEST_BINARY"`,
+  `RAYON_NUM_THREADS=8`), pinned against the pinned `SIM-02-A` reference. Max / p99 / mean in
+  ms: 10k 1× 192.2 / 6.29 / 2.43, 10k 32× 192.6 / 8.33 / 2.95, 30k 1× 498.6 / 7.37 / 3.34, 30k
+  32× 500.4 / 26.85 / 5.28, 100k 1× 1,970.1 / 19.41 / 12.09, 100k 32× 1,948.5 / 185.93 / 21.90.
+  Every maximum is below `SIM-02-A`. The 00:00 frame no longer stands out: at 30k it falls out of the eight worst
+  (75.9 ms on `SIM-02-F`, 45.5 of it the daily tick), and the worst frame away from an hour
+  boundary fell at every tier (30k 1× 65.8 → 43.6 ms, 100k 1× 268.6 → 200.9 ms). The worst
+  frame at 30k and 100k is 01:00, the first hour after the snapshot loads, which rebuilds the
+  derived economy caches (`SIM-02-K` in the inventory). The gate failed one p99, 100k 1× 19.41
+  against a limit of 19.10. A paired rerun of that tier with `SIM-02-F` right after it gave
+  18.06 against 17.59 (means 11.67 and 11.53): each build moved by more than the 0.47 ms
+  between them from one run to the next, so the gap is noise. The 32× means are 10–18% above
+  `SIM-02-A`: within 2% of `SIM-02-F` at 10k and 30k, and 6% below it at 100k.
+- **`PERF-01`** (`tools/perf_contract.py --binary "$TEST_BINARY"` under `taskset -c
+  0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`), two runs alternating with `SIM-02-A` (hour / day
+  means in ms, `SIM-02-A` first): baseline 10k 17.5–17.7 / 7.4–7.9 against 15.6 / 0.2; baseline
+  30k 62.9–63.5 / 47.7–48.0 against 56.2–56.4 / 0.7; fiscal 10k 27.9–28.2 / 22.1–22.6 against
+  28.6–28.7 / 0.2; fiscal 30k 79.4–81.7 / 69.5–70.0 against 86.6–86.7 / 0.7–0.8. The day is now
+  the calendar close, so the three daily time limits `SIM-02-A` failed pass; eight limits fail
+  against ten. One is new: baseline `buyer_sites_built` scaling (1,202 at 10k against 7,039 at
+  30k, limit 3.42×). The 30k count is unchanged (7,076 on `SIM-02-A`); the 10k city rebuilds its
+  buyer sites once a day instead of five times, because it has almost no failed businesses.
+  Fiscal 30k's hour is 6 ms (7%) above `SIM-02-A`: its census takes 11.3 against 5.9 ms a call
+  and its planning 24.7 against 18.9 ms, over the same parcel scan and fewer census buildings, in
+  a collapsing city whose workers now leave at their own phases. The cause is not isolated;
+  `SIM-02-I` rewrites both passes. Over a whole day fiscal 30k costs 5% more and baseline 30k
+  14% less.
+- **Build identity:** envelope, determinism and tests ran on the committed build. `PERF-07` and
+  `PERF-01` ran on the build before the last fix, which changed only the road-length sweep's sum
+  (whole millimetres) and its saved edge positions.
+- **Tests:** 2,442 release library tests and the integration tests pass on the final build, and
+  `./run.sh --test` (isolated profile) passed on the build before the insolvency rule, which
+  touches no bridge code; clippy is clean. Its first run hung after `agent_inspector_test` lost
+  its debug car once; the unchanged test passed in the rerun and ten more runs, and G adds no
+  path that removes an agent outside a household. New: the rolling road length sums the network over one day; exits claimed at
+  daily phases keep the daily fraction and limit; workplace quotes expire a day of passes after
+  they were added; adults not paid a wage in the window draw unemployment benefit; an employer
+  that cannot pay wages two windows running deserts; evicting a
+  household hands its shopper at a store back to the schedule and rehousing sends it home; a
+  road-length sweep resumes identically on the edges a save keeps. The
+  save round trip covers the day totals, coal stock, city input day, request queues and window
+  counts.
+
 ### Phase inventory
 
 Every phase of today's operational hour, hourly demand pass and daily tick, and where it goes.
@@ -707,18 +816,18 @@ Every phase of today's operational hour, hourly demand pass and daily tick, and 
 | Household admission | Bounded; all carriers leave on the hour | Admission queue with credit; departure events | E (departures done), J |
 | Construction queue | One start per minute | Timed events | C (done) |
 | `execute_building_actions` | Plan-bounded | Level-change queue with quota | J |
-| `allocator.maintain`, `cleanup_stale_buildings` | O(buildings), serial | Compatibility check at building phase; removals queued | G, J |
+| `allocator.maintain`, `cleanup_stale_buildings` | O(buildings), serial | Compatibility check at building phase; removals queued | G (done), J |
 | Pollution, noise, desirability | O(grid) plus O(buildings + edges) emission | Rolling grid sweeps | H |
-| Daily ledger begin and finish, `reset_daily_ledgers`, `reset_daily_input_accumulators` | O(households), O(buildings) | Each entity rolls its own window at its phase | G |
+| Daily ledger begin and finish, `reset_daily_ledgers`, `reset_daily_input_accumulators` | O(households), O(buildings) | Each entity rolls its own window at its phase | G (done) |
 | `job_lock_days` decrement | O(agents) | Passive deadline | D (done) |
-| Bankruptcy, wages, property tax, utilities, profit tax | Serial over buildings and agents | Per building at its daily phase, same internal order | G |
-| `pay_household_transfers` | Serial over households until the treasury runs out | Per household at its phase; slot order decides who is paid | G |
-| `resolve_household_housing` | Serial over households | Check at phase enqueues housing requests | G, J |
-| `workplace_route_cache.clear` | Daily clear | Entries expire by slot stamp | G |
-| Road upkeep sum | O(edges) | Incremental road length; upkeep posted per slot | G |
-| `run_daily_pass`, `execute_demand_household_removal` | O(households) | Exit check at phase; departures through a credit-paced queue | G, J |
-| `finalize_daily_tax_window`, `record_daily_budget_ledger` | Serial over ledgers | Calendar close over running sums, O(zones) | G |
-| `agents.daily_update` | O(agents), par | `EntityPhase` daily | G |
+| Bankruptcy, wages, property tax, utilities, profit tax | Serial over buildings and agents | Per building at its daily phase, same internal order; wages at each worker's phase | G (done) |
+| `pay_household_transfers` | Serial over households until the treasury runs out | Per household at its phase; slot order decides who is paid | G (done) |
+| `resolve_household_housing` | Serial over households | Check at phase enqueues housing requests, served by the next hour | G (done), J |
+| `workplace_route_cache.clear` | Daily clear | Entries expire 24 passes after they were added | G (done) |
+| Road upkeep sum | O(edges) | Rolling road-length sum; upkeep charged at the calendar close | G (done) |
+| `run_daily_pass`, `execute_demand_household_removal` | O(households) | Exit check at phase; departures through a credit-paced queue | G (done), J |
+| `finalize_daily_tax_window`, `record_daily_budget_ledger` | Serial over ledgers | Calendar close over running sums, O(zones) | G (done) |
+| `agents.daily_update` | O(agents), par | `EntityPhase` daily | G (done) |
 
 Per-frame costs found by the `SIM-02-A` `PERF-07` baseline, outside the boundary passes:
 
@@ -931,3 +1040,106 @@ alternatives and the evidence. The user reviews these on return.
   production reads during an hour now comes from that hour's census, one hour fresher.
   Alternative: save the census results, including the customer book; rejected as a large
   new save surface for state that is derived each hour.
+- **`SIM-02-G` — wages at each worker's phase.** The inventory names the building's phase, but
+  buildings hold no list of their workers. Each worker is paid at its own daily phase while its
+  workplace has paid fewer than its funded jobs since the workplace's own phase
+  (`paid_workers_in_window`, saved). An overstaffed store or work area releases the workers
+  whose phases come after its funded jobs were paid, where midnight kept the lowest agent IDs.
+  Alternative: a worker index per building, maintained on every hire, quit, removal and remap.
+- **`SIM-02-G` — wages read funded jobs copied onto the buildings.** The hourly census writes
+  each building's funded jobs to `funded_job_capacity`, which is saved, because wages now read
+  the census between hours and a load rebuilds the census from a later state (the `SIM-02-F`
+  lesson). Alternative: save the census.
+- **`SIM-02-G` — unemployment benefit for adults not paid in the window.** A household's
+  unemployed adults are its adults minus the members paid a wage in its own 24-hour window
+  (each member's wage falls once in any such window; the count is saved). Counting the employed
+  adults of the latest hourly census instead, the first build left a worker of a failing employer
+  without wage or benefit for one or two windows: on F the employer paid its last wages before
+  the tax that sank it, and its workers drew benefit at the same midnight. In fiscal stress at 10k
+  that cost 478 evictions over the two days after the collapse (unhoused rate 0.0266 against a
+  base of 0.0018, and departures at 30k); paid-wage counting brought it to 80 evictions and an
+  unhoused rate of 0.0014. When the treasury runs dry, slot order decides who is paid instead of
+  household ID. Alternatives: count members' jobs live at the phase (needs a member index), or
+  release workers at their first unpaid wage (loses the workers of a building that recovers).
+- **`SIM-02-G` — water and sewage coverage one day old.** Coverage was whether any provider
+  operated at midnight. It is now whether one settled operational during the last closed day,
+  and providers' revenue shares are that day's receipts. Alternative: count providers
+  incrementally on every staffing change.
+- **`SIM-02-G` — housing reviews and exits served by the next hour.** Relocation and eviction
+  move every member, and only the hourly membership census builds member links. A household's
+  phase queues a review, and the next hour serves the queue in order with the census's links and
+  one vacancy planner. An exit check at the phase adds `persistent_exit_daily_fraction` to the
+  exit credit; a whole unit releases the household, at most 48 per calendar day, and the next
+  hour removes it if it is still eligible. Departures therefore go in slot order, not
+  lowest-reserve first. Alternative: a member index maintained on every membership change.
+- **`SIM-02-G` — zoning grace at the building's phase.** The compatibility check and its
+  three-day grace run per building at its phase. A removal there repairs the derived caches
+  once for the slot, as the midnight maintenance did. Alternative: a timed event at the grace
+  deadline, which would also need a check after every edit.
+- **`SIM-02-G` — city totals post as they happen.** The budget report summed household ledgers
+  and building accumulators at midnight. Each payment now also posts into the calendar day's
+  totals: transfers, wages, utility and electricity bills, city input purchases at payment, coal
+  burned in each hourly dispatch, and the coal stock after the latest dispatch. The close keeps
+  them in O(1); the headless growth report reconciles to them.
+- **`SIM-02-G` — road upkeep from a rolling sum.** Upkeep summed every edge at midnight. A
+  rolling sweep folds 1/23,040 of the edges per slot, and the close charges the last finished
+  sweep; a world without one measures its network once at its first close. Alternative: a
+  maintained total, which every road mutation would have to update. The sweep sums whole
+  millimetres and saves its frozen edge count and next edge in saved edge numbering (a save
+  drops deleted edges and keeps the rest in order), so a game saved mid-sweep resumes on the
+  same live edges with the same total; a float sum would round differently once a save regroups
+  the remaining edges into slots. The `SIM-02-H` grid work found the problem; the 10k
+  determinism city has no deleted roads, so its reload check could not.
+- **`SIM-02-G` — workplace quotes expire per entry.** The midnight clear of the commute quote
+  cache is replaced by expiry 24 passes (hours) after each quote was added, through an
+  insertion-order queue, so the cache still holds about one day's searches. Stamps are saved.
+- **`SIM-02-G` — 00:00 is an ordinary hour.** The daily demand pass and the second hiring round
+  after settlement are gone; 00:00 runs the ordinary hour, its demand pass included. The hourly
+  employed-adult count already covered the daily one.
+- **`SIM-02-G` — fixture treasury 1e10.** The populated-city fixture started with a treasury of
+  1e15 so that city services never run out. At that size an f64 holds only multiples of 0.125, so
+  every treasury posting rounded: per-worker income tax and per-entity bills leaked about 360 a
+  day at 10k, and money conservation failed at 10k and in fiscal stress (hourly residual up to 42
+  against a limit near 6). A 100k city spends about 1e6 a day, so 1e10 still never runs out and
+  resolves 2e-6; every treasury-dependent rule in the fixture (admission's transfer coverage,
+  transfer cash limits) stays saturated. The 30k residual fell from 40.6 an hour on `SIM-02-F`
+  to 0.9, so the `SIM-02-A` residual at 30k came from the same rounding in the midnight pass. Alternatives: batch treasury postings per slot
+  (still rounds, and hides per-entity flows), or widen the residual limit (would hide real
+  leaks).
+- **`SIM-02-G` — an evicted shopper goes home.** With housing reviews at any time of day,
+  evictions now catch shoppers away from home. The eviction cleared the shopper's planned return
+  but left it in the shopping activity, which the schedule skips, so it stayed in the store for
+  good and its household never shopped again (the year-long producer town had two such
+  households). The eviction now hands the shopper back to the schedule, and rehousing gives a
+  member away from home and work a trip to the new home after its current one, since the
+  schedule only moves agents at home or at work. Alternative: defer reviews of households with a
+  shopper out, which would leave the latent bug in place.
+- **`SIM-02-G` — wages read the census of the worker's hour.** Workers above a building's funded
+  jobs go unpaid and quit after two days. Each worker's wage now reads the funded jobs the census
+  of its own hour copied onto the building, where the midnight payroll read one census for all.
+  Fixing a window's funded jobs at its first wage instead brought baseline 30k final employment
+  back into band (0.635 against 0.630) but put fiscal stress far out (employment rate 0.147
+  against 0.052, deliveries 20.6 against 14.4 per 1,000 buildings a day, trip failures out of
+  band): a failing employer kept paying jobs the census no longer funded. The hourly copy stays.
+- **`SIM-02-G` — unpaid wages make a window insolvent.** On `SIM-02-F` the midnight payroll sold
+  output to pay every worker just before the bills, so an employer that could not pay ended the
+  day negative and deserted the next. With wages at each worker's phase and production refilling
+  stock between them, the distress sale at the building's phase always covered the bills: at 30k
+  baseline about 100 businesses were in distress each day, none had a negative budget, and
+  bankruptcies fell from 113 to 6 over the 14 days (21 to 0 at 10k); insolvent businesses lived
+  on by fire sales while their unpaid workers quit, and with no failed sites to rebuild, the
+  10k and 30k performance snapshots had no building change in their next day. A window is now
+  also insolvent when a wage went unpaid for lack of cash after selling output (counted per
+  building and saved); two insolvent windows in a row desert the business. Bankruptcies are 67
+  at 30k, 77 in the arrivals workload (116 on F) and 3 at 10k, and baseline 30k final
+  employment returned into band (19,434 workers against 19,489 on F). Alternatives: pay all of
+  a building's workers at its phase (needs a worker index per building), or bill and test
+  distress at each wage (moves the bills off the building's window).
+- **`SIM-02-G` — the snapshot's building-change check runs at 30k.** The performance snapshot
+  accepts a cache only if its continuation day changes a building, so the reload check covers
+  the incremental tables keyed by building revision. At 10k the healthy city now loses 3
+  businesses in 14 days (21 on `SIM-02-F`): wages at each worker's phase let marginal
+  businesses pay as revenue comes in. Its day-12 snapshot changed no building, so the check now
+  runs at 30k only, where 12–15 businesses fail a day around that day. Alternatives: a later
+  snapshot day (changes every `PERF-01` and `PERF-07` workload), or a building removal injected
+  into the continuation check (exercises an edit, not the economy's own churn).

@@ -8,6 +8,7 @@ pub(super) fn clamp01(value: f32) -> f32 {
     value.clamp(0.0, 1.0)
 }
 
+#[cfg(test)]
 pub(super) fn advance_persistent_exit_credit(
     credit: &mut f32,
     eligible_households: u32,

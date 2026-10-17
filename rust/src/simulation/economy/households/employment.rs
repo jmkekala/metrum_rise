@@ -49,6 +49,8 @@ const GO_TO_WORK_THRESHOLD: f32 = 0.45;
 const JOB_LOCK_MIN_DAYS: u8 = 5;
 const JOB_LOCK_MAX_DAYS: u8 = 9;
 const JOB_UNPAID_ABANDON_DAYS: u8 = 2;
+/// Workplace passes a complete commute quote stays valid: one per operational hour, a day.
+pub(crate) const WORKPLACE_QUOTE_PASSES: u32 = 24;
 const JOB_SEARCH_CANDIDATES: usize = 24;
 const JOB_ROUTE_SCAN_CANDIDATES: usize = JOB_SEARCH_CANDIDATES * 4;
 const COMMUTE_PENALTY_MAX_SECONDS: f32 = 30.0 * 60.0;
@@ -66,7 +68,7 @@ const EMPTY_HOME_JOB_OPTION: HomeJobOption = HomeJobOption {
 const EMPTY_WORKPLACE_ROUTE_ENTRY: WorkplaceRouteCacheEntry =
     ((usize::MAX, usize::MAX, false), None);
 
-type WorkplaceRouteCacheKey = (usize, usize, bool);
+pub(super) type WorkplaceRouteCacheKey = (usize, usize, bool);
 type WorkplaceRouteCacheEntry = (WorkplaceRouteCacheKey, Option<u16>);
 /// Exact home/workplace/car quotations. Consumers only perform keyed lookups, so the
 /// existing fixed fast hasher changes neither choice order nor daily price invalidation.
@@ -142,11 +144,31 @@ struct JobSupplySnapshot {
     node_slack_m: f32,
 }
 
-struct WagePaymentPlan {
+/// One day's wage paid at a worker's daily phase (`SIM-02-G`).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct WagePayment {
+    /// The employer.
+    pub(crate) building: usize,
+    /// Gross wage, before income tax.
+    pub(crate) gross: f32,
+    /// Income tax withheld for the treasury.
+    pub(crate) income_tax: f32,
+    /// Whether the treasury paid it.
+    pub(crate) city_funded: bool,
+}
+
+// Ends `agent_idx`'s assignment to `work` and updates the workplace's count. O(1).
+fn release_worker(
+    agents: &mut AgentSystem,
+    allocator: &mut BuildingAllocator,
     agent_idx: usize,
-    work_building: usize,
-    household_id: usize,
-    wage: f32,
+    work: usize,
+) {
+    allocator.set_worker_count(
+        work,
+        allocator.buildings[work].worker_count.saturating_sub(1),
+    );
+    agents.assign_work_building(agent_idx, usize::MAX, 0);
 }
 
 impl HouseholdSystem {
@@ -172,6 +194,7 @@ impl HouseholdSystem {
     }
 
     /// Funding census, then job search against it.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn assign_agent_workplaces_with_service_funding(
         &mut self,
@@ -238,6 +261,7 @@ impl HouseholdSystem {
             treasury_balance,
             minute_of_day,
         );
+        self.publish_funded_job_capacities(allocator);
     }
 
     /// Job search against the latest funding census.
@@ -249,6 +273,7 @@ impl HouseholdSystem {
         graph: &RegionGraph,
         minute_of_day: u16,
     ) {
+        self.expire_workplace_route_cache();
         let timing_category = if debug::Channel::EconomyWorkplace.enabled() {
             debug::Channel::EconomyWorkplace
         } else if debug::Channel::EconomyPhases.enabled() {
@@ -420,7 +445,10 @@ impl HouseholdSystem {
         // Reserve the completed batch before ordered insertion; no per-quote growth.
         self.workplace_route_cache.reserve(new_route_entry_count);
         for (key, result) in new_route_entries {
-            self.workplace_route_cache.insert(key, result);
+            if self.workplace_route_cache.insert(key, result).is_none() {
+                self.workplace_route_cache_order
+                    .push_back((self.workplace_route_cache_pass, key));
+            }
         }
         let insert_routes_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
@@ -568,138 +596,184 @@ impl HouseholdSystem {
         tax
     }
 
-    /// Pays at most the funded live-job capacity that hiring advertised in the latest census,
-    /// including fiscal service ceilings; workers above it are released or stay unpaid
-    /// (`ECON-17`). O(buildings + agents), plus serial payment in agent order.
+    /// Every worker's daily wage at once, in agent order, as their daily phases would pay it
+    /// within one fresh window of each workplace.
+    #[cfg(test)]
     pub(crate) fn pay_funded_daily_wages(
         &mut self,
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
         income_tax_rate: f32,
         treasury_balance: &mut f64,
-        logistics: &ShipmentSystem,
+        _logistics: &ShipmentSystem,
     ) -> f32 {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let tuning = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
-        let reserved_outbound = logistics.reserved_outbound_view(catalog.resource_count());
-        eject_inactive_work_assignments(agents, allocator, &catalog);
-        shed_unfunded_workers(agents, allocator, &catalog, &self.job_funding.capacities);
-        self.last_city_service_wages = super::data::CityServiceWages::default();
-        let city_funded_by_building: Vec<bool> = allocator
-            .buildings
-            .iter()
-            .map(|building| allocator.is_city_service_building(building))
-            .collect();
-        let paid_capacity_by_building: Vec<u32> = allocator
-            .buildings
-            .par_iter()
-            .enumerate()
-            .map(|(building_idx, building)| {
-                funded_worker_capacity(
-                    &catalog,
-                    &self.job_funding.capacities,
-                    building_idx,
-                    building,
-                )
-                .unwrap_or(0)
-            })
-            .collect();
-        let plans: Vec<_> = (0..agents.len())
-            .into_par_iter()
-            .filter_map(|i| {
-                let work = agents.work_building[i];
-                let household_id = agents.household_id[i];
-                if !age_group_can_work(agents.age_group[i]) {
-                    return None;
-                }
-                if work >= allocator.buildings.len() || household_id >= self.households.len() {
-                    return None;
-                }
-                let profile = active_work_profile(&catalog, &allocator.buildings[work])?;
-                let wage = profile.average_daily_wage();
-                if wage <= 0.0 {
-                    return None;
-                }
-                Some(WagePaymentPlan {
-                    agent_idx: i,
-                    work_building: work,
-                    household_id,
-                    wage,
-                })
-            })
-            .collect();
+        self.publish_funded_job_capacities(allocator);
+        for building in &mut allocator.buildings {
+            building.paid_workers_in_window = 0;
+        }
         self.ensure_daily_ledger_len();
-
-        let mut income_tax_collected = 0.0;
-        let mut paid_workers_by_building = vec![0u32; allocator.buildings.len()];
-        for plan in plans {
-            let within_paid_capacity = paid_workers_by_building[plan.work_building]
-                < paid_capacity_by_building[plan.work_building];
-            let city_funded = city_funded_by_building[plan.work_building];
-            if within_paid_capacity
-                && !city_funded
-                && allocator.buildings[plan.work_building].operating_budget < plan.wage
-            {
-                liquidate_outputs_until_budget(
-                    plan.work_building,
-                    &mut allocator.buildings[plan.work_building],
-                    &catalog,
-                    &reserved_outbound,
-                    catalog.resource_count(),
-                    tuning.owa_distress_liquidation_multiplier,
-                    plan.wage,
-                );
-            }
-            if within_paid_capacity
-                && (city_funded
-                    || allocator.buildings[plan.work_building].operating_budget >= plan.wage)
-            {
-                let income_tax = tax_amount(plan.wage, income_tax_rate);
-                let net_wage = plan.wage - income_tax;
-                if city_funded {
-                    *treasury_balance -= plan.wage as f64;
-                    self.last_city_service_wages.total += plan.wage;
-                    if catalog
-                        .profile_by_runtime_id(
-                            allocator.buildings[plan.work_building].economy_profile_runtime_id,
-                        )
-                        .is_some_and(|profile| {
-                            profile.utility_service.as_deref() == Some(UTILITY_SERVICE_POWER)
-                        })
-                    {
-                        self.last_city_service_wages.power += plan.wage;
-                    }
-                } else {
-                    allocator.buildings[plan.work_building].operating_budget -= plan.wage;
-                }
-                self.households[plan.household_id].budget += net_wage;
-                self.daily_ledgers[plan.household_id].wage_income += net_wage;
-                income_tax_collected += income_tax;
-                paid_workers_by_building[plan.work_building] =
-                    paid_workers_by_building[plan.work_building].saturating_add(1);
-                agents.consecutive_unpaid_days[plan.agent_idx] = 0;
-            } else {
-                agents.consecutive_unpaid_days[plan.agent_idx] =
-                    agents.consecutive_unpaid_days[plan.agent_idx].saturating_add(1);
-
-                if agents.consecutive_unpaid_days[plan.agent_idx] >= JOB_UNPAID_ABANDON_DAYS {
-                    allocator.set_worker_count(
-                        plan.work_building,
-                        allocator.buildings[plan.work_building].worker_count.saturating_sub(1),
-                    );
-                    agents.assign_work_building(plan.agent_idx, usize::MAX, 0);
-                    debug_log!(
-                        "economy",
-                        "agent_idx={} fired self from insolvent building={} due to consecutive unpaid days",
-                        plan.agent_idx,
-                        plan.work_building
-                    );
-                }
+        self.day_totals.city_service_wages = Default::default();
+        let mut income_tax = 0.0;
+        for agent_idx in 0..agents.len() {
+            if let Some(payment) = self.pay_agent_daily_wage(
+                agent_idx,
+                agents,
+                allocator,
+                &catalog,
+                tuning.owa_distress_liquidation_multiplier,
+                income_tax_rate,
+                treasury_balance,
+            ) {
+                income_tax += payment.income_tax;
             }
         }
-        income_tax_collected
+        self.last_day_totals.city_service_wages = self.day_totals.city_service_wages;
+        income_tax
+    }
+
+    /// Copies the latest census's funded jobs onto the buildings, where wages at each worker's
+    /// daily phase read them until the next census (`SIM-02-G`). O(buildings).
+    pub(super) fn publish_funded_job_capacities(&self, allocator: &mut BuildingAllocator) {
+        let capacities = &self.job_funding.capacities;
+        allocator
+            .buildings
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(building_idx, building)| {
+                building.funded_job_capacity = capacities.get(building_idx).copied().unwrap_or(0);
+            });
+    }
+
+    /// Settles agent `agent_idx`'s workday at its daily phase (`SIM-02-G`, `ECON-17`). An
+    /// assignment to a workplace that no longer operates, or of an agent who cannot work, ends.
+    /// A store or work area above its funded staff releases a worker once its funded jobs have
+    /// been paid in the window. Otherwise the worker is
+    /// paid one day's wage while the workplace has paid fewer than its funded jobs in its own
+    /// 24-hour window: a short private employer first sells output at distress price, and a
+    /// worker left unpaid on `JOB_UNPAID_ABANDON_DAYS` days in a row quits. Wages never push a
+    /// private budget negative. Returns the wage paid. O(output ports).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn pay_agent_daily_wage(
+        &mut self,
+        agent_idx: usize,
+        agents: &mut AgentSystem,
+        allocator: &mut BuildingAllocator,
+        catalog: &RuntimeEconomyCatalog,
+        liquidation_multiplier: f32,
+        income_tax_rate: f32,
+        treasury_balance: &mut f64,
+    ) -> Option<WagePayment> {
+        let work = agents.work_building[agent_idx];
+        if work >= allocator.buildings.len() {
+            return None;
+        }
+        let profile = if age_group_can_work(agents.age_group[agent_idx]) {
+            active_work_profile(catalog, &allocator.buildings[work])
+        } else {
+            None
+        };
+        let Some(profile) = profile else {
+            release_worker(agents, allocator, agent_idx, work);
+            return None;
+        };
+        let building = &allocator.buildings[work];
+        let capacity = building
+            .funded_job_capacity
+            .min(physical_worker_capacity_for_profile(building, profile));
+        // Like the midnight shedding, the first workers keep the funded jobs: once the window
+        // has paid them, an overstaffed store or work area releases the rest.
+        if (profile.kind == EconomyProfileRuntimeKind::ServiceStore
+            || profile_kind_uses_explicit_work_area(profile.kind))
+            && building.worker_count > capacity
+            && building.paid_workers_in_window >= capacity
+        {
+            release_worker(agents, allocator, agent_idx, work);
+            agents.consecutive_unpaid_days[agent_idx] = 0;
+            return None;
+        }
+        let household_id = agents.household_id[agent_idx];
+        let wage = profile.average_daily_wage();
+        if household_id >= self.households.len() || wage <= 0.0 {
+            return None;
+        }
+        self.ensure_daily_ledger_len();
+        let power_plant = profile.utility_service.as_deref() == Some(UTILITY_SERVICE_POWER);
+        let city_funded = allocator.is_city_service_building(building);
+        let within_paid_capacity = building.paid_workers_in_window < capacity;
+        let building = &mut allocator.buildings[work];
+        if within_paid_capacity && !city_funded && building.operating_budget < wage {
+            // Outside the logistics hour no shipment holds unloaded source stock.
+            liquidate_outputs_until_budget(
+                work,
+                building,
+                catalog,
+                &[],
+                catalog.resource_count(),
+                liquidation_multiplier,
+                wage,
+            );
+        }
+        if !within_paid_capacity || (!city_funded && building.operating_budget < wage) {
+            if within_paid_capacity {
+                building.unpaid_cash_wages_in_window =
+                    building.unpaid_cash_wages_in_window.saturating_add(1);
+            }
+            let unpaid = &mut agents.consecutive_unpaid_days[agent_idx];
+            *unpaid = unpaid.saturating_add(1);
+            if *unpaid >= JOB_UNPAID_ABANDON_DAYS {
+                release_worker(agents, allocator, agent_idx, work);
+                debug_log!(
+                    "economy",
+                    "agent_idx={} fired self from insolvent building={} due to consecutive unpaid days",
+                    agent_idx,
+                    work
+                );
+            }
+            return None;
+        }
+        let income_tax = tax_amount(wage, income_tax_rate);
+        let net_wage = wage - income_tax;
+        if city_funded {
+            *treasury_balance -= f64::from(wage);
+            self.day_totals.city_service_wages.total += wage;
+            if power_plant {
+                self.day_totals.city_service_wages.power += wage;
+            }
+        } else {
+            building.operating_budget -= wage;
+            self.day_totals.private_payroll += f64::from(wage);
+        }
+        building.paid_workers_in_window = building.paid_workers_in_window.saturating_add(1);
+        self.households[household_id].budget += net_wage;
+        let ledger = &mut self.daily_ledgers[household_id];
+        ledger.wage_income += net_wage;
+        ledger.paid_workers = ledger.paid_workers.saturating_add(1);
+        agents.consecutive_unpaid_days[agent_idx] = 0;
+        Some(WagePayment {
+            building: work,
+            gross: wage,
+            income_tax,
+            city_funded,
+        })
+    }
+
+    // Job searches repeat for a worker only after a multi-day lock, so a commute priced a day
+    // ago is rarely asked again. Expiring each quote a day after it was added bounds the cache
+    // to one day's searches (it grew to 7.4M entries at 30k by day 15 without a limit) and
+    // keeps the daily pricing cadence without a midnight clear (`SIM-02-G`). O(expired).
+    pub(super) fn expire_workplace_route_cache(&mut self) {
+        self.workplace_route_cache_pass = self.workplace_route_cache_pass.wrapping_add(1);
+        while let Some(&(pass, key)) = self.workplace_route_cache_order.front() {
+            if self.workplace_route_cache_pass.wrapping_sub(pass) < WORKPLACE_QUOTE_PASSES {
+                break;
+            }
+            self.workplace_route_cache_order.pop_front();
+            self.workplace_route_cache.remove(&key);
+        }
     }
 
     fn refresh_workplace_route_cache(
@@ -715,6 +789,7 @@ impl HouseholdSystem {
             || self.workplace_route_cache_cch_generation != cch_generation
         {
             self.workplace_route_cache.clear();
+            self.workplace_route_cache_order.clear();
             self.workplace_route_cache_building_revision = building_revision;
             self.workplace_route_cache_entrance_revision = entrance_revision;
             self.workplace_route_cache_cch_generation = cch_generation;
@@ -1009,48 +1084,6 @@ fn eject_inactive_work_assignments(
         allocator.set_worker_count(work, allocator.buildings[work].worker_count.saturating_sub(1));
         agents.assign_work_building(i, usize::MAX, 0);
     }
-}
-
-// Hiring, payroll and shedding share the latest funding census (`ECON-17`). The current
-// physical workplace still bounds it if a work area shrank after that census.
-fn funded_worker_capacity(
-    catalog: &RuntimeEconomyCatalog,
-    job_capacities: &[u32],
-    building_idx: usize,
-    building: &Building,
-) -> Option<u32> {
-    let profile = active_work_profile(catalog, building)?;
-    Some(
-        job_capacities
-            .get(building_idx)
-            .copied()
-            .unwrap_or(0)
-            .min(physical_worker_capacity_for_profile(building, profile)),
-    )
-}
-
-fn shed_unfunded_workers(
-    agents: &mut AgentSystem,
-    allocator: &mut BuildingAllocator,
-    catalog: &RuntimeEconomyCatalog,
-    job_capacities: &[u32],
-) {
-    let funded_capacity_by_building: Vec<Option<u32>> = allocator
-        .buildings
-        .par_iter()
-        .enumerate()
-        .map(|(building_idx, building)| {
-            let profile = active_work_profile(catalog, building)?;
-            if profile.kind == EconomyProfileRuntimeKind::ServiceStore
-                || profile_kind_uses_explicit_work_area(profile.kind)
-            {
-                funded_worker_capacity(catalog, job_capacities, building_idx, building)
-            } else {
-                None
-            }
-        })
-        .collect();
-    enforce_worker_capacities(agents, allocator, &funded_capacity_by_building);
 }
 
 fn enforce_worker_capacities(
