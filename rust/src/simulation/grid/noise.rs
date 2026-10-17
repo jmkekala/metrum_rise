@@ -2,10 +2,13 @@
 
 //! Traffic and building noise emission/diffusion system.
 
+use std::ops::Range;
+
 use super::data_grid::DataGrid;
 use crate::config::HIGH_NOISE_ROAD_THRESHOLD_MS;
-use crate::simulation::buildings::allocator::BuildingAllocator;
-use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
+use crate::simulation::core::config::WorldConfig;
+use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::zoning::ZoneType;
 
 /// A grid-based system that simulates noise pollution.
@@ -13,83 +16,110 @@ use crate::simulation::zoning::ZoneType;
 /// Noise is emitted at road geometry points (based on speed limit) and by commercial/industrial buildings,
 /// then diffuses and decays across the environmental grid per tick.
 pub struct NoiseSystem {
-    /// The underlying 2D grid storing noise levels.
+    /// The current noise level grid (0-100), which every reader uses.
     pub grid: DataGrid<f32>,
-    /// Temporary buffer used during the diffusion pass.
-    pub swap: DataGrid<f32>,
+    /// The next grid being built (`SIM-02-H`): the emissions folded so far, then diffused rows.
+    pub back: DataGrid<f32>,
 }
 
 impl NoiseSystem {
     /// Creates a new noise system for the given map dimensions.
-    pub fn new(config: &crate::simulation::core::config::WorldConfig) -> Self {
+    pub fn new(config: &WorldConfig) -> Self {
         let (w, h) = config.get_env_grid_size();
         Self {
             grid: DataGrid::new(w, h, 0.0),
-            swap: DataGrid::new(w, h, 0.0),
+            back: DataGrid::new(w, h, 0.0),
         }
     }
 
-    /// Simulates one step of noise emission, diffusion, and decay.
+    /// Simulates one whole step of noise emission, diffusion, and decay: buildings in dense
+    /// order, then road edges, then every row. One rolling sweep ([`super::sweep`]) produces the
+    /// same grid.
     pub fn tick(
         &mut self,
         allocator: &BuildingAllocator,
         graph: &RegionGraph,
-        config: &crate::simulation::core::config::WorldConfig,
+        config: &WorldConfig,
     ) {
-        std::mem::swap(&mut self.grid, &mut self.swap);
-        self.grid.data.fill(0.0);
-
-        let w = self.grid.width;
-        let h = self.grid.height;
-
-        // 1. Emission (Sequential - small count)
-        for b in &allocator.buildings {
-            let (gx_raw, gy_raw) = config.world_to_env_grid(b.center_x, b.center_y);
-            let gx = gx_raw.round() as i32;
-            let gy = gy_raw.round() as i32;
-
-            if gx >= 0 && gx < w as i32 && gy >= 0 && gy < h as i32 {
-                let gx = gx as usize;
-                let gy = gy as usize;
-                if b.zone_type == ZoneType::Commercial
-                    && let Some(val) = self.grid.get_mut(gx, gy)
-                {
-                    *val = (*val + 30.0).min(100.0);
-                }
-                if b.zone_type == ZoneType::Industrial
-                    && let Some(val) = self.grid.get_mut(gx, gy)
-                {
-                    *val = (*val + 80.0).min(100.0);
-                }
-            }
+        self.clear_back();
+        // Sequential: building and edge counts are small compared to the grid.
+        for building in &allocator.buildings {
+            self.emit_building(building, config);
         }
-
-        // 1B. Emission (Roads)
         for edge in graph.edges() {
-            if edge.deleted {
-                continue;
+            self.emit_edge(edge, config);
+        }
+        self.diffuse_back_rows(0..self.back.height);
+        self.swap_buffers();
+    }
+
+    /// Zeroes the back grid before the first emission of a step. O(grid).
+    pub(crate) fn clear_back(&mut self) {
+        self.back.data.fill(0.0);
+    }
+
+    /// Adds `building`'s emission to the back grid at its cell: 30 when commercial, 80 when
+    /// industrial, saturating at 100. O(1).
+    pub(crate) fn emit_building(&mut self, building: &Building, config: &WorldConfig) {
+        let w = self.back.width;
+        let h = self.back.height;
+        let (gx_raw, gy_raw) = config.world_to_env_grid(building.center_x, building.center_y);
+        let gx = gx_raw.round() as i32;
+        let gy = gy_raw.round() as i32;
+
+        if gx >= 0 && gx < w as i32 && gy >= 0 && gy < h as i32 {
+            let gx = gx as usize;
+            let gy = gy as usize;
+            if building.zone_type == ZoneType::Commercial
+                && let Some(val) = self.back.get_mut(gx, gy)
+            {
+                *val = (*val + 30.0).min(100.0);
             }
-            let road_noise = if edge.speed_limit > HIGH_NOISE_ROAD_THRESHOLD_MS {
-                4.0
-            } else {
-                1.0
-            };
-            for p in &edge.physical_geometry {
-                let (gx_raw, gz_raw) = config.world_to_env_grid(p.x, p.z);
-                let gx = gx_raw.round() as i32;
-                let gz = gz_raw.round() as i32;
-                if gx >= 0
-                    && gx < w as i32
-                    && gz >= 0
-                    && gz < h as i32
-                    && let Some(val) = self.grid.get_mut(gx as usize, gz as usize)
-                {
-                    *val = (*val + road_noise).min(100.0);
-                }
+            if building.zone_type == ZoneType::Industrial
+                && let Some(val) = self.back.get_mut(gx, gy)
+            {
+                *val = (*val + 80.0).min(100.0);
             }
         }
+    }
 
-        diffuse_emissions!(self.grid, self.swap, 0.50, 0.50, 0.90);
+    /// Adds a live road edge's emission to the back grid: 1, or 4 above the high-noise speed,
+    /// at each physical geometry point, saturating at 100. O(points).
+    pub(crate) fn emit_edge(&mut self, edge: &Edge, config: &WorldConfig) {
+        if edge.deleted {
+            return;
+        }
+        let w = self.back.width;
+        let h = self.back.height;
+        let road_noise = if edge.speed_limit > HIGH_NOISE_ROAD_THRESHOLD_MS {
+            4.0
+        } else {
+            1.0
+        };
+        for p in &edge.physical_geometry {
+            let (gx_raw, gz_raw) = config.world_to_env_grid(p.x, p.z);
+            let gx = gx_raw.round() as i32;
+            let gz = gz_raw.round() as i32;
+            if gx >= 0
+                && gx < w as i32
+                && gz >= 0
+                && gz < h as i32
+                && let Some(val) = self.back.get_mut(gx as usize, gz as usize)
+            {
+                *val = (*val + road_noise).min(100.0);
+            }
+        }
+    }
+
+    /// Diffuses `rows` of the back grid, which hold their emissions, from the front grid and
+    /// clamps them to 0-100. O(rows × width).
+    pub(crate) fn diffuse_back_rows(&mut self, rows: Range<usize>) {
+        diffuse_emissions!(self.back, self.grid, rows, 0.50, 0.50, 0.90);
+    }
+
+    /// Makes the finished back grid the front; the old front becomes the next back. O(1).
+    pub(crate) fn swap_buffers(&mut self) {
+        std::mem::swap(&mut self.grid, &mut self.back);
     }
 }
 #[cfg(test)]

@@ -8,8 +8,8 @@ simulation tiers. Economy and growth rules stay in [`economy.md`](economy.md) an
 **Status:** `SIM-02` in progress. `SIM-02-A` (guards and pre-refactor baseline), `SIM-02-B`
 (save cutover and handles), `SIM-02-C` (slot clock, scheduler, timing wheel and phases),
 `SIM-02-D` (passive deadlines and construction completion), `SIM-02-E` (trips as timed
-events), `SIM-02-F` (per-entity hourly economy) and `SIM-02-G` (per-entity daily settlement)
-are done; see the
+events), `SIM-02-F` (per-entity hourly economy), `SIM-02-G` (per-entity daily settlement) and
+`SIM-02-H` (rolling environment grids and the cell-lot queue) are done; see the
 [`SIM-02-A` baseline](#sim-02-a-guards-and-pre-refactor-baseline) and the
 [step results](#step-results). Until each migration step lands,
 the current cadence in
@@ -183,6 +183,17 @@ and runs after the phases; the rolling road length is its first system. Tools an
 step a whole day run the environment grids, every entity's daily phase in order, then the
 close.
 
+**Implemented in `SIM-02-H`.** The environment grids leave the fixed slots: `environment grids`
+is the second `Rolling { period: Day }` system, one `Chunk` per slot after the road length (see
+[Snapshots](#snapshots)). Tools and tests that step a whole day run every chunk of one sweep in
+order instead of the midnight pass.
+
+**Implemented in `SIM-02-H`.** `Queue { quota }` systems cost `Quota`: at most their quota of
+requests per slot, each bounded by its own size, and an O(1) check with nothing queued. The
+schedule rejects any other cost and a zero quota. Queues run after the daily phases and before
+the rolling chunks. The first is `cell lots`, quota 1 ([request queues](#request-queues)). Tools
+and tests that step a whole hour serve the hour's quota after every phase.
+
 ### Phases
 
 - Each building and household has a daily phase `d` in `0..23,040`, a stable hash of its seed:
@@ -319,6 +330,32 @@ Readers only ever see a completed snapshot. This replaces the rule that demand n
 half-updated economy state. Front buffer, back buffer and cursor are saved, so a loaded game
 continues bit-identically.
 
+**Implemented in `SIM-02-H`** (`simulation/grid/sweep.rs`): pollution, noise and desirability
+are one rolling sweep per day. Each keeps its front grid, which every reader uses, and a back
+grid. With `E` = 11,520, half the day's slots:
+
+- **Start:** the day's first slot freezes the building handle capacity `Hb` and the road edge
+  count `He`, and zeroes the pollution and noise backs. This memset of two grids is the sweep's
+  only O(grid) step.
+- **Emissions:** slot `k < E` folds building handle slots `[k·Hb/E, (k+1)·Hb/E)` and road edges
+  `[k·He/E, (k+1)·He/E)` into the backs, with the old per-building and per-edge rules. A freed
+  handle slot is skipped; a slot reused since the day's start emits its new building.
+- **Diffusion:** slot `E + j` diffuses rows `[j·R/E, (j+1)·R/E)` of the `R`-row backs from the
+  fronts, with the old weights and neighbour order, then composes desirability for the same rows
+  from the pollution and noise backs.
+- **Swap:** the day's last slot swaps all three backs in. Over unchanged buildings and roads one
+  sweep equals one old whole-grid step bit for bit. Emissions are whole numbers, so their order
+  changes neither the sums nor the saturation at 100.
+- **Timing:** readers see the sweep that finished at the end of the previous day, built from the
+  buildings and roads of that day's first 12 hours. The midnight pass ran at 00:00 from the
+  state at midnight. A sweep starts only at a day's first slot, so a world started mid-day gets
+  its first grids at the end of its first full day. A sweep that misses a slot, as when the clock
+  is set directly, is abandoned.
+- **Saved:** the pollution and noise fronts and backs, and in `scheduler_state` the frozen
+  counts, the next chunk and the next edge. Loading rebuilds the desirability back from the other
+  backs. Saving drops deleted edges, so the frozen edge count and the edge cursor are saved as
+  indices among the saved edges.
+
 ### Request queues
 
 Order-dependent matching against shared capacity runs as queues: job search, freight requests,
@@ -328,6 +365,32 @@ requests oldest first, ties broken by handle, up to its quota per slot, against 
 Rate caps such as the daily departure limit accrue per slot through the existing credit helpers
 (`demand/credits.rs`). The construction queue (`pending_demand_spawns`) is the precedent and
 moves onto the timing wheel.
+
+**Implemented in `SIM-02-H`:** dirty cell-lot regions (`zoning/system/cell_lots/dirty.rs`,
+`nodes/sim/zoning.rs`).
+
+- A region is one 512 m chunk, marked as today. Each slot the `cell lots` queue regenerates
+  the generated cells and lots of at most one region, oldest first, and none while a road edit
+  is staged. The hourly demand pass no longer drains the regions; it plans on the lots served
+  so far, so a region marked late in an hour waits for the queue rather than for the hour.
+- A chunk marked again while pending keeps its place. The chunks marked between two services
+  join the queue together in coordinate order, so the order never depends on hash iteration.
+- A catalog refresh (an asset reload, a dense-terrain undo, or a load whose live registry
+  yields other lot sizes than the save recorded) re-derives every painted chunk. Unless an
+  editing path drains them at once, those chunks are served only in slots with nothing else
+  queued, so a load's refresh never delays the regions its save queued.
+- Editing paths (road commits, undo, asset reload, entrance rebuilds) still regenerate every
+  pending region synchronously, in coordinate order.
+- Saves keep the queue in order (`zoning_cell_lot_queue`), flagging the chunks marked since
+  the last service. Load replaces the regions that restoring parcels marked, since the saved
+  lots already hold their derivation. Saves also record the asset footprint sizes the lots
+  were derived with (`zoning_cell_lot_catalog`), unless a catalog refresh is still pending. A
+  load whose live catalog yields the same sizes keeps the saved lots and invalidates only the
+  generated cells, which saves leave out and the overlay rebuilds on demand; the sizes are all
+  the derivation reads from the catalog.
+- Cost per slot: O(1) with nothing queued. A served region costs O(region) with the cached
+  asset sizes, plus repairing the building-site index or road surface if an earlier system in
+  the slot left them stale, a repair the frame's render snapshot otherwise makes.
 
 ### Pure jobs
 
@@ -399,6 +462,13 @@ three builds stayed within 2.60–2.75 ms. Steps from `SIM-02-D` on compare agai
 `PERF-01` on the same build (`tools/perf_contract.py --binary "$TEST_BINARY"`, 70.6 s): mean
 hour / day 22.13 / 7.96 ms at 10k and 78.04 / 62.12 ms at 30k; fiscal stress 41.84 / 23.55 ms
 and 105.58 / 88.42 ms. Later steps compare against these.
+
+**Timing runs need an idle machine** (calibrated 2026-10-17 on `SIM-02-H`). A release build on
+the efficiency cores at the lowest CPU and I/O priority (`taskset -c 16-23 nice -n 19 ionice
+-c3`), running alongside the pinned benchmark, raised the 10k and 30k 32× means by 50% and 41%
+and their p99 by 14% and 28%. A 100k 1× run that overlapped another build read 15% slower per
+frame. Builds and tests therefore never run during `PERF-07` or `PERF-01`; the envelope,
+determinism checks and `./run.sh --test` are not timing runs and may share the machine.
 
 ## GPU compute
 
@@ -781,6 +851,58 @@ on a fresh `$ARTIFACTS` directory.
   save round trip covers the day totals, coal stock, city input day, request queues and window
   counts.
 
+#### `SIM-02-H` — rolling environment grids and the cell-lot queue (2026-10-17)
+
+- **Save format 94:** pollution and noise save their back grids beside their fronts;
+  `scheduler_state` saves the environment sweep (frozen building handles and edges, next edge,
+  next chunk); `zoning_cell_lot_queue` holds the pending lot regions in service order and
+  `zoning_cell_lot_catalog` the asset sizes the lots were derived with. The Kuopio fixture gained
+  the columns and tables and its hash in `placements.json`.
+- **Envelope and bursts** (`tools/sim02_gate.py envelope determinism --bursts
+  departures,settlements --binary "$TEST_BINARY"`, `RAYON_NUM_THREADS=8`): every metric of every
+  workload equals `SIM-02-G`'s, the notes included. The grids are read only by the map
+  overlays, and the hourly demand passes placed the same buildings on the lots the queue served.
+- **Determinism:** repeat run, 1 and 3 workers and save/reload continuation are identical (10k,
+  three days).
+- **`PERF-07`** (`tools/sim02_gate.py perf07 --cpus 0,2,4,6,8,10,12,14 --binary "$TEST_BINARY"
+  --perf07-baseline` the pinned `SIM-02-A` report, `RAYON_NUM_THREADS=8`). Max / p99 / mean in
+  ms, `SIM-02-G` in parentheses: 10k 1× 21.8 / 6.23 / 2.43 (192.2 / 6.29 / 2.43), 10k 32× 22.3 /
+  8.89 / 2.86 (192.6 / 8.33 / 2.95), 30k 1× 128.6 / 7.40 / 3.34 (498.6 / 7.37 / 3.34), 30k 32×
+  134.9 / 26.78 / 5.32 (500.4 / 26.85 / 5.28), 100k 1× 466.8 / 19.06 / 12.01 (1,970.1 / 19.41 /
+  12.09), 100k 32× 474.5 / 188.89 / 22.30 (1,948.5 / 185.93 / 21.90). Every gate limit passes.
+  - The worst frame fell to a quarter of `SIM-02-G`'s or less at every tier. The 01:00 spike
+    was mostly the catalog refresh every load made, which re-derived every painted chunk's lots
+    in the first hourly demand pass; a load now skips it when the catalog is unchanged.
+  - The worst frames at 30k, 01:00, 03:00 and 06:00, carry 64–89 ms of lot work beside the
+    hour. Saves leave out the generated cells, so loading invalidates them, and the first lot
+    regions served after loading rebuild them: 61–88 ms for each of the first four regions at
+    30k, then about 3 ms a region (a diagnostic run with the `economy_phases` channel). The
+    first hour frames at 100k carry about 85 ms more slot work than on `SIM-02-G` for the same
+    reason (cell generation up to 85 ms a region). `SIM-02-K` rebuilds them during loading or in
+    bounded parts (phase inventory).
+  - The first full run failed 100k 1× on p99 (22.94 against a limit of 19.10, mean 13.88 ms):
+    a release build ran on the efficiency cores for 14 of its 20 minutes. The idle rerun above
+    passes. See the benchmarking note under [`PERF-07`](#frame-budget-perf-07).
+- **`PERF-01`** (`tools/perf_contract.py --binary "$TEST_BINARY"` under `taskset -c
+  0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`), two runs alternating with `SIM-02-A` (hour / day
+  means in ms, `SIM-02-A` first): baseline 10k 17.3 / 7.6–8.5 against 8.2–8.3 / 0.00; baseline
+  30k 63.0–63.9 / 49.6–49.8 against 35.7 / 0.00; fiscal 10k 27.7–28.2 / 22.6–23.5 against
+  15.8–15.9 / 0.00; fiscal 30k 79.3–80.7 / 68.8–70.1 against 53.1–53.8 / 0.00. The same eight
+  work-count limits fail as on `SIM-02-G`; no time limit fails. The hour no longer includes
+  cell-lot regeneration, which runs in the per-slot queue that `PERF-01` does not time:
+  baseline 30k spends 260 ms a day on lots against 466 ms on `SIM-02-G`, whose total included
+  the load refresh, and at 10k the refresh was the only lot work. The census, planning and
+  logistics totals are within 2% of `SIM-02-G`'s, and the day is the calendar close alone.
+- **Build identity:** envelope, determinism, `PERF-07`, `PERF-01` and the tests ran on the
+  committed build (rustc 1.98.1).
+- **Tests:** 2,448 release library tests, the integration tests and `./run.sh --test` (isolated
+  profile) pass; clippy is clean. New: one day's sweep equals one whole-grid step bit for bit,
+  and a sweep started mid-day publishes nothing; the sweep's saved edge indices skip deleted
+  edges; the lot queue serves one region per slot, oldest first, and holds while a road edit is
+  staged; queues run after the entity phases and before the rolling chunks; pending lot regions
+  round-trip in service order; a load with an unchanged catalog keeps the saved lots, and another
+  catalog re-derives them.
+
 ### Phase inventory
 
 Every phase of today's operational hour, hourly demand pass and daily tick, and where it goes.
@@ -810,14 +932,14 @@ Every phase of today's operational hour, hourly demand pass and daily tick, and 
 | `plan_and_apply_visible_service_visits` | Capped at 64 per hour | Visit queue with per-slot quota | J |
 | Funding census (`job_funding.refresh`) | Superlinear (`PERF-03`/`PERF-04`) | Incremental totals plus rolling snapshot | I |
 | Job search | Gated by the job lock (`job_lock_until_day`) | Job queue on lock deadline | J |
-| `prepare_cell_lots_internal` | O(dirty regions), can spike | Dirty-region queue with quota | H |
+| `prepare_cell_lots_internal` | O(dirty regions), can spike | Dirty-region queue with quota | H (done) |
 | Demand snapshot (`from_runtime_with_funding`) | O(households + buildings + nodes) hourly | Rolling snapshot | I |
 | Demand planning (`plan_private_building_actions`) | Scans all parcels hourly | Open question 1 | I |
 | Household admission | Bounded; all carriers leave on the hour | Admission queue with credit; departure events | E (departures done), J |
 | Construction queue | One start per minute | Timed events | C (done) |
 | `execute_building_actions` | Plan-bounded | Level-change queue with quota | J |
 | `allocator.maintain`, `cleanup_stale_buildings` | O(buildings), serial | Compatibility check at building phase; removals queued | G (done), J |
-| Pollution, noise, desirability | O(grid) plus O(buildings + edges) emission | Rolling grid sweeps | H |
+| Pollution, noise, desirability | O(grid) plus O(buildings + edges) emission | Rolling grid sweeps | H (done) |
 | Daily ledger begin and finish, `reset_daily_ledgers`, `reset_daily_input_accumulators` | O(households), O(buildings) | Each entity rolls its own window at its phase | G (done) |
 | `job_lock_days` decrement | O(agents) | Passive deadline | D (done) |
 | Bankruptcy, wages, property tax, utilities, profit tax | Serial over buildings and agents | Per building at its daily phase, same internal order; wages at each worker's phase | G (done) |
@@ -836,7 +958,7 @@ Per-frame costs found by the `SIM-02-A` `PERF-07` baseline, outside the boundary
 | Render snapshot (`build_snapshot_reusing`) | 3–12 ms: a lane pose for every agent before camera culling, serial | Cull before posing; bucket in parallel | K |
 | Agent movement in departure frames | Up to 4 ms at 10k and 17 ms at 30k (32×) | Departures spread by events; `PERF-06` limits | E, K |
 | One queued construction start | 14–21 ms for a single placement | Placement split across slots | K |
-| First boundary after loading | About 10× an ordinary hour: derived economy caches rebuild | Rebuilt during loading | K |
+| First boundary after loading | About 10× an ordinary hour. `SIM-02-H` found most of it was the catalog refresh every load made, now skipped when the catalog is unchanged. What remains are the generated cells, which loading invalidates and the first lot regions served afterwards rebuild: 61–88 ms each at 30k | Rebuilt during loading, or in bounded parts | H (refresh, done), K |
 | 100k fixture traffic (found in `SIM-02-E`) | About 45,000 of 145,000 agents moving at any time (30,000 on lanes, 15,000 in junctions) and 15,000 shopping trips in flight around the clock, on `SIM-02-D` too: the network is saturated, so movement and trip checks run for most of the city | Find why trips stall at 100k (junction throughput, routing); movement within `PERF-06` limits | K |
 
 ### Open questions
@@ -1143,3 +1265,34 @@ alternatives and the evidence. The user reviews these on return.
   runs at 30k only, where 12–15 businesses fail a day around that day. Alternatives: a later
   snapshot day (changes every `PERF-01` and `PERF-07` workload), or a building removal injected
   into the continuation check (exercises an edit, not the economy's own churn).
+- **`SIM-02-H` — environment grids: emissions first, diffusion second.** The midnight pass rebuilt
+  pollution, noise and desirability at 00:00 from the state at midnight. The sweep folds building
+  handle slots and road edges over the day's first 11,520 slots, diffuses rows over the rest and
+  swaps at the last slot, so readers see the previous day's sweep, built from the buildings and
+  roads of its first 12 hours. Alternatives: diffuse each row band as soon as its emitters are
+  folded (emitters are in handle order, not row order, so no band is complete before the
+  emission half ends), or two day-long sweeps, one per stage (grids two days old). Evidence: the
+  three grids are read only by the map overlays, so no simulation result depends on when they
+  publish; every envelope metric equals `SIM-02-G`'s.
+- **`SIM-02-H` — one O(grid) step a day.** The sweep's first slot zeroes the pollution and
+  noise backs. At the default 40 m cells over 20 km that is a memset of 250,000 cells (1 MB)
+  per grid. Alternative: a third buffer per grid, cleared in chunks during the diffusion half,
+  for 2 MB more memory and a second cursor.
+- **`SIM-02-H` — cell lots: one region per slot.** The `cell lots` queue serves at most one
+  512 m region per slot, 960 an hour, oldest first; editing paths still drain every pending
+  region at once, because their own previews and commits read the lots. A catalog refresh,
+  which every load makes because the live asset registry replaces the saved one, is not saved
+  and is served only in slots with nothing else queued, so it never delays the regions a save
+  queued. Alternatives: a quota that grows with the queue (no per-slot bound), or draining the
+  refresh during loading. Evidence: every envelope metric equals `SIM-02-G`'s, so the hourly
+  demand pass placed the same buildings on lots served by the queue.
+- **`SIM-02-H` — a load keeps lots derived with the same catalog.** Every load used to refresh
+  the catalog, because the live asset registry replaces the saved one. The first gate run
+  served that refresh one region per idle slot: about 10 ms a region at 30k, so after loading
+  the 30k city ran hundreds of frames over 8 ms at 1× and up to eight regions a frame at 32×,
+  where the p99 rose to 39.4 ms against a limit of 32.0. Before `SIM-02-H` the same refresh was
+  most of the 01:00 spike. The derivation reads only the sorted list of compatible asset
+  footprint sizes from the catalog, so saves now record that list and a load with an equal
+  live list skips the refresh. Alternatives: serve refresh regions at a lower rate (each still
+  costs about 10 ms), or split a region's derivation across slots (`SIM-02-K` may still need it
+  for edits that dirty many regions).

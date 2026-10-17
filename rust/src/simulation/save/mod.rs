@@ -465,7 +465,7 @@ fn write_snapshot(
     network::save_network(tx, view.graph, maps)?;
     agents::save_agents(tx, view.agents, view.graph, view.network, maps)?;
     workplace_quotes::save(tx, view.households, view.allocator, view.network, maps)?;
-    scheduler::save(tx, &view.scheduler)?;
+    scheduler::save(tx, &view.scheduler, view.graph)?;
     handles::save(
         tx,
         handles::HandleKind::Buildings,
@@ -709,8 +709,11 @@ pub(crate) fn load_from_sqlite(
         quarantined_parcels.is_empty(),
     )?;
 
+    // Desirability is a function of pollution and noise: the front of the fronts, and the back
+    // of the backs, whose rows the sweep has not composed yet are rewritten before they swap in.
     let mut desirability = DesirabilitySystem::new(&config);
     desirability.tick(&pollution, &noise);
+    desirability.compose_back_rows(0..desirability.back.height, &pollution, &noise);
 
     let service_policy = if sqlite_table_exists(&conn, "city_service_policy")? {
         match conn.query_row(

@@ -6,52 +6,65 @@
 //! with row-major indexing and `rayon::par_chunks_mut` parallelism for tick updates.
 //!
 //! Tick order within the grid module: pollution → noise → desirability.
-//! Desirability reads from pollution and noise, so it must run last.
+//! Desirability reads from pollution and noise, so it must run last. The simulation runs the
+//! three as one rolling sweep per day ([`sweep`]); `tick` is the same step over the whole grid.
 
 // Expand per field so Rayon closures retain constant coefficients, without runtime weight captures.
-// Neighbor order and arithmetic remain identical for both environmental fields.
+// Neighbor order and arithmetic remain identical for both environmental fields. Diffuses rows
+// `$rows` of `$target`, which holds their emissions, from the whole `$previous` grid.
 macro_rules! diffuse_emissions {
-    ($target:expr, $previous:expr, $own_weight:expr, $neighbor_weight:expr, $retention:expr) => {{
+    (
+        $target:expr,
+        $previous:expr,
+        $rows:expr,
+        $own_weight:expr,
+        $neighbor_weight:expr,
+        $retention:expr
+    ) => {{
         let target = &mut $target;
         let previous = &$previous;
+        let rows: std::ops::Range<usize> = $rows;
         use rayon::prelude::*;
         let w = target.width;
         let h = target.height;
-        target
-            .data
-            .par_chunks_mut(w)
-            .enumerate()
-            .for_each(|(y, row)| {
-                for x in 0..w {
-                    let current = *previous.get(x, y).unwrap_or(&0.0);
-                    let mut neighbor_sum = 0.0;
-                    let mut count = 0.0;
-                    if x > 0 {
-                        neighbor_sum += *previous.get(x - 1, y).unwrap_or(&0.0);
-                        count += 1.0;
+        let first = rows.start;
+        if !rows.is_empty() {
+            target.data[rows.start * w..rows.end * w]
+                .par_chunks_mut(w)
+                .enumerate()
+                .for_each(|(offset, row)| {
+                    let y = first + offset;
+                    for x in 0..w {
+                        let current = *previous.get(x, y).unwrap_or(&0.0);
+                        let mut neighbor_sum = 0.0;
+                        let mut count = 0.0;
+                        if x > 0 {
+                            neighbor_sum += *previous.get(x - 1, y).unwrap_or(&0.0);
+                            count += 1.0;
+                        }
+                        if x < w - 1 {
+                            neighbor_sum += *previous.get(x + 1, y).unwrap_or(&0.0);
+                            count += 1.0;
+                        }
+                        if y > 0 {
+                            neighbor_sum += *previous.get(x, y - 1).unwrap_or(&0.0);
+                            count += 1.0;
+                        }
+                        if y < h - 1 {
+                            neighbor_sum += *previous.get(x, y + 1).unwrap_or(&0.0);
+                            count += 1.0;
+                        }
+                        let average = if count > 0.0 {
+                            neighbor_sum / count
+                        } else {
+                            0.0
+                        };
+                        let propagated =
+                            (current * $own_weight + average * $neighbor_weight) * $retention;
+                        row[x] = (row[x] + propagated).min(100.0).max(0.0);
                     }
-                    if x < w - 1 {
-                        neighbor_sum += *previous.get(x + 1, y).unwrap_or(&0.0);
-                        count += 1.0;
-                    }
-                    if y > 0 {
-                        neighbor_sum += *previous.get(x, y - 1).unwrap_or(&0.0);
-                        count += 1.0;
-                    }
-                    if y < h - 1 {
-                        neighbor_sum += *previous.get(x, y + 1).unwrap_or(&0.0);
-                        count += 1.0;
-                    }
-                    let average = if count > 0.0 {
-                        neighbor_sum / count
-                    } else {
-                        0.0
-                    };
-                    let propagated =
-                        (current * $own_weight + average * $neighbor_weight) * $retention;
-                    row[x] = (row[x] + propagated).min(100.0).max(0.0);
-                }
-            });
+                });
+        }
     }};
 }
 
@@ -63,6 +76,8 @@ pub mod desirability;
 pub mod noise;
 /// Industrial pollution simulation.
 pub mod pollution;
+/// The day-long rolling sweep of pollution, noise and desirability.
+pub mod sweep;
 
 #[cfg(test)]
 mod tests {

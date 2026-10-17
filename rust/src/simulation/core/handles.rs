@@ -268,6 +268,18 @@ impl<K> HandleTable<K> {
             .then_some(slot.dense as usize)
     }
 
+    /// Handle slots, live or free: the capacity a rolling snapshot freezes at its period start.
+    pub(crate) fn capacity(&self) -> usize {
+        self.slots.len()
+    }
+
+    /// Dense index of the entity in handle slot `index`, whatever its generation; `None` while
+    /// the slot is free or beyond the capacity.
+    pub(crate) fn dense_at(&self, index: usize) -> Option<usize> {
+        let slot = self.slots.get(index)?;
+        (slot.dense != NONE_INDEX).then_some(slot.dense as usize)
+    }
+
     /// Saved form; [`Self::restore`] rebuilds an identical table.
     pub(crate) fn save(&self) -> SavedHandleTable {
         SavedHandleTable {

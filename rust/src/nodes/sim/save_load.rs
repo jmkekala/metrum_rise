@@ -57,6 +57,7 @@ impl SimCore {
                             self.road_length.measured,
                         )
                     },
+                    environment: self.environment_sweep,
                     events: events
                         .pending()
                         .into_iter()
@@ -119,7 +120,11 @@ impl SimCore {
         self.allocator.now_slot = self.time.absolute_slot();
         // Vacancy capacity and admission eligibility require the restored asset registry.
         self.allocator.rebuild_zone_index();
-        self.zoning.invalidate_cell_lot_assets();
+        // A live catalog with the saved lot sizes keeps the saved lots (`SIM-02-H`).
+        let lot_sizes = self
+            .allocator
+            .cell_lot_sizes(&self.zoning, self.demand.runtime_catalog());
+        self.zoning.restore_cell_lot_assets(lot_sizes);
         // Transforms and entrances were restored before agent lane references.
         self.allocator
             .rebuild_building_site_clients(self.zoning.config.zone_cell_m);
@@ -138,6 +143,7 @@ impl SimCore {
             next_edge,
             measured,
         };
+        self.environment_sweep = loaded.scheduler.environment;
         self.agents.rebuild_arrival_carriers();
         self.treasury = loaded.treasury;
         self.service_policy = loaded.service_policy;

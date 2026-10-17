@@ -32,7 +32,8 @@ pub struct ZoningSystem {
     pub parcels: ParcelStore,
     /// Road-generated cell paint and derived lot coverage; unpainted cells reserve no land.
     pub(crate) cells: super::cells::CellStore,
-    cell_lot_dirty: HashSet<(i32, i32)>,
+    // Pending dirty lot regions, served by the `cell lots` queue (`SIM-02-H`).
+    cell_lot_queue: cell_lots::CellLotQueue,
     cell_external_revision: u64,
     /// Cached compatible footprints, invalidated by the asset registry's explicit refresh hook.
     pub(crate) cell_lot_sizes: Option<Vec<super::cells::CellLotSize>>,
@@ -65,7 +66,7 @@ impl ZoningSystem {
             profiles,
             parcels: ParcelStore::default(),
             cells: super::cells::CellStore::default(),
-            cell_lot_dirty: HashSet::new(),
+            cell_lot_queue: Default::default(),
             cell_external_revision: 0,
             cell_lot_sizes: None,
             config: *config,
@@ -80,7 +81,7 @@ impl ZoningSystem {
         let had_parcels = !self.parcels.parcels().is_empty();
         self.parcels.clear();
         self.cells.clear();
-        self.cell_lot_dirty.clear();
+        self.cell_lot_queue.clear();
         self.cell_external_revision = self.cell_external_revision.wrapping_add(1);
         self.cell_lot_sizes = None;
         if had_parcels {

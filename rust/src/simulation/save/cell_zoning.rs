@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! Cell zoning authority persistence; generated meshes, empty cells and indices are rebuilt.
+//! The pending dirty lot regions are saved in service order, with the asset sizes the lots were
+//! derived with (`SIM-02-H`).
 
 use super::{
     SaveLoadError, SaveLoadResult, SnapshotMaps, i64_to_u16, i64_to_u64, i64_to_usize, u64_to_i64,
@@ -15,7 +17,7 @@ use crate::simulation::zoning::cells::{
 };
 use crate::simulation::zoning::{ZoneType, ZoningSystem};
 use rayon::prelude::*;
-use rusqlite::{Connection, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::collections::{BTreeMap, HashSet};
 
 /// Writes authoritative frames, reservations and validated lot coverage in one save transaction.
@@ -70,6 +72,54 @@ pub(super) fn save(
             lot_stmt.execute(params![u64_to_i64(parcel.id().raw())?, json])?;
         }
     }
+    let mut queue_stmt = tx.prepare("INSERT INTO zoning_cell_lot_queue VALUES (?1, ?2, ?3, ?4)")?;
+    for (position, ((x, y), queued)) in zoning.saved_cell_lot_queue().into_iter().enumerate() {
+        queue_stmt.execute(params![usize_to_i64(position)?, x, y, i64::from(queued)])?;
+    }
+    if let Some(sizes) = zoning.saved_cell_lot_sizes() {
+        let json =
+            serde_json::to_string(sizes).map_err(|err| SaveLoadError::custom(err.to_string()))?;
+        tx.execute(
+            "INSERT INTO zoning_cell_lot_catalog VALUES (1, ?1)",
+            params![json],
+        )?;
+    }
+    Ok(())
+}
+
+/// Restores the pending dirty lot regions in saved order, replacing the regions the parcel
+/// restore marked: the saved lots already hold their derivation, so a loaded game serves the
+/// same regions in the same slots as the game that saved it.
+pub(super) fn load_lot_queue(conn: &Connection, zoning: &mut ZoningSystem) -> SaveLoadResult<()> {
+    let mut stmt = conn
+        .prepare("SELECT chunk_x, chunk_y, queued FROM zoning_cell_lot_queue ORDER BY position")?;
+    let mut rows = stmt.query([])?;
+    let mut entries: Vec<((i32, i32), bool)> = Vec::new();
+    while let Some(row) = rows.next()? {
+        let queued: i64 = row.get(2)?;
+        if !matches!(queued, 0 | 1) {
+            return Err(SaveLoadError::custom("invalid saved cell lot queue entry"));
+        }
+        entries.push(((row.get(0)?, row.get(1)?), queued == 1));
+    }
+    if !zoning.restore_cell_lot_queue(entries) {
+        return Err(SaveLoadError::custom(
+            "duplicate saved cell lot queue chunk",
+        ));
+    }
+    // The sizes the saved lots were derived with, checked against the live catalog when the
+    // loaded world is applied (`ZoningSystem::restore_cell_lot_assets`).
+    let json: Option<String> = conn
+        .query_row(
+            "SELECT sizes_json FROM zoning_cell_lot_catalog WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    zoning.cell_lot_sizes = json
+        .map(|json| serde_json::from_str(&json))
+        .transpose()
+        .map_err(|err| SaveLoadError::custom(format!("invalid saved cell lot sizes: {err}")))?;
     Ok(())
 }
 

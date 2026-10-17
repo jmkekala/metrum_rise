@@ -32,6 +32,7 @@ use crate::simulation::economy::logistics::{
 use crate::simulation::extraction::{ExtractorSite, ResourceExtractionSystem};
 use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
+use crate::simulation::grid::sweep::{EnvironmentSweep, SweepCapacities};
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::types::{
@@ -385,8 +386,19 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         .expect("save test parcel");
     let mut pollution = PollutionSystem::new(&config);
     pollution.grid.data[0] = 3.0;
+    pollution.back.data[1] = 4.0;
     let mut noise = NoiseSystem::new(&config);
     noise.grid.data[0] = 7.0;
+    noise.back.data[1] = 6.0;
+    // A sweep in progress; frozen edges past the network are roads added since its start.
+    let environment = EnvironmentSweep {
+        frozen: Some(SweepCapacities {
+            building_handles: 2,
+            edges: 3,
+        }),
+        next_chunk: 12_000,
+        next_edge: 1,
+    };
     let mut demand = DemandSystem::new();
     demand.households_to_admit_today = 2;
     demand.persistent_exit_action_credit = 0.75;
@@ -768,7 +780,10 @@ fn sqlite_round_trip_preserves_authoritative_state() {
                 noise: &noise,
                 demand: &demand,
                 pending_demand_spawns: &pending_demand_spawns,
-                scheduler: crate::simulation::save::SavedScheduler::default(),
+                scheduler: crate::simulation::save::SavedScheduler {
+                    environment,
+                    ..Default::default()
+                },
                 allocator,
                 households: &households,
                 logistics: &logistics,
@@ -1064,6 +1079,14 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     assert_eq!(loaded_pending.planned_minute_of_day, 180);
     assert_eq!(loaded.pollution.grid.data, pollution.grid.data);
     assert_eq!(loaded.noise.grid.data, noise.grid.data);
+    assert_eq!(loaded.pollution.back.data, pollution.back.data);
+    assert_eq!(loaded.noise.back.data, noise.back.data);
+    assert_eq!(loaded.scheduler.environment, environment);
+    // The desirability back is rebuilt from the pollution and noise backs.
+    assert_eq!(
+        loaded.desirability.back.data[1],
+        50.0 - 4.0 * 2.0 - 6.0 * 1.5
+    );
     assert_eq!(loaded.graph.edge_count(), 1);
     assert_eq!(
         loaded.graph.edge(0).vehicle_frontage_access,
@@ -1264,6 +1287,18 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         })
     );
     assert_eq!(loaded.logistics.shipments[0].freight_cost, 16.0);
+}
+
+#[test]
+fn environment_sweep_edge_indices_skip_deleted_edges_when_saved() {
+    let deleted = [false, true, false, true, false];
+    for (live, saved) in [(0, 0), (1, 1), (2, 1), (3, 2), (4, 2), (5, 3), (7, 5)] {
+        assert_eq!(
+            super::scheduler::compacted_edge_index(deleted.into_iter(), live),
+            saved,
+            "edge {live}"
+        );
+    }
 }
 
 #[test]

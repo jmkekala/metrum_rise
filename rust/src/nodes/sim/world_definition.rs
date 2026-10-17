@@ -547,6 +547,7 @@ impl SimCore {
         self.pollution = PollutionSystem::new(&self.config);
         self.noise = NoiseSystem::new(&self.config);
         self.desirability = DesirabilitySystem::new(&self.config);
+        self.environment_sweep = Default::default();
         self.demand = DemandSystem::new();
         self.pending_demand_spawns.clear();
         self.next_spawn_id = 0;

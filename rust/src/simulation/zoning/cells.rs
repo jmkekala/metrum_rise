@@ -49,7 +49,8 @@ pub(crate) struct CellRoadFrontage {
 }
 
 /// One compatible initial asset footprint considered when deriving painted building lots.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct CellLotSize {
     /// Profile whose asset rules admit this footprint.
     pub(crate) profile: u16,

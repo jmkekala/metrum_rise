@@ -204,6 +204,52 @@ fn corrupted_cell_authority_is_rejected_before_publishing_the_loaded_world() {
 }
 
 #[test]
+fn pending_cell_lot_regions_round_trip_in_service_order() {
+    let (graph, mut zoning, allocator) = fixture(0.35, false);
+    let chunk = |x: f64, y: f64| CellBounds {
+        min: DVec2::new(x * 512.0 + 1.0, y * 512.0 + 1.0),
+        max: DVec2::new(x * 512.0 + 2.0, y * 512.0 + 2.0),
+    };
+    // The fixture's paint plus one more chunk form the first batch; one service queues it.
+    zoning.mark_cell_lots_dirty(chunk(3.0, 2.0));
+    assert!(zoning.pop_dirty_cell_lot_region().is_some());
+    // Marked after that service, so still unqueued and served after the queued chunks.
+    zoning.mark_cell_lots_dirty(chunk(1.0, -3.0));
+    zoning.mark_cell_lots_dirty(chunk(-3.0, 0.0));
+    let saved = zoning.saved_cell_lot_queue();
+    assert!(saved.iter().any(|&(_, queued)| queued));
+    assert_eq!(
+        &saved[saved.len() - 2..],
+        &[((-3, 0), false), ((1, -3), false)]
+    );
+
+    let path = temp_path("cell_lot_queue");
+    write_snapshot(&path, &graph, &zoning, &allocator);
+    let mut loaded = load_from_sqlite(&path, &allocator.registry).unwrap().zoning;
+    assert_eq!(loaded.saved_cell_lot_queue(), saved);
+    let order = |zoning: &mut ZoningSystem| {
+        std::iter::from_fn(|| zoning.pop_dirty_cell_lot_region()).collect::<Vec<_>>()
+    };
+    assert_eq!(order(&mut loaded), order(&mut zoning));
+
+    let valid = fs::read(&path).unwrap();
+    for sql in [
+        "UPDATE zoning_cell_lot_queue SET queued = 2",
+        "INSERT INTO zoning_cell_lot_queue SELECT position + 1000, chunk_x, chunk_y, queued FROM zoning_cell_lot_queue",
+    ] {
+        fs::write(&path, &valid).unwrap();
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(sql).unwrap();
+        drop(conn);
+        assert!(
+            load_from_sqlite(&path, &allocator.registry).is_err(),
+            "accepted {sql}"
+        );
+    }
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn saved_road_frames_validate_sources() {
     let (graph, mut zoning, allocator) = fixture(0.35, false);
     zoning

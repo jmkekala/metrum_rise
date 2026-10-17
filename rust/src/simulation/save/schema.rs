@@ -6,7 +6,7 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version, also the only one that loads (`SIM-02` broke older saves).
-pub const SAVE_VERSION: i64 = 93;
+pub const SAVE_VERSION: i64 = 94;
 
 /// Sentinel for an absent reference column.
 pub const NONE_REF: i64 = -1;
@@ -137,7 +137,11 @@ CREATE TABLE scheduler_state(
     road_length_back_mm INTEGER NOT NULL,
     road_length_edges INTEGER NOT NULL,
     road_length_next_edge INTEGER NOT NULL,
-    road_length_measured INTEGER NOT NULL
+    road_length_measured INTEGER NOT NULL,
+    environment_building_handles INTEGER NOT NULL,
+    environment_edges INTEGER NOT NULL,
+    environment_next_edge INTEGER NOT NULL,
+    environment_next_chunk INTEGER NOT NULL
 );
 CREATE TABLE timed_events(
     slot INTEGER NOT NULL,
@@ -149,12 +153,14 @@ CREATE TABLE timed_events(
 CREATE TABLE pollution_state(
     width INTEGER NOT NULL,
     height INTEGER NOT NULL,
-    grid_blob_f32_le BLOB NOT NULL
+    grid_blob_f32_le BLOB NOT NULL,
+    back_blob_f32_le BLOB NOT NULL
 );
 CREATE TABLE noise_state(
     width INTEGER NOT NULL,
     height INTEGER NOT NULL,
-    grid_blob_f32_le BLOB NOT NULL
+    grid_blob_f32_le BLOB NOT NULL,
+    back_blob_f32_le BLOB NOT NULL
 );
 CREATE TABLE network_nodes(
     node_id INTEGER PRIMARY KEY,
@@ -230,6 +236,16 @@ CREATE TABLE zoning_cell_curve_sources(
 CREATE TABLE zoning_cell_road_alignments(
     edge_id INTEGER PRIMARY KEY,
     alignment_json TEXT NOT NULL
+);
+CREATE TABLE zoning_cell_lot_queue(
+    position INTEGER PRIMARY KEY,
+    chunk_x INTEGER NOT NULL,
+    chunk_y INTEGER NOT NULL,
+    queued INTEGER NOT NULL
+);
+CREATE TABLE zoning_cell_lot_catalog(
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    sizes_json TEXT NOT NULL
 );
 CREATE TABLE buildings(
     building_id INTEGER PRIMARY KEY,

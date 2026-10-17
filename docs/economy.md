@@ -88,16 +88,17 @@ crossed:
    daily phase leave if they still may, then the pooled household hour (below), then the
    **hourly demand pass**: project planning, household admission and immediate building actions
    ([`demand.md`](demand.md#cadence-and-handoff)). 00:00 is an ordinary hour (`SIM-02-G`).
-3. At 00:00, before the hour: pollution, noise and desirability are recomputed (until
-   `SIM-02-H`). After the hour, the **calendar close**: the day's running totals become the
+3. At 00:00, after the hour, the **calendar close**: the day's running totals become the
    budget report, the tax window rolls, road upkeep is charged from the rolling road length and
    the day's exit budget resets. It costs O(zones); the 00:00 hour still belongs to the closing
    day.
 4. Each slot, after everything above: the **hourly phases** of the buildings, households and
    agents whose phase falls in it (`SIM-02-F`), then their **daily phases** (`SIM-02-G`), then
-   one chunk of the rolling road-length sum ([`simulation.md`](simulation.md#phases)). Each
-   entity has one hourly phase per hour, about 1/960 of the city per slot, and one daily phase
-   per day, about 1/23,040.
+   at most one dirty cell-lot region (`SIM-02-H`), then one chunk of the rolling road-length
+   sum and one of the day's pollution, noise and desirability sweep
+   ([`simulation.md`](simulation.md#snapshots)). Each entity has one hourly phase per hour,
+   about 1/960 of the city per slot, and one daily phase per day, about 1/23,040. Readers see
+   the environment grids the previous day's sweep finished at its last slot.
 
 Household hour (`households/tick.rs`): count the households still arriving; rebuild membership
 and worker counts; rehouse unhoused households; the funding census; the activity floor and

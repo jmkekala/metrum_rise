@@ -5,6 +5,7 @@
 mod derivation;
 mod dirty;
 pub(crate) use derivation::CellLotGeneration;
+pub(super) use dirty::CellLotQueue;
 
 use super::ZoningSystem;
 use crate::simulation::network::graph::RegionGraph;

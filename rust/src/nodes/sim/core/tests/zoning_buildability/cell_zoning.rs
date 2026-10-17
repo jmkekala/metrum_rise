@@ -388,6 +388,101 @@ fn painted_cells_use_asset_lots_and_the_existing_growth_path() {
 }
 
 #[test]
+fn cell_lot_queue_regenerates_one_region_per_slot_oldest_first() {
+    let mut core = painted_fixture(0.0);
+    let pending = |core: &SimCore| -> Vec<(i32, i32)> {
+        core.zoning
+            .saved_cell_lot_queue()
+            .into_iter()
+            .map(|(chunk, _)| chunk)
+            .collect()
+    };
+    let cell_lots = |core: &SimCore| {
+        core.zoning
+            .parcels()
+            .iter()
+            .filter(|parcel| parcel.cell_lot().is_some())
+            .count()
+    };
+    core.align_events_to_clock();
+    let mut slot = core.time.absolute_slot();
+    let mut report = crate::nodes::sim::core::frame::FrameStepReport::default();
+    let mut step = |core: &mut SimCore| {
+        slot += 1;
+        core.step_slot(slot, &mut report, &mut ());
+    };
+    // The paint marked one batch of chunks, queued in coordinate order.
+    let mut order = pending(&core);
+    assert!(order.len() > 1);
+    assert_eq!(cell_lots(&core), 0);
+    step(&mut core);
+    assert_eq!(pending(&core), &order[1..]);
+    // A chunk marked later waits behind every older one, although it sorts first.
+    core.zoning.mark_cell_lots_dirty(CellBounds {
+        min: DVec2::new(-1000.0, 10.0),
+        max: DVec2::new(-990.0, 20.0),
+    });
+    order.push((-2, 0));
+    assert!(
+        order[1..order.len() - 1]
+            .iter()
+            .all(|&chunk| chunk > (-2, 0))
+    );
+    assert_eq!(pending(&core), &order[1..]);
+    // A staged road edit holds the queue.
+    core.transit_network.begin_road_edit();
+    step(&mut core);
+    core.transit_network.accept_road_edit();
+    assert_eq!(pending(&core), &order[1..]);
+    for served in 2..=order.len() {
+        step(&mut core);
+        assert_eq!(pending(&core), &order[served..]);
+    }
+    assert!(!core.zoning.has_dirty_cell_lots());
+    assert!(cell_lots(&core) > 0);
+}
+
+#[test]
+fn loading_with_an_unchanged_catalog_keeps_the_saved_lots() {
+    let mut core = painted_fixture(0.0);
+    core.prepare_cell_lots_internal();
+    let lots = |core: &SimCore| {
+        core.zoning
+            .parcels()
+            .iter()
+            .filter_map(|parcel| {
+                let lot = serde_json::to_string(&parcel.cell_lot()?).unwrap();
+                Some((parcel.id().raw(), lot))
+            })
+            .collect::<Vec<_>>()
+    };
+    let saved = lots(&core);
+    assert!(!saved.is_empty());
+    let path = temp_save_path("unchanged_lot_catalog");
+    core.save_game_internal(path.to_str().unwrap(), None)
+        .unwrap();
+    let load = |registry| {
+        let mut loaded = test_core();
+        loaded.allocator.registry = registry;
+        loaded.load_game_internal(path.to_str().unwrap()).unwrap();
+        loaded
+    };
+    // The live catalog derives the saved lots, so loading queues no region.
+    let mut loaded = load(core.allocator.registry.clone());
+    assert!(!loaded.zoning.has_dirty_cell_lots());
+    assert_eq!(lots(&loaded), saved);
+    // Re-deriving every painted chunk anyway changes no lot.
+    loaded.zoning.invalidate_cell_lot_assets();
+    loaded.prepare_cell_lots_internal();
+    assert_eq!(lots(&loaded), saved);
+    // Another catalog re-derives every painted chunk.
+    let mut registry = core.allocator.registry.clone();
+    registry.clear();
+    assert!(load(registry).zoning.has_dirty_cell_lots());
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn missing_assets_leave_paint_until_a_catalog_refresh_schedules_growth() {
     let mut core = painted_fixture(0.0);
     let registry = core.allocator.registry.clone();

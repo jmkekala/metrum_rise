@@ -335,7 +335,11 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   budget report sums payments as they happen, and 00:00 keeps only the calendar close and,
   until `SIM-02-H`, the pollution, noise and desirability update (save format 93). A business
   that cannot pay its workers two days running goes bankrupt, and an adult not paid a wage that
-  day draws unemployment benefit.
+  day draws unemployment benefit. `SIM-02-H` (2026-10-17): pollution, noise and desirability are rebuilt by a
+  sweep that runs through each day and publishes at its end, instead of at midnight, and dirty
+  building lots regenerate one map region per slot instead of all at once in the hourly demand
+  pass. Loading a game no longer re-derives every lot when the asset catalog is unchanged, which
+  was most of the stall in the first hour after a load (save format 94).
 
 - **Starting treasury**: new games begin with 500,000, increased from 100,000. See
   [money source](economy.md#money-source); earlier balance runs retain their original starting capital.

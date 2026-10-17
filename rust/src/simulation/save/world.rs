@@ -219,21 +219,23 @@ pub(super) fn save_world(
         ])?;
     }
 
-    // Grids
+    // Grids: the front every reader uses and the back of the rolling sweep (`SIM-02-H`).
     tx.execute(
-        "INSERT INTO pollution_state(width, height, grid_blob_f32_le) VALUES (?1, ?2, ?3)",
+        "INSERT INTO pollution_state(width, height, grid_blob_f32_le, back_blob_f32_le) VALUES (?1, ?2, ?3, ?4)",
         params![
             usize_to_i64(pollution.grid.width)?,
             usize_to_i64(pollution.grid.height)?,
-            pack_f32_slice(&pollution.grid.data)
+            pack_f32_slice(&pollution.grid.data),
+            pack_f32_slice(&pollution.back.data)
         ],
     )?;
     tx.execute(
-        "INSERT INTO noise_state(width, height, grid_blob_f32_le) VALUES (?1, ?2, ?3)",
+        "INSERT INTO noise_state(width, height, grid_blob_f32_le, back_blob_f32_le) VALUES (?1, ?2, ?3, ?4)",
         params![
             usize_to_i64(noise.grid.width)?,
             usize_to_i64(noise.grid.height)?,
-            pack_f32_slice(&noise.grid.data)
+            pack_f32_slice(&noise.grid.data),
+            pack_f32_slice(&noise.back.data)
         ],
     )?;
 
@@ -827,6 +829,7 @@ pub(super) fn load_zoning(
     if !cell_lots.is_empty() {
         return Err(SaveLoadError::custom("cell lot references missing parcel"));
     }
+    super::cell_zoning::load_lot_queue(conn, &mut zoning)?;
     if !quarantined_parcels.is_empty() {
         crate::debug_log!(
             "save",
@@ -1393,22 +1396,23 @@ fn bool_to_db(value: bool) -> i64 {
 
 pub(super) trait GridSystemLoader: Sized {
     fn new_with_config(config: &WorldConfig) -> Self;
-    fn grid_mut(&mut self) -> &mut DataGrid<f32>;
+    // The front and back grids.
+    fn grids_mut(&mut self) -> (&mut DataGrid<f32>, &mut DataGrid<f32>);
 }
 impl GridSystemLoader for PollutionSystem {
     fn new_with_config(config: &WorldConfig) -> Self {
         Self::new(config)
     }
-    fn grid_mut(&mut self) -> &mut DataGrid<f32> {
-        &mut self.grid
+    fn grids_mut(&mut self) -> (&mut DataGrid<f32>, &mut DataGrid<f32>) {
+        (&mut self.grid, &mut self.back)
     }
 }
 impl GridSystemLoader for NoiseSystem {
     fn new_with_config(config: &WorldConfig) -> Self {
         Self::new(config)
     }
-    fn grid_mut(&mut self) -> &mut DataGrid<f32> {
-        &mut self.grid
+    fn grids_mut(&mut self) -> (&mut DataGrid<f32>, &mut DataGrid<f32>) {
+        (&mut self.grid, &mut self.back)
     }
 }
 
@@ -1417,10 +1421,10 @@ pub(super) fn load_grid_system<T: GridSystemLoader>(
     config: &WorldConfig,
     table: &str,
 ) -> SaveLoadResult<T> {
-    let raw: (i64, i64, Vec<u8>) = conn.query_row(
-        &format!("SELECT width, height, grid_blob_f32_le FROM {table} LIMIT 1"),
+    let raw: (i64, i64, Vec<u8>, Vec<u8>) = conn.query_row(
+        &format!("SELECT width, height, grid_blob_f32_le, back_blob_f32_le FROM {table} LIMIT 1"),
         [],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
     )?;
     let (w, h) = (i64_to_usize(raw.0)?, i64_to_usize(raw.1)?);
     if w != config.env_grid_width() || h != config.env_grid_height() {
@@ -1429,7 +1433,9 @@ pub(super) fn load_grid_system<T: GridSystemLoader>(
         )));
     }
     let mut s = T::new_with_config(config);
-    s.grid_mut().data = unpack_f32_blob(&raw.2, w * h)?;
+    let (front, back) = s.grids_mut();
+    front.data = unpack_f32_blob(&raw.2, w * h)?;
+    back.data = unpack_f32_blob(&raw.3, w * h)?;
     Ok(s)
 }
 

@@ -5,8 +5,9 @@
 //!
 //! [`SimCore::step_frame`] reports the slots the clock crossed; each runs here in order. The
 //! timing wheel fires first, then the fixed-slot systems: until `SIM-02-K` the re-hosted
-//! operational hour and environment grids, and the calendar close. The entities of the slot's
-//! hourly and daily phases follow, then one chunk of the rolling road length.
+//! operational hour, and the calendar close. The entities of the slot's hourly and daily phases
+//! follow, then the cell-lot queue and one chunk each of the rolling road length and
+//! environment sweep.
 
 use std::time::Instant;
 
@@ -25,8 +26,6 @@ use super::trips::TripEvent;
 pub(crate) enum SimSystem {
     /// Fires the slot's timed events.
     TimedEvents,
-    /// Pollution, noise and desirability, a midnight pass until rolling sweeps (`SIM-02-H`).
-    EnvironmentGrids,
     /// Today's operational hour, with the hourly demand pass.
     OperationalHour,
     /// The calendar close: the city's day totals become the day's budget report.
@@ -43,8 +42,12 @@ pub(crate) enum SimSystem {
     HouseholdDays,
     /// Wages and daily happiness of the agents in the slot's daily phase.
     AgentDays,
+    /// Regenerates the oldest pending dirty cell-lot regions, `CELL_LOT_QUOTA` per slot.
+    CellLots,
     /// One chunk of the rolling road length that daily upkeep reads.
     RoadLength,
+    /// One chunk of the day-long sweep of pollution, noise and desirability (`SIM-02-H`).
+    EnvironmentGrids,
 }
 
 /// Something that must happen at a given slot.
@@ -80,6 +83,9 @@ impl SimEvent {
     }
 }
 
+/// Dirty cell-lot regions the `cell lots` queue regenerates per slot (`SIM-02-H`).
+pub(super) const CELL_LOT_QUOTA: u32 = 1;
+
 /// The fixed declaration list, in registration order.
 pub(crate) fn simulation_schedule() -> Schedule<SimSystem> {
     Schedule::new(vec![
@@ -102,18 +108,6 @@ pub(crate) fn simulation_schedule() -> Schedule<SimSystem> {
                 | state::LOGISTICS
                 | state::GRIDS,
             cost: Cost::Events,
-            tier: Tier::Full,
-        },
-        Declaration {
-            system: SimSystem::EnvironmentGrids,
-            name: "environment grids",
-            kind: SystemKind::FixedSlot {
-                period: Period::Day,
-                offset: 0,
-            },
-            reads: state::BUILDINGS | state::NETWORK | state::GRIDS,
-            writes: state::GRIDS,
-            cost: Cost::LegacyBoundary,
             tier: Tier::Full,
         },
         Declaration {
@@ -215,6 +209,17 @@ pub(crate) fn simulation_schedule() -> Schedule<SimSystem> {
             tier: Tier::Full,
         },
         Declaration {
+            system: SimSystem::CellLots,
+            name: "cell lots",
+            kind: SystemKind::Queue {
+                quota: CELL_LOT_QUOTA,
+            },
+            reads: state::ZONING | state::BUILDINGS | state::NETWORK,
+            writes: state::ZONING | state::BUILDINGS | state::NETWORK,
+            cost: Cost::Quota,
+            tier: Tier::Full,
+        },
+        Declaration {
             system: SimSystem::RoadLength,
             name: "road length",
             kind: SystemKind::Rolling {
@@ -222,6 +227,17 @@ pub(crate) fn simulation_schedule() -> Schedule<SimSystem> {
             },
             reads: state::NETWORK,
             writes: state::TREASURY,
+            cost: Cost::Chunk,
+            tier: Tier::Full,
+        },
+        Declaration {
+            system: SimSystem::EnvironmentGrids,
+            name: "environment grids",
+            kind: SystemKind::Rolling {
+                period: Period::Day,
+            },
+            reads: state::BUILDINGS | state::NETWORK | state::GRIDS,
+            writes: state::GRIDS,
             cost: Cost::Chunk,
             tier: Tier::Full,
         },
@@ -265,12 +281,6 @@ impl SimCore {
                         self.print_sim_console_summary(day_index, minute_of_day);
                     }
                 }
-                SimSystem::EnvironmentGrids => {
-                    let grids_start = Instant::now();
-                    record_crash_phase_for_core(self, "environment grids");
-                    run_sim_phase("environment grids", || self.run_environment_grids());
-                    report.daily_ms += grids_start.elapsed().as_secs_f64() * 1000.0;
-                }
                 SimSystem::CalendarClose => {
                     let close_start = Instant::now();
                     record_crash_phase_for_core(self, "calendar close");
@@ -289,7 +299,11 @@ impl SimCore {
                 SimSystem::BuildingDays => self.run_building_days(slot, observer),
                 SimSystem::HouseholdDays => self.run_household_days(slot, observer),
                 SimSystem::AgentDays => self.run_agent_days(slot, observer),
+                SimSystem::CellLots => {
+                    self.serve_cell_lot_queue(CELL_LOT_QUOTA as usize);
+                }
                 SimSystem::RoadLength => self.road_length.advance(slot, &self.region_graph),
+                SimSystem::EnvironmentGrids => self.advance_environment_sweep(slot),
             }
         }
         self.schedule_construction_completions();

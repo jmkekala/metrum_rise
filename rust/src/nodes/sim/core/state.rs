@@ -11,7 +11,7 @@ use super::budget::{
     RoadLengthRoll,
 };
 use super::frame::EconomyObserver;
-use super::schedule::{SimEvent, SimSystem, simulation_schedule};
+use super::schedule::{CELL_LOT_QUOTA, SimEvent, SimSystem, simulation_schedule};
 use super::snapshot::SimulationSnapshot;
 use super::terrain_payloads::{
     CachedRefinedTerrainPatch, ROAD_LOCKED_TERRAIN_RENDER_STEP_M, RefinedTerrainAssemblyLedger,
@@ -23,7 +23,9 @@ use crate::simulation::agriculture::AgricultureSystem;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::handles::{Handle, HandleTable};
-use crate::simulation::core::scheduler::{SLOTS_PER_MINUTE, Schedule, absolute_slot};
+use crate::simulation::core::scheduler::{
+    SLOTS_PER_DAY, SLOTS_PER_HOUR, SLOTS_PER_MINUTE, Schedule, absolute_slot,
+};
 use crate::simulation::core::time::TimeSystem;
 use crate::simulation::core::timing_wheel::{TimedEvent, TimingWheel};
 use crate::simulation::economy::agents::AgentSystem;
@@ -37,6 +39,7 @@ use crate::simulation::extraction::ResourceExtractionSystem;
 use crate::simulation::grid::desirability::DesirabilitySystem;
 use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
+use crate::simulation::grid::sweep::EnvironmentSweep;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::render::NetworkMeshData;
 use crate::simulation::network::road_edit::FinalizedRoadGeometry;
@@ -189,6 +192,8 @@ pub struct SimCore {
     pub(crate) agent_phase_scratch: Vec<crate::simulation::economy::agents::AgentHandle>,
     /// Rolling sum of the road network's length for daily upkeep (`SIM-02-G`); saved.
     pub(crate) road_length: RoadLengthRoll,
+    /// Rolling day-long sweep of pollution, noise and desirability (`SIM-02-H`); saved.
+    pub(crate) environment_sweep: EnvironmentSweep,
     /// Building placement and vacancy index.
     pub allocator: BuildingAllocator,
     /// Agent FSM in Structure-of-Arrays layout.
@@ -339,6 +344,7 @@ impl SimCore {
             household_phase_scratch: Vec::new(),
             agent_phase_scratch: Vec::new(),
             road_length: RoadLengthRoll::default(),
+            environment_sweep: EnvironmentSweep::default(),
             allocator: BuildingAllocator::new_at_slot(next_slot - 1),
             agents: AgentSystem::new(),
             households: HouseholdSystem::new(),
@@ -569,10 +575,12 @@ impl SimCore {
 
 impl SimCore {
     /// Executes one coarse operational-hour economy step before the daily settlement boundary.
-    /// Every entity's hour runs at once after the pass, as the slots of the hour would.
+    /// Every entity's hour runs at once after the pass, then the cell-lot queue serves the
+    /// hour's quota, as the slots of the hour would.
     pub fn simulate_operational_hour_internal(&mut self, day_index: u32, minute_of_day: u16) {
         self.simulate_operational_hour_observed(day_index, minute_of_day, &mut ());
         self.run_every_hour_phase();
+        self.serve_cell_lot_queue(CELL_LOT_QUOTA as usize * SLOTS_PER_HOUR as usize);
     }
 
     pub(super) fn simulate_operational_hour_observed(
@@ -928,23 +936,34 @@ impl SimCore {
     }
 
     /// Executes one full economy / daily tick (called once per in-game day).
-    /// Steps a whole day's settlement at once for tools and tests: the environment grids, every
-    /// entity's daily phase in order, then the calendar close, as the slots of a day would.
+    /// Steps a whole day's settlement at once for tools and tests: a whole environment sweep,
+    /// every entity's daily phase in order, then the calendar close, as the slots of a day would.
     pub fn simulate_tick_internal(&mut self, day_index: u32) {
         #[cfg(test)]
         let _contract_phase = crate::debug::work::phases::enter("settlement");
-        self.run_environment_grids();
+        // Every chunk of one sweep in order; a sweep the slot clock had in progress restarts.
+        for slot in 0..SLOTS_PER_DAY {
+            self.advance_environment_sweep(slot);
+        }
         self.run_every_day_phase(&mut ());
         self.close_calendar_day(day_index, &mut ());
     }
 
-    /// Pollution, noise and desirability, still a midnight pass until rolling sweeps
-    /// (`SIM-02-H`).
-    pub(super) fn run_environment_grids(&mut self) {
-        self.pollution.tick(&self.allocator, &self.config);
-        self.noise
-            .tick(&self.allocator, &self.region_graph, &self.config);
-        self.desirability.tick(&self.pollution, &self.noise);
+    /// Slot `slot`'s chunk of the rolling environment sweep (`SIM-02-H`): a share of the
+    /// emissions, or of the diffused rows, of pollution, noise and desirability.
+    pub(super) fn advance_environment_sweep(&mut self, slot: u64) {
+        self.allocator
+            .building_handles
+            .register_appended(self.allocator.buildings.len());
+        self.environment_sweep.advance(
+            slot,
+            &mut self.pollution,
+            &mut self.noise,
+            &mut self.desirability,
+            &self.allocator,
+            &self.region_graph,
+            &self.config,
+        );
     }
 
     /// The calendar close at the start of a day, before any daily phase of the new day
@@ -980,12 +999,11 @@ impl SimCore {
         self.last_tick_duration = close_start.elapsed().as_secs_f64() * 1000.0;
     }
 
+    // Plans on the cell lots the `cell lots` queue has prepared so far (`SIM-02-H`).
     pub(super) fn execute_hourly_demand_pass(&mut self, day_index: u32, minute_of_day: u16) {
         let timing = crate::debug::Channel::EconomyPhases
             .enabled()
             .then(Instant::now);
-        self.prepare_cell_lots_internal();
-        let cells_ms = timing.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0);
         self.allocator
             .prepare_building_site_query_index(self.config.zone_cell_m);
         self.transit_network.road_surface.compile_dirty_with_reason(
@@ -996,8 +1014,7 @@ impl SimCore {
         self.demand
             .set_admission_candidate_hour(day_index, minute_of_day);
         self.refresh_demand_construction_queue(day_index, minute_of_day);
-        let prepare_ms =
-            timing.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0) - cells_ms;
+        let prepare_ms = timing.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0);
         self.demand.run_hourly_pass_with_policy(
             &self.allocator,
             &mut self.households,
@@ -1013,9 +1030,8 @@ impl SimCore {
             },
             minute_of_day,
         );
-        let plan_ms = timing.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0)
-            - cells_ms
-            - prepare_ms;
+        let plan_ms =
+            timing.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0) - prepare_ms;
         let launched_households = self
             .allocator
             .execute_demand_household_admission_with_income(
@@ -1072,15 +1088,14 @@ impl SimCore {
             let total_ms = start.elapsed().as_secs_f64() * 1000.0;
             debug_log!(
                 "economy_phases",
-                "demand_phase_detail day={} minute={} cells_ms={:.3} prepare_ms={:.3} plan_ms={:.3} execute_ms={:.3} total_ms={:.3} admission_ms={:.3} queue_ms={:.3} actions_ms={:.3} publish_ms={:.3}",
+                "demand_phase_detail day={} minute={} prepare_ms={:.3} plan_ms={:.3} execute_ms={:.3} total_ms={:.3} admission_ms={:.3} queue_ms={:.3} actions_ms={:.3} publish_ms={:.3}",
                 day_index,
                 minute_of_day,
-                cells_ms,
                 prepare_ms,
                 plan_ms,
-                total_ms - cells_ms - prepare_ms - plan_ms,
+                total_ms - prepare_ms - plan_ms,
                 total_ms,
-                admission_end - cells_ms - prepare_ms - plan_ms,
+                admission_end - prepare_ms - plan_ms,
                 queue_end - admission_end,
                 actions_end - queue_end,
                 total_ms - actions_end

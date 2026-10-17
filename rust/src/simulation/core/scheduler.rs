@@ -60,14 +60,17 @@ pub(crate) enum SystemKind {
     /// One call per slot for the entities whose `period` phase falls in it, so each entity is
     /// visited once per period (`docs/simulation.md#phases`).
     EntityPhase { period: Period },
-    /// One chunk per slot of a sum over the whole city that finishes once per `period`
-    /// (`docs/simulation.md#snapshots`).
+    /// One call per slot that serves up to `quota` pending requests, oldest first
+    /// (`docs/simulation.md#request-queues`).
+    Queue { quota: u32 },
+    /// One chunk per slot of a sum or grid sweep over the whole city that finishes once per
+    /// `period` (`docs/simulation.md#snapshots`).
     Rolling { period: Period },
 }
 
 impl SystemKind {
-    // Per-slot order: events, fixed-slot systems, hourly before daily entity phases, then
-    // rolling chunks; declaration order within a kind.
+    // Per-slot order: events, fixed-slot systems, hourly before daily entity phases, queue
+    // matchers, then rolling chunks; declaration order within a kind.
     fn order(self) -> u8 {
         match self {
             Self::Events => 0,
@@ -78,14 +81,17 @@ impl SystemKind {
             Self::EntityPhase {
                 period: Period::Day,
             } => 3,
-            Self::Rolling { .. } => 4,
+            Self::Queue { .. } => 4,
+            Self::Rolling { .. } => 5,
         }
     }
 
     /// Whether a declaration of this kind runs in `slot`.
     pub(crate) fn due(self, slot: u64) -> bool {
         match self {
-            Self::Events | Self::EntityPhase { .. } | Self::Rolling { .. } => true,
+            Self::Events | Self::EntityPhase { .. } | Self::Queue { .. } | Self::Rolling { .. } => {
+                true
+            }
             Self::FixedSlot { period, offset } => slot % period.slots() == offset,
         }
     }
@@ -100,8 +106,11 @@ pub(crate) enum Cost {
     LegacyBoundary,
     /// Proportional to the entities whose phase falls in the slot: O(N / slots per period).
     Phase,
-    /// One chunk of a rolling sum: O(N / slots per period).
+    /// One chunk of a rolling sum or sweep: O(N / slots per period).
     Chunk,
+    /// At most the queue's quota of requests, each bounded by its own size; O(1) when nothing
+    /// is queued.
+    Quota,
     /// Independent of the city's size: O(1) or O(zones).
     Constant,
 }
@@ -184,8 +193,9 @@ pub(crate) struct Schedule<S> {
 impl<S: Copy> Schedule<S> {
     /// Orders `declarations` by kind, keeping declaration order within a kind. Panics on a
     /// declaration that breaks the scheduling contract: a fixed-slot offset outside its period,
-    /// a fixed-slot system without a bounded cost or legacy status, or an events or entity-phase
-    /// system whose cost is not its events or its phase's entities.
+    /// a fixed-slot system without a bounded cost or legacy status, a queue without a quota, or
+    /// an events, entity-phase, queue or rolling system whose cost is not its events, its
+    /// phase's entities, its quota or one chunk.
     pub(crate) fn new(mut declarations: Vec<Declaration<S>>) -> Self {
         for declaration in &declarations {
             match declaration.kind {
@@ -213,6 +223,15 @@ impl<S: Copy> Schedule<S> {
                     "{} must cost its phase's entities",
                     declaration.name
                 ),
+                SystemKind::Queue { quota } => {
+                    assert!(quota > 0, "{} serves no requests", declaration.name);
+                    assert_eq!(
+                        declaration.cost,
+                        Cost::Quota,
+                        "{} must cost its quota of requests",
+                        declaration.name
+                    );
+                }
                 SystemKind::Rolling { .. } => assert_eq!(
                     declaration.cost,
                     Cost::Chunk,
@@ -280,10 +299,12 @@ mod tests {
             kind,
             reads: state::ALL,
             writes: state::ALL,
-            cost: if kind == SystemKind::Events {
-                Cost::Events
-            } else {
-                Cost::LegacyBoundary
+            cost: match kind {
+                SystemKind::Events => Cost::Events,
+                SystemKind::FixedSlot { .. } => Cost::LegacyBoundary,
+                SystemKind::EntityPhase { .. } => Cost::Phase,
+                SystemKind::Queue { .. } => Cost::Quota,
+                SystemKind::Rolling { .. } => Cost::Chunk,
             },
             tier: Tier::Full,
         }
@@ -321,5 +342,40 @@ mod tests {
         assert_eq!(due(SLOTS_PER_HOUR + 1), [0]);
         assert_eq!(due(3 * SLOTS_PER_DAY), [0, 1, 2]);
         assert_eq!(absolute_slot(2, 60, 3), SLOTS_PER_DAY + SLOTS_PER_HOUR + 3);
+    }
+
+    #[test]
+    fn queues_run_every_slot_after_entity_phases_and_before_rolling_chunks() {
+        let schedule = Schedule::new(vec![
+            declaration(
+                4,
+                SystemKind::Rolling {
+                    period: Period::Day,
+                },
+            ),
+            declaration(3, SystemKind::Queue { quota: 1 }),
+            declaration(
+                2,
+                SystemKind::EntityPhase {
+                    period: Period::Day,
+                },
+            ),
+            declaration(
+                1,
+                SystemKind::EntityPhase {
+                    period: Period::Hour,
+                },
+            ),
+            declaration(
+                0,
+                SystemKind::FixedSlot {
+                    period: Period::Hour,
+                    offset: 0,
+                },
+            ),
+        ]);
+        let order: Vec<_> = schedule.declarations().iter().map(|d| d.system).collect();
+        assert_eq!(order, [0, 1, 2, 3, 4]);
+        assert!(SystemKind::Queue { quota: 1 }.due(SLOTS_PER_HOUR + 7));
     }
 }
