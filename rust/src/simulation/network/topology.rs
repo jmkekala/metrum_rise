@@ -1463,6 +1463,7 @@ mod tests {
                 depth_cells: 3,
                 zone_profile_runtime_id: 0,
                 parcel_id: 0,
+                applicant_seed: 0,
                 zone_type: crate::simulation::zoning::ZoneType::Residential,
                 facing_dir: godot::prelude::Vector2::new(0.0, 1.0),
                 frontage_t: 0.85, // Pre-split frontage_t

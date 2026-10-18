@@ -23,6 +23,7 @@ pub(crate) fn indexed_test_building(asset_id: String, zone_type: ZoneType, idx: 
         depth_cells: 3,
         zone_profile_runtime_id: 0,
         parcel_id: idx.max(0) as u64,
+        applicant_seed: 0,
         zone_type,
         facing_dir: Vector2::new(0.0, 1.0),
         frontage_t: 0.5,

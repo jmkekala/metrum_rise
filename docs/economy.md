@@ -1539,7 +1539,8 @@ their funding books solely on those keys would be incorrect.
 Inspection of the owned-routing build's cached 30k day trace narrows that reuse target:
 all 15 execution censuses occur in distinct hours, one minute after the live census.
 Splitting queue-replay invalidation alone therefore removes none of this workload's censuses.
-An opt-in test-only input trace now compares selected building/household scalar bits, exact
+An opt-in test-only input trace (deleted in `SIM-02-I` part 3, with the execution censuses)
+compared selected building/household scalar bits, exact
 ordered consumer budgets, freight capital and structural/routing revisions between the live
 census and execution. It allocates diagnostic rows and is excluded from gameplay; matching
 rows locate reuse candidates but are not a complete production validity proof.

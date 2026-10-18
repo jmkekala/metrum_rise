@@ -690,6 +690,7 @@ fn make_building(
         depth_cells: 2,
         zone_profile_runtime_id: 0,
         parcel_id: 0,
+        applicant_seed: 0,
         zone_type,
         facing_dir: Vector2::new(0.0, 1.0),
         frontage_t: 0.5,
@@ -6749,7 +6750,8 @@ fn saved_supplier_sweep_continues_identically_after_loading() {
     );
     original.hour_ticks = 8;
     run_supplier_slots(&mut original, 0..480, &allocator, &network, &graph);
-    let saved = original.supplier_roll.saved();
+    let saved = original.saved_supplier_roll(&network);
+    assert_eq!(saved.current, [true; 2]);
     assert!(
         saved
             .front

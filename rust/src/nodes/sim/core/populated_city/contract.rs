@@ -270,6 +270,14 @@ fn perf_contract_phase() {
     if name == "routing" {
         route_scratch.prepare(&core.transit_network.cch_graph, &core.region_graph);
     }
+    if name == "execution" {
+        // The epoch reads the workforce its slot's planning pass counted.
+        core.demand.count_workforce_for_test(
+            &core.allocator,
+            &core.households,
+            &core.fiscal_policy,
+        );
+    }
     let setup_s = setup.elapsed().as_secs_f64();
     phases::begin();
     let before = work_snapshot();
@@ -304,18 +312,26 @@ fn perf_contract_phase() {
             60,
         ),
         "execution" => {
-            // Exercise the same epoch preparation used by queued placement without requiring
-            // a queue entry. A frozen day can legitimately have no commercial action due.
-            core.demand.prepare_execution_epoch_for_test(
+            // The planning slot's construction epoch over the whole queue and back, as the
+            // hour's first slot opens it after planning (`SIM-02-I`).
+            assert!(
+                core.demand.open_construction_epoch(
+                    &core.allocator,
+                    &mut core.households,
+                    &core.zoning,
+                    &core.region_graph,
+                    &core.transit_network,
+                    &mut core.logistics,
+                    &core.fiscal_policy,
+                    core.treasury.balance,
+                    crate::nodes::sim::core::state::absolute_operational_minute(day, 60),
+                ),
+                "the snapshot's published census is current for the epoch"
+            );
+            core.demand.close_construction_epoch(
+                &mut core.households,
                 &core.allocator,
-                &core.households,
                 &core.region_graph,
-                crate::nodes::sim::core::state::absolute_operational_minute(day, 60),
-                &core.transit_network,
-                &mut core.logistics,
-                &core.zoning,
-                core.treasury.balance,
-                &core.fiscal_policy,
             );
         }
         "logistics" => core.logistics.hourly_tick(

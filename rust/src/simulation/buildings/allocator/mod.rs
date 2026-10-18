@@ -126,6 +126,10 @@ pub(crate) enum ExplicitServicePlacementRejection {
     FieldOverlap,
 }
 
+/// The applicant seeds of buildings placed outside the demand queue (`SIM-02-I`): this bit
+/// and the city counter. Queued spawn ids, the seeds of demand-placed buildings, stay below it.
+pub(crate) const CITY_APPLICANT_SEEDS: u64 = 1 << 62;
+
 /// A placed building occupying one authored parcel or an explicit non-zoned site.
 pub struct Building {
     /// World-space X centre of the building footprint (metres, ground-plane X axis).
@@ -144,6 +148,12 @@ pub struct Building {
     pub zone_profile_runtime_id: u16,
     /// Stable authored parcel id claimed by this private zoned building; `0` means no parcel.
     pub parcel_id: u64,
+    /// Seed of the applicant stream offered this building's household places (`SIM-02-I`):
+    /// the id of the queued spawn that placed it, or the city counter's next value
+    /// ([`CITY_APPLICANT_SEEDS`]) for a building placed outside the demand queue. A stable
+    /// identity, so planning, admission and arrivals draw the same applicants across remaps,
+    /// removals and loads. Saved.
+    pub applicant_seed: u64,
     /// Redevelopment counter of the claimed parcel when this building was placed.
     ///
     /// Captured rather than read live so the render path needs no zoning lookup, and so the
@@ -442,6 +452,8 @@ pub struct BuildingAllocator {
     /// Slot in progress on the simulation clock, set by SimCore; construction deadlines count
     /// from it.
     pub(crate) now_slot: u64,
+    /// Next value of the city applicant-seed counter, without [`CITY_APPLICANT_SEEDS`]. Saved.
+    pub(crate) next_applicant_seed: u64,
     /// Construction deadlines set since SimCore last scheduled their completion events, in
     /// placement order.
     pub(crate) pending_construction: Vec<(Handle<Building>, u64)>,
@@ -828,6 +840,7 @@ impl BuildingAllocator {
             field_clearance: FieldClearanceIndex::default(),
             pending_production_site_removals: Vec::new(),
             now_slot: 0,
+            next_applicant_seed: 0,
             pending_construction: Vec::new(),
             city_input_day: CityInputDay::default(),
             last_city_input_day: CityInputDay::default(),
@@ -1188,6 +1201,28 @@ impl BuildingAllocator {
             return 0.0;
         };
         self.registry.flat_size_m2(&b.asset_id)
+    }
+
+    /// The applicant-stream seed of building `building_idx` ([`Building::applicant_seed`]),
+    /// as the household applicant functions take it. O(1).
+    pub(crate) fn applicant_seed(&self, building_idx: usize) -> usize {
+        self.buildings[building_idx].applicant_seed as usize
+    }
+
+    /// Test fixtures that push buildings directly: seeds each building's applicants by its
+    /// index, as distinct placements would give each home a stream of its own.
+    #[cfg(test)]
+    pub(crate) fn seed_applicants_by_index_for_test(&mut self) {
+        for (index, building) in self.buildings.iter_mut().enumerate() {
+            building.applicant_seed = index as u64;
+        }
+    }
+
+    // The city counter's next applicant seed, for a building placed outside the demand queue.
+    pub(super) fn next_city_applicant_seed(&mut self) -> u64 {
+        let seed = CITY_APPLICANT_SEEDS | self.next_applicant_seed;
+        self.next_applicant_seed += 1;
+        seed
     }
 
     /// Returns the economy-profile worker capacity for an asset, failing safe on unresolved profiles.

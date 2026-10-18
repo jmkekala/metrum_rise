@@ -63,7 +63,7 @@ pub(super) fn incoming_household_need(
         budget.households_to_staff(policy, seed, vacancies.len(), |position| {
             let home = vacancies[position];
             (
-                home,
+                allocator.applicant_seed(home),
                 allocator.flat_size_m2(home),
                 allocator.buildings[home].level,
             )

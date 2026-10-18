@@ -627,6 +627,12 @@ impl SimCore {
         true
     }
 
+    /// Test driver: bulldozes road edge `edge_idx` as the bulldoze tool does.
+    #[cfg(test)]
+    pub(crate) fn bulldoze_road_edge_for_test(&mut self, edge_idx: usize) -> bool {
+        self.bulldoze_road_edge(edge_idx)
+    }
+
     fn bulldoze_road_edge(&mut self, edge_idx: usize) -> bool {
         if edge_idx >= self.region_graph.edge_count() || self.region_graph.edge(edge_idx).deleted {
             return false;
@@ -2306,7 +2312,6 @@ impl SimCore {
             node_id as u32,
             crate::simulation::network::types::NodeType::Border,
         );
-        self.demand.invalidate_construction_execution();
         debug_log!(
             "economy",
             "border connection created at node_id={} pos=({:.1}, {:.1}, {:.1})",
@@ -2764,6 +2769,8 @@ mod tests {
                 },
                 planned_day_index: 2,
                 planned_minute_of_day: 60,
+                permit: Default::default(),
+                counted: false,
             });
 
         core.push_undo_state_with_runtime(false, false, false, true);

@@ -398,9 +398,11 @@ impl BuildingAllocator {
             let home_idx = vacancies[position];
             cursor = position + 1;
             let household_seed = next_household_id.saturating_add(attempt);
-            let Some((household_size, composition)) =
-                applicant_offer(self.flat_size_m2(home_idx), home_idx, household_seed)
-            else {
+            let Some((household_size, composition)) = applicant_offer(
+                self.flat_size_m2(home_idx),
+                self.applicant_seed(home_idx),
+                household_seed,
+            ) else {
                 continue;
             };
             let arrival =
@@ -428,7 +430,7 @@ impl BuildingAllocator {
             let carrier_idx = agents.spawn_household_arrival_carrier(
                 home_idx,
                 household_size,
-                household_seed,
+                composition,
                 border_node,
                 border_pos.x,
                 border_pos.z,
@@ -497,44 +499,22 @@ impl BuildingAllocator {
         let mut mutated_any = false;
         let mut execution = DemandBuildingActionExecution::default();
 
-        for (zone_type, use_plan) in [
+        let uses = [
             (ZoneType::Residential, &plan.residential),
             (ZoneType::Commercial, &plan.commercial),
             (ZoneType::Industrial, &plan.industrial),
-        ] {
-            for action in &use_plan.despawns {
-                let Some(building_idx) = self.resolve_demand_building_action(action, zoning) else {
-                    continue;
-                };
-                if !self.can_demand_despawn(building_idx) {
-                    continue;
-                }
-                // Employment slots can be empty while former employees remain inside.
-                // Preserve a physical route home before deletion invalidates the entrance.
-                agents.evacuate_building_for_removal(
-                    building_idx,
-                    households,
-                    self,
-                    network,
-                    graph,
-                );
-                mutated_any |= self.remove_building_at_index(
-                    building_idx,
-                    zoning,
-                    agents,
-                    households,
-                    logistics,
-                    treasury_balance,
-                );
-            }
-
-            // Despawns can remap entrances. Refresh once per zone batch, never per proposal;
-            // accepted replacements retain their prepared doors in the economic proof.
-            if (!use_plan.downgrades.is_empty() || !use_plan.upgrades.is_empty())
-                && self.entrances_dirty
-            {
-                self.rebuild_entrance_cache(graph, &network.lane_system);
-            }
+        ];
+        // Every zone's guarded level changes come first, while the guard's proofs lend the
+        // census's books (`SIM-02-I`); a despawn swap-removes a building under those books,
+        // so the guard closes before the first one.
+        if uses
+            .iter()
+            .any(|(_, use_plan)| !use_plan.downgrades.is_empty() || !use_plan.upgrades.is_empty())
+            && self.entrances_dirty
+        {
+            self.rebuild_entrance_cache(graph, &network.lane_system);
+        }
+        for (_, use_plan) in uses {
             for action in use_plan.downgrades.iter().chain(&use_plan.upgrades) {
                 let Some(building_idx) =
                     self.resolve_demand_building_action(&action.building, zoning)
@@ -567,6 +547,35 @@ impl BuildingAllocator {
                     .is_some();
                 level_changes.finish(permit, applied, self);
                 mutated_any |= applied;
+            }
+        }
+        level_changes.close(households, self);
+
+        for (zone_type, use_plan) in uses {
+            for action in &use_plan.despawns {
+                let Some(building_idx) = self.resolve_demand_building_action(action, zoning) else {
+                    continue;
+                };
+                if !self.can_demand_despawn(building_idx) {
+                    continue;
+                }
+                // Employment slots can be empty while former employees remain inside.
+                // Preserve a physical route home before deletion invalidates the entrance.
+                agents.evacuate_building_for_removal(
+                    building_idx,
+                    households,
+                    self,
+                    network,
+                    graph,
+                );
+                mutated_any |= self.remove_building_at_index(
+                    building_idx,
+                    zoning,
+                    agents,
+                    households,
+                    logistics,
+                    treasury_balance,
+                );
             }
 
             for action in &use_plan.spawns {
@@ -608,12 +617,14 @@ impl BuildingAllocator {
         execution
     }
 
-    /// Executes one queued demand spawn through the same final placement path as batch demand.
+    /// Executes one queued demand spawn through the same final placement path as batch demand,
+    /// seeding its applicants with `applicant_seed` (its spawn id; the city counter without).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn execute_single_demand_spawn_action(
         &mut self,
         zone_type: ZoneType,
         action: &DemandSpawnAction,
+        applicant_seed: Option<u64>,
         zoning: &mut ZoningSystem,
         graph: &RegionGraph,
         lanes: &LaneSystem,
@@ -628,8 +639,9 @@ impl BuildingAllocator {
             !self.dirty_index && self.vacancy_pos.len() == self.buildings.len();
         let entrance_cache_was_clean =
             !self.entrances_dirty && self.entrances.len() == self.buildings.len();
-        match self.execute_demand_spawn_action(
+        match self.execute_seeded_demand_spawn_action(
             action,
+            applicant_seed,
             zoning,
             graph,
             road_surface,
@@ -1145,7 +1157,12 @@ impl BuildingAllocator {
             );
         }
         self.admission_order
-            .pick(vacancies, next_household_id, prefer_worker_capable)
+            .pick(
+                vacancies,
+                |building| self.applicant_seed(building),
+                next_household_id,
+                prefer_worker_capable,
+            )
             .map(|(position, size)| (vacancies[position], size))
     }
 
@@ -1169,7 +1186,7 @@ impl BuildingAllocator {
 
             let worker_rank = if prefer_worker_capable {
                 let composition = crate::simulation::economy::agents::household_age_composition(
-                    building_idx,
+                    self.applicant_seed(building_idx),
                     next_household_id,
                     candidate_size,
                 );

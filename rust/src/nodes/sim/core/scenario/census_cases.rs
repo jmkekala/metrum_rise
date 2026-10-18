@@ -375,17 +375,49 @@ fn growth_census_window_churn() {
         .unwrap_or(6);
     let mut scenario = GrowthScenario::starter_town();
     scenario.run_days(1);
-    crate::nodes::sim::core::populated_city::census_churn::report_census_churn(
+    let skips = crate::nodes::sim::core::populated_city::census_churn::report_census_churn(
         &mut scenario.core,
         days * 24,
         "starter-town",
     );
+    assert_eq!(skips, 0);
 }
 
 // Starts a queued construction of a firm (with recipe inputs) or a home in a census window,
 // out of queue order (the queue's own start event then finds it gone), and returns the game and
 // a copy loaded at that moment whose census restarts at its next slot and so covers the site.
 fn start_in_window(firm: bool) -> (GrowthScenario, GrowthScenario) {
+    let (mut source, _) = start_site_in_window(firm);
+    let path = std::env::temp_dir().join(format!(
+        "metrum-window-start-{firm}-{}.sqlite",
+        std::process::id()
+    ));
+    source
+        .core
+        .save_game_internal(path.to_str().unwrap(), None)
+        .unwrap();
+    let mut covering = GrowthScenario::starter_town();
+    covering
+        .core
+        .load_game_internal(path.to_str().unwrap())
+        .unwrap();
+    std::fs::remove_file(path).unwrap();
+    covering.core.time.speed_multiplier = source.core.time.speed_multiplier;
+    covering.core.transit_network.frontage_delay_revision += 1;
+    for core in [&mut source.core, &mut covering.core] {
+        step_to_chunk(core, SLOTS_PER_HOUR - 1);
+    }
+    let census = |game: &GrowthScenario| game.core.households.census_run.funding().capacities.len();
+    let live = source.core.allocator.buildings.len();
+    assert!(census(&source) < live, "the site is not in the census");
+    // The restart took the site; the window appended more to both games since.
+    assert_eq!(census(&covering), census(&source) + 1);
+    (source, covering)
+}
+
+// Starts a queued firm (with recipe inputs) or home in a census window, out of queue order, and
+// returns the game and the new site's index.
+fn start_site_in_window(firm: bool) -> (GrowthScenario, usize) {
     let mut source = GrowthScenario::starter_town();
     let window = CENSUS_WINDOW_START + 10..SLOTS_PER_HOUR - 60;
     let catalog = load_runtime_economy_catalog().unwrap();
@@ -416,51 +448,59 @@ fn start_in_window(firm: bool) -> (GrowthScenario, GrowthScenario) {
         let (day, minute) = (core.time.day_index, core.time.minute_of_day);
         core.start_pending_demand_spawn(id, day, minute);
         if core.allocator.buildings.len() > buildings && has_inputs(core, buildings) == firm {
-            break;
+            return (source, buildings);
         }
     }
-    let path = std::env::temp_dir().join(format!(
-        "metrum-window-start-{firm}-{}.sqlite",
-        std::process::id()
-    ));
-    source
-        .core
-        .save_game_internal(path.to_str().unwrap(), None)
-        .unwrap();
-    let mut covering = GrowthScenario::starter_town();
-    covering
-        .core
-        .load_game_internal(path.to_str().unwrap())
-        .unwrap();
-    std::fs::remove_file(path).unwrap();
-    covering.core.time.speed_multiplier = source.core.time.speed_multiplier;
-    covering.core.transit_network.frontage_delay_revision += 1;
-    for core in [&mut source.core, &mut covering.core] {
-        step_to_chunk(core, SLOTS_PER_HOUR - 1);
-    }
-    let census = |game: &GrowthScenario| game.core.households.census_run.funding().capacities.len();
-    let live = source.core.allocator.buildings.len();
-    assert!(census(&source) < live, "the site is not in the census");
-    // The restart took the site; the window appended more to both games since.
-    assert_eq!(census(&covering), census(&source) + 1);
-    (source, covering)
 }
 
-// A home started in the census window appends a site the census's copy lacks. Planning at the
-// next hour's first slot still lends the published census, which treats the site as unfunded
-// and without supply, and plans as on a census that covers the site.
+// A workplace that completes between the census's copy and the next hour's first slot is still
+// under construction for planning (`SIM-02-I`): the census published there did not see it
+// complete and funds none of its jobs, so only a constructing claim can hold its workers; from
+// the hour after, the census funds its jobs and planning claims none. No hour claims its workers
+// twice.
 #[test]
-fn planning_lends_the_published_census_after_a_home_starts_in_the_window() {
-    let (mut source, mut covering) = start_in_window(false);
-    let planned = [&source, &covering].map(|game| game.core.demand.planner_censuses);
+fn a_workplace_completed_after_the_copy_keeps_one_claim_until_a_census_sees_it() {
+    let (mut scenario, site) = start_site_in_window(true);
+    let core = &mut scenario.core;
+    // Started in the window, the site completes in a later hour's window, after that copy.
+    let complete = core.allocator.buildings[site].construction_complete_slot;
+    assert!(complete % SLOTS_PER_HOUR >= CENSUS_WINDOW_START);
+    while core.time.absolute_slot() < complete {
+        core.step_frame(FRAME_DT_S / 16.0);
+    }
+    assert!(!core.allocator.buildings[site].is_under_construction());
+    let claims = |core: &SimCore| {
+        let census = &core.households.job_funding;
+        (
+            census.saw_operating(site),
+            census.capacities.get(site).copied().unwrap_or(0),
+            core.demand.constructing_workers_for_test(site),
+        )
+    };
+    // Each planning slot runs at the hour's first slot; read its claims in the slot after.
+    step_to_chunk(core, 1);
+    let (seen, funded, _) = claims(core);
+    assert!(!seen && funded == 0, "{:?}", claims(core));
+    step_to_chunk(core, 0);
+    step_to_chunk(core, 1);
+    let (seen, funded, constructing) = claims(core);
+    assert!(
+        seen && funded > 0 && constructing == 0,
+        "{:?}",
+        claims(core)
+    );
+}
+
+// A home or a firm started in the census window appends a site the census's copy lacks.
+// Planning at the next hour's first slot lends the published census, whose books treat the site
+// as unfunded and without supply and lay out a firm's buyer ports after the census's own, and
+// plans as on a census that covers the site; the pass asserts that it lends a current census and
+// that the books return exactly.
+fn assert_planning_lends_the_census_after_a_start_in_the_window(firm: bool) {
+    let (mut source, mut covering) = start_in_window(firm);
     for core in [&mut source.core, &mut covering.core] {
         step_to_chunk(core, 0);
     }
-    assert_eq!(
-        [&source, &covering].map(|game| game.core.demand.planner_censuses),
-        planned,
-        "both passes lend the published census"
-    );
     let plan = |game: &GrowthScenario| {
         let core = &game.core;
         (
@@ -474,19 +514,14 @@ fn planning_lends_the_published_census_after_a_home_starts_in_the_window() {
     assert_eq!(plan(&source), plan(&covering));
 }
 
-// A firm started in the window would buy through business input ports the published books do
-// not lay out for it, so planning runs its own census; the covering game lends its census.
 #[test]
-fn planning_runs_its_own_census_after_a_firm_starts_in_the_window() {
-    let (mut source, mut covering) = start_in_window(true);
-    let planned = [&source, &covering].map(|game| game.core.demand.planner_censuses);
-    for core in [&mut source.core, &mut covering.core] {
-        step_to_chunk(core, 0);
-    }
-    assert_eq!(
-        [&source, &covering].map(|game| game.core.demand.planner_censuses),
-        [planned[0] + 1, planned[1]]
-    );
+fn planning_lends_the_published_census_after_a_home_starts_in_the_window() {
+    assert_planning_lends_the_census_after_a_start_in_the_window(false);
+}
+
+#[test]
+fn planning_lends_the_published_census_after_a_firm_starts_in_the_window() {
+    assert_planning_lends_the_census_after_a_start_in_the_window(true);
 }
 
 // A household that arrives during the demand snapshot's sweep and is hired at the next hour's

@@ -97,16 +97,6 @@ impl Revalidation {
 }
 
 impl RecurringSupply {
-    /// Drops an unpublished project proof immediately before rebuilding the entire live book.
-    /// Layout invalidation may already have removed its old source indices, so no rollback
-    /// may dereference the new allocator through the old geometry. No quote may intervene.
-    pub(crate) fn discard_project_proof_for_reset(&mut self) {
-        self.staged.clear();
-        self.released.clear();
-        self.releasing_owner = None;
-        self.revalidation.finish();
-    }
-
     /// Starts one outer replacement/revalidation transaction in O(1). Accepted inner owner
     /// quotes remain provisional until `accept_revalidation`; one rejection restores them all.
     /// Call `prepare_owners` before the project pass to provide bounded journal storage.

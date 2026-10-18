@@ -18,10 +18,15 @@ use crate::simulation::zoning::{ParcelId, ZoneType, ZoningSystem};
 pub(super) struct QueuedConstruction {
     /// False after minute execution consumes the queue entry, even if placement failed.
     pub(super) active: bool,
+    /// Id of the queue entry this project is: the earliest for its parcel.
+    pub(super) spawn_id: u64,
     pub(super) parcel_id: u64,
     pub(super) completion_hour: u64,
     pub(super) household_slots: u32,
-    /// Adults the applicant stream offers these places, keyed by parcel (`DEM-02-C`).
+    /// Seed of a home's applicant stream: its spawn id, the applicant seed it is placed with
+    /// (`SIM-02-I`), so planning and permits count the applicants it draws once placed.
+    pub(super) home_seed: usize,
+    /// Adults the applicant stream offers these places (`DEM-02-C`), seeded by `home_seed`.
     pub(super) household_workers: u32,
     /// Members of those applicants, whose shopping needs store workers.
     pub(super) household_members: u32,
@@ -46,19 +51,19 @@ fn start_hour_delay(now: u64, due_minute: u64) -> u64 {
 impl DemandSystem {
     /// Refreshes derived queue capacities and doors without cloning names or changing saved state.
     /// Retains parcel lookup order and a reusable execution-order permutation for finite inputs.
+    /// `queued` yields each entry's spawn id, due minute, zone and action, in queue order.
     pub(crate) fn set_queued_construction_with_entrances<'a>(
         &mut self,
         allocator: &BuildingAllocator,
         zoning: &ZoningSystem,
         now: u64,
-        queued: impl IntoIterator<Item = (u64, ZoneType, &'a DemandSpawnAction)>,
+        queued: impl IntoIterator<Item = (u64, u64, ZoneType, &'a DemandSpawnAction)>,
         site_entrance: impl Fn(&DemandSpawnAction) -> Option<BuildingEntrance>,
     ) {
-        self.invalidate_construction_execution();
         self.queued_reference_hour = now / 60;
         self.queued_construction.clear();
         let mut next_due = now.saturating_add(1);
-        for (sequence, (due, zone, action)) in queued.into_iter().enumerate() {
+        for (sequence, (spawn_id, due, zone, action)) in queued.into_iter().enumerate() {
             // Even a stale action consumes an execution slot before placement rejects it.
             let due = due.max(next_due);
             next_due = due.saturating_add(1);
@@ -82,14 +87,12 @@ impl DemandSystem {
                 0
             };
             let flat_size_m2 = allocator.registry.flat_size_m2(&action.asset_id);
-            let (places, household_members) = applicant_places_and_members(
-                flat_size_m2,
-                action.parcel_id as usize,
-                0..household_slots,
-            );
-            let household_workers = places[1] + 2 * places[2];
+            let home_seed = spawn_id as usize;
+            let (places, household_members) =
+                applicant_places_and_members(flat_size_m2, home_seed, 0..household_slots);
             self.queued_construction.push(QueuedConstruction {
                 active: true,
+                spawn_id,
                 level: authored.level,
                 parcel_id: action.parcel_id,
                 completion_hour: start_hour_delay(now, due)
@@ -99,7 +102,8 @@ impl DemandSystem {
                         &self.runtime_tuning,
                     )),
                 household_slots,
-                household_workers,
+                home_seed,
+                household_workers: places[1] + 2 * places[2],
                 household_members,
                 flat_size_m2,
                 profile_runtime_id: candidate_economy_profile(
@@ -130,20 +134,48 @@ impl DemandSystem {
             .sort_unstable_by_key(|&index| self.queued_construction[index].sequence);
     }
 
-    /// Retires one consumed queue entry and returns its recipe without moving owner identities.
-    pub(super) fn retire_queued_construction(&mut self, parcel: u64) -> Option<u16> {
-        if let Ok(index) = self
+    /// The active project queue entry `spawn_id` is for `parcel`: none for a later duplicate
+    /// of a queued parcel or an entry already consumed. O(log Q).
+    pub(super) fn queued_project(&self, spawn_id: u64, parcel: u64) -> Option<&QueuedConstruction> {
+        self.queued_construction
+            .binary_search_by_key(&parcel, |project| project.parcel_id)
+            .ok()
+            .map(|index| &self.queued_construction[index])
+            .filter(|project| project.active && project.spawn_id == spawn_id)
+    }
+
+    /// Retires queue entry `spawn_id` for `parcel` and returns its recipe without moving owner
+    /// identities: `None` when it was no active project (a later duplicate, or consumed).
+    pub(super) fn retire_queued_construction(&mut self, spawn_id: u64, parcel: u64) -> Option<u16> {
+        let index = self
             .queued_construction
             .binary_search_by_key(&parcel, |project| project.parcel_id)
-        {
-            let project = &mut self.queued_construction[index];
-            return std::mem::replace(&mut project.active, false)
-                .then_some(project.profile_runtime_id);
-        }
-        None
+            .ok()?;
+        let project = &mut self.queued_construction[index];
+        (project.spawn_id == spawn_id && std::mem::replace(&mut project.active, false))
+            .then_some(project.profile_runtime_id)
+    }
+
+    /// A queued home's seed, applicant adults and members, as planning and permits read them.
+    #[cfg(test)]
+    pub(crate) fn queued_home_estimate_for_test(
+        &self,
+        spawn_id: u64,
+        parcel: u64,
+    ) -> Option<(usize, u32, u32)> {
+        self.queued_project(spawn_id, parcel)
+            .filter(|project| project.household_slots > 0)
+            .map(|project| {
+                (
+                    project.home_seed,
+                    project.household_workers,
+                    project.household_members,
+                )
+            })
     }
 
     /// Numeric reservation fixtures do not need road geometry; runtime queues always supply doors.
+    /// Entries take their queue positions as spawn ids.
     #[cfg(test)]
     pub(crate) fn set_queued_construction<'a>(
         &mut self,
@@ -152,7 +184,16 @@ impl DemandSystem {
         now: u64,
         queued: impl IntoIterator<Item = (u64, ZoneType, &'a DemandSpawnAction)>,
     ) {
-        self.set_queued_construction_with_entrances(allocator, zoning, now, queued, |_| None);
+        self.set_queued_construction_with_entrances(
+            allocator,
+            zoning,
+            now,
+            queued
+                .into_iter()
+                .enumerate()
+                .map(|(id, (due, zone, action))| (id as u64, due, zone, action)),
+            |_| None,
+        );
     }
 }
 

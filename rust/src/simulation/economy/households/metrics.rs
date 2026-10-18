@@ -1095,7 +1095,8 @@ pub(crate) fn applicant_offer_limit(arrivals: usize) -> usize {
 
 /// The deterministic outside household offered one residential place: size and ages.
 ///
-/// `home_seed` is the home's building index (its parcel id before placement) and
+/// `home_seed` is the home's building index (the index it will have once placed while it is
+/// queued, `queued_home_seed`; a proposed home's parcel id before it is queued) and
 /// `household_seed` the offer's position in the applicant stream. Admission, housing need and
 /// the workforce calendar read the same stream. `None` where the flat fits no household. O(1).
 pub(crate) fn applicant_offer(

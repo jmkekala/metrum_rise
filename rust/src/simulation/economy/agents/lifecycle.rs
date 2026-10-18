@@ -75,19 +75,18 @@ impl AgentSystem {
         idx
     }
 
-    /// Spawns a household carrier, preserving the composition selected with `household_seed`.
-    pub fn spawn_household_arrival_carrier(
+    /// Spawns a household carrier with the applicant's `composition` as admission drew it.
+    pub(crate) fn spawn_household_arrival_carrier(
         &mut self,
         home: usize,
         household_size: u16,
-        household_seed: usize,
+        composition: super::HouseholdAgeComposition,
         border_node: u32,
         init_x: f32,
         init_y: f32,
     ) -> usize {
         let agent_idx = self.spawn_border_arrival_agent(home, border_node, init_x, init_y);
         self.agents.pending_household_size[agent_idx] = household_size.max(1);
-        let composition = super::household_age_composition(home, household_seed, household_size);
         self.agents.pending_household_adults[agent_idx] = composition.adult_count;
         self.agents.pending_household_elders[agent_idx] = composition.elder_count;
         // The carrier waits at the border for its paced departure (`SIM-02-E`).
@@ -630,7 +629,11 @@ mod tests {
                                 system.spawn_household_arrival_carrier(
                                     origin,
                                     (index % 6) as u16,
-                                    index,
+                                    crate::simulation::economy::agents::household_age_composition(
+                                        origin,
+                                        index,
+                                        (index % 6) as u16,
+                                    ),
                                     (index % 31) as u32,
                                     x,
                                     -x,

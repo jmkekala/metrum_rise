@@ -68,8 +68,19 @@ pub(crate) struct BusinessMarket {
     port_masks: Vec<u64>,
     dirty_buyers: Vec<usize>,
     buyer_dirty: Vec<bool>,
+    // The census's own layout while a planning pass covers buildings appended since.
+    census_buyers: Option<CensusBuyers>,
     #[cfg(test)]
     disable_finance_masks: bool,
+}
+
+/// The census's buyer count, live port count and live index, kept aside while a lent book
+/// lays out the buildings appended since its census.
+#[derive(Clone, Debug, Default)]
+struct CensusBuyers {
+    buyers: usize,
+    live_ports: usize,
+    live: Vec<ReachableBucketIndex>,
 }
 
 impl BusinessMarket {
@@ -93,8 +104,9 @@ impl BusinessMarket {
         self.disable_finance_masks = true;
     }
 
-    /// Forks the jointly financed live book once per project pass. Warm cost follows account
-    /// tranches and receipts; the existing resource buckets retain their prepared storage.
+    /// Forks the jointly financed live book, for tests: planning lends it instead. Warm cost
+    /// follows account tranches and receipts; the resource buckets retain their storage.
+    #[cfg(test)]
     pub(crate) fn copy_reservations_from(&mut self, source: &Self) {
         if self.revision != source.revision
             || self.access != source.access
@@ -1100,6 +1112,102 @@ impl BusinessMarket {
             "account_available" => market.account_available, "port_available" => market.port_available[..live],
             "port_masks" => market.port_masks[..live], "indices" => market.indices.live,
             "revision" => market.revision)
+    }
+
+    /// Lays out buyer ports for the buildings appended since this book's census, for a
+    /// planning pass on the lent book (`SIM-02-I`). Their ports follow the census's live
+    /// ports, as a census of the whole city would number them, and hold no accounts; the live
+    /// index is rebuilt with them, keeping the census's availability and finance classes, and
+    /// the proposed sites are laid out again after them. The census's index waits aside until
+    /// [`Self::restore_census_buyers`]. O(live ports log live ports + appended buyers) when
+    /// buildings were appended, O(1) otherwise.
+    pub(crate) fn append_live_buyers(
+        &mut self,
+        allocator: &BuildingAllocator,
+        graph: &RegionGraph,
+        components: &ModeComponentIndex,
+        catalog: &RuntimeEconomyCatalog,
+    ) {
+        let buyers = self.buyer_ports.len();
+        if allocator.buildings.len() <= buyers || self.revision.is_none() {
+            return;
+        }
+        debug_assert!(self.census_buyers.is_none());
+        let live_ports = self.indices.live_ports;
+        // Proposed sites are numbered after the live ports.
+        self.identities.truncate(live_ports);
+        self.port_access.truncate(live_ports);
+        self.port_sites.truncate(live_ports);
+        self.port_available.truncate(live_ports);
+        self.port_masks.truncate(live_ports);
+        self.sites.invalidate_layout();
+        self.indices.sites.clear();
+        for (buyer, building) in allocator.buildings.iter().enumerate().skip(buyers) {
+            let access = Access {
+                chunk: allocator.entrances.get(buyer).map_or((0, 0), |entrance| {
+                    chunk_for_point(entrance.door_pos.x, entrance.door_pos.y)
+                }),
+                components: components.building_components(
+                    allocator,
+                    graph,
+                    buyer,
+                    TransitFlags::CAR,
+                ),
+            };
+            self.access.push(access);
+            self.profiles.push(building.economy_profile_runtime_id);
+            let first = self.identities.len();
+            if let Some(profile) =
+                catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
+            {
+                for input in &profile.inputs {
+                    self.identities.push((buyer, input.resource_runtime_id));
+                    self.port_access.push(access);
+                }
+            }
+            self.buyer_ports.push(first..self.identities.len());
+        }
+        let ports = self.identities.len();
+        self.port_sites.resize(ports, None);
+        self.port_available.resize(ports, 0);
+        self.port_masks.resize(ports, 0);
+        self.visited.resize(ports, 0);
+        self.indices.live_ports = ports;
+        let census = std::mem::take(&mut self.indices.live);
+        self.rebuild_indices(catalog.resource_count() + 1, false);
+        let (available, masks) = (&self.port_available, &self.port_masks);
+        self.indices.live.par_iter_mut().for_each(|index| {
+            index.reset_available(|port| available[port] > 0);
+            index.reset_query_masks(|port| masks[port]);
+        });
+        self.census_buyers = Some(CensusBuyers {
+            buyers,
+            live_ports,
+            live: census,
+        });
+    }
+
+    /// Returns the census's layout after a pass that covered appended buildings: the
+    /// appended buyers and their ports leave, the census's live index returns, and the
+    /// proposed sites are laid out again at the next pass. Call after [`Self::end_pass`].
+    /// O(appended buyers + site ports).
+    pub(crate) fn restore_census_buyers(&mut self) {
+        let Some(census) = self.census_buyers.take() else {
+            return;
+        };
+        self.identities.truncate(census.live_ports);
+        self.port_access.truncate(census.live_ports);
+        self.port_sites.truncate(census.live_ports);
+        self.port_available.truncate(census.live_ports);
+        self.port_masks.truncate(census.live_ports);
+        self.visited.truncate(census.live_ports);
+        self.access.truncate(census.buyers);
+        self.profiles.truncate(census.buyers);
+        self.buyer_ports.truncate(census.buyers);
+        self.sites.invalidate_layout();
+        self.indices.sites.clear();
+        self.indices.live = census.live;
+        self.indices.live_ports = census.live_ports;
     }
 
     /// Opens a planning pass directly on this live market. Proposals nest ordinary proofs

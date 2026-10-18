@@ -104,6 +104,7 @@ pub(super) fn create_test_building(edge_idx: usize, side: i8) -> Building {
         depth_cells: 1,
         zone_profile_runtime_id: 0,
         parcel_id: 0,
+        applicant_seed: 0,
         zone_type: ZoneType::Residential,
         facing_dir: Vector2::new(1.0, 0.0),
         frontage_t: 0.5, // t=0.5 → depart node = end_node of the edge

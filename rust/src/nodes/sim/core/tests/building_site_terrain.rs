@@ -336,6 +336,8 @@ fn queued_asymmetric_houses_publish_graded_terrain() {
                             },
                             planned_day_index: 1,
                             planned_minute_of_day: 0,
+                            permit: Default::default(),
+                            counted: false,
                         });
                 }
             }

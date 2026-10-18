@@ -304,6 +304,7 @@ fn building(
         depth_cells: 2,
         zone_profile_runtime_id: 0,
         parcel_id: 0,
+        applicant_seed: 0,
         zone_type,
         facing_dir: Vector2::new(0.0, 1.0),
         frontage_t: 0.5,
@@ -1271,8 +1272,8 @@ fn queued_workplace_reserves_homes_without_admitting_households() {
         &zoning,
         0,
         [
-            (61, ZoneType::Industrial, &action),
-            (62, ZoneType::Industrial, &action),
+            (0, 61, ZoneType::Industrial, &action),
+            (1, 62, ZoneType::Industrial, &action),
         ],
         |action| {
             allocator.demand_site_entrance(
@@ -1313,12 +1314,16 @@ fn queued_workplace_reserves_homes_without_admitting_households() {
         &allocator,
         &zoning,
         0,
-        [(61, ZoneType::Industrial, &action)].into_iter().chain(
-            homes
-                .iter()
-                .enumerate()
-                .map(|(index, home)| (62 + index as u64, ZoneType::Residential, home)),
-        ),
+        [(0, 61, ZoneType::Industrial, &action)]
+            .into_iter()
+            .chain(homes.iter().enumerate().map(|(index, home)| {
+                (
+                    1 + index as u64,
+                    62 + index as u64,
+                    ZoneType::Residential,
+                    home,
+                )
+            })),
         |action| {
             allocator.demand_site_entrance(
                 action.parcel_id,
@@ -1346,6 +1351,7 @@ fn pension_arrivals_preserve_homes_for_constructing_workplaces() {
     let mut workplace = building(ZoneType::Industrial, 1_000_000.0, 0, 0, factory);
     workplace.set_construction_hours_left(12);
     allocator.buildings.push(workplace);
+    allocator.seed_applicants_by_index_for_test();
     allocator.rebuild_zone_index();
     let mut households = HouseholdSystem::new();
     let mut graph = graph_with_connected_border();
@@ -1429,6 +1435,7 @@ fn queued_homes_obey_deadlines_and_are_claimed_only_once() {
         &demand.queued_construction,
         demand.next_construction_start_hour,
         None,
+        |_| true,
     );
     workforce.reserve_existing();
     assert!(
@@ -1464,6 +1471,7 @@ fn queued_homes_obey_deadlines_and_are_claimed_only_once() {
         &demand.queued_construction,
         demand.next_construction_start_hour,
         None,
+        |_| true,
     );
     assert!(!workforce.claim(12, 1));
     assert!(workforce.claim(24, workers));
@@ -1850,6 +1858,7 @@ fn job_driven_admission_prefers_worker_candidate_over_workerless_front_candidate
     let mut factory = building(ZoneType::Industrial, 0.0, 0, 0, industrial_asset);
     factory.operating_budget = 100_000.0;
     allocator.buildings.push(factory);
+    allocator.seed_applicants_by_index_for_test();
     allocator.rebuild_zone_index();
 
     let normal_candidate = allocator

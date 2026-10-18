@@ -19,10 +19,14 @@ pub(crate) enum Work {
     PlanningPasses,
     /// Live hourly funding censuses run by employment.
     LiveCensuses,
-    /// Funding censuses rebuilt by a planning pass that could not reuse the live one.
-    PlannerCensuses,
-    /// Funding censuses run by queued-construction execution.
-    ExecutionCensuses,
+    /// Planning passes skipped because the published census's books were not valid for the
+    /// live city (`SIM-02-I`); planning waits for the next publication.
+    PlanningSkips,
+    /// Construction epochs opened at planning slots (`SIM-02-I`).
+    ConstructionEpochs,
+    /// Construction epochs skipped because the published census's books were not valid for
+    /// the live city (`SIM-02-I`); the queue's business permits wait for the next slot.
+    ConstructionEpochSkips,
     /// Building rows visited across all censuses.
     CensusBuildings,
     /// Live business/customer reservation rows copied into a planning fork.
@@ -170,8 +174,9 @@ pub(crate) const WORK_NAMES: [&str; WORK_COUNT] = [
     "buildings_removed",
     "planning_passes",
     "live_censuses",
-    "planner_censuses",
-    "execution_censuses",
+    "planning_skips",
+    "construction_epochs",
+    "construction_epoch_skips",
     "census_buildings",
     "reservation_rows_copied",
     "owner_slots_prepared",

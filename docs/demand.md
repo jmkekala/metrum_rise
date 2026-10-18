@@ -203,9 +203,8 @@ This section describes the current cadence. Its replacement is planned in
   published census copied onto each building. The workforce (housed unemployed adults,
   displaced households' labour, and the open funded jobs, their wages and the worker
   capacities) is counted on the live city at the pass, after the hour's job search.
-  Construction execution builds its own current snapshot. The pass lends the published census
-  books while the building structure is unchanged and no building started since the census copy
-  has recipe inputs; otherwise it runs its own census (`SIM-02-I` part 2).
+  The pass lends the published census books, and the construction epoch at the same slot proves
+  the queue's permits on them (`SIM-02-I` part 3).
   A household admitted by an hourly pass cannot claim an exit: exits need at least two unhoused
   days.
 
@@ -377,8 +376,9 @@ Claims are made in this order:
 3. New proposals claim last.
 
 A future place supplies the adults of the applicant the shared stream offers it
-(`households::applicant_offer`), keyed by building index, or by parcel ID before placement, and
-by place ordinal; an elder applicant supplies none (`DEM-02-C`). Arrivals also shop: each
+(`households::applicant_offer`), keyed by the building's stable applicant seed (the queued
+spawn's id, kept once placed, or a city counter's value for other buildings), by parcel ID while
+only proposed, and by place ordinal; an elder applicant supplies none (`DEM-02-C`). Arrivals also shop: each
 hour's arrival adults are reduced by `ceil(members × store labor per resident)`. Store labor per
 resident is the authored consumption rate of each resource households buy from stores, times the
 fewest workers per daily unit among the stores selling it (`workforce::resident_store_labor`).
@@ -405,22 +405,34 @@ Regenerated rows still reuse entrance geometry only when exact door coordinates,
 edge/side, lane revision and CCH generation match. Rows keep the full rebuild's owner/key order,
 so candidate order, financing and job-lock expiry are unchanged.
 
-The hourly pass plans directly on the live customer, business and input books when the
-employment census is current (the usual case). It opens one first-touch transaction per book,
-nests each proposal's ordinary proof inside it, and restores every changed row, link, port
-mapping and bucket entry when it closes. Temporary project owners and appended rows are
-truncated. The planner borrows its own walking proofs, as its former copy of the books had.
-A stale census still plans on a separate census and copy. Test builds compare full book
-fingerprints after every such pass.
+The hourly pass plans directly on the live customer, business and input books of the census
+published at its slot. It opens one first-touch transaction per book, nests each proposal's
+ordinary proof inside it, and restores every changed row, link, port mapping and bucket entry when
+it closes. Temporary project owners and appended rows are truncated. Buildings appended since the
+census's copy join the lent business book as buyers: their input ports are laid out after the
+census's live ports and the live port index is rebuilt with them for the pass; the census's own
+index returns with the rollback. There is no planner census: under the slot clock the published
+census is current (test builds assert it, and `planner_censuses` counts any pass that would not
+be). Test builds compare full book fingerprints after every pass.
 
-Before placing a project and spending its owner equity, the minute executor revalidates:
-- placed housing and unemployed adults;
-- customers;
-- input commitments.
+After the pass queues its spawns, the hour's first slot opens one construction epoch on the same
+published books, under the same journal: the planner's snapshot (rolling front, live workforce,
+queue capacity) and a replay of every constructing building and queued project in queue order,
+counting queued homes' applicants as the planner does. A building the census did not see
+operating still counts as under construction. Each queued commercial or industrial spawn gets a
+permit when its proof funds and staffs it: a digest of its door, with its profile and level.
+Permits are saved with the queue. Immediate business level changes are proved in the same epoch, all
+before any despawn; the epoch closes before the first despawn and before the hour's exits.
 
-Validation runs once per execution epoch, plus incremental updates. A failed placement consumes
-nothing and retires the queue entry, so later checks revalidate anything that depended on it.
-Construction itself is owned by [`economy.md`](economy.md#private-construction).
+At its start minute a business spawn places and spends its owner equity only with a permit for
+its current door, profile and level; otherwise it is rejected and its queue entry retires.
+Nothing is proved at the start, and a missing permit always rejects. A home the planning slot
+counted that fails to place voids the queue's granted business permits; those spawns wait, in
+queue order, until the next planning slot proves them again. Queued homes' applicants are seeded
+by the spawn id each keeps once placed (`Building::applicant_seed`); buildings placed outside
+the queue take a city counter's next value, so planning and the permits count what a home draws
+once placed. Residential spawns need no permit. Construction itself is owned by
+[`economy.md`](economy.md#private-construction).
 
 ## Level changes
 

@@ -102,7 +102,7 @@ fn fixture(districts: usize) -> (SimCore, Vec<DemandSpawnAction>) {
 }
 
 #[test]
-#[ignore = "manual release throughput of successful physical projects; setup and first check separate"]
+#[ignore = "manual release throughput of successful physical projects; setup and planning slot separate"]
 fn benchmark_successful_project_placement() {
     for districts in [1, 8, 64, 512] {
         let mut samples = [[0.0_f64; 3]; 5];
@@ -112,28 +112,33 @@ fn benchmark_successful_project_placement() {
             let (mut core, factories) = fixture(districts);
             sample[0] = start.elapsed().as_secs_f64() * 1_000.0;
             let homes = core.allocator.buildings.len();
-            let start = Instant::now();
-            assert!(
-                core.demand
-                    .prepare_queued_spawn(
-                        &factories[0],
-                        ZoneType::Industrial,
-                        &core.allocator,
-                        &core.households,
-                        &core.region_graph,
-                        2,
-                        &core.transit_network,
-                        &mut core.logistics,
-                        &core.zoning,
-                        core.treasury.balance,
-                        &core.fiscal_policy
-                    )
-                    .is_ok()
-            );
-            sample[1] = start.elapsed().as_secs_f64() * 1_000.0;
-            let start = Instant::now();
+            // One planning slot proves every queued factory's permit; each start then places.
             for (index, action) in factories.iter().enumerate() {
-                execute_test_construction(&mut core, action, ZoneType::Industrial, 2);
+                core.pending_demand_spawns.push_back(
+                    super::super::state::PendingDemandSpawnAction {
+                        id: 0,
+                        due_minute: 2 + index as u64,
+                        zone_type: ZoneType::Industrial,
+                        action: action.clone(),
+                        planned_day_index: 1,
+                        planned_minute_of_day: 0,
+                        permit: Default::default(),
+                        counted: false,
+                    },
+                );
+            }
+            let start = Instant::now();
+            core.prove_construction_permits_for_test(1, 1);
+            sample[1] = start.elapsed().as_secs_f64() * 1_000.0;
+            assert!(
+                core.pending_demand_spawns
+                    .iter()
+                    .all(|pending| pending.permit.granted().is_some())
+            );
+            let start = Instant::now();
+            for index in 0..factories.len() {
+                let minute = 2 + index as u16;
+                assert_eq!(core.execute_pending_demand_spawns_for_minute(1, minute), 1);
                 assert_eq!(core.allocator.buildings.len(), homes + index + 1);
             }
             sample[2] = start.elapsed().as_secs_f64() * 1_000.0;
@@ -160,7 +165,7 @@ fn benchmark_successful_project_placement() {
             values[2]
         };
         eprintln!(
-            "successful_project_placement districts={districts} placed={} owner_equity={owner_equity:.2} setup_ms={:.3} first_check_ms={:.3} placement_ms={:.3}",
+            "successful_project_placement districts={districts} placed={} owner_equity={owner_equity:.2} setup_ms={:.3} planning_slot_ms={:.3} placement_ms={:.3}",
             districts * 2,
             median(0),
             median(1),

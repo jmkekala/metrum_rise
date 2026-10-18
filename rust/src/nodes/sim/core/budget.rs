@@ -589,9 +589,8 @@ impl SimCore {
 
     // A fiscal or service funding change reaches the census through its copy (`SIM-02-I`):
     // the census in progress restarts on the new values and the next hour's first slot
-    // publishes it; construction execution plans afresh.
+    // publishes it, with the construction permits proved on it.
     fn follow_census_policy(&mut self) {
-        self.demand.invalidate_construction_execution();
         self.households
             .follow_census_policy(self.fiscal_policy, self.service_policy.electricity_funding);
     }
@@ -612,7 +611,6 @@ impl SimCore {
                 profile,
                 funding,
             );
-            self.demand.invalidate_construction_execution();
         }
     }
 
@@ -620,7 +618,6 @@ impl SimCore {
     /// first slot publishes the census of the loaded copy.
     pub(crate) fn refresh_loaded_job_funding(&mut self) {
         let funding = self.electricity_funding_by_building();
-        self.demand.invalidate_construction_execution();
         self.households.job_funding.refresh(
             &self.allocator,
             &self.households.households,

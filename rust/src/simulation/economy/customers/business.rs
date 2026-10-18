@@ -71,7 +71,9 @@ pub(crate) struct BusinessBudgets {
 }
 
 impl BusinessBudgets {
-    /// Copies accepted accounts once per planning pass, retaining warm journal storage.
+    /// Copies accepted accounts, retaining warm journal storage; test forks only, as planning
+    /// lends the live book.
+    #[cfg(test)]
     fn copy_reservations_from(&mut self, source: &Self) {
         debug_assert!(source.staged.is_empty());
         debug_assert!(!self.revalidation.is_active() && !source.revalidation.is_active());

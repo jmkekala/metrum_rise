@@ -1024,6 +1024,7 @@ fn add_test_complete_building(core: &mut SimCore, asset_id: String, zone_type: Z
         depth_cells: 2,
         zone_profile_runtime_id,
         parcel_id: 0,
+        applicant_seed: 0,
         zone_type,
         facing_dir: godot::prelude::Vector2::ZERO,
         frontage_t: 0.5,
@@ -1376,7 +1377,7 @@ fn max_demand_cheat_runtime_queues_and_executes_rci_spawns() {
     place_test_parcel_run(&mut core, ZoneType::Industrial, 110.0, 150.0);
 
     core.apply_money_and_max_demand_cheat(1_000_000.0);
-    core.execute_hourly_demand_pass(1, 0);
+    core.execute_hourly_demand_pass_for_test(1, 0);
 
     assert!(
         core.pending_demand_spawns
@@ -1440,13 +1441,13 @@ fn hourly_planning_does_not_queue_the_same_parcel_twice() {
     place_test_parcel_run(&mut core, ZoneType::Residential, 10.0, 50.0);
     place_test_parcel_run(&mut core, ZoneType::Industrial, 110.0, 150.0);
     core.apply_money_and_max_demand_cheat(1_000_000.0);
-    core.execute_hourly_demand_pass(1, 0);
+    core.execute_hourly_demand_pass_for_test(1, 0);
     assert!(!core.pending_demand_spawns.is_empty());
     // Keep the first batch queued while another hour plans. Other parcels may still grow.
     for pending in &mut core.pending_demand_spawns {
         pending.due_minute += 120;
     }
-    core.execute_hourly_demand_pass(1, 60);
+    core.execute_hourly_demand_pass_for_test(1, 60);
     let mut parcels: Vec<_> = core
         .pending_demand_spawns
         .iter()
@@ -1542,15 +1543,11 @@ fn execute_test_construction(
     zone: ZoneType,
     minute: u16,
 ) {
-    core.pending_demand_spawns
-        .push_back(super::state::PendingDemandSpawnAction {
-            id: 0,
-            due_minute: u64::from(minute),
-            zone_type: zone,
-            action: action.clone(),
-            planned_day_index: 1,
-            planned_minute_of_day: 0,
-        });
+    queue_test_spawn(core, u64::from(minute), zone, action);
+    // A planning slot proves a business spawn's permit before its start (`SIM-02-I`).
+    if zone != ZoneType::Residential {
+        core.prove_construction_permits_for_test(1, minute - 1);
+    }
     assert_eq!(core.execute_pending_demand_spawns_for_minute(1, minute), 1);
 }
 
@@ -1644,77 +1641,62 @@ fn future_homes_rehouse_nonworkers_before_funding_factory_construction() {
     assert!(core.allocator.buildings[3].operating_budget > 0.0);
 }
 
+// Homes and factories queued in one batch: the planning slot's permits count the queued
+// homes' applicants as the planner does, and the second factory cannot reuse the first one's
+// workers; the next slot replays the placed factory as construction (`SIM-02-I`).
 #[test]
-fn queued_customer_financing_requires_placed_homes_and_reserves_labour_once() {
+fn queued_customers_count_queued_homes_and_reserve_labour_once() {
     let (mut core, homes, factories) = construction_execution_fixture();
-    core.demand.set_queued_construction_with_entrances(
-        &core.allocator,
-        &core.zoning,
-        0,
-        [
+    let queue = |core: &mut SimCore, spawns: &[(u64, ZoneType, &DemandSpawnAction)]| {
+        for &(due_minute, zone_type, action) in spawns {
+            core.pending_demand_spawns
+                .push_back(super::state::PendingDemandSpawnAction {
+                    id: 0,
+                    due_minute,
+                    zone_type,
+                    action: action.clone(),
+                    planned_day_index: 1,
+                    planned_minute_of_day: 0,
+                    permit: Default::default(),
+                    counted: false,
+                });
+        }
+    };
+    queue(
+        &mut core,
+        &[
             (1, ZoneType::Residential, &homes[0]),
             (2, ZoneType::Residential, &homes[1]),
             (3, ZoneType::Industrial, &factories[0]),
             (4, ZoneType::Industrial, &factories[1]),
         ],
-        |action| {
-            core.allocator.demand_site_entrance(
-                action.parcel_id,
-                &action.asset_id,
-                &core.zoning,
-                &core.region_graph,
-                &core.transit_network.lane_system,
-            )
-        },
     );
-    let prepare = |core: &mut SimCore, index| {
-        core.demand.prepare_queued_spawn(
-            &factories[index],
-            ZoneType::Industrial,
-            &core.allocator,
-            &core.households,
-            &core.region_graph,
-            3,
-            &core.transit_network,
-            &mut core.logistics,
-            &core.zoning,
-            core.treasury.balance,
-            &core.fiscal_policy,
-        )
-    };
-    assert!(
-        matches!(prepare(&mut core, 0), Err("queued-operation-not-supported")),
-        "unplaced supporting homes cannot back a queued customer's payroll"
+    core.prove_construction_permits_for_test(1, 0);
+    let permits: Vec<_> = core
+        .pending_demand_spawns
+        .iter()
+        .map(|pending| pending.permit.granted().is_some())
+        .collect();
+    assert_eq!(
+        permits,
+        [false, false, true, false],
+        "queued homes back the first buyer, whose workers the second cannot reuse"
     );
-    execute_test_construction(&mut core, &homes[0], ZoneType::Residential, 1);
-    execute_test_construction(&mut core, &homes[1], ZoneType::Residential, 2);
-    for _ in 0..3 {
-        assert!(
-            prepare(&mut core, 0).is_ok(),
-            "the first buyer already owns its workers"
-        );
-        assert!(
-            matches!(prepare(&mut core, 1), Err("queued-operation-not-supported")),
-            "the second buyer cannot reuse the first buyer's workforce"
-        );
+    for minute in 1..=4 {
+        assert_eq!(core.execute_pending_demand_spawns_for_minute(1, minute), 1);
     }
-    core.demand
-        .reject_queued_spawn(&factories[0], &core.allocator, &core.region_graph);
-    assert!(
-        prepare(&mut core, 1).is_ok(),
-        "failed placement withdraws the first customer and releases its workforce"
-    );
-    execute_test_construction(&mut core, &factories[1], ZoneType::Industrial, 4);
     assert_eq!(core.allocator.buildings.len(), 3);
     assert!(core.allocator.buildings[2].operating_budget > 0.0);
+    queue(&mut core, &[(5, ZoneType::Industrial, &factories[1])]);
+    core.prove_construction_permits_for_test(1, 4);
     assert!(
-        prepare(&mut core, 0).is_err(),
-        "placed construction keeps its labour after the old queue entry retires"
+        core.pending_demand_spawns[0].permit.granted().is_none(),
+        "placed construction keeps its labour after its queue entry retires"
     );
 }
 
 #[test]
-fn queued_customer_reservations_rebuild_before_post_load_minute_execution() {
+fn queued_customer_permits_survive_a_load_before_their_start() {
     let mut outcomes = Vec::new();
     for reload in [false, true] {
         let (mut core, homes, factories) = construction_execution_fixture();
@@ -1729,10 +1711,15 @@ fn queued_customer_reservations_rebuild_before_post_load_minute_execution() {
                     action: action.clone(),
                     planned_day_index: 1,
                     planned_minute_of_day: 0,
+                    permit: Default::default(),
+                    counted: false,
                 });
         }
         core.time.minute_of_day = 2;
-        core.refresh_demand_construction_queue(1, 2);
+        core.prove_construction_permits_for_test(1, 2);
+        // Queue priority: the earlier buyer holds the workers before either has started.
+        assert!(core.pending_demand_spawns[0].permit.granted().is_some());
+        assert!(core.pending_demand_spawns[1].permit.granted().is_none());
         if reload {
             let path = temp_save_path("queued_customer_reservations");
             core.save_game_internal(path.to_str().unwrap(), None)
@@ -1742,24 +1729,6 @@ fn queued_customer_reservations_rebuild_before_post_load_minute_execution() {
             std::fs::remove_file(path).unwrap();
             core = loaded;
         }
-        // Inspect the second project first: preserving execution priority requires the
-        // earlier buyer's commitment even before the first minute action has run.
-        assert!(matches!(
-            core.demand.prepare_queued_spawn(
-                &factories[1],
-                ZoneType::Industrial,
-                &core.allocator,
-                &core.households,
-                &core.region_graph,
-                3,
-                &core.transit_network,
-                &mut core.logistics,
-                &core.zoning,
-                core.treasury.balance,
-                &core.fiscal_policy
-            ),
-            Err("queued-operation-not-supported")
-        ));
         assert_eq!(core.execute_pending_demand_spawns_for_minute(1, 3), 1);
         assert_eq!(core.execute_pending_demand_spawns_for_minute(1, 4), 1);
         assert!(core.pending_demand_spawns.is_empty());
@@ -1777,7 +1746,10 @@ fn queued_customer_reservations_rebuild_before_post_load_minute_execution() {
 }
 
 #[test]
-fn queued_projects_revalidate_future_doors_and_prices_through_placement_and_reload() {
+// Permits are proved at the planning slot, before any edit. A start places only with a
+// permit for its current door: an edit that moves a queued factory's door rejects it, a price
+// change alone does not, and a load keeps every permit and decision (`SIM-02-I`).
+fn queued_projects_start_only_at_their_permitted_doors_through_placement_and_reload() {
     for edit in [
         "unchanged",
         "future-door",
@@ -1879,9 +1851,17 @@ fn queued_projects_revalidate_future_doors_and_prices_through_placement_and_relo
                         action: action.clone(),
                         planned_day_index: 1,
                         planned_minute_of_day: 0,
+                        permit: Default::default(),
+                        counted: false,
                     });
             }
-            core.refresh_demand_construction_queue(1, 4);
+            core.prove_construction_permits_for_test(1, 4);
+            let permits: Vec<_> = core
+                .pending_demand_spawns
+                .iter()
+                .map(|pending| pending.permit.granted())
+                .collect();
+            assert!(permits[0].is_some() && permits[1].is_some() && permits[2].is_none());
             if edit == "future-door" {
                 // Only the second project changes; the warm queue still holds its old door.
                 let mut manifest = core
@@ -1942,6 +1922,40 @@ fn queued_projects_revalidate_future_doors_and_prices_through_placement_and_relo
                     "the actual road edit must remap the future project's frontage"
                 );
             }
+            // A permitted factory whose door the edit left unchanged places.
+            let expected: Vec<_> = factories
+                .iter()
+                .take(3)
+                .zip(&permits)
+                .filter(|(action, permit)| {
+                    permit.is_some_and(|permit| {
+                        let entrance = core.allocator.demand_site_entrance(
+                            action.parcel_id,
+                            &action.asset_id,
+                            &core.zoning,
+                            &core.region_graph,
+                            &core.transit_network.lane_system,
+                        );
+                        crate::simulation::economy::demand::door_digest(
+                            entrance.as_ref(),
+                            &core.region_graph,
+                            &core.transit_network.lane_system,
+                        ) == permit.door
+                    })
+                })
+                .map(|(action, _)| action.parcel_id)
+                .collect();
+            match edit {
+                "unchanged" | "frontage-recovery" => assert_eq!(
+                    expected,
+                    [factories[0].parcel_id, factories[1].parcel_id],
+                    "{edit}: prices alone leave the permitted doors"
+                ),
+                _ => assert!(
+                    !expected.contains(&factories[1].parcel_id),
+                    "{edit}: the edit moves the second factory's door"
+                ),
+            }
             let mut sequence = Vec::new();
             for minute in 5..=7 {
                 if edit == "frontage-recovery" && minute >= 6 {
@@ -1995,18 +2009,8 @@ fn queued_projects_revalidate_future_doors_and_prices_through_placement_and_relo
                 .filter(|building| building.zone_type == ZoneType::Industrial)
                 .collect();
             assert_eq!(
-                firms.len(),
-                2,
-                "{edit}, reload={reload}: 24 future workers fund only two factories"
-            );
-            let second = if matches!(edit, "future-door" | "frontage-recovery") {
-                2
-            } else {
-                1
-            };
-            assert_eq!(
-                [firms[0].parcel_id, firms[1].parcel_id],
-                [factories[0].parcel_id, factories[second].parcel_id],
+                firms.iter().map(|firm| firm.parcel_id).collect::<Vec<_>>(),
+                expected,
                 "{edit}, reload={reload}"
             );
             let profile = core
@@ -2079,6 +2083,130 @@ fn failed_supporting_housing_prevents_owner_funding_and_labor_is_not_reused() {
     );
 }
 
+// Queues `action` as the hour's planning pass would, with a fresh spawn id.
+fn queue_test_spawn(
+    core: &mut SimCore,
+    due_minute: u64,
+    zone_type: ZoneType,
+    action: &DemandSpawnAction,
+) {
+    let id = core.next_spawn_id;
+    core.next_spawn_id += 1;
+    core.pending_demand_spawns
+        .push_back(super::state::PendingDemandSpawnAction {
+            id,
+            due_minute,
+            zone_type,
+            action: action.clone(),
+            planned_day_index: 1,
+            planned_minute_of_day: 0,
+            permit: Default::default(),
+            counted: false,
+        });
+}
+
+// A home that fails to place voids the queued business permits, which counted its applicants:
+// the factory it backed waits for the next planning slot, which proves it again on the city
+// without that home, instead of spending its equity on workers that will not come
+// (`SIM-02-I`).
+#[test]
+fn a_failed_home_voids_the_business_permits_its_applicants_backed() {
+    use crate::simulation::economy::demand::SpawnPermit;
+    let (mut core, homes, factories) = construction_execution_fixture();
+    queue_test_spawn(&mut core, 1, ZoneType::Residential, &homes[0]);
+    queue_test_spawn(&mut core, 2, ZoneType::Residential, &homes[1]);
+    queue_test_spawn(&mut core, 3, ZoneType::Industrial, &factories[0]);
+    core.prove_construction_permits_for_test(1, 0);
+    assert!(core.pending_demand_spawns[2].permit.granted().is_some());
+    // The second home's lot is gone by its start.
+    let removed = std::iter::once(homes[1].parcel_id).collect();
+    assert_eq!(core.zoning.remove_parcels_by_raw_ids(&removed), 1);
+    for minute in 1..=2 {
+        assert_eq!(core.execute_pending_demand_spawns_for_minute(1, minute), 1);
+    }
+    assert_eq!(core.pending_demand_spawns[0].permit, SpawnPermit::Voided);
+    assert_eq!(
+        core.execute_pending_demand_spawns_for_minute(1, 3),
+        0,
+        "the factory waits for the next planning slot"
+    );
+    assert_eq!(core.pending_demand_spawns.len(), 1);
+    assert_eq!(core.pending_demand_spawns[0].due_minute, 61);
+    assert_eq!(core.allocator.buildings.len(), 1);
+    // The next planning slot proves it again on the one placed home, which cannot staff it.
+    core.prove_construction_permits_for_test(1, 60);
+    assert_eq!(core.pending_demand_spawns[0].permit, SpawnPermit::Denied);
+    assert_eq!(core.execute_pending_demand_spawns_for_minute(1, 61), 1);
+    assert_eq!(core.allocator.buildings.len(), 1);
+    assert_eq!(core.allocator.buildings[0].zone_type, ZoneType::Residential);
+}
+
+// Every home's applicant stream is seeded by a stable identity (`SIM-02-I`): a queued home by
+// its spawn id, which it keeps once placed, so planning and the planning slot's permits count
+// the applicants it draws once placed, as the workforce calendar counts a placed home's. An
+// earlier spawn that fails to place shifts no other home's seed.
+#[test]
+fn queued_homes_estimate_the_applicants_they_draw_once_placed() {
+    use crate::simulation::economy::households::applicant_places_and_members;
+    let (mut core, homes, factories) = construction_execution_fixture();
+    assert!(homes.len() >= 4);
+    let queue = [
+        (ZoneType::Residential, &homes[0]),
+        (ZoneType::Residential, &homes[1]),
+        (ZoneType::Residential, &homes[2]),
+        (ZoneType::Residential, &homes[3]),
+        (ZoneType::Industrial, &factories[0]),
+    ];
+    for (minute, &(zone_type, action)) in queue.iter().enumerate() {
+        queue_test_spawn(&mut core, minute as u64 + 1, zone_type, action);
+    }
+    let ids: Vec<_> = core
+        .pending_demand_spawns
+        .iter()
+        .map(|pending| pending.id)
+        .collect();
+    core.prove_construction_permits_for_test(1, 0);
+    let estimates: Vec<_> = [0, 1, 2, 3]
+        .map(|position| {
+            core.demand
+                .queued_home_estimate_for_test(ids[position], queue[position].1.parcel_id)
+                .unwrap()
+        })
+        .into();
+    // The second home's lot is gone by its start: the later homes keep their seeds.
+    let removed = std::iter::once(homes[1].parcel_id).collect();
+    assert_eq!(core.zoning.remove_parcels_by_raw_ids(&removed), 1);
+    for minute in 1..=queue.len() as u16 {
+        core.execute_pending_demand_spawns_for_minute(1, minute);
+    }
+    for (position, (seed, workers, members)) in [0, 1, 2, 3].into_iter().zip(estimates) {
+        let home = queue[position].1;
+        assert_eq!(seed, ids[position] as usize);
+        let Some(placed) = core
+            .allocator
+            .buildings
+            .iter()
+            .position(|building| building.parcel_id == home.parcel_id)
+        else {
+            assert_eq!(position, 1, "only the home without a lot fails to place");
+            continue;
+        };
+        assert_eq!(
+            core.allocator.buildings[placed].applicant_seed,
+            ids[position]
+        );
+        let (places, drawn_members) = applicant_places_and_members(
+            core.allocator.flat_size_m2(placed),
+            core.allocator.applicant_seed(placed),
+            0..core.allocator.registry.household_capacity(&home.asset_id),
+        );
+        assert_eq!(
+            (workers, members),
+            (places[1] + 2 * places[2], drawn_members)
+        );
+    }
+}
+
 #[test]
 fn independent_factories_can_start_together_when_each_has_its_own_workforce() {
     let (mut core, homes, factories) = construction_execution_fixture();
@@ -2118,7 +2246,7 @@ fn business_planning_prices_the_actual_freight_route() {
             }
             core.transit_network.frontage_delay_revision += 1;
         }
-        core.execute_hourly_demand_pass(1, 0);
+        core.execute_hourly_demand_pass_for_test(1, 0);
         let factories = core
             .pending_demand_spawns
             .iter()
@@ -2138,8 +2266,11 @@ fn business_planning_prices_the_actual_freight_route() {
     }
 }
 
+// The planning slot proves each queued factory's permit with one census and epoch; a start
+// checks only its permit against its current door, profile and level (`SIM-02-I`), so the
+// warm check stays local however many buildings the city has.
 #[test]
-#[ignore = "manual release locality of queued-project validation; setup and census timed separately"]
+#[ignore = "manual release locality of queued-project start checks; setup and planning slot timed separately"]
 fn benchmark_queued_project_validation() {
     use std::hint::black_box;
     use std::time::{Duration, Instant};
@@ -2156,63 +2287,40 @@ fn benchmark_queued_project_validation() {
         core.allocator
             .buildings
             .resize(background + 2, background_home);
-        let prepare = |core: &mut SimCore, index: usize| {
-            core.demand.prepare_queued_spawn(
-                &factories[index % factories.len()],
-                ZoneType::Industrial,
-                &core.allocator,
-                &core.households,
-                &core.region_graph,
-                3,
-                &core.transit_network,
-                &mut core.logistics,
-                &core.zoning,
-                core.treasury.balance,
-                &core.fiscal_policy,
-            )
-        };
-        // One simulated second of the live delay cache from a check-specific congestion state:
-        // every vehicle lane changes, as in a busy city's per-second update.
-        let live_revision = |core: &mut SimCore, index: usize| {
-            for lane in &mut core.transit_network.lane_system.lanes {
-                lane.live_frontage_delay_s = 1.0 + (index % 17) as f32;
-            }
-            core.agents.update_frontage_delay_cache(
-                &mut core.transit_network,
-                &core.region_graph,
-                1.0,
-            );
-        };
         let balance = core.treasury.balance;
         let mut samples = [[0.0_f64; 3]; 9];
         for round in 0..12 {
-            core.demand.invalidate_construction_execution();
             let start = Instant::now();
-            assert!(black_box(prepare(&mut core, 0)).is_ok());
-            let cold_ms = start.elapsed().as_secs_f64() * 1_000.0;
+            let permits: Vec<_> = factories
+                .iter()
+                .map(|factory| {
+                    black_box(core.permit_for_test(factory, ZoneType::Industrial, 1, 2))
+                        .expect("each factory alone has the workers it needs")
+                })
+                .collect();
+            let slot_ms = start.elapsed().as_secs_f64() * 1_000.0 / factories.len() as f64;
             let mut warm = Duration::ZERO;
             for index in 0..WARM_CHECKS {
-                // Uncommitted permits model placement rejection: repeat checks must neither
-                // spend owner money nor claim workers/customers nor rebuild the city census.
-                live_revision(&mut core, index);
+                // Checks neither spend owner money nor claim workers or customers nor count the
+                // city; a live revision changes no price a permit read.
+                queued_check_live_revision(&mut core, index);
                 let start = Instant::now();
-                assert!(black_box(prepare(&mut core, index)).is_ok());
+                assert!(black_box(queued_permit_check(&core, &factories, &permits, index)).is_ok());
                 warm += start.elapsed();
             }
-            // The hourly publication is the only revision prices see; each one pays a census.
             let mut published = Duration::ZERO;
             for index in 0..PUBLISHED_CHECKS {
-                live_revision(&mut core, index);
+                queued_check_live_revision(&mut core, index);
                 core.transit_network.publish_frontage_prices();
                 let start = Instant::now();
-                assert!(black_box(prepare(&mut core, index)).is_ok());
+                assert!(black_box(queued_permit_check(&core, &factories, &permits, index)).is_ok());
                 published += start.elapsed();
             }
             assert_eq!(core.treasury.balance, balance);
             assert_eq!(core.allocator.buildings.len(), background + 2);
             if round >= 3 {
                 samples[round - 3] = [
-                    cold_ms,
+                    slot_ms,
                     warm.as_secs_f64() * 1_000.0,
                     published.as_secs_f64() * 1_000.0 / PUBLISHED_CHECKS as f64,
                 ];
@@ -2224,7 +2332,7 @@ fn benchmark_queued_project_validation() {
             values[4]
         };
         eprintln!(
-            "queued_validation background={background} census_and_first_check_ms={:.3} \
+            "queued_validation background={background} census_and_permit_ms={:.3} \
              warm_checks_after_live_revisions={WARM_CHECKS}_ms={:.3} \
              check_after_published_revision_ms={:.3}",
             median(0),
@@ -2234,15 +2342,44 @@ fn benchmark_queued_project_validation() {
     }
 }
 
+// One simulated second of the live delay cache from a check-specific congestion state: every
+// vehicle lane changes, as in a busy city's per-second update.
+fn queued_check_live_revision(core: &mut SimCore, index: usize) {
+    for lane in &mut core.transit_network.lane_system.lanes {
+        lane.live_frontage_delay_s = 1.0 + (index % 17) as f32;
+    }
+    core.agents
+        .update_frontage_delay_cache(&mut core.transit_network, &core.region_graph, 1.0);
+}
+
+// The start's check of a queued factory's permit, cycling over `factories`.
+fn queued_permit_check(
+    core: &SimCore,
+    factories: &[DemandSpawnAction],
+    permits: &[crate::simulation::economy::demand::ConstructionPermit],
+    index: usize,
+) -> Result<(), crate::simulation::economy::demand::StartRefusal> {
+    let index = index % factories.len();
+    core.demand.check_construction_permit(
+        ZoneType::Industrial,
+        &factories[index],
+        crate::simulation::economy::demand::SpawnPermit::Granted(permits[index]),
+        &core.allocator,
+        &core.zoning,
+        &core.region_graph,
+        &core.transit_network,
+    )
+}
+
 #[test]
-#[ignore = "short PERF-01 locality acceptance; setup and census timed separately"]
+#[ignore = "short PERF-01 locality acceptance; setup and planning slot timed separately"]
 fn perf_contract_queued_locality() {
     use std::hint::black_box;
     use std::time::Instant;
 
     // One fixed batch per tier: the former ~1 ms batch was dominated by timing noise.
     const WARM_CHECKS: usize = 131_072;
-    let execution_censuses = crate::debug::work::Work::ExecutionCensuses as usize;
+    let construction_epochs = crate::debug::work::Work::ConstructionEpochs as usize;
     let census_buildings = crate::debug::work::Work::CensusBuildings as usize;
     let mut results = Vec::new();
 
@@ -2256,70 +2393,51 @@ fn perf_contract_queued_locality() {
             .buildings
             .resize(background + 2, background_home);
         let setup_ms = setup.elapsed().as_secs_f64() * 1_000.0;
-        let prepare = |core: &mut SimCore, index: usize| {
-            core.demand.prepare_queued_spawn(
-                &factories[index % factories.len()],
-                ZoneType::Industrial,
-                &core.allocator,
-                &core.households,
-                &core.region_graph,
-                3,
-                &core.transit_network,
-                &mut core.logistics,
-                &core.zoning,
-                core.treasury.balance,
-                &core.fiscal_policy,
-            )
-        };
-        let live_revision = |core: &mut SimCore, index: usize| {
-            for lane in &mut core.transit_network.lane_system.lanes {
-                lane.live_frontage_delay_s = 1.0 + (index % 17) as f32;
-            }
-            core.agents.update_frontage_delay_cache(
-                &mut core.transit_network,
-                &core.region_graph,
-                1.0,
-            );
-        };
 
-        core.demand.invalidate_construction_execution();
+        // The planning slot: one census and one epoch prove the permit.
         let cold = Instant::now();
-        assert!(black_box(prepare(&mut core, 0)).is_ok());
-        let cold_ms = cold.elapsed().as_secs_f64() * 1_000.0;
+        let permits: Vec<_> = factories
+            .iter()
+            .map(|factory| {
+                black_box(core.permit_for_test(factory, ZoneType::Industrial, 1, 2))
+                    .expect("each factory alone has the workers it needs")
+            })
+            .collect();
+        let cold_ms = cold.elapsed().as_secs_f64() * 1_000.0 / factories.len() as f64;
 
         let revision = core.transit_network.frontage_delay_revision;
-        live_revision(&mut core, 0);
+        queued_check_live_revision(&mut core, 0);
         core.transit_network.publish_frontage_prices();
         assert_ne!(
             core.transit_network.frontage_delay_revision, revision,
             "the locality check must exercise a published frontage revision"
         );
         let published = Instant::now();
-        assert!(black_box(prepare(&mut core, 0)).is_ok());
+        assert!(black_box(queued_permit_check(&core, &factories, &permits, 0)).is_ok());
         let published_ms = published.elapsed().as_secs_f64() * 1_000.0;
 
         for index in 0..1_024 {
-            live_revision(&mut core, index);
-            assert!(black_box(prepare(&mut core, index)).is_ok());
+            queued_check_live_revision(&mut core, index);
+            assert!(black_box(queued_permit_check(&core, &factories, &permits, index)).is_ok());
         }
         let before = crate::debug::work::snapshot();
         let mut warm = std::time::Duration::ZERO;
         for index in 0..WARM_CHECKS {
-            live_revision(&mut core, index);
+            queued_check_live_revision(&mut core, index);
             let started = Instant::now();
-            let result = black_box(prepare(&mut core, index));
+            let result = black_box(queued_permit_check(&core, &factories, &permits, index));
             warm += started.elapsed();
             assert!(result.is_ok());
         }
         let warm_batch_ms = warm.as_secs_f64() * 1_000.0;
         let after = crate::debug::work::snapshot();
         assert_eq!(
-            after[execution_censuses], before[execution_censuses],
-            "warm queued validation changed execution census count"
+            after[construction_epochs], before[construction_epochs],
+            "warm queued checks opened a construction epoch"
         );
         assert_eq!(
             after[census_buildings], before[census_buildings],
-            "warm queued validation changed census row count"
+            "warm queued checks counted census rows"
         );
         results.push(serde_json::json!({
             "background": background,
@@ -2344,80 +2462,55 @@ fn perf_contract_queued_locality() {
     );
 }
 
+// Planning slots price published frontage delays only: per-second congestion leaves a queued
+// factory's permit unchanged until the operational hour publishes it (`SIM-02-I`).
 #[test]
 fn live_frontage_delay_reaches_queued_checks_only_when_published() {
     let (mut core, homes, factories) = construction_execution_fixture();
     execute_test_construction(&mut core, &homes[0], ZoneType::Residential, 1);
     execute_test_construction(&mut core, &homes[1], ZoneType::Residential, 2);
-    let prepare = |core: &mut SimCore| {
-        core.demand.prepare_queued_spawn(
-            &factories[0],
-            ZoneType::Industrial,
-            &core.allocator,
-            &core.households,
-            &core.region_graph,
-            3,
-            &core.transit_network,
-            &mut core.logistics,
-            &core.zoning,
-            core.treasury.balance,
-            &core.fiscal_policy,
-        )
-    };
-    assert!(prepare(&mut core).is_ok());
+    let permit =
+        |core: &mut SimCore| core.permit_for_test(&factories[0], ZoneType::Industrial, 1, 2);
+    assert!(permit(&mut core).is_some());
     let revision = core.transit_network.frontage_delay_revision;
     // Per-second congestion anywhere, including the project's own frontage, leaves every
-    // price-keyed cache and the warm check unchanged until the operational hour publishes it.
+    // price-keyed cache and the permit unchanged until the operational hour publishes it.
     for lane in &mut core.transit_network.lane_system.lanes {
         lane.live_frontage_delay_s = 1_000_000.0;
     }
     core.agents
         .update_frontage_delay_cache(&mut core.transit_network, &core.region_graph, 1.0);
     assert_eq!(core.transit_network.frontage_delay_revision, revision);
-    assert!(prepare(&mut core).is_ok());
+    assert!(permit(&mut core).is_some());
     core.transit_network.publish_frontage_prices();
     assert_ne!(core.transit_network.frontage_delay_revision, revision);
-    assert!(matches!(
-        prepare(&mut core),
-        Err("market-cannot-fund-operation")
-    ));
+    assert!(
+        permit(&mut core).is_none(),
+        "the market cannot fund the operation at the published delay"
+    );
     // Publishing unchanged prices is not a revision.
     let revision = core.transit_network.frontage_delay_revision;
     core.transit_network.publish_frontage_prices();
     assert_eq!(core.transit_network.frontage_delay_revision, revision);
 }
 
+// Each planning slot reprices a queued factory's freight before its start can spend owner
+// money: no permit at a price the market cannot fund, and the permitted door's carrier quote
+// is the one live hiring and dispatch pay (`SIM-02-I`).
 #[test]
 fn queued_business_reprices_freight_before_owner_funding() {
     let (mut core, homes, factories) = construction_execution_fixture();
     execute_test_construction(&mut core, &homes[0], ZoneType::Residential, 1);
     execute_test_construction(&mut core, &homes[1], ZoneType::Residential, 2);
     let action = &factories[0];
-    let prepare = |core: &mut SimCore| {
-        core.demand.prepare_queued_spawn(
-            action,
-            ZoneType::Industrial,
-            &core.allocator,
-            &core.households,
-            &core.region_graph,
-            3,
-            &core.transit_network,
-            &mut core.logistics,
-            &core.zoning,
-            core.treasury.balance,
-            &core.fiscal_policy,
-        )
-    };
-    assert!(prepare(&mut core).is_ok());
+    let permit = |core: &mut SimCore| core.permit_for_test(action, ZoneType::Industrial, 1, 2);
+    assert!(permit(&mut core).is_some());
     let before = core.allocator.buildings.len();
     for lane in &mut core.transit_network.lane_system.lanes {
         lane.frontage_delay_penalty_s = 1_000_000.0;
     }
     core.transit_network.frontage_delay_revision += 1;
-    assert!(matches!(
-        prepare(&mut core),
-        Err("market-cannot-fund-operation")
-    ));
+    assert!(permit(&mut core).is_none());
     execute_test_construction(&mut core, action, ZoneType::Industrial, 3);
     assert_eq!(core.allocator.buildings.len(), before);
     assert!(
@@ -2436,14 +2529,11 @@ fn queued_business_reprices_freight_before_owner_funding() {
         .unwrap()
         .edge_idx();
     core.region_graph.edge_mut(edge).allowed_types = TransitFlags::FOOT;
-    // This isolated access probe bypasses the normal topology-edit revision updates.
-    core.demand.invalidate_construction_execution();
     assert!(
-        matches!(prepare(&mut core), Err("market-cannot-fund-operation")),
+        permit(&mut core).is_none(),
         "a gateway elsewhere cannot supply an entrance without vehicle access"
     );
     core.region_graph.edge_mut(edge).allowed_types = TransitFlags::FOOT | TransitFlags::CAR;
-    core.demand.invalidate_construction_execution();
     let entrance = core
         .allocator
         .demand_site_entrance(
@@ -2488,28 +2578,26 @@ fn queued_business_reprices_freight_before_owner_funding() {
     );
 }
 
+// A queued factory's permit stands for its planning slot's hour; the next slot proves it again
+// on the city without the bulldozed home that backed it (`SIM-02-I`).
 #[test]
 fn construction_execution_revalidates_after_a_supporting_home_is_bulldozed() {
     let (mut core, homes, factories) = construction_execution_fixture();
     execute_test_construction(&mut core, &homes[0], ZoneType::Residential, 1);
     execute_test_construction(&mut core, &homes[1], ZoneType::Residential, 2);
-    assert!(
-        core.demand
-            .prepare_queued_spawn(
-                &factories[0],
-                ZoneType::Industrial,
-                &core.allocator,
-                &core.households,
-                &core.region_graph,
-                3,
-                &core.transit_network,
-                &mut core.logistics,
-                &core.zoning,
-                core.treasury.balance,
-                &core.fiscal_policy,
-            )
-            .is_ok()
-    );
+    core.pending_demand_spawns
+        .push_back(super::state::PendingDemandSpawnAction {
+            id: 0,
+            due_minute: 3,
+            zone_type: ZoneType::Industrial,
+            action: factories[0].clone(),
+            planned_day_index: 1,
+            planned_minute_of_day: 0,
+            permit: Default::default(),
+            counted: false,
+        });
+    core.prove_construction_permits_for_test(1, 2);
+    assert!(core.pending_demand_spawns[0].permit.granted().is_some());
     assert!(core.allocator.remove_building_for_bulldoze(
         0,
         &mut core.zoning,
@@ -2518,7 +2606,9 @@ fn construction_execution_revalidates_after_a_supporting_home_is_bulldozed() {
         &mut core.logistics,
         &mut core.treasury.balance,
     ));
-    execute_test_construction(&mut core, &factories[0], ZoneType::Industrial, 3);
+    core.prove_construction_permits_for_test(1, 2);
+    assert!(core.pending_demand_spawns[0].permit.granted().is_none());
+    assert_eq!(core.execute_pending_demand_spawns_for_minute(1, 3), 1);
     assert_eq!(core.allocator.buildings.len(), 1);
     assert_eq!(core.allocator.buildings[0].zone_type, ZoneType::Residential);
     execute_test_construction(&mut core, &homes[0], ZoneType::Residential, 4);
@@ -2929,6 +3019,8 @@ fn queued_buyers_and_supplier_replacement_survive_reload_at_every_step() {
                     action: action.clone(),
                     planned_day_index: 1,
                     planned_minute_of_day: 0,
+                    permit: Default::default(),
+                    counted: false,
                 });
         }
         core.refresh_demand_construction_queue(1, 6);
@@ -2937,8 +3029,8 @@ fn queued_buyers_and_supplier_replacement_survive_reload_at_every_step() {
             core.time.day_index = 1;
             core.time.minute_of_day = minute - 1;
             if reload {
-                // Loading rebuilds every queued proof, supplier book and replacement variant
-                // cold from persisted buildings, zoning and the queue.
+                // Loading keeps every queued permit and rebuilds the supplier books cold from
+                // persisted buildings, zoning and the queue.
                 let path = temp_save_path("queued_supplier_replacement");
                 core.save_game_internal(path.to_str().unwrap(), None)
                     .unwrap();
@@ -2948,53 +3040,46 @@ fn queued_buyers_and_supplier_replacement_survive_reload_at_every_step() {
                 std::fs::remove_file(path).unwrap();
                 core = loaded;
             }
+            // Minute 7 is a planning slot: it proves the queued groceries' permits and runs the
+            // processor's replacement in the same epoch. Later minutes start on those permits.
+            let mut proofs = Vec::new();
             if minute == 7 {
                 let mut plan = DemandBuildingActionPlan::default();
                 plan.industrial.upgrades.push(DemandLevelChangeAction {
                     building: demand_building_action_key(&core.allocator.buildings[supplier]),
                     target_asset_id: target.clone(),
                 });
-                core.refresh_demand_construction_queue(1, minute);
-                core.demand.execute_building_actions(
-                    &plan,
-                    &mut core.allocator,
-                    &mut core.zoning,
-                    &mut core.agents,
-                    &mut core.households,
-                    &mut core.logistics,
-                    &mut core.treasury.balance,
-                    &core.region_graph,
-                    &core.transit_network,
-                    &core.heightmap,
-                    absolute_operational_minute(1, minute),
-                    &core.fiscal_policy,
-                );
-            } else {
-                assert_eq!(core.execute_pending_demand_spawns_for_minute(1, minute), 1);
-            }
-            // Every still-queued grocery's proof, after the same epoch has been prepared.
-            let proofs: Vec<_> = core
-                .pending_demand_spawns
-                .iter()
-                .map(|pending| {
-                    core.demand
-                        .project_proof_for_test(pending.action.parcel_id, &core.zoning)
-                })
-                .collect();
-            if minute == 7 {
+                proofs = core.run_planning_slot_actions_for_test(&plan, 1, minute);
                 assert_eq!(
                     core.allocator.buildings[supplier].asset_id, target,
                     "reload={reload}"
                 );
                 let first = proofs[0]
                     .as_ref()
-                    .expect("the replacement must retain its queued buyer");
+                    .expect("the slot's epoch proves the queued grocery");
                 assert!(
                     first
                         .2
                         .iter()
                         .any(|&(_, source, ..)| source == Some(supplier)),
-                    "the queued grocery's packaged food comes from the replaced processor"
+                    "the queued grocery's packaged food comes from the processor it replaces"
+                );
+            } else {
+                assert_eq!(core.execute_pending_demand_spawns_for_minute(1, minute), 1);
+            }
+            let permits: Vec<_> = core
+                .pending_demand_spawns
+                .iter()
+                .map(|pending| pending.permit.granted())
+                .collect();
+            if minute == 7 {
+                // Each queued grocery the slot proved has its permit; the town funds one.
+                assert!(
+                    permits
+                        .iter()
+                        .zip(&proofs)
+                        .all(|(permit, proof)| permit.is_some() == proof.is_some()),
+                    "reload={reload}"
                 );
             }
             sequence.push((
@@ -3013,6 +3098,7 @@ fn queued_buyers_and_supplier_replacement_survive_reload_at_every_step() {
                     .collect::<Vec<_>>(),
                 core.treasury.balance.to_bits(),
                 proofs,
+                permits,
             ));
         }
         assert!(
@@ -3025,6 +3111,6 @@ fn queued_buyers_and_supplier_replacement_survive_reload_at_every_step() {
     }
     assert_eq!(
         outcomes[0], outcomes[1],
-        "reload must preserve each replacement, placement and queued proof"
+        "reload must preserve each replacement, placement and queued permit"
     );
 }

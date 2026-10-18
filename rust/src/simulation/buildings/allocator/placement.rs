@@ -543,12 +543,13 @@ impl BuildingAllocator {
     fn commit_resolved_slot(
         &mut self,
         placement: ResolvedPlacement,
+        applicant_seed: Option<u64>,
         zoning: &mut ZoningSystem,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
     ) -> usize {
         let parcel_id = placement.parcel_id;
-        let building_idx = self.place_building_instance(placement, catalog, tuning);
+        let building_idx = self.place_building_instance(placement, applicant_seed, catalog, tuning);
         zoning.occupy_parcel(parcel_id, building_idx);
         debug_log!(
             "economy",
@@ -578,6 +579,32 @@ impl BuildingAllocator {
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
     ) -> Result<usize, DemandSpawnPlacementRejection> {
+        self.execute_seeded_demand_spawn_action(
+            action,
+            None,
+            zoning,
+            graph,
+            road_surface,
+            terrain,
+            catalog,
+            tuning,
+        )
+    }
+
+    /// [`Self::execute_demand_spawn_action`] seeding the building's applicant stream with
+    /// `applicant_seed` (a queued spawn's id), or the city counter's next value without one.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn execute_seeded_demand_spawn_action(
+        &mut self,
+        action: &DemandSpawnAction,
+        applicant_seed: Option<u64>,
+        zoning: &mut ZoningSystem,
+        graph: &RegionGraph,
+        road_surface: &RoadSurfaceSystem,
+        terrain: &TerrainSystem,
+        catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning,
+    ) -> Result<usize, DemandSpawnPlacementRejection> {
         let Some(params) = self.asset_placement_params(&action.asset_id, catalog) else {
             return Err(DemandSpawnPlacementRejection::AssetUnavailable);
         };
@@ -590,7 +617,7 @@ impl BuildingAllocator {
             return Err(DemandSpawnPlacementRejection::SlotUnavailable);
         };
         self.prepare_site_support(&mut resolved, graph, road_surface, terrain)?;
-        Ok(self.commit_resolved_slot(resolved, zoning, catalog, tuning))
+        Ok(self.commit_resolved_slot(resolved, applicant_seed, zoning, catalog, tuning))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -758,7 +785,7 @@ impl BuildingAllocator {
         self.prepare_site_support(&mut placement, graph, road_surface, terrain)
             .map_err(explicit_rejection_from_site_rejection)?;
 
-        let building_idx = self.place_building_instance(placement, catalog, tuning);
+        let building_idx = self.place_building_instance(placement, None, catalog, tuning);
         debug_log!(
             "economy",
             "explicit site placed building idx={} asset_id={} edge={} center=({:.1}, {:.1}) support_height_m={:.2}",
@@ -1726,9 +1753,11 @@ impl BuildingAllocator {
     fn place_building_instance(
         &mut self,
         placement: ResolvedPlacement,
+        applicant_seed: Option<u64>,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
     ) -> usize {
+        let applicant_seed = applicant_seed.unwrap_or_else(|| self.next_city_applicant_seed());
         let economy_binding = resolve_building_economy_profile_binding_with_catalog(
             &self.registry,
             catalog,
@@ -1819,6 +1848,7 @@ impl BuildingAllocator {
         self.buildings.push(Building {
             zone_profile_runtime_id: placement.zone_profile_runtime_id,
             parcel_id: placement.parcel_id,
+            applicant_seed,
             build_generation: placement.build_generation,
             zone_type: placement.zone_type,
             facing_dir: placement.facing_dir,

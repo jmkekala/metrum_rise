@@ -178,6 +178,7 @@ pub(super) fn put_building(out: &mut Writer, building: &Building, edge: &impl Fn
         depth_cells,
         zone_profile_runtime_id,
         parcel_id,
+        applicant_seed,
         build_generation,
         zone_type,
         facing_dir,
@@ -235,6 +236,7 @@ pub(super) fn put_building(out: &mut Writer, building: &Building, edge: &impl Fn
         out.u16(value);
     }
     out.u64(*parcel_id);
+    out.u64(*applicant_seed);
     out.u32(*build_generation);
     out.u8(*zone_type as u8);
     for value in [facing_dir.x, facing_dir.y, *frontage_t, *side_offset] {
@@ -320,6 +322,7 @@ pub(super) fn read_building(reader: &mut Reader<'_>) -> Result<Building, String>
     let [width_cells, depth_cells, zone_profile_runtime_id] =
         [reader.u16()?, reader.u16()?, reader.u16()?];
     let parcel_id = reader.u64()?;
+    let applicant_seed = reader.u64()?;
     let build_generation = reader.u32()?;
     let zone_byte = reader.u8()?;
     let zone_type = ZoneType::from_u8(zone_byte);
@@ -409,6 +412,7 @@ pub(super) fn read_building(reader: &mut Reader<'_>) -> Result<Building, String>
         depth_cells,
         zone_profile_runtime_id,
         parcel_id,
+        applicant_seed,
         build_generation,
         zone_type,
         facing_dir,

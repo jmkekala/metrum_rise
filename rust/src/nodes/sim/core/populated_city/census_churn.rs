@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! What happens during the funding census's window, the hour's second half (`SIM-02-I`): per
-//! hour, the appends and structural changes there, census restarts and the censuses run by
-//! planning and construction execution. Counts come from the test-only [`crate::debug::work`]
+//! hour, the appends and structural changes there, census restarts, planning passes whose
+//! published books were not valid for the live city and so were skipped, and construction
+//! epochs, opened or skipped. Counts come from the test-only
+//! [`crate::debug::work`]
 //! counters, so run one of these tests alone.
 
 use super::super::frame::FRAME_DT_S;
@@ -11,7 +13,7 @@ use super::PopulatedCity;
 use crate::debug::work::{WORK_COUNT, Work, snapshot, window_snapshot};
 use crate::simulation::core::scheduler::SLOTS_PER_HOUR;
 
-const COUNTED: [(Work, &str); 10] = [
+const COUNTED: [(Work, &str); 11] = [
     (Work::BuildingsPlaced, "buildings_placed"),
     (Work::BuildingsRemoved, "buildings_removed"),
     (Work::HouseholdsRemoved, "households_removed"),
@@ -19,8 +21,9 @@ const COUNTED: [(Work, &str); 10] = [
     (Work::CensusRestarts, "census_restarts"),
     (Work::LiveCensuses, "live_censuses"),
     (Work::PlanningPasses, "planning_passes"),
-    (Work::PlannerCensuses, "planner_censuses"),
-    (Work::ExecutionCensuses, "execution_censuses"),
+    (Work::PlanningSkips, "planning_skips"),
+    (Work::ConstructionEpochs, "construction_epochs"),
+    (Work::ConstructionEpochSkips, "construction_epoch_skips"),
     (Work::CensusBuildings, "census_buildings"),
 ];
 
@@ -30,12 +33,13 @@ fn delta(after: &[u64; WORK_COUNT], before: &[u64; WORK_COUNT], work: Work) -> u
 
 /// Steps `core` frame by frame over `hours` whole hours and prints one `CENSUS_CHURN` JSON line:
 /// totals and window totals of each counter, and the hours with any structural change in the
-/// window, any planner census or any execution census.
+/// window or any planning pass or construction epoch skipped on books not valid for the live
+/// city. Returns the skips.
 pub(in crate::nodes::sim::core) fn report_census_churn(
     core: &mut SimCore,
     hours: u32,
     label: &str,
-) {
+) -> u64 {
     let hour = |core: &SimCore| core.time.absolute_slot() / SLOTS_PER_HOUR;
     // Start at an hour boundary so every counted hour is whole.
     let first = hour(core);
@@ -43,7 +47,7 @@ pub(in crate::nodes::sim::core) fn report_census_churn(
         core.step_frame(FRAME_DT_S);
     }
     let (start, start_window) = (snapshot(), window_snapshot());
-    let mut hours_with = [0_u32; 3];
+    let mut hours_with = [0_u32; 2];
     let mut current = hour(core);
     let (mut before, mut before_window) = (start, start_window);
     let mut counted = 0;
@@ -57,8 +61,9 @@ pub(in crate::nodes::sim::core) fn report_census_churn(
         let (after, after_window) = (snapshot(), window_snapshot());
         for (seen, any) in hours_with.iter_mut().zip([
             delta(&after_window, &before_window, Work::StructuralChanges) > 0,
-            delta(&after, &before, Work::PlannerCensuses) > 0,
-            delta(&after, &before, Work::ExecutionCensuses) > 0,
+            delta(&after, &before, Work::PlanningSkips)
+                + delta(&after, &before, Work::ConstructionEpochSkips)
+                > 0,
         ]) {
             *seen += u32::from(any);
         }
@@ -86,10 +91,10 @@ pub(in crate::nodes::sim::core) fn report_census_churn(
             "households": core.households.households.len(),
             "totals_and_window": totals,
             "hours_with_window_structural_change": hours_with[0],
-            "hours_with_planner_census": hours_with[1],
-            "hours_with_execution_census": hours_with[2],
+            "hours_with_skip": hours_with[1],
         })
     );
+    delta(&end, &start, Work::PlanningSkips) + delta(&end, &start, Work::ConstructionEpochSkips)
 }
 
 fn env_u32(name: &str, default: u32) -> u32 {
@@ -113,11 +118,13 @@ fn populated_census_window_churn() {
         "fiscal_stress" => super::envelope::apply_fiscal_stress(&mut city),
         other => panic!("unknown METRUM_CHURN_WORKLOAD {other}"),
     }
-    report_census_churn(
+    let skips = report_census_churn(
         &mut city.core,
         hours,
         &format!("populated-{residents}-{workload}"),
     );
+    // Planning and permits lend the census published at their slot (`SIM-02-I`).
+    assert_eq!(skips, 0);
 }
 
 // Wall time of the census steps so far, per step, in milliseconds.

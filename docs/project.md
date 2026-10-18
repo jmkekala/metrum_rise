@@ -352,7 +352,13 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   hour instead of at once, though workers a funding cut no longer pays still leave at once, and
   demand planning counts unemployed adults and open jobs on the live
   city, which stops the growing starter town admitting more adults than it has jobs (save
-  format 97).
+  format 97). `SIM-02-I` part 3 (2026-10-18): new shops and factories are checked once an hour,
+  when demand is planned, instead of each running its own jobs census as construction starts;
+  each keeps a permit until it starts, and one whose door moved in the meantime is rejected. A
+  permit voided by a home that failed to place waits for the next hour instead of cancelling the
+  building. Every home now draws its new residents from a seed of its own, so households
+  differ from earlier versions, and a game saved mid-hour, even right after a road edit,
+  continues exactly as before (save format 99).
 
 - **Starting treasury**: new games begin with 500,000, increased from 100,000. See
   [money source](economy.md#money-source); earlier balance runs retain their original starting capital.

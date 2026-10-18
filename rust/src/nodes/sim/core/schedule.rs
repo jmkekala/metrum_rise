@@ -331,10 +331,10 @@ pub(crate) fn simulation_schedule() -> Schedule<SimSystem> {
         },
         // A rolling chunk, not a queue: one resumable computation over a period, not requests
         // served oldest first. Each second-half slot runs ceil(R / S) rows of the census's
-        // steps, R the rows left assuming the current closure pass is the last and S the slots
-        // left; a step that is not sliced runs whole in the slot it starts in, and the hour's
-        // last slot finishes what remains (`hiring/rolling.rs`). First-half slots return at
-        // once. The census start publishes the frontage prices first.
+        // steps, R the rows left assuming as many closure passes as the previous census took
+        // and S the slots left; a step that is not sliced runs whole in the slot it starts in,
+        // and the hour's last slot finishes what remains (`hiring/rolling.rs`). First-half
+        // slots return at once. The census start publishes the frontage prices first.
         Declaration {
             system: SimSystem::Census,
             name: "census",

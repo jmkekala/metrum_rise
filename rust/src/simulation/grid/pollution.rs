@@ -105,6 +105,7 @@ mod tests {
             depth_cells: 3,
             zone_profile_runtime_id: 0,
             parcel_id: 0,
+            applicant_seed: 0,
             zone_type: ZoneType::Industrial,
             facing_dir: Vector2::new(0.0, 1.0),
             frontage_t: 0.5,

@@ -192,6 +192,8 @@ pub(crate) struct CensusProgress {
     retained_customers: bool,
     input_ports: usize,
     first_pass: bool,
+    // Closure passes started; slicing only, never read by the census itself.
+    passes: usize,
     reduced: bool,
     settled: bool,
     // Diagnostic step times for the `funding_detail` debug line; never read by the census.
@@ -204,8 +206,10 @@ impl CensusProgress {
         self.step == Step::Done
     }
 
-    /// Rows left assuming the current closure pass is the last. O(steps).
-    pub(crate) fn remaining(&self, buildings: usize, households: usize) -> usize {
+    /// Rows left assuming the census takes `expected` closure passes, as the previous one
+    /// did (`SIM-02-I`): the current pass's and the steps after it, and whole passes for the
+    /// ones still expected. A census that needs more catches up in its last slots. O(steps).
+    pub(crate) fn remaining(&self, buildings: usize, households: usize, expected: usize) -> usize {
         if self.step == Step::Done {
             return 0;
         }
@@ -220,7 +224,18 @@ impl CensusProgress {
             rows += step.rows(buildings, households);
             step = step.next();
         }
-        rows
+        let mut pass = 0;
+        let mut step = Step::PassStart;
+        while step != Step::Done {
+            pass += step.rows(buildings, households);
+            step = step.next();
+        }
+        rows + expected.saturating_sub(self.passes.max(1)) * pass
+    }
+
+    /// Closure passes started so far.
+    pub(crate) fn passes(&self) -> usize {
+        self.passes
     }
 
     fn advance(&mut self, step: Step) {
@@ -424,6 +439,7 @@ impl JobFunding {
                 {
                     self.closure_passes += 1;
                 }
+                progress.passes += 1;
                 if !progress.first_pass {
                     let household_census = household_claims::Census::new(
                         ctx.allocator,
@@ -540,13 +556,6 @@ impl JobFunding {
             minute_of_day,
             ..
         } = *ctx;
-        #[cfg(test)]
-        let CensusContext {
-            households,
-            fiscal,
-            treasury_balance,
-            ..
-        } = *ctx;
         self.pricing_phase = freight_price_phase(tuning, minute_of_day);
         let count = allocator.buildings.len();
         crate::debug::work::add(crate::debug::work::Work::CensusBuildings, count as u64);
@@ -590,20 +599,6 @@ impl JobFunding {
                 self.freight_capital.copy_from_slice(capital);
             }
             None => logistics.write_freight_working_capital(&mut self.freight_capital),
-        }
-        #[cfg(test)]
-        if input_trace::enabled() {
-            self.input_trace = Some(input_trace::FundingInputs::capture(
-                allocator,
-                households,
-                &self.freight_capital,
-                network,
-                catalog,
-                tuning,
-                fiscal,
-                treasury_balance,
-                minute_of_day,
-            ));
         }
     }
 
@@ -769,6 +764,7 @@ impl JobFunding {
             ..
         } = *ctx;
         let count = allocator.buildings.len();
+        self.record_operating(&allocator.buildings);
         self.customer_offsets.resize(count + 1, 0);
         self.local_order.resize(count, 0);
         self.phase_offsets.resize(catalog.funding_phase_count(), 0);

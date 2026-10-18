@@ -466,6 +466,7 @@ fn write_snapshot(
         view.noise,
         maps,
     )?;
+    world::save_supplier_roll(tx, &view.logistics.saved_supplier_roll(view.network))?;
     network::save_network(tx, view.graph, maps)?;
     agents::save_agents(tx, view.agents, view.graph, view.network, maps)?;
     workplace_quotes::save(tx, view.households, view.allocator, view.network, maps)?;

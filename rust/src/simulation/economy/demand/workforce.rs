@@ -86,12 +86,14 @@ impl ReadySupply {
     }
 }
 
-// `order` is the building index, or the parcel id before placement; it also seeds the
-// applicant offered each place. Places `first_slot..first_slot + slots` are free.
+// `order` is the building index, or the parcel id before placement. `seed` seeds the applicant
+// offered each place: the building's applicant seed, a queued home's spawn id, or a proposed
+// home's parcel id. Places `first_slot..first_slot + slots` are free.
 struct FutureHome {
     hour: usize,
     level: u8,
     order: u64,
+    seed: usize,
     slots: u32,
     first_slot: u32,
     flat_size_m2: f32,
@@ -175,7 +177,9 @@ pub(super) struct WorkforceReservations {
 }
 
 impl WorkforceReservations {
-    /// Collects already committed housing and workplaces once, in parallel.
+    /// Collects already committed housing and workplaces once, in parallel. A workplace the
+    /// census did not see complete (`census_operating`) claims its constructing workers, as
+    /// one still under construction does (`SIM-02-I`).
     #[allow(clippy::too_many_arguments)]
     pub(super) fn reset(
         &mut self,
@@ -186,6 +190,7 @@ impl WorkforceReservations {
         queued: &[QueuedConstruction],
         new_start_hour: u64,
         reservations: Option<&super::supply::ProjectReservations>,
+        census_operating: impl Fn(usize) -> bool + Sync,
     ) {
         self.horizon = allocator
             .buildings
@@ -270,7 +275,7 @@ impl WorkforceReservations {
                         return None;
                     }
                     let hour = usize::from(building.construction_hours_left(allocator.now_slot));
-                    if building.is_under_construction()
+                    if (building.is_under_construction() || !census_operating(idx))
                         && matches!(
                             building.zone_type,
                             ZoneType::Commercial | ZoneType::Industrial
@@ -301,7 +306,7 @@ impl WorkforceReservations {
                         if arrivals_possible {
                             let (places, members) = applicant_places_and_members(
                                 flat_size_m2,
-                                idx,
+                                allocator.applicant_seed(idx),
                                 first_slot..capacity,
                             );
                             homes_by_hour[hour]
@@ -317,6 +322,7 @@ impl WorkforceReservations {
                         hour,
                         level: building.level,
                         order: idx as u64,
+                        seed: allocator.applicant_seed(idx),
                         slots,
                         first_slot,
                         flat_size_m2,
@@ -343,6 +349,7 @@ impl WorkforceReservations {
                     hour,
                     level: project.level,
                     order: project.parcel_id,
+                    seed: project.home_seed,
                     slots: project.household_slots,
                     first_slot: 0,
                     flat_size_m2: project.flat_size_m2,
@@ -407,6 +414,7 @@ impl WorkforceReservations {
             hour,
             level: authored.level,
             order: action.parcel_id,
+            seed: action.parcel_id as usize,
             slots: allocator.registry.household_capacity(&action.asset_id),
             first_slot: 0,
             flat_size_m2: allocator.registry.flat_size_m2(&action.asset_id),
@@ -581,7 +589,7 @@ impl WorkforceReservations {
                 let end = home.first_slot + home.slots;
                 let (places, members) = applicant_places_and_members(
                     home.flat_size_m2,
-                    home.order as usize,
+                    home.seed,
                     end - remaining..end,
                 );
                 if home.hour == 0 {
@@ -710,6 +718,7 @@ mod tests {
             hour,
             level,
             order,
+            seed: order as usize,
             slots,
             first_slot: 0,
             flat_size_m2: SINGLE_FLAT_M2,
@@ -850,6 +859,7 @@ mod tests {
                 ..home(12, 1, 0, 1, 2.0, None)
             });
             supply.homes[index].order = seed as u64;
+            supply.homes[index].seed = seed;
         }
         supply.reserve_existing();
         assert!(!supply.claim(12, 3));

@@ -6,7 +6,7 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version, also the only one that loads (`SIM-02` broke older saves).
-pub const SAVE_VERSION: i64 = 97;
+pub const SAVE_VERSION: i64 = 99;
 
 /// Sentinel for an absent reference column.
 pub const NONE_REF: i64 = -1;
@@ -124,7 +124,9 @@ CREATE TABLE pending_demand_spawns(
     asset_id TEXT NOT NULL,
     planned_day_index INTEGER NOT NULL,
     planned_minute_of_day INTEGER NOT NULL,
-    spawn_id INTEGER NOT NULL
+    spawn_id INTEGER NOT NULL,
+    permit BLOB,
+    counted INTEGER NOT NULL
 );
 CREATE TABLE scheduler_state(
     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
@@ -294,7 +296,12 @@ CREATE TABLE buildings(
     unpaid_cash_wages_in_window INTEGER NOT NULL,
     service_sales_capacity REAL NOT NULL,
     service_sales_profile_runtime_id INTEGER NOT NULL,
-    funded_activity REAL NOT NULL
+    funded_activity REAL NOT NULL,
+    applicant_seed INTEGER NOT NULL
+);
+CREATE TABLE building_seed_state(
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    next_applicant_seed INTEGER NOT NULL
 );
 CREATE TABLE building_vacancy_state(
     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
@@ -526,7 +533,9 @@ CREATE TABLE freight_supplier_sweep(
     front_hour INTEGER NOT NULL,
     sweep_building_handles INTEGER NOT NULL,
     sweep_hour INTEGER NOT NULL,
-    sweep_next_chunk INTEGER NOT NULL
+    sweep_next_chunk INTEGER NOT NULL,
+    front_current INTEGER NOT NULL,
+    sweep_current INTEGER NOT NULL
 );
 CREATE TABLE census_inputs(
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),

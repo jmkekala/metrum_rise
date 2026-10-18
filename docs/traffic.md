@@ -77,8 +77,12 @@ and validates each current lane against its owner and travel mode. Pedestrian la
 through load, including final frontage legs with an exhausted graph-node path.
 An empty network path can also be a pending immediate replan after demolition. With valid
 node, edge and destination references, loading preserves its planned target and path cursor
-even when retry time and failure count are zero. Delayed retries retain their backoff;
-agents without a usable destination or pending retry still receive orphan repair.
+even when retry time and failure count are zero. An agent in network transit at a valid node
+stays there and replans from the node whatever its mode, as the running game does: a road edit
+that rebuilds the junction lane a walker is crossing leaves it at the node with no edge (found in
+`SIM-02-I` part 3, when loading sent such walkers straight into their destination). Delayed
+retries retain their backoff; agents without a usable destination or pending retry still
+receive orphan repair.
 
 Version 57 saves recover sidewalk direction from the saved road/node and connector identity from
 the saved junction, outgoing route and authoritative position (including the pedestrian offset).

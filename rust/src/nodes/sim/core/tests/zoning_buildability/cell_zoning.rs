@@ -801,6 +801,8 @@ fn queued_cell_growth_reloads_and_revalidates_erased_or_disabled_lots() {
                     action: action.clone(),
                     planned_day_index: 0,
                     planned_minute_of_day: 0,
+                    permit: Default::default(),
+                    counted: false,
                 });
             let parcel = core.zoning.parcel_by_raw_id(action.parcel_id).unwrap();
             if transition == "erase" {

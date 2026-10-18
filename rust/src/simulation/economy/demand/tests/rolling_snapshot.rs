@@ -192,6 +192,10 @@ fn an_hour_long_sweep_equals_the_whole_city_snapshot() {
 #[test]
 fn the_planned_workforce_follows_a_hire_after_the_sweep() {
     let (mut allocator, mut households) = city();
+    // The census published before the hour saw the city as it is.
+    households
+        .job_funding
+        .see_operating_for_test(&allocator.buildings);
     let graph = graph_with_connected_border();
     let config = load_builtin_demand_config().unwrap();
     let catalog = load_runtime_economy_catalog().unwrap();

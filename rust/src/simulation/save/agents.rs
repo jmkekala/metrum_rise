@@ -599,12 +599,12 @@ fn repair_orphaned_loaded_network_agent(
     agents.lane_change_length_m[i] = 0.0;
     agents.overtake_blocked_time_s[i] = 0.0;
     agents.overtake_cooldown_s[i] = 0.0;
-    let has_replan_node = agents.current_node[i] < graph.node_count() as u32;
-    let has_replan_edge =
-        agents.current_edge[i] < graph.edge_count() && !graph.edge(agents.current_edge[i]).deleted;
-    if has_replan_node && (agents.transit_mode[i] == MODE_CAR || has_replan_edge) {
+    if agents.current_node[i] < graph.node_count() as u32 {
         // The movement pass replans from the node and keeps the economy's next plan, as it
-        // does for the same state in a running game.
+        // does for the same state in a running game, walkers too: a road edit that rebuilds
+        // the junction lane a walker is crossing leaves it at the node without an edge, and
+        // the replan starts from the node (`replan_start`). Sending it to its destination
+        // instead made a loaded game diverge from the one that kept running.
         agents.current_building[i] = usize::MAX;
         agents.transit[i] = TRANSIT_NETWORK;
     } else {

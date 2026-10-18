@@ -11,7 +11,9 @@ use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::definitions::{
     QuantityUnit, load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
-use crate::simulation::economy::demand::{DemandSpawnAction, DemandSystem};
+use crate::simulation::economy::demand::{
+    ConstructionPermit, DemandSpawnAction, DemandSystem, SpawnPermit,
+};
 use crate::simulation::economy::households::{
     Household, HouseholdSystem,
 };
@@ -204,7 +206,7 @@ pub(super) fn save_world(
         ],
     )?;
     let mut pending_spawn_stmt = tx.prepare(
-        "INSERT INTO pending_demand_spawns(sequence, due_minute, zone_type, parcel_id, asset_id, planned_day_index, planned_minute_of_day, spawn_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO pending_demand_spawns(sequence, due_minute, zone_type, parcel_id, asset_id, planned_day_index, planned_minute_of_day, spawn_id, permit, counted) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
     )?;
     for (sequence, pending) in pending_demand_spawns.iter().enumerate() {
         pending_spawn_stmt.execute(params![
@@ -216,6 +218,8 @@ pub(super) fn save_world(
             i64::from(pending.planned_day_index),
             i64::from(pending.planned_minute_of_day),
             u64_to_i64(pending.id)?,
+            pack_spawn_permit(pending.permit),
+            i64::from(pending.counted),
         ])?;
     }
 
@@ -265,7 +269,7 @@ pub(super) fn save_world(
     super::cell_zoning::save(tx, zoning, maps)?;
 
     // Buildings
-    let mut bld_stmt = tx.prepare("INSERT INTO buildings(building_id, parcel_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, service_funding_override, revenue, operating_budget, profit_tax_budget_baseline, last_day_profit, shipment_cooldown_until_tick, width, depth, asset_id, level, construction_total_hours, construction_complete_slot, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress, daily_household_sales_value, daily_power_service_units, daily_power_served_units, recent_power_service_units, recent_power_served_units, recent_household_sales_value, support_height_m, build_generation, electricity_usage, hourly_economy_activity, commercial_activity_floor_scale, paid_workers_in_window, funded_job_capacity, unpaid_cash_wages_in_window, service_sales_capacity, service_sales_profile_runtime_id, funded_activity) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44)")?;
+    let mut bld_stmt = tx.prepare("INSERT INTO buildings(building_id, parcel_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, service_funding_override, revenue, operating_budget, profit_tax_budget_baseline, last_day_profit, shipment_cooldown_until_tick, width, depth, asset_id, level, construction_total_hours, construction_complete_slot, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress, daily_household_sales_value, daily_power_service_units, daily_power_served_units, recent_power_service_units, recent_power_served_units, recent_household_sales_value, support_height_m, build_generation, electricity_usage, hourly_economy_activity, commercial_activity_floor_scale, paid_workers_in_window, funded_job_capacity, unpaid_cash_wages_in_window, service_sales_capacity, service_sales_profile_runtime_id, funded_activity, applicant_seed) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45)")?;
     let mut inventory_stmt = tx.prepare(
         "INSERT INTO building_inventories(building_id, resource_runtime_id, amount) VALUES (?1, ?2, ?3)",
     )?;
@@ -338,6 +342,7 @@ pub(super) fn save_world(
             b.service_sales_capacity,
             i64::from(b.service_sales_profile_runtime_id),
             b.funded_activity,
+            u64_to_i64(b.applicant_seed)?,
         ])?;
         for (slot, amount) in b.resource_inventory.iter().enumerate() {
             if *amount <= 0.0 {
@@ -346,6 +351,10 @@ pub(super) fn save_world(
             inventory_stmt.execute(params![saved_bid_db, i64::from(slot as u16 + 1), *amount])?;
         }
     }
+    tx.execute(
+        "INSERT INTO building_seed_state(singleton, next_applicant_seed) VALUES (1, ?1)",
+        [u64_to_i64(buildings.next_applicant_seed)?],
+    )?;
     save_vacancy_order(tx, buildings)?;
     save_resource_extraction(tx, resource_extraction, maps)?;
     save_agriculture(tx, agriculture, maps)?;
@@ -511,14 +520,14 @@ pub(super) fn save_world(
             if failure.terminal { 1_i64 } else { 0_i64 },
         ])?;
     }
-    save_supplier_roll(tx, &logistics.supplier_roll.saved())?;
 
     Ok(())
 }
 
 // The front's entries are buffer 0 and the sweep's buffer 1, each in its own order; building
-// handles split into slot and generation as other saved handles do.
-fn save_supplier_roll(tx: &Transaction, roll: &SavedSupplierRoll) -> SaveLoadResult<()> {
+// handles split into slot and generation as other saved handles do. The roll comes from
+// `ShipmentSystem::saved_supplier_roll`, which knows whether its buffers are current.
+pub(super) fn save_supplier_roll(tx: &Transaction, roll: &SavedSupplierRoll) -> SaveLoadResult<()> {
     let (sweep_handles, sweep_hour, sweep_next_chunk) = match &roll.sweep {
         Some(sweep) => (
             u64_to_i64(sweep.building_handles)?,
@@ -528,7 +537,7 @@ fn save_supplier_roll(tx: &Transaction, roll: &SavedSupplierRoll) -> SaveLoadRes
         None => (NONE_REF, 0, 0),
     };
     tx.execute(
-        "INSERT INTO freight_supplier_sweep(singleton, front_hour, sweep_building_handles, sweep_hour, sweep_next_chunk) VALUES (1, ?1, ?2, ?3, ?4)",
+        "INSERT INTO freight_supplier_sweep(singleton, front_hour, sweep_building_handles, sweep_hour, sweep_next_chunk, front_current, sweep_current) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)",
         params![
             roll.front
                 .as_ref()
@@ -536,6 +545,8 @@ fn save_supplier_roll(tx: &Transaction, roll: &SavedSupplierRoll) -> SaveLoadRes
             sweep_handles,
             sweep_hour,
             sweep_next_chunk,
+            i64::from(roll.current[0]),
+            i64::from(roll.current[1]),
         ],
     )?;
     let mut stmt = tx.prepare("INSERT INTO freight_supplier_entries(buffer, position, resource_runtime_id, component, chunk_x, chunk_y, building_slot, building_generation) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)")?;
@@ -561,12 +572,19 @@ fn save_supplier_roll(tx: &Transaction, roll: &SavedSupplierRoll) -> SaveLoadRes
 }
 
 fn load_supplier_roll(conn: &Connection) -> SaveLoadResult<SupplierRoll> {
-    let (front_hour, sweep_handles, sweep_hour, sweep_next_chunk): (i64, i64, i64, i64) = conn
-        .query_row(
-            "SELECT front_hour, sweep_building_handles, sweep_hour, sweep_next_chunk FROM freight_supplier_sweep WHERE singleton = 1",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        )?;
+    let ((front_hour, sweep_handles, sweep_hour, sweep_next_chunk), current): (
+        (i64, i64, i64, i64),
+        [bool; 2],
+    ) = conn.query_row(
+        "SELECT front_hour, sweep_building_handles, sweep_hour, sweep_next_chunk, front_current, sweep_current FROM freight_supplier_sweep WHERE singleton = 1",
+        [],
+        |row| {
+            Ok((
+                (row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?),
+                [row.get::<_, i64>(4)? != 0, row.get::<_, i64>(5)? != 0],
+            ))
+        },
+    )?;
     let mut buffers = [Vec::new(), Vec::new()];
     let mut stmt = conn.prepare("SELECT buffer, resource_runtime_id, component, chunk_x, chunk_y, building_slot, building_generation FROM freight_supplier_entries ORDER BY buffer, position")?;
     let mut rows = stmt.query([])?;
@@ -595,6 +613,7 @@ fn load_supplier_roll(conn: &Connection) -> SaveLoadResult<SupplierRoll> {
         ));
     }
     let saved = SavedSupplierRoll {
+        current,
         front: match front_hour {
             NONE_REF => None,
             hour => Some((i64_to_u32(hour)?, front)),
@@ -858,22 +877,33 @@ pub(super) fn load_pending_demand_spawns(
     conn: &Connection,
 ) -> SaveLoadResult<VecDeque<PendingDemandSpawnAction>> {
     let mut stmt = conn.prepare(
-        "SELECT due_minute, zone_type, parcel_id, asset_id, planned_day_index, planned_minute_of_day, spawn_id FROM pending_demand_spawns ORDER BY sequence ASC",
+        "SELECT due_minute, zone_type, parcel_id, asset_id, planned_day_index, planned_minute_of_day, spawn_id, permit, counted FROM pending_demand_spawns ORDER BY sequence ASC",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok((
-            row.get::<_, i64>(0)?,
-            row.get::<_, i64>(1)?,
-            row.get::<_, i64>(2)?,
-            row.get::<_, String>(3)?,
+            (
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+            ),
             row.get::<_, i64>(4)?,
             row.get::<_, i64>(5)?,
             row.get::<_, i64>(6)?,
+            row.get::<_, Option<Vec<u8>>>(7)?,
+            row.get::<_, i64>(8)? != 0,
         ))
     })?;
     let mut pending = VecDeque::new();
     for row in rows {
-        let (due_minute, zone_type, parcel_id, asset_id, planned_day, planned_minute, id) = row?;
+        let (
+            (due_minute, zone_type, parcel_id, asset_id),
+            planned_day,
+            planned_minute,
+            id,
+            permit,
+            counted,
+        ) = row?;
         pending.push_back(PendingDemandSpawnAction {
             id: i64_to_u64(id)?,
             due_minute: i64_to_u64(due_minute)?,
@@ -884,9 +914,40 @@ pub(super) fn load_pending_demand_spawns(
             },
             planned_day_index: i64_to_u32(planned_day)?,
             planned_minute_of_day: i64_to_u16(planned_minute)?,
+            permit: unpack_spawn_permit(permit.as_deref())?,
+            counted,
         });
     }
     Ok(pending)
+}
+
+// A queued spawn's permit as saved: NULL when denied, a single 0 byte when voided, otherwise
+// the door digest, profile and level, little-endian.
+fn pack_spawn_permit(permit: SpawnPermit) -> Option<Vec<u8>> {
+    match permit {
+        SpawnPermit::Denied => None,
+        SpawnPermit::Voided => Some(vec![0]),
+        SpawnPermit::Granted(permit) => {
+            let mut bytes = Vec::with_capacity(11);
+            bytes.extend_from_slice(&permit.door.to_le_bytes());
+            bytes.extend_from_slice(&permit.profile.to_le_bytes());
+            bytes.push(permit.level);
+            Some(bytes)
+        }
+    }
+}
+
+fn unpack_spawn_permit(bytes: Option<&[u8]>) -> SaveLoadResult<SpawnPermit> {
+    match bytes {
+        None => Ok(SpawnPermit::Denied),
+        Some([0]) => Ok(SpawnPermit::Voided),
+        Some(bytes) if bytes.len() == 11 => Ok(SpawnPermit::Granted(ConstructionPermit {
+            door: u64::from_le_bytes(bytes[0..8].try_into().unwrap()),
+            profile: u16::from_le_bytes(bytes[8..10].try_into().unwrap()),
+            level: bytes[10],
+        })),
+        Some(_) => Err(SaveLoadError::custom("malformed construction permit")),
+    }
 }
 
 pub(super) fn load_zoning(
@@ -999,8 +1060,13 @@ pub(super) fn load_buildings(
     //      34=build_generation 35=electricity_usage 36=hourly_economy_activity
     //      37=commercial_activity_floor_scale 38=paid_workers_in_window 39=funded_job_capacity
     //      40=unpaid_cash_wages_in_window 41=service_sales_capacity
-    //      42=service_sales_profile_runtime_id 43=funded_activity
-    let mut stmt = conn.prepare("SELECT building_id, parcel_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, service_funding_override, revenue, operating_budget, profit_tax_budget_baseline, last_day_profit, shipment_cooldown_until_tick, width, depth, asset_id, level, construction_total_hours, construction_complete_slot, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress, daily_household_sales_value, daily_power_service_units, daily_power_served_units, recent_power_service_units, recent_power_served_units, recent_household_sales_value, support_height_m, build_generation, electricity_usage, hourly_economy_activity, commercial_activity_floor_scale, paid_workers_in_window, funded_job_capacity, unpaid_cash_wages_in_window, service_sales_capacity, service_sales_profile_runtime_id, funded_activity FROM buildings ORDER BY building_id")?;
+    //      42=service_sales_profile_runtime_id 43=funded_activity 44=applicant_seed
+    allocator.next_applicant_seed = i64_to_u64(conn.query_row(
+        "SELECT next_applicant_seed FROM building_seed_state WHERE singleton = 1",
+        [],
+        |row| row.get(0),
+    )?)?;
+    let mut stmt = conn.prepare("SELECT building_id, parcel_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, service_funding_override, revenue, operating_budget, profit_tax_budget_baseline, last_day_profit, shipment_cooldown_until_tick, width, depth, asset_id, level, construction_total_hours, construction_complete_slot, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress, daily_household_sales_value, daily_power_service_units, daily_power_served_units, recent_power_service_units, recent_power_served_units, recent_household_sales_value, support_height_m, build_generation, electricity_usage, hourly_economy_activity, commercial_activity_floor_scale, paid_workers_in_window, funded_job_capacity, unpaid_cash_wages_in_window, service_sales_capacity, service_sales_profile_runtime_id, funded_activity, applicant_seed FROM buildings ORDER BY building_id")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let bid = i64_to_usize(row.get(0)?)?;
@@ -1051,6 +1117,7 @@ pub(super) fn load_buildings(
             depth_cells: i64_to_u16(row.get(17)?)?,
             zone_profile_runtime_id: profile_runtime_id,
             parcel_id: i64_to_u64(row.get(1)?)?,
+            applicant_seed: i64_to_u64(row.get(44)?)?,
             zone_type,
             facing_dir: Vector2::ZERO,
             frontage_t: row.get(3)?,

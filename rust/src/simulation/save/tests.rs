@@ -218,6 +218,7 @@ fn snapshot_test_building(
         depth_cells: 3,
         zone_profile_runtime_id: residential_profile,
         parcel_id: 1,
+        applicant_seed: 0,
         zone_type: ZoneType::Residential,
         facing_dir: Vector2::new(0.0, 1.0),
         frontage_t: 0.5,
@@ -354,7 +355,14 @@ fn pending_household_composition_survives_save() {
         .buildings
         .push(snapshot_test_building(edge, 0, asset));
     let mut agents = AgentSystem::new();
-    let carrier = agents.spawn_household_arrival_carrier(0, 6, 17, 0, -20.0, 0.0);
+    let carrier = agents.spawn_household_arrival_carrier(
+        0,
+        6,
+        crate::simulation::economy::agents::household_age_composition(0, 17, 6),
+        0,
+        -20.0,
+        0.0,
+    );
     let approved = agents.pending_household_composition(carrier);
     let maps = build_snapshot_maps(&graph, &allocator, &agents).unwrap();
     let mut conn = Connection::open_in_memory().unwrap();
@@ -634,6 +642,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     );
     // A supplier index front and a sweep in progress (`SIM-02-I`), each saved sorted.
     let supplier_roll = SavedSupplierRoll {
+        current: [true, false],
         front: Some((
             12,
             vec![(1, 0, -1, 0, 1 << 32 | 3), (household_supplies, 2, 0, 5, 0)],
@@ -823,6 +832,8 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         },
         planned_day_index: 2,
         planned_minute_of_day: 180,
+        permit: Default::default(),
+        counted: false,
     });
     // A finished demand snapshot sweep and part of the next (`SIM-02-I`).
     for slot in 0..crate::simulation::core::scheduler::SLOTS_PER_HOUR + 37 {
@@ -1530,6 +1541,7 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
         depth_cells: 2,
         zone_profile_runtime_id: residential_profile,
         parcel_id: 1,
+        applicant_seed: 0,
         zone_type: ZoneType::Residential,
         facing_dir: Vector2::new(0.0, 1.0),
         frontage_t: 0.5,
@@ -1603,6 +1615,8 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
         },
         planned_day_index: 1,
         planned_minute_of_day: 10,
+        permit: Default::default(),
+        counted: false,
     });
     pending_demand_spawns.push_back(PendingDemandSpawnAction {
         id: 0,
@@ -1614,6 +1628,8 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
         },
         planned_day_index: 1,
         planned_minute_of_day: 20,
+        permit: Default::default(),
+        counted: false,
     });
 
     let path = temp_path("legacy_overlap");
@@ -1892,4 +1908,35 @@ fn benchmark_sqlite_graph_loading() {
         samples.sort_by(f64::total_cmp);
         eprintln!("sqlite_graph edges={count} load_ms={:.6}", samples[5]);
     }
+}
+
+// A road edit that rebuilds the junction lane a walker is crossing leaves it in the network at
+// the junction node with no edge, lane or path, and the next movement pass replans from the node.
+// A load keeps it there, as the running game does, instead of sending it to its destination.
+#[test]
+fn a_loaded_walker_at_a_node_without_an_edge_replans_from_the_node() {
+    use crate::simulation::network::types::NodeType;
+    let mut graph = RegionGraph::new();
+    let node = graph.add_node(godot::prelude::Vector3::ZERO, NodeType::Junction);
+    let mut allocator = BuildingAllocator::new();
+    allocator.buildings.push(snapshot_test_building(
+        usize::MAX,
+        0,
+        "test:home".to_owned(),
+    ));
+    let mut agents = AgentSystem::new();
+    let walker = agents.spawn_housed_agent(0, 0.0, 0.0);
+    agents.transit[walker] = TRANSIT_NETWORK;
+    agents.transit_mode[walker] = MODE_WALK;
+    agents.current_building[walker] = usize::MAX;
+    agents.target_building[walker] = 0;
+    agents.current_node[walker] = node;
+    agents.current_edge[walker] = usize::MAX;
+    agents.current_lane_id[walker] = usize::MAX;
+    agents.current_path[walker].clear();
+    agents::validate_loaded_agents(&mut agents, &graph, &allocator).unwrap();
+    assert_eq!(agents.transit[walker], TRANSIT_NETWORK);
+    assert_eq!(agents.current_node[walker], node);
+    assert_eq!(agents.current_building[walker], usize::MAX);
+    assert_eq!(agents.target_building[walker], 0);
 }

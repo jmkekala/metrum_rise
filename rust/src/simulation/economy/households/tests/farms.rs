@@ -103,8 +103,22 @@ fn incoming_households_keep_their_approved_members_when_arrivals_reverse() {
     let mut allocator = farm_allocator();
     allocator.buildings.push(allocator.buildings[0].clone());
     let mut agents = AgentSystem::new();
-    let first = agents.spawn_household_arrival_carrier(0, 6, 17, 0, 0.0, 0.0);
-    let second = agents.spawn_household_arrival_carrier(1, 3, 18, 0, 0.0, 0.0);
+    let first = agents.spawn_household_arrival_carrier(
+        0,
+        6,
+        crate::simulation::economy::agents::household_age_composition(0, 17, 6),
+        0,
+        0.0,
+        0.0,
+    );
+    let second = agents.spawn_household_arrival_carrier(
+        1,
+        3,
+        crate::simulation::economy::agents::household_age_composition(1, 18, 3),
+        0,
+        0.0,
+        0.0,
+    );
     let first_mix = agents.pending_household_composition(first);
     let second_mix = agents.pending_household_composition(second);
     let mut households = HouseholdSystem::new();
@@ -145,7 +159,14 @@ fn farm_carrier_materializes_one_normal_household_once() {
     let mut households = HouseholdSystem::new();
     let mut agents = AgentSystem::new();
     allocator.claim_vacancy(0);
-    let carrier = agents.spawn_household_arrival_carrier(0, 6, 0, 0, 10.0, 0.0);
+    let carrier = agents.spawn_household_arrival_carrier(
+        0,
+        6,
+        crate::simulation::economy::agents::household_age_composition(0, 0, 6),
+        0,
+        10.0,
+        0.0,
+    );
     agents.current_building[carrier] = 0;
     agents.transit[carrier] = TRANSIT_IN_BUILDING;
     let arrival = households.materialize_arrived_household_carriers(&mut agents, &allocator);

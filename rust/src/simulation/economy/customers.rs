@@ -245,6 +245,8 @@ impl ConsumerBudgets {
             .reserve(2 * (self.funds.len() + output_ports));
     }
 
+    // Test forks of the live book; planning lends it instead.
+    #[cfg(test)]
     fn copy_reservations_from(&mut self, source: &Self) {
         debug_assert!(source.staged.is_empty());
         debug_assert!(!self.revalidation.is_active() && !source.revalidation.is_active());

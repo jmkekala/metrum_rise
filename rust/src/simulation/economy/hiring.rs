@@ -29,8 +29,6 @@ mod closure;
 mod household_claims;
 mod import_memo;
 mod import_plan;
-#[cfg(test)]
-mod input_trace;
 mod inputs;
 mod rolling;
 mod steps;
@@ -52,6 +50,8 @@ pub(crate) use steps::{STEP_NAMES, STEP_NANOS};
 pub(crate) struct JobFunding {
     /// Maximum live employees supported by both recurring sales and working capital.
     pub(crate) capacities: Vec<u32>,
+    // One bit per copied row: complete, not under construction, when the census copied it.
+    saw_operating: Vec<u64>,
     /// Complete closure attempts in the latest census, for exact scaling diagnostics.
     #[cfg(test)]
     pub(crate) closure_passes: usize,
@@ -120,13 +120,11 @@ pub(crate) struct JobFunding {
     // Stable counting-sort scratch: authored supplier phases, then live building index.
     local_order: Vec<usize>,
     phase_offsets: Vec<usize>,
-    remapped_capacities: Vec<(usize, u32, u32, f64, f32)>,
+    remapped_capacities: Vec<(usize, u32, u32, f64, f32, bool)>,
     /// Finite recurring supply left after funded live operations have made their input claims.
     pub(crate) input_supply: RecurringSupply,
     /// Individual recurring household accounts prepared with this funding census.
     pub(crate) customers: super::customers::ConsumerMarket,
-    #[cfg(test)]
-    input_trace: Option<input_trace::FundingInputs>,
     #[cfg(test)]
     import_quote_replay_disabled: bool,
     #[cfg(test)]
@@ -535,6 +533,48 @@ impl JobFunding {
         self.published = None;
     }
 
+    /// Whether the census saw building `index` complete (`SIM-02-I`): a building that
+    /// completed after its copy, or was placed after it, is still under construction for the
+    /// readers of its books (workforce, construction supply, open jobs) until a census sees it
+    /// complete, so its constructing claim never meets the jobs a later census funds. O(1).
+    pub(crate) fn saw_operating(&self, index: usize) -> bool {
+        self.saw_operating
+            .get(index / 64)
+            .is_some_and(|word| word & (1 << (index % 64)) != 0)
+    }
+
+    /// Test fixtures with hand-built censuses: the census saw `buildings` as they are now.
+    #[cfg(test)]
+    pub(crate) fn see_operating_for_test(&mut self, buildings: &[Building]) {
+        self.record_operating(buildings);
+    }
+
+    // Sets whether the census saw building `index` complete, for remaps. O(1).
+    fn set_saw_operating(&mut self, index: usize, seen: bool) {
+        let (word, bit) = (index / 64, 1 << (index % 64));
+        if seen && self.saw_operating.len() <= word {
+            self.saw_operating.resize(word + 1, 0);
+        }
+        if let Some(bits) = self.saw_operating.get_mut(word) {
+            if seen {
+                *bits |= bit;
+            } else {
+                *bits &= !bit;
+            }
+        }
+    }
+
+    // Records which copied rows are complete, from the census's setup step. O(B).
+    fn record_operating(&mut self, buildings: &[Building]) {
+        self.saw_operating.clear();
+        self.saw_operating.resize(buildings.len().div_ceil(64), 0);
+        for (index, building) in buildings.iter().enumerate() {
+            if !building.is_under_construction() {
+                self.saw_operating[index / 64] |= 1 << (index % 64);
+            }
+        }
+    }
+
     /// Paid cargo assets prepared with the current live-job forecast, excluding carrier charges.
     pub(crate) fn paid_cargo_capital(&self, index: usize) -> f64 {
         self.freight_capital.get(index).copied().unwrap_or(0.0)
@@ -543,16 +583,13 @@ impl JobFunding {
     /// Whether an hourly construction pass can reuse the funded source book, including its
     /// frontage-priced freight costs. Geometry alone cannot validate recurring profitability.
     /// The census must have started on the live city's `key`, households removed since aside
-    /// (`SIM-02-I`, [`CensusKey::books_valid_for`]). Buildings appended
-    /// since its copy are not in its books: readers treat them as unfunded and without supply,
-    /// but one with recipe inputs would buy through business input ports, which the book lays
-    /// out per census building, so it still needs a census of its own. O(connected borders +
-    /// appended buildings), called once per planning pass.
+    /// (`SIM-02-I`, [`CensusKey::books_valid_for`]). Buildings appended since its copy are not
+    /// in its books: readers treat them as unfunded and without supply, and the lent books lay
+    /// out their buyer ports for the pass. O(connected borders), called once per planning
+    /// pass.
     pub(crate) fn has_current_input_supply(
         &self,
         key: CensusKey,
-        allocator: &BuildingAllocator,
-        catalog: &RuntimeEconomyCatalog,
         borders: &[u32],
         pricing_phase: u16,
     ) -> bool {
@@ -560,16 +597,6 @@ impl JobFunding {
             .is_some_and(|published| published.books_valid_for(key))
             && self.pricing_phase == pricing_phase
             && self.quoted_border_nodes == borders
-            && allocator
-                .buildings
-                .get(self.capacities.len()..)
-                .is_some_and(|appended| {
-                    appended.iter().all(|building| {
-                        catalog
-                            .profile_by_runtime_id(building.economy_profile_runtime_id)
-                            .is_none_or(|profile| profile.inputs.is_empty())
-                    })
-                })
     }
 
     // Keeps the fiscal ceilings `live` registered for services below `buildings` that this
@@ -587,6 +614,7 @@ impl JobFunding {
     /// Clears the live view without discarding reusable forecast storage.
     pub(crate) fn clear(&mut self) {
         self.published = None;
+        self.saw_operating.clear();
         self.import_plans.clear();
         self.market_revision = None;
         self.capacities.clear();
@@ -619,6 +647,7 @@ impl JobFunding {
         if let Some(headroom) = self.headroom.get_mut(index) {
             *headroom = [0.0; 2];
         }
+        self.set_saw_operating(index, false);
         self.quote_revision = None;
         self.input_supply.invalidate();
     }
@@ -643,6 +672,7 @@ impl JobFunding {
                 self.service_capacities.get(old).copied().unwrap_or(0),
                 self.freight_capital.get(old).copied().unwrap_or(0.0),
                 self.activities.get(old).copied().unwrap_or(0.0),
+                self.saw_operating(old),
             ));
         }
         // Undo can reintroduce a last index after an hourly forecast shrank these arrays.
@@ -673,8 +703,13 @@ impl JobFunding {
             if let Some(capital) = self.freight_capital.get_mut(old) {
                 *capital = 0.0;
             }
+            self.set_saw_operating(old, false);
         }
-        for &(new, value, service, capital, activity) in &self.remapped_capacities {
+        for index in 0..self.remapped_capacities.len() {
+            let (new, _, _, _, _, seen) = self.remapped_capacities[index];
+            self.set_saw_operating(new, seen);
+        }
+        for &(new, value, service, capital, activity, _) in &self.remapped_capacities {
             if let Some(capacity) = self.capacities.get_mut(new) {
                 *capacity = value;
             }

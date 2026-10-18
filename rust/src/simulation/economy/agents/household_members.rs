@@ -285,7 +285,14 @@ mod tests {
             let agent = agents.spawn_housed_agent(usize::MAX, 0.0, 0.0);
             agents.assign_household_id(agent, household);
         }
-        let carrier = agents.spawn_household_arrival_carrier(usize::MAX, 3, 0, 0, 0.0, 0.0);
+        let carrier = agents.spawn_household_arrival_carrier(
+            usize::MAX,
+            3,
+            crate::simulation::economy::agents::household_age_composition(usize::MAX, 0, 3),
+            0,
+            0.0,
+            0.0,
+        );
         agents.materialize_household_carrier(carrier, 3, 0, None);
         let member = agents.spawn_housed_agent(usize::MAX, 0.0, 0.0);
         agents.assign_household_id(member, 3);

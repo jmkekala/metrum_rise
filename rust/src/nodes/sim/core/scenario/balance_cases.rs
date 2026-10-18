@@ -742,6 +742,21 @@ fn stale_vacancy_index_continues_identically_after_a_save_load() {
     assert_continues_identically_after_reload(source, "stale");
 }
 
+// A road placed mid-hour rebuilds the CCH, so the freight supplier index's front and its sweep
+// in progress hold the old graph's components: the game builds its own index at the next
+// planning pass and abandons the sweep. A save taken before the next slot must continue the
+// same way instead of labelling the stale buffers with the loaded graph's components.
+#[test]
+fn a_supplier_index_left_stale_by_a_road_edit_continues_identically_after_a_save_load() {
+    let mut source = growing_town_mid_hour();
+    assert!(
+        source.core.logistics.supplier_roll.saved().sweep.is_some(),
+        "a supplier sweep in progress"
+    );
+    commit_road(&mut source.core, (MAIN_STREET_END_X_M, 0.0), (450.0, 0.0));
+    assert_continues_identically_after_reload(source, "supplier-roll");
+}
+
 // A starter town with a power plant, two days in and saved at mid-hour: homes have been claimed
 // and released, so the vacancy lists are no longer in building order, and households keep
 // arriving.
@@ -773,8 +788,18 @@ fn growing_town_mid_hour() -> GrowthScenario {
 }
 
 // Saves `source`, loads it into a fresh town and steps both for a day, comparing homes, cash,
-// occupancy and the vacancy index every frame.
-fn assert_continues_identically_after_reload(mut source: GrowthScenario, name: &str) {
+// occupancy, the vacancy index and the freight supplier index's buffers every frame.
+fn assert_continues_identically_after_reload(source: GrowthScenario, name: &str) {
+    assert_continues_identically_after_checked_reload(source, name, |_, _| {});
+}
+
+// [`assert_continues_identically_after_reload`], first checking the games with `check` once
+// loaded.
+fn assert_continues_identically_after_checked_reload(
+    mut source: GrowthScenario,
+    name: &str,
+    check: impl FnOnce(&SimCore, &SimCore),
+) {
     let path = std::env::temp_dir().join(format!(
         "metrum-{name}-continuation-{}.sqlite",
         std::process::id()
@@ -790,6 +815,7 @@ fn assert_continues_identically_after_reload(mut source: GrowthScenario, name: &
         .unwrap();
     std::fs::remove_file(path).unwrap();
     loaded.core.time.speed_multiplier = source.core.time.speed_multiplier;
+    check(&source.core, &loaded.core);
     let target_day = source.core.time.day_index + 1;
     loop {
         let when = (source.core.time.day_index, source.core.time.minute_of_day);
@@ -805,6 +831,11 @@ fn assert_continues_identically_after_reload(mut source: GrowthScenario, name: &
             // The saved game's order is kept incrementally, the loaded one's rebuilt at load.
             assert!(a.admission_order.same_as(&b.admission_order), "{when:?}");
         }
+        assert_eq!(
+            source.core.logistics.supplier_roll.saved(),
+            loaded.core.logistics.supplier_roll.saved(),
+            "supplier index at {when:?}"
+        );
         if source.core.time.day_index >= target_day {
             break;
         }
@@ -815,6 +846,17 @@ fn assert_continues_identically_after_reload(mut source: GrowthScenario, name: &
             source.core.agents.len(),
             loaded.core.agents.len(),
             "agents at {when:?}"
+        );
+        let queued = |core: &SimCore| {
+            core.pending_demand_spawns
+                .iter()
+                .map(|pending| (pending.id, pending.permit))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            queued(&source.core),
+            queued(&loaded.core),
+            "queued spawns at {when:?}"
         );
         let (a, b) = (&source.core.households, &loaded.core.households);
         assert_eq!(
@@ -845,6 +887,82 @@ fn assert_continues_identically_after_reload(mut source: GrowthScenario, name: &
             );
         }
     }
+}
+
+// Whether a commercial or industrial spawn waits in the queue under a granted permit.
+fn business_permit_queued(core: &SimCore) -> bool {
+    core.pending_demand_spawns.iter().any(|pending| {
+        pending.zone_type != ZoneType::Residential && pending.permit.granted().is_some()
+    })
+}
+
+// A starter town stepped to a mid-hour moment with a business spawn queued under its permit.
+fn town_with_a_queued_business_permit() -> GrowthScenario {
+    let mut source = GrowthScenario::starter_town();
+    loop {
+        assert!(
+            source.day() < 5,
+            "no business spawn waited mid-hour with a permit"
+        );
+        source.core.step_frame(FRAME_DT_S);
+        let core = &source.core;
+        if (10..=50).contains(&(core.time.minute_of_day % 60)) && business_permit_queued(core) {
+            return source;
+        }
+    }
+}
+
+// A game saved mid-hour with commercial or industrial spawns queued under their planning slot's
+// permits continues identically every frame for a day: permits are saved, and each start checks
+// its permit against its door, profile and level, so no proof runs at the start (`SIM-02-I`).
+#[test]
+fn queued_business_permits_continue_identically_after_a_mid_hour_save_load() {
+    assert_continues_identically_after_reload(
+        town_with_a_queued_business_permit(),
+        "queued-permits",
+    );
+}
+
+// A save renumbers edges past a deleted one and a load rebuilds lanes compactly, while the
+// session tombstones and appends: after a road split and a bulldozed stub far from town, the
+// loaded game numbers the town's edges and lanes differently, and every queued permit still
+// matches its door, so the game continues identically (`SIM-02-I`).
+#[test]
+fn queued_business_permits_survive_edge_and_lane_renumbering_across_a_save() {
+    let mut source = town_with_a_queued_business_permit();
+    let core = &mut source.core;
+    let x = BORDER_INSET_M - core.heightmap.half_world_extents().0 + 120.0;
+    super::commit_road(core, (x, 0.0), (x, 80.0));
+    let stub = core
+        .region_graph
+        .edges()
+        .iter()
+        .rposition(|edge| {
+            !edge.deleted
+                && edge
+                    .geometry
+                    .iter()
+                    .any(|point| (point.x - x).abs() < 1.0 && (point.z - 80.0).abs() < 1.0)
+        })
+        .expect("the stub was committed");
+    assert!(core.bulldoze_road_edge_for_test(stub));
+    assert!(
+        core.region_graph.edges().iter().any(|edge| edge.deleted),
+        "the split and the bulldoze leave edges a save renumbers"
+    );
+    assert!(business_permit_queued(core));
+    assert_continues_identically_after_checked_reload(
+        source,
+        "renumbered-permits",
+        |source, loaded| {
+            assert_ne!(
+                source.transit_network.lane_system.lanes.len(),
+                loaded.transit_network.lane_system.lanes.len(),
+                "the loaded game numbers its lanes compactly"
+            );
+            assert!(business_permit_queued(loaded));
+        },
+    );
 }
 
 #[test]

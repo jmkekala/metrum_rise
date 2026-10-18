@@ -121,6 +121,7 @@ impl AdmissionOrder {
     pub(super) fn pick(
         &self,
         vacancies: &[usize],
+        applicant_seed: impl Fn(usize) -> usize,
         next_household_id: usize,
         prefer_worker_capable: bool,
     ) -> Option<(usize, u16)> {
@@ -133,7 +134,9 @@ impl AdmissionOrder {
             for (size, group) in groups.clone() {
                 if let Some(&position) = group.iter().find(|&&position| {
                     let building_idx = vacancies[position as usize];
-                    household_age_composition(building_idx, next_household_id, size).adult_count > 0
+                    household_age_composition(applicant_seed(building_idx), next_household_id, size)
+                        .adult_count
+                        > 0
                 }) {
                     return Some((position as usize, size));
                 }
@@ -178,7 +181,7 @@ impl BuildingAllocator {
         }
         candidate_immigrant_household_size_for_vacancy(
             self.flat_size_m2(building_idx),
-            building_idx,
+            self.applicant_seed(building_idx),
             building.occupancy,
         )
     }

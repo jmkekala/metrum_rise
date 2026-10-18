@@ -30,7 +30,7 @@ use crate::simulation::core::time::TimeSystem;
 use crate::simulation::core::timing_wheel::{TimedEvent, TimingWheel};
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::demand::{
-    DemandBuildingActionPlan, DemandSpawnAction, DemandSystem,
+    DemandBuildingActionPlan, DemandSpawnAction, DemandSystem, SpawnPermit, StartRefusal,
 };
 use crate::simulation::economy::fiscal::CityFiscalPolicy;
 use crate::simulation::economy::hiring::{CENSUS_WINDOW_START, FrozenCensusParameters};
@@ -71,6 +71,14 @@ pub(crate) struct PendingDemandSpawnAction {
     pub(crate) planned_day_index: u32,
     /// Minute of day when demand originally planned the spawn.
     pub(crate) planned_minute_of_day: u16,
+    /// A commercial or industrial spawn's permit from the latest planning slot's construction
+    /// epoch (`SIM-02-I`): it starts only with a granted one and waits on a voided one. Saved.
+    pub(crate) permit: SpawnPermit,
+    /// Whether the latest planning slot counted this home's applicants (its queued project was
+    /// active, not a later duplicate of a parcel or on a parcel no longer available): a counted
+    /// home that fails to place voids the granted business permits (`SIM-02-I`). Saved, so a
+    /// loaded game decides as the planning slot did.
+    pub(crate) counted: bool,
 }
 
 // Construction starts of `pending`, in queue order, at their due minute and at most one per
@@ -674,6 +682,28 @@ impl SimCore {
         );
         // Capture receipts before demand can remove or replace their building.
         observer.hourly_economy(self);
+        // Planning lends the census published before this hour, current for the live city
+        // (`SIM-02-I`); nothing between the publication and the pass invalidates it. Tests
+        // that run the pass without an hour publish their own census for it.
+        #[cfg(test)]
+        {
+            let mut borders = Vec::new();
+            crate::simulation::economy::logistics::collect_connected_border_nodes(
+                &self.region_graph,
+                &mut borders,
+            );
+            assert!(
+                self.households.job_funding.has_current_input_supply(
+                    self.households.census_key(&self.transit_network),
+                    &borders,
+                    crate::simulation::economy::logistics::freight_price_phase(
+                        self.demand.runtime_tuning(),
+                        minute_of_day,
+                    ),
+                ),
+                "the census published at the pass's slot is current"
+            );
+        }
         self.execute_hourly_demand_pass(day_index, minute_of_day);
         observer.buildings_changed(self);
         self.schedule_trip_departures(absolute_slot(day_index, minute_of_day, 0));
@@ -703,9 +733,14 @@ impl SimCore {
             &self.allocator,
             &self.zoning,
             now,
-            self.pending_demand_spawns
-                .iter()
-                .map(|pending| (pending.due_minute, pending.zone_type, &pending.action)),
+            self.pending_demand_spawns.iter().map(|pending| {
+                (
+                    pending.id,
+                    pending.due_minute,
+                    pending.zone_type,
+                    &pending.action,
+                )
+            }),
             |action| {
                 self.allocator.demand_site_entrance(
                     action.parcel_id,
@@ -716,6 +751,65 @@ impl SimCore {
                 )
             },
         );
+    }
+
+    // Opens the planning slot's construction epoch when a queued commercial or industrial
+    // spawn needs a permit or an immediate business level change needs a proof, and writes
+    // every queued spawn's permit (`SIM-02-I`). The epoch stays open for the level changes.
+    // Returns whether business level changes may run: an epoch skipped on books not valid for
+    // the live city proves none, and its spawns wait for the next slot.
+    fn prove_construction_permits(
+        &mut self,
+        immediate: &crate::simulation::economy::demand::DemandBuildingActionPlan,
+        day_index: u32,
+        minute_of_day: u16,
+    ) -> bool {
+        let business_spawns = self
+            .pending_demand_spawns
+            .iter()
+            .any(|pending| pending.zone_type != ZoneType::Residential);
+        let [residential, commercial, industrial] = [
+            &immediate.residential,
+            &immediate.commercial,
+            &immediate.industrial,
+        ]
+        .map(|plan| !plan.downgrades.is_empty() || !plan.upgrades.is_empty());
+        let business_level_changes = commercial || industrial;
+        // The level changes rebuild stale doors before their proofs; the epoch must not see
+        // the doors change under its lent books.
+        if (residential || business_level_changes) && self.allocator.entrances_dirty {
+            self.allocator
+                .rebuild_entrance_cache(&self.region_graph, &self.transit_network.lane_system);
+        }
+        let opened = (business_spawns || business_level_changes)
+            && self.demand.open_construction_epoch(
+                &self.allocator,
+                &mut self.households,
+                &self.zoning,
+                &self.region_graph,
+                &self.transit_network,
+                &mut self.logistics,
+                &self.fiscal_policy,
+                self.treasury.balance,
+                absolute_operational_minute(day_index, minute_of_day),
+            );
+        for pending in &mut self.pending_demand_spawns {
+            if pending.zone_type == ZoneType::Residential {
+                pending.counted = self.demand.counts_queued_home(pending.id, &pending.action);
+                continue;
+            }
+            pending.permit = if opened {
+                self.demand.construction_permit(
+                    pending.id,
+                    &pending.action,
+                    &self.region_graph,
+                    &self.transit_network.lane_system,
+                )
+            } else {
+                SpawnPermit::Voided
+            };
+        }
+        opened
     }
 
     fn enqueue_hourly_demand_spawns(&mut self, day_index: u32, minute_of_day: u16) -> usize {
@@ -759,6 +853,8 @@ impl SimCore {
                         action: action.clone(),
                         planned_day_index: day_index,
                         planned_minute_of_day: minute_of_day,
+                        permit: SpawnPermit::Denied,
+                        counted: false,
                     });
                 queued += 1;
             }
@@ -782,7 +878,8 @@ impl SimCore {
     }
 
     /// Starts queued spawn `id` when it is next in the queue; its event names it, so a spawn
-    /// dropped from the queue (loading repairs, undo) is skipped. Returns whether it started.
+    /// dropped from the queue (loading repairs, undo) is skipped. Returns whether it started,
+    /// placed or rejected; a spawn whose permit was voided waits for the next planning slot.
     pub(super) fn start_pending_demand_spawn(
         &mut self,
         id: u64,
@@ -799,8 +896,32 @@ impl SimCore {
         let Some(pending) = self.pending_demand_spawns.pop_front() else {
             return false;
         };
-        self.execute_pending_demand_spawn(pending, day_index, minute_of_day);
-        true
+        self.execute_pending_demand_spawn(pending, day_index, minute_of_day)
+    }
+
+    // After a queued home the planning slot counted failed to place: its applicants backed
+    // the queue's granted business permits, which are voided; those spawns wait for the next
+    // slot's epoch (`SIM-02-I`). O(queue).
+    fn void_granted_permits(&mut self) {
+        for pending in &mut self.pending_demand_spawns {
+            if matches!(pending.permit, SpawnPermit::Granted(_)) {
+                pending.permit = SpawnPermit::Voided;
+            }
+        }
+    }
+
+    // Puts `pending`, whose permit was voided, back at the queue's front to start after the
+    // next planning slot proves it again, and every later start after it, in queue order
+    // (`SIM-02-I`). O(queue + scheduled events).
+    fn wait_for_next_planning_slot(&mut self, mut pending: PendingDemandSpawnAction, now: u64) {
+        let mut due = (now / 60 + 1) * 60 + 1;
+        pending.due_minute = pending.due_minute.max(due);
+        self.pending_demand_spawns.push_front(pending);
+        for pending in &mut self.pending_demand_spawns {
+            pending.due_minute = pending.due_minute.max(due);
+            due = pending.due_minute + 1;
+        }
+        reschedule_construction_starts(&mut self.events, &self.pending_demand_spawns, now);
     }
 
     /// Replaces every construction-start event after the queue was replaced wholesale (loading,
@@ -869,7 +990,160 @@ impl SimCore {
         }
     }
 
-    /// Test driver of the queue: starts at most one due spawn at this minute.
+    /// Test driver of an hour's planning pass without the slot clock: publishes a census of the
+    /// live city first when the published one is not current, as the hour's first slot does.
+    #[cfg(test)]
+    pub(super) fn execute_hourly_demand_pass_for_test(
+        &mut self,
+        day_index: u32,
+        minute_of_day: u16,
+    ) {
+        self.demand.publish_census_if_stale_for_test(
+            &self.allocator,
+            &mut self.households,
+            &self.transit_network,
+            &self.region_graph,
+            &mut self.logistics,
+            &self.fiscal_policy,
+            self.treasury.balance,
+            minute_of_day,
+        );
+        self.execute_hourly_demand_pass(day_index, minute_of_day);
+    }
+
+    /// Test driver of a planning slot's permits without its pass: a census of the live city is
+    /// published, the workforce counted and every queued spawn's permit proved, then the epoch
+    /// closes, as the hour's first slot does after planning (`SIM-02-I`).
+    #[cfg(test)]
+    pub(crate) fn prove_construction_permits_for_test(
+        &mut self,
+        day_index: u32,
+        minute_of_day: u16,
+    ) {
+        let service = self.electricity_funding_by_building();
+        self.households.census_inputs.discard_front();
+        self.households.refresh_funding_census(
+            &mut self.allocator,
+            &mut self.logistics,
+            &self.transit_network,
+            &self.region_graph,
+            &service,
+            &self.fiscal_policy,
+            self.treasury.balance,
+            minute_of_day,
+        );
+        self.demand.count_workforce_for_test(
+            &self.allocator,
+            &self.households,
+            &self.fiscal_policy,
+        );
+        self.refresh_demand_construction_queue(day_index, minute_of_day);
+        self.prove_construction_permits(&Default::default(), day_index, minute_of_day);
+        self.demand.close_construction_epoch(
+            &mut self.households,
+            &self.allocator,
+            &self.region_graph,
+        );
+    }
+
+    /// Test driver of a planning slot's immediate actions without its pass: the permits as
+    /// [`Self::prove_construction_permits_for_test`] proves them, then `plan`'s level changes
+    /// and despawns in the same epoch, as the hour's first slot runs them (`SIM-02-I`).
+    /// Returns each queued spawn's proof in the epoch, read before the level changes run.
+    #[cfg(test)]
+    pub(crate) fn run_planning_slot_actions_for_test(
+        &mut self,
+        plan: &DemandBuildingActionPlan,
+        day_index: u32,
+        minute_of_day: u16,
+    ) -> Vec<Option<crate::simulation::economy::demand::ProjectProof>> {
+        let service = self.electricity_funding_by_building();
+        self.households.census_inputs.discard_front();
+        self.households.refresh_funding_census(
+            &mut self.allocator,
+            &mut self.logistics,
+            &self.transit_network,
+            &self.region_graph,
+            &service,
+            &self.fiscal_policy,
+            self.treasury.balance,
+            minute_of_day,
+        );
+        self.demand.count_workforce_for_test(
+            &self.allocator,
+            &self.households,
+            &self.fiscal_policy,
+        );
+        self.refresh_demand_construction_queue(day_index, minute_of_day);
+        self.prove_construction_permits(plan, day_index, minute_of_day);
+        let proofs = self
+            .pending_demand_spawns
+            .iter()
+            .map(|pending| {
+                self.demand
+                    .project_proof_for_test(pending.action.parcel_id, &self.zoning)
+            })
+            .collect();
+        self.demand.execute_building_actions(
+            plan,
+            &mut self.allocator,
+            &mut self.zoning,
+            &mut self.agents,
+            &mut self.households,
+            &mut self.logistics,
+            &mut self.treasury.balance,
+            &self.region_graph,
+            &self.transit_network,
+            &self.heightmap,
+            absolute_operational_minute(day_index, minute_of_day),
+            &self.fiscal_policy,
+        );
+        // The level changes closed the epoch before their despawns.
+        self.demand.close_construction_epoch(
+            &mut self.households,
+            &self.allocator,
+            &self.region_graph,
+        );
+        proofs
+    }
+
+    /// Test driver: the permit a planning slot now would prove for `action` queued after the
+    /// current queue, which keeps the permits that slot proves for it.
+    #[cfg(test)]
+    pub(crate) fn permit_for_test(
+        &mut self,
+        action: &DemandSpawnAction,
+        zone: ZoneType,
+        day_index: u32,
+        minute_of_day: u16,
+    ) -> Option<crate::simulation::economy::demand::ConstructionPermit> {
+        let now = absolute_operational_minute(day_index, minute_of_day);
+        let due_minute = self
+            .pending_demand_spawns
+            .back()
+            .map_or(now + 1, |pending| pending.due_minute + 1);
+        self.pending_demand_spawns
+            .push_back(PendingDemandSpawnAction {
+                id: u64::MAX,
+                due_minute,
+                zone_type: zone,
+                action: action.clone(),
+                planned_day_index: day_index,
+                planned_minute_of_day: minute_of_day,
+                permit: Default::default(),
+                counted: false,
+            });
+        self.prove_construction_permits_for_test(day_index, minute_of_day);
+        let permit = self
+            .pending_demand_spawns
+            .pop_back()
+            .and_then(|pending| pending.permit.granted());
+        self.refresh_demand_construction_queue(day_index, minute_of_day);
+        permit
+    }
+
+    /// Test driver of the queue: starts at most one due spawn at this minute, as its start event
+    /// would; returns how many started (a waiting spawn did not).
     #[cfg(test)]
     pub(super) fn execute_pending_demand_spawns_for_minute(
         &mut self,
@@ -890,39 +1164,48 @@ impl SimCore {
             let Some(pending) = self.pending_demand_spawns.pop_front() else {
                 return executed_this_minute;
             };
-            self.execute_pending_demand_spawn(pending, day_index, minute_of_day);
+            if !self.execute_pending_demand_spawn(pending, day_index, minute_of_day) {
+                return executed_this_minute;
+            }
             executed_this_minute += 1;
         }
         executed_this_minute
     }
 
+    // Starts `pending` at its minute: places it, or rejects it without a permit for its current
+    // door, profile and level; returns `false` when its voided permit makes it wait instead.
     fn execute_pending_demand_spawn(
         &mut self,
         pending: PendingDemandSpawnAction,
         day_index: u32,
         minute_of_day: u16,
-    ) {
+    ) -> bool {
         let total_start = Instant::now();
-        let permit = match self.demand.prepare_queued_spawn(
-            &pending.action,
+        match self.demand.check_construction_permit(
             pending.zone_type,
+            &pending.action,
+            pending.permit,
             &self.allocator,
-            &self.households,
-            &self.region_graph,
-            absolute_operational_minute(day_index, minute_of_day),
-            &self.transit_network,
-            &mut self.logistics,
             &self.zoning,
-            self.treasury.balance,
-            &self.fiscal_policy,
+            &self.region_graph,
+            &self.transit_network,
         ) {
-            Ok(permit) => permit,
-            Err(reason) => {
-                self.demand.reject_queued_spawn(
-                    &pending.action,
-                    &self.allocator,
-                    &self.region_graph,
+            Ok(()) => {}
+            Err(StartRefusal::Wait) => {
+                debug_log!(
+                    "economy",
+                    "queued demand spawn waits for the next planning slot: parcel={} zone={:?}",
+                    pending.action.parcel_id,
+                    pending.zone_type,
                 );
+                self.wait_for_next_planning_slot(
+                    pending,
+                    absolute_operational_minute(day_index, minute_of_day),
+                );
+                return false;
+            }
+            Err(StartRefusal::Denied(reason)) => {
+                self.demand.finish_queued_spawn(pending.id, &pending.action);
                 debug_log!(
                     "economy",
                     "queued demand spawn rejected before owner funding: parcel={} zone={:?} reason={}",
@@ -930,9 +1213,9 @@ impl SimCore {
                     pending.zone_type,
                     reason
                 );
-                return;
+                return true;
             }
-        };
+        }
         let compile_start = Instant::now();
         self.transit_network.road_surface.compile_dirty_with_reason(
             &self.region_graph,
@@ -944,6 +1227,7 @@ impl SimCore {
         let execution = self.allocator.execute_single_demand_spawn_action(
             pending.zone_type,
             &pending.action,
+            Some(pending.id),
             &mut self.zoning,
             &self.region_graph,
             &self.transit_network.lane_system,
@@ -960,14 +1244,11 @@ impl SimCore {
             ZoneType::Residential => execution.residential,
             ZoneType::Commercial => execution.commercial,
             ZoneType::Industrial => execution.industrial,
-            _ => return,
+            _ => return true,
         };
-        if use_execution.spawn_executed > 0 {
-            self.demand
-                .record_queued_spawn_placement(permit, &pending.action, &self.allocator);
-        } else {
-            self.demand
-                .reject_queued_spawn(&pending.action, &self.allocator, &self.region_graph);
+        self.demand.finish_queued_spawn(pending.id, &pending.action);
+        if use_execution.spawn_executed == 0 && pending.counted {
+            self.void_granted_permits();
         }
         debug_log!(
             "economy",
@@ -985,6 +1266,7 @@ impl SimCore {
             execute_ms,
             total_ms,
         );
+        true
     }
 
     /// Executes one full economy / daily tick (called once per in-game day).
@@ -1202,11 +1484,21 @@ impl SimCore {
             .record_household_admission_execution(launched_households);
         let admission_end = timing.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0);
         let queued_spawn_count = self.enqueue_hourly_demand_spawns(day_index, minute_of_day);
-        let immediate_building_plan = demand_plan_without_spawns(&self.demand.building_actions);
+        let mut immediate_building_plan = demand_plan_without_spawns(&self.demand.building_actions);
+        self.refresh_demand_construction_queue(day_index, minute_of_day);
+        if !self.prove_construction_permits(&immediate_building_plan, day_index, minute_of_day) {
+            // Without an epoch no business level change is proved; the next hour plans again.
+            for plan in [
+                &mut immediate_building_plan.commercial,
+                &mut immediate_building_plan.industrial,
+            ] {
+                plan.upgrades.clear();
+                plan.downgrades.clear();
+            }
+        }
         let queue_end = timing.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0);
         let building_action_execution =
             if demand_plan_has_non_spawn_actions(&immediate_building_plan) {
-                self.refresh_demand_construction_queue(day_index, minute_of_day);
                 self.demand.execute_building_actions(
                     &immediate_building_plan,
                     &mut self.allocator,
@@ -1224,6 +1516,12 @@ impl SimCore {
             } else {
                 Default::default()
             };
+        // The level changes closed the epoch before their despawns; without any it closes here.
+        self.demand.close_construction_epoch(
+            &mut self.households,
+            &self.allocator,
+            &self.region_graph,
+        );
         let actions_end = timing.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0);
         self.publish_pending_building_site_changes();
         if let Some(start) = timing {

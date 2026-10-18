@@ -314,6 +314,7 @@ impl DemandSystem {
             &self.queued_construction,
             self.next_construction_start_hour,
             supply.reservations(),
+            |index| funded_jobs.saw_operating(index),
         );
         lap(2);
         // Existing-candidate collection is interleaved with dependent zone decisions.
@@ -675,7 +676,7 @@ impl DemandSystem {
                     let capacity = allocator.household_capacity(candidate.building_idx);
                     let retired = applicant_places_by_adults(
                         allocator.flat_size_m2(candidate.building_idx),
-                        candidate.building_idx,
+                        allocator.applicant_seed(candidate.building_idx),
                         (capacity - lost).max(allocator.buildings[candidate.building_idx].occupancy)
                             ..capacity,
                     );

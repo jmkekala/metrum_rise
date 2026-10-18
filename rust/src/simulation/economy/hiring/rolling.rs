@@ -11,9 +11,10 @@
 //! census that is missing, unfinished or stale runs whole there. Its results are a function of
 //! the copy and the network alone, so a loaded game recomputes a census in progress at load.
 //!
-//! **Costs.** Each window slot gets ceil(R / S) rows of work, R the rows left assuming the
-//! current closure pass is the last ([`CensusProgress::remaining`]) and S the window slots left;
-//! the window's last slot gets all that remains. A step that is not sliced (the consumer-market
+//! **Costs.** Each window slot gets ceil(R / S) rows of work, R the rows left assuming as many
+//! closure passes as the previous census took ([`CensusProgress::remaining`]) and S the window
+//! slots left, so later passes do not all land in the last slots; the window's last slot gets
+//! all that remains. A step that is not sliced (the consumer-market
 //! refresh, setup, the input-source reset, repair, business seeding, propagation) runs whole in
 //! the slot it starts in. A restart repeats the work done so far.
 
@@ -101,6 +102,9 @@ pub(crate) struct RollingCensus {
     run: Option<Run>,
     // A census current at the save, to recompute once the loaded world is ready.
     complete_on_load: bool,
+    // Closure passes the last finished census took, which the next one's slices plan for;
+    // slicing never changes a census's result.
+    expected_passes: usize,
     /// Census restarts so far, for tests.
     #[cfg(test)]
     pub(crate) restarts: usize,
@@ -187,11 +191,11 @@ impl RollingCensus {
         } else {
             let (buildings, households) = inputs.front_len();
             self.progress
-                .remaining(buildings, households)
+                .remaining(buildings, households, self.expected_passes)
                 .div_ceil(slots_left as usize)
                 .max(1)
         };
-        self.funding.step_from_inputs(
+        let done = self.funding.step_from_inputs(
             inputs,
             &mut self.progress,
             network,
@@ -199,7 +203,11 @@ impl RollingCensus {
             catalog,
             tuning,
             budget,
-        )
+        );
+        if done {
+            self.expected_passes = self.progress.passes();
+        }
+        done
     }
 
     /// Swaps the finished census into `live`, which becomes this census's storage, and keeps
@@ -275,6 +283,9 @@ impl RollingCensus {
             tuning,
             usize::MAX,
         );
+        // As the uninterrupted game records when the same census finishes (`Self::step`, which
+        // the whole run at publication goes through too).
+        self.expected_passes = self.progress.passes();
     }
 }
 

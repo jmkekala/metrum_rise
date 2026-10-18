@@ -52,7 +52,7 @@ pub struct DemandSystem {
     /// The demand snapshot folded over the previous hour (`SIM-02-I`); saved.
     pub(super) snapshot_sweep: DemandSnapshotSweep,
     // The live workforce each pass composes its snapshot with; storage only, not saved.
-    workforce_view: WorkforceView,
+    pub(super) workforce_view: WorkforceView,
     pub(super) workforce_reservations: super::workforce::WorkforceReservations,
     pub(super) construction_execution: super::execution::ConstructionExecution,
     pub(super) queued_construction: Vec<super::queued::QueuedConstruction>,
@@ -64,9 +64,6 @@ pub struct DemandSystem {
     freight_border_nodes: Vec<u32>,
     /// Current outside applicant seed, derived from simulation time rather than accepted arrivals.
     pub(crate) admission_candidate_seed: usize,
-    /// Planning passes that could not lend the live census and ran their own, for tests.
-    #[cfg(test)]
-    pub(crate) planner_censuses: usize,
 }
 
 /// Checks after every test-build planning pass that the live books return bit for bit.
@@ -75,19 +72,8 @@ pub struct DemandSystem {
 pub(crate) static VERIFY_LIVE_PASSES: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(true);
 
-// Exchanges the live economic books with the planner's in O(1); a second call returns both.
-fn exchange_live_books(
-    funding: &mut crate::simulation::economy::hiring::JobFunding,
-    reservations: &mut super::supply::ProjectReservations,
-    live: &mut crate::simulation::economy::hiring::JobFunding,
-) {
-    std::mem::swap(&mut funding.input_supply, &mut live.input_supply);
-    std::mem::swap(&mut reservations.customers, &mut live.customers);
-    std::mem::swap(&mut reservations.business, &mut live.business);
-}
-
 #[cfg(test)]
-fn live_fingerprint(
+pub(super) fn live_fingerprint(
     funding: &crate::simulation::economy::hiring::JobFunding,
 ) -> [Vec<(&'static str, u64)>; 3] {
     [
@@ -139,8 +125,6 @@ impl DemandSystem {
             admission_budget: HouseholdAdmissionBudget::default(),
             freight_border_nodes: Vec::new(),
             admission_candidate_seed: 0,
-            #[cfg(test)]
-            planner_censuses: 0,
         }
     }
 
@@ -202,6 +186,17 @@ impl DemandSystem {
         network.rebuild_cch_and_check(graph);
         // A whole hour without the slot clock plans on a snapshot of the current state.
         self.discard_snapshot_front();
+        let mut logistics = ShipmentSystem::new();
+        self.publish_census_if_stale_for_test(
+            allocator,
+            households,
+            &network,
+            graph,
+            &mut logistics,
+            &fiscal_policy,
+            treasury_balance,
+            420,
+        );
         self.run_hourly_pass_with_policy(
             allocator,
             households,
@@ -210,7 +205,7 @@ impl DemandSystem {
             treasury_balance,
             &fiscal_policy,
             &network,
-            &mut ShipmentSystem::new(),
+            &mut logistics,
             BuildingSiteEnvironment {
                 road_surface: &road_surface,
                 terrain: &terrain,
@@ -250,9 +245,6 @@ impl DemandSystem {
             }
         };
         crate::debug::work::add(crate::debug::work::Work::PlanningPasses, 1);
-        self.invalidate_construction_execution();
-        self.construction_execution
-            .discard_project_proof_for_reset();
         self.building_actions = DemandBuildingActionPlan::default();
         let catalog = Arc::clone(&self.runtime_catalog);
         let economy_tuning = Arc::clone(&self.runtime_tuning);
@@ -261,93 +253,43 @@ impl DemandSystem {
         collect_connected_border_nodes(graph, &mut borders);
         logistics.prepare_site_carrier_quotes(allocator, network, graph, &borders);
         lap(0);
-        let mut funding = std::mem::take(&mut self.construction_execution.funding);
+        // The census published at this slot, before the operational hour, on the live city's
+        // key: appends since its copy are covered by the lent books (`SIM-02-I`). Books that are
+        // not valid for the live key are never lent: the pass is skipped and counted, and
+        // planning waits for the next publication.
+        if !self.lent_books_current(live_households, network, &borders, minute_of_day) {
+            crate::debug::work::add(crate::debug::work::Work::PlanningSkips, 1);
+            crate::debug_log!(
+                "economy",
+                "planning skipped: the published census is not valid for the live city: minute={}",
+                minute_of_day
+            );
+            self.households_to_admit_today = 0;
+            self.freight_border_nodes = borders;
+            return;
+        }
         let mut reservations = std::mem::take(&mut self.construction_execution.reservations);
-        let reuse_funding = live_households.job_funding.has_current_input_supply(
-            live_households.census_key(network),
-            allocator,
-            &catalog,
-            &borders,
-            crate::simulation::economy::logistics::freight_price_phase(
-                &economy_tuning,
-                minute_of_day,
-            ),
-        );
         #[cfg(test)]
-        let before = (reuse_funding
-            && VERIFY_LIVE_PASSES.load(std::sync::atomic::Ordering::Relaxed))
-        .then(|| live_fingerprint(&live_households.job_funding));
-        if reuse_funding {
-            // Lend the live books to the planner; the execution books wait in their place.
-            let live = &mut live_households.job_funding;
-            exchange_live_books(&mut funding, &mut reservations, live);
-            funding
-                .service_capacities
-                .clone_from(&live.service_capacities);
-            funding.freight_capital.clone_from(&live.freight_capital);
-        }
+        let before = VERIFY_LIVE_PASSES
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .then(|| live_fingerprint(&live_households.job_funding));
+        // Lend the live books to the planner, which reads the matching funding columns in
+        // place.
+        let mut inputs =
+            super::execution::lend_live_books(&mut reservations, &mut live_households.job_funding);
         let households = &*live_households;
-        if !reuse_funding {
-            // Removals, network edits or frontage prices can change after the employment
-            // census started (`SIM-02-I`). Rebuild once after such edits before reusing its
-            // funded sources.
-            crate::debug::work::add(crate::debug::work::Work::PlannerCensuses, 1);
-            #[cfg(test)]
-            {
-                self.planner_censuses += 1;
-            }
-            funding.refresh_with_service_capacity(
-                allocator,
-                &households.households,
-                logistics,
-                network,
-                graph,
-                &catalog,
-                &economy_tuning,
-                fiscal_policy,
-                treasury_balance,
-                |index, physical, _| {
-                    households
-                        .job_funding
-                        .service_capacities
-                        .get(index)
-                        .copied()
-                        .unwrap_or(0)
-                        .min(physical)
-                },
-                Some(&households.job_funding),
-                minute_of_day,
-            );
-        }
         lap(1);
-        // Move only the mutable reservation book; the planner reads the matching
-        // funding columns without copying them or borrowing the whole owner mutably.
-        let mut inputs = std::mem::take(&mut funding.input_supply);
-        let funded_jobs = if reuse_funding {
-            &households.job_funding
-        } else {
-            &funding
-        };
-        if reuse_funding {
-            reservations.begin_live_pass(
-                funded_jobs,
-                &mut inputs,
-                allocator,
-                &catalog,
-                &economy_tuning,
-                fiscal_policy,
-                minute_of_day,
-            );
-        } else {
-            reservations.reset(
-                funded_jobs,
-                allocator,
-                &catalog,
-                &economy_tuning,
-                fiscal_policy,
-                minute_of_day,
-            );
-        }
+        let funded_jobs = &households.job_funding;
+        reservations.begin_live_pass(
+            funded_jobs,
+            &mut inputs,
+            allocator,
+            graph,
+            &catalog,
+            &economy_tuning,
+            fiscal_policy,
+            minute_of_day,
+        );
         lap(2);
         // The snapshot swept over the previous hour, with the entities created since
         // (`SIM-02-I`); a world without one builds it now from the census this pass plans with.
@@ -419,8 +361,9 @@ impl DemandSystem {
             &snapshot.output_absorption,
             &mut self.construction_execution.replay_market,
             fiscal_policy,
-            &funding.service_capacities,
-            &funding.freight_capital,
+            &funded_jobs.service_capacities,
+            &funded_jobs.freight_capital,
+            |index| funded_jobs.saw_operating(index),
         );
         lap(5);
         self.plan_private_building_actions(
@@ -439,13 +382,10 @@ impl DemandSystem {
         );
         self.snapshot_sweep.restore_front(front);
         lap(6);
-        if reuse_funding {
-            reservations.end_live_pass(&mut inputs, allocator, graph);
-        }
+        reservations.end_live_pass(&mut inputs, allocator, graph);
         crate::debug_log!(
             "economy_phases",
-            "demand_preparation_detail reuse_funding={} carrier_ms={:.3} funding_ms={:.3} reservations_ms={:.3} snapshots_ms={:.3} site_preparation_ms={:.3} queued_ms={:.3} planning_ms={:.3}",
-            reuse_funding,
+            "demand_preparation_detail carrier_ms={:.3} funding_ms={:.3} reservations_ms={:.3} snapshots_ms={:.3} site_preparation_ms={:.3} queued_ms={:.3} planning_ms={:.3}",
             times[0],
             times[1],
             times[2],
@@ -454,14 +394,11 @@ impl DemandSystem {
             times[5],
             times[6]
         );
-        funding.input_supply = inputs;
-        if reuse_funding {
-            exchange_live_books(
-                &mut funding,
-                &mut reservations,
-                &mut live_households.job_funding,
-            );
-        }
+        super::execution::return_live_books(
+            inputs,
+            &mut reservations,
+            &mut live_households.job_funding,
+        );
         #[cfg(test)]
         if let Some(before) = before {
             assert_eq!(
@@ -471,10 +408,119 @@ impl DemandSystem {
             );
         }
         self.construction_execution.reservations = reservations;
-        self.construction_execution.funding = funding;
         self.freight_border_nodes = borders;
         self.admission_budget
             .reserve_worker_homes(self.workforce_reservations.unreserved_ready_homes());
+    }
+
+    /// Counts the live workforce as a planning pass does, for epochs opened without one.
+    #[cfg(test)]
+    pub(crate) fn count_workforce_for_test(
+        &mut self,
+        allocator: &BuildingAllocator,
+        households: &HouseholdSystem,
+        fiscal_policy: &CityFiscalPolicy,
+    ) {
+        self.workforce_view.count_live(
+            allocator,
+            households,
+            &self.runtime_catalog,
+            &self.runtime_tuning,
+            fiscal_policy.income_tax_rate,
+        );
+    }
+
+    // Whether the published census's books are valid for the live city, for a pass or epoch at
+    // `minute_of_day` with the connected `borders`: the same building indices and network, the
+    // hour's freight price phase and gateways (`SIM-02-I`). O(borders).
+    pub(super) fn lent_books_current(
+        &self,
+        households: &HouseholdSystem,
+        network: &TransitNetwork,
+        borders: &[u32],
+        minute_of_day: u16,
+    ) -> bool {
+        households.job_funding.has_current_input_supply(
+            households.census_key(network),
+            borders,
+            crate::simulation::economy::logistics::freight_price_phase(
+                &self.runtime_tuning,
+                minute_of_day,
+            ),
+        )
+    }
+
+    /// Test driver for passes planned without the slot clock, which publishes a census at
+    /// every pass's slot (`SIM-02-I`): publishes a census of the live city when the published
+    /// one is not current, with the old one's service ceilings.
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn publish_census_if_stale_for_test(
+        &self,
+        allocator: &BuildingAllocator,
+        households: &mut HouseholdSystem,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+        logistics: &mut ShipmentSystem,
+        fiscal_policy: &CityFiscalPolicy,
+        treasury_balance: f64,
+        minute_of_day: u16,
+    ) {
+        let mut borders = Vec::new();
+        collect_connected_border_nodes(graph, &mut borders);
+        if !self.lent_books_current(households, network, &borders, minute_of_day) {
+            self.publish_census_for_pass(
+                allocator,
+                households,
+                network,
+                graph,
+                logistics,
+                fiscal_policy,
+                treasury_balance,
+                minute_of_day,
+            );
+        }
+    }
+
+    // A census of the live city, with the old one's service ceilings.
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    fn publish_census_for_pass(
+        &self,
+        allocator: &BuildingAllocator,
+        households: &mut HouseholdSystem,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+        logistics: &mut ShipmentSystem,
+        fiscal_policy: &CityFiscalPolicy,
+        treasury_balance: f64,
+        minute_of_day: u16,
+    ) {
+        let key = households.census_key(network);
+        let previous = std::mem::take(&mut households.job_funding);
+        let funding = &mut households.job_funding;
+        funding.refresh_with_service_capacity(
+            allocator,
+            &households.households,
+            logistics,
+            network,
+            graph,
+            &self.runtime_catalog,
+            &self.runtime_tuning,
+            fiscal_policy,
+            treasury_balance,
+            |index, physical, _| {
+                previous
+                    .service_capacities
+                    .get(index)
+                    .copied()
+                    .unwrap_or(0)
+                    .min(physical)
+            },
+            Some(&previous),
+            minute_of_day,
+        );
+        funding.published = Some(key);
     }
 
     /// Slot `slot`'s chunk of the hour-long demand snapshot sweep (`SIM-02-I`): a share of the

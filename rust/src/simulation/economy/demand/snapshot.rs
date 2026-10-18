@@ -287,7 +287,9 @@ pub(super) struct JobTotals {
 
 impl JobTotals {
     // Adds building `idx`'s jobs if it is a workplace that operates, with its funded jobs read
-    // from `funded`. O(1).
+    // from `funded`; one the census did not see complete (`!complete`) is still under
+    // construction. O(1).
+    #[allow(clippy::too_many_arguments)]
     fn add_workplace(
         &mut self,
         catalog: &RuntimeEconomyCatalog,
@@ -295,11 +297,13 @@ impl JobTotals {
         funded: FundedJobs<'_>,
         idx: usize,
         building: &Building,
+        complete: bool,
     ) {
         if building.broken
             || building.economy_broken
             || building.is_deserted
             || building.is_under_construction()
+            || !complete
         {
             return;
         }
@@ -392,9 +396,10 @@ impl WorkforceView {
     }
 
     /// Counts the workforce of the live city, with funded jobs from the copies the published
-    /// census left on the buildings, keeping the displaced list's storage. A parallel scan,
-    /// O(H/p + B/p); `SIM-02-K` replaces it with totals the job, household and building
-    /// mutators maintain.
+    /// census left on the buildings, keeping the displaced list's storage. A workplace that
+    /// census did not see complete counts no jobs: planning claims its constructing workers
+    /// instead. A parallel scan, O(H/p + B/p); `SIM-02-K` replaces it with totals the job,
+    /// household and building mutators maintain.
     pub(super) fn count_live(
         &mut self,
         allocator: &BuildingAllocator,
@@ -403,6 +408,7 @@ impl WorkforceView {
         tuning: &RuntimeEconomyTuning,
         income_tax_rate: f32,
     ) {
+        let census = &households.job_funding;
         self.housed_unemployed = households
             .households
             .par_iter()
@@ -435,6 +441,7 @@ impl WorkforceView {
                     FundedJobs::Published,
                     idx,
                     building,
+                    census.saw_operating(idx),
                 );
             },
             |mut merged, jobs| {
@@ -923,7 +930,7 @@ impl BuildingSnapshotAccumulator {
         }
 
         self.jobs
-            .add_workplace(catalog, income_tax_rate, funded, idx, building);
+            .add_workplace(catalog, income_tax_rate, funded, idx, building, true);
 
         if let Some(profile) = active_profile {
             let commercial = building.zone_type == ZoneType::Commercial;

@@ -52,6 +52,10 @@ pub(crate) struct SavedSupplierRoll {
     pub(crate) front: Option<(u32, Vec<SavedSupplierEntry>)>,
     /// The sweep in progress.
     pub(crate) sweep: Option<SavedSupplierSweep>,
+    /// Whether the front and the sweep were folded with the saved road graph's freight
+    /// components. A load labels only those with its own; the others stay unusable, as the
+    /// saved game would have found them at their next use.
+    pub(crate) current: [bool; 2],
 }
 
 // Resource, component and routing chunk of one bucket of the back.
@@ -85,6 +89,8 @@ pub(crate) struct SupplierRoll {
     back_components: Option<u32>,
     // Reused entry list of the publish.
     publish_entries: Vec<SupplierEntry>,
+    // Whether a restored front and sweep are current, until a load labels them.
+    restored_current: [bool; 2],
 }
 
 impl SupplierRoll {
@@ -187,8 +193,25 @@ impl SupplierRoll {
         self.sweep = None;
     }
 
-    /// Saved form; [`Self::restore`] rebuilds a roll that continues identically.
+    /// Saved form, for comparisons; see [`Self::saved_for`].
+    #[cfg(test)]
     pub(crate) fn saved(&self) -> SavedSupplierRoll {
+        self.saved_for(None)
+    }
+
+    /// Saved form for a game whose freight components are of generation `layout`, `None` when
+    /// a road change has not reached them yet; [`Self::restore`] rebuilds a roll that continues
+    /// identically.
+    pub(crate) fn saved_for(&self, layout: Option<u32>) -> SavedSupplierRoll {
+        let current = |components: Option<u32>, restored: bool| match components {
+            Some(components) => layout == Some(components),
+            None => restored,
+        };
+        let current = [
+            self.front_hour.is_some() && current(self.front_components, self.restored_current[0]),
+            self.sweep
+                .is_some_and(|sweep| current(sweep.components, self.restored_current[1])),
+        ];
         let front = self
             .front_hour
             .zip(self.front.as_ref())
@@ -211,13 +234,20 @@ impl SupplierRoll {
                 entries,
             }
         });
-        SavedSupplierRoll { front, sweep }
+        SavedSupplierRoll {
+            front,
+            sweep,
+            current,
+        }
     }
 
     /// Rebuilds a saved roll; its component generation is unknown until
-    /// [`ShipmentSystem::adopt_loaded_topology`].
+    /// [`ShipmentSystem::adopt_loaded_topology`] labels the buffers saved as current.
     pub(crate) fn restore(saved: SavedSupplierRoll) -> Result<Self, String> {
-        let mut roll = Self::default();
+        let mut roll = Self {
+            restored_current: saved.current,
+            ..Self::default()
+        };
         if let Some((hour, entries)) = saved.front {
             let mut entries: Vec<SupplierEntry> = entries.into_iter().map(loaded_entry).collect();
             roll.front = Some(SupplierCandidateIndex::from_entry_slice(&mut entries));
@@ -282,20 +312,35 @@ impl ShipmentSystem {
         );
     }
 
-    /// Stamps a loaded supplier roll with the loaded road graph's freight components. They
-    /// label every component as the saved graph did: labels follow node order, and saving
-    /// keeps the order of the nodes it keeps. O(nodes + edges).
+    /// Stamps a loaded supplier roll with the loaded road graph's freight components, where the
+    /// saved game's buffers were folded with its own. They label every component as the saved
+    /// graph did: labels follow node order, and saving keeps the order of the nodes it keeps. A
+    /// buffer folded before a road change stays unlabelled, so it is rebuilt or abandoned at its
+    /// next use as in the saved game. O(nodes + edges).
     pub(crate) fn adopt_loaded_topology(&mut self, network: &TransitNetwork, graph: &RegionGraph) {
         self.freight_topology.refresh(network, graph);
         let components = self.freight_topology.components_generation();
         let roll = &mut self.supplier_roll;
-        if roll.front_hour.is_some() {
+        let [front_current, sweep_current] = std::mem::take(&mut roll.restored_current);
+        if roll.front_hour.is_some() && front_current {
             roll.front_components = components;
         }
-        if let Some(sweep) = &mut roll.sweep {
+        if let Some(sweep) = &mut roll.sweep
+            && sweep_current
+        {
             sweep.components = components;
             roll.back_components = components;
         }
+    }
+
+    /// The supplier roll as saved: its buffers count as current while they were folded with the
+    /// network's CCH build and no road change waits for the next rebuild.
+    pub(crate) fn saved_supplier_roll(&self, network: &TransitNetwork) -> SavedSupplierRoll {
+        let layout = network
+            .cch_dirty_chunks
+            .is_empty()
+            .then_some(network.cch_graph.build_generation);
+        self.supplier_roll.saved_for(layout)
     }
 
     // Runs `step` on the roll with the live dispatch eligibility, after refreshing the freight

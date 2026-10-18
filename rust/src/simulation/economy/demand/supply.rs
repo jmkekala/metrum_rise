@@ -5,12 +5,13 @@
 use super::spawn_need::{
     OutputAbsorptionContext, candidate_economy_profile, constructing_area_covers_operation,
 };
-use crate::simulation::buildings::allocator::{BuildingAllocator, BuildingEntrance};
+use crate::simulation::buildings::allocator::{Building, BuildingAllocator, BuildingEntrance};
 use crate::simulation::economy::customers::ConsumerMarket;
 use crate::simulation::economy::customers::business::{BusinessMarket, PreparedBusinessSite};
 use crate::simulation::economy::definitions::EconomyProfileRuntime;
 use crate::simulation::economy::definitions::{RuntimeEconomyCatalog, RuntimeEconomyTuning};
 use crate::simulation::economy::fiscal::{CityFiscalPolicy, daily_property_tax};
+use crate::simulation::economy::hiring::JobFunding;
 use crate::simulation::economy::households::{
     local_utility_service_costs, output_area_scale_for_building,
     physical_worker_capacity_for_profile,
@@ -32,6 +33,13 @@ mod site_rows;
 mod storage;
 use replacements::{OperationSite, ReplacementProof};
 use storage::StorageRequirement;
+
+/// Whether planning treats a building as under construction: it is, or the census did not see
+/// it complete (`!census_complete`, `SIM-02-I`), so a completion after the census's copy keeps
+/// its constructing claims until a census funds its jobs.
+pub(super) fn constructing(building: &Building, census_complete: bool) -> bool {
+    building.is_under_construction() || !census_complete
+}
 
 /// One proposed operation stages inputs until every independent admission check passes.
 pub(super) trait ProjectSupply {
@@ -156,6 +164,7 @@ pub(crate) type ProjectProof = (u32, [u64; 2], Vec<(u16, Option<usize>, u64, u32
 
 impl ProjectReservations {
     /// Finds an unplaced operation using the fixed owner namespace retained across appends.
+    #[cfg(test)]
     pub(super) fn project_operation(
         &self,
         parcel: u64,
@@ -217,7 +226,9 @@ impl ProjectReservations {
         ))
     }
 
-    /// Forks both customer books from the same completed financing proof.
+    /// Forks both customer books from the same completed financing proof, for tests: planning
+    /// lends the live books instead.
+    #[cfg(test)]
     pub(super) fn reset(
         &mut self,
         funding: &crate::simulation::economy::hiring::JobFunding,
@@ -241,14 +252,20 @@ impl ProjectReservations {
         funding: &crate::simulation::economy::hiring::JobFunding,
         inputs: &mut RecurringSupply,
         allocator: &BuildingAllocator,
+        graph: &RegionGraph,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
         fiscal: &CityFiscalPolicy,
         minute: u16,
     ) {
         inputs.begin_pass();
-        // Buildings appended since the census's copy are live sources without supply.
+        // Buildings appended since the census's copy are live sources without supply, and
+        // buyers without accounts at ports laid out after the census's (`SIM-02-I`).
         inputs.cover_live_buildings(allocator.buildings.len());
+        if let Some(components) = inputs.freight_components() {
+            self.business
+                .append_live_buyers(allocator, graph, components, catalog);
+        }
         self.begin_book_pass(funding, allocator, catalog, tuning, fiscal, minute);
     }
 
@@ -278,6 +295,7 @@ impl ProjectReservations {
     ) {
         self.reject(inputs, allocator, graph);
         self.end_book_pass();
+        self.business.restore_census_buyers();
         inputs.end_pass(allocator, graph);
     }
 
@@ -787,6 +805,7 @@ impl<'a> SiteSupply<'a> {
         policy: &CityFiscalPolicy,
         service_capacities: &[u32],
         freight_capital: &[f64],
+        census_complete: impl Fn(usize) -> bool,
     ) {
         let projects = projects.filter(|project| project.active);
         self.prepare_project_market(
@@ -797,13 +816,16 @@ impl<'a> SiteSupply<'a> {
             policy,
             service_capacities,
             freight_capital,
+            &census_complete,
         );
         self.reserve_queued(projects, catalog, replay, policy, |_, _| Ok(()));
     }
 
-    /// Execution retains only queue purchases backed by workers from already placed homes.
-    /// Both books consume projects in queue order; a labour rejection restores its finances.
-    /// Preparation is O(B + (Q + H) log H + quoted ports/routes), once per execution epoch.
+    /// The construction epoch's proof of the whole queue (`SIM-02-I`): constructing buildings,
+    /// then queued projects in queue order, each claiming workers by its completion from
+    /// placed homes and, as the planner counts them, `queued` homes. Both books consume
+    /// projects in queue order; a labour rejection restores its finances. Preparation is
+    /// O(B + (Q + H) log H + quoted ports/routes), once per planning slot.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn reserve_execution_projects<'q>(
         &mut self,
@@ -812,9 +834,10 @@ impl<'a> SiteSupply<'a> {
         snapshot: &super::snapshot::DailyDemandSnapshot,
         replay: &mut OutputAbsorptionContext,
         policy: &CityFiscalPolicy,
-        service_capacities: &[u32],
-        freight_capital: &[f64],
+        census: &JobFunding,
         workforce: &mut super::workforce::WorkforceReservations,
+        queued: &[super::queued::QueuedConstruction],
+        new_start_hour: u64,
         elapsed: u64,
     ) {
         let projects = projects.filter(|project| project.active);
@@ -824,17 +847,19 @@ impl<'a> SiteSupply<'a> {
             &snapshot.output_absorption,
             replay,
             policy,
-            service_capacities,
-            freight_capital,
+            &census.service_capacities,
+            &census.freight_capital,
+            &|index| census.saw_operating(index),
         );
         workforce.reset(
             self.allocator,
             catalog,
             self.tuning,
             snapshot,
-            &[],
-            0,
+            queued,
+            new_start_hour,
             Some(self.reservations),
+            |index| census.saw_operating(index),
         );
         workforce.reserve_existing();
         self.reserve_queued(projects, catalog, replay, policy, |project, workers| {
@@ -857,6 +882,7 @@ impl<'a> SiteSupply<'a> {
         policy: &CityFiscalPolicy,
         service_capacities: &[u32],
         freight_capital: &[f64],
+        census_complete: &dyn Fn(usize) -> bool,
     ) {
         self.reservations
             .building_workers
@@ -868,8 +894,8 @@ impl<'a> SiteSupply<'a> {
             .reserve(projects.clone().count());
         replay.copy_from(market);
         // Ordered capacity updates share resource totals, like the subsequent finite claims.
-        for building in &self.allocator.buildings {
-            if building.is_under_construction()
+        for (index, building) in self.allocator.buildings.iter().enumerate() {
+            if constructing(building, census_complete(index))
                 && !self.allocator.is_city_service_building(building)
                 && let Some(profile) =
                     catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
@@ -883,7 +909,14 @@ impl<'a> SiteSupply<'a> {
                 replay.release_candidate(profile, 1.0);
             }
         }
-        self.reserve_constructing(catalog, replay, policy, service_capacities, freight_capital);
+        self.reserve_constructing(
+            catalog,
+            replay,
+            policy,
+            service_capacities,
+            freight_capital,
+            census_complete,
+        );
     }
 
     fn reserve_constructing(
@@ -893,10 +926,11 @@ impl<'a> SiteSupply<'a> {
         policy: &CityFiscalPolicy,
         service_capacities: &[u32],
         freight_capital: &[f64],
+        census_complete: &dyn Fn(usize) -> bool,
     ) {
         for index in 0..self.allocator.buildings.len() {
             let building = &self.allocator.buildings[index];
-            if !building.is_under_construction() {
+            if !constructing(building, census_complete(index)) {
                 continue;
             }
             let Some(profile) = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)

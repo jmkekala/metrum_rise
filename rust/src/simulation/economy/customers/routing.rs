@@ -528,8 +528,10 @@ impl ConsumerMarket {
             .is_some_and(|&category| category != usize::MAX)
     }
 
-    /// Forks live accounts and owner receipts once per construction pass. Matching access
-    /// retains bucket storage; warm copying is O(household accounts + accepted claims).
+    /// Forks live accounts and owner receipts, for tests: planning lends the book instead.
+    /// Matching access retains bucket storage; warm copying is O(household accounts + accepted
+    /// claims).
+    #[cfg(test)]
     pub(crate) fn copy_reservations_from(&mut self, source: &Self) {
         self.bump_quote_revision();
         #[cfg(test)]

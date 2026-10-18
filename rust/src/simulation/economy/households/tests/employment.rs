@@ -536,28 +536,26 @@ fn unfinished_service_keeps_fiscal_ceiling_without_advertising_live_jobs() {
             &network,
         )
     };
-    assert!(funding.has_current_input_supply(key(&network), &allocator, &catalog, &borders, 420));
+    assert!(funding.has_current_input_supply(key(&network), &borders, 420));
     assert!(
         !funding.has_current_input_supply(
             key(&network),
-            &allocator,
-            &catalog,
             &borders,
             crate::simulation::economy::logistics::freight_price_phase(&tuning, 480)
         ),
         "a new receiving-price interval cannot reuse earlier profitability"
     );
     assert!(
-        !funding.has_current_input_supply(shifted(1, 0), &allocator, &catalog, &borders, 420),
+        !funding.has_current_input_supply(shifted(1, 0), &borders, 420),
         "a building index shift invalidates the books"
     );
     assert!(
-        funding.has_current_input_supply(shifted(0, 1), &allocator, &catalog, &borders, 420),
+        funding.has_current_input_supply(shifted(0, 1), &borders, 420),
         "a departed household stays in the books until the next census"
     );
     network.frontage_delay_revision += 1;
     assert!(
-        !funding.has_current_input_supply(key(&network), &allocator, &catalog, &borders, 420),
+        !funding.has_current_input_supply(key(&network), &borders, 420),
         "unchanged road geometry cannot validate stale recurring freight prices"
     );
 }
@@ -1732,6 +1730,16 @@ fn live_hiring_and_admission_keep_jobs_after_paid_stock_and_payroll() {
             let terrain = crate::simulation::terrain::TerrainSystem::new(4, 4);
             let mut surface = crate::simulation::network::surface::RoadSurfaceSystem::new(512.0);
             surface.compile_dirty(&graph, &terrain);
+            demand.publish_census_if_stale_for_test(
+                allocator,
+                &mut households,
+                &network,
+                &graph,
+                logistics,
+                &policy,
+                100_000.0,
+                420,
+            );
             demand.run_hourly_pass_with_policy(
                 allocator,
                 &mut households,
