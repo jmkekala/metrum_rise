@@ -80,21 +80,26 @@ func _run() -> void:
 	var first_seq: int = MetrumDebug.read_since(0, 0)["last_seq"]
 
 	# Click where the car is drawn, through the same handler a mouse click reaches. Paused, so
-	# the car is where it is drawn.
-	_expect(await _drawn_car(simulation, render_id) != Vector3.INF, "the car must be drawn")
+	# the car is where it is drawn. A spawned car is drawn before the simulation thread has
+	# ticked it onto its lane, where a click finds it, so the test waits until it has moved
+	# (`DEBUG-07`).
+	var spawned := await _drawn_car(simulation, render_id)
+	_expect(spawned != Vector3.INF, "the car must be drawn")
+	_expect(await _moved_car(simulation, render_id, spawned), "the car must drive")
 	simulation.set_simulation_speed(0.0)
 	await create_timer(SETTLE_S).timeout
 	var car := await _drawn_car(simulation, render_id)
 	# Off the screen centre, so the window placement depends on where the click was.
 	camera.focus_on(car + Vector3(30.0, 0.0, 15.0), 40.0)
 	var click := camera.unproject_position(car)
-	input._handle_inspect_click(click)
+	await _click(simulation, camera, input, click, func() -> bool: return inspector.render_id == render_id)
 	_expect(inspector.render_id == render_id, "a click on the car must inspect it, got %d" % inspector.render_id)
 	_expect(buildings.clicks == 0, "a click on a car must not reach the building inspector")
-	_expect(camera.is_following(), "inspecting must start the camera follow")
+	# The follow starts at the first refresh the core answers, the next frame if it is busy.
+	_expect(await _eventually(func() -> bool: return camera.is_following()), "inspecting must start the camera follow")
 
 	await _frames(5)
-	var details: Dictionary = simulation.get_agent_inspection(render_id)
+	var details: Dictionary = await _inspection(simulation, render_id)
 	_expect(details.get("active", false) and details["mode"] == "car", "the inspection must describe a car: %s" % details)
 	_expect(details.get("state") in ["on a road", "in a junction"], "the car must be on the road: %s" % details.get("state"))
 	_expect(details["destination"].is_empty() and details["home"].is_empty(), "the debug car has no buildings")
@@ -148,12 +153,12 @@ func _run() -> void:
 	_expect(Vector2(camera.get_focus_position().x, camera.get_focus_position().z) == Vector2(home.x, home.z), "the camera must stay on the building")
 	_expect(inspector.is_active(), "a link must keep the inspection")
 	panel.find_child("FollowButton", true, false).pressed.emit()
-	await _frames(3)
-	_expect(camera.is_following() and not panel.follow_offered(), "Follow must resume following")
+	_expect(await _eventually(func() -> bool: return camera.is_following() and not panel.follow_offered()), "Follow must resume following")
 	_expect(camera.get_focus_position().distance_to(details["position"]) < 0.5, "Follow must bring the camera back to the car")
 
-	# Moving: the pivot is on the car's drawn position each frame; zoom and orbit still work.
-	simulation.set_simulation_speed(4.0)
+	# Moving: the pivot is on the car's drawn position each frame; zoom and orbit still work. At
+	# 2x the car cannot reach the end of its route before the test pauses it again.
+	simulation.set_simulation_speed(2.0)
 	var start: Vector3 = camera.get_focus_position()
 	var distance := camera.global_position.distance_to(start)
 	var compared := 0
@@ -202,9 +207,8 @@ func _run() -> void:
 	await create_timer(SETTLE_S).timeout
 	_expect(camera.get_focus_position() == panned_to, "the camera must stay where it was panned while the car drives on")
 	panel.find_child("FollowButton", true, false).pressed.emit()
-	await _frames(3)
-	var following_now: Dictionary = simulation.get_agent_inspection(render_id)
-	_expect(camera.is_following() and not panel.follow_offered(), "Follow must resume after panning")
+	_expect(await _eventually(func() -> bool: return camera.is_following() and not panel.follow_offered()), "Follow must resume after panning")
+	var following_now: Dictionary = await _inspection(simulation, render_id)
 	_expect(camera.get_focus_position().distance_to(following_now.get("drawn_position", following_now.get("position", Vector3.INF))) < 5.0, "Follow must bring the camera back to the car")
 
 	# Esc reaches the game with the window open and ends it; the camera stays where it is while
@@ -216,7 +220,7 @@ func _run() -> void:
 	await process_frame
 	_expect(not inspector.is_active() and not camera.is_following(), "Esc must end the inspection and the follow")
 	_expect(inspector.vertex_count == 0 and not panel.visible, "ending must clear the route and hide the panel")
-	_expect(not simulation.get_agent_inspection(render_id).get("active", true), "Rust must drop the selection")
+	_expect(not (await _inspection(simulation, render_id)).get("active", true), "Rust must drop the selection")
 	var resting := camera.get_focus_position()
 	await create_timer(SETTLE_S).timeout
 	_expect(camera.get_focus_position() == resting, "the camera must stay put after the inspection")
@@ -228,9 +232,10 @@ func _run() -> void:
 	await create_timer(SETTLE_S).timeout
 	car = await _drawn_car(simulation, render_id)
 	camera.focus_on(car, 40.0)
-	input._handle_inspect_click(camera.unproject_position(car))
+	await _click(simulation, camera, input, camera.unproject_position(car), func() -> bool: return inspector.is_active())
 	_expect(inspector.is_active(), "the car must be inspected again")
-	input._handle_inspect_click(camera.unproject_position(car + Vector3(0.0, 0.0, 30.0)))
+	var building_clicks := buildings.clicks
+	await _click(simulation, camera, input, camera.unproject_position(car + Vector3(0.0, 0.0, 30.0)), func() -> bool: return buildings.clicks > building_clicks)
 	_expect(not inspector.is_active() and buildings.clicks == 2 and buildings.last.get("toggle") == true, "a click beside the road must end the inspection and inspect buildings")
 
 	# A real Building Inspector window: open or clicked, it leaves the camera keys to the game.
@@ -267,6 +272,43 @@ func _drawn_car(simulation: Node, render_id: int) -> Vector3:
 				return Vector3(t[at * 12 + 3], t[at * 12 + 7], t[at * 12 + 11])
 		await process_frame
 	return Vector3.INF
+
+# Whether `condition` holds within the frame limit.
+func _eventually(condition: Callable) -> bool:
+	for frame in TIMEOUT_FRAMES:
+		if condition.call():
+			return true
+		await process_frame
+	return false
+
+# The inspection once the core answers: while the simulation thread holds the core it returns
+# only the drawn position, which the follow loop accepts but a full check cannot (`DEBUG-07`).
+func _inspection(simulation: Node, render_id: int) -> Dictionary:
+	for frame in TIMEOUT_FRAMES:
+		var details: Dictionary = simulation.get_agent_inspection(render_id)
+		if details.has("active"):
+			return details
+		await process_frame
+	return {}
+
+# An inspect click at `screen`, repeated until `done` holds: a click while the simulation thread
+# holds the core finds no ground and is dropped without effect, as in the game (`DEBUG-07`).
+func _click(simulation: Node, camera: Camera3D, input: Node, screen: Vector2, done: Callable) -> void:
+	for frame in TIMEOUT_FRAMES:
+		if simulation.intersect_terrain(camera.project_ray_origin(screen), camera.project_ray_normal(screen)) != null:
+			input._handle_inspect_click(screen)
+			if done.call():
+				return
+		await process_frame
+
+# Whether the car is drawn away from `from` within the frame limit: the simulation has ticked it.
+func _moved_car(simulation: Node, render_id: int, from: Vector3) -> bool:
+	for frame in TIMEOUT_FRAMES:
+		var at := await _drawn_car(simulation, render_id)
+		if at != Vector3.INF and at.distance_to(from) > 0.5:
+			return true
+		await process_frame
+	return false
 
 # Presses the left button at `from`, moves by `by` and releases, through the root viewport.
 func _drag(from: Vector2, by: Vector2) -> void:
