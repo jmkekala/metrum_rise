@@ -5,11 +5,17 @@
 //! Each field stores the next node and nearest destination building for one zone/mode.
 //! Fields provide an optional path for an already selected trip; CCH remains authoritative.
 //! Topology edits and building changes mark the affected fields dirty for the next tick.
-//! Reverse Dijkstra stages compact incoming edges for cache locality during the search.
+//!
+//! A field is a function of its sources and the road graph alone, which is what a loaded game
+//! builds (`SIM-02-I`): a marked zone whose sources and graph are unchanged since its field was
+//! built keeps the field. The reverse adjacency each search walks is cached per graph revision
+//! in compact rows, and every field keeps its storage and search scratch, so a frame that builds
+//! fields allocates nothing once the buffers have grown.
 
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::TransitFlags;
 use crate::simulation::zoning::ZoneType;
+use rayon::prelude::*;
 use std::collections::BinaryHeap;
 
 // ---------------------------------------------------------------------------
@@ -39,11 +45,93 @@ impl PartialOrd for HeapEntry {
 }
 
 // ---------------------------------------------------------------------------
+// Reverse adjacency and search scratch
+// ---------------------------------------------------------------------------
+
+// Incoming arcs of every node for one mode in compact rows: node `v`'s arcs are
+// `arcs[offsets[v]..offsets[v + 1]]`, `(predecessor, cost)`, in graph edge order, each edge
+// adding its forward arc at its end node before its backward arc at its start node. Direct
+// traversal of graph adjacency reads the large Edge records in search order and was slower on
+// large matched grids; these rows are a measured locality cache.
+#[derive(Default)]
+struct ReverseAdjacency {
+    offsets: Vec<u32>,
+    arcs: Vec<(u32, f32)>,
+    // Fill position per node while building.
+    cursor: Vec<u32>,
+}
+
+impl ReverseAdjacency {
+    // Rebuilds the rows for mode `flags` in O(V + E), reusing the storage.
+    fn rebuild(&mut self, graph: &RegionGraph, flags: u8) {
+        let node_count = graph.node_count();
+        let arcs_of = |edge: &crate::simulation::network::graph::Edge| {
+            if edge.deleted || edge.allowed_types & flags == 0 {
+                return [None, None];
+            }
+            let cost = edge.base_cost.max(1e-6);
+            [
+                (edge.traversal_flags(true) & flags != 0).then_some((
+                    edge.end_node,
+                    edge.start_node,
+                    cost,
+                )),
+                (edge.traversal_flags(false) & flags != 0).then_some((
+                    edge.start_node,
+                    edge.end_node,
+                    cost,
+                )),
+            ]
+        };
+        self.offsets.clear();
+        self.offsets.resize(node_count + 1, 0);
+        for edge in graph.edges() {
+            for (node, _, _) in arcs_of(edge).into_iter().flatten() {
+                self.offsets[node as usize + 1] += 1;
+            }
+        }
+        for node in 0..node_count {
+            self.offsets[node + 1] += self.offsets[node];
+        }
+        self.arcs.clear();
+        self.arcs
+            .resize(self.offsets[node_count] as usize, (0, 0.0));
+        self.cursor.clear();
+        self.cursor.extend_from_slice(&self.offsets[..node_count]);
+        for edge in graph.edges() {
+            for (node, predecessor, cost) in arcs_of(edge).into_iter().flatten() {
+                let position = &mut self.cursor[node as usize];
+                self.arcs[*position as usize] = (predecessor, cost);
+                *position += 1;
+            }
+        }
+    }
+
+    fn node_count(&self) -> usize {
+        self.offsets.len().saturating_sub(1)
+    }
+
+    fn incoming(&self, node: u32) -> &[(u32, f32)] {
+        let node = node as usize;
+        &self.arcs[self.offsets[node] as usize..self.offsets[node + 1] as usize]
+    }
+}
+
+// The search state of one field build, kept between builds.
+#[derive(Default)]
+struct SearchScratch {
+    dist: Vec<f32>,
+    nearest_source_node: Vec<u32>,
+    heap: BinaryHeap<HeapEntry>,
+}
+
+// ---------------------------------------------------------------------------
 // FlowField
 // ---------------------------------------------------------------------------
 
 /// A precomputed routing map from every reachable node toward the nearest
 /// building of one zone type, for one transit mode (car or foot).
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct FlowField {
     /// `next_node[v]` — the next node to move to from `v` on the shortest path
     /// toward the nearest destination. `u32::MAX` if `v` is unreachable.
@@ -60,34 +148,42 @@ impl FlowField {
     /// per building of the target zone type. All sources start at cost 0.
     ///
     /// Complexity: O((V + E) log V), with O(V + E) temporary storage plus the search heap.
+    /// [`FlowFieldSystem`] builds the same field on cached adjacency and reused storage.
     pub fn build(sources: &[(u32, usize)], graph: &RegionGraph, flags: u8) -> Self {
-        let node_count = graph.node_count();
-        let mut dist = vec![f32::INFINITY; node_count];
-        let mut next_node = vec![u32::MAX; node_count];
-        let mut nearest_building = vec![usize::MAX; node_count];
-        let mut nearest_source_node = vec![u32::MAX; node_count];
+        let mut adjacency = ReverseAdjacency::default();
+        adjacency.rebuild(graph, flags);
+        let mut field = Self::default();
+        field.build_on(sources, &adjacency, &mut SearchScratch::default());
+        field
+    }
 
-        // Keep compact incoming endpoints/costs together during Dijkstra. Direct traversal of
-        // graph adjacency reads the large Edge records in search order and was slower on large
-        // matched grids; this temporary table is a measured locality cache, not persistent state.
-        let mut rev_adj: Vec<Vec<(u32, f32)>> = vec![Vec::new(); node_count];
-        for edge in graph.edges() {
-            if edge.deleted || edge.allowed_types & flags == 0 {
-                continue;
-            }
-            let start = edge.start_node as usize;
-            let end = edge.end_node as usize;
-            let cost = edge.base_cost.max(1e-6);
-            if edge.traversal_flags(true) & flags != 0 {
-                rev_adj[end].push((edge.start_node, cost));
-            }
-            if edge.traversal_flags(false) & flags != 0 {
-                rev_adj[start].push((edge.end_node, cost));
-            }
-        }
+    // Rebuilds this field from `sources` on `adjacency`, reusing this field's and `scratch`'s
+    // storage. O((V + E) log V); allocates only to grow past earlier sizes.
+    fn build_on(
+        &mut self,
+        sources: &[(u32, usize)],
+        adjacency: &ReverseAdjacency,
+        scratch: &mut SearchScratch,
+    ) {
+        let node_count = adjacency.node_count();
+        let SearchScratch {
+            dist,
+            nearest_source_node,
+            heap,
+        } = scratch;
+        let next_node = &mut self.next_node;
+        let nearest_building = &mut self.nearest_building;
+        dist.clear();
+        dist.resize(node_count, f32::INFINITY);
+        next_node.clear();
+        next_node.resize(node_count, u32::MAX);
+        nearest_building.clear();
+        nearest_building.resize(node_count, usize::MAX);
+        nearest_source_node.clear();
+        nearest_source_node.resize(node_count, u32::MAX);
+        heap.clear();
 
         // Seed all source nodes at cost 0.
-        let mut heap = BinaryHeap::new();
         for &(source_node, building_idx) in sources {
             let fn_idx = source_node as usize;
             if fn_idx >= node_count {
@@ -114,7 +210,7 @@ impl FlowField {
             if d > dist[u as usize] {
                 continue; // stale entry
             }
-            for &(v, cost) in &rev_adj[u as usize] {
+            for &(v, cost) in adjacency.incoming(u) {
                 let new_dist = d + cost;
                 let v_idx = v as usize;
                 let new_building = nearest_building[u as usize];
@@ -138,11 +234,6 @@ impl FlowField {
                     });
                 }
             }
-        }
-
-        Self {
-            next_node,
-            nearest_building,
         }
     }
 
@@ -201,6 +292,13 @@ impl FlowField {
 // ---------------------------------------------------------------------------
 
 const FLOW_FIELD_ZONE_COUNT: usize = 3;
+const FLOW_FIELD_ZONES: [ZoneType; FLOW_FIELD_ZONE_COUNT] = [
+    ZoneType::Residential,
+    ZoneType::Commercial,
+    ZoneType::Industrial,
+];
+// Field slot `2 * zone + mode`: car then foot.
+const FLOW_FIELD_MODES: [u8; 2] = [TransitFlags::CAR, TransitFlags::FOOT];
 
 fn flow_field_zone_slot(zone: ZoneType) -> Option<usize> {
     match zone {
@@ -211,18 +309,44 @@ fn flow_field_zone_slot(zone: ZoneType) -> Option<usize> {
     }
 }
 
+/// What a flow field's graph is identified by: the routing hierarchy's build generation and
+/// metric revision, which every topology or cost change moves, with the node and edge counts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FlowGraphRevision {
+    /// CCH build generation.
+    pub cch_build: u32,
+    /// CCH metric revision.
+    pub cch_metric: u64,
+}
+
+// One zone's field for one mode, with the sources it was built from and its search storage.
+#[derive(Default)]
+struct FieldSlot {
+    field: FlowField,
+    // Whether `field` holds a field: a zone without sources has none.
+    present: bool,
+    // The sources `field` was built from, on the cached adjacency when `current`.
+    sources: Vec<(u32, usize)>,
+    current: bool,
+    // The sources collected at a drain, compared with `sources`.
+    collected: Vec<(u32, usize)>,
+    scratch: SearchScratch,
+}
+
 /// Manages one [`FlowField`] per zone type per transit mode, rebuilt lazily.
 ///
 /// Attached to [`crate::simulation::network::TransitNetwork`].
 /// Call [`FlowFieldSystem::mark_all_dirty`] on topology changes and
 /// [`FlowFieldSystem::mark_zone_dirty`] when buildings of a zone type are added/removed.
 pub struct FlowFieldSystem {
-    /// `car_fields[z]` for one shipped baseline private-use family.
-    pub car_fields: [Option<FlowField>; FLOW_FIELD_ZONE_COUNT],
-    /// `foot_fields[z]` for one shipped baseline private-use family.
-    pub foot_fields: [Option<FlowField>; FLOW_FIELD_ZONE_COUNT],
-    /// Per-family dirty flags. Set to rebuild on next `rebuild_dirty` call.
+    // Slot `2 * zone + mode`, car before foot.
+    slots: [FieldSlot; 2 * FLOW_FIELD_ZONE_COUNT],
+    // Per-family dirty flags, read by the next `rebuild_dirty` call.
     dirty: [bool; FLOW_FIELD_ZONE_COUNT],
+    // Reverse adjacency per mode for the graph `graph` identifies; `None` until built or after
+    // `mark_all_dirty`.
+    adjacency: [ReverseAdjacency; 2],
+    graph: Option<(FlowGraphRevision, usize, usize)>,
 }
 
 impl Default for FlowFieldSystem {
@@ -235,74 +359,127 @@ impl FlowFieldSystem {
     /// Creates a new system with all fields absent and all zones dirty.
     pub fn new() -> Self {
         Self {
-            car_fields: std::array::from_fn(|_| None),
-            foot_fields: std::array::from_fn(|_| None),
+            slots: Default::default(),
             dirty: [true; FLOW_FIELD_ZONE_COUNT],
+            adjacency: Default::default(),
+            graph: None,
         }
     }
 
-    /// Marks all zone types as dirty (called on road topology change).
+    /// Marks all zone types as dirty (called on road topology change): every field and the
+    /// cached adjacency are rebuilt at the next call.
     pub fn mark_all_dirty(&mut self) {
         self.dirty = [true; FLOW_FIELD_ZONE_COUNT];
+        self.graph = None;
     }
 
-    /// Marks a single zone type as dirty (called on building spawn/removal).
+    /// Marks a single zone type as dirty (called when its buildings may have changed): its
+    /// sources are collected again at the next call, and its fields rebuilt if they differ.
     pub fn mark_zone_dirty(&mut self, zone: ZoneType) {
         if let Some(zone_idx) = flow_field_zone_slot(zone) {
             self.dirty[zone_idx] = true;
         }
     }
 
-    /// Rebuilds flow fields for all dirty zone types.
+    /// Rebuilds the flow fields of the dirty zone types whose sources changed, or every field
+    /// when the graph `revision` identifies differs from the one they were built on.
     ///
-    /// `sources_fn(zone, mode_flags) -> Vec<(endpoint_node, building_idx)>` is called
-    /// once per dirty zone and transit mode to collect the current legal destination
-    /// endpoint nodes. Passing a closure keeps this module free of a direct
-    /// `BuildingAllocator` dependency.
+    /// `sources_fn(zone, mode_flags, out)` fills `out` (cleared) with the current legal
+    /// destination endpoints of `zone` for one mode, in a fixed order; it is called once per
+    /// dirty zone and mode, from Rayon workers. Passing a closure keeps this module free of a direct
+    /// `BuildingAllocator` dependency. A field equals [`FlowField::build`] of its sources on
+    /// the current graph.
     ///
-    /// Complexity: O(dirty_zones × (V + E) log V).
+    /// Complexity: O(1) with nothing marked; O(V + E) for the adjacency after a graph change;
+    /// then, for each marked zone's two modes in parallel, O(S) to collect and compare its S
+    /// sources and O((V + E) log V) when they changed. Allocates only to grow buffers past
+    /// earlier sizes.
     pub fn rebuild_dirty(
         &mut self,
         graph: &RegionGraph,
-        sources_fn: impl Fn(ZoneType, u8) -> Vec<(u32, usize)>,
+        revision: FlowGraphRevision,
+        sources_fn: impl Fn(ZoneType, u8, &mut Vec<(u32, usize)>) + Sync,
     ) {
-        for (zone_idx, zone) in [
-            ZoneType::Residential,
-            ZoneType::Commercial,
-            ZoneType::Industrial,
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            if !self.dirty[zone_idx] {
-                continue;
+        let identity = (revision, graph.node_count(), graph.edge_count());
+        if self.graph != Some(identity) {
+            for (adjacency, flags) in self.adjacency.iter_mut().zip(FLOW_FIELD_MODES) {
+                adjacency.rebuild(graph, flags);
             }
-            let car_sources = sources_fn(zone, TransitFlags::CAR);
-            let foot_sources = sources_fn(zone, TransitFlags::FOOT);
-            self.car_fields[zone_idx] = if car_sources.is_empty() {
-                None
-            } else {
-                Some(FlowField::build(&car_sources, graph, TransitFlags::CAR))
-            };
-            self.foot_fields[zone_idx] = if foot_sources.is_empty() {
-                None
-            } else {
-                Some(FlowField::build(&foot_sources, graph, TransitFlags::FOOT))
-            };
-            self.dirty[zone_idx] = false;
+            self.graph = Some(identity);
+            self.dirty = [true; FLOW_FIELD_ZONE_COUNT];
+            for slot in &mut self.slots {
+                slot.current = false;
+            }
         }
+        let dirty = std::mem::take(&mut self.dirty);
+        // Most frames find nothing marked; the pool is not woken for them.
+        if !dirty.contains(&true) {
+            return;
+        }
+        // The cached adjacency is keyed on the routing hierarchy's revisions, not on the graph
+        // itself: every change to an edge's endpoints, deletion, modes, directions or base cost
+        // must move the CCH build generation or metric revision before this call (the frame
+        // rebuilds a dirty hierarchy first) or call `mark_all_dirty`. Debug builds check the
+        // rows against a fresh build, O(V + E) per call with a zone marked.
+        #[cfg(debug_assertions)]
+        for (adjacency, flags) in self.adjacency.iter().zip(FLOW_FIELD_MODES) {
+            let mut fresh = ReverseAdjacency::default();
+            fresh.rebuild(graph, flags);
+            debug_assert!(
+                fresh.offsets == adjacency.offsets && fresh.arcs == adjacency.arcs,
+                "the flow fields' cached adjacency is stale for its graph revision {revision:?}"
+            );
+        }
+        crate::debug::work::add(
+            crate::debug::work::Work::FlowFieldZonesDrained,
+            dirty.iter().filter(|&&marked| marked).count() as u64,
+        );
+        // Each marked slot collects its sources, compares them with its field's and rebuilds
+        // only on a change; slots share nothing but the adjacency, so the order they run in
+        // changes no result.
+        let adjacency = &self.adjacency;
+        self.slots
+            .as_mut_slice()
+            .par_iter_mut()
+            .enumerate()
+            .filter(|(index, _)| dirty[index / 2])
+            .for_each(|(index, slot)| {
+                slot.collected.clear();
+                sources_fn(
+                    FLOW_FIELD_ZONES[index / 2],
+                    FLOW_FIELD_MODES[index % 2],
+                    &mut slot.collected,
+                );
+                if slot.current && slot.collected == slot.sources {
+                    crate::debug::work::add(crate::debug::work::Work::FlowFieldsSkipped, 1);
+                    return;
+                }
+                std::mem::swap(&mut slot.collected, &mut slot.sources);
+                slot.current = true;
+                slot.present = !slot.sources.is_empty();
+                if slot.present {
+                    crate::debug::work::add(crate::debug::work::Work::FlowFieldsBuilt, 1);
+                    slot.field
+                        .build_on(&slot.sources, &adjacency[index % 2], &mut slot.scratch);
+                }
+            });
     }
 
     /// Returns the car flow field for `zone`, or `None` if not yet built or zone has no buildings.
     #[inline]
     pub fn car(&self, zone: ZoneType) -> Option<&FlowField> {
-        self.car_fields[flow_field_zone_slot(zone)?].as_ref()
+        self.field(zone, 0)
     }
 
     /// Returns the foot flow field for `zone`, or `None` if not yet built or zone has no buildings.
     #[inline]
     pub fn foot(&self, zone: ZoneType) -> Option<&FlowField> {
-        self.foot_fields[flow_field_zone_slot(zone)?].as_ref()
+        self.field(zone, 1)
+    }
+
+    fn field(&self, zone: ZoneType, mode: usize) -> Option<&FlowField> {
+        let slot = &self.slots[2 * flow_field_zone_slot(zone)? + mode];
+        slot.present.then_some(&slot.field)
     }
 }
 
@@ -522,10 +699,120 @@ mod tests {
                 black_box(field);
             }
             samples.sort_by(f64::total_cmp);
+            // The drain's path: adjacency cached per graph revision, field and scratch reused.
+            let mut adjacency_samples = Vec::with_capacity(21);
+            let mut adjacency = ReverseAdjacency::default();
+            for _ in 0..21 {
+                let begin = Instant::now();
+                adjacency.rebuild(black_box(&graph), TransitFlags::CAR);
+                adjacency_samples.push(begin.elapsed().as_secs_f64() * 1e6);
+            }
+            adjacency_samples.sort_by(f64::total_cmp);
+            let mut field = FlowField::default();
+            let mut scratch = SearchScratch::default();
+            field.build_on(&sources, &adjacency, &mut scratch);
+            let mut cached_samples = Vec::with_capacity(21);
+            for _ in 0..21 {
+                let begin = Instant::now();
+                field.build_on(black_box(&sources), black_box(&adjacency), &mut scratch);
+                cached_samples.push(begin.elapsed().as_secs_f64() * 1e6);
+                assert_eq!(fingerprint(&field), expected);
+            }
+            cached_samples.sort_by(f64::total_cmp);
             println!(
                 "FLOW_BUILD_BENCH {}",
-                serde_json::json!({"side":side,"nodes":graph.node_count(),"edges":graph.edge_count(),"samples":samples.len(),"median_us":samples[samples.len()/2],"setup_us":setup_us,"fingerprint":format!("{expected:016x}")})
+                serde_json::json!({"side":side,"nodes":graph.node_count(),"edges":graph.edge_count(),"samples":samples.len(),"median_us":samples[samples.len()/2],"adjacency_median_us":adjacency_samples[adjacency_samples.len()/2],"cached_median_us":cached_samples[cached_samples.len()/2],"setup_us":setup_us,"fingerprint":format!("{expected:016x}")})
             );
         }
+    }
+
+    fn grid_graph(side: u32) -> RegionGraph {
+        let mut graph = RegionGraph::new();
+        for y in 0..side {
+            for x in 0..side {
+                graph.add_node(
+                    Vector3::new(x as f32 * 50.0, 0.0, y as f32 * 50.0),
+                    NodeType::Junction,
+                );
+            }
+        }
+        for y in 0..side {
+            for x in 0..side {
+                let node = y * side + x;
+                // Uneven costs, so ties and detours both occur.
+                let cost = 1.0 + ((x * 7 + y * 3) % 5) as f32 * 0.25;
+                if x + 1 < side {
+                    graph.add_edge(make_edge(node, node + 1, cost));
+                }
+                if y + 1 < side {
+                    graph.add_edge(make_edge(node, node + side, cost));
+                }
+            }
+        }
+        graph.rebuild_adjacency_list();
+        graph
+    }
+
+    /// The system's fields equal fresh builds of their sources on the current graph: a marked
+    /// zone with the same sources keeps its field, changed sources and a changed graph rebuild.
+    #[test]
+    fn system_fields_equal_fresh_builds_and_skip_unchanged_sources() {
+        let mut graph = grid_graph(9);
+        let revision = |build| FlowGraphRevision {
+            cch_build: build,
+            cch_metric: 0,
+        };
+        let mut commercial = vec![(4_u32, 3_usize), (40, 1), (80, 2)];
+        let fresh = |sources: &[(u32, usize)], graph: &RegionGraph, flags| {
+            (!sources.is_empty()).then(|| FlowField::build(sources, graph, flags))
+        };
+        let mut system = FlowFieldSystem::new();
+        let rebuild =
+            |system: &mut FlowFieldSystem, graph: &RegionGraph, build, sources: &[(u32, usize)]| {
+                system.rebuild_dirty(graph, revision(build), |zone, _, out| {
+                    if zone == ZoneType::Commercial {
+                        out.extend_from_slice(sources);
+                    }
+                });
+            };
+        rebuild(&mut system, &graph, 1, &commercial);
+        let check = |system: &FlowFieldSystem, graph: &RegionGraph, sources: &[(u32, usize)]| {
+            assert_eq!(
+                system.car(ZoneType::Commercial).cloned(),
+                fresh(sources, graph, TransitFlags::CAR)
+            );
+            assert_eq!(
+                system.foot(ZoneType::Commercial).cloned(),
+                fresh(sources, graph, TransitFlags::FOOT)
+            );
+            assert!(system.car(ZoneType::Residential).is_none());
+            assert!(system.foot(ZoneType::Industrial).is_none());
+        };
+        check(&system, &graph, &commercial);
+        // Unchanged sources on the same graph: the field is kept as it is.
+        system.slots[2].field.next_node[0] = 12_345;
+        system.mark_zone_dirty(ZoneType::Commercial);
+        rebuild(&mut system, &graph, 1, &commercial);
+        assert_eq!(system.slots[2].field.next_node[0], 12_345);
+        // Changed sources rebuild.
+        commercial.push((20, 0));
+        system.mark_zone_dirty(ZoneType::Commercial);
+        rebuild(&mut system, &graph, 1, &commercial);
+        check(&system, &graph, &commercial);
+        // A graph change rebuilds every field, marked or not.
+        system.slots[2].field.next_node[0] = 12_345;
+        graph.edge_mut(3).deleted = true;
+        graph.rebuild_adjacency_list();
+        rebuild(&mut system, &graph, 2, &commercial);
+        check(&system, &graph, &commercial);
+        // So does marking everything.
+        system.slots[2].field.next_node[0] = 12_345;
+        system.mark_all_dirty();
+        rebuild(&mut system, &graph, 2, &commercial);
+        check(&system, &graph, &commercial);
+        // A zone without sources has no field.
+        system.mark_zone_dirty(ZoneType::Commercial);
+        rebuild(&mut system, &graph, 2, &[]);
+        check(&system, &graph, &[]);
     }
 }

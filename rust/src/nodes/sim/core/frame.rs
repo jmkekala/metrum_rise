@@ -116,6 +116,36 @@ pub(crate) struct FrameStepReport {
 }
 
 impl SimCore {
+    /// Marks the flow fields of the zones whose buildings the allocator placed, completed,
+    /// changed or removed since the last call, so the next rebuild sees them: a loaded game
+    /// rebuilds every field, and the running game must route on the same fields. O(zones).
+    pub(crate) fn mark_changed_zone_flow_fields(&mut self) {
+        use crate::simulation::buildings::allocator::BASELINE_PRIVATE_ZONES;
+        for (zone_idx, zone) in BASELINE_PRIVATE_ZONES.iter().enumerate() {
+            if std::mem::take(&mut self.allocator.dirty_zones[zone_idx]) {
+                self.transit_network.flow_fields.mark_zone_dirty(*zone);
+            }
+        }
+    }
+
+    // The frame's flow-field drain reads the zone index and the entrance cache, so like every
+    // reader of the index it rebuilds a stale one first (`SIM-02-I`). The index is rebuilt at
+    // every frame that starts with it stale, whether or not a field is marked: the flow-field
+    // marks are not saved (a load marks every field), while the stale flag is, so a game
+    // loaded from a save between frames rebuilds the index at the same frame as the game it
+    // was saved from, from the same buildings, and its vacancy order and admission order
+    // continue identically. A stale entrance cache is rebuilt too; it has no order to keep.
+    // O(B) when stale, O(1) otherwise.
+    fn repair_flow_field_sources(&mut self) {
+        if self.allocator.vacancy_index_stale() {
+            self.allocator.rebuild_zone_index();
+        }
+        let allocator = &mut self.allocator;
+        if allocator.entrances_dirty || allocator.entrances.len() != allocator.buildings.len() {
+            allocator.rebuild_entrance_cache(&self.region_graph, &self.transit_network.lane_system);
+        }
+    }
+
     /// Advances the simulation by one frame of `frame_dt_s` real seconds at the current speed.
     ///
     /// A paused clock (`speed_multiplier <= 0`) leaves all state untouched. Otherwise agents move
@@ -138,19 +168,25 @@ impl SimCore {
             return report;
         }
 
-        // Rebuild CCH if dirty, then rebuild any dirty flow fields.
+        // Rebuild CCH if dirty, then rebuild any dirty flow fields, the zones whose buildings
+        // changed since the last frame among them.
         let pathing_start = Instant::now();
         record_crash_phase_for_core(self, "pathing rebuild");
         self.transit_network
             .rebuild_pathing_if_dirty(&mut self.region_graph);
+        self.repair_flow_field_sources();
+        self.mark_changed_zone_flow_fields();
         {
+            let revision = self.transit_network.flow_graph_revision();
             let alloc = &self.allocator;
             let graph = &self.region_graph;
-            self.transit_network
-                .flow_fields
-                .rebuild_dirty(graph, |zone, mode_flags| {
-                    alloc.get_sources_for_zone(zone, graph, mode_flags)
-                });
+            self.transit_network.flow_fields.rebuild_dirty(
+                graph,
+                revision,
+                |zone, mode_flags, sources| {
+                    alloc.collect_sources_for_zone(zone, graph, mode_flags, sources)
+                },
+            );
         }
         report.pathing_ms = pathing_start.elapsed().as_secs_f64() * 1000.0;
 

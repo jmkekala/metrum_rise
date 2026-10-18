@@ -104,6 +104,11 @@ pub(crate) enum Cost {
     Events,
     /// A pass over the whole city re-hosted unchanged; removed by `SIM-02-K`.
     LegacyBoundary,
+    /// A pass over the whole city split out of a legacy one (`SIM-02-I` demand planning
+    /// slots): each call O(B + H + P + Q log H) in buildings B, households H, lots P and queued
+    /// constructions Q, with each slot's terms stated at its declaration. `SIM-02-K` replaces
+    /// its scans with maintained totals and indices.
+    CityScan,
     /// Proportional to the entities whose phase falls in the slot: O(N / slots per period).
     Phase,
     /// One chunk of a rolling sum or sweep: O(N / slots per period).
@@ -206,7 +211,10 @@ impl<S: Copy> Schedule<S> {
                         declaration.name
                     );
                     assert!(
-                        matches!(declaration.cost, Cost::LegacyBoundary | Cost::Constant),
+                        matches!(
+                            declaration.cost,
+                            Cost::LegacyBoundary | Cost::CityScan | Cost::Constant
+                        ),
                         "{} runs at a fixed slot without a bounded cost",
                         declaration.name
                     );

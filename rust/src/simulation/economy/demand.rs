@@ -25,7 +25,8 @@ mod workforce;
 pub(crate) use actions::demand_building_action_key;
 pub(crate) use actions::{
     DemandBuildingActionKey, DemandBuildingActionPlan, DemandLevelChangeAction, DemandSpawnAction,
-    DemandSpawnCandidate, DemandSpawnCandidatesByUse, SpawnSiteAvailability, private_zone_index,
+    DemandSpawnCandidate, DemandSpawnCandidatesByUse, DemandUseActionPlan, PlanningSlot,
+    SpawnSiteAvailability, private_zone_index,
 };
 pub(crate) use diagnostics::{
     BuildingActionDiagnosticsByUse, HouseholdAdmissionDiagnostics, HouseholdRemovalDiagnostics,

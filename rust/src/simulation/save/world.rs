@@ -12,11 +12,10 @@ use crate::simulation::economy::definitions::{
     QuantityUnit, load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
 use crate::simulation::economy::demand::{
-    ConstructionPermit, DemandSpawnAction, DemandSystem, SpawnPermit,
+    ConstructionPermit, DemandBuildingActionKey, DemandLevelChangeAction, DemandSpawnAction,
+    DemandSystem, SpawnPermit,
 };
-use crate::simulation::economy::households::{
-    Household, HouseholdSystem,
-};
+use crate::simulation::economy::households::{Household, HouseholdSystem};
 use crate::simulation::economy::logistics::{
     CarrierClass, FreightRequestFailure, FreightRequestKey, SavedSupplierRoll, SavedSupplierSweep,
     Shipment, ShipmentEndpoint, ShipmentStatus, ShipmentSystem, SupplierRoll,
@@ -222,6 +221,8 @@ pub(super) fn save_world(
             i64::from(pending.counted),
         ])?;
     }
+
+    save_demand_hour_plan(tx, demand, maps)?;
 
     // Grids: the front every reader uses and the back of the rolling sweep (`SIM-02-H`).
     tx.execute(
@@ -919,6 +920,132 @@ pub(super) fn load_pending_demand_spawns(
         });
     }
     Ok(pending)
+}
+
+// The hour's plan between its planning slots (`SIM-02-I`): each zone's upgrades (kind 0),
+// despawns (kind 1) and spawns (kind 3), then the residential slot's optional homes (kind 2),
+// in plan order. Building keys save their edge through the save's edge renumbering; a key whose
+// edge the save drops names a building that resolves in neither game and is not saved, which
+// keeps the loaded upgrade list sorted as slot 3's search needs. Spawns and optional homes
+// save only their parcel and asset.
+fn save_demand_hour_plan(
+    tx: &Transaction,
+    demand: &DemandSystem,
+    maps: &SnapshotMaps,
+) -> SaveLoadResult<()> {
+    let mut stmt = tx.prepare(
+        "INSERT INTO demand_hour_plan(sequence, kind, zone_type, parcel_id, edge_id, side, cell_x, width, depth, level, asset_id, target_asset_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+    )?;
+    let mut sequence = 0_i64;
+    let mut row = |kind: i64,
+                   zone: ZoneType,
+                   key: &DemandBuildingActionKey,
+                   target: &str|
+     -> SaveLoadResult<()> {
+        let edge = match maps.edge_old_to_new.get(&key.edge_idx) {
+            Some(&edge) => usize_to_i64(edge)?,
+            None if key.edge_idx == usize::MAX => NONE_REF,
+            None => return Ok(()),
+        };
+        stmt.execute(params![
+            sequence,
+            kind,
+            demand_spawn_zone_to_db(zone)?,
+            u64_to_i64(key.parcel_id)?,
+            edge,
+            i64::from(key.side),
+            usize_to_i64(key.cell_x)?,
+            i64::from(key.width_cells),
+            i64::from(key.depth_cells),
+            i64::from(key.level),
+            &key.asset_id,
+            target,
+        ])?;
+        sequence += 1;
+        Ok(())
+    };
+    let plan = &demand.building_actions;
+    for (zone, use_plan) in [
+        (ZoneType::Residential, &plan.residential),
+        (ZoneType::Commercial, &plan.commercial),
+        (ZoneType::Industrial, &plan.industrial),
+    ] {
+        for upgrade in &use_plan.upgrades {
+            row(0, zone, &upgrade.building, &upgrade.target_asset_id)?;
+        }
+        for despawn in &use_plan.despawns {
+            row(1, zone, despawn, "")?;
+        }
+        for spawn in &use_plan.spawns {
+            row(3, zone, &spawn_key(spawn), "")?;
+        }
+    }
+    for home in &demand.optional_homes {
+        row(2, ZoneType::Residential, &spawn_key(home), "")?;
+    }
+    Ok(())
+}
+
+// A planned spawn as a building key row: its parcel and asset, no edge.
+fn spawn_key(spawn: &DemandSpawnAction) -> DemandBuildingActionKey {
+    DemandBuildingActionKey {
+        parcel_id: spawn.parcel_id,
+        edge_idx: usize::MAX,
+        side: 0,
+        cell_x: 0,
+        width_cells: 0,
+        depth_cells: 0,
+        level: 0,
+        asset_id: spawn.asset_id.clone(),
+    }
+}
+
+/// Loads the hour's plan [`save_demand_hour_plan`] saved into `demand`.
+pub(super) fn load_demand_hour_plan(
+    conn: &Connection,
+    demand: &mut DemandSystem,
+) -> SaveLoadResult<()> {
+    let mut stmt = conn.prepare(
+        "SELECT kind, zone_type, parcel_id, edge_id, side, cell_x, width, depth, level, asset_id, target_asset_id FROM demand_hour_plan ORDER BY sequence ASC",
+    )?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let kind: i64 = row.get(0)?;
+        let zone = demand_spawn_zone_from_db(row.get(1)?)?;
+        let key = DemandBuildingActionKey {
+            parcel_id: i64_to_u64(row.get(2)?)?,
+            edge_idx: db_to_optional_usize(row.get(3)?)?,
+            side: i64_to_i8(row.get(4)?)?,
+            cell_x: i64_to_usize(row.get(5)?)?,
+            width_cells: i64_to_u16(row.get(6)?)?,
+            depth_cells: i64_to_u16(row.get(7)?)?,
+            level: i64_to_u8(row.get(8)?)?,
+            asset_id: row.get(9)?,
+        };
+        let plan = &mut demand.building_actions;
+        let use_plan = match zone {
+            ZoneType::Commercial => &mut plan.commercial,
+            ZoneType::Industrial => &mut plan.industrial,
+            _ => &mut plan.residential,
+        };
+        match kind {
+            0 => use_plan.upgrades.push(DemandLevelChangeAction {
+                building: key,
+                target_asset_id: row.get(10)?,
+            }),
+            1 => use_plan.despawns.push(key),
+            2 => demand.optional_homes.push(DemandSpawnAction {
+                parcel_id: key.parcel_id,
+                asset_id: key.asset_id,
+            }),
+            3 => use_plan.spawns.push(DemandSpawnAction {
+                parcel_id: key.parcel_id,
+                asset_id: key.asset_id,
+            }),
+            _ => return Err(SaveLoadError::custom("invalid demand hour plan row")),
+        }
+    }
+    Ok(())
 }
 
 // A queued spawn's permit as saved: NULL when denied, a single 0 byte when voided, otherwise

@@ -1740,7 +1740,7 @@ fn live_hiring_and_admission_keep_jobs_after_paid_stock_and_payroll() {
                 100_000.0,
                 420,
             );
-            demand.run_hourly_pass_with_policy(
+            demand.run_planning_hour_for_test(
                 allocator,
                 &mut households,
                 &graph,

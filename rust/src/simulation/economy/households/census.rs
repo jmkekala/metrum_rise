@@ -200,7 +200,39 @@ impl HouseholdSystem {
         self.census_run
             .publish_into(&mut self.job_funding, allocator.buildings.len());
         self.census_inputs.consume();
+        // The hour's planning slots read this census; a save before its actions slot keeps
+        // the copy for the load to recompute it.
+        self.census_inputs.keep_published_front();
         self.publish_funded_job_capacities(allocator);
+    }
+
+    /// Restores, once the loaded world is ready, the census the saved hour's first slot
+    /// published, from the copy and ceilings a save before the hour's actions slot kept
+    /// (`SIM-02-I`, [`RollingCensus::restore_published`](crate::simulation::economy::hiring::RollingCensus::restore_published)).
+    /// O(census).
+    pub(crate) fn restore_published_census(
+        &mut self,
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+        adopted: &[u32],
+    ) {
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        let tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        let key = self.census_key(network);
+        self.census_run.restore_published(
+            &mut self.census_inputs,
+            &mut self.job_funding,
+            adopted,
+            allocator,
+            network,
+            graph,
+            &catalog,
+            &tuning,
+            key,
+        );
     }
 
     /// Recomputes, once the loaded world is ready, a census that was current at the save

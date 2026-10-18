@@ -233,6 +233,9 @@ impl BuildingAllocator {
             .collect_into_vec(&mut self.entrances);
         self.entrances_dirty = false;
         self.bump_entrance_ref_revision();
+        // Entrances choose the flow fields' source nodes (`SIM-02-I`): each zone's sources
+        // are compared again at the next frame and its fields rebuilt only if they changed.
+        self.dirty_zones = [true; 3];
         if let Some(old_entrances) = old_entrances.as_deref() {
             log_entrance_cache_rebuild(old_entrances, &self.entrances, &self.buildings);
         }

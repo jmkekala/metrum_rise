@@ -8,11 +8,12 @@ simulation tiers. Economy and growth rules stay in [`economy.md`](economy.md) an
 **Status:** `SIM-02` in progress. `SIM-02-A` (guards and pre-refactor baseline), `SIM-02-B`
 (save cutover and handles), `SIM-02-C` (slot clock, scheduler, timing wheel and phases),
 `SIM-02-D` (passive deadlines and construction completion), `SIM-02-E` (trips as timed
-events), `SIM-02-F` (per-entity hourly economy), `SIM-02-G` (per-entity daily settlement) and
-`SIM-02-H` (rolling environment grids and the cell-lot queue) are done, and `SIM-02-I` is in
-progress (part 1: counts, electricity, store sales, freight suppliers and the demand snapshot;
-part 2: the funding census over slots on a rolling input copy; part 3: construction permits
-on the published census; part 4, demand planning one zone type a slot, remains); see the
+events), `SIM-02-F` (per-entity hourly economy), `SIM-02-G` (per-entity daily settlement),
+`SIM-02-H` (rolling environment grids and the cell-lot queue) and `SIM-02-I` (rolling
+snapshots and pure jobs, in four parts: counts, electricity, store sales, freight suppliers and
+the demand snapshot; the funding census over slots on a rolling input copy; construction
+permits on the published census; demand planning one zone type a slot) are done, and
+`SIM-02-J` (request queues) is next; see the
 [`SIM-02-A` baseline](#sim-02-a-guards-and-pre-refactor-baseline) and the
 [step results](#step-results). Until each migration step lands,
 the current cadence in
@@ -136,7 +137,10 @@ A declaration names:
   - `EntityPhase { period }` — runs for entities whose phase falls in this slot (hourly or daily).
   - `FixedSlot { period, offset }` — one call at a fixed slot of each period. Allowed only for
     work with a stated O(1), O(zones) or O(dirty) bound, and for re-hosted legacy passes during
-    migration.
+    migration. The hour's four demand planning slots (`SIM-02-I` part 4) declare
+    `Cost::CityScan`, O(B + H + P + Q log H) a call in buildings, households, parcels and queued
+    projects: splits of the former whole-city pass, recorded as `SIM-02-K` debt and the only
+    `CityScan` users.
   - `Events` — consumes this slot's [timed events](#deadlines-and-timed-events).
   - `Queue { quota }` — serves up to `quota` [requests](#request-queues) per slot.
   - `Rolling { period, chunks }` — advances one chunk of a [rolling snapshot](#snapshots).
@@ -505,8 +509,12 @@ about 90 MB of lanes at 100k after every road edit.
   the demand snapshot sweep reads the same copies. Job search, restock and visit planning read
   the published census. Demand planning lends the published books, with the buildings started
   since the copy appended as buyers, and runs no census of its own. Commercial and industrial
-  construction is proved once an hour, in the planning slot, on the same books, and keeps a
-  saved permit until it starts (`SIM-02-I` part 3).
+  construction is proved once an hour, in the hour's actions slot, on the same books, and keeps
+  a saved permit until it starts (`SIM-02-I` parts 3 and 4). Planning slots 0–2 and the actions
+  slot 3 all read the census published at slot 0; a save in those slots keeps what restores it
+  exactly (`census_inputs.published`), so a load there plans on the same books (part 4). A load
+  from slot 3 on runs a census of the loaded city, which nothing reads before the next hour's
+  first slot publishes.
 
 ### Simulation tiers
 
@@ -1221,6 +1229,74 @@ on a fresh `$ARTIFACTS` directory.
   edit, and a loaded walker at a node without an edge, continue identically. The tests written
   for the old prove-at-start model now drive permits.
 
+#### `SIM-02-I`, part 4 — demand planning one zone type a slot (2026-10-19)
+
+- **Save format 101:** the hour plan between its slots (`demand_hour_plan`) and, for a save in
+  the hour's slots 0–2, what restores the census those slots read (`census_inputs.published`).
+  The Kuopio fixture gained the table, the column and its hash in `placements.json`.
+- **What moved off the hour:** the hourly demand pass. Residential, commercial and industrial
+  planning run at slots 0, 1 and 2 into a saved hour plan; slot 3 plans downgrades, admits,
+  queues the hour's spawns in the single pass's order, proves the permits and level changes and
+  runs the clearances. Each slot is still a whole-city scan of its zone (`Cost::CityScan`, a
+  `SIM-02-K` item). See [Decided while unattended](#decided-while-unattended).
+- **Defects found and fixed:** queueing each zone's spawns at its own slot (the first build)
+  changed every later start, building index and applicant seed, and in the starter town led to
+  an industrial overbuild (12 factories, no grocery); slot 3 now queues the hour in the single
+  pass's order. Two determinism defects surfaced on the way: arrival carriers held across the
+  planning slots were lost by a save, and since `SIM-02-G` flow fields were rebuilt only on days
+  a building was removed while a load rebuilt every field. A review then found that a save in
+  slots 0–2 lost the census those slots read, that the new flow-field drain rebuilt every marked
+  zone every frame (up to about 50 ms at 100k road nodes), that the drain could build fields
+  from a stale zone index, and that a spawn failing its re-proof kept its place in the plan;
+  all are fixed.
+- **Envelope and bursts** (`tools/sim02_gate.py envelope determinism --bursts
+  departures,settlements --binary "$TEST_BINARY"`, `RAYON_NUM_THREADS=8`): pass, within 0.05 net
+  income per resident of part 3 in every city, every metric in band: baseline 10k 13.36 (13.32),
+  bankruptcies 0.058 per 1,000 buildings a day (0.068); baseline 30k 12.43 (12.46), bankruptcies
+  0.298 (0.281). The four fiscal-stress employment notes of earlier steps remain. The busiest
+  minute is at most 3.3% of an hour's departures, unchanged.
+- **Determinism:** repeat run, 1 and 3 workers and save/reload continuation are identical (10k,
+  three days). New continuation tests save between the planning slots, after the actions slot,
+  at slot 1 after a fiscal change, and in the planning slots with invalid books, and compare
+  the hour plan, the published census at load and the flow fields every frame.
+- **`PERF-07`** (`tools/sim02_gate.py perf07 --cpus 0,2,4,6,8,10,12,14 --binary "$TEST_BINARY"
+  --perf07-baseline` the pinned `SIM-02-A` report, `RAYON_NUM_THREADS=8`). Max / p99 / mean in
+  ms, part 3 in parentheses: 10k 1× 66.4 / 6.23 / 2.42 (101.2 / 5.95 / 2.41), 10k 32× 67.2 /
+  7.11 / 2.88 (100.7 / 7.47 / 3.00), 30k 1× 82.6 / 7.55 / 3.33 (106.3 / 7.55 / 3.32), 30k 32×
+  98.1 / 18.93 / 5.22 (110.0 / 13.95 / 5.28), 100k 1× 235.4 / 17.93 / 11.66 (354.4 / 18.05 /
+  11.81), 100k 32× 359.9 / 128.44 / 21.99 (460.6 / 57.76 / 21.97). Every gate limit passes, and
+  the worst frame fell at every tier. The 32× p99 rose at 30k and 100k because the hour's work
+  now spans two frames: slot 3's actions, permits and clearances often fall in the frame after
+  the one that crosses slot 0, so a day has up to 48 heavy frames instead of 24, each lighter
+  (the 100k 32× frames outside the hour boundary peak at 170.5 ms against 84.4). Measured on the
+  build before two debug assertions were added; release code is the same.
+- **`PERF-01`** (`tools/perf_contract.py --binary "$TEST_BINARY"` under `taskset -c
+  0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`), two runs alternating with `SIM-02-A` (hour / day
+  means in ms, `SIM-02-A` first): baseline 10k 17.2–17.3 / 8.0–8.6 against 5.7 / 0.00; baseline
+  30k 63.1–63.2 / 46.8–47.6 against 20.9–21.0 / 0.00; fiscal 10k 27.8–28.6 / 22.4–23.3 against
+  15.7–15.8 / 0.00; fiscal 30k 80.1–80.9 / 68.3–70.2 against 51.2–51.4 / 0.00. No time limit
+  fails; five work-count limits fail (six on part 3; `owner_slots_prepared` now passes), all of
+  which `SIM-02-A` also fails. The continuation hours now end after the hour's actions slot:
+  ending at slot 0 split the hour's building churn across two counted hours, which failed the
+  fiscal fixture's check that every hour has churn, and left the planning slots that fell in
+  the next frame out of the hour's time. The hours are 8–21% above part 3's (4.7–4.8,
+  13.8–13.9, 18.6–18.9 and 47.5–47.6), the four slots' repeated setup (`Cost::CityScan`).
+- **Build identity:** the envelope, determinism, library and growth tests, `PERF-01` and
+  `./run.sh --test` ran on the committed sources built with rustc 1.99.1; `PERF-07` ran on the
+  same sources before two `debug_assert!`s and test-only changes were added, which do not
+  compile into its release test build. The `SIM-02-A` runs used its retained binary.
+- **Tests:** 2,505 release library tests and the 4 growth integration tests pass; clippy and
+  rustfmt add nothing. `./run.sh --test` (isolated profile): the Rust suites pass, and the Godot
+  run fails only `road_junction_preview_test`'s terrain-delta polls, the `ROAD-54` race below,
+  which a 30-run comparison reproduced on part 3 at the same rate (2 runs in 30 each); part 4
+  does not change the Godot bridge. New: failed re-proofs leave the plan and free their workers
+  for later slots; the published census continues identically across a save in each planning
+  slot; a save in the planning slots on invalid books skips the hour identically; the flow-field
+  drain rebuilds a stale zone index first; flow fields skip unchanged sources and equal a fresh
+  build. The starter town and the scarce-labour case equal the first part 4 build's.
+- **Found and recorded:** `ROAD-54`, a race in the road preview's poll that predates this part
+  (about one `./run.sh --test` run in 15 on parts 3 and 4).
+
 ### Phase inventory
 
 Every phase of today's operational hour, hourly demand pass and daily tick, and where it goes.
@@ -1252,7 +1328,7 @@ Every phase of today's operational hour, hourly demand pass and daily tick, and 
 | Job search | Gated by the job lock (`job_lock_until_day`) | Job queue on lock deadline | J |
 | `prepare_cell_lots_internal` | O(dirty regions), can spike | Dirty-region queue with quota | H (done) |
 | Demand snapshot (`from_runtime_with_funding`) | O(households + buildings + nodes) hourly | Rolling snapshot; entities created since its start folded before the next hour's job search; workforce counted live at the pass (`K` maintains it) | I (done) |
-| Demand planning (`plan_private_building_actions`) | Scans all parcels hourly | Open question 1 | I |
+| Demand planning (`plan_private_building_actions`) | Scans all parcels hourly | One slot per zone type (slots 0–2) into a saved hour plan; slot 3 admits, queues and executes; each slot `Cost::CityScan` (per-zone lot lists are a `K` item) | I (done) |
 | Household admission | Bounded; all carriers leave on the hour | Admission queue with credit; departure events | E (departures done), J |
 | Construction queue | One start per minute | Timed events | C (done) |
 | `execute_building_actions` | Plan-bounded | Level-change queue with quota | J |
@@ -1281,9 +1357,11 @@ Per-frame costs found by the `SIM-02-A` `PERF-07` baseline, outside the boundary
 
 ### Open questions
 
-1. **Demand planning slicing.** The planner works directly on the live books and rolls them back
-   through journals. Options: separate slots per zone type, or per-district planning against the
-   rolling snapshot. Decide in `SIM-02-I` with `PERF-07` data.
+1. **Demand planning slicing.** Resolved in `SIM-02-I` part 4: residential, commercial and
+   industrial plan in slots 0, 1 and 2 of the hour into a saved hour plan, and slot 3 admits,
+   queues the hour's spawns in the single pass's order and runs the actions; see
+   [Decided while unattended](#decided-while-unattended). Per-district planning remains an
+   option for `SIM-02-K` if a zone slot grows past its budget.
 2. **Hot dense references.** Resolved in `SIM-02-B`; see
    [Entity handles](#entity-handles).
 3. **Pure-job latency and pool size** per job.
@@ -1921,3 +1999,211 @@ alternatives and the evidence. The user reviews these on return.
   a census needing two closure passes has its slowest slot at 1.07 ms (window slot 583; one run
   7.0 ms), with no spike at the window's end; at 30k (one pass) 1.94 ms (slot 597). Diagnostic
   timing, not acceptance.
+- **`SIM-02-I` — the hour's plan is saved between the zone slots, and slot 3 queues it.**
+  Residential, commercial and industrial plan at slots 0, 1 and 2 of the hour, each on the
+  published books under its own journal, and append their spawns, upgrades and despawns to the
+  hour's plan, which is saved (`demand_hour_plan`: upgrades kind 0, despawns 1, optional homes 2,
+  spawns 3). Slot 3 plans the downgrades and the optional homes the workforce claims, admits,
+  then queues the whole hour's spawns in the single pass's order (homes, claimed optional homes,
+  shops, industry), proves the queue's permits and the level changes in one construction epoch
+  and runs the despawns after it closes. This is the single pass: plan everything, then execute
+  once; only the planning is spread over slots 0–2. A later slot first offers the residential
+  slot's homes and optional homes to its calendar again (a home whose lot went since is skipped,
+  an optional one dropped), then proves the earlier slots' business spawns and upgrades again,
+  zone by zone, spawns before upgrades, as the single pass held their claims. Alternatives:
+  (1) each zone slot queues its own spawns (the WIP): the 08:00 factories then started before
+  the hour's optional homes, which changed every later start, building index and applicant
+  seed; in the starter town ten factories completed before the census copy reached their rows,
+  held no claim at the next hour (their constructing proof read budgets already spent on
+  inputs, the gap left for `SIM-02-K`) and the industrial slot planned 12 more at day 1 21:00,
+  so no grocery was ever built (29,928 empty household-days in year 1). (2) Queue per slot and
+  re-sequence the hour's entries at slot 3: needs the start events rescheduled, and spawn ids,
+  hence applicant seeds, still differ from the single pass. Measured: the starter town plans the
+  same commercial and industrial spawns as part 3 on day 1 (traced), ends at 80 households, 153
+  residents, 109/119 jobs, 25 empty household-days in year 1, none in year 2, no failed
+  shopping trips (part 3: 80, 153, 109/119, 24/0/0); the scarce-labour case's entrants equal
+  part 3's (machinery on parcels 101, 103 and 104, a food processor on 102 at 99.87%).
+- **`SIM-02-I` — admission's arrivals depart paced from slot 3.** Admission runs at slot 3,
+  between the plans and the actions, as the single pass ran it before its actions. Its carriers
+  wait at the border for paced departures, which slot 0 schedules for the hour's other trips;
+  slot 3 now schedules its own carriers over the following hour. Without it they waited a whole
+  hour, and a save in that window lost their departure (a load rebuilds the arrival carriers
+  and clears the held list), so the loaded game never admitted them: four continuation tests
+  diverged by one household (`growing_town_…`, `stale_vacancy_index_…`,
+  `a_supplier_index_left_stale_…`, `a_policy_change_in_the_census_window_…`), and the
+  scarce-labour case's late arrivals left a machinery entrant at 75% staffing. Departures are
+  three slots later than the single pass's; the last of a large batch may leave in the next
+  hour's slots 0–2. Alternative: schedule every held trip at slot 3 (the hour's shoppers,
+  visitors and freight would wait three slots, and a save between slots 0 and 3 would need the
+  held lists).
+- **`SIM-02-I` — a flow field is a function of its sources and the road graph.** A field
+  equals `FlowField::build` of its zone's current sources (completed buildings of the zone in
+  zone-index order, with their entrance-legal edge endpoints) on the current graph, which is
+  what a loaded game builds. Since `SIM-02-G` only a phase that removed buildings passed the
+  allocator's zone marks to the fields, so the running game routed on fields up to days old;
+  the first part 4 build drained the marks at every frame but rebuilt both fields of every marked zone,
+  including zones marked by a placement whose site, under construction, is no source. Now:
+  - **Marks:** completion, removal (the removed and the moved building's zones), level
+    changes, a building placed complete, and every zone after a zone-index or entrance-cache
+    rebuild (both choose sources); a placement under construction marks nothing. Topology
+    edits and loads mark every field as before.
+  - **Skip:** a marked zone collects its sources into reused buffers and compares them with
+    those its fields were built from; unchanged sources on an unchanged graph keep the field.
+    The graph is identified by the CCH build generation and metric revision with the node and
+    edge counts; `mark_all_dirty` drops the identity, and a changed identity rebuilds every
+    field.
+  - **Cached adjacency and storage:** the reverse adjacency each search walks is cached per
+    mode in compact rows (offsets and a flat arc array, per-node arcs in the old order: graph
+    edge order, forward arc at the end node before the backward arc at the start node), so
+    fields are bit-identical to the old builds (the benchmark's field fingerprints match).
+    Fields and search scratch (distances, source nodes, heap) keep their storage.
+  - **Parallel:** each marked zone's car and foot slots collect, compare and build on Rayon
+    workers; slots share only the adjacency, so the result never depends on scheduling. A
+    frame with nothing marked returns without waking the pool (waking it every frame cost about
+    0.08 ms a frame at 100k in a first version).
+  - **Bound:** O(1) per frame with nothing marked; O(V + E) for the adjacency after a graph
+    change; per marked zone and mode, in parallel, O(S) to collect and compare its S sources
+    plus O((V + E) log V) only when they changed, at most six fields. Steady state allocates
+    nothing; buffers grow only past earlier sizes. Memory: six fields and scratch, 20 bytes a
+    node each, plus two adjacency tables, 4 bytes a node and 8 an arc.
+  Measured (`benchmark_flow_field_build`, matched grids, release, pinned to the eight P-cores,
+  two alternating rounds each, medians of 21): 10,000 nodes 764 µs before; 578 µs cold after
+  (adjacency built in the call), 452 µs on cached adjacency and reused buffers, adjacency alone
+  119 µs; 99,856 nodes 8.94 ms before, 7.57 ms cold, 5.62–5.72 ms cached, adjacency 1.57–1.92
+  ms. On the `PERF-07` snapshots (`perf07_flow_field_drain`, `RAYON_NUM_THREADS=8`, 1× and 32×
+  give the same counts): 30k (642 nodes, 1,201 edges), 4 game hours, before 0/1/1/1 zones
+  drained and 0/2/2/2 fields built an hour; after 0/3/1/3 drained, 0/2/2/2 built, 0/4/0/4 left
+  as they were. 100k (2,220 nodes, 4,283 edges), 3 hours, before 4/3/3 drained and 8/6/6 built;
+  after 4/4/5 drained, 6/6/6 built, 2/2/4 left. Frames that built a field: 100k before mean
+  0.68–0.91 ms, worst 1.16 ms; after 0.55–0.82 ms, worst 1.37 ms (32×); 30k before 0.20–0.27
+  ms, after 0.08–0.40 ms. Frames with nothing to build: 0.001 ms (after) at both tiers. The
+  snapshot cities are mature (one or two placements and removals an hour), so rebuild counts
+  are small either way; the bound above, not these counts, is what a growing city meets.
+  Alternatives: (1) save the fields' sources (larger saves, a second index of buildings to keep
+  in step); (2) drain at a fixed slot (a load between drains still differs); (3) insert a
+  completion into a field incrementally with the same tie-break (not needed at these counts);
+  (4) spread one build over frames: a `SIM-02-K` item, for a grid like the benchmark's 100k
+  where one build costs 5.7 ms; not done here.
+- **`SIM-02-I` — the frame's flow-field drain reads a fresh zone index**. The drain
+  read the zone index and the entrance cache without checking them, so a frame after a
+  removal that left the index stale built fields from wrong sources (the removed building's
+  entry names the moved one, the moved one's entry is past the end), while a loaded game,
+  whose load rebuilds the index, built correct ones; the next planning slot repaired the index
+  without marking the fields. The drain is now a reader under the existing rule: it rebuilds a
+  stale index (`vacancy_index_stale`) and a stale entrance cache before collecting sources.
+  The index is rebuilt at every frame that starts stale, not only when a field is marked: the
+  field marks are not saved (a load marks every field) while the stale flag is, so a game
+  loaded from a save between frames rebuilds at the same frame as the game saved, from the
+  same buildings, and its vacancy and admission order continue identically. A stale entrance
+  cache has no order to keep. Gameplay: a stale index is now rebuilt at the next frame
+  instead of at its next reader in a slot, so claims and releases between them see a fresh
+  index. Measured: on the 30k and 100k snapshots no frame started with a stale index, entrance
+  cache or CCH over the counted hours (the phases' removals repair them in their slot). The
+  player's bulldoze in the starter town does not leave the index stale either (its site query
+  rebuilds it before returning); `the_flow_field_drain_rebuilds_a_stale_zone_index_first`
+  removes a building through the lifecycle removal without the repair and checks every field
+  against a fresh build after one frame; without the drain's repair the index is still stale
+  after the frame and the test fails. Godot's building-LOD reader also rebuilds a stale index,
+  between frames, where nothing else changes it, so the result is the same as at the drain.
+- **`SIM-02-I` — a zone slot on invalid books waits for the next hour**.
+  A skipped commercial or industrial slot plans nothing for its zone; the residential slot's
+  plan stands and is queued at slot 3. A skipped slot 3 queues the hour's spawns with voided
+  business permits (they wait an hour) and drops the downgrades and business level changes;
+  residential level changes and despawns run. Measured: no skips in any slot over 24 hours at
+  10k and 30k, baseline and fiscal stress (`residential/commercial/industrial/actions_planning
+  _skips` and `construction_epoch_skips` all 0; 96 planning passes), or over 144 hours of the
+  starter town (5 epochs).
+- **`SIM-02-I` — no business start before slot 3's permits.** Slot 3 queues every spawn, due
+  from minute 1 (slot 16).
+
+- **`SIM-02-I` — a save in the hour's planning slots keeps the census they read**.
+  The census the hour's first slot publishes is read by planning slots 1–3, slot 3's permit
+  epoch, the workforce reset (`saw_operating`) and the project reservations (service ceilings,
+  paid cargo). A load ran a census of the loaded city instead, so a game saved after slot 0, 1
+  or 2 planned commerce and industry, proved permits and re-proved the plan on other books. A
+  save before the hour's actions slot (`absolute_slot % 960 < 3`) now stores, in
+  `census_inputs.published` (save format 101): whether the published books were valid for the
+  live city, and for valid books the input copy that census read and the service ceilings it
+  adopted for buildings appended after the copy (`service_capacities[copy rows..]`). The load
+  recomputes the census from that copy as `complete_loaded` does (entrances derived from the
+  copied rows, a whole census) and finishes it as `publish_into` left it: the adopted ceilings
+  appended, `published` set to the live key, no `publish_funded_job_capacities` (the buildings'
+  funded jobs and activity are saved). Books that were not valid at the save stay not valid
+  (`published = None`), so the loaded game's slots skip as the saved game's do. The copy is
+  provably unchanged from `consume()` until the fill's last slot swaps a new one in: while it
+  is not pending, `remove_building`, `remove_household`, the retargeting pass,
+  `copy_changed_rows` (front rows only when pending and not read) and `follow_policy` (only
+  when pending) leave it alone; only `prepare` (a census start, at slot 480 or a whole-hour
+  caller) and the swap change it, and both clear the new `published_front` flag. Valid books
+  also imply the live job funding is unchanged since the publication: `register_pending_service`,
+  `invalidate_building`, a non-empty remap and `clear` all set `published = None`, and the
+  planning slots and epoch return the lent books exactly. Costs: the save adds the copy's rows
+  only in slots 0–2 (in those slots no pending front is saved, so a save holds at most one
+  copy plus the partial fill, as in the hour's second half); the load runs one census, as
+  before. Alternatives: (1) save the front at every slot until the swap (exact derived jobs in
+  the UI all hour, but every save in slots 3–478 grows by a city copy for no reader); (2) save
+  the published census's books themselves (the customer, business and input books, with their
+  caches, have no saved form, and would be a second encoding of the census's state); (3) leave
+  the planning slots to run on a census of the loaded city (the defect). Evidence (release): `the_published_census_continues_identically_after_save_load_in_the_planning_slots`
+  (busy town saved after slots 0, 1 and 2: same books, funded jobs, activity, headroom, service
+  ceilings and freight capital, the loaded game saves the same copy again, and three hours of
+  censuses match) and `a_save_at_slot_1_after_a_fiscal_change_plans_on_the_published_census`
+  (busy town, commercial and industrial property tax 500 a day after slot 0, saved at slot 1;
+  the published census at load, then the hour plan, queue permits and flow fields every frame
+  for a day) pass, and both fail on a build without the restore (headroom, and the fiscal
+  case's funded jobs: the loaded city's census funds the new policy's books). The starter-town
+  between-slots test passes even without the restore, as on the first part 4 build: its decisions coincide
+  on the two censuses, which is why the census comparison at load is the check.
+- **`SIM-02-I` — a failed re-proof leaves the hour's plan**. A later slot proves
+  the earlier slots' business spawns and upgrades again, in the single pass's order, before its
+  own decisions. One that fails there (budgets, stock or workforce moved in the slots between,
+  or its lot went) would get no permit on these books anyway, but it stayed in the plan with its
+  claims released, so a later zone's projects could claim the same workers, customers and
+  inputs and the epoch then granted in queue order. It is now dropped from the plan and counted
+  (test-only `Work::ReproofDrops`); a dropped upgrade gets its pacing credit back, as a rejected
+  one does ("economic rejection must not spend pacing credit"). An upgrade whose building no
+  longer stands as planned holds no claims and stays: slot 3 skips it as before (dropping it
+  too broke two unit tests whose fixtures have buildings without parcels). Alternatives: (1)
+  keep the action and hold its old claims (no proof backs them); (2) re-plan the dropped
+  project's zone (a second decision pass per slot). Counts: see Measurements (review).
+- **`SIM-02-I` — hour-plan keys whose edge the save drops are not saved**. An
+  upgrade or despawn key whose edge has no entry in the save's edge renumbering saved as -1
+  and loaded as `usize::MAX`, which broke the edge-first order slot 3 binary-searches upgrades
+  in. Such a key names a building that resolves in neither game, so it is skipped at save.
+  No test: it needs a road edit that deletes a planned building's edge between the slots,
+  which the fixtures do not offer cheaply. Alternative: re-sort after load (keeps a row that
+  can never resolve).
+- **`SIM-02-I` — the planning slots cost `CityScan`**. The three new fixed-slot
+  systems were declared `LegacyBoundary`, which means a pass re-hosted unchanged. They are new
+  splits of a whole-city pass, so a new cost, `CityScan` (O(B + H + P) a call in buildings,
+  households and lots; `SIM-02-K` replaces the scans with maintained totals and indices), is
+  accepted for fixed slots, and the declarations state the per-call bound: the live workforce,
+  O((H + B)/p); the project market, O(B) serial; the queue's replay, O(Q log H); the earlier
+  slots' plans, O(plan); a zone slot's lot scan, O(P/p) plus its zone's free lots' assets, and
+  its zone's existing buildings, O(B/p); slot 3's downgrade candidates, O(B/p) per zone, and
+  its epoch, O(B + Q log H). Reads and writes stay `ALL`. The existing-building scan now
+  collects only what each slot uses: a zone slot its zone's upgrades and despawns, slot 3 every
+  zone's downgrades (the old scan proved both directions every time and dropped half). Per-zone
+  lot lists are not done: the parcel scan's work per lot outside the slot's zone is an
+  availability check and a profile lookup, in parallel, and a list per zone would have to
+  follow every parcel creation, removal, rezoning and occupancy change. `SIM-02-K` item, with
+  the measured lot-scan time (Measurements (review)).
+
+### Corrections to part 2's statements (merge with the entries above)
+
+- [Pure jobs](#pure-jobs), **Loading:** after "a stale one restarts at the next window slot, or
+  runs at slot 0", add: "A save before the hour's actions slot also keeps the copy the census
+  published at the hour's first slot read, whether its books were valid and the service
+  ceilings it adopted; the load recomputes that census, which the hour's planning slots read.
+  A later save runs a census of the loaded city, which only the derived jobs shown read before
+  the next publication."
+- Decided while unattended, "policy changes reach the census through its copy": replace the
+  last sentence ("Loading still runs a census of the loaded city for the derived jobs shown
+  before the next publication.") with: "A load before the hour's actions slot restores the
+  published census (it still carries the old policy, as in the saved game); a later load runs a
+  census of the loaded city for the derived jobs shown before the next publication."
+- Part 2's premise "nothing reads the load-time census before the next publication" held while
+  planning and the epoch ran at slot 0; from part 4 it holds only for loads after slot 3, and
+  the test comment in `census_cases.rs` says so.
+- `SIM-02-I` part 4 step results: save format 101 (`census_inputs.published`); the Kuopio
+  fixture gained the column and its hash in `placements.json`.

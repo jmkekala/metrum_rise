@@ -97,10 +97,12 @@ impl BuildingAllocator {
             commercial_spawn_resource_priorities,
             environment,
             &asset_candidates_by_profile,
+            None,
         )
     }
 
     /// Reuses prepared profile assets for initial selection and later viable alternatives.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn collect_demand_spawn_candidates_from_assets(
         &self,
         zoning: &ZoningSystem,
@@ -109,6 +111,7 @@ impl BuildingAllocator {
         commercial_spawn_resource_priorities: &[(ResourceRuntimeId, f32)],
         environment: BuildingSiteEnvironment<'_>,
         asset_candidates_by_profile: &BTreeMap<u16, SpawnProfileAssetCandidates>,
+        only: Option<ZoneType>,
     ) -> DemandSpawnCandidatesByUse {
         crate::debug::work::add(
             crate::debug::work::Work::SpawnParcelsScanned,
@@ -130,6 +133,10 @@ impl BuildingAllocator {
                         return candidates;
                     };
                     let zone_type = profile.zone_type;
+                    // A zone's planning slot resolves only its own zone's lots (`SIM-02-I`).
+                    if only.is_some_and(|only| only != zone_type) {
+                        return candidates;
+                    }
                     let Some(index) = private_zone_index(zone_type) else {
                         return candidates;
                     };
@@ -1921,7 +1928,12 @@ impl BuildingAllocator {
         self.dirty = true;
         self.dirty_index = true;
         self.entrances_dirty = true;
-        if let Some(zone_idx) = baseline_private_zone_slot(self.buildings[building_idx].zone_type) {
+        // A site under construction is no flow-field source (`SIM-02-I`): its zone's fields
+        // change when it completes. One placed complete is a source at once.
+        let building = &self.buildings[building_idx];
+        if !building.is_under_construction()
+            && let Some(zone_idx) = baseline_private_zone_slot(building.zone_type)
+        {
             self.dirty_zones[zone_idx] = true;
         }
         building_idx

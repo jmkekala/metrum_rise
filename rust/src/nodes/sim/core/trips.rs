@@ -117,6 +117,13 @@ impl SimCore {
             );
         }
         self.households.held_visitors = visitors;
+        self.schedule_arrival_departures(slot);
+    }
+
+    /// Paces the departures of the arrival carriers admission launched, evenly over the hour
+    /// after `slot`: the hour's actions slot admits after the hour's other trips were paced
+    /// (`SIM-02-I`), so no carrier is still held when the slot ends.
+    pub(super) fn schedule_arrival_departures(&mut self, slot: u64) {
         let mut arrivals = std::mem::take(&mut self.agents.held_arrivals);
         let count = arrivals.len();
         for (index, carrier) in arrivals.drain(..).enumerate() {

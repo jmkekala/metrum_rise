@@ -358,7 +358,12 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   permit voided by a home that failed to place waits for the next hour instead of cancelling the
   building. Every home now draws its new residents from a seed of its own, so households
   differ from earlier versions, and a game saved mid-hour, even right after a road edit,
-  continues exactly as before (save format 99).
+  continues exactly as before (save format 99). `SIM-02-I` part 4 (2026-10-19): demand
+  planning no longer runs in one frame at the top of the hour; homes, shops and industry are
+  planned in the hour's first three slots and the hour's buildings are queued, permitted and
+  cleared in the fourth, in the same order as before. Newly admitted households set off three
+  slots later, and route guidance now follows new and removed buildings at once instead of up to
+  a day later (save format 101).
 
 - **Starting treasury**: new games begin with 500,000, increased from 100,000. See
   [money source](economy.md#money-source); earlier balance runs retain their original starting capital.

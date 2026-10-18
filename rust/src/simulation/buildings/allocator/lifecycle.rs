@@ -1210,7 +1210,8 @@ impl BuildingAllocator {
 }
 
 impl BuildingAllocator {
-    fn resolve_demand_building_action(
+    /// The building a planned action names, when it still stands as planned. Expected O(1).
+    pub(crate) fn resolve_demand_building_action(
         &self,
         action: &DemandBuildingActionKey,
         zoning: &ZoningSystem,

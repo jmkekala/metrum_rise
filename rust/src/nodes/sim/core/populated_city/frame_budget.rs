@@ -163,3 +163,144 @@ fn perf07_frame_budget() {
         })
     );
 }
+
+/// Diagnostic, not acceptance timing: the hourly work of each of the hour's first four slots of a
+/// prepared snapshot over `METRUM_PLAN_HOURS` hours (`SIM-02-I`: slot 0 publishes the census,
+/// runs the operational hour and plans homes; slots 1 to 3 plan commerce and industry and
+/// execute the hour's plan). Each frame crosses at most one slot. Prints each slot's mean and
+/// worst milliseconds.
+#[test]
+#[ignore = "SIM-02-I planning slot costs on a prepared snapshot; run alone, release"]
+fn perf07_planning_slots() {
+    timing_mode();
+    let hours: u64 = std::env::var("METRUM_PLAN_HOURS")
+        .unwrap_or_else(|_| "6".into())
+        .parse()
+        .expect("METRUM_PLAN_HOURS must be an integer");
+    let mut city = snapshot::load_snapshot(residents(), &cache_dir());
+    let core = &mut city.core;
+    core.time.speed_multiplier = 1.0;
+    let per_hour = crate::simulation::core::scheduler::SLOTS_PER_HOUR;
+    // Warm the rest of this hour and one whole hour.
+    let warm = core.time.absolute_slot() / per_hour + 2;
+    while core.time.absolute_slot() / per_hour < warm {
+        core.step_frame(FRAME_DT_S);
+    }
+    let end = warm + hours;
+    let mut costs: [Vec<f64>; 4] = Default::default();
+    let mut before = core.time.absolute_slot();
+    while core.time.absolute_slot() / per_hour < end {
+        let step = core.step_frame(FRAME_DT_S / 16.0);
+        let now = core.time.absolute_slot();
+        assert!(now <= before + 1, "a frame crossed more than one slot");
+        if now != before && now % per_hour < 4 {
+            costs[(now % per_hour) as usize].push(step.hourly_ms);
+        }
+        before = now;
+    }
+    eprintln!(
+        "PERF07_PLANNING_SLOTS {}",
+        serde_json::json!({
+            "residents": residents(),
+            "hours": hours,
+            "slots_ms": costs
+                .iter()
+                .map(|slot| serde_json::json!({
+                    "mean": slot.iter().sum::<f64>() / slot.len().max(1) as f64,
+                    "max": slot.iter().copied().fold(0.0, f64::max),
+                    "samples": slot.len(),
+                }))
+                .collect::<Vec<_>>(),
+        })
+    );
+}
+
+/// Diagnostic, not acceptance timing: the frame's flow-field drain on a prepared snapshot over
+/// `METRUM_FLOW_HOURS` game hours at `METRUM_PERF07_SPEED` (`SIM-02-I`). Prints, per game hour,
+/// the zones the drain found marked, the fields it built and those it left as they were, and
+/// the frames' pathing milliseconds (CCH rebuild, index repair and field builds): the mean,
+/// the mean of frames that built a field, and the worst.
+#[test]
+#[ignore = "SIM-02-I flow-field drain counts on a prepared snapshot; run alone, release"]
+fn perf07_flow_field_drain() {
+    use crate::debug::work::{Work, snapshot as work_snapshot};
+    timing_mode();
+    let hours: u64 = std::env::var("METRUM_FLOW_HOURS")
+        .unwrap_or_else(|_| "4".into())
+        .parse()
+        .expect("METRUM_FLOW_HOURS must be an integer");
+    let speed: f32 = std::env::var("METRUM_PERF07_SPEED")
+        .unwrap_or_else(|_| "1".into())
+        .parse()
+        .expect("METRUM_PERF07_SPEED must be a number");
+    let mut city = snapshot::load_snapshot(residents(), &cache_dir());
+    let core = &mut city.core;
+    core.time.speed_multiplier = speed;
+    let per_hour = crate::simulation::core::scheduler::SLOTS_PER_HOUR;
+    // The first frame after loading builds every field; the measured hours start at the next.
+    core.step_frame(FRAME_DT_S);
+    let first = core.time.absolute_slot() / per_hour + 1;
+    while core.time.absolute_slot() / per_hour < first {
+        core.step_frame(FRAME_DT_S);
+    }
+    let count = |counts: &[u64], work: Work| counts[work as usize];
+    let mut report = Vec::new();
+    for hour in first..first + hours {
+        let before = work_snapshot();
+        let mut pathing = Vec::new();
+        let mut building = Vec::new();
+        // Frames that start with a stale zone index, a stale entrance cache or a CCH rebuild
+        // due, and their pathing milliseconds.
+        let mut stale = [Vec::new(), Vec::new(), Vec::new()];
+        while core.time.absolute_slot() / per_hour <= hour {
+            let built = count(&work_snapshot(), Work::FlowFieldsBuilt);
+            let allocator = &core.allocator;
+            let due = [
+                allocator.vacancy_index_stale(),
+                allocator.entrances_dirty || allocator.entrances.len() != allocator.buildings.len(),
+                !core.transit_network.cch_dirty_chunks.is_empty(),
+            ];
+            let step = core.step_frame(FRAME_DT_S);
+            pathing.push(step.pathing_ms);
+            if count(&work_snapshot(), Work::FlowFieldsBuilt) > built {
+                building.push(step.pathing_ms);
+            }
+            for (frames, due) in stale.iter_mut().zip(due) {
+                if due {
+                    frames.push(step.pathing_ms);
+                }
+            }
+        }
+        let after = work_snapshot();
+        let delta = |work| count(&after, work) - count(&before, work);
+        let mean = |values: &[f64]| values.iter().sum::<f64>() / values.len().max(1) as f64;
+        report.push(serde_json::json!({
+            "hour": hour,
+            "frames": pathing.len(),
+            "zones_drained": delta(Work::FlowFieldZonesDrained),
+            "fields_built": delta(Work::FlowFieldsBuilt),
+            "fields_skipped": delta(Work::FlowFieldsSkipped),
+            "buildings_placed": delta(Work::BuildingsPlaced),
+            "buildings_removed": delta(Work::BuildingsRemoved),
+            "pathing_mean_ms": mean(&pathing),
+            "pathing_building_mean_ms": mean(&building),
+            "pathing_max_ms": pathing.iter().copied().fold(0.0, f64::max),
+            "stale_index_frames": stale[0].len(),
+            "stale_index_mean_ms": mean(&stale[0]),
+            "stale_entrance_frames": stale[1].len(),
+            "stale_entrance_mean_ms": mean(&stale[1]),
+            "cch_rebuild_frames": stale[2].len(),
+            "cch_rebuild_mean_ms": mean(&stale[2]),
+        }));
+    }
+    eprintln!(
+        "PERF07_FLOW_FIELDS {}",
+        serde_json::json!({
+            "residents": residents(),
+            "speed": speed,
+            "nodes": core.region_graph.node_count(),
+            "edges": core.region_graph.edge_count(),
+            "hours": report,
+        })
+    );
+}

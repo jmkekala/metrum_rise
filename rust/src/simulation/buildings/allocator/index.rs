@@ -104,6 +104,9 @@ impl BuildingAllocator {
         }
         self.rebuild_admission_order();
         self.dirty_index = false;
+        // The zone lists name the flow fields' sources (`SIM-02-I`): the next frame compares
+        // each zone's sources and rebuilds only fields whose sources changed.
+        self.dirty_zones = [true; 3];
     }
 
     /// Whether the vacancy lists may be stale: a stale index is rebuilt by its next reader.
@@ -356,22 +359,24 @@ impl BuildingAllocator {
         })
     }
 
-    /// Returns `(endpoint_node, building_index)` pairs for all buildings of `zone`
-    /// that are legal destinations for the requested transit mode.
-    ///
-    /// Used by [`FlowFieldSystem::rebuild_dirty`](crate::simulation::pathing::flow_field::FlowFieldSystem::rebuild_dirty)
-    /// to seed the exact entrance-model
-    /// multi-source Dijkstra without falling back to a legacy endpoint proxy.
-    pub fn get_sources_for_zone(
+    /// Fills `sources` (cleared) with the `(endpoint_node, building_index)` pairs of every
+    /// completed building of `zone` that is a legal destination for the requested transit mode,
+    /// in zone-index order: the flow fields' sources
+    /// ([`FlowFieldSystem::rebuild_dirty`](crate::simulation::pathing::flow_field::FlowFieldSystem::rebuild_dirty)),
+    /// seeding the exact entrance-model multi-source Dijkstra without a legacy endpoint proxy.
+    /// The caller rebuilds a stale index and entrance cache first. O(zone buildings); reuses
+    /// `sources`' storage.
+    pub fn collect_sources_for_zone(
         &self,
         zone: ZoneType,
         graph: &RegionGraph,
         mode_flags: u8,
-    ) -> Vec<(u32, usize)> {
+        sources: &mut Vec<(u32, usize)>,
+    ) {
+        sources.clear();
         let Some(zone_idx) = baseline_private_zone_slot(zone) else {
-            return Vec::new();
+            return;
         };
-        let mut sources = Vec::new();
         let want_car = (mode_flags & crate::simulation::network::types::TransitFlags::CAR) != 0;
         let want_foot = (mode_flags & crate::simulation::network::types::TransitFlags::FOOT) != 0;
 
@@ -406,8 +411,6 @@ impl BuildingAllocator {
                 }
             }
         }
-
-        sources
     }
 }
 

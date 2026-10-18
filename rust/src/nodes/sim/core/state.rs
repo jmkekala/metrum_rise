@@ -30,7 +30,8 @@ use crate::simulation::core::time::TimeSystem;
 use crate::simulation::core::timing_wheel::{TimedEvent, TimingWheel};
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::demand::{
-    DemandBuildingActionPlan, DemandSpawnAction, DemandSystem, SpawnPermit, StartRefusal,
+    DemandBuildingActionPlan, DemandSpawnAction, DemandSystem, PlanningSlot, SpawnPermit,
+    StartRefusal,
 };
 use crate::simulation::economy::fiscal::CityFiscalPolicy;
 use crate::simulation::economy::hiring::{CENSUS_WINDOW_START, FrozenCensusParameters};
@@ -146,6 +147,18 @@ pub(super) fn demand_plan_has_non_spawn_actions(plan: &DemandBuildingActionPlan)
                 || !use_plan.downgrades.is_empty()
                 || !use_plan.upgrades.is_empty()
         })
+}
+
+// The part of the hour's plan for zone type `zone_type`, one of the private zone families.
+fn zone_plan(
+    plan: &mut DemandBuildingActionPlan,
+    zone_type: ZoneType,
+) -> &mut crate::simulation::economy::demand::DemandUseActionPlan {
+    match zone_type {
+        ZoneType::Commercial => &mut plan.commercial,
+        ZoneType::Industrial => &mut plan.industrial,
+        _ => &mut plan.residential,
+    }
 }
 
 pub(super) fn demand_plan_without_spawns(
@@ -606,6 +619,10 @@ impl SimCore {
             minute_of_day,
         );
         self.simulate_operational_hour_observed(day_index, minute_of_day, &mut ());
+        // The hour's later planning slots, as slots 1 to 3 run them (`SIM-02-I`).
+        for slot in &PlanningSlot::ALL[1..] {
+            self.execute_demand_planning_slot(*slot, day_index, minute_of_day);
+        }
         self.run_every_hour_phase();
         self.serve_cell_lot_queue(CELL_LOT_QUOTA as usize * SLOTS_PER_HOUR as usize);
         self.allocator
@@ -704,7 +721,9 @@ impl SimCore {
                 "the census published at the pass's slot is current"
             );
         }
-        self.execute_hourly_demand_pass(day_index, minute_of_day);
+        // The hour's residential planning slot; commercial, industrial and the hour's actions
+        // follow at slots 1 to 3 (`SIM-02-I`).
+        self.execute_demand_planning_slot(PlanningSlot::Residential, day_index, minute_of_day);
         observer.buildings_changed(self);
         self.schedule_trip_departures(absolute_slot(day_index, minute_of_day, 0));
     }
@@ -990,8 +1009,9 @@ impl SimCore {
         }
     }
 
-    /// Test driver of an hour's planning pass without the slot clock: publishes a census of the
-    /// live city first when the published one is not current, as the hour's first slot does.
+    /// Test driver of an hour's demand planning without the slot clock: publishes a census of
+    /// the live city first when the published one is not current, as the hour's first slot
+    /// does, then runs the hour's four planning slots in turn.
     #[cfg(test)]
     pub(super) fn execute_hourly_demand_pass_for_test(
         &mut self,
@@ -1008,7 +1028,9 @@ impl SimCore {
             self.treasury.balance,
             minute_of_day,
         );
-        self.execute_hourly_demand_pass(day_index, minute_of_day);
+        for slot in PlanningSlot::ALL {
+            self.execute_demand_planning_slot(slot, day_index, minute_of_day);
+        }
     }
 
     /// Test driver of a planning slot's permits without its pass: a census of the live city is
@@ -1423,8 +1445,16 @@ impl SimCore {
         self.last_tick_duration = close_start.elapsed().as_secs_f64() * 1000.0;
     }
 
-    // Plans on the cell lots the `cell lots` queue has prepared so far (`SIM-02-H`).
-    pub(super) fn execute_hourly_demand_pass(&mut self, day_index: u32, minute_of_day: u16) {
+    // The hour's demand planning slot `slot` (`SIM-02-I`), on the cell lots the `cell lots`
+    // queue has prepared so far (`SIM-02-H`): a zone slot plans its zone into the hour's plan;
+    // the actions slot admits the hour's arrivals, queues the hour's spawns and executes the
+    // rest of the plan. Returns whether buildings may have changed.
+    pub(super) fn execute_demand_planning_slot(
+        &mut self,
+        slot: PlanningSlot,
+        day_index: u32,
+        minute_of_day: u16,
+    ) -> bool {
         let timing = crate::debug::Channel::EconomyPhases
             .enabled()
             .then(Instant::now);
@@ -1439,7 +1469,8 @@ impl SimCore {
             .set_admission_candidate_hour(day_index, minute_of_day);
         self.refresh_demand_construction_queue(day_index, minute_of_day);
         let prepare_ms = timing.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0);
-        self.demand.run_hourly_pass_with_policy(
+        let planned = self.demand.run_planning_slot(
+            slot,
             &self.allocator,
             &mut self.households,
             &self.region_graph,
@@ -1456,6 +1487,56 @@ impl SimCore {
         );
         let plan_ms =
             timing.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0) - prepare_ms;
+        let Some(zone_type) = slot.zone_type() else {
+            self.execute_demand_actions_slot(planned, day_index, minute_of_day, timing, plan_ms);
+            return true;
+        };
+        // A slot skipped on books not valid for the live city plans nothing for its zone this
+        // hour; the earlier slots' plans stand. Slot 3 queues the hour's spawns.
+        if let Some(start) = timing {
+            debug_log!(
+                "economy_phases",
+                "demand_slot_detail day={} minute={} slot={:?} planned={} prepare_ms={:.3} plan_ms={:.3} total_ms={:.3}",
+                day_index,
+                minute_of_day,
+                slot,
+                planned,
+                prepare_ms,
+                plan_ms,
+                start.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+        let plan = zone_plan(&mut self.demand.building_actions, zone_type);
+        debug_log!(
+            "economy",
+            "demand planning slot: day={} minute={} zone={:?} planned={} spawns={} upgrades={} despawns={}",
+            day_index,
+            minute_of_day,
+            zone_type,
+            planned,
+            plan.spawns.len(),
+            plan.upgrades.len(),
+            plan.despawns.len(),
+        );
+        false
+    }
+
+    // Slot 3 of the hour (`SIM-02-I`): the hour's admission between its plans and its actions,
+    // as the single pass ran it, then the hour's spawns queued in the single pass's order
+    // (homes, the optional homes the workforce claimed, shops, industry), the permits of the
+    // whole queue and the hour's level changes in one construction epoch, and the despawns
+    // last, after it closes. Without slot 3's planning or epoch (books not valid for the live
+    // city) no business level change runs and the queue's business permits wait an hour;
+    // residential level changes and despawns still run.
+    fn execute_demand_actions_slot(
+        &mut self,
+        planned: bool,
+        day_index: u32,
+        minute_of_day: u16,
+        timing: Option<Instant>,
+        plan_ms: f64,
+    ) {
+        let actions_start = timing.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0);
         let launched_households = self
             .allocator
             .execute_demand_household_admission_with_income(
@@ -1482,12 +1563,21 @@ impl SimCore {
             .saturating_add(launched_households);
         self.demand
             .record_household_admission_execution(launched_households);
+        // The carriers depart paced over the hour from this slot, as the single pass's left
+        // from slot 0 with the hour's other trips.
+        self.schedule_arrival_departures(absolute_slot(
+            day_index,
+            minute_of_day,
+            PlanningSlot::Actions as u64,
+        ));
         let admission_end = timing.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0);
         let queued_spawn_count = self.enqueue_hourly_demand_spawns(day_index, minute_of_day);
         let mut immediate_building_plan = demand_plan_without_spawns(&self.demand.building_actions);
         self.refresh_demand_construction_queue(day_index, minute_of_day);
-        if !self.prove_construction_permits(&immediate_building_plan, day_index, minute_of_day) {
-            // Without an epoch no business level change is proved; the next hour plans again.
+        let proved =
+            self.prove_construction_permits(&immediate_building_plan, day_index, minute_of_day);
+        if !planned || !proved {
+            // No business level change is proved; the next hour plans again.
             for plan in [
                 &mut immediate_building_plan.commercial,
                 &mut immediate_building_plan.industrial,
@@ -1528,14 +1618,13 @@ impl SimCore {
             let total_ms = start.elapsed().as_secs_f64() * 1000.0;
             debug_log!(
                 "economy_phases",
-                "demand_phase_detail day={} minute={} prepare_ms={:.3} plan_ms={:.3} execute_ms={:.3} total_ms={:.3} admission_ms={:.3} queue_ms={:.3} actions_ms={:.3} publish_ms={:.3}",
+                "demand_phase_detail day={} minute={} plan_ms={:.3} execute_ms={:.3} total_ms={:.3} admission_ms={:.3} queue_ms={:.3} actions_ms={:.3} publish_ms={:.3}",
                 day_index,
                 minute_of_day,
-                prepare_ms,
                 plan_ms,
-                total_ms - prepare_ms - plan_ms,
+                total_ms - actions_start,
                 total_ms,
-                admission_end - prepare_ms - plan_ms,
+                admission_end - actions_start,
                 queue_end - admission_end,
                 actions_end - queue_end,
                 total_ms - actions_end
@@ -1579,30 +1668,30 @@ impl SimCore {
                 rejections.site_support_tie_in_invalid,
             );
         }
+        let plan = &self.demand.building_actions;
         debug_log!(
             "economy",
-            "hourly demand: day={} minute={} admit={} planned_spawns=({}/{}/{}) queued_spawns={} pending_spawns={} placed_spawns=({}/{}/{}) upgrades=({}/{}/{}) downgrades=({}/{}/{}) despawns=({}/{}/{})",
+            "hourly demand actions: day={} minute={} admit={} planned_spawns=({}/{}/{}) queued_spawns={} pending_spawns={} upgrades=({}/{}/{}) downgrades=({}/{}/{}) despawns=({}/{}/{})",
             day_index,
             minute_of_day,
             self.demand.households_to_admit_today,
-            self.demand.building_actions.residential.spawns.len(),
-            self.demand.building_actions.commercial.spawns.len(),
-            self.demand.building_actions.industrial.spawns.len(),
+            plan.residential.spawns.len(),
+            plan.commercial.spawns.len(),
+            plan.industrial.spawns.len(),
             queued_spawn_count,
             self.pending_demand_spawns.len(),
-            building_action_execution.residential.spawn_executed,
-            building_action_execution.commercial.spawn_executed,
-            building_action_execution.industrial.spawn_executed,
-            self.demand.building_actions.residential.upgrades.len(),
-            self.demand.building_actions.commercial.upgrades.len(),
-            self.demand.building_actions.industrial.upgrades.len(),
-            self.demand.building_actions.residential.downgrades.len(),
-            self.demand.building_actions.commercial.downgrades.len(),
-            self.demand.building_actions.industrial.downgrades.len(),
-            self.demand.building_actions.residential.despawns.len(),
-            self.demand.building_actions.commercial.despawns.len(),
-            self.demand.building_actions.industrial.despawns.len(),
+            plan.residential.upgrades.len(),
+            plan.commercial.upgrades.len(),
+            plan.industrial.upgrades.len(),
+            plan.residential.downgrades.len(),
+            plan.commercial.downgrades.len(),
+            plan.industrial.downgrades.len(),
+            plan.residential.despawns.len(),
+            plan.commercial.despawns.len(),
+            plan.industrial.despawns.len(),
         );
+        // The hour's plan is done; the next hour's first slot starts a new one.
+        self.demand.clear_hour_plan();
     }
 
     /// Publishes allocator-owned site changes through one terrain invalidation path for every mode.

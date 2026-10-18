@@ -124,7 +124,8 @@ hour`, `SIM-02-I`).
 Trips decided on the hour do not leave on it (`SIM-02-E`,
 [`simulation.md`](simulation.md#deadlines-and-timed-events)). Freight carriers, shoppers,
 service visitors and household arrival carriers wait for a departure slot; each kind is spaced
-evenly over the following hour. Each trip is then checked as it travels (every one to eight
+evenly over the following hour. Arrival carriers are paced from the hour's actions slot, where
+admission runs (`SIM-02-I` part 4), so they leave three slots after the hour's other trips. Each trip is then checked as it travels (every one to eight
 minutes, growing with its time on the road) and settles when it arrives: a delivery, a store pickup, a shopper's return or a household moving in no longer
 waits for the next hour. Leg timeouts still count operational hours.
 

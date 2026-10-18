@@ -312,7 +312,7 @@ fn construction_shares_live_queued_and_placed_local_input_claims() {
             100_000.0,
             420,
         );
-        demand.run_hourly_pass_with_policy(
+        demand.run_planning_hour_for_test(
             &allocator,
             &mut households,
             &graph,
@@ -1845,7 +1845,7 @@ fn live_local_inputs_can_fund_only_their_incumbents_upgrade() {
         }
         let mut demand = DemandSystem::new();
         demand.upgrade_action_credit.industrial = 2.0;
-        demand.plan_private_building_actions(
+        demand.plan_hour_for_test(
             &allocator,
             &graph,
             &zoning,
@@ -3124,6 +3124,35 @@ fn plan_with_supply(
 ) -> DemandSystem {
     let catalog = load_runtime_economy_catalog().unwrap();
     let tuning = load_runtime_economy_tuning().unwrap();
+    let snapshot = planning_snapshot(workers, sales);
+    let terrain = TerrainSystem::new(4, 4);
+    let mut surface = RoadSurfaceSystem::new(512.0);
+    surface.compile_dirty(graph, &terrain);
+    let mut demand = DemandSystem::new();
+    demand.plan_hour_for_test(
+        allocator,
+        graph,
+        zoning,
+        &snapshot,
+        &Default::default(),
+        &catalog,
+        &tuning,
+        &CityFiscalPolicy::default(),
+        &ResidentialOccupantSnapshot::from_runtime(allocator, &HouseholdSystem::new()),
+        1.0 / 24.0,
+        BuildingSiteEnvironment {
+            road_surface: &surface,
+            terrain: &terrain,
+        },
+        supply,
+    );
+    demand
+}
+
+// A planning snapshot with `workers` unemployed members, `sales` of unmet consumer demand and
+// export expansion open.
+fn planning_snapshot(workers: u32, sales: &[(&str, f32)]) -> DailyDemandSnapshot {
+    let catalog = load_runtime_economy_catalog().unwrap();
     let demand_by_resource: Vec<_> = sales
         .iter()
         .map(|(resource, units)| {
@@ -3147,28 +3176,7 @@ fn plan_with_supply(
         .output_absorption
         .set_export_expansion_available(true);
     snapshot.committed_unmet_commercial_consumer_demand_by_resource = demand_by_resource;
-    let terrain = TerrainSystem::new(4, 4);
-    let mut surface = RoadSurfaceSystem::new(512.0);
-    surface.compile_dirty(graph, &terrain);
-    let mut demand = DemandSystem::new();
-    demand.plan_private_building_actions(
-        allocator,
-        graph,
-        zoning,
-        &snapshot,
-        &Default::default(),
-        &catalog,
-        &tuning,
-        &CityFiscalPolicy::default(),
-        &ResidentialOccupantSnapshot::from_runtime(allocator, &HouseholdSystem::new()),
-        1.0 / 24.0,
-        BuildingSiteEnvironment {
-            road_surface: &surface,
-            terrain: &terrain,
-        },
-        supply,
-    );
-    demand
+    snapshot
 }
 
 #[test]
@@ -3262,7 +3270,9 @@ fn alternative_reservations_commit_the_winner_after_later_rejected_probes() {
         demand.building_actions.industrial.spawns[0].asset_id,
         viable
     );
-    assert_eq!(committed.borrow().as_slice(), &[viable]);
+    // The industrial slot commits the winner; the actions slot proves the hour's spawn again
+    // on the driver's one supply (`SIM-02-I`). No rejected probe commits.
+    assert_eq!(committed.borrow().as_slice(), &[viable.clone(), viable]);
 }
 
 #[test]
@@ -3590,7 +3600,7 @@ fn upgrades_share_ready_workers_and_preserve_incumbent_job_reservations() {
         let mut demand = DemandSystem::new();
 
         demand.upgrade_action_credit.industrial = 2.0;
-        demand.plan_private_building_actions(
+        demand.plan_hour_for_test(
             &allocator,
             &graph,
             &empty_zoning(),
@@ -3961,7 +3971,7 @@ fn business_downgrades_require_recovery_and_share_workers_and_customers() {
         let mut demand = DemandSystem::new();
 
         demand.downgrade_action_credit.industrial = 2.0;
-        demand.plan_private_building_actions(
+        demand.plan_hour_for_test(
             &allocator,
             &graph,
             &empty_zoning(),
@@ -4094,7 +4104,7 @@ fn residential_downgrades_preserve_worker_housing_and_share_surplus() {
             assert_eq!(demand.queued_construction.len(), 2);
             snapshot.reserve_queued_construction(&catalog, &demand.queued_construction);
         }
-        demand.plan_private_building_actions(
+        demand.plan_hour_for_test(
             &allocator,
             &graph,
             &zoning,
@@ -4177,7 +4187,7 @@ fn an_available_lower_tier_cannot_hide_a_viable_upgrade() {
     let mut demand = DemandSystem::new();
     demand.upgrade_action_credit.industrial = 1.0;
     demand.downgrade_action_credit.industrial = 1.0;
-    demand.plan_private_building_actions(
+    demand.plan_hour_for_test(
         &allocator,
         &graph,
         &empty_zoning(),
@@ -4204,7 +4214,7 @@ fn an_available_lower_tier_cannot_hide_a_viable_upgrade() {
     // Cash cannot subsidize a replacement whose proposed route has no recurring margin.
     demand.building_actions = Default::default();
     demand.upgrade_action_credit.industrial = 1.0;
-    demand.plan_private_building_actions(
+    demand.plan_hour_for_test(
         &allocator,
         &graph,
         &empty_zoning(),
@@ -4372,7 +4382,7 @@ fn benchmark_active_level_change_planning() {
             demand.building_actions = Default::default();
             demand.downgrade_action_credit.residential = pairs as f32;
             demand.downgrade_action_credit.industrial = pairs as f32;
-            demand.plan_private_building_actions(
+            demand.plan_hour_for_test(
                 black_box(&allocator),
                 &graph,
                 &zoning,
@@ -4778,4 +4788,133 @@ fn benchmark_active_construction_queue() {
             median(2)
         );
     }
+}
+
+// Runs planning slot `slot` of `demand` on a snapshot with `workers` unemployed members and
+// `sales` of unmet consumer demand, as the hour's slots run it on the published census.
+fn plan_slot(
+    demand: &mut DemandSystem,
+    slot: crate::simulation::economy::demand::PlanningSlot,
+    world: (&BuildingAllocator, &RegionGraph, &ZoningSystem),
+    workers: u32,
+    sales: &[(&str, f32)],
+) {
+    let (allocator, graph, zoning) = world;
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let tuning = load_runtime_economy_tuning().unwrap();
+    let terrain = TerrainSystem::new(4, 4);
+    let mut surface = RoadSurfaceSystem::new(512.0);
+    surface.compile_dirty(graph, &terrain);
+    let fee = tuning.logistics.dispatch_fee_currency;
+    demand.plan_private_building_actions(
+        slot,
+        allocator,
+        graph,
+        zoning,
+        &planning_snapshot(workers, sales),
+        &Default::default(),
+        &catalog,
+        &tuning,
+        &CityFiscalPolicy::default(),
+        &ResidentialOccupantSnapshot::from_runtime(allocator, &HouseholdSystem::new()),
+        1.0 / 24.0,
+        BuildingSiteEnvironment {
+            road_surface: &surface,
+            terrain: &terrain,
+        },
+        &mut |_: u64, _: &str| Some(fee),
+    );
+}
+
+// A later slot proves the earlier slots' business spawns and upgrades again (`SIM-02-I`). The
+// commercial slot plans a barber on the free lot and the upgrade of the staffed one, with the
+// town's eight workers; when the market they were proved on is gone by the industrial slot,
+// both fail its re-proof: they leave the hour's plan, the upgrade's pacing credit is refunded,
+// and the workers they held go to the industrial slot's factories, which the held claims left
+// no room for while the market stood.
+#[test]
+fn failed_reproofs_leave_the_plan_and_free_their_workers_for_later_slots() {
+    use crate::simulation::economy::demand::PlanningSlot;
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let mut allocator = BuildingAllocator::new();
+    let barber = |allocator: &mut BuildingAllocator, name: &str, level| {
+        register_family_asset_with_economy_profile(
+            allocator,
+            name,
+            ZoneType::Commercial,
+            Some("barber"),
+            level,
+            Some("personal_service_small"),
+        )
+    };
+    let level_one = barber(&mut allocator, "barber_l1", 1);
+    let level_two = barber(&mut allocator, "barber_l2", 2);
+    register_family_asset_with_economy_profile(
+        &mut allocator,
+        "machinery",
+        ZoneType::Industrial,
+        None,
+        1,
+        Some("machinery_factory_basic"),
+    );
+    let graph = graph_with_connected_border();
+    let mut zoning = two_lots(&graph, ZoneType::Commercial);
+    let industrial = zoning
+        .profiles
+        .default_runtime_id_for_zone_type(ZoneType::Industrial)
+        .unwrap();
+    zoning
+        .place_parcel_run_at(10.0, 20.0, 40.0, 20.0, industrial, 20.0, 30.0, 0.0, &graph)
+        .unwrap();
+    // A fully staffed level-one barber with service stock on the first commercial lot.
+    let lot = zoning.parcels()[0].id().raw();
+    let mut shop = building(ZoneType::Commercial, 0.0, 0, 4, level_one);
+    shop.parcel_id = lot;
+    shop.operating_budget = 100_000.0;
+    shop.economy_profile_runtime_id = catalog
+        .profile_for_id("personal_service_small")
+        .unwrap()
+        .runtime_id;
+    let services = catalog
+        .resource_runtime_id_for_id("personal_services")
+        .unwrap();
+    shop.resource_inventory[services as usize - 1] = 10.0;
+    allocator.buildings.push(shop);
+    assert!(zoning.occupy_parcel(lot, 0));
+    let sales = [("personal_services", 600.0)];
+    let world = (&allocator, &graph, &zoning);
+    let planned = || {
+        let mut demand = DemandSystem::new();
+        demand.upgrade_action_credit.commercial = 1.0;
+        for slot in [PlanningSlot::Residential, PlanningSlot::Commercial] {
+            plan_slot(&mut demand, slot, world, 8, &sales);
+        }
+        let plan = &demand.building_actions.commercial;
+        assert_eq!(plan.spawns.len(), 1, "the commercial slot plans a barber");
+        assert_ne!(plan.spawns[0].parcel_id, lot);
+        assert_eq!(plan.upgrades.len(), 1, "and the staffed barber's upgrade");
+        assert_eq!(plan.upgrades[0].target_asset_id, level_two);
+        let credit = demand.upgrade_action_credit.commercial;
+        assert!(credit < 1.0, "the upgrade spent its pacing credit");
+        (demand, credit)
+    };
+    // While the market stands, both are proved again and keep their claims.
+    let (mut kept, credit) = planned();
+    plan_slot(&mut kept, PlanningSlot::Industrial, world, 8, &sales);
+    assert_eq!(kept.reproof_drops, 0);
+    assert_eq!(kept.building_actions.commercial.spawns.len(), 1);
+    assert_eq!(kept.building_actions.commercial.upgrades.len(), 1);
+    assert_eq!(kept.upgrade_action_credit.commercial, credit);
+    assert!(
+        kept.building_actions.industrial.spawns.is_empty(),
+        "the commercial projects hold every worker"
+    );
+    // Without it, both leave the plan and the factories take the freed workers.
+    let (mut dropped, credit) = planned();
+    plan_slot(&mut dropped, PlanningSlot::Industrial, world, 8, &[]);
+    assert_eq!(dropped.reproof_drops, 2);
+    assert!(dropped.building_actions.commercial.spawns.is_empty());
+    assert!(dropped.building_actions.commercial.upgrades.is_empty());
+    assert_eq!(dropped.upgrade_action_credit.commercial, credit + 1.0);
+    assert_eq!(dropped.building_actions.industrial.spawns.len(), 2);
 }

@@ -13,7 +13,7 @@ use super::PopulatedCity;
 use crate::debug::work::{WORK_COUNT, Work, snapshot, window_snapshot};
 use crate::simulation::core::scheduler::SLOTS_PER_HOUR;
 
-const COUNTED: [(Work, &str); 11] = [
+const COUNTED: [(Work, &str); 15] = [
     (Work::BuildingsPlaced, "buildings_placed"),
     (Work::BuildingsRemoved, "buildings_removed"),
     (Work::HouseholdsRemoved, "households_removed"),
@@ -21,9 +21,13 @@ const COUNTED: [(Work, &str); 11] = [
     (Work::CensusRestarts, "census_restarts"),
     (Work::LiveCensuses, "live_censuses"),
     (Work::PlanningPasses, "planning_passes"),
-    (Work::PlanningSkips, "planning_skips"),
+    (Work::ResidentialPlanningSkips, "residential_planning_skips"),
+    (Work::CommercialPlanningSkips, "commercial_planning_skips"),
+    (Work::IndustrialPlanningSkips, "industrial_planning_skips"),
+    (Work::ActionsPlanningSkips, "actions_planning_skips"),
     (Work::ConstructionEpochs, "construction_epochs"),
     (Work::ConstructionEpochSkips, "construction_epoch_skips"),
+    (Work::ReproofDrops, "reproof_drops"),
     (Work::CensusBuildings, "census_buildings"),
 ];
 
@@ -61,9 +65,7 @@ pub(in crate::nodes::sim::core) fn report_census_churn(
         let (after, after_window) = (snapshot(), window_snapshot());
         for (seen, any) in hours_with.iter_mut().zip([
             delta(&after_window, &before_window, Work::StructuralChanges) > 0,
-            delta(&after, &before, Work::PlanningSkips)
-                + delta(&after, &before, Work::ConstructionEpochSkips)
-                > 0,
+            skips(&after, &before) > 0,
         ]) {
             *seen += u32::from(any);
         }
@@ -94,7 +96,21 @@ pub(in crate::nodes::sim::core) fn report_census_churn(
             "hours_with_skip": hours_with[1],
         })
     );
-    delta(&end, &start, Work::PlanningSkips) + delta(&end, &start, Work::ConstructionEpochSkips)
+    skips(&end, &start)
+}
+
+// Planning slots and construction epochs skipped between two snapshots.
+fn skips(after: &[u64; WORK_COUNT], before: &[u64; WORK_COUNT]) -> u64 {
+    [
+        Work::ResidentialPlanningSkips,
+        Work::CommercialPlanningSkips,
+        Work::IndustrialPlanningSkips,
+        Work::ActionsPlanningSkips,
+        Work::ConstructionEpochSkips,
+    ]
+    .into_iter()
+    .map(|work| delta(after, before, work))
+    .sum()
 }
 
 fn env_u32(name: &str, default: u32) -> u32 {

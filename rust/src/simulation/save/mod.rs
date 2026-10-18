@@ -470,7 +470,14 @@ fn write_snapshot(
     network::save_network(tx, view.graph, maps)?;
     agents::save_agents(tx, view.agents, view.graph, view.network, maps)?;
     workplace_quotes::save(tx, view.households, view.allocator, view.network, maps)?;
-    census_inputs::save(tx, view.households, view.allocator, view.network, maps)?;
+    census_inputs::save(
+        tx,
+        view.households,
+        view.allocator,
+        view.network,
+        view.time,
+        maps,
+    )?;
     scheduler::save(tx, &view.scheduler, view.graph)?;
     handles::save(
         tx,
@@ -582,6 +589,7 @@ pub(crate) fn load_from_sqlite(
         demand_row.cheat_max_demands_enabled,
     );
     demand.exit_eligible_today = demand_row.exit_eligible_today;
+    world::load_demand_hour_plan(&conn, &mut demand)?;
     let mut pending_demand_spawns = world::load_pending_demand_spawns(&conn)?;
     let scheduler = scheduler::load(&conn)?;
     demand
@@ -860,6 +868,20 @@ fn load_fiscal_policy(conn: &Connection) -> SaveLoadResult<CityFiscalPolicy> {
         row.10,
     );
     Ok(policy)
+}
+
+/// The node numbering a save of this game writes: the saved id of each canonical node the save
+/// keeps, those that a live edge or an agent names. For tests that compare a game with the game
+/// loaded from its save.
+#[cfg(test)]
+pub(crate) fn saved_node_numbering(
+    graph: &RegionGraph,
+    allocator: &BuildingAllocator,
+    agents: &AgentSystem,
+) -> HashMap<u32, u32> {
+    build_snapshot_maps(graph, allocator, agents)
+        .expect("a saveable game")
+        .node_old_to_new
 }
 
 fn build_snapshot_maps(

@@ -14,7 +14,7 @@ use crate::simulation::economy::hiring::{
 };
 
 // A town busy with homes, businesses and freight on the road.
-fn busy_town() -> GrowthScenario {
+pub(super) fn busy_town() -> GrowthScenario {
     let mut scenario = GrowthScenario::starter_town();
     scenario.run_days(8);
     let in_transit = |core: &SimCore| {
@@ -185,7 +185,7 @@ fn step_to_chunk(core: &mut SimCore, chunk: u64) {
 }
 
 // The census's outputs and books, bit for bit.
-fn assert_same_census(left: &JobFunding, right: &JobFunding, label: &str) {
+pub(super) fn assert_same_census(left: &JobFunding, right: &JobFunding, label: &str) {
     left.assert_same_operations_for_test(right);
     assert_eq!(left.service_capacities, right.service_capacities, "{label}");
     assert_eq!(left.freight_capital, right.freight_capital, "{label}");
@@ -194,6 +194,57 @@ fn assert_same_census(left: &JobFunding, right: &JobFunding, label: &str) {
         right.census_book_fingerprints_for_test(),
         "{label}"
     );
+}
+
+// Whether the planning slots and the permit epoch lend the published census's books at the
+// clock's minute, as `has_current_input_supply` decides it (`SIM-02-I`): books valid for the
+// live city's key, priced for the hour's freight phase and quoted for its connected borders.
+pub(super) fn published_books_lent(core: &SimCore) -> bool {
+    let mut borders = Vec::new();
+    crate::simulation::economy::logistics::collect_connected_border_nodes(
+        &core.region_graph,
+        &mut borders,
+    );
+    core.households.job_funding.has_current_input_supply(
+        core.households.census_key(&core.transit_network),
+        &borders,
+        crate::simulation::economy::logistics::freight_price_phase(
+            core.demand.runtime_tuning(),
+            core.time.minute_of_day,
+        ),
+    )
+}
+
+// The census the hour's first slot published, which the hour's later planning slots, permit
+// epoch, workforce reset and project reservations read (`SIM-02-I`): a game loaded before the
+// hour's actions slot lends its books exactly when the saved game does, and lent books are the
+// same books, funded jobs and activity, with the same buildings seen complete. Books not lent
+// are read by nobody before the next publication replaces them.
+pub(super) fn assert_same_published_census(source: &SimCore, loaded: &SimCore) {
+    let lent = published_books_lent(source);
+    assert_eq!(
+        lent,
+        published_books_lent(loaded),
+        "published census validity"
+    );
+    if lent {
+        let (a, b) = (
+            &source.households.job_funding,
+            &loaded.households.job_funding,
+        );
+        assert_same_census(a, b, "published census");
+        // One word past the buildings covers every bit either census set.
+        let rows = source
+            .allocator
+            .buildings
+            .len()
+            .max(loaded.allocator.buildings.len())
+            + 64;
+        assert!(
+            (0..rows).all(|index| a.saw_operating(index) == b.saw_operating(index)),
+            "the published census saw the same buildings complete"
+        );
+    }
 }
 
 #[test]
@@ -254,6 +305,18 @@ fn the_census_continues_identically_after_save_load_in_the_fill_the_window_and_b
     assert_census_continues_after_reload(&mut source, "before-publish");
 }
 
+// The hour's planning slots read the census its first slot published (`SIM-02-I`): a save after
+// slot 0, 1 or 2 keeps its copy, and the loaded game recomputes the same census, books and all,
+// saves the same copy again and runs the next censuses as the saved game does.
+#[test]
+fn the_published_census_continues_identically_after_save_load_in_the_planning_slots() {
+    let mut source = busy_town();
+    for chunk in 0..3 {
+        step_to_chunk(&mut source.core, chunk);
+        assert_census_continues_after_reload(&mut source, &format!("planning-slot-{chunk}"));
+    }
+}
+
 // Saves `source`, loads the save, checks that the loaded game saves the same copy and census
 // state and that both run the next three hours' censuses bit for bit.
 fn assert_census_continues_after_reload(source: &mut GrowthScenario, label: &str) {
@@ -285,13 +348,14 @@ fn assert_census_continues_after_reload(source: &mut GrowthScenario, label: &str
         Vec<u8>,
         Option<i64>,
         Option<bool>,
+        Option<Vec<u8>>,
     );
     let copy = |path: &std::path::Path| -> Row {
         let rows = rusqlite::Connection::open(path)
             .unwrap()
             .query_row(
-                "SELECT front, back, changes, deferred, census_publish_slot, census_current \
-                 FROM census_inputs",
+                "SELECT front, back, changes, deferred, census_publish_slot, census_current, \
+                 published FROM census_inputs",
                 [],
                 |row| {
                     Ok((
@@ -301,6 +365,7 @@ fn assert_census_continues_after_reload(source: &mut GrowthScenario, label: &str
                         row.get(3)?,
                         row.get(4)?,
                         row.get(5)?,
+                        row.get(6)?,
                     ))
                 },
             )
@@ -314,6 +379,13 @@ fn assert_census_continues_after_reload(source: &mut GrowthScenario, label: &str
         "{label}"
     );
     assert_eq!(source_copy, loaded_copy, "{label}: the loaded copy differs");
+    // Saved before the hour's actions slot: the published census its planning slots read.
+    let planning = source.core.time.absolute_slot() % SLOTS_PER_HOUR
+        < crate::simulation::economy::demand::PlanningSlot::Actions as u64;
+    assert_eq!(source_copy.6.is_some(), planning, "{label}");
+    if planning {
+        assert_same_published_census(&source.core, &loaded.core);
+    }
     // A finished census is recomputed at load.
     if source.core.households.census_run.is_done() && source_copy.4.is_some() {
         assert!(loaded.core.households.census_run.is_done(), "{label}");
@@ -331,8 +403,9 @@ fn assert_census_continues_after_reload(source: &mut GrowthScenario, label: &str
         loaded.core.step_frame(FRAME_DT_S);
         censuses += frame.hourly_ticks;
         let (a, b) = (&source.core, &loaded.core);
-        // Loading rebuilt a census of the live city, which nothing reads before the next
-        // hour's first slot publishes the census of the copy.
+        // A load after the hour's actions slot rebuilt a census of the live city, which only
+        // the derived jobs shown read before the next hour's first slot publishes the census
+        // of the copy; a load before it restored the published census (above).
         if censuses > 0 {
             let (x, y) = (&a.households.job_funding, &b.households.job_funding);
             assert_eq!(x.capacities, y.capacities, "{label}: funded jobs differ");
@@ -498,8 +571,9 @@ fn a_workplace_completed_after_the_copy_keeps_one_claim_until_a_census_sees_it()
 // that the books return exactly.
 fn assert_planning_lends_the_census_after_a_start_in_the_window(firm: bool) {
     let (mut source, mut covering) = start_in_window(firm);
+    // The hour's planning slots and its actions, slots 0 to 3 (`SIM-02-I`).
     for core in [&mut source.core, &mut covering.core] {
-        step_to_chunk(core, 0);
+        step_to_chunk(core, 3);
     }
     let plan = |game: &GrowthScenario| {
         let core = &game.core;
@@ -629,4 +703,45 @@ fn a_policy_change_in_the_census_window_reaches_the_next_census_and_survives_sav
     assert_ne!(live.service_capacities[plant], before);
     assert_eq!(ceiling(core), live.service_capacities[plant]);
     assert_census_continues_after_reload(&mut source, "policy");
+}
+
+// A building that leaves between the hour's planning slots moves the published books' indices,
+// so the later slots never read their rows: a skipped commercial or industrial slot plans
+// nothing for its zone this hour (the residential slot's homes, planned before the removal,
+// are still queued at slot 3), and a skipped slot 3 leaves every queued business permit
+// voided, to wait for the next hour's slot (`SIM-02-I`).
+#[test]
+fn a_building_removed_between_the_planning_slots_skips_the_later_slots() {
+    use crate::simulation::economy::demand::SpawnPermit;
+    let mut scenario = GrowthScenario::starter_town();
+    scenario.run_days(1);
+    let core = &mut scenario.core;
+    // Slot 0 of the next hour has run: homes are planned.
+    let hour = core.time.absolute_slot() / SLOTS_PER_HOUR + 1;
+    while core.time.absolute_slot() < hour * SLOTS_PER_HOUR {
+        core.step_frame(FRAME_DT_S / 16.0);
+    }
+    assert_eq!(core.time.absolute_slot(), hour * SLOTS_PER_HOUR);
+    let queued = core.pending_demand_spawns.len();
+    // The last building moves into the removed one's index.
+    assert!(core.bulldoze_building(0));
+    while core.time.absolute_slot() < hour * SLOTS_PER_HOUR + 3 {
+        core.step_frame(FRAME_DT_S / 16.0);
+    }
+    let (day, minute) = slot_calendar(hour * SLOTS_PER_HOUR);
+    assert!(
+        core.pending_demand_spawns
+            .iter()
+            .skip(queued)
+            .all(|pending| pending.zone_type == ZoneType::Residential
+                || (pending.planned_day_index, pending.planned_minute_of_day) != (day, minute)),
+        "no business zone slot planned after the removal"
+    );
+    assert!(
+        core.pending_demand_spawns
+            .iter()
+            .filter(|pending| pending.zone_type != ZoneType::Residential)
+            .all(|pending| pending.permit == SpawnPermit::Voided),
+        "every queued business spawn waits for the next hour's permits"
+    );
 }

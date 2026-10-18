@@ -131,7 +131,8 @@ fn run_day(fiscal_stress: bool) {
     let mut building_churn = [[0_u64; 2]; 24];
     for churn in &mut building_churn {
         let before_hour = work_snapshot();
-        let hour = city.advance_hour();
+        // Each window holds one hour's planning slots and building actions (`SIM-02-I`).
+        let hour = city.advance_hour_through_actions();
         let after_hour = work_snapshot();
         for (slot, counter) in churn.iter_mut().zip([
             crate::debug::work::Work::BuildingsPlaced,
@@ -219,7 +220,7 @@ fn scan_churn(mut city: super::PopulatedCity, days: u32) {
         let mut building_churn = [[0_u64; 2]; 24];
         for churn in &mut building_churn {
             let before = work_snapshot();
-            city.advance_hour();
+            city.advance_hour_through_actions();
             let after = work_snapshot();
             for (slot, counter) in churn.iter_mut().zip([
                 crate::debug::work::Work::BuildingsPlaced,
@@ -296,7 +297,7 @@ fn perf_contract_phase() {
             core.treasury.balance,
             60,
         ),
-        "planning" => core.demand.run_hourly_pass_with_policy(
+        "planning" => core.demand.run_planning_hour_for_test(
             &core.allocator,
             &mut core.households,
             &core.region_graph,

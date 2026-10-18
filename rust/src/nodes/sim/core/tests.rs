@@ -27,7 +27,7 @@ use crate::simulation::economy::agents::{
 };
 use crate::simulation::economy::definitions::load_runtime_economy_catalog;
 use crate::simulation::economy::demand::{
-    DemandBuildingActionKey, DemandBuildingActionPlan, DemandSpawnAction,
+    DemandBuildingActionKey, DemandBuildingActionPlan, DemandSpawnAction, PlanningSlot,
 };
 use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
@@ -1483,15 +1483,17 @@ fn hourly_passes_read_the_previous_hours_demand_sweep_and_whole_hours_the_curren
             core.step_slot(slot, &mut report, &mut ());
         }
     };
+    // The hour's admission is planned at its actions slot, slot 3 (`SIM-02-I`).
+    let actions = PlanningSlot::Actions as u64;
     // The first pass has no front and builds one from the city.
-    step_to(&mut core, hour);
+    step_to(&mut core, hour + actions);
     assert_eq!(vacant(&core), 2 * capacity);
     // A home that fails after its chunk of the sweep counts until the next hour's sweep.
     step_to(&mut core, hour + 600);
     core.allocator.buildings[0].broken = true;
-    step_to(&mut core, hour + SLOTS_PER_HOUR);
+    step_to(&mut core, hour + SLOTS_PER_HOUR + actions);
     assert_eq!(vacant(&core), 2 * capacity);
-    step_to(&mut core, hour + 2 * SLOTS_PER_HOUR);
+    step_to(&mut core, hour + 2 * SLOTS_PER_HOUR + actions);
     assert_eq!(vacant(&core), capacity);
     // A whole hour without the slot clock plans on the city as it is.
     let last = core.allocator.buildings.len() - 1;

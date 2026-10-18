@@ -525,7 +525,8 @@ fn assert_exact_continuation(
         let mut churn = [[0; 2]; 2];
         for (city, row) in [&mut *straight, &mut *loaded].into_iter().zip(&mut churn) {
             let before = work_snapshot();
-            city.advance_hour();
+            // Each window holds one hour's building actions, at its actions slot (`SIM-02-I`).
+            city.advance_hour_through_actions();
             let after = work_snapshot();
             for (slot, counter) in row
                 .iter_mut()

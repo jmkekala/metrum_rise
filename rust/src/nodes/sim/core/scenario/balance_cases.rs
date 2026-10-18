@@ -731,7 +731,7 @@ fn stale_vacancy_index_continues_identically_after_a_save_load() {
     }
     // A player's placement. Every editing path reads the index before it returns, so a save
     // normally finds it clean; this save is taken as if the placement had left it stale for
-    // its next reader, the hour's housing review before admission.
+    // its next reader, the next frame's flow-field drain.
     source
         .core
         .place_service_building_internal(COAL_POWER_PLANT, -560.0, 8.0)
@@ -815,6 +815,7 @@ fn assert_continues_identically_after_checked_reload(
         .unwrap();
     std::fs::remove_file(path).unwrap();
     loaded.core.time.speed_multiplier = source.core.time.speed_multiplier;
+    let nodes = SavedNodes::of(&source.core, &loaded.core);
     check(&source.core, &loaded.core);
     let target_day = source.core.time.day_index + 1;
     loop {
@@ -842,6 +843,22 @@ fn assert_continues_identically_after_checked_reload(
         source.core.step_frame(FRAME_DT_S);
         loaded.core.step_frame(FRAME_DT_S);
         let when = (source.core.time.day_index, source.core.time.minute_of_day);
+        assert_same_flow_fields(&source.core, &loaded.core, &nodes, when);
+        // In the hour's planning slots both games lend the published books, or skip, alike.
+        if source.core.time.absolute_slot() % crate::simulation::core::scheduler::SLOTS_PER_HOUR
+            <= crate::simulation::economy::demand::PlanningSlot::Actions as u64
+        {
+            assert_eq!(
+                super::census_cases::published_books_lent(&source.core),
+                super::census_cases::published_books_lent(&loaded.core),
+                "published books at {when:?}"
+            );
+        }
+        assert_eq!(
+            hour_plan(&source.core),
+            hour_plan(&loaded.core),
+            "hour plan at {when:?}"
+        );
         assert_eq!(
             source.core.agents.len(),
             loaded.core.agents.len(),
@@ -889,6 +906,161 @@ fn assert_continues_identically_after_checked_reload(
     }
 }
 
+// One action of the hour's plan: kind, parcel, side, cell, width, depth, level, asset, target.
+type PlanRow = (u8, u64, i8, usize, u16, u16, u8, String, String);
+
+// The hour's plan between its planning slots (`SIM-02-I`): each zone's spawns, upgrades,
+// downgrades and despawns, then the optional homes, by parcel, lot and asset; building keys
+// leave out their edge, which a save renumbers.
+fn hour_plan(core: &SimCore) -> Vec<PlanRow> {
+    use crate::simulation::economy::demand::DemandBuildingActionKey;
+    let key = |kind: u8, key: &DemandBuildingActionKey, target: &str| {
+        (
+            kind,
+            key.parcel_id,
+            key.side,
+            key.cell_x,
+            key.width_cells,
+            key.depth_cells,
+            key.level,
+            key.asset_id.clone(),
+            target.to_owned(),
+        )
+    };
+    let spawn = |kind: u8, action: &crate::simulation::economy::demand::DemandSpawnAction| {
+        (
+            kind,
+            action.parcel_id,
+            0,
+            0,
+            0,
+            0,
+            0,
+            action.asset_id.clone(),
+            String::new(),
+        )
+    };
+    let plan = &core.demand.building_actions;
+    let mut rows = Vec::new();
+    for (zone, use_plan) in [&plan.residential, &plan.commercial, &plan.industrial]
+        .into_iter()
+        .enumerate()
+    {
+        let zone = zone as u8 * 8;
+        rows.extend(use_plan.spawns.iter().map(|action| spawn(zone, action)));
+        rows.extend(
+            use_plan
+                .upgrades
+                .iter()
+                .map(|action| key(zone + 1, &action.building, &action.target_asset_id)),
+        );
+        rows.extend(
+            use_plan
+                .downgrades
+                .iter()
+                .map(|action| key(zone + 2, &action.building, &action.target_asset_id)),
+        );
+        rows.extend(
+            use_plan
+                .despawns
+                .iter()
+                .map(|action| key(zone + 3, action, "")),
+        );
+    }
+    rows.extend(
+        core.demand
+            .optional_homes
+            .iter()
+            .map(|action| spawn(32, action)),
+    );
+    rows
+}
+
+// How a save renumbered the saved game's road nodes: the loaded game's id of each node the save
+// kept, and both games' node counts at the load, past which both append the same nodes in the
+// same order.
+struct SavedNodes {
+    saved: std::collections::HashMap<u32, u32>,
+    source_count: usize,
+    loaded_count: usize,
+}
+
+impl SavedNodes {
+    fn of(source: &SimCore, loaded: &SimCore) -> Self {
+        let saved = crate::simulation::save::saved_node_numbering(
+            &source.region_graph,
+            &source.allocator,
+            &source.agents,
+        );
+        assert_eq!(
+            saved.len(),
+            loaded.region_graph.node_count(),
+            "the loaded graph holds exactly the saved nodes"
+        );
+        Self {
+            saved,
+            source_count: source.region_graph.node_count(),
+            loaded_count: loaded.region_graph.node_count(),
+        }
+    }
+
+    // The loaded game's id of the saved game's node `node`; `None` for a node the save dropped.
+    fn loaded(&self, node: u32) -> Option<u32> {
+        match (node as usize).checked_sub(self.source_count) {
+            Some(appended) => Some((self.loaded_count + appended) as u32),
+            None => self.saved.get(&node).copied(),
+        }
+    }
+}
+
+// The flow fields both games route on, car and foot, for every private zone (`SIM-02-I`). A
+// field names nodes, so the saved game's are translated through the save's numbering: each
+// node the save kept has the loaded node's next node and nearest building, and a node the save
+// dropped (one no live edge or agent names) is unreachable.
+fn assert_same_flow_fields(a: &SimCore, b: &SimCore, nodes: &SavedNodes, when: (u32, u16)) {
+    use crate::simulation::pathing::flow_field::FlowField;
+    let same = |x: &FlowField, y: &FlowField| {
+        let mut kept = 0;
+        for (node, (&next, &building)) in x.next_node.iter().zip(&x.nearest_building).enumerate() {
+            let Some(loaded) = nodes.loaded(node as u32) else {
+                if (next, building) != (u32::MAX, usize::MAX) {
+                    return false;
+                }
+                continue;
+            };
+            kept += 1;
+            let next = (next != u32::MAX).then(|| nodes.loaded(next)).flatten();
+            let loaded = loaded as usize;
+            if y.next_node.get(loaded).copied() != Some(next.unwrap_or(u32::MAX))
+                || y.nearest_building.get(loaded) != Some(&building)
+            {
+                return false;
+            }
+        }
+        kept == y.next_node.len() && y.nearest_building.len() == y.next_node.len()
+    };
+    let (a, b) = (
+        &a.transit_network.flow_fields,
+        &b.transit_network.flow_fields,
+    );
+    for zone in [
+        ZoneType::Residential,
+        ZoneType::Commercial,
+        ZoneType::Industrial,
+    ] {
+        for (mode, x, y) in [
+            ("car", a.car(zone), b.car(zone)),
+            ("foot", a.foot(zone), b.foot(zone)),
+        ] {
+            let equal = match (x, y) {
+                (Some(x), Some(y)) => same(x, y),
+                (x, y) => x.is_none() && y.is_none(),
+            };
+            assert!(equal, "{zone:?} {mode} flow field at {when:?}");
+        }
+    }
+}
+
 // Whether a commercial or industrial spawn waits in the queue under a granted permit.
 fn business_permit_queued(core: &SimCore) -> bool {
     core.pending_demand_spawns.iter().any(|pending| {
@@ -921,6 +1093,113 @@ fn queued_business_permits_continue_identically_after_a_mid_hour_save_load() {
         town_with_a_queued_business_permit(),
         "queued-permits",
     );
+}
+
+// The hour's plan lives between its planning slots (`SIM-02-I`): a game saved after slot 0, 1
+// or 2 of an hour whose slots planned spawns continues identically every frame for a day, its
+// saved plan proved again by the later slots on the restored published census and queued and
+// executed at slot 3 as the uninterrupted game does, with the same flow fields.
+#[test]
+fn the_hours_plan_continues_identically_after_a_save_between_its_slots() {
+    use crate::simulation::core::scheduler::SLOTS_PER_HOUR;
+    for saved_after in 0..3 {
+        let mut source = GrowthScenario::starter_town();
+        loop {
+            assert!(
+                source.day() < 4,
+                "no hour planned spawns before slot {saved_after}"
+            );
+            let core = &mut source.core;
+            let hour = core.time.absolute_slot() / SLOTS_PER_HOUR + 1;
+            while core.time.absolute_slot() < hour * SLOTS_PER_HOUR + saved_after {
+                core.step_frame(FRAME_DT_S / 16.0);
+            }
+            let plan = &core.demand.building_actions;
+            // Slot 2's save also needs a business spawn of slot 2 to prove at slot 3.
+            let business = !plan.commercial.spawns.is_empty() || !plan.industrial.spawns.is_empty();
+            if !plan.residential.spawns.is_empty() && (saved_after < 2 || business) {
+                break;
+            }
+        }
+        assert_continues_identically_after_checked_reload(
+            source,
+            &format!("planning-slot-{saved_after}"),
+            super::census_cases::assert_same_published_census,
+        );
+    }
+}
+
+// Steps `core` in short frames until absolute slot `slot` has run.
+fn step_to_slot(core: &mut SimCore, slot: u64) {
+    while core.time.absolute_slot() < slot {
+        core.step_frame(FRAME_DT_S / 16.0);
+    }
+}
+
+// The hour's later planning slots read the census its first slot published (`SIM-02-I`). After
+// a fiscal stress change at that slot (commercial and industrial property taxes at 500 a day),
+// a census of the loaded city would fund the new policy's books while the published one keeps
+// the policy its copy froze: a busy town saved at slot 1 restores the published books, plans
+// slot 2's industry, proves slot 3's permits and continues as the uninterrupted game does.
+#[test]
+fn a_save_at_slot_1_after_a_fiscal_change_plans_on_the_published_census() {
+    use crate::simulation::core::scheduler::SLOTS_PER_HOUR;
+    use crate::simulation::economy::fiscal::{
+        POLICY_COMMERCIAL_PROPERTY_TAX, POLICY_INDUSTRIAL_PROPERTY_TAX,
+    };
+    let mut source = super::census_cases::busy_town();
+    let hour = source.core.time.absolute_slot() / SLOTS_PER_HOUR + 1;
+    step_to_slot(&mut source.core, hour * SLOTS_PER_HOUR);
+    for policy in [
+        POLICY_COMMERCIAL_PROPERTY_TAX,
+        POLICY_INDUSTRIAL_PROPERTY_TAX,
+    ] {
+        assert!(source.core.set_fiscal_policy_value(policy, 500.0));
+    }
+    step_to_slot(&mut source.core, hour * SLOTS_PER_HOUR + 1);
+    assert_continues_identically_after_checked_reload(
+        source,
+        "fiscal-slot-1",
+        super::census_cases::assert_same_published_census,
+    );
+}
+
+// A game saved after the hour's actions slot, before the first queued start at slot 16
+// (`SIM-02-I`): the queue's permits and counted flags, the arrivals paced from slot 3, the
+// cleared plan, the hour's admission and the indices slot 3's actions rebuilt continue as the
+// uninterrupted game's.
+#[test]
+fn a_save_after_the_actions_slot_before_the_first_start_continues_identically() {
+    use crate::simulation::core::scheduler::{SLOTS_PER_HOUR, SLOTS_PER_MINUTE};
+    let mut source = GrowthScenario::starter_town();
+    loop {
+        assert!(
+            source.day() < 4,
+            "no hour queued a business spawn under its permit"
+        );
+        let hour = source.core.time.absolute_slot() / SLOTS_PER_HOUR + 1;
+        step_to_slot(&mut source.core, hour * SLOTS_PER_HOUR + 3);
+        if business_permit_queued(&source.core) {
+            break;
+        }
+    }
+    let core = &source.core;
+    assert!(core.time.absolute_slot() % SLOTS_PER_HOUR < SLOTS_PER_MINUTE);
+    assert!(hour_plan(core).is_empty(), "slot 3 cleared the hour's plan");
+    assert_continues_identically_after_checked_reload(source, "after-actions", |source, loaded| {
+        assert!(hour_plan(loaded).is_empty());
+        assert_eq!(
+            source.demand.households_to_admit_today,
+            loaded.demand.households_to_admit_today
+        );
+        let counted = |core: &SimCore| {
+            core.pending_demand_spawns
+                .iter()
+                .map(|pending| (pending.id, pending.permit, pending.counted))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(counted(source), counted(loaded));
+    });
 }
 
 // A save renumbers edges past a deleted one and a load rebuilds lanes compactly, while the
@@ -1605,4 +1884,162 @@ fn residential_rich_town_housing_balance() {
     if let Ok(path) = std::env::var("METRUM_DIAG_REPORT") {
         std::fs::write(path, report.daily_report()).unwrap();
     }
+}
+
+// A player's bulldoze swap-removes a building and marks every flow field; a save taken before
+// the next planning slot routes both games on the same fields and continues identically
+// (`SIM-02-I`).
+#[test]
+fn a_bulldoze_before_the_next_planning_slot_continues_identically_after_a_save_load() {
+    let mut source = growing_town_mid_hour();
+    let core = &mut source.core;
+    let last = core.allocator.buildings.len() - 1;
+    let target = (0..last)
+        .find(|&index| {
+            let building = &core.allocator.buildings[index];
+            building.zone_type == ZoneType::Residential && !building.is_under_construction()
+        })
+        .expect("a completed home that is not the last building");
+    assert!(core.bulldoze_building(target));
+    assert!(
+        (10..=50).contains(&(core.time.minute_of_day % 60)),
+        "saved before the next planning slot"
+    );
+    assert_continues_identically_after_reload(source, "bulldoze");
+}
+
+// A removal leaves the zone index and the entrance cache for their next reader: the removed
+// building's zone entry names the building the swap-remove moved there, and the moved one's is
+// missing. The next frame's flow-field drain reads them, so it rebuilds them first and builds
+// every field from the current buildings, as a loaded game does (`SIM-02-I`).
+#[test]
+fn the_flow_field_drain_rebuilds_a_stale_zone_index_first() {
+    use crate::simulation::network::types::TransitFlags;
+    use crate::simulation::pathing::flow_field::FlowField;
+    let mut town = GrowthScenario::starter_town();
+    town.run_days(1);
+    let core = &mut town.core;
+    let last = core.allocator.buildings.len() - 1;
+    // A completed building whose zone list the moved last building does not belong to as a
+    // completed one, so the stale list names a wrong source.
+    let completed_in = |index: usize, zone: ZoneType| {
+        let building = &core.allocator.buildings[index];
+        building.zone_type == zone && !building.is_under_construction()
+    };
+    let target = [
+        ZoneType::Residential,
+        ZoneType::Commercial,
+        ZoneType::Industrial,
+    ]
+    .into_iter()
+    .find_map(|zone| {
+        (0..last).find(|&index| completed_in(index, zone) && !completed_in(last, zone))
+    })
+    .expect("a completed building of another zone than the last");
+    // The lifecycle removal a phase or the bulldoze tool makes, without the repair after it.
+    core.agents.evacuate_building_for_removal(
+        target,
+        &mut core.households,
+        &mut core.allocator,
+        &core.transit_network,
+        &core.region_graph,
+    );
+    assert!(core.allocator.remove_building_for_bulldoze(
+        target,
+        &mut core.zoning,
+        &mut core.agents,
+        &mut core.households,
+        &mut core.logistics,
+        &mut core.treasury.balance,
+    ));
+    assert!(core.allocator.dirty_index && core.allocator.entrances_dirty);
+    // A frame too short to reach the next slot: only the drain runs.
+    let slot = core.time.absolute_slot();
+    core.step_frame(FRAME_DT_S / 1000.0);
+    assert_eq!(core.time.absolute_slot(), slot);
+    assert!(!core.allocator.dirty_index && !core.allocator.entrances_dirty);
+    let graph = &core.region_graph;
+    for zone in [
+        ZoneType::Residential,
+        ZoneType::Commercial,
+        ZoneType::Industrial,
+    ] {
+        let fields = &core.transit_network.flow_fields;
+        for (flags, field) in [
+            (TransitFlags::CAR, fields.car(zone)),
+            (TransitFlags::FOOT, fields.foot(zone)),
+        ] {
+            let mut sources = Vec::new();
+            core.allocator
+                .collect_sources_for_zone(zone, graph, flags, &mut sources);
+            assert!(
+                field.cloned()
+                    == (!sources.is_empty()).then(|| FlowField::build(&sources, graph, flags)),
+                "{zone:?} {flags} field from the stale index"
+            );
+        }
+    }
+}
+
+// A starter town at the first hour whose commercial slot planned a store, just after that slot,
+// with a power plant placed then: a service placed after the publication withdraws the
+// published books (`SIM-02-I`).
+fn town_with_a_service_placed_after_slot_1() -> GrowthScenario {
+    use crate::simulation::core::scheduler::SLOTS_PER_HOUR;
+    let mut source = GrowthScenario::starter_town();
+    loop {
+        assert!(source.day() < 4, "no hour planned a store at slot 1");
+        let hour = source.core.time.absolute_slot() / SLOTS_PER_HOUR + 1;
+        step_to_slot(&mut source.core, hour * SLOTS_PER_HOUR + 1);
+        if !source
+            .core
+            .demand
+            .building_actions
+            .commercial
+            .spawns
+            .is_empty()
+        {
+            break;
+        }
+    }
+    assert!(super::census_cases::published_books_lent(&source.core));
+    source
+        .core
+        .place_service_building_internal("kenney:building.power.coal_power_plant", -700.0, 8.0)
+        .unwrap();
+    assert!(!super::census_cases::published_books_lent(&source.core));
+    source
+}
+
+// A save in the hour's planning slots on books not valid for the live city (`SIM-02-I`): the
+// save keeps that they were not valid, so in both games slots 2 and 3 skip, slot 3 queues the
+// store slot 1 planned with its permit void until the next hour's epoch, and the loaded game
+// continues every frame as the saved one does.
+#[test]
+fn a_save_in_the_planning_slots_on_invalid_books_skips_the_hour_identically() {
+    use crate::simulation::core::scheduler::SLOTS_PER_HOUR;
+    // The uninterrupted game: slot 3 queues the store without a permit.
+    let mut town = town_with_a_service_placed_after_slot_1();
+    let hour = town.core.time.absolute_slot() / SLOTS_PER_HOUR;
+    step_to_slot(&mut town.core, hour * SLOTS_PER_HOUR + 3);
+    assert!(!super::census_cases::published_books_lent(&town.core));
+    let stores: Vec<_> = town
+        .core
+        .pending_demand_spawns
+        .iter()
+        .filter(|pending| pending.zone_type == ZoneType::Commercial)
+        .collect();
+    assert!(!stores.is_empty(), "slot 3 queues the planned store");
+    assert!(
+        stores
+            .iter()
+            .all(|pending| pending.permit.granted().is_none()),
+        "the skipped epoch grants no business permit"
+    );
+    // Saved at slot 1, the loaded game skips and voids alike.
+    assert_continues_identically_after_checked_reload(
+        town_with_a_service_placed_after_slot_1(),
+        "invalid-books-slot-1",
+        super::census_cases::assert_same_published_census,
+    );
 }

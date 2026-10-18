@@ -315,13 +315,7 @@ impl SimCore {
             &mut self.region_graph,
         );
         self.publish_pending_production_site_removals();
-        use crate::simulation::buildings::allocator::BASELINE_PRIVATE_ZONES;
-        for (zone_idx, zone) in BASELINE_PRIVATE_ZONES.iter().enumerate() {
-            if self.allocator.dirty_zones[zone_idx] {
-                self.allocator.dirty_zones[zone_idx] = false;
-                self.transit_network.flow_fields.mark_zone_dirty(*zone);
-            }
-        }
+        self.mark_changed_zone_flow_fields();
     }
 
     /// Returns the deterministic building, road or vegetation target for the bulldoze cursor.

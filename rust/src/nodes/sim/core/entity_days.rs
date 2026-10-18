@@ -78,13 +78,7 @@ impl SimCore {
         );
         self.publish_pending_building_site_changes();
         observer.buildings_changed(self);
-        use crate::simulation::buildings::allocator::BASELINE_PRIVATE_ZONES;
-        for (zone_idx, zone) in BASELINE_PRIVATE_ZONES.iter().enumerate() {
-            if self.allocator.dirty_zones[zone_idx] {
-                self.allocator.dirty_zones[zone_idx] = false;
-                self.transit_network.flow_fields.mark_zone_dirty(*zone);
-            }
-        }
+        self.mark_changed_zone_flow_fields();
     }
 
     /// The day of the households whose daily phase is `slot`'s.

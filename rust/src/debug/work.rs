@@ -19,9 +19,16 @@ pub(crate) enum Work {
     PlanningPasses,
     /// Live hourly funding censuses run by employment.
     LiveCensuses,
-    /// Planning passes skipped because the published census's books were not valid for the
-    /// live city (`SIM-02-I`); planning waits for the next publication.
-    PlanningSkips,
+    /// Residential planning slots skipped because the published census's books were not valid
+    /// for the live city (`SIM-02-I`); the zone waits for the next hour.
+    ResidentialPlanningSkips,
+    /// Commercial planning slots skipped on books not valid for the live city (`SIM-02-I`).
+    CommercialPlanningSkips,
+    /// Industrial planning slots skipped on books not valid for the live city (`SIM-02-I`).
+    IndustrialPlanningSkips,
+    /// Action slots whose downgrade and admission planning was skipped on books not valid for
+    /// the live city (`SIM-02-I`).
+    ActionsPlanningSkips,
     /// Construction epochs opened at planning slots (`SIM-02-I`).
     ConstructionEpochs,
     /// Construction epochs skipped because the published census's books were not valid for
@@ -82,11 +89,20 @@ pub(crate) enum Work {
     StructuralChanges,
     /// Funding censuses restarted by a network or structural change during their window.
     CensusRestarts,
+    /// Zones whose flow fields a frame's pathing rebuild found marked (`SIM-02-I`).
+    FlowFieldZonesDrained,
+    /// Flow fields built by a frame's pathing rebuild, car and foot counted apart.
+    FlowFieldsBuilt,
+    /// Flow fields of a marked zone left as they were: the same sources on the same graph.
+    FlowFieldsSkipped,
+    /// Business spawns and upgrades an earlier planning slot of the hour planned that a later
+    /// slot's proof rejected, dropped from the hour's plan (`SIM-02-I`).
+    ReproofDrops,
 }
 
 /// Number of [`Work`] counters.
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) const WORK_COUNT: usize = Work::CensusRestarts as usize + 1;
+pub(crate) const WORK_COUNT: usize = Work::ReproofDrops as usize + 1;
 
 #[cfg(test)]
 static COUNTS: [std::sync::atomic::AtomicU64; WORK_COUNT] =
@@ -174,7 +190,10 @@ pub(crate) const WORK_NAMES: [&str; WORK_COUNT] = [
     "buildings_removed",
     "planning_passes",
     "live_censuses",
-    "planning_skips",
+    "residential_planning_skips",
+    "commercial_planning_skips",
+    "industrial_planning_skips",
+    "actions_planning_skips",
     "construction_epochs",
     "construction_epoch_skips",
     "census_buildings",
@@ -204,6 +223,10 @@ pub(crate) const WORK_NAMES: [&str; WORK_COUNT] = [
     "households_removed",
     "structural_changes",
     "census_restarts",
+    "flow_field_zones_drained",
+    "flow_fields_built",
+    "flow_fields_skipped",
+    "reproof_drops",
 ];
 
 /// Hashes a value's `Debug` rendering without building the string. Test-only exact state

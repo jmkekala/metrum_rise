@@ -22,6 +22,7 @@ use crate::simulation::core::scheduler::{
 };
 use crate::simulation::core::timing_wheel::TimedEvent;
 use super::trips::TripEvent;
+use crate::simulation::economy::demand::PlanningSlot;
 
 /// One system the dispatcher can run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,8 +31,15 @@ pub(crate) enum SimSystem {
     TimedEvents,
     /// Publishes the funding census the previous hour's second half built (`SIM-02-I`).
     CensusPublish,
-    /// Today's operational hour, with the hourly demand pass.
+    /// Today's operational hour, with the hour's residential demand planning slot.
     OperationalHour,
+    /// The hour's commercial demand planning slot (`SIM-02-I`).
+    CommercialPlanning,
+    /// The hour's industrial demand planning slot (`SIM-02-I`).
+    IndustrialPlanning,
+    /// The hour's downgrades, admission and demand actions: permits, level changes and
+    /// despawns (`SIM-02-I`).
+    DemandActions,
     /// The calendar close: the city's day totals become the day's budget report.
     CalendarClose,
     /// Production of the buildings in the slot's hourly phase.
@@ -160,6 +168,55 @@ pub(crate) fn simulation_schedule() -> Schedule<SimSystem> {
             reads: state::ALL,
             writes: state::ALL,
             cost: Cost::LegacyBoundary,
+            tier: Tier::Full,
+        },
+        // The hour's demand planning, one zone per slot after the residential slot in the
+        // operational hour, on the census the hour's first slot published; slot 3 queues the
+        // hour's spawns and executes its plan (`SIM-02-I`). Planning lends the census's books
+        // and restores them, quotes freight and prepares site indices. Each slot pays the
+        // planning setup again: the live workforce, O((H + B)/p) in parallel; the project
+        // market, O(B) serial; the queue's replay, O(Q log H); and the earlier slots' plans
+        // proved again, O(plan). A zone slot adds the lot scan, O(P/p) in parallel plus its
+        // zone's free lots' assets, and its zone's existing buildings, O(B/p). Hence each call
+        // is O(B + H + P + Q log H), the `CityScan` bound, until `SIM-02-K`.
+        Declaration {
+            system: SimSystem::CommercialPlanning,
+            name: "commercial planning",
+            kind: SystemKind::FixedSlot {
+                period: Period::Hour,
+                offset: 1,
+            },
+            reads: state::ALL,
+            writes: state::ALL,
+            cost: Cost::CityScan,
+            tier: Tier::Full,
+        },
+        Declaration {
+            system: SimSystem::IndustrialPlanning,
+            name: "industrial planning",
+            kind: SystemKind::FixedSlot {
+                period: Period::Hour,
+                offset: 2,
+            },
+            reads: state::ALL,
+            writes: state::ALL,
+            cost: Cost::CityScan,
+            tier: Tier::Full,
+        },
+        // Slot 3 pays the same setup and every zone's downgrade candidates, O(B/p) each, then
+        // admits a bounded applicant batch, queues the hour's spawns, opens the construction
+        // epoch, O(B + Q log H), and runs the level changes and despawns: O(B + H + Q log H),
+        // within the `CityScan` bound.
+        Declaration {
+            system: SimSystem::DemandActions,
+            name: "demand actions",
+            kind: SystemKind::FixedSlot {
+                period: Period::Hour,
+                offset: 3,
+            },
+            reads: state::ALL,
+            writes: state::ALL,
+            cost: Cost::CityScan,
             tier: Tier::Full,
         },
         Declaration {
@@ -396,6 +453,24 @@ impl SimCore {
                     if minute_of_day != 0 && crate::debug::Channel::Sim.enabled() {
                         self.print_sim_console_summary(day_index, minute_of_day);
                     }
+                }
+                SimSystem::CommercialPlanning
+                | SimSystem::IndustrialPlanning
+                | SimSystem::DemandActions => {
+                    let planning_start = Instant::now();
+                    let slot_kind = match declaration.system {
+                        SimSystem::CommercialPlanning => PlanningSlot::Commercial,
+                        SimSystem::IndustrialPlanning => PlanningSlot::Industrial,
+                        _ => PlanningSlot::Actions,
+                    };
+                    record_crash_phase_for_core(self, declaration.name);
+                    let changed = run_sim_phase(declaration.name, || {
+                        self.execute_demand_planning_slot(slot_kind, day_index, minute_of_day)
+                    });
+                    if changed {
+                        observer.buildings_changed(self);
+                    }
+                    report.hourly_ms += planning_start.elapsed().as_secs_f64() * 1000.0;
                 }
                 SimSystem::CalendarClose => {
                     let close_start = Instant::now();

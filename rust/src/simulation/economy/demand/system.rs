@@ -3,7 +3,7 @@
 //! Demand system state and pass orchestration.
 
 use super::UseTuningF32;
-use super::actions::DemandBuildingActionPlan;
+use super::actions::{DemandBuildingActionPlan, DemandSpawnAction, PlanningSlot};
 use super::admission::HouseholdAdmissionBudget;
 use super::config::{DemandConfig, load_builtin_demand_config};
 #[cfg(test)]
@@ -45,7 +45,14 @@ pub struct DemandSystem {
     pub(crate) upgrade_action_credit: UseTuningF32,
     pub(crate) downgrade_action_credit: UseTuningF32,
     pub(crate) despawn_action_credit: UseTuningF32,
+    /// The hour's plan (`SIM-02-I`): each zone slot's spawns, upgrades and despawns, with the
+    /// actions slot's downgrades and claimed optional homes, until slot 3 queues the spawns and
+    /// executes the rest. Saved between the slots.
     pub(crate) building_actions: DemandBuildingActionPlan,
+    /// Homes the residential slot offers employers without selecting them (`DEM-02-C`):
+    /// later slots count them as optional housing and the actions slot queues those the
+    /// workforce claims. Saved between the slots.
+    pub(crate) optional_homes: Vec<DemandSpawnAction>,
     pub(super) last_admission_diagnostics: HouseholdAdmissionDiagnostics,
     pub(super) last_removal_diagnostics: HouseholdRemovalDiagnostics,
     pub(super) last_building_action_diagnostics: BuildingActionDiagnosticsByUse,
@@ -64,6 +71,11 @@ pub struct DemandSystem {
     freight_border_nodes: Vec<u32>,
     /// Current outside applicant seed, derived from simulation time rather than accepted arrivals.
     pub(crate) admission_candidate_seed: usize,
+    /// Earlier slots' spawns and upgrades this system's later slots dropped on a failed
+    /// re-proof (`SIM-02-I`); [`crate::debug::work::Work::ReproofDrops`] counts them across
+    /// the process.
+    #[cfg(test)]
+    pub(crate) reproof_drops: u64,
 }
 
 /// Checks after every test-build planning pass that the live books return bit for bit.
@@ -111,6 +123,7 @@ impl DemandSystem {
             downgrade_action_credit: UseTuningF32::default(),
             despawn_action_credit: UseTuningF32::default(),
             building_actions: DemandBuildingActionPlan::default(),
+            optional_homes: Vec::new(),
             last_admission_diagnostics: HouseholdAdmissionDiagnostics::default(),
             last_removal_diagnostics: HouseholdRemovalDiagnostics::default(),
             last_building_action_diagnostics: BuildingActionDiagnosticsByUse::default(),
@@ -125,6 +138,8 @@ impl DemandSystem {
             admission_budget: HouseholdAdmissionBudget::default(),
             freight_border_nodes: Vec::new(),
             admission_candidate_seed: 0,
+            #[cfg(test)]
+            reproof_drops: 0,
         }
     }
 
@@ -186,18 +201,7 @@ impl DemandSystem {
         network.rebuild_cch_and_check(graph);
         // A whole hour without the slot clock plans on a snapshot of the current state.
         self.discard_snapshot_front();
-        let mut logistics = ShipmentSystem::new();
-        self.publish_census_if_stale_for_test(
-            allocator,
-            households,
-            &network,
-            graph,
-            &mut logistics,
-            &fiscal_policy,
-            treasury_balance,
-            420,
-        );
-        self.run_hourly_pass_with_policy(
+        self.run_planning_hour_for_test(
             allocator,
             households,
             graph,
@@ -205,7 +209,7 @@ impl DemandSystem {
             treasury_balance,
             &fiscal_policy,
             &network,
-            &mut logistics,
+            &mut ShipmentSystem::new(),
             BuildingSiteEnvironment {
                 road_surface: &road_surface,
                 terrain: &terrain,
@@ -214,13 +218,69 @@ impl DemandSystem {
         );
     }
 
-    /// Advances hourly demand using the current fiscal policy and prepared live hiring.
-    /// With a current live input census, the pass plans directly on the live customer,
-    /// business and input books inside one first-touch transaction and restores them before
-    /// returning, so its cost follows the rows it touches rather than a copy of every book.
+    /// Test driver of an hour's demand planning without the slot clock or execution: publishes
+    /// a census when the published one is not current, then runs the hour's four planning
+    /// slots in turn (`SIM-02-I`). The whole hour's plan stays in the plan for the test to read.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn run_hourly_pass_with_policy(
+    pub(crate) fn run_planning_hour_for_test(
         &mut self,
+        allocator: &BuildingAllocator,
+        households: &mut HouseholdSystem,
+        graph: &RegionGraph,
+        zoning: &ZoningSystem,
+        treasury_balance: f64,
+        fiscal_policy: &CityFiscalPolicy,
+        network: &TransitNetwork,
+        logistics: &mut ShipmentSystem,
+        environment: BuildingSiteEnvironment<'_>,
+        minute_of_day: u16,
+    ) {
+        self.publish_census_if_stale_for_test(
+            allocator,
+            households,
+            network,
+            graph,
+            logistics,
+            fiscal_policy,
+            treasury_balance,
+            minute_of_day,
+        );
+        for slot in PlanningSlot::ALL {
+            self.run_planning_slot(
+                slot,
+                allocator,
+                households,
+                graph,
+                zoning,
+                treasury_balance,
+                fiscal_policy,
+                network,
+                logistics,
+                environment,
+                minute_of_day,
+            );
+        }
+    }
+
+    /// Ends the hour's plan after slot 3 executed it (`SIM-02-I`).
+    pub(crate) fn clear_hour_plan(&mut self) {
+        self.building_actions = DemandBuildingActionPlan::default();
+        self.optional_homes.clear();
+    }
+
+    /// Runs planning slot `slot` of the hour (`SIM-02-I`) on the census published at the hour's
+    /// first slot: the residential, commercial or industrial slot plans its zone's spawns,
+    /// upgrades and despawns; the actions slot plans the downgrades and the hour's admission
+    /// and selects the optional homes the workforce claims. A slot plans directly on the live
+    /// customer, business and input books inside one first-touch transaction and restores them
+    /// before returning, so its cost follows the rows it touches rather than a copy of every
+    /// book. Books not valid for the live city are never lent: the slot is skipped and
+    /// counted, and returns `false`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn run_planning_slot(
+        &mut self,
+        slot: PlanningSlot,
         allocator: &BuildingAllocator,
         live_households: &mut HouseholdSystem,
         graph: &RegionGraph,
@@ -231,7 +291,7 @@ impl DemandSystem {
         logistics: &mut ShipmentSystem,
         environment: BuildingSiteEnvironment<'_>,
         minute_of_day: u16,
-    ) {
+    ) -> bool {
         #[cfg(test)]
         let _contract_phase = crate::debug::work::phases::enter("planning");
         let mut phase = crate::debug::Channel::EconomyPhases
@@ -245,7 +305,11 @@ impl DemandSystem {
             }
         };
         crate::debug::work::add(crate::debug::work::Work::PlanningPasses, 1);
-        self.building_actions = DemandBuildingActionPlan::default();
+        // The hour's plan starts at its first slot.
+        if slot == PlanningSlot::Residential {
+            self.building_actions = DemandBuildingActionPlan::default();
+            self.optional_homes.clear();
+        }
         let catalog = Arc::clone(&self.runtime_catalog);
         let economy_tuning = Arc::clone(&self.runtime_tuning);
         // Move reusable gateway scratch out while the planner mutates the other demand state.
@@ -258,15 +322,18 @@ impl DemandSystem {
         // not valid for the live key are never lent: the pass is skipped and counted, and
         // planning waits for the next publication.
         if !self.lent_books_current(live_households, network, &borders, minute_of_day) {
-            crate::debug::work::add(crate::debug::work::Work::PlanningSkips, 1);
+            crate::debug::work::add(slot.skip_work(), 1);
             crate::debug_log!(
                 "economy",
-                "planning skipped: the published census is not valid for the live city: minute={}",
+                "planning slot {:?} skipped: the published census is not valid for the live city: minute={}",
+                slot,
                 minute_of_day
             );
-            self.households_to_admit_today = 0;
+            if slot == PlanningSlot::Actions {
+                self.households_to_admit_today = 0;
+            }
             self.freight_border_nodes = borders;
-            return;
+            return false;
         }
         let mut reservations = std::mem::take(&mut self.construction_execution.reservations);
         #[cfg(test)]
@@ -323,20 +390,26 @@ impl DemandSystem {
         snapshot.reserve_queued_construction(catalog.as_ref(), &self.queued_construction);
 
         self.admission_budget = HouseholdAdmissionBudget::from_snapshot(&snapshot, &self.config);
-        // This is execution capacity, not approval of the preview household. Each actual
-        // applicant claims its own income below. A jobless town can consider pension-funded
-        // applicants too; temporary benefits cannot pay recurring essentials.
-        self.households_to_admit_today = if snapshot.connected_border_count == 0 {
-            0
-        } else {
-            snapshot
-                .vacant_household_slots
-                .min(snapshot.move_in_job_slots.div_ceil(24).max(1))
-        };
-        let mut admission_diagnostics = HouseholdAdmissionDiagnostics::from_snapshot(&snapshot);
-        admission_diagnostics.planned_households = self.households_to_admit_today;
-        admission_diagnostics.launched_households = 0;
-        self.last_admission_diagnostics = admission_diagnostics;
+        // Admission runs at the actions slot, after the hour's plans and before its actions,
+        // as it ran between the single pass and the actions.
+        if slot == PlanningSlot::Actions {
+            // This is execution capacity, not approval of the preview household. Each actual
+            // applicant claims its own income below. A jobless town can consider pension-funded
+            // applicants too; temporary benefits cannot pay recurring essentials.
+            self.households_to_admit_today = if snapshot.connected_border_count == 0 {
+                0
+            } else {
+                snapshot
+                    .vacant_household_slots
+                    .min(snapshot.move_in_job_slots.div_ceil(24).max(1))
+            };
+            let mut admission_diagnostics = HouseholdAdmissionDiagnostics::from_snapshot(&snapshot);
+            admission_diagnostics.planned_households = self.households_to_admit_today;
+            admission_diagnostics.launched_households = 0;
+            admission_diagnostics.incoming_household_need =
+                self.last_admission_diagnostics.incoming_household_need;
+            self.last_admission_diagnostics = admission_diagnostics;
+        }
         lap(3);
         let mut supply = SiteSupply::new(
             &mut inputs,
@@ -367,6 +440,7 @@ impl DemandSystem {
         );
         lap(5);
         self.plan_private_building_actions(
+            slot,
             allocator,
             graph,
             zoning,
@@ -378,7 +452,7 @@ impl DemandSystem {
             &front.occupants,
             DEMAND_HOURLY_CADENCE_FRACTION,
             environment,
-            supply,
+            &mut supply,
         );
         self.snapshot_sweep.restore_front(front);
         lap(6);
@@ -409,8 +483,11 @@ impl DemandSystem {
         }
         self.construction_execution.reservations = reservations;
         self.freight_border_nodes = borders;
-        self.admission_budget
-            .reserve_worker_homes(self.workforce_reservations.unreserved_ready_homes());
+        if slot == PlanningSlot::Actions {
+            self.admission_budget
+                .reserve_worker_homes(self.workforce_reservations.unreserved_ready_homes());
+        }
+        true
     }
 
     /// Counts the live workforce as a planning pass does, for epochs opened without one.
@@ -616,7 +693,7 @@ impl DemandSystem {
         treasury_balance: f64,
         fiscal_policy: &CityFiscalPolicy,
     ) {
-        self.building_actions = DemandBuildingActionPlan::default();
+        // The hour's plan stands: a load or a policy change between its slots keeps it.
         let catalog = Arc::clone(&self.runtime_catalog);
         let economy_tuning = Arc::clone(&self.runtime_tuning);
         let snapshot = DailyDemandSnapshot::from_runtime_with_catalog(

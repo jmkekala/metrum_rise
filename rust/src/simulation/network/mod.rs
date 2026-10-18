@@ -562,6 +562,18 @@ impl TransitNetwork {
         }
     }
 
+    /// What identifies the graph the flow fields are built on (`SIM-02-I`): the routing
+    /// hierarchy's build generation and metric revision, which every topology or edge cost
+    /// change moves once the hierarchy is rebuilt. O(1).
+    pub(crate) fn flow_graph_revision(
+        &self,
+    ) -> crate::simulation::pathing::flow_field::FlowGraphRevision {
+        crate::simulation::pathing::flow_field::FlowGraphRevision {
+            cch_build: self.cch_graph.build_generation,
+            cch_metric: self.cch_graph.metric_revision,
+        }
+    }
+
     /// Builds the CCH from scratch and immediately runs the connectivity check.
     ///
     /// Use this in editor paths that call `CchGraph::build` directly rather than going

@@ -614,9 +614,24 @@ impl SimCore {
         }
     }
 
-    /// A census of the loaded city, for the derived jobs demand shows before the next hour's
-    /// first slot publishes the census of the loaded copy.
+    /// The census the loaded game's readers see until the next hour's first slot publishes one
+    /// (`SIM-02-I`). A save before the hour's actions slot kept the census that hour's first
+    /// slot published, which the hour's planning slots, permit epoch, workforce reset and
+    /// project reservations read: it is recomputed from its saved copy, or, with books that
+    /// were not valid at the save, stays not valid so those readers skip as the saved game's
+    /// did. Later in the hour only the derived jobs shown read it until the next publication,
+    /// and it is a census of the loaded city.
     pub(crate) fn refresh_loaded_job_funding(&mut self) {
+        let published = self.households.census_inputs.take_loaded_published();
+        if let Some(Some(adopted)) = &published {
+            self.households.restore_published_census(
+                &self.allocator,
+                &self.transit_network,
+                &self.region_graph,
+                adopted,
+            );
+            return;
+        }
         let funding = self.electricity_funding_by_building();
         self.households.job_funding.refresh(
             &self.allocator,
@@ -633,8 +648,10 @@ impl SimCore {
         );
         // A census of the live city; the hour's census still publishes at the next hour's
         // first slot (`SIM-02-I`).
-        self.households.job_funding.published =
-            Some(self.households.census_key(&self.transit_network));
+        self.households.job_funding.published = match published {
+            Some(None) => None,
+            _ => Some(self.households.census_key(&self.transit_network)),
+        };
     }
 
     fn log_fiscal_policy_change(

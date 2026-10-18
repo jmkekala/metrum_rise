@@ -52,6 +52,57 @@ pub(crate) struct DemandUseActionPlan {
     pub(crate) spawns: Vec<DemandSpawnAction>,
 }
 
+/// The hour's demand planning slots, in order (`SIM-02-I`): residential, commercial and
+/// industrial plan their zone at the hour's slots 0, 1 and 2; slot 3 plans the downgrades and
+/// the hour's admission, then the hour's plan is executed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PlanningSlot {
+    /// Slot 0, after the operational hour: homes.
+    Residential,
+    /// Slot 1: shops and services.
+    Commercial,
+    /// Slot 2: industry.
+    Industrial,
+    /// Slot 3: downgrades, admission and the hour's actions.
+    Actions,
+}
+
+impl PlanningSlot {
+    /// Every planning slot, in order.
+    pub(crate) const ALL: [Self; 4] = [
+        Self::Residential,
+        Self::Commercial,
+        Self::Industrial,
+        Self::Actions,
+    ];
+
+    /// The zone a zone slot plans; none for the actions slot.
+    pub(super) fn zone(self) -> Option<DemandUse> {
+        match self {
+            Self::Residential => Some(DemandUse::Residential),
+            Self::Commercial => Some(DemandUse::Commercial),
+            Self::Industrial => Some(DemandUse::Industrial),
+            Self::Actions => None,
+        }
+    }
+
+    /// The zone type a zone slot plans and queues.
+    pub(crate) fn zone_type(self) -> Option<ZoneType> {
+        self.zone().map(DemandUse::zone_type)
+    }
+
+    /// The test-only work counter of this slot's skips.
+    pub(super) fn skip_work(self) -> crate::debug::work::Work {
+        use crate::debug::work::Work;
+        match self {
+            Self::Residential => Work::ResidentialPlanningSkips,
+            Self::Commercial => Work::CommercialPlanningSkips,
+            Self::Industrial => Work::IndustrialPlanningSkips,
+            Self::Actions => Work::ActionsPlanningSkips,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct DemandBuildingActionPlan {
     pub(crate) residential: DemandUseActionPlan,

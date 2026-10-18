@@ -110,6 +110,9 @@ pub(crate) struct SavedCensusInputs {
     pub(crate) changes: Vec<u8>,
     /// Whether a census reads the front, and the front rows it defers.
     pub(crate) deferred: Vec<u8>,
+    /// The census published at the hour's first slot, saved before the hour's actions slot,
+    /// whose planning reads it ([`CensusInputs::save_published`]); `None` otherwise.
+    pub(crate) published: Option<Vec<u8>>,
 }
 
 // A copied prefix `items[..len]` of a live store. Items past `len` are storage kept so that
@@ -254,6 +257,13 @@ pub(crate) struct CensusInputs {
     // Changes restored by a load, adopted by the loaded allocator once loading is done.
     loaded_changes: Option<RowChanges>,
     changed_owners: Vec<usize>,
+    // Whether the front is the copy the published census read, unchanged since: from the
+    // publication until the fill's last slot replaces it or a census prepares it again. While
+    // it is not pending, removals, in-place changes and policy changes leave it alone.
+    published_front: bool,
+    // The published census a load restored: `Some(None)` for books that were not valid at the
+    // save, `Some(Some(adopted))` for a census to recompute from the restored front.
+    loaded_published: Option<Option<Vec<u32>>>,
 }
 
 impl Default for CensusInputs {
@@ -272,6 +282,8 @@ impl Default for CensusInputs {
             expected_remap: None,
             loaded_changes: None,
             changed_owners: Vec::new(),
+            published_front: false,
+            loaded_published: None,
         }
     }
 }
@@ -339,6 +351,7 @@ impl CensusInputs {
         front.parameters = parameters;
         front.production_floor = back.production_floor;
         self.pending = true;
+        self.published_front = false;
         // A census of an older front that was never published is abandoned with it.
         self.reading = false;
         self.deferred = RowChanges::default();
@@ -551,6 +564,7 @@ impl CensusInputs {
         catalog: &RuntimeEconomyCatalog,
         fallback: CopyNow<'_>,
     ) {
+        self.published_front = false;
         if self.reading {
             self.copy_deferred_rows(live);
             self.reading = false;
@@ -731,9 +745,92 @@ impl CensusInputs {
         self.census_floor = self.front.production_floor;
     }
 
+    /// Keeps the front the census just published read (`SIM-02-I`): the hour's planning slots
+    /// read that census, and a save before the hour's actions slot stores the copy so that a
+    /// load recomputes the census ([`Self::save_published`]). Only a copy with frozen
+    /// parameters is saved. O(1).
+    pub(crate) fn keep_published_front(&mut self) {
+        self.published_front = self.front.derive_funding;
+    }
+
     /// Whether a census reads the front.
     pub(crate) fn is_read(&self) -> bool {
         self.reading
+    }
+
+    /// The published census's saved form (`SIM-02-I`): whether its books are `valid` for the
+    /// live city and, for valid books, the copy the census read with `adopted`, the service
+    /// ceilings it adopted for buildings appended after the copy. `None` for valid books
+    /// without a kept copy (a census run without the slots): the load then counts the loaded
+    /// city. O(copied rows).
+    pub(crate) fn save_published(
+        &self,
+        valid: bool,
+        adopted: &[u32],
+        edge: impl Fn(usize) -> u64,
+    ) -> Option<Vec<u8>> {
+        let mut out = Writer(Vec::new());
+        out.bool(valid);
+        if valid {
+            // The slot clock keeps the front from the publication at the hour's first slot
+            // until the fill's last slot, and every change to it or to the books' validity in
+            // between clears the books or keeps the front, so valid books in the planning slots
+            // without it come only from a census of a copy taken live (`refresh_funding_census`,
+            // callers without the slot clock and tests), whose front derives no funding.
+            debug_assert!(
+                (self.published_front && !self.pending) || !self.front.derive_funding,
+                "valid books in the hour's planning slots must keep the copy their census read"
+            );
+            if !self.published_front || self.pending {
+                return None;
+            }
+            self.put_front(&mut out, &edge);
+            out.len(adopted.len());
+            for &ceiling in adopted {
+                out.u32(ceiling);
+            }
+        }
+        Some(out.0)
+    }
+
+    /// Takes the published census a load restored ([`Self::save_published`]): `None` without
+    /// one, `Some(None)` for books that were not valid at the save, `Some(Some(adopted))` for a
+    /// census to recompute from the restored front, with the service ceilings it adopted.
+    pub(crate) fn take_loaded_published(&mut self) -> Option<Option<Vec<u32>>> {
+        self.loaded_published.take()
+    }
+
+    // The front's rows, freight capital and frozen parameters, as saved.
+    fn put_front(&self, out: &mut Writer, edge: &impl Fn(usize) -> u64) {
+        let front = &self.front;
+        put_buildings(out, &front.allocator.buildings, edge);
+        put_households(out, &front.households);
+        for &capital in &front.freight_capital {
+            out.f64(capital);
+        }
+        let parameters = &front.parameters;
+        out.f64(parameters.treasury);
+        encoding::put_fiscal(out, &parameters.fiscal);
+        out.f32(parameters.electricity_funding);
+        out.u16(parameters.minute_of_day);
+    }
+
+    // Reads a front [`Self::put_front`] wrote.
+    fn read_front(&mut self, reader: &mut Reader<'_>) -> Result<(), String> {
+        let front = &mut self.front;
+        front.allocator.buildings = read_buildings(reader)?;
+        front.households = read_households(reader)?;
+        front.freight_capital = (0..front.allocator.buildings.len())
+            .map(|_| reader.f64())
+            .collect::<Result<_, _>>()?;
+        front.parameters = FrozenCensusParameters {
+            treasury: reader.f64()?,
+            fiscal: encoding::read_fiscal(reader)?,
+            electricity_funding: reader.f32()?,
+            minute_of_day: reader.u16()?,
+        };
+        front.derive_funding = true;
+        Ok(())
     }
 
     /// The saved form; `changes` is the allocator's pending row list and `edge` maps a live
@@ -748,18 +845,8 @@ impl CensusInputs {
                 self.front.derive_funding,
                 "a copy taken now is read at once"
             );
-            let front = &self.front;
             let mut out = Writer(Vec::new());
-            put_buildings(&mut out, &front.allocator.buildings, &edge);
-            put_households(&mut out, &front.households);
-            for &capital in &front.freight_capital {
-                out.f64(capital);
-            }
-            let parameters = &front.parameters;
-            out.f64(parameters.treasury);
-            encoding::put_fiscal(&mut out, &parameters.fiscal);
-            out.f32(parameters.electricity_funding);
-            out.u16(parameters.minute_of_day);
+            self.put_front(&mut out, &edge);
             out.0
         });
         let back = self.back.next_chunk.map(|next_chunk| {
@@ -782,6 +869,7 @@ impl CensusInputs {
                 out.bool(self.reading);
                 put_row_changes(out, &self.deferred)
             },
+            published: None,
         }
     }
 
@@ -791,21 +879,26 @@ impl CensusInputs {
         let mut inputs = Self::default();
         if let Some(bytes) = &saved.front {
             let mut reader = Reader(bytes);
-            let front = &mut inputs.front;
-            front.allocator.buildings = read_buildings(&mut reader)?;
-            front.households = read_households(&mut reader)?;
-            front.freight_capital = (0..front.allocator.buildings.len())
-                .map(|_| reader.f64())
-                .collect::<Result<_, _>>()?;
-            front.parameters = FrozenCensusParameters {
-                treasury: reader.f64()?,
-                fiscal: encoding::read_fiscal(&mut reader)?,
-                electricity_funding: reader.f32()?,
-                minute_of_day: reader.u16()?,
-            };
+            inputs.read_front(&mut reader)?;
             reader.finish()?;
-            front.derive_funding = true;
             inputs.pending = true;
+        }
+        if let Some(bytes) = &saved.published {
+            let mut reader = Reader(bytes);
+            inputs.loaded_published = Some(if reader.bool()? {
+                if inputs.pending {
+                    return Err("census input copy saved both pending and published".into());
+                }
+                inputs.read_front(&mut reader)?;
+                inputs.published_front = true;
+                let adopted = (0..reader.len(4)?)
+                    .map(|_| reader.u32())
+                    .collect::<Result<_, _>>()?;
+                Some(adopted)
+            } else {
+                None
+            });
+            reader.finish()?;
         }
         if let Some(bytes) = &saved.back {
             let mut reader = Reader(bytes);

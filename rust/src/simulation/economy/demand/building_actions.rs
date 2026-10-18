@@ -3,7 +3,8 @@
 //! Private building growth, level-change, and despawn planning.
 
 use super::actions::{
-    DemandBuildingActionKey, DemandLevelChangeAction, demand_building_action_key,
+    DemandBuildingActionKey, DemandLevelChangeAction, DemandSpawnAction, PlanningSlot,
+    demand_building_action_key,
 };
 use super::credits::advance_building_action_credit;
 use super::diagnostics::BuildingActionDiagnostics;
@@ -31,7 +32,7 @@ use crate::simulation::economy::households::{
 };
 use crate::simulation::economy::operation::OperationPrices;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::zoning::{ZoneType, ZoningSystem};
+use crate::simulation::zoning::{ParcelId, ZoneType, ZoningSystem};
 use rayon::prelude::*;
 
 #[derive(Clone, Debug)]
@@ -45,6 +46,34 @@ pub(super) struct LevelChangeCandidate {
 pub(super) struct DespawnCandidate {
     pub(super) action: DemandBuildingActionKey,
     building_idx: usize,
+}
+
+// Which existing-building actions a planning slot collects (`SIM-02-I`): a zone slot plans its
+// zone's upgrades and despawns, the actions slot every zone's downgrades.
+#[derive(Clone, Copy)]
+struct ExistingActions {
+    upgrades: bool,
+    downgrades: bool,
+    despawns: bool,
+}
+
+impl ExistingActions {
+    #[cfg(test)]
+    const ALL: Self = Self {
+        upgrades: true,
+        downgrades: true,
+        despawns: true,
+    };
+    const ZONE_SLOT: Self = Self {
+        upgrades: true,
+        downgrades: false,
+        despawns: true,
+    };
+    const ACTIONS_SLOT: Self = Self {
+        upgrades: false,
+        downgrades: true,
+        despawns: false,
+    };
 }
 
 #[derive(Clone, Debug, Default)]
@@ -106,6 +135,108 @@ fn nonresidential_spawn_rejection(
         return Some(SpawnRejection::Workforce);
     }
     None
+}
+
+// A business spawn's proof on `asset` at `parcel`: the full crew, then, for a store short only
+// of workers, the crew the calendar can house, serving that crew's share (`DEM-02-C`). A
+// passing proof leaves its claims staged in `supply`.
+#[allow(clippy::too_many_arguments)]
+fn business_spawn_rejection(
+    allocator: &BuildingAllocator,
+    catalog: &RuntimeEconomyCatalog,
+    absorption: &OutputAbsorptionContext,
+    workforce: &WorkforceReservations,
+    zone_type: ZoneType,
+    parcel: u64,
+    asset: &str,
+    completion_hour: u16,
+    prices: OperationPrices,
+    exports: f32,
+    supply: &mut impl ProjectSupply,
+) -> Option<SpawnRejection> {
+    let mut probe = |crew_cap: Option<u32>| {
+        let carrier_quote = supply.begin(parcel, asset);
+        if let Some(workers) = crew_cap {
+            supply.set_crew_cap(workers);
+        }
+        nonresidential_spawn_rejection(
+            allocator,
+            catalog,
+            absorption,
+            workforce,
+            asset,
+            completion_hour,
+            OperationPrices {
+                carrier_quote: carrier_quote.unwrap_or(f32::INFINITY),
+                ..prices
+            },
+            exports,
+            supply,
+        )
+    };
+    let full = probe(None);
+    if zone_type == ZoneType::Commercial && matches!(full, Some(SpawnRejection::Workforce)) {
+        let available = workforce.available(completion_hour);
+        if available > 0 {
+            return probe(Some(available));
+        }
+    }
+    full
+}
+
+// Commits a proved business spawn on `asset`: its workers by `completion_hour`, its customers
+// (a store's crew share of them) and its staged supply. Without the workers it commits nothing
+// and returns false.
+#[allow(clippy::too_many_arguments)]
+fn commit_business_spawn(
+    allocator: &BuildingAllocator,
+    catalog: &RuntimeEconomyCatalog,
+    asset: &str,
+    completion_hour: u16,
+    cheat: bool,
+    supply: &mut impl ProjectSupply,
+    absorption: &mut OutputAbsorptionContext,
+    workforce: &mut WorkforceReservations,
+) -> bool {
+    if let Some(profile) = candidate_economy_profile(allocator, catalog, asset) {
+        if !cheat
+            && !workforce.claim(
+                completion_hour,
+                supply.supported_workers(absorption.candidate_workers(profile)),
+            )
+        {
+            supply.reject();
+            return false;
+        }
+        let crew_cap = supply.crew_cap();
+        if crew_cap < profile.worker_capacity {
+            absorption.reserve_scaled_candidate(
+                profile,
+                crew_cap as f32 / profile.worker_capacity as f32,
+            );
+        } else {
+            absorption.reserve_candidate(profile);
+        }
+    }
+    supply.accept();
+    true
+}
+
+// The prices a fresh level-one business of `zone_type` proves its operation with; each
+// candidate door replaces the carrier quote.
+fn new_business_prices(
+    zone_type: ZoneType,
+    utility_prices: [f32; 3],
+    tuning: &RuntimeEconomyTuning,
+    fiscal_policy: &CityFiscalPolicy,
+) -> OperationPrices {
+    OperationPrices {
+        utilities: utility_prices,
+        property_tax: daily_property_tax(zone_type, 1, fiscal_policy),
+        imports: tuning.owa_import_price_multiplier,
+        carrier_quote: f32::INFINITY,
+        truck_payload: tuning.logistics.truck_payload_kg,
+    }
 }
 
 // A replacement must operate from its own sales and working capital. Downsizing must also
@@ -249,9 +380,25 @@ impl ExistingBuildingCandidates {
 }
 
 impl DemandSystem {
+    // Counts a later slot's failed re-proofs (`SIM-02-I`).
+    fn count_reproof_drops(&mut self, dropped: usize) {
+        crate::debug::work::add(crate::debug::work::Work::ReproofDrops, dropped as u64);
+        #[cfg(test)]
+        {
+            self.reproof_drops += dropped as u64;
+        }
+    }
+
+    /// Plans the hour's planning slot `slot` (`SIM-02-I`). A zone slot plans its zone's spawns,
+    /// upgrades and despawns into the hour's plan, as the single pass planned each zone in
+    /// turn; the actions slot plans the downgrades and the optional homes the workforce claims.
+    /// Nothing is queued before the actions slot, so a later slot first offers the residential
+    /// slot's homes and optional homes to the calendar, then reserves the earlier slots'
+    /// business spawns and upgrades again, zone by zone, as the single pass held their claims.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn plan_private_building_actions(
         &mut self,
+        slot: PlanningSlot,
         allocator: &BuildingAllocator,
         graph: &RegionGraph,
         zoning: &ZoningSystem,
@@ -263,7 +410,7 @@ impl DemandSystem {
         residential_occupants: &ResidentialOccupantSnapshot,
         cadence_fraction: f32,
         environment: BuildingSiteEnvironment<'_>,
-        mut supply: impl ProjectSupply,
+        supply: &mut impl ProjectSupply,
     ) {
         let timing = crate::debug::Channel::EconomyPhases.enabled();
         let begin = timing.then(std::time::Instant::now);
@@ -294,16 +441,25 @@ impl DemandSystem {
                 .total_cmp(&left.1)
                 .then_with(|| left.0.cmp(&right.0))
         });
-        let spawn_assets = allocator.collect_spawn_asset_candidates_by_profile(zoning, catalog);
+        let zone = slot.zone();
+        let spawn_assets = if zone.is_some() {
+            allocator.collect_spawn_asset_candidates_by_profile(zoning, catalog)
+        } else {
+            Default::default()
+        };
         lap(0);
-        let mut spawn_candidates_by_use = allocator.collect_demand_spawn_candidates_from_assets(
-            zoning,
-            graph,
-            catalog,
-            &commercial_spawn_resource_priorities,
-            environment,
-            &spawn_assets,
-        );
+        let mut spawn_candidates_by_use = match zone {
+            Some(use_kind) => allocator.collect_demand_spawn_candidates_from_assets(
+                zoning,
+                graph,
+                catalog,
+                &commercial_spawn_resource_priorities,
+                environment,
+                &spawn_assets,
+                Some(use_kind.zone_type()),
+            ),
+            None => Default::default(),
+        };
         lap(1);
         let mut absorption_context = snapshot.output_absorption.clone();
         self.workforce_reservations.reset(
@@ -316,16 +472,116 @@ impl DemandSystem {
             supply.reservations(),
             |index| funded_jobs.saw_operating(index),
         );
+        if slot != PlanningSlot::Residential {
+            // The residential slot's homes and optional homes, which this slot's employers may
+            // claim, as the single pass offered them (`SIM-02-I`). A home whose lot went since
+            // supplies nobody: the queue drops it.
+            let available = |action: &DemandSpawnAction| {
+                zoning
+                    .parcels
+                    .get(ParcelId::from_raw(action.parcel_id))
+                    .is_some_and(|parcel| parcel.is_available())
+            };
+            self.optional_homes.retain(available);
+            for (action, optional) in self
+                .building_actions
+                .residential
+                .spawns
+                .iter()
+                .filter(|action| available(action))
+                .map(|action| (action, false))
+                .chain(self.optional_homes.iter().map(|action| (action, true)))
+            {
+                self.workforce_reservations
+                    .add_home(allocator, economy_tuning, action, optional);
+            }
+            self.workforce_reservations.reserve_existing();
+            // Business spawns, then upgrades, of earlier slots claim their workers, customers
+            // and inputs again before this slot's decisions, in the single pass's order. One
+            // whose proof now fails would get no permit on these books: it leaves the hour's
+            // plan, so its claims are not freed while it stays queued, and a dropped upgrade
+            // gets its pacing credit back, as a rejected one does.
+            for use_kind in [DemandUse::Commercial, DemandUse::Industrial] {
+                if slot.zone().is_some_and(|zone| zone as u8 <= use_kind as u8) {
+                    continue;
+                }
+                let zone_type = use_kind.zone_type();
+                let completion_hour = construction_duration_hours(zone_type, 1, economy_tuning);
+                let prices =
+                    new_business_prices(zone_type, utility_prices, economy_tuning, fiscal_policy);
+                let cheat = self.cheat_max_demands_enabled;
+                let mut spawns =
+                    std::mem::take(&mut self.building_actions.use_plan_mut(use_kind).spawns);
+                let planned = spawns.len();
+                spawns.retain(|action| {
+                    // Cheat mode planned them without proofs.
+                    (cheat
+                        || business_spawn_rejection(
+                            allocator,
+                            catalog,
+                            &absorption_context,
+                            &self.workforce_reservations,
+                            zone_type,
+                            action.parcel_id,
+                            &action.asset_id,
+                            completion_hour,
+                            prices,
+                            economy_tuning.owa_export_price_multiplier,
+                            supply,
+                        )
+                        .is_none())
+                        && commit_business_spawn(
+                            allocator,
+                            catalog,
+                            &action.asset_id,
+                            completion_hour,
+                            cheat,
+                            supply,
+                            &mut absorption_context,
+                            &mut self.workforce_reservations,
+                        )
+                });
+                self.count_reproof_drops(planned - spawns.len());
+                self.building_actions.use_plan_mut(use_kind).spawns = spawns;
+                if cheat {
+                    continue;
+                }
+                let mut upgrades =
+                    std::mem::take(&mut self.building_actions.use_plan_mut(use_kind).upgrades);
+                let planned = upgrades.len();
+                upgrades.retain(|action| {
+                    // A building no longer standing as planned holds no claims, and slot 3
+                    // skips it as it does now.
+                    let Some(building_idx) =
+                        allocator.resolve_demand_building_action(&action.building, zoning)
+                    else {
+                        return true;
+                    };
+                    reserve_business_level_change(
+                        &LevelChangeCandidate {
+                            action: action.clone(),
+                            building_idx,
+                        },
+                        allocator,
+                        catalog,
+                        economy_tuning,
+                        fiscal_policy,
+                        funded_jobs,
+                        utility_prices,
+                        supply,
+                        &mut absorption_context,
+                        &mut self.workforce_reservations,
+                    )
+                });
+                self.count_reproof_drops(planned - upgrades.len());
+                *self.upgrade_action_credit.get_mut(use_kind) += (planned - upgrades.len()) as f32;
+                self.building_actions.use_plan_mut(use_kind).upgrades = upgrades;
+            }
+        }
         lap(2);
-        // Existing-candidate collection is interleaved with dependent zone decisions.
         let mut existing_ms = 0.0;
-        let mut optional_homes = Vec::new();
-        let mut downgrade_batches = Vec::with_capacity(3);
-        for use_kind in [
-            DemandUse::Residential,
-            DemandUse::Commercial,
-            DemandUse::Industrial,
-        ] {
+        if let Some(use_kind) = zone {
+            let mut optional_homes = Vec::new();
             let zone_type = use_kind.zone_type();
             let mut spawn_candidates = spawn_candidates_by_use.take_zone_type(zone_type);
             spawn_candidates.retain(|candidate| {
@@ -334,19 +590,19 @@ impl DemandSystem {
                     .map_or(true, |index| !self.queued_construction[index].active)
             });
             let existing_begin = timing.then(std::time::Instant::now);
-            let existing_candidates = self.collect_existing_building_candidates(
+            let existing_candidates = self.collect_existing_actions(
                 allocator,
                 catalog,
                 economy_tuning,
                 residential_occupants,
                 zone_type,
+                ExistingActions::ZONE_SLOT,
             );
             if let Some(begin) = existing_begin {
                 existing_ms += begin.elapsed().as_secs_f64() * 1_000.0;
             }
             let spawn_candidate_count = spawn_candidates.len();
             let upgrade_candidate_count = existing_candidates.upgrades.len();
-            let downgrade_candidate_count = existing_candidates.downgrades.len();
             let despawn_candidate_count = existing_candidates.despawns.len();
             // Only households need a capacity target; businesses claim their own shared
             // customers and workforce below. The minute queue paces physical placement.
@@ -390,6 +646,8 @@ impl DemandSystem {
                         .add_home(allocator, economy_tuning, action, true);
                 }
                 self.workforce_reservations.reserve_existing();
+                // Offered to every later slot's employers (`SIM-02-I`).
+                self.optional_homes = std::mem::take(&mut optional_homes);
                 selected
             } else {
                 // Non-residential openings need customers and a possible source of labor.
@@ -397,50 +655,26 @@ impl DemandSystem {
                 let mut selected = Vec::new();
                 // Fresh zoned assets are level one; preparation excludes higher levels.
                 let completion_hour = construction_duration_hours(zone_type, 1, economy_tuning);
-                let prices = OperationPrices {
-                    utilities: utility_prices,
-                    property_tax: daily_property_tax(zone_type, 1, fiscal_policy),
-                    imports: economy_tuning.owa_import_price_multiplier,
-                    carrier_quote: f32::INFINITY, // Replaced by each candidate door's quote below.
-                    truck_payload: economy_tuning.logistics.truck_payload_kg,
-                };
+                let prices =
+                    new_business_prices(zone_type, utility_prices, economy_tuning, fiscal_policy);
                 for mut candidate in spawn_candidates {
                     if !self.cheat_max_demands_enabled {
                         let parcel = candidate.action.parcel_id;
                         let workforce = &self.workforce_reservations;
                         let mut rejection = |asset: &str| {
-                            let mut probe = |crew_cap: Option<u32>| {
-                                let carrier_quote = supply.begin(parcel, asset);
-                                if let Some(workers) = crew_cap {
-                                    supply.set_crew_cap(workers);
-                                }
-                                nonresidential_spawn_rejection(
-                                    allocator,
-                                    catalog,
-                                    &absorption_context,
-                                    workforce,
-                                    asset,
-                                    completion_hour,
-                                    OperationPrices {
-                                        carrier_quote: carrier_quote.unwrap_or(f32::INFINITY),
-                                        ..prices
-                                    },
-                                    economy_tuning.owa_export_price_multiplier,
-                                    &mut supply,
-                                )
-                            };
-                            let full = probe(None);
-                            // A store short only of workers may open with the crew the
-                            // calendar can house, serving that crew's share (`DEM-02-C`).
-                            if zone_type == ZoneType::Commercial
-                                && matches!(full, Some(SpawnRejection::Workforce))
-                            {
-                                let available = workforce.available(completion_hour);
-                                if available > 0 {
-                                    return probe(Some(available));
-                                }
-                            }
-                            full
+                            business_spawn_rejection(
+                                allocator,
+                                catalog,
+                                &absorption_context,
+                                workforce,
+                                zone_type,
+                                parcel,
+                                asset,
+                                completion_hour,
+                                prices,
+                                economy_tuning.owa_export_price_multiplier,
+                                supply,
+                            )
                         };
                         if let Some(reason) = rejection(&candidate.action.asset_id) {
                             let alternative = allocator.select_demand_spawn_alternative(
@@ -473,32 +707,19 @@ impl DemandSystem {
                             }
                         }
                     }
-                    if let Some(profile) =
-                        candidate_economy_profile(allocator, catalog, &candidate.action.asset_id)
-                    {
-                        if !self.cheat_max_demands_enabled
-                            && !self.workforce_reservations.claim(
-                                completion_hour,
-                                supply.supported_workers(
-                                    absorption_context.candidate_workers(profile),
-                                ),
-                            )
-                        {
-                            spawn_rejected_workforce += 1;
-                            supply.reject();
-                            continue;
-                        }
-                        let crew_cap = supply.crew_cap();
-                        if crew_cap < profile.worker_capacity {
-                            absorption_context.reserve_scaled_candidate(
-                                profile,
-                                crew_cap as f32 / profile.worker_capacity as f32,
-                            );
-                        } else {
-                            absorption_context.reserve_candidate(profile);
-                        }
+                    if !commit_business_spawn(
+                        allocator,
+                        catalog,
+                        &candidate.action.asset_id,
+                        completion_hour,
+                        self.cheat_max_demands_enabled,
+                        supply,
+                        &mut absorption_context,
+                        &mut self.workforce_reservations,
+                    ) {
+                        spawn_rejected_workforce += 1;
+                        continue;
                     }
-                    supply.accept();
                     selected.push(candidate.action);
                 }
                 selected
@@ -534,7 +755,7 @@ impl DemandSystem {
                         fiscal_policy,
                         funded_jobs,
                         utility_prices,
-                        &mut supply,
+                        supply,
                         &mut absorption_context,
                         &mut self.workforce_reservations,
                     )
@@ -549,23 +770,6 @@ impl DemandSystem {
             let upgrade_credit_after = self.upgrade_action_credit.get(use_kind);
             let upgrade_selected = selected_upgrades.len();
 
-            let downgrade_budget_units = if self.cheat_max_demands_enabled {
-                0.0
-            } else {
-                downgrade_candidate_count as f32
-                    * self
-                        .config
-                        .action_budget
-                        .downgrade_batch_fraction_by_use
-                        .get(use_kind)
-            };
-            let downgrade_credit_before = self.downgrade_action_credit.get(use_kind);
-            let downgrades_today = advance_building_action_credit(
-                self.downgrade_action_credit.get_mut(use_kind),
-                downgrade_budget_units,
-                downgrade_candidate_count,
-                cadence_fraction,
-            );
             // Clearance is paced by eligible failed sites, never a citywide market signal.
             let despawn_budget_units = despawn_candidate_count as f32
                 * self
@@ -608,11 +812,12 @@ impl DemandSystem {
                 upgrade_credit_after,
                 upgrade_planned: upgrades_today,
                 upgrade_selected,
-                downgrade_candidates: downgrade_candidate_count,
-                downgrade_budget_units,
-                downgrade_credit_before,
+                // The actions slot plans the downgrades and fills these in.
+                downgrade_candidates: 0,
+                downgrade_budget_units: 0.0,
+                downgrade_credit_before: self.downgrade_action_credit.get(use_kind),
                 downgrade_credit_after: self.downgrade_action_credit.get(use_kind),
-                downgrade_planned: downgrades_today,
+                downgrade_planned: 0,
                 downgrade_selected: 0,
                 despawn_candidates: despawn_candidate_count,
                 despawn_budget_units,
@@ -626,102 +831,146 @@ impl DemandSystem {
             plan.spawns.extend(selected_spawns);
             plan.upgrades.extend(selected_upgrades);
             plan.despawns.extend(selected_despawns);
-            downgrade_batches.push((use_kind, existing_candidates.downgrades, downgrades_today));
-        }
-        // Growth claims first: a smaller home cannot erase housing promised to a new employer.
-        let arrivals_possible = snapshot.connected_border_count > 0;
-        let protected_homes = residential_vacancy_reserve(snapshot.total_household_count)
-            .saturating_add(snapshot.unhoused_household_count)
-            .max(u32::from(
-                arrivals_possible && snapshot.total_household_count == 0,
-            ));
-        let mut retirable_homes = snapshot
-            .vacant_household_slots
-            .saturating_sub(protected_homes);
-        // Business replacements also claim ready homes before residential capacity can shrink.
-        downgrade_batches.rotate_left(1);
-        for (use_kind, candidates, planned) in downgrade_batches {
-            if use_kind == DemandUse::Residential && arrivals_possible {
-                retirable_homes = self
-                    .workforce_reservations
-                    .unreserved_ready_homes()
-                    .saturating_sub(protected_homes);
-            }
-            let mut selected = Vec::with_capacity(planned);
-            for candidate in candidates {
-                if selected.len() == planned {
-                    break;
+        } else {
+            // Growth claims first: a smaller home cannot erase housing promised to a new employer.
+            let arrivals_possible = snapshot.connected_border_count > 0;
+            let protected_homes = residential_vacancy_reserve(snapshot.total_household_count)
+                .saturating_add(snapshot.unhoused_household_count)
+                .max(u32::from(
+                    arrivals_possible && snapshot.total_household_count == 0,
+                ));
+            let mut retirable_homes = snapshot
+                .vacant_household_slots
+                .saturating_sub(protected_homes);
+            // Business replacements also claim ready homes before residential capacity can shrink.
+            for use_kind in [
+                DemandUse::Commercial,
+                DemandUse::Industrial,
+                DemandUse::Residential,
+            ] {
+                let existing_begin = timing.then(std::time::Instant::now);
+                let candidates = self
+                    .collect_existing_actions(
+                        allocator,
+                        catalog,
+                        economy_tuning,
+                        residential_occupants,
+                        use_kind.zone_type(),
+                        ExistingActions::ACTIONS_SLOT,
+                    )
+                    .downgrades;
+                if let Some(begin) = existing_begin {
+                    existing_ms += begin.elapsed().as_secs_f64() * 1_000.0;
                 }
-                // A family may offer both directions; a selected upgrade wins this pass.
-                if self
-                    .building_actions
-                    .use_plan_mut(use_kind)
-                    .upgrades
-                    .binary_search_by(|action| {
-                        compare_level_change_actions(action, &candidate.action)
-                    })
-                    .is_ok()
-                {
-                    continue;
+                let downgrade_candidate_count = candidates.len();
+                let downgrade_budget_units = if self.cheat_max_demands_enabled {
+                    0.0
+                } else {
+                    downgrade_candidate_count as f32
+                        * self
+                            .config
+                            .action_budget
+                            .downgrade_batch_fraction_by_use
+                            .get(use_kind)
+                };
+                let downgrade_credit_before = self.downgrade_action_credit.get(use_kind);
+                let planned = advance_building_action_credit(
+                    self.downgrade_action_credit.get_mut(use_kind),
+                    downgrade_budget_units,
+                    downgrade_candidate_count,
+                    cadence_fraction,
+                );
+                if use_kind == DemandUse::Residential && arrivals_possible {
+                    retirable_homes = self
+                        .workforce_reservations
+                        .unreserved_ready_homes()
+                        .saturating_sub(protected_homes);
                 }
-                if use_kind == DemandUse::Residential {
-                    let lost = allocator
-                        .household_capacity(candidate.building_idx)
-                        .saturating_sub(
-                            allocator
-                                .registry
-                                .household_capacity(&candidate.action.target_asset_id),
-                        );
-                    // Free places above the smaller capacity, by their applicants' adults.
-                    let capacity = allocator.household_capacity(candidate.building_idx);
-                    let retired = applicant_places_by_adults(
-                        allocator.flat_size_m2(candidate.building_idx),
-                        allocator.applicant_seed(candidate.building_idx),
-                        (capacity - lost).max(allocator.buildings[candidate.building_idx].occupancy)
-                            ..capacity,
-                    );
-                    if lost > retirable_homes
-                        || (arrivals_possible
-                            && !self.workforce_reservations.retire_ready_homes(retired))
+                let mut selected = Vec::with_capacity(planned);
+                for candidate in candidates {
+                    if selected.len() == planned {
+                        break;
+                    }
+                    // A family may offer both directions; a selected upgrade wins this pass.
+                    if self
+                        .building_actions
+                        .use_plan_mut(use_kind)
+                        .upgrades
+                        .binary_search_by(|action| {
+                            compare_level_change_actions(action, &candidate.action)
+                        })
+                        .is_ok()
                     {
                         continue;
                     }
-                    retirable_homes -= lost;
-                } else if !reserve_business_level_change(
-                    &candidate,
-                    allocator,
-                    catalog,
-                    economy_tuning,
-                    fiscal_policy,
-                    funded_jobs,
-                    utility_prices,
-                    &mut supply,
-                    &mut absorption_context,
-                    &mut self.workforce_reservations,
-                ) {
-                    continue;
+                    if use_kind == DemandUse::Residential {
+                        let lost = allocator
+                            .household_capacity(candidate.building_idx)
+                            .saturating_sub(
+                                allocator
+                                    .registry
+                                    .household_capacity(&candidate.action.target_asset_id),
+                            );
+                        // Free places above the smaller capacity, by their applicants' adults.
+                        let capacity = allocator.household_capacity(candidate.building_idx);
+                        let retired = applicant_places_by_adults(
+                            allocator.flat_size_m2(candidate.building_idx),
+                            allocator.applicant_seed(candidate.building_idx),
+                            (capacity - lost)
+                                .max(allocator.buildings[candidate.building_idx].occupancy)
+                                ..capacity,
+                        );
+                        if lost > retirable_homes
+                            || (arrivals_possible
+                                && !self.workforce_reservations.retire_ready_homes(retired))
+                        {
+                            continue;
+                        }
+                        retirable_homes -= lost;
+                    } else if !reserve_business_level_change(
+                        &candidate,
+                        allocator,
+                        catalog,
+                        economy_tuning,
+                        fiscal_policy,
+                        funded_jobs,
+                        utility_prices,
+                        supply,
+                        &mut absorption_context,
+                        &mut self.workforce_reservations,
+                    ) {
+                        continue;
+                    }
+                    selected.push(candidate.action);
                 }
-                selected.push(candidate.action);
+                *self.downgrade_action_credit.get_mut(use_kind) +=
+                    (planned - selected.len()) as f32;
+                let diagnostics = self.last_building_action_diagnostics.use_mut(use_kind);
+                diagnostics.downgrade_candidates = downgrade_candidate_count;
+                diagnostics.downgrade_budget_units = downgrade_budget_units;
+                diagnostics.downgrade_credit_before = downgrade_credit_before;
+                diagnostics.downgrade_planned = planned;
+                diagnostics.downgrade_selected = selected.len();
+                diagnostics.downgrade_credit_after = self.downgrade_action_credit.get(use_kind);
+                self.building_actions
+                    .use_plan_mut(use_kind)
+                    .downgrades
+                    .extend(selected);
             }
-            *self.downgrade_action_credit.get_mut(use_kind) += (planned - selected.len()) as f32;
-            let diagnostics = self.last_building_action_diagnostics.use_mut(use_kind);
-            diagnostics.downgrade_selected = selected.len();
-            diagnostics.downgrade_credit_after = self.downgrade_action_credit.get(use_kind);
-            self.building_actions
-                .use_plan_mut(use_kind)
-                .downgrades
-                .extend(selected);
-        }
-        // Only materialize optional housing actually claimed by incumbent or newly selected
-        // workplaces. These are the same legal candidates already collected for this pass.
-        self.workforce_reservations.select_optional_homes();
-        for (index, action) in optional_homes.into_iter().enumerate() {
-            if self.workforce_reservations.needs_home(index) {
-                self.building_actions.residential.spawns.push(action);
-                let diagnostics = &mut self.last_building_action_diagnostics.residential;
-                diagnostics.spawn_selected += 1;
-                diagnostics.spawn_planned += 1;
-                diagnostics.spawn_not_needed = diagnostics.spawn_not_needed.saturating_sub(1);
+            // Only materialize optional housing actually claimed by incumbent or newly selected
+            // workplaces. These are the same legal candidates already collected for this pass.
+            self.workforce_reservations.select_optional_homes();
+            for (index, action) in self.optional_homes.iter().enumerate() {
+                if self.workforce_reservations.needs_home(index) {
+                    self.building_actions
+                        .residential
+                        .spawns
+                        .push(action.clone());
+                    let diagnostics = &mut self.last_building_action_diagnostics.residential;
+                    diagnostics.spawn_selected += 1;
+                    diagnostics.spawn_planned += 1;
+                    diagnostics.spawn_not_needed = diagnostics.spawn_not_needed.saturating_sub(1);
+                }
             }
         }
         supply.reject();
@@ -737,6 +986,46 @@ impl DemandSystem {
         );
     }
 
+    /// Test driver of the hour's four planning slots on one `supply` without the slot clock or
+    /// execution (`SIM-02-I`): the whole hour's plan stays in the plan for the test to read.
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn plan_hour_for_test(
+        &mut self,
+        allocator: &BuildingAllocator,
+        graph: &RegionGraph,
+        zoning: &ZoningSystem,
+        snapshot: &DailyDemandSnapshot,
+        funded_jobs: &JobFunding,
+        catalog: &RuntimeEconomyCatalog,
+        economy_tuning: &RuntimeEconomyTuning,
+        fiscal_policy: &CityFiscalPolicy,
+        residential_occupants: &ResidentialOccupantSnapshot,
+        cadence_fraction: f32,
+        environment: BuildingSiteEnvironment<'_>,
+        mut supply: impl ProjectSupply,
+    ) {
+        for slot in PlanningSlot::ALL {
+            self.plan_private_building_actions(
+                slot,
+                allocator,
+                graph,
+                zoning,
+                snapshot,
+                funded_jobs,
+                catalog,
+                economy_tuning,
+                fiscal_policy,
+                residential_occupants,
+                cadence_fraction,
+                environment,
+                &mut supply,
+            );
+        }
+    }
+
+    // Every existing-building action of `zone_type`'s buildings, for tests.
+    #[cfg(test)]
     pub(super) fn collect_existing_building_candidates(
         &self,
         allocator: &BuildingAllocator,
@@ -744,6 +1033,26 @@ impl DemandSystem {
         economy_tuning: &RuntimeEconomyTuning,
         residential_occupants: &ResidentialOccupantSnapshot,
         zone_type: ZoneType,
+    ) -> ExistingBuildingCandidates {
+        self.collect_existing_actions(
+            allocator,
+            catalog,
+            economy_tuning,
+            residential_occupants,
+            zone_type,
+            ExistingActions::ALL,
+        )
+    }
+
+    // The `kinds` of existing-building actions of `zone_type`'s buildings. O(B / p), parallel.
+    fn collect_existing_actions(
+        &self,
+        allocator: &BuildingAllocator,
+        catalog: &RuntimeEconomyCatalog,
+        economy_tuning: &RuntimeEconomyTuning,
+        residential_occupants: &ResidentialOccupantSnapshot,
+        zone_type: ZoneType,
+        kinds: ExistingActions,
     ) -> ExistingBuildingCandidates {
         let mut candidates = allocator
             .buildings
@@ -770,7 +1079,7 @@ impl DemandSystem {
                     return result;
                 }
                 if building.is_deserted {
-                    if building.occupancy == 0 && building.worker_count == 0 {
+                    if kinds.despawns && building.occupancy == 0 && building.worker_count == 0 {
                         result[0] = Some(CollectedExistingBuildingCandidate::Despawn(
                             DespawnCandidate {
                                 action: demand_building_action_key(building),
@@ -780,7 +1089,8 @@ impl DemandSystem {
                     }
                     return result;
                 }
-                if let Some(target_asset_id) = allocator.downgrade_target(building)
+                if kinds.downgrades
+                    && let Some(target_asset_id) = allocator.downgrade_target(building)
                     && level_change_is_compatible(allocator, catalog, building_idx, target_asset_id)
                     && building_is_viable_for_downgrade(
                         allocator,
@@ -799,7 +1109,8 @@ impl DemandSystem {
                         },
                     ));
                 }
-                if let Some(target_asset_id) = allocator.upgrade_target(building)
+                if kinds.upgrades
+                    && let Some(target_asset_id) = allocator.upgrade_target(building)
                     && level_change_is_compatible(allocator, catalog, building_idx, target_asset_id)
                     && building_is_viable_for_upgrade(
                         allocator,

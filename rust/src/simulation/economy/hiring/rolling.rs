@@ -287,6 +287,50 @@ impl RollingCensus {
         // the whole run at publication goes through too).
         self.expected_passes = self.progress.passes();
     }
+
+    /// Recomputes, at load, the census the hour's first slot published into `live`, from the
+    /// restored front it read (`SIM-02-I`): the hour's planning slots, permit epoch, workforce
+    /// reset and project reservations read it, and the books are a function of the copy and
+    /// the network. As [`Self::publish_into`] left it: the census, then `adopted`, the service
+    /// ceilings it adopted for buildings appended after the copy; the buildings keep their
+    /// saved funded jobs and activity. Call once the loaded network, allocator and entrances
+    /// are rebuilt. O(census).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn restore_published(
+        &mut self,
+        inputs: &mut CensusInputs,
+        live: &mut JobFunding,
+        adopted: &[u32],
+        allocator: &BuildingAllocator,
+        network: &TransitNetwork,
+        graph: &RegionGraph,
+        catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning,
+        key: CensusKey,
+    ) {
+        debug_assert!(
+            self.run.is_none(),
+            "no census runs before the hour's window"
+        );
+        inputs.bind_loaded(allocator, graph, &network.lane_system, catalog);
+        let mut progress = CensusProgress::default();
+        let mut funding = JobFunding::default();
+        funding.step_from_inputs(
+            inputs,
+            &mut progress,
+            network,
+            graph,
+            catalog,
+            tuning,
+            usize::MAX,
+        );
+        inputs.consume();
+        inputs.keep_published_front();
+        funding.service_capacities.extend_from_slice(adopted);
+        funding.published = Some(key);
+        *live = funding;
+        self.expected_passes = progress.passes();
+    }
 }
 
 #[cfg(test)]

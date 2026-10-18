@@ -188,6 +188,25 @@ impl PopulatedCity {
         }
     }
 
+    // `advance_hour`, then the frames up to and including the hour's actions slot.
+    // The hour's demand planning runs at its slots 0–3 and its building actions (permits,
+    // level changes, despawns) at slot 3 (`SIM-02-I`), which at maximum speed (about 8.5 slots
+    // a frame) falls in the frame after the hour's first slot in about every other hour. A
+    // window ending here holds the whole hour's planning and actions; the planning slots of
+    // the frames after the first are added to `hourly`.
+    #[cfg(test)]
+    fn advance_hour_through_actions(&mut self) -> EconomyHourTimes {
+        use crate::simulation::core::scheduler::SLOTS_PER_HOUR;
+        use crate::simulation::economy::demand::PlanningSlot;
+        let mut times = self.advance_hour();
+        // The clock's slot in progress has run (`TimeSystem::absolute_slot`).
+        while self.core.time.absolute_slot() % SLOTS_PER_HOUR < PlanningSlot::Actions as u64 {
+            let frame = self.core.step_frame(FRAME_DT_S);
+            times.hourly += Duration::from_secs_f64(frame.hourly_ms / 1000.0);
+        }
+        times
+    }
+
     fn admit_households(&mut self, residents: u32) {
         let core = &mut self.core;
         core.transit_network

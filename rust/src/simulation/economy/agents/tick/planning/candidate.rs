@@ -915,13 +915,14 @@ mod tests {
             })
             .expect("foot lane starting at n2");
 
-        network.flow_fields.rebuild_dirty(&graph, |zone, _| {
-            if zone == ZoneType::Commercial {
-                vec![(n2, 7)]
-            } else {
-                Vec::new()
-            }
-        });
+        let revision = network.flow_graph_revision();
+        network
+            .flow_fields
+            .rebuild_dirty(&graph, revision, |zone, _, sources| {
+                if zone == ZoneType::Commercial {
+                    sources.push((n2, 7));
+                }
+            });
         let mut candidate = PlannedTripCandidate {
             total_cost_s: 0.0,
             mode_choice_cost_s: 0.0,
