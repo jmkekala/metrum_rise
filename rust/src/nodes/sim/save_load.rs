@@ -163,6 +163,7 @@ impl SimCore {
         self.service_policy = loaded.service_policy;
         self.fiscal_policy = loaded.fiscal_policy;
         self.apply_service_funding_staffing_policy();
+        self.refresh_loaded_job_funding();
         self.refresh_demand_construction_queue(self.time.day_index, self.time.minute_of_day);
         self.refresh_loaded_demand_state_and_log();
         self.budget_history = loaded.budget_history;
@@ -182,6 +183,17 @@ impl SimCore {
         // surface was rebuilt. Stamp a matching mesh generation before water and
         // refined-terrain payload workers consume the refreshed snapshot.
         self.precompute_road_mesh_data();
+        // The census input copy's pending row changes replace those the reconstruction above
+        // recorded (`SIM-02-I`).
+        self.households
+            .census_inputs
+            .finish_load(&mut self.allocator);
+        // A census current at the save is recomputed whole from the loaded copy (`SIM-02-I`).
+        self.households.complete_loaded_census(
+            &self.allocator,
+            &self.transit_network,
+            &self.region_graph,
+        );
     }
 
     fn refresh_loaded_demand_state_and_log(&mut self) {

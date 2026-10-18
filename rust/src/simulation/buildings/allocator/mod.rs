@@ -127,7 +127,6 @@ pub(crate) enum ExplicitServicePlacementRejection {
 }
 
 /// A placed building occupying one authored parcel or an explicit non-zoned site.
-#[derive(Clone)]
 pub struct Building {
     /// World-space X centre of the building footprint (metres, ground-plane X axis).
     pub center_x: f32,
@@ -311,6 +310,32 @@ pub struct Building {
     pub rezone_grace_days_remaining: u8,
 }
 
+// Every field but the asset id and the inventory is `Copy`, so a new field is copied without
+// listing it here; a new owned field fails to compile until it is cloned too.
+impl Clone for Building {
+    fn clone(&self) -> Self {
+        Self {
+            asset_id: self.asset_id.clone(),
+            resource_inventory: self.resource_inventory.clone(),
+            ..*self
+        }
+    }
+
+    // Reuses this building's string and inventory storage, so copies into retained rows (the
+    // census input copy, `SIM-02-I`) allocate nothing once grown.
+    fn clone_from(&mut self, source: &Self) {
+        let mut asset_id = std::mem::take(&mut self.asset_id);
+        let mut resource_inventory = std::mem::take(&mut self.resource_inventory);
+        asset_id.clone_from(&source.asset_id);
+        resource_inventory.clone_from(&source.resource_inventory);
+        *self = Self {
+            asset_id,
+            resource_inventory,
+            ..*source
+        };
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct BuildingEntrance {
     pub edge_idx: usize,
@@ -341,6 +366,36 @@ impl Default for BuildingEntrance {
             car_lane_bkw: usize::MAX,
             flags: 0,
         }
+    }
+}
+
+/// Building rows a copy of the store must refresh: the rows named by building revision steps,
+/// or every row after a step that could not name them. Unlike the bounded revision log, it is
+/// kept until its one consumer drains it, so draining never depends on how much history a log
+/// retained. Bounded by the store: more rows than buildings collapse into `all`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct RowChanges {
+    /// Rows changed since the last drain, in recording order, possibly repeated.
+    pub(crate) rows: Vec<usize>,
+    /// Whether some change could not name its rows.
+    pub(crate) all: bool,
+}
+
+impl RowChanges {
+    // Adds `rows` of a store of `buildings` rows. O(rows), amortized allocation-free.
+    fn record(&mut self, rows: impl IntoIterator<Item = usize>, buildings: usize) {
+        if self.all {
+            return;
+        }
+        self.rows.extend(rows);
+        if self.rows.len() > buildings.saturating_add(2) {
+            self.mark_all();
+        }
+    }
+
+    fn mark_all(&mut self) {
+        self.all = true;
+        self.rows.clear();
     }
 }
 
@@ -416,6 +471,9 @@ pub struct BuildingAllocator {
     pub(crate) building_ref_revision: u64,
     // Building indices changed at each `building_ref_revision` step, for incremental tables.
     building_changes: crate::simulation::core::change_log::IndexChangeLog,
+    /// The same steps for the census input copy (`SIM-02-I`), kept until the copy drains them;
+    /// saved with the copy, unlike the bounded log above.
+    pub(crate) census_copy_changes: RowChanges,
     production_revision: u64,
     production_changes: crate::simulation::core::change_log::IndexChangeLog,
     /// Appearance-only revision; does not invalidate routing or entrance references.
@@ -784,6 +842,7 @@ impl BuildingAllocator {
             entrances_dirty: false,
             building_ref_revision: 0,
             building_changes: Default::default(),
+            census_copy_changes: RowChanges::default(),
             production_revision: 0,
             production_changes: Default::default(),
             building_visual_revision: 0,
@@ -1022,14 +1081,17 @@ impl BuildingAllocator {
         self.invalidate_production_changes();
         self.building_ref_revision = self.building_ref_revision.wrapping_add(1);
         self.building_changes.clear(self.building_ref_revision);
+        self.census_copy_changes.mark_all();
     }
 
     // Revision step whose only changed building rows are `indices`, including removed rows.
-    fn record_building_changes(&mut self, indices: impl IntoIterator<Item = usize>) {
+    fn record_building_changes(&mut self, indices: impl IntoIterator<Item = usize> + Clone) {
         self.invalidate_production_changes();
         self.building_ref_revision = self.building_ref_revision.wrapping_add(1);
         self.building_changes
-            .record(self.building_ref_revision, indices);
+            .record(self.building_ref_revision, indices.clone());
+        self.census_copy_changes
+            .record(indices, self.buildings.len());
     }
 
     /// Writes the building rows changed since `since` into `out`, sorted and deduplicated.

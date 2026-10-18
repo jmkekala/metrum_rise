@@ -38,6 +38,7 @@ use std::path::Path;
 pub mod agents;
 mod camera;
 mod cell_zoning;
+mod census_inputs;
 mod handles;
 mod scheduler;
 pub mod network;
@@ -468,6 +469,7 @@ fn write_snapshot(
     network::save_network(tx, view.graph, maps)?;
     agents::save_agents(tx, view.agents, view.graph, view.network, maps)?;
     workplace_quotes::save(tx, view.households, view.allocator, view.network, maps)?;
+    census_inputs::save(tx, view.households, view.allocator, view.network, maps)?;
     scheduler::save(tx, &view.scheduler, view.graph)?;
     handles::save(
         tx,
@@ -683,6 +685,10 @@ pub(crate) fn load_from_sqlite(
     )?;
     resource_extraction.apply_work_area_scales(&mut allocator);
     agriculture.apply_work_area_scales(&mut allocator);
+    // A repaired load no longer matches the saved copy; its first census copies the city.
+    if quarantined_parcels.is_empty() {
+        (households.census_inputs, households.census_run) = census_inputs::load(&conn)?;
+    }
 
     let mut transit_network = TransitNetwork::new_for_world(&config);
     network::rebuild_loaded_graph_runtime(&mut graph, &mut transit_network, &mut terrain)?;

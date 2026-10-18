@@ -423,6 +423,40 @@ fn graph_with_connected_border() -> RegionGraph {
     graph
 }
 
+// Runs the employment census on `graph` and copies its funded jobs and activity onto the
+// buildings, as the hour's publication does before planning reads them (`SIM-02-I`).
+fn publish_census(
+    allocator: &mut BuildingAllocator,
+    households: &mut HouseholdSystem,
+    graph: &RegionGraph,
+    treasury_balance: f64,
+) {
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let tuning = load_runtime_economy_tuning().unwrap();
+    let mut routing_graph = graph.clone();
+    let mut network = crate::simulation::network::TransitNetwork::new();
+    network.lane_system.rebuild(&mut routing_graph);
+    network.rebuild_cch_and_check(&routing_graph);
+    households.job_funding.refresh(
+        allocator,
+        &households.households,
+        &mut crate::simulation::economy::logistics::ShipmentSystem::new(),
+        &network,
+        &routing_graph,
+        &catalog,
+        &tuning,
+        &CityFiscalPolicy::from_runtime_tuning(tuning.as_ref()),
+        &[],
+        treasury_balance,
+        420,
+    );
+    let funding = &households.job_funding;
+    for (index, building) in allocator.buildings.iter_mut().enumerate() {
+        building.funded_job_capacity = funding.capacities.get(index).copied().unwrap_or(0);
+        building.funded_activity = funding.activities().get(index).copied().unwrap_or(0.0);
+    }
+}
+
 fn empty_zoning() -> ZoningSystem {
     ZoningSystem::new(&WorldConfig::default())
 }
@@ -1614,6 +1648,7 @@ fn rejected_applicant_does_not_block_later_affordable_households() {
     let zoning = empty_zoning();
     let mut demand = DemandSystem::new();
     let policy = CityFiscalPolicy::from_runtime_tuning(demand.runtime_tuning());
+    publish_census(&mut allocator, &mut households, &graph, 100_000.0);
     demand.run_hourly_pass(&allocator, &mut households, &graph, &zoning, 100_000.0);
     assert!(demand.households_to_admit_today > 0);
     assert!(!demand.claim_household_admission(
@@ -1850,6 +1885,7 @@ fn job_driven_admission_prefers_worker_candidate_over_workerless_front_candidate
     let zoning = empty_zoning();
     let mut demand = DemandSystem::new();
 
+    publish_census(&mut allocator, &mut households, &graph, -20_000.0);
     demand.run_hourly_pass(&allocator, &mut households, &graph, &zoning, -20_000.0);
 
     let diagnostics = demand.last_admission_diagnostics;

@@ -99,6 +99,9 @@ pub(crate) struct RecurringSupply {
     nearest_incumbents: Vec<Option<usize>>,
     #[cfg(test)]
     search_counts: [u64; 6],
+    // Source handles below this are live buildings, the census's own and any appended since
+    // (which hold no supply); prepared variants are numbered from here (`SIM-02-I`).
+    source_base: usize,
     // Placed source doors, packed for the straight-line prune of every scanned candidate.
     doors: Vec<Option<godot::prelude::Vector2>>,
     index: SupplierCandidateIndex,
@@ -173,12 +176,23 @@ impl RecurringSupply {
         }
     }
 
+    /// Numbers prepared variants after `buildings` live buildings: a book lent to planning
+    /// after buildings were appended to the census's copy covers them as live sources without
+    /// supply, so a variant handle never names an appended building (`SIM-02-I`). Call before
+    /// [`Self::prepare_projected_sources`]. O(1).
+    pub(crate) fn cover_live_buildings(&mut self, buildings: usize) {
+        debug_assert!(!self.projected_enabled());
+        self.source_base = buildings.max(self.offsets.len().saturating_sub(1));
+    }
+
     /// Invalidates the source view after job-state removal, remapping, or reload.
     pub(crate) fn invalidate(&mut self) {
         self.revision = None;
     }
 
     /// Whether supplier indices and geometry still refer to this allocator/network layout.
+    /// Planning checks the census key instead (`SIM-02-I`).
+    #[cfg(test)]
     pub(crate) fn matches_layout(
         &self,
         allocator: &BuildingAllocator,
@@ -234,6 +248,7 @@ impl RecurringSupply {
             }
         }
         self.revision = source.revision;
+        self.source_base = source.source_base;
         self.max_speed = source.max_speed;
         self.staged.clear();
         self.released.clear();
@@ -340,6 +355,7 @@ impl RecurringSupply {
     ) {
         debug_assert!(!self.revalidation.is_active());
         self.clear_projected_sources();
+        self.source_base = allocator.buildings.len();
         self.staged.clear();
         self.committed.clear();
         self.released.clear();
@@ -664,7 +680,7 @@ impl RecurringSupply {
         allocator: &BuildingAllocator,
         graph: &RegionGraph,
     ) {
-        if source >= self.offsets.len().saturating_sub(1) {
+        if source >= self.source_base {
             self.set_projected_available(source, resource, available, graph);
             return;
         }

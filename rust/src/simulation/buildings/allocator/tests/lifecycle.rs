@@ -684,7 +684,6 @@ fn test_immigration_claims_vacant_home() {
         0,
         0,
         &mut treasury_balance,
-        &[],
         &crate::simulation::economy::fiscal::CityFiscalPolicy::default(),
     );
     assert_eq!(agents.len(), expected_household_size as usize);

@@ -133,6 +133,53 @@ impl MarketFixture {
         );
     }
 
+    // `refresh` run in slices of `budget` rows, restarting after `restart_after` slices.
+    fn refresh_in_slices(
+        &mut self,
+        tuning: &RuntimeEconomyTuning,
+        budget: usize,
+        restart_after: Option<usize>,
+    ) -> usize {
+        self.funding.refresh_in_slices_for_test(
+            &self.allocator,
+            &self.families,
+            &mut self.logistics,
+            &self.network,
+            &self.graph,
+            &self.catalog,
+            tuning,
+            &CityFiscalPolicy::from_runtime_tuning(tuning),
+            &[],
+            0.0,
+            420,
+            budget,
+            restart_after,
+        )
+    }
+
+    // Every census output and book, bit for bit.
+    fn assert_same_census(&self, other: &Self, label: &str) {
+        self.funding.assert_same_operations_for_test(&other.funding);
+        assert_eq!(
+            self.funding.service_capacities, other.funding.service_capacities,
+            "{label}"
+        );
+        assert_eq!(
+            self.funding.freight_capital, other.funding.freight_capital,
+            "{label}"
+        );
+        assert_eq!(
+            self.funding.closure_passes, other.funding.closure_passes,
+            "{label}"
+        );
+        // Each fixture builds its own network, whose revisions differ.
+        assert_eq!(
+            self.funding.census_book_fingerprints_for_test(),
+            other.funding.census_book_fingerprints_for_test(),
+            "{label}"
+        );
+    }
+
     fn district(&self, district: usize) -> Vec<DistrictRow> {
         let first = district * DISTRICT;
         (first + HOMES..first + DISTRICT)
@@ -1724,5 +1771,75 @@ fn perf_contract_financing_locality() {
     eprintln!(
         "PERF_LOCALITY {}",
         serde_json::json!({ "kind": "financing", "results": results })
+    );
+}
+
+// A labelled fixture and the incomes its census runs at in turn.
+type MarketCase = (String, Box<dyn Fn() -> MarketFixture>, Vec<f32>);
+
+// The census in slices of any size, and restarted part way as a network change restarts it,
+// equals the census run at once bit for bit (`SIM-02-I`), through closures of several passes.
+#[test]
+fn a_census_in_slices_or_restarted_equals_one_run_bit_for_bit() {
+    let mut tuning = (*load_runtime_economy_tuning().unwrap()).clone();
+    tuning.owa_import_price_multiplier = 10.0;
+    tuning.owa_export_price_multiplier = 0.0;
+    // Budgets in rows, and the slice after which the census starts again.
+    let slicings = [
+        (1, None),
+        (5, Some(3)),
+        (37, None),
+        (37, Some(1)),
+        (1_000, None),
+    ];
+    let mut most_passes = 0;
+    let mut cases: Vec<MarketCase> = vec![(
+        "mixed districts".into(),
+        Box::new(|| MarketFixture::new(&[0, 1, 2, 3])),
+        vec![0.0, 0.0],
+    )];
+    for (length, partial, failing) in [(2, 7_750.0, 7_500.0), (8, 11_250.0, 10_500.0)] {
+        for cascade in [true, false] {
+            cases.push((
+                format!("chain {length} cascade {cascade}"),
+                Box::new(move || {
+                    let mut market = financing_chain(length, 3);
+                    if !cascade {
+                        market.funding.disable_customer_cascade();
+                    }
+                    market
+                }),
+                vec![1_000_000.0, partial, failing, partial, 1_000_000.0],
+            ));
+        }
+    }
+    for (label, build, incomes) in &cases {
+        let mut reference = build();
+        let mut sliced: Vec<_> = slicings.iter().map(|_| build()).collect();
+        for &income in incomes {
+            for market in std::iter::once(&mut reference).chain(&mut sliced) {
+                if income > 0.0 {
+                    market.families[0].gross_daily_wages = income;
+                    market.families[0].budget = income;
+                }
+            }
+            reference.refresh(&tuning);
+            most_passes = most_passes.max(reference.funding.closure_passes);
+            for (market, &(budget, restart)) in sliced.iter_mut().zip(&slicings) {
+                let slices = market.refresh_in_slices(&tuning, budget, restart);
+                assert!(
+                    budget >= 1_000 || slices > 1,
+                    "{label}: {budget} rows a slice"
+                );
+                reference.assert_same_census(
+                    market,
+                    &format!("{label}, income {income}, {budget} rows, restart {restart:?}"),
+                );
+            }
+        }
+    }
+    assert!(
+        most_passes > 2,
+        "the fixtures must close over several passes"
     );
 }

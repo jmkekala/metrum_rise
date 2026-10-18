@@ -101,10 +101,13 @@ crossed:
    the environment grids the previous day's sweep finished at its last slot.
 
 Household hour (`households/tick.rs`): count the households still arriving; rehouse unhoused
-households; the funding census; logistics; replenishment and service-visit planning; job search
-against the census. Every reader that hour sees a census of the state the previous hour's phases
-left. Membership is a maintained list of each household's members (`SIM-02-I`): each household
-recounts its members, car access, stock days, employed adults and expected wages at its own
+households; logistics; replenishment and service-visit planning; job search against the census.
+The funding census is no longer part of the hour (`SIM-02-I`,
+[`simulation.md`](simulation.md#pure-jobs)): its inputs are copied over each hour's first half,
+it runs in steps over the second half, and it publishes at the next hour's first slot, just
+before this pass, copying funded jobs and activity onto the buildings. Every reader that hour
+sees that census; its copy is 31–60 minutes old when it publishes. Membership is a maintained
+list of each household's members (`SIM-02-I`): each household recounts its members, car access, stock days, employed adults and expected wages at its own
 hourly phase, a job change also updates the household's employed adults at once, and
 buildings' worker counts follow every job change.
 

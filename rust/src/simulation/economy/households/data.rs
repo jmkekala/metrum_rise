@@ -231,6 +231,20 @@ pub struct HouseholdSystem {
     /// Service visitors held since SimCore last paced departures.
     pub(crate) held_visitors: Vec<AgentHandle>,
     pub(crate) job_funding: crate::simulation::economy::hiring::JobFunding,
+    /// The hourly census's rolling copy of the buildings and households it reads (`SIM-02-I`);
+    /// saved.
+    pub(crate) census_inputs: crate::simulation::economy::hiring::CensusInputs,
+    /// The census built over each hour's second half and published at the next hour's start
+    /// (`SIM-02-I`); saved with the input copy.
+    pub(crate) census_run: crate::simulation::economy::hiring::RollingCensus,
+    /// Advance whenever building or household indices shift or are reused: swap-removes,
+    /// remaps, clears and undo restores (`SIM-02-I`). Appends and in-place changes keep them,
+    /// so a census stays valid for the indices it covers. Not saved: a loaded game counts
+    /// afresh.
+    pub(crate) structure: crate::simulation::economy::hiring::StructureRevisions,
+    /// Advances at every change of the policy the census's copy freezes (`SIM-02-I`); part of
+    /// the census key. Not saved: a loaded game counts afresh.
+    pub(crate) census_policy_revision: u64,
     pub(super) shopping_car_scratch: Vec<AtomicU32>,
     pub(super) removal_candidates_scratch: Vec<(usize, f32, f32)>,
     pub(super) removal_selected_flags_scratch: Vec<bool>,
@@ -291,6 +305,10 @@ impl HouseholdSystem {
             held_shoppers: Vec::new(),
             held_visitors: Vec::new(),
             job_funding: Default::default(),
+            census_inputs: Default::default(),
+            census_run: Default::default(),
+            structure: Default::default(),
+            census_policy_revision: 0,
             shopping_car_scratch: Vec::new(),
             removal_candidates_scratch: Vec::new(),
             removal_selected_flags_scratch: Vec::new(),
@@ -353,6 +371,9 @@ impl HouseholdSystem {
 
     /// Restores records captured by [`Self::capture_building_undo`].
     pub(crate) fn restore_building_undo(&mut self, undo: HouseholdBuildingUndo) {
+        // Restored records replace households in place; the census copy cannot follow them.
+        self.census_inputs.invalidate();
+        self.note_building_structure_change();
         self.removed_electricity = undo.removed_electricity;
         self.ensure_daily_ledger_len();
         for (household_id, household, ledger) in undo.records {
@@ -364,6 +385,18 @@ impl HouseholdSystem {
             }
         }
         self.invalidate_workplace_route_cache();
+    }
+
+    // A building index shifts or is reused (`SIM-02-I`). O(1).
+    pub(super) fn note_building_structure_change(&mut self) {
+        self.structure.buildings = self.structure.buildings.wrapping_add(1);
+        crate::debug::work::add(crate::debug::work::Work::StructuralChanges, 1);
+    }
+
+    // A household index shifts or is reused (`SIM-02-I`). O(1).
+    pub(super) fn note_household_structure_change(&mut self) {
+        self.structure.households = self.structure.households.wrapping_add(1);
+        crate::debug::work::add(crate::debug::work::Work::StructuralChanges, 1);
     }
 
     fn invalidate_workplace_route_cache(&mut self) {
@@ -427,6 +460,10 @@ impl HouseholdSystem {
     pub fn clear(&mut self) {
         self.households.clear();
         self.job_funding.clear();
+        self.census_inputs.invalidate();
+        self.census_run.abandon();
+        self.note_building_structure_change();
+        self.note_household_structure_change();
         self.pending_arrivals = PendingHouseholdArrivals::default();
         self.held_shoppers.clear();
         self.held_visitors.clear();
@@ -450,7 +487,11 @@ impl HouseholdSystem {
 
     /// Remaps building references after a building swap-remove.
     pub fn remap_building_indices(&mut self, mapping: &std::collections::HashMap<usize, usize>) {
+        if !mapping.is_empty() {
+            self.note_building_structure_change();
+        }
         self.job_funding.remap_buildings(mapping);
+        self.census_inputs.remap_buildings(mapping);
         self.ensure_daily_ledger_len();
         if mapping.len() == 1 {
             let (&old, &new) = mapping.iter().next().unwrap();
@@ -480,7 +521,11 @@ impl HouseholdSystem {
         removed_building: usize,
         allocator: &mut BuildingAllocator,
     ) {
+        self.note_building_structure_change();
         self.job_funding.invalidate_building(removed_building);
+        // Both removal paths swap-remove the building next (`SIM-02-I`).
+        self.census_inputs
+            .remove_building(removed_building, allocator);
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let tuning = load_runtime_economy_tuning()

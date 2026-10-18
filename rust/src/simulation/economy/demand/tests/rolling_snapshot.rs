@@ -5,7 +5,7 @@
 use std::ops::Range;
 
 use super::super::snapshot::{
-    DemandSnapshotSweep, SnapshotBuffer, SweepInputs, connected_road_border_count,
+    DemandSnapshotSweep, SnapshotBuffer, SweepInputs, WorkforceView, connected_road_border_count,
 };
 use super::*;
 use crate::simulation::core::scheduler::SLOTS_PER_HOUR;
@@ -71,6 +71,7 @@ fn city() -> (BuildingAllocator, HouseholdSystem) {
     households.job_funding.capacities = vec![3; allocator.buildings.len()];
     households.job_funding.set_activity(6, 0.75);
     households.job_funding.set_activity(8, 0.5);
+    publish(&mut allocator, &households);
     allocator
         .building_handles
         .register_appended(allocator.buildings.len());
@@ -78,6 +79,15 @@ fn city() -> (BuildingAllocator, HouseholdSystem) {
         .handles
         .register_appended(households.households.len());
     (allocator, households)
+}
+
+// Copies the census onto the buildings, as its publication does (`SIM-02-I`).
+fn publish(allocator: &mut BuildingAllocator, households: &HouseholdSystem) {
+    let funding = &households.job_funding;
+    for (index, building) in allocator.buildings.iter_mut().enumerate() {
+        building.funded_job_capacity = funding.capacities.get(index).copied().unwrap_or(0);
+        building.funded_activity = funding.activities().get(index).copied().unwrap_or(0.0);
+    }
 }
 
 // The transfer claims of the first few hundred households exhaust it.
@@ -98,7 +108,6 @@ fn an_hour_long_sweep_equals_the_whole_city_snapshot() {
     let inputs = SweepInputs {
         allocator: &allocator,
         households: &households,
-        job_funding: &households.job_funding,
         config: &config,
         catalog: &catalog,
         tuning: &tuning,
@@ -176,6 +185,115 @@ fn an_hour_long_sweep_equals_the_whole_city_snapshot() {
     assert_eq!(front_bits(&sweep), Some(swept));
 }
 
+// Planning composes its snapshot with the workforce of the live city: a hire after the sweep
+// took the household and the workplace shows at once, as in a snapshot of the whole city built
+// now, while the swept workforce still counts the job open and the adult unemployed. The other
+// folds stay as the sweep found each entity.
+#[test]
+fn the_planned_workforce_follows_a_hire_after_the_sweep() {
+    let (mut allocator, mut households) = city();
+    let graph = graph_with_connected_border();
+    let config = load_builtin_demand_config().unwrap();
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let tuning = load_runtime_economy_tuning().unwrap();
+    let policy = CityFiscalPolicy::from_runtime_tuning(tuning.as_ref());
+    let mut sweep = DemandSnapshotSweep::default();
+    let inputs = SweepInputs {
+        allocator: &allocator,
+        households: &households,
+        config: &config,
+        catalog: &catalog,
+        tuning: &tuning,
+        policy: &policy,
+        treasury: TREASURY,
+    };
+    for slot in 0..SLOTS_PER_HOUR {
+        sweep.advance(slot, &inputs);
+    }
+    let worker = households
+        .households
+        .iter()
+        .position(|household| {
+            crate::simulation::economy::households::household_is_housed(household, &allocator)
+                && household.adult_count > household.employed_adults
+        })
+        .unwrap();
+    let workplace = allocator
+        .buildings
+        .iter()
+        .position(|building| {
+            building.zone_type == ZoneType::Commercial
+                && !building.is_under_construction()
+                && building.funded_job_capacity > building.worker_count
+        })
+        .unwrap();
+    households.households[worker].employed_adults += 1;
+    allocator.buildings[workplace].worker_count += 1;
+
+    let inputs = SweepInputs {
+        allocator: &allocator,
+        households: &households,
+        config: &config,
+        catalog: &catalog,
+        tuning: &tuning,
+        policy: &policy,
+        treasury: TREASURY,
+    };
+    let front = sweep.take_front(&inputs);
+    let whole = DailyDemandSnapshot::from_runtime_with_funding(
+        &allocator,
+        &households,
+        &graph,
+        &config,
+        &catalog,
+        &tuning,
+        &policy,
+        TREASURY,
+        &households.job_funding,
+    );
+    let mut borders = Vec::new();
+    collect_connected_border_nodes(&graph, &mut borders);
+    let workforce = |snapshot: &DailyDemandSnapshot| {
+        format!(
+            "{} {} {} {} {} {} {} {} {:?}",
+            snapshot.existing_unemployed_member_count,
+            snapshot.open_job_slots,
+            snapshot.move_in_job_slots,
+            snapshot.move_in_job_equivalent_slots,
+            snapshot.average_move_in_job_wage_per_day,
+            snapshot.physical_worker_capacity,
+            snapshot.funded_worker_capacity,
+            snapshot.open_jobs_unfunded,
+            snapshot.unhoused_workforce,
+        )
+    };
+    let compose = |view: &WorkforceView| {
+        workforce(&DailyDemandSnapshot::compose(
+            &front.totals,
+            view,
+            &households,
+            connected_road_border_count(&graph, &borders),
+            &catalog,
+            &tuning,
+            &policy,
+            TREASURY,
+        ))
+    };
+    let mut live = WorkforceView::default();
+    live.count_live(
+        &allocator,
+        &households,
+        &catalog,
+        &tuning,
+        policy.income_tax_rate,
+    );
+    assert_eq!(compose(&live), workforce(&whole));
+    assert_ne!(
+        compose(&WorkforceView::of_totals(&front.totals)),
+        workforce(&whole)
+    );
+}
+
 fn composed(
     front: &SnapshotBuffer,
     households: &HouseholdSystem,
@@ -188,6 +306,7 @@ fn composed(
     collect_connected_border_nodes(graph, &mut borders);
     DailyDemandSnapshot::compose(
         &front.totals,
+        &WorkforceView::of_totals(&front.totals),
         households,
         connected_road_border_count(graph, &borders),
         &catalog,
@@ -236,7 +355,6 @@ fn entities_created_after_the_freeze_count_at_the_next_pass() {
         let inputs = SweepInputs {
             allocator,
             households,
-            job_funding: &households.job_funding,
             config: &config,
             catalog: &catalog,
             tuning: &tuning,
@@ -261,12 +379,12 @@ fn entities_created_after_the_freeze_count_at_the_next_pass() {
         .handles
         .register_appended(households.households.len());
     households.job_funding.capacities.push(3);
+    publish(&mut allocator, &households);
     advance(&mut sweep, 500..SLOTS_PER_HOUR, &allocator, &households);
 
     let inputs = SweepInputs {
         allocator: &allocator,
         households: &households,
-        job_funding: &households.job_funding,
         config: &config,
         catalog: &catalog,
         tuning: &tuning,
@@ -323,7 +441,6 @@ fn a_saved_sweep_continues_identically() {
     let inputs = SweepInputs {
         allocator: &allocator,
         households: &households,
-        job_funding: &households.job_funding,
         config: &config,
         catalog: &catalog,
         tuning: &tuning,
@@ -363,6 +480,50 @@ fn a_saved_sweep_continues_identically() {
     let mut corrupt = saved.clone();
     corrupt.front.as_mut().unwrap().pop();
     assert!(DemandSnapshotSweep::restore(&corrupt).is_err());
+}
+
+// A census rebuilt mid-hour, by a load or a policy change, replaces the live operation book but
+// not the copies the published census left on the buildings, which the sweep folds (`SIM-02-I`).
+#[test]
+fn a_census_rebuilt_mid_hour_leaves_the_sweep_unchanged() {
+    let (allocator, households) = city();
+    let config = load_builtin_demand_config().unwrap();
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let tuning = load_runtime_economy_tuning().unwrap();
+    let policy = CityFiscalPolicy::from_runtime_tuning(tuning.as_ref());
+    let inputs = SweepInputs {
+        allocator: &allocator,
+        households: &households,
+        config: &config,
+        catalog: &catalog,
+        tuning: &tuning,
+        policy: &policy,
+        treasury: TREASURY,
+    };
+    // The same households with an empty live census.
+    let rebuilt = changed_households(&households, |_, _| {});
+    assert!(rebuilt.job_funding.capacities.is_empty());
+    let rebuilt_inputs = SweepInputs {
+        households: &rebuilt,
+        ..inputs
+    };
+    let (mut sweep, mut other) = (
+        DemandSnapshotSweep::default(),
+        DemandSnapshotSweep::default(),
+    );
+    for slot in 0..SLOTS_PER_HOUR {
+        sweep.advance(slot, &inputs);
+        other.advance(
+            slot,
+            if slot < SLOTS_PER_HOUR / 2 {
+                &inputs
+            } else {
+                &rebuilt_inputs
+            },
+        );
+    }
+    assert!(sweep.save().front.is_some());
+    assert_eq!(sweep.save(), other.save());
 }
 
 #[test]

@@ -11,6 +11,8 @@
 //! `docs/economy.md#econ-13-economy-tick-baseline`.
 
 #[cfg(test)]
+pub(super) mod census_churn;
+#[cfg(test)]
 mod contract;
 #[cfg(test)]
 mod envelope;

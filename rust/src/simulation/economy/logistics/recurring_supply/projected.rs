@@ -78,8 +78,9 @@ impl ProjectedSupplySource {
 pub(super) struct ProjectedSources {
     // Caller revision of `sources`; retained across live forks for incremental updates.
     key: Option<Vec<u64>>,
-    // Live geometry and first projected slot of the derived offsets and index below.
-    layout: Option<(Option<GeometryRevision>, usize)>,
+    // Live geometry, first projected slot and first variant handle of the derived offsets and
+    // index below.
+    layout: Option<(Option<GeometryRevision>, usize, usize)>,
     // Network topology of every source's cached access.
     access_topology: Option<u32>,
     sources: Vec<ProjectedSupplySource>,
@@ -112,10 +113,10 @@ impl RecurringSupply {
         let Some(components) = &self.components else {
             return;
         };
-        let base = self.offsets.len() - 1;
-        let first_slot = self.offsets[base];
+        let base = self.source_base;
+        let first_slot = *self.offsets.last().unwrap();
         let projected = &mut self.projected;
-        let layout = (geometry_revision(self.revision), first_slot);
+        let layout = (geometry_revision(self.revision), first_slot, base);
         let rows_current = projected.key.as_deref() == Some(caller_revision);
         if !rows_current || projected.layout != Some(layout) {
             let timing = crate::debug::Channel::EconomyPhases
@@ -239,7 +240,7 @@ impl RecurringSupply {
             .get(owner)?
             .clone()
             .find(|&index| self.projected.sources[index].asset == asset)
-            .map(|index| self.offsets.len() - 1 + index)
+            .map(|index| self.source_base + index)
     }
 
     /// Changes one source's funded net production while retaining outstanding buyer claims.
@@ -308,7 +309,7 @@ impl RecurringSupply {
 
     /// Maps a supply handle to its real commitment owner, including unplaced recipe variants.
     pub(super) fn source_owner(&self, source: usize) -> usize {
-        let base = self.offsets.len().saturating_sub(1);
+        let base = self.source_base;
         if source < base {
             source
         } else {
@@ -318,7 +319,7 @@ impl RecurringSupply {
 
     /// Sparse quantity range for an original or prepared source handle.
     pub(super) fn source_range(&self, source: usize) -> Option<Range<usize>> {
-        let base = self.offsets.len().saturating_sub(1);
+        let base = self.source_base;
         let (offsets, index) = if source < base {
             (&self.offsets, source)
         } else if self.projected.enabled {
@@ -336,7 +337,7 @@ impl RecurringSupply {
         allocator: &BuildingAllocator,
         catalog: &'c RuntimeEconomyCatalog,
     ) -> Option<&'c EconomyProfileRuntime> {
-        let base = self.offsets.len().saturating_sub(1);
+        let base = self.source_base;
         let profile = if source < base {
             allocator.buildings.get(source)?.economy_profile_runtime_id
         } else if self.projected.enabled {
@@ -353,7 +354,7 @@ impl RecurringSupply {
         source: usize,
         allocator: &'a BuildingAllocator,
     ) -> Option<&'a BuildingEntrance> {
-        let base = self.offsets.len().saturating_sub(1);
+        let base = self.source_base;
         if source < base {
             allocator.entrances.get(source)
         } else if self.projected.enabled {
@@ -378,7 +379,7 @@ impl RecurringSupply {
         graph: &RegionGraph,
         routes: &mut FreightRouteCache,
     ) -> Option<f32> {
-        if source < self.offsets.len().saturating_sub(1) {
+        if source < self.source_base {
             if let Some(buyer) = buyer {
                 routes.between_buildings(source, buyer, allocator, network, graph)
             } else {
@@ -405,11 +406,7 @@ impl RecurringSupply {
         let Some(components) = &self.components else {
             return;
         };
-        let Some(variant) = self
-            .projected
-            .sources
-            .get(source - (self.offsets.len() - 1))
-        else {
+        let Some(variant) = self.projected.sources.get(source - self.source_base) else {
             return;
         };
         let chunk = chunk_for_point(variant.entrance.door_pos.x, variant.entrance.door_pos.y);

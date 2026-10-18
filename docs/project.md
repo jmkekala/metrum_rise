@@ -345,7 +345,14 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   power coverage and shop prices of the hour before, so power and shop takings lag by an hour.
   Freight finds suppliers listed an hour earlier, and demand plans on a snapshot swept over the
   previous hour. A game saved mid-hour now continues exactly as one that was not saved (save
-  format 95).
+  format 95). `SIM-02-I` part 2 (2026-10-18): the hourly jobs-funding census no longer runs in one
+  frame at the top of the hour. It copies the city over the first half of each hour, works
+  through the copy over the second half and takes effect at the next hour, so funded jobs reflect
+  the city 31–60 minutes earlier. Tax and service-funding changes reach funded jobs at the next
+  hour instead of at once, though workers a funding cut no longer pays still leave at once, and
+  demand planning counts unemployed adults and open jobs on the live
+  city, which stops the growing starter town admitting more adults than it has jobs (save
+  format 97).
 
 - **Starting treasury**: new games begin with 500,000, increased from 100,000. See
   [money source](economy.md#money-source); earlier balance runs retain their original starting capital.

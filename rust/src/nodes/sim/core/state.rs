@@ -33,6 +33,7 @@ use crate::simulation::economy::demand::{
     DemandBuildingActionPlan, DemandSpawnAction, DemandSystem,
 };
 use crate::simulation::economy::fiscal::CityFiscalPolicy;
+use crate::simulation::economy::hiring::{CENSUS_WINDOW_START, FrozenCensusParameters};
 use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::extraction::ResourceExtractionSystem;
@@ -581,6 +582,21 @@ impl SimCore {
     /// sweep runs, as the slots of the hour would.
     pub fn simulate_operational_hour_internal(&mut self, day_index: u32, minute_of_day: u16) {
         self.demand.discard_snapshot_front();
+        // The census runs at once on a copy taken now and publishes before the pass; a census
+        // the slots had in progress is abandoned (`SIM-02-I`).
+        self.transit_network.publish_frontage_prices();
+        self.households.census_inputs.discard_front();
+        let service_funding_by_building = self.electricity_funding_by_building();
+        self.households.refresh_funding_census(
+            &mut self.allocator,
+            &mut self.logistics,
+            &self.transit_network,
+            &self.region_graph,
+            &service_funding_by_building,
+            &self.fiscal_policy,
+            self.treasury.balance,
+            minute_of_day,
+        );
         self.simulate_operational_hour_observed(day_index, minute_of_day, &mut ());
         self.run_every_hour_phase();
         self.serve_cell_lot_queue(CELL_LOT_QUOTA as usize * SLOTS_PER_HOUR as usize);
@@ -618,11 +634,24 @@ impl SimCore {
             .saturating_sub(1)
             .saturating_mul(24)
             .saturating_add(u32::from(minute_of_day / 60));
-        // Every economy consumer this hour prices the same frontage delays (`ECON-13-D`).
+        // The hour's economy consumers and the census published before the hour price the
+        // frontage delays published when that census started (`ECON-13-D`, `SIM-02-I`).
         // Production, farms, mines and household consumption run at each entity's hourly
         // phase (`SIM-02-F`).
-        self.transit_network.publish_frontage_prices();
-        // Households whose daily phase chose to leave since the last hour (`SIM-02-G`).
+        // The demand snapshot front takes the households and buildings created since its sweep
+        // began first, before exits and job search change them, as the sweep took the others
+        // (`SIM-02-I`).
+        self.demand.fold_created_snapshot_entities(
+            &self.allocator,
+            &self.households,
+            &self.fiscal_policy,
+            self.treasury.balance,
+        );
+        // Households whose daily phase chose to leave since the last hour (`SIM-02-G`), before
+        // the hour's readers, as before the census was published separately. The census
+        // published at this slot covers them: its books keep a removed household as a
+        // customer until the next publication, and their readers, planning with the lent
+        // books among them, check each household's identity (`SIM-02-I`).
         let removed_households = self.households.remove_queued_exits(
             self.demand.household_exit_policy(),
             &mut self.agents,
@@ -632,7 +661,6 @@ impl SimCore {
             self.demand
                 .record_household_removal_execution(removed_households);
         }
-        let service_funding_by_building = self.electricity_funding_by_building();
         self.households.operational_hour_tick(
             &mut self.agents,
             &mut self.allocator,
@@ -642,7 +670,6 @@ impl SimCore {
             absolute_hour,
             minute_of_day,
             &mut self.treasury.balance,
-            &service_funding_by_building,
             &self.fiscal_policy,
         );
         // Capture receipts before demand can remove or replace their building.
@@ -991,6 +1018,79 @@ impl SimCore {
         );
     }
 
+    /// Slot `slot`'s chunk of the funding census's input copy (`SIM-02-I`). The fill's last
+    /// slot freezes the treasury, policies and the minute of the hour the census feeds with it.
+    pub(super) fn advance_census_inputs(&mut self, slot: u64) {
+        let parameters = self.census_parameters(next_hour(slot));
+        self.households.advance_census_inputs(
+            slot,
+            &mut self.allocator,
+            &self.logistics,
+            parameters,
+        );
+    }
+
+    // The live census parameters for a census feeding the hour that starts at slot `feeds`.
+    fn census_parameters(&self, feeds: u64) -> FrozenCensusParameters {
+        let (_, minute_of_day) = super::schedule::slot_calendar(feeds);
+        FrozenCensusParameters {
+            treasury: self.treasury.balance,
+            fiscal: self.fiscal_policy,
+            electricity_funding: self.service_policy.electricity_funding,
+            minute_of_day,
+        }
+    }
+
+    /// Window slot `slot`'s share of the hourly funding census (`SIM-02-I`): the frontage prices
+    /// are published where the hour's census starts, before its first step, so it and the next
+    /// hour's consumers price the same delays. The hour's first half returns at once.
+    pub(super) fn advance_census(&mut self, slot: u64) {
+        if slot % SLOTS_PER_HOUR < CENSUS_WINDOW_START {
+            return;
+        }
+        if self
+            .households
+            .census_starts_at(slot, self.households.census_key(&self.transit_network))
+        {
+            self.transit_network.publish_frontage_prices();
+        }
+        let key = self.households.census_key(&self.transit_network);
+        let fallback = self.census_parameters(next_hour(slot));
+        self.households.advance_census(
+            slot,
+            &mut self.allocator,
+            &self.logistics,
+            &self.transit_network,
+            &self.region_graph,
+            fallback,
+            key,
+        );
+    }
+
+    /// Publishes the hour's census at its first slot `slot`, before the operational hour
+    /// (`SIM-02-I`); a census the window did not finish for the live city runs whole first,
+    /// after publishing the frontage prices as a census start does.
+    pub(super) fn publish_census(&mut self, slot: u64) {
+        if !self
+            .households
+            .census_ready(slot, self.households.census_key(&self.transit_network))
+        {
+            self.transit_network.publish_frontage_prices();
+        }
+        let key = self.households.census_key(&self.transit_network);
+        // The census feeds this hour.
+        let fallback = self.census_parameters(slot);
+        self.households.publish_census(
+            slot,
+            &mut self.allocator,
+            &self.logistics,
+            &self.transit_network,
+            &self.region_graph,
+            fallback,
+            key,
+        );
+    }
+
     /// Slot `slot`'s chunk of the hour-long demand snapshot sweep (`SIM-02-I`).
     pub(super) fn advance_demand_snapshot(&mut self, slot: u64) {
         self.allocator
@@ -1275,4 +1375,9 @@ impl SimCore {
         self.bump_terrain_payload_patch_generations(&dirty_patch_keys);
         self.terrain_dirty = true;
     }
+}
+
+// The first slot of the hour after `slot`'s.
+fn next_hour(slot: u64) -> u64 {
+    (slot / SLOTS_PER_HOUR + 1) * SLOTS_PER_HOUR
 }

@@ -67,7 +67,7 @@ fn apply_arrival_wave(city: &mut PopulatedCity) {
         .remove_households(&mut leaving, &mut core.agents, &mut core.allocator);
 }
 
-fn apply_fiscal_stress(city: &mut PopulatedCity) {
+pub(super) fn apply_fiscal_stress(city: &mut PopulatedCity) {
     for policy in [
         crate::simulation::economy::fiscal::POLICY_COMMERCIAL_PROPERTY_TAX,
         crate::simulation::economy::fiscal::POLICY_INDUSTRIAL_PROPERTY_TAX,

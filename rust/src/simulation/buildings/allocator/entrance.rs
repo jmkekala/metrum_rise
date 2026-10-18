@@ -253,6 +253,22 @@ impl BuildingAllocator {
         self.bump_entrance_ref_revision();
     }
 
+    /// Derives the entrances of `buildings` into `out` as [`Self::rebuild_entrance_cache`]
+    /// does for the live store: for a copy of the store (the census input copy, `SIM-02-I`).
+    /// O(buildings), parallel.
+    pub(crate) fn derive_entrances_of(
+        buildings: &[Building],
+        graph: &RegionGraph,
+        lanes: &LaneSystem,
+        registry: &crate::assets::AssetRegistry,
+        out: &mut Vec<BuildingEntrance>,
+    ) {
+        buildings
+            .par_iter()
+            .map(|building| Self::derive_building_entrance(building, graph, lanes, registry))
+            .collect_into_vec(out);
+    }
+
     /// Appends the derived entrance for a newly appended building to a clean cache.
     pub(crate) fn append_entrance_cache_for_building(
         &mut self,

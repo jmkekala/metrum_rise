@@ -30,6 +30,17 @@ use crate::simulation::economy::definitions::{
 };
 use crate::simulation::economy::fiscal::{CityFiscalPolicy, tax_amount};
 use crate::simulation::economy::hiring::JobFunding;
+
+/// Where a building snapshot reads each building's funded jobs and funded input scale.
+#[derive(Clone, Copy)]
+pub(in crate::simulation::economy::demand) enum FundedJobs<'a> {
+    /// A census's operation book, by building index: construction execution's own census.
+    Census(&'a JobFunding),
+    /// The copies the published census left on each building (`funded_job_capacity`,
+    /// `funded_activity`), which saves keep, so a census rebuilt by a load or a policy change
+    /// mid-hour never changes what the rolling sweep folds (`SIM-02-I`).
+    Published,
+}
 use crate::simulation::economy::households::{
     CommercialActivitySums, CommercialActivityTerms, Household, HouseholdSystem,
     active_worker_capacity_for_profile_with_floor_scale, affordable_consumer_residents,
@@ -263,6 +274,177 @@ impl SnapshotTotals {
     }
 }
 
+/// The jobs of operating workplaces: open funded jobs and their net daily wage sum, and the
+/// physical, funded and unfunded worker capacities.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct JobTotals {
+    open_job_slots: u32,
+    open_job_wage_sum: f32,
+    physical_worker_capacity: u32,
+    funded_worker_capacity: u32,
+    open_jobs_unfunded: u32,
+}
+
+impl JobTotals {
+    // Adds building `idx`'s jobs if it is a workplace that operates, with its funded jobs read
+    // from `funded`. O(1).
+    fn add_workplace(
+        &mut self,
+        catalog: &RuntimeEconomyCatalog,
+        income_tax_rate: f32,
+        funded: FundedJobs<'_>,
+        idx: usize,
+        building: &Building,
+    ) {
+        if building.broken
+            || building.economy_broken
+            || building.is_deserted
+            || building.is_under_construction()
+        {
+            return;
+        }
+        let Some(profile) = catalog
+            .profile_by_runtime_id(building.economy_profile_runtime_id)
+            .filter(|profile| profile_offers_work(building, profile))
+        else {
+            return;
+        };
+        // A funding change does not end an employment assignment. Releasing these
+        // workers early lets another project reserve them while their employer still
+        // reserves its customers (e.g. before the daily bankruptcy/layoff boundary).
+        let filled_workers = building.worker_count;
+        let physical_worker_capacity = active_worker_capacity_for_profile_with_floor_scale(
+            catalog,
+            building,
+            profile,
+            // Stores and explicit work areas cache their activity; a store's is its census.
+            building.commercial_activity_floor_scale,
+        );
+        let funded_worker_capacity = physical_worker_capacity.min(match funded {
+            FundedJobs::Census(job_funding) => {
+                job_funding.capacities.get(idx).copied().unwrap_or(0)
+            }
+            FundedJobs::Published => building.funded_job_capacity,
+        });
+        if physical_worker_capacity > funded_worker_capacity {
+            self.open_jobs_unfunded = self
+                .open_jobs_unfunded
+                .saturating_add(physical_worker_capacity.saturating_sub(funded_worker_capacity));
+        }
+        if physical_worker_capacity > 0 {
+            self.physical_worker_capacity = self
+                .physical_worker_capacity
+                .saturating_add(physical_worker_capacity);
+            self.funded_worker_capacity = self
+                .funded_worker_capacity
+                .saturating_add(funded_worker_capacity);
+        }
+        if funded_worker_capacity > 0 {
+            let average_daily_wage = profile.average_daily_wage();
+            if average_daily_wage > 0.1 {
+                let open_slots = funded_worker_capacity.saturating_sub(filled_workers);
+                let net_daily_wage =
+                    average_daily_wage - tax_amount(average_daily_wage, income_tax_rate);
+                self.open_job_slots = self.open_job_slots.saturating_add(open_slots);
+                self.open_job_wage_sum += open_slots as f32 * net_daily_wage.max(0.0);
+            }
+        }
+    }
+
+    fn merge(&mut self, other: Self) {
+        self.open_job_slots = self.open_job_slots.saturating_add(other.open_job_slots);
+        self.open_job_wage_sum += other.open_job_wage_sum;
+        self.physical_worker_capacity = self
+            .physical_worker_capacity
+            .saturating_add(other.physical_worker_capacity);
+        self.funded_worker_capacity = self
+            .funded_worker_capacity
+            .saturating_add(other.funded_worker_capacity);
+        self.open_jobs_unfunded = self
+            .open_jobs_unfunded
+            .saturating_add(other.open_jobs_unfunded);
+    }
+}
+
+/// The workforce a snapshot is composed with: housed unemployed adults, displaced households'
+/// labour in household priority order, and the workplaces' [`JobTotals`].
+///
+/// Planning counts it on the live city at its pass, after the hour's job search
+/// ([`Self::count_live`], `SIM-02-I`): the rolling sweep holds each household and workplace as
+/// it stood at its chunk, so a hire, quit or release since would leave the job open on one
+/// side and its worker employed on the other, and the workforce calendar and admission would
+/// count it twice or not at all.
+#[derive(Clone, Debug, Default)]
+pub(super) struct WorkforceView {
+    housed_unemployed: u32,
+    unhoused: Vec<UnhousedWorkforce>,
+    jobs: JobTotals,
+}
+
+impl WorkforceView {
+    /// The workforce `totals` folded.
+    pub(super) fn of_totals(totals: &SnapshotTotals) -> Self {
+        Self {
+            housed_unemployed: totals.households.housed_unemployed_count,
+            unhoused: totals.unhoused_workforce.clone(),
+            jobs: totals.buildings.jobs,
+        }
+    }
+
+    /// Counts the workforce of the live city, with funded jobs from the copies the published
+    /// census left on the buildings, keeping the displaced list's storage. A parallel scan,
+    /// O(H/p + B/p); `SIM-02-K` replaces it with totals the job, household and building
+    /// mutators maintain.
+    pub(super) fn count_live(
+        &mut self,
+        allocator: &BuildingAllocator,
+        households: &HouseholdSystem,
+        catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning,
+        income_tax_rate: f32,
+    ) {
+        self.housed_unemployed = households
+            .households
+            .par_iter()
+            .filter(|household| {
+                household.member_count > 0 && household_is_housed(household, allocator)
+            })
+            .map(|household| {
+                u32::from(
+                    household
+                        .adult_count
+                        .saturating_sub(household.employed_adults),
+                )
+            })
+            .reduce(|| 0, u32::saturating_add);
+        self.unhoused.clear();
+        // Indexed parallel collection preserves household priority.
+        self.unhoused.par_extend(
+            households.households.par_iter().filter_map(|household| {
+                UnhousedWorkforce::of(household, allocator, catalog, tuning)
+            }),
+        );
+        self.jobs = ordered_fold(
+            &allocator.buildings,
+            BUILDING_SNAPSHOT_CHUNK_SIZE,
+            JobTotals::default,
+            |jobs, idx, building| {
+                jobs.add_workplace(
+                    catalog,
+                    income_tax_rate,
+                    FundedJobs::Published,
+                    idx,
+                    building,
+                );
+            },
+            |mut merged, jobs| {
+                merged.merge(jobs);
+                merged
+            },
+        );
+    }
+}
+
 impl DailyDemandSnapshot {
     #[cfg(test)]
     pub(super) fn from_runtime(
@@ -367,6 +549,7 @@ impl DailyDemandSnapshot {
         collect_connected_border_nodes(graph, &mut borders);
         Self::compose(
             &totals,
+            &WorkforceView::of_totals(&totals),
             households,
             connected_road_border_count(graph, &borders),
             catalog,
@@ -376,11 +559,13 @@ impl DailyDemandSnapshot {
         )
     }
 
-    /// Composes a snapshot from city-wide totals and the values read when it is used: pending
-    /// arrivals, the connected borders, the fiscal policy's benefits and the treasury.
-    /// O(catalog profile ports + resources + displaced households).
+    /// Composes a snapshot from city-wide totals, a workforce view and the values read when
+    /// it is used: pending arrivals, the connected borders, the fiscal policy's benefits and
+    /// the treasury. O(catalog profile ports + resources + displaced households).
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn compose(
         totals: &SnapshotTotals,
+        workforce: &WorkforceView,
         households: &HouseholdSystem,
         connected_border_count: u32,
         catalog: &RuntimeEconomyCatalog,
@@ -426,18 +611,20 @@ impl DailyDemandSnapshot {
         let occupied_household_slots = building_accumulator.occupied_household_slots;
         let under_construction_household_slots =
             building_accumulator.under_construction_household_slots;
-        let open_job_slots = building_accumulator.open_job_slots;
-        let open_job_wage_sum = building_accumulator.open_job_wage_sum;
-        let physical_worker_capacity = building_accumulator.physical_worker_capacity;
-        let funded_worker_capacity = building_accumulator.funded_worker_capacity;
-        let open_jobs_unfunded = building_accumulator.open_jobs_unfunded;
+        let JobTotals {
+            open_job_slots,
+            open_job_wage_sum,
+            physical_worker_capacity,
+            funded_worker_capacity,
+            open_jobs_unfunded,
+        } = workforce.jobs;
         let committed_commercial_output_capacity_by_resource =
             &building_accumulator.committed_commercial_output_capacity_by_resource;
         let business_input_need_by_resource = &building_accumulator.business_input_need_by_resource;
         let committed_output_capacity_by_resource =
             &building_accumulator.committed_output_capacity_by_resource;
-        let existing_unemployed_member_count = household_accumulator
-            .housed_unemployed_count
+        let existing_unemployed_member_count = workforce
+            .housed_unemployed
             .saturating_add(households.pending_arrivals.adults);
 
         let vacant_household_slots = total_household_slots.saturating_sub(occupied_household_slots);
@@ -535,7 +722,7 @@ impl DailyDemandSnapshot {
         );
 
         Self {
-            unhoused_workforce: totals.unhoused_workforce.clone(),
+            unhoused_workforce: workforce.unhoused.clone(),
             vacant_household_slots,
             total_household_count,
             housed_household_count,
@@ -639,11 +826,7 @@ struct BuildingSnapshotAccumulator {
     occupied_household_slots: u32,
     under_construction_household_slots: u32,
     constructing_by_use: [u32; 3],
-    open_job_slots: u32,
-    open_job_wage_sum: f32,
-    physical_worker_capacity: u32,
-    funded_worker_capacity: u32,
-    open_jobs_unfunded: u32,
+    jobs: JobTotals,
     committed_output_capacity_by_resource: Vec<(ResourceRuntimeId, f32)>,
     committed_commercial_output_capacity_by_resource: Vec<(ResourceRuntimeId, f32)>,
     business_input_need_by_resource: Vec<(ResourceRuntimeId, f32)>,
@@ -679,7 +862,7 @@ impl BuildingSnapshotAccumulator {
         catalog: &RuntimeEconomyCatalog,
         income_tax_rate: f32,
         demand_sink_rates_by_resource: &[(ResourceRuntimeId, f32)],
-        job_funding: &JobFunding,
+        funded: FundedJobs<'_>,
         idx: usize,
         building: &Building,
     ) {
@@ -739,46 +922,8 @@ impl BuildingSnapshotAccumulator {
             self.occupied_household_slots = self.occupied_household_slots.saturating_add(occupied);
         }
 
-        if let Some(profile) =
-            active_profile.filter(|profile| profile_offers_work(building, profile))
-        {
-            // A funding change does not end an employment assignment. Releasing these
-            // workers early lets another project reserve them while their employer still
-            // reserves its customers (e.g. before the daily bankruptcy/layoff boundary).
-            let filled_workers = building.worker_count;
-            let physical_worker_capacity = active_worker_capacity_for_profile_with_floor_scale(
-                catalog,
-                building,
-                profile,
-                // Stores and explicit work areas cache their activity; a store's is its census.
-                building.commercial_activity_floor_scale,
-            );
-            let funded_worker_capacity =
-                physical_worker_capacity.min(job_funding.capacities.get(idx).copied().unwrap_or(0));
-            if physical_worker_capacity > funded_worker_capacity {
-                self.open_jobs_unfunded = self.open_jobs_unfunded.saturating_add(
-                    physical_worker_capacity.saturating_sub(funded_worker_capacity),
-                );
-            }
-            if physical_worker_capacity > 0 {
-                self.physical_worker_capacity = self
-                    .physical_worker_capacity
-                    .saturating_add(physical_worker_capacity);
-                self.funded_worker_capacity = self
-                    .funded_worker_capacity
-                    .saturating_add(funded_worker_capacity);
-            }
-            if funded_worker_capacity > 0 {
-                let average_daily_wage = profile.average_daily_wage();
-                if average_daily_wage > 0.1 {
-                    let open_slots = funded_worker_capacity.saturating_sub(filled_workers);
-                    let net_daily_wage =
-                        average_daily_wage - tax_amount(average_daily_wage, income_tax_rate);
-                    self.open_job_slots = self.open_job_slots.saturating_add(open_slots);
-                    self.open_job_wage_sum += open_slots as f32 * net_daily_wage.max(0.0);
-                }
-            }
-        }
+        self.jobs
+            .add_workplace(catalog, income_tax_rate, funded, idx, building);
 
         if let Some(profile) = active_profile {
             let commercial = building.zone_type == ZoneType::Commercial;
@@ -805,12 +950,15 @@ impl BuildingSnapshotAccumulator {
                     );
                 }
             }
-            let input_capacity_scale = job_funding.input_demand_scale(
-                idx,
-                building,
-                profile,
-                allocator.is_city_service_building(building),
-            );
+            let service = allocator.is_city_service_building(building);
+            let input_capacity_scale = match funded {
+                FundedJobs::Census(job_funding) => {
+                    job_funding.input_demand_scale(idx, building, profile, service)
+                }
+                FundedJobs::Published => {
+                    JobFunding::published_input_demand_scale(building, profile, service)
+                }
+            };
             for input_port in &profile.inputs {
                 // Maintenance supplied by this recipe is already excluded from net output.
                 // It cannot also claim another supplier's customers.
@@ -845,17 +993,7 @@ impl BuildingSnapshotAccumulator {
         self.under_construction_household_slots = self
             .under_construction_household_slots
             .saturating_add(other.under_construction_household_slots);
-        self.open_job_slots = self.open_job_slots.saturating_add(other.open_job_slots);
-        self.open_job_wage_sum += other.open_job_wage_sum;
-        self.physical_worker_capacity = self
-            .physical_worker_capacity
-            .saturating_add(other.physical_worker_capacity);
-        self.funded_worker_capacity = self
-            .funded_worker_capacity
-            .saturating_add(other.funded_worker_capacity);
-        self.open_jobs_unfunded = self
-            .open_jobs_unfunded
-            .saturating_add(other.open_jobs_unfunded);
+        self.jobs.merge(other.jobs);
         merge_resource_amounts(
             &mut self.committed_output_capacity_by_resource,
             other.committed_output_capacity_by_resource,
@@ -901,7 +1039,7 @@ fn collect_building_snapshot_accumulator(
                 catalog,
                 income_tax_rate,
                 demand_sink_rates_by_resource,
-                job_funding,
+                FundedJobs::Census(job_funding),
                 idx,
                 building,
             );

@@ -247,6 +247,8 @@ impl ProjectReservations {
         minute: u16,
     ) {
         inputs.begin_pass();
+        // Buildings appended since the census's copy are live sources without supply.
+        inputs.cover_live_buildings(allocator.buildings.len());
         self.begin_book_pass(funding, allocator, catalog, tuning, fiscal, minute);
     }
 

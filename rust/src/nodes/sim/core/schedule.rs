@@ -4,11 +4,12 @@
 //! `docs/simulation.md#scheduler`).
 //!
 //! [`SimCore::step_frame`] reports the slots the clock crossed; each runs here in order. The
-//! timing wheel fires first, then the fixed-slot systems: until `SIM-02-K` the re-hosted
-//! operational hour, and the calendar close. The entities of the slot's hourly and daily phases
-//! follow, then the cell-lot queue, one chunk each of the rolling road length, environment
-//! sweep, freight supplier index and demand snapshot, and at an hour's last slot the hour's
-//! city totals.
+//! timing wheel fires first, then the fixed-slot systems: the funding census's publication,
+//! until `SIM-02-K` the re-hosted operational hour, and the calendar close. The entities of the
+//! slot's hourly and daily phases follow, then the cell-lot queue, one chunk each of the rolling
+//! road length, environment sweep, freight supplier index and demand snapshot, at an hour's last
+//! slot the hour's city totals, one chunk of the funding census's input copy over the hour's
+//! first half and the census's share of its steps over the second half.
 
 use std::time::Instant;
 
@@ -27,6 +28,8 @@ use super::trips::TripEvent;
 pub(crate) enum SimSystem {
     /// Fires the slot's timed events.
     TimedEvents,
+    /// Publishes the funding census the previous hour's second half built (`SIM-02-I`).
+    CensusPublish,
     /// Today's operational hour, with the hourly demand pass.
     OperationalHour,
     /// The calendar close: the city's day totals become the day's budget report.
@@ -57,6 +60,11 @@ pub(crate) enum SimSystem {
     /// next hour's electricity dispatch and coverage and service-sales prices and pool
     /// (`SIM-02-I`).
     CityHour,
+    /// One chunk of the copy of the buildings and households the hour's funding census reads,
+    /// filled over the hour's first half (`SIM-02-I`).
+    CensusInputs,
+    /// The funding census's share of its steps over the hour's second half (`SIM-02-I`).
+    Census,
 }
 
 /// Something that must happen at a given slot.
@@ -117,6 +125,29 @@ pub(crate) fn simulation_schedule() -> Schedule<SimSystem> {
                 | state::LOGISTICS
                 | state::GRIDS,
             cost: Cost::Events,
+            tier: Tier::Full,
+        },
+        // Before the operational hour, so the census and all its readers that hour (planning,
+        // restock and visits, job search) share one slot no save separates. The swap is O(1);
+        // copying funded jobs and activity onto the buildings is an O(B) parallel pass, and a
+        // census the window left missing, unfinished or stale (a world's first hour, a clock
+        // set directly, an edit between the window's last slot and this one) runs whole here,
+        // as every census did before `SIM-02-I`: hence the legacy boundary cost.
+        Declaration {
+            system: SimSystem::CensusPublish,
+            name: "census publish",
+            kind: SystemKind::FixedSlot {
+                period: Period::Hour,
+                offset: 0,
+            },
+            reads: state::BUILDINGS
+                | state::HOUSEHOLDS
+                | state::LOGISTICS
+                | state::NETWORK
+                | state::TREASURY
+                | state::CLOCK,
+            writes: state::HOUSEHOLDS | state::BUILDINGS | state::NETWORK,
+            cost: Cost::LegacyBoundary,
             tier: Tier::Full,
         },
         Declaration {
@@ -283,6 +314,43 @@ pub(crate) fn simulation_schedule() -> Schedule<SimSystem> {
             cost: Cost::Chunk,
             tier: Tier::Full,
         },
+        Declaration {
+            system: SimSystem::CensusInputs,
+            name: "census inputs",
+            kind: SystemKind::Rolling {
+                period: Period::Hour,
+            },
+            reads: state::CLOCK
+                | state::BUILDINGS
+                | state::HOUSEHOLDS
+                | state::LOGISTICS
+                | state::TREASURY,
+            writes: state::HOUSEHOLDS | state::BUILDINGS,
+            cost: Cost::Chunk,
+            tier: Tier::Full,
+        },
+        // A rolling chunk, not a queue: one resumable computation over a period, not requests
+        // served oldest first. Each second-half slot runs ceil(R / S) rows of the census's
+        // steps, R the rows left assuming the current closure pass is the last and S the slots
+        // left; a step that is not sliced runs whole in the slot it starts in, and the hour's
+        // last slot finishes what remains (`hiring/rolling.rs`). First-half slots return at
+        // once. The census start publishes the frontage prices first.
+        Declaration {
+            system: SimSystem::Census,
+            name: "census",
+            kind: SystemKind::Rolling {
+                period: Period::Hour,
+            },
+            reads: state::CLOCK
+                | state::BUILDINGS
+                | state::HOUSEHOLDS
+                | state::LOGISTICS
+                | state::NETWORK
+                | state::TREASURY,
+            writes: state::HOUSEHOLDS | state::BUILDINGS | state::NETWORK,
+            cost: Cost::Chunk,
+            tier: Tier::Full,
+        },
     ])
 }
 
@@ -311,6 +379,12 @@ impl SimCore {
             }
             match declaration.system {
                 SimSystem::TimedEvents => self.fire_timed_events(slot, report, observer),
+                SimSystem::CensusPublish => {
+                    let publish_start = Instant::now();
+                    record_crash_phase_for_core(self, "census publish");
+                    run_sim_phase("census publish", || self.publish_census(slot));
+                    report.hourly_ms += publish_start.elapsed().as_secs_f64() * 1000.0;
+                }
                 SimSystem::OperationalHour => {
                     let hourly_start = Instant::now();
                     record_crash_phase_for_core(self, "operational hour tick");
@@ -349,6 +423,8 @@ impl SimCore {
                 SimSystem::FreightSuppliers => self.advance_freight_supplier_sweep(slot),
                 SimSystem::DemandSnapshot => self.advance_demand_snapshot(slot),
                 SimSystem::CityHour => self.advance_city_hour(slot),
+                SimSystem::CensusInputs => self.advance_census_inputs(slot),
+                SimSystem::Census => self.advance_census(slot),
             }
         }
         self.schedule_construction_completions();

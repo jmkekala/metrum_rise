@@ -10,8 +10,9 @@ simulation tiers. Economy and growth rules stay in [`economy.md`](economy.md) an
 `SIM-02-D` (passive deadlines and construction completion), `SIM-02-E` (trips as timed
 events), `SIM-02-F` (per-entity hourly economy), `SIM-02-G` (per-entity daily settlement) and
 `SIM-02-H` (rolling environment grids and the cell-lot queue) are done, and `SIM-02-I` is in
-progress (part 1: counts, electricity, store sales, freight suppliers and the demand snapshot);
-see the
+progress (part 1: counts, electricity, store sales, freight suppliers and the demand snapshot;
+part 2: the funding census over slots on a rolling input copy; part 3, construction permits
+on the published census, and part 4, demand planning one zone type a slot, remain); see the
 [`SIM-02-A` baseline](#sim-02-a-guards-and-pre-refactor-baseline) and the
 [step results](#step-results). Until each migration step lands,
 the current cadence in
@@ -227,15 +228,17 @@ and tests that step a whole hour serve the hour's quota after every phase.
   - **Pooled reads:** a pooled pass reads what the phases of the previous hour left. The hourly
     electricity pass bills each building's activity from its own phase, and production reads
     the activity floor the last hour set. Both values are now saved.
-  - **Census first:** the funding census now opens the hour, right after the membership
-    counts, so the activity floor, store sales, restock and visit planning and hiring all read
-    a census of the state the previous hour's phases left. A census rebuilt on load therefore
-    never feeds the simulation.
+  - **Census at :00:** the funding census publishes at the hour's first slot, before the
+    operational hour, from a copy of the city taken over the previous hour's first half
+    (`SIM-02-I` part 2, [Pure jobs](#pure-jobs)). The activity floor, store sales, restock and
+    visit planning and hiring read it. Its copy is 31–60 minutes old when it publishes, where
+    the census used to read the live city at :00. A census rebuilt on load equals the one the
+    uninterrupted game publishes.
 - **Implemented in `SIM-02-I` (hourly passes):** the activity floor, service-store sales and
   electricity leave the hour.
   - **Buildings:** the activity floor before production, from the funded activity the hour's
     census copied onto the building (`funded_activity`, saved like `funded_job_capacity`, so a
-    census rebuilt on load or by a policy change never feeds the hour's phases); after
+    census rebuilt on load never feeds the hour's phases); after
     production, a service store draws its sales and every building meters its electricity, a
     power plant generating at the last hour's dispatch of its current capacity. The hour's
     pooled passes (logistics, visit planning, the demand snapshot) now read the floors the
@@ -403,7 +406,12 @@ sweep that misses a slot is abandoned.
   commercial activity signal, the treasury-ordered count of affordable consumers, the displaced
   workforce and the residential occupants that the hourly demand pass composes its snapshot
   from. The pass reads the previous hour's sweep, first folding the entities created in new
-  handle slots since that sweep began, so a site placed mid-hour is never planned twice. The
+  handle slots since that sweep began, so a site placed mid-hour is never planned twice; the
+  operational hour folds them before its job search, so a household hired that hour is not
+  counted as unemployed while its workplace still shows the job open (part 2). The workforce
+  fields are counted on the live city at the pass, after job search, from the buildings'
+  published funded jobs, in a parallel O(H/p + B/p) scan that `SIM-02-K` replaces with
+  maintained totals. The
   treasury the consumer count draws on is frozen at the sweep's first slot, and benefit claims
   are walked in handle order. Construction execution keeps its own current snapshot from its
   own census: from an hour-old count, successive execution epochs reserved the same unemployed
@@ -455,30 +463,50 @@ lesson). If the job has not finished by its apply slot, the sim thread waits: re
 depend on completion time. Mutating passes are never pure jobs. Candidates: distance tables,
 field diffusion and other read-only precomputation.
 
-**Planned for `SIM-02-I`: the funding census spread over slots** (decided 2026-10-17; see
-[Decided while unattended](#decided-while-unattended)). The census only reads the city and
-writes its own books, but it costs about 96 ms a call at 100k and runs about twice an hour. It
-is not a pure job: it routes on the live lanes, CCH and road graph, which the sim thread writes
-every frame (lane frontage delays, edge congestion) and which the per-frame agent planner
-shares, so a background copy would mean moving those fields out of the lane and edge records
-and copying about 90 MB of lanes at 100k after every road edit.
+**Implemented in `SIM-02-I` (part 2): the funding census spread over slots** (decided
+2026-10-17; see [Decided while unattended](#decided-while-unattended)). The census only reads
+the city and writes its own books, but it costs about 96 ms a call at 100k. It is not a pure
+job: it routes on the live lanes, CCH and road graph, which the sim thread writes every frame
+(lane frontage delays, edge congestion) and which the per-frame agent planner shares, so a
+background copy would mean moving those fields out of the lane and edge records and copying
+about 90 MB of lanes at 100k after every road edit.
 
-- **Inputs:** a rolling copy of what the census reads besides the network: buildings and their
-  entrances, households, each building's freight working capital, and the treasury, fiscal
-  policy and clock frozen when the census starts. The copy is filled a slice per slot over each
-  hour in dense order; a building or household removal is mirrored into it in O(1), so it stays
-  aligned with the live store. The front copy, the back copy, the cursor and the frozen values
-  are saved.
-- **Steps:** the census runs as a sequence of steps over a window of slots after the hour
-  starts, each step bounded (one market or claim phase, or a fixed slice of a serial loop), on
-  the sim thread against the front copy and the live network. A network change (a road edit or
-  the hourly frontage prices) restarts it.
-- **Loading:** the steps are a pure function of the saved copy and the network, so a load
-  recomputes a census in progress from the saved copy and continues from the saved step.
-- **Readers:** each building takes its funded jobs and activity floor from the published census
-  at its own phase. Demand planning and construction execution use the published books; after a
-  building removal has invalidated them they wait for the next census instead of running their
-  own.
+- **Inputs** (`hiring/inputs.rs`): a rolling copy of what the census reads besides the
+  network: buildings, households, each building's paid freight, and the treasury, fiscal
+  policy, city electricity funding and clock. A back copy fills over the hour's first 480
+  slots in dense order and becomes the front at slot 479, with those values frozen there. A
+  swap-remove is mirrored into both copies in O(1); a building removal also retargets the
+  copied households' home and store references, O(households) in parallel like the live pass.
+  Rows the allocator changes in place are copied again each slot. While a census reads the
+  front, the front follows removals but defers in-place changes and appends, which a restart
+  copies in.
+- **Steps** (`hiring/steps.rs`, `hiring/rolling.rs`): from slot 480 the census runs over the
+  front copy and the live network as resumable steps into a back `JobFunding`: routes and
+  market setup, then for each closure pass import funding, household claims, source
+  production, current staff, expansion, publication, repair, and business claims and proof.
+  A sliced step takes ceil(R / S) rows a slot, never a wall-clock budget: R is the rows left if
+  the current pass is the last, S the window slots left, and slot 959 takes the rest. The other
+  steps run whole in the slot they start in. Frontage prices publish when a census starts. A
+  change of the network revisions (CCH build and metric, lanes, frontage) or of the building
+  or household structure revisions restarts the census, even after it finished early; appends
+  and in-place changes do not. A fiscal or service funding change also restarts it, after
+  writing the new values into the copy's frozen policy and recording an overridden building's
+  row; the published census stands until the next one, while service workers the new funding no
+  longer pays leave at once.
+- **Publish** (`households/census.rs`): `census publish`, a fixed slot at offset 0 declared
+  before the operational hour, swaps the census in and copies funded jobs and activity onto
+  the buildings, O(buildings). A census that is missing, unfinished or stale there runs whole.
+- **Loading:** saves keep both copies, the deferred rows, the publish slot and whether the
+  census is current. The census is a pure function of the copy and the network, so a load
+  recomputes a current census whole, whatever step it had reached; a stale one restarts at the
+  next window slot, or runs at slot 0.
+- **Readers:** buildings take funded jobs and activity from their copies at their phases, and
+  the demand snapshot sweep reads the same copies. Job search, restock and visit planning read
+  the published census. Demand planning lends the published books while the building
+  structure is unchanged and no appended building has recipe inputs; otherwise it still runs
+  its own census. Construction execution still runs one per epoch. `SIM-02-I` part 3 removes
+  both: C/I construction is proved once an hour in the planning slot on the published census
+  and keeps a saved permit until it starts.
 
 ### Simulation tiers
 
@@ -1045,6 +1073,76 @@ on a fresh `$ARTIFACTS` directory.
   demand snapshot equals a whole-city build, entities created mid-sweep count once, and a sweep
   saved mid-hour continues identically; the vacancy order and a stale index survive a save.
 
+#### `SIM-02-I`, part 2 — the funding census over slots on a rolling input copy (2026-10-18)
+
+- **Save format 97:** the census input copy (`census_inputs`: both copies, the deferred in-place
+  rows, the publish slot and whether the census is current). The Kuopio fixture gained the table
+  and its hash in `placements.json`.
+- **What moved off the hour:** the hourly funding census, about 96 ms a call at 100k
+  ([Pure jobs](#pure-jobs)): its inputs are copied over the hour's first half, it runs as
+  resumable steps over the second, and it publishes at the next hour's first slot. Demand
+  planning lends the published books, and policy changes reach the census through its copy.
+  Construction execution and, after a firm with inputs starts in the window, the planner still
+  run their own censuses; part 3 removes them.
+- **Defects found in part 1** (committed 2026-10-17), fixed here: the demand snapshot read the
+  live census, which a load replaces mid-hour; and new households joined it after the hour's
+  job search had hired them, counting each such job twice. With exact counts, planning now
+  takes its workforce from the live city at the pass. See
+  [Decided while unattended](#decided-while-unattended).
+- **Envelope and bursts** (`tools/sim02_gate.py envelope determinism --bursts
+  departures,settlements --binary "$TEST_BINARY"`, `RAYON_NUM_THREADS=8`): pass, money residuals
+  at most 0.03 an hour, the busiest minute at most 3.3% of an hour's departures. The 30k
+  baseline's net income per resident is back in its band, 12.34 (12.21 on part 1). Against part
+  1, the 10k baseline's net income per resident fell from 13.43 to 13.18 and its bankruptcies
+  rose from 0.04 to 0.06 per 1,000 buildings a day; the 30k baseline's bankruptcies rose from
+  0.27 to 0.33. An envelope run of the input copy alone (the census still at the hour's first
+  slot) gave 13.39 at 10k and 0.26 bankruptcies at 30k, so the rest comes from the census's half
+  hour of extra age. The fiscal-stress notes of earlier steps remain (employment 0.077 and 0.080
+  against about 0.052, final employment 0.62% and 0.75%, 10k deliveries 12.82 against a low edge
+  of 13.05).
+- **Determinism:** repeat run, 1 and 3 workers and save/reload continuation are identical (10k,
+  three days). New continuation tests save during the copy, after the swap, mid-census and
+  before publishing, and after a policy change at minute 40, and compare the published censuses
+  (with their books) or every frame for three hours.
+- **`PERF-07`** (`tools/sim02_gate.py perf07 --cpus 0,2,4,6,8,10,12,14 --binary "$TEST_BINARY"
+  --perf07-baseline` the pinned `SIM-02-A` report, `RAYON_NUM_THREADS=8`). Max / p99 / mean in
+  ms, part 1 in parentheses: 10k 1× 71.1 / 5.93 / 2.34 (17.8 / 6.07 / 2.36), 10k 32× 70.3 / 7.05
+  / 2.86 (18.4 / 8.25 / 2.80), 30k 1× 93.8 / 7.54 / 3.31 (122.6 / 7.11 / 3.27), 30k 32× 89.8 /
+  23.44 / 5.38 (126.6 / 26.16 / 5.20), 100k 1× 338.3 / 18.67 / 12.08 (440.6 / 18.37 / 11.74),
+  100k 32× 429.2 / 178.40 / 23.10 (515.0 / 185.39 / 21.88). Every gate limit passes. The 100k
+  worst frame is still the first hour after loading, its operational hour down to 238 ms. The
+  10k maximum is new and not the census: a slow-frame diagnostic (work counters and phase times
+  per frame on the same snapshot) put 84.5 ms of the 06:00 frame and 68.7 ms of the 22:00 frame
+  in the cell-lot queue. In both hours the planning pass removed a building, and the region it
+  freed was the first served since loading, while its generated cells were still cold: the
+  post-load cost `SIM-02-H` recorded for `SIM-02-K`. Part 1's snapshot city had no such removal
+  in its measured day. The means rose up to 6% (100k 32×): the census work moved into slots,
+  and the live workforce count is new.
+- **`PERF-01`** (`tools/perf_contract.py --binary "$TEST_BINARY"` under `taskset -c
+  0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`), two runs alternating with `SIM-02-A` (hour / day
+  means in ms, `SIM-02-A` first): baseline 10k 17.0–17.3 / 7.7 against 4.5–4.6 / 0.00; baseline
+  30k 62.3–62.6 / 47.3–48.7 against 18.7–19.1 / 0.00; fiscal 10k 27.2–27.9 / 22.4–24.4 against
+  13.1–13.2 / 0.00; fiscal 30k 79.0–80.1 / 67.6–68.0 against 43.3–44.2 / 0.00. Part 1's hours
+  were 8.6, 35.0, 15.5–15.6 and 53.5–53.7: the census window runs in slots `PERF-01` does not
+  time. Seven limits fail, the same work-count scalings as part 1, all of which `SIM-02-A` also
+  fails. Planning ran no census of its own in any workload; construction execution ran 2 a day
+  at 10k and 12 at 30k (part 3 removes them). Fiscal 30k's hour is mostly its planning pass,
+  about 26 ms (part 4 splits it by zone type).
+- **Build identity:** every result above ran on the committed sources built with rustc 1.99.1;
+  the `SIM-02-A` runs used its retained binary.
+- **Tests:** 2,488 release library tests and the 4 growth integration tests pass; clippy adds
+  no warnings; `./run.sh --test` passes in an isolated profile, after a fix to
+  `agent_inspector_test`'s races with the simulation thread (`DEBUG-07`). New: the census in slices of 1, 5, 37 and 1,000
+  rows, with restarts and more than two closure passes, equals one run bit for bit, in isolated
+  markets and in the game; the census restarts on network changes and continues identically
+  across a load at four points of the hour; a home started in the window lends the published
+  books, a firm with inputs runs the planner's census; a census rebuilt mid-hour leaves the
+  snapshot sweep unchanged; an arrival hired at the next hour joins the snapshot before its
+  hire; the planned workforce follows a hire after the sweep; a pending service followed by an
+  appended building keeps its ceiling; a road split records the moved rows and their undo; a
+  policy change in the window reaches the next census and survives a save. The two-year
+  starter town and the scarce-labour case, which failed on the first part-2 build, pass.
+
 ### Phase inventory
 
 Every phase of today's operational hour, hourly demand pass and daily tick, and where it goes.
@@ -1072,10 +1170,10 @@ Every phase of today's operational hour, hourly demand pass and daily tick, and 
 | `process_visible_service_visit_returns` | O(agents) scan | Visit-end event | E (done) |
 | `plan_and_apply_household_replenishment` | Indices rebuilt hourly when needed; since F a parallel O(households) scan finds whether any household can restock | Restock queue; indices from rolling snapshots | J |
 | `plan_and_apply_visible_service_visits` | Capped at 64 per hour | Visit queue with per-slot quota | J |
-| Funding census (`job_funding.refresh`) | Superlinear (`PERF-03`/`PERF-04`) | Incremental totals plus rolling snapshot | I |
+| Funding census (`job_funding.refresh`) | Superlinear (`PERF-03`/`PERF-04`) | Hourly census as resumable steps over the hour's second half on a rolling input copy, published at slot 0; the planner's and construction execution's own censuses remain | I (part 2 done; part 3 removes the other censuses) |
 | Job search | Gated by the job lock (`job_lock_until_day`) | Job queue on lock deadline | J |
 | `prepare_cell_lots_internal` | O(dirty regions), can spike | Dirty-region queue with quota | H (done) |
-| Demand snapshot (`from_runtime_with_funding`) | O(households + buildings + nodes) hourly | Rolling snapshot; entities created since its start folded at the pass | I (done) |
+| Demand snapshot (`from_runtime_with_funding`) | O(households + buildings + nodes) hourly | Rolling snapshot; entities created since its start folded before the next hour's job search; workforce counted live at the pass (`K` maintains it) | I (done) |
 | Demand planning (`plan_private_building_actions`) | Scans all parcels hourly | Open question 1 | I |
 | Household admission | Bounded; all carriers leave on the hour | Admission queue with credit; departure events | E (departures done), J |
 | Construction queue | One start per minute | Timed events | C (done) |
@@ -1497,8 +1595,8 @@ alternatives and the evidence. The user reviews these on return.
   sites (admission, removal, relocation, eviction, repair, undo, remap, load).
 - **`SIM-02-I` — the activity floor reads a saved copy of the census activity.** A building's
   phase reads `funded_activity`, which the hour's census copies onto it with its funded jobs,
-  instead of the live census, so a census rebuilt by a load or a policy change mid-hour never
-  feeds the phases. Alternative: save the census itself.
+  instead of the live census, so a census rebuilt by a load mid-hour never feeds the phases.
+  Alternative: save the census itself.
 - **`SIM-02-I` — reserved freight amounts as integer sums.** Kept up to date by every shipment
   change instead of rebuilt each hour, the reserved amounts summed in f32 could differ by one
   last-place step from a load's rebuild when a shipment's amount was off the batch grid, so a
@@ -1533,3 +1631,102 @@ alternatives and the evidence. The user reviews these on return.
   by building index, which also needs the admission order rebuilt on every claim. The
   determinism gate's 10k city had not exposed it; a starter-town test saved mid-hour on day 3
   now continues identically, checked every frame for a game day.
+- **`SIM-02-I` — census inputs copied over the hour's first half, the census over its
+  second.** The copy fills over slots 0–479 and freezes the treasury, fiscal policy,
+  electricity funding and clock at slot 479. The census then runs over slots 480–959 and
+  publishes at the next slot 0, so its copy is 31–60 minutes old when it publishes, where the
+  census used to read the live city at :00.
+  The slicing budget counts rows (ceil(rows left / slots left)), never wall-clock time, so the
+  steps are the same on any machine. Alternative: copy and census interleaved over the whole
+  hour, 30 minutes fresher, but the census would read a copy still being filled. At 100k the
+  window totals 98.8 ms over 480 slots, median 0.03 ms a slot (a diagnostic run, unpinned).
+- **`SIM-02-I` — frontage prices publish when a census starts.** The hourly frontage
+  publication moved from slot 0 to slot 480, so a census never sees the prices change under
+  it. The slot-0 fallback census and the whole-hour callers also publish first; restarts do
+  not. Alternative: restart the census at every frontage publication, which would restart
+  every census. Publishing at slot 0 again, with the books carrying the previous prices, left
+  the starter town's two-year run unchanged (182 empty household-days in year 1, 6 in year 2;
+  see the snapshot entries below), so the price timing did not cause that regression.
+- **`SIM-02-I` — what restarts a census.** A change of the network revisions (CCH build and
+  metric, lanes, frontage) or of the building or household structure revisions, which count
+  swap-removes, remaps, clears and undo restores (`StructureRevisions`; the building reference
+  revision keeps its old meaning). Appended entities and in-place changes do not restart it; the
+  copy defers them until a restart. A change after the census finished early still restarts it,
+  so a load can always recompute the census from the saved copy.
+- **`SIM-02-I` — household exits stay at the start of the operational hour.** The design moved
+  them after the hour's census readers. That changed a 270-day outcome: in
+  `many_new_industrial_lots_respect_scarce_labor_and_earn_their_owner_capital` the entrant
+  food processor ended at −1,938 cash where it must gain. The base build passes, exits at the
+  hour's start pass, and exits just before the demand pass fail with the identical number: the
+  households that chose to leave took part in one more hour of rehousing, restock and job
+  search. Alternative: keep the move and retune the scenario, rejected as further from today's
+  behaviour.
+- **`SIM-02-I` — a departed household stays in the published customer book until the next
+  publish.** Exits now swap-remove households after the census publishes. Mirroring an exit into
+  the book is O(all receipts), since committed receipts chain per seller with no household
+  index; invalidating the books on every exit made the planner run its own census in exit
+  hours. The census key keeps the building and household structure revisions apart, and the
+  planner's reuse check reads only the building part. Readers that join book rows to live
+  households (`household_walking_access`) already check home and entrance. On earlier builds
+  the census ran after exits, so this ghost customer, for up to an hour, is new. Alternative:
+  also turn off the departed household's access buckets (O(K·4)); not needed, since the
+  year-long scenarios and the library suite pass and the measured exit hours lent the published
+  census.
+- **`SIM-02-I` — the demand snapshot reads the published per-building copies.** A defect found
+  after part 1 was committed: the rolling sweep read the live census every slot, and a load or
+  a fiscal-policy change replaces that census mid-hour, so a mid-hour reload could fold other
+  capacities into the next hour's planning. The sweep now reads `funded_job_capacity` and
+  `funded_activity`, which equal the census in an uninterrupted game.
+  `a_census_rebuilt_mid_hour_leaves_the_sweep_unchanged` fails on part 1. Construction
+  execution still reads the live census's service ceilings until part 3.
+- **`SIM-02-I` — a load recomputes the census whole instead of saving its steps.** The census
+  is a pure function of the saved copy and the network, so the step and cursor are not saved.
+  Alternative: save them and continue, which saves load time but adds a saved form for every
+  step's working state.
+- **`SIM-02-I` — the planner tolerates appended buildings without inputs.** The input book
+  numbers projected sources from the live building count, so a home or other building without
+  recipe inputs started after the copy no longer forces the planner's own census. A firm with
+  inputs still does: the business book lays out buyer input ports only for census buildings.
+  Part 3 removes that fallback.
+- **`SIM-02-I` — new entities join the demand snapshot before the hour's job search.** A
+  defect in part 1, which was committed with it: the pass folded them after the operational hour's job search, which hires the households that
+  arrived during the swept hour: the swept workplace still showed the job open while the new
+  household no longer counted its adult as unemployed, so admission counted each such job twice
+  and let in that many adults too many. The starter town ended its third day with one adult
+  more than its funded jobs, absorbed by the next census's 13th grocery job. With the census
+  reading its half-hour-old copy it ended with two more (115 adults, 113 funded jobs), a town
+  whose census funds the grocery for 12 workers even on the live city: an unemployed adult adds
+  nothing to the recurring budgets, so their spending cannot fund their jobs. Two adults stayed
+  unemployed until their support ran out (182 empty household-days in year 1), and the 160
+  residents left matched the 12-worker grocery's 160 units a day exactly (6 empty days in year
+  2). The operational hour now folds the new entities first, before exits and job search, as
+  the sweep folded every other entity; the pass folds any created since. Alone, this gave 37,
+  0 and 0 (19, 0 and 23 with the census at the hour's first slot and the old fold), but see
+  the next entry.
+- **`SIM-02-I` — planning counts its workforce on the live city.** With only the fold fixed,
+  the scarce-labour case (`many_new_industrial_lots_respect_scarce_labor_and_earn_their_owner_capital`)
+  funded a factory whose fourth worker never arrived (75% staffing). Apart from the new
+  entities, the workforce the calendar and admission read came from the rolling sweep, so a
+  hire, quit or release after an entity's chunk was up to an hour stale, and the double count
+  had happened to give the calendar a margin. On `SIM-02-H` the pass built its snapshot whole,
+  so it was exact. The pass now counts housed unemployed adults, displaced households' labour
+  and the workplaces' open funded jobs, their net wage sum and their physical, funded and
+  unfunded capacity on the live city, after the hour's job search, with funded jobs from the
+  published copies; the other folds stay rolling, and the sweep still folds and saves the
+  workforce fields, which only whole-city builds and tests read now. It is a parallel scan,
+  O(H/p + B/p) a pass. Maintained totals would need hooks at every hire and release, each
+  household's hourly recount, each building's hourly phase (its activity floor sets store and
+  work-area capacity), construction, closures, desertion, homes becoming uninhabitable,
+  removals, placement, publication and income tax changes, and a running f32 wage sum would
+  not reproduce a recount exactly; `SIM-02-K` replaces the scan with them. The starter town
+  grows to 80 households and 158 residents, all adults employed: 35 empty household-days in
+  year 1, none in year 2 and no failed shopping trips, and the scarce-labour entrants are
+  staffed.
+- **`SIM-02-I` — policy changes reach the census through its copy.** A fiscal or service
+  funding change ran a census of the live city at once, while the census in the window kept the
+  policy its copy froze at the half hour and published it at the next hour, and a building's
+  funding override changed its row without the copy taking it. A change now writes the new
+  values into the copy's frozen policy, records the overridden row and restarts the census in
+  progress, so the next hour's census carries the new ceilings; until then the published census
+  stands. Service workers the new funding no longer pays leave at once, as before. Loading
+  still runs a census of the loaded city for the derived jobs shown before the next publication.

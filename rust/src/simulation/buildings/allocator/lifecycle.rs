@@ -722,6 +722,85 @@ impl BuildingAllocator {
         Ok(())
     }
 
+    /// Moves the buildings fronting `edge_id` onto the halves of its split at cell `split_x`:
+    /// those at or past it front `new_edge_id` from its start, and each one's frontage
+    /// parameter is measured along its half, `lengths_m` long. The moved rows are recorded, so
+    /// row-indexed tables and the census input copy (`SIM-02-I`) take them again; `undo`
+    /// receives each row's previous edge, cell and frontage. Returns the buildings on each
+    /// half. O(B).
+    pub(crate) fn migrate_split_frontages(
+        &mut self,
+        [edge_id, new_edge_id]: [usize; 2],
+        split_x: usize,
+        lengths_m: [f32; 2],
+        cell_m: f32,
+        mut undo: Option<&mut Vec<(usize, usize, usize, f32)>>,
+    ) -> [usize; 2] {
+        let traffic_debug = crate::debug::Channel::Traffic.enabled();
+        let mut moved = Vec::new();
+        let mut halves = [0; 2];
+        for (building_idx, b) in self.buildings.iter_mut().enumerate() {
+            if b.edge_idx != edge_id {
+                continue;
+            }
+            if let Some(undo) = undo.as_deref_mut() {
+                undo.push((building_idx, b.edge_idx, b.cell_x, b.frontage_t));
+            }
+            let (old_cell_x, old_frontage_t) = (b.cell_x, b.frontage_t);
+            let half = usize::from(b.cell_x >= split_x);
+            if half == 1 {
+                b.edge_idx = new_edge_id;
+                b.cell_x -= split_x;
+            }
+            let half_cells = b.width_cells as f32 * 0.5;
+            b.frontage_t = (b.cell_x as f32 + half_cells) * cell_m / lengths_m[half].max(0.001);
+            halves[half] += 1;
+            moved.push(building_idx);
+            if traffic_debug {
+                crate::traffic_log!(
+                    "[ROAD_SPLIT_DEPENDENTS] bldg={} action={} old_edge={} new_edge={} old_cell_x={} new_cell_x={} old_frontage_t={:.3} new_frontage_t={:.3}",
+                    building_idx,
+                    if half == 1 {
+                        "move-to-new-edge"
+                    } else {
+                        "stay-on-old-edge"
+                    },
+                    edge_id,
+                    b.edge_idx,
+                    old_cell_x,
+                    b.cell_x,
+                    old_frontage_t,
+                    b.frontage_t,
+                );
+            }
+        }
+        if !moved.is_empty() {
+            self.record_building_changes(moved);
+        }
+        halves
+    }
+
+    /// Puts back the rows [`Self::migrate_split_frontages`] moved, from its `undo` entries,
+    /// and records them. O(rows).
+    pub(crate) fn restore_split_frontages(&mut self, rows: &[(usize, usize, usize, f32)]) {
+        for &(index, edge_idx, cell_x, frontage_t) in rows {
+            let building = &mut self.buildings[index];
+            building.edge_idx = edge_idx;
+            building.cell_x = cell_x;
+            building.frontage_t = frontage_t;
+        }
+        if !rows.is_empty() {
+            self.record_building_changes(rows.iter().map(|row| row.0));
+        }
+    }
+
+    /// Sets building `index`'s service funding override and records the row, so the census
+    /// input copy takes it (`SIM-02-I`). O(1).
+    pub(crate) fn set_service_funding_override(&mut self, index: usize, funding: f32) {
+        self.buildings[index].service_funding_override = funding;
+        self.record_building_changes([index]);
+    }
+
     /// Re-projects stale building frontage references onto nearby live road edges.
     pub(crate) fn repair_road_attachments_after_topology_edit(
         &mut self,

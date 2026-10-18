@@ -50,12 +50,7 @@ impl TransitNetwork {
         self.profile_authored_edges.clear();
         if let Some(journal) = self.road_edit_split_undo.take() {
             for undo in journal.into_iter().rev() {
-                for (index, edge_idx, cell_x, frontage_t) in undo.buildings {
-                    let building = &mut allocator.buildings[index];
-                    building.edge_idx = edge_idx;
-                    building.cell_x = cell_x;
-                    building.frontage_t = frontage_t;
-                }
+                allocator.restore_split_frontages(&undo.buildings);
                 allocator.edge_occupancy.remove(&undo.new_edge_id);
                 if let Some(occupancy) = undo.occupancy {
                     allocator.edge_occupancy.insert(undo.edge_id, occupancy);
@@ -665,7 +660,6 @@ pub(super) fn migrate_split_dependents(
         buildings: Vec::new(),
         occupancy: allocator.edge_occupancy.get(&edge_id).cloned(),
     });
-    let cell_size = zoning.config.zone_cell_m;
     let traffic_debug = crate::debug::Channel::Traffic.enabled();
     let old_occ_cells = allocator
         .edge_occupancy
@@ -674,55 +668,13 @@ pub(super) fn migrate_split_dependents(
         .unwrap_or(0);
     let occ_part1_len = split_x.min(old_occ_cells);
     let occ_part2_len = old_occ_cells.saturating_sub(split_x);
-    let mut buildings_part1 = 0usize;
-    let mut buildings_part2 = 0usize;
-
-    // Migrate buildings
-    for (building_idx, b) in allocator.buildings.iter_mut().enumerate() {
-        if b.edge_idx == edge_id {
-            if let Some(undo) = &mut undo {
-                undo.buildings
-                    .push((building_idx, b.edge_idx, b.cell_x, b.frontage_t));
-            }
-            let old_cell_x = b.cell_x;
-            let old_frontage_t = b.frontage_t;
-            if b.cell_x >= split_x {
-                b.edge_idx = new_edge_id;
-                b.cell_x = b.cell_x.saturating_sub(split_x);
-                let half_cells = b.width_cells as f32 * 0.5;
-                b.frontage_t =
-                    (b.cell_x as f32 + half_cells) * cell_size / new_len_second.max(0.001);
-                buildings_part2 += 1;
-                if traffic_debug {
-                    crate::traffic_log!(
-                        "[ROAD_SPLIT_DEPENDENTS] bldg={} action=move-to-new-edge old_edge={} new_edge={} old_cell_x={} new_cell_x={} old_frontage_t={:.3} new_frontage_t={:.3}",
-                        building_idx,
-                        edge_id,
-                        new_edge_id,
-                        old_cell_x,
-                        b.cell_x,
-                        old_frontage_t,
-                        b.frontage_t,
-                    );
-                }
-            } else {
-                let half_cells = b.width_cells as f32 * 0.5;
-                b.frontage_t =
-                    (b.cell_x as f32 + half_cells) * cell_size / new_len_first.max(0.001);
-                buildings_part1 += 1;
-                if traffic_debug {
-                    crate::traffic_log!(
-                        "[ROAD_SPLIT_DEPENDENTS] bldg={} action=stay-on-old-edge edge={} cell_x={} old_frontage_t={:.3} new_frontage_t={:.3}",
-                        building_idx,
-                        edge_id,
-                        b.cell_x,
-                        old_frontage_t,
-                        b.frontage_t,
-                    );
-                }
-            }
-        }
-    }
+    let [buildings_part1, buildings_part2] = allocator.migrate_split_frontages(
+        [edge_id, new_edge_id],
+        split_x,
+        [new_len_first, new_len_second],
+        zoning.config.zone_cell_m,
+        undo.as_mut().map(|undo| &mut undo.buildings),
+    );
 
     // Migrate edge occupancy
     if let Some(old_occ) = allocator.edge_occupancy.remove(&edge_id) {
@@ -1589,5 +1541,69 @@ mod tests {
             "Expected 0.90, got {}",
             b.frontage_t
         );
+    }
+
+    // A split records the building rows it moves, and their undo records them again, so the
+    // row-indexed tables and the census input copy (`SIM-02-I`) take them.
+    #[test]
+    fn split_records_the_moved_building_rows_and_their_undo() {
+        use crate::simulation::buildings::allocator::indexed_test_building;
+        let mut net = TransitNetwork::new();
+        let mut graph = RegionGraph::new();
+        let mut zoning = ZoningSystem::new(&WorldConfig::default());
+        let mut allocator = BuildingAllocator::new();
+        net.add_road(
+            &mut graph,
+            vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
+            1,
+            1,
+            crate::simulation::network::types::EdgeClass::Standard,
+            &mut zoning,
+            &mut allocator,
+        );
+        let edge_id = graph.edges.len() - 1;
+        for (cell_x, edge_idx) in [(2, edge_id), (0, usize::MAX), (8, edge_id)] {
+            let mut building = indexed_test_building(
+                String::new(),
+                crate::simulation::zoning::ZoneType::Residential,
+                0,
+            );
+            building.edge_idx = edge_idx;
+            building.cell_x = cell_x;
+            allocator.buildings.push(building);
+        }
+        let rows = |allocator: &BuildingAllocator| {
+            allocator
+                .buildings
+                .iter()
+                .map(|b| (b.edge_idx, b.cell_x, b.frontage_t.to_bits()))
+                .collect::<Vec<_>>()
+        };
+        let changed = |allocator: &BuildingAllocator, since| {
+            let mut changed = Vec::new();
+            assert!(allocator.building_changes_since(since, &mut changed));
+            changed
+        };
+        let before = rows(&allocator);
+        let revision = allocator.building_ref_revision();
+        net.begin_road_edit();
+        let junction_id = graph.add_node(Vector3::new(50.0, 0.0, 0.0), NodeType::Junction);
+        split_edge(
+            &mut net,
+            &mut graph,
+            edge_id,
+            0,
+            0.5,
+            junction_id,
+            &mut zoning,
+            &mut allocator,
+        );
+        assert_ne!(rows(&allocator), before);
+        assert_eq!(changed(&allocator, revision), [0, 2]);
+        assert_eq!(allocator.census_copy_changes.rows, [0, 2]);
+        let revision = allocator.building_ref_revision();
+        net.rollback_road_edit_dependents(&mut allocator);
+        assert_eq!(rows(&allocator), before);
+        assert_eq!(changed(&allocator, revision), [0, 2]);
     }
 }

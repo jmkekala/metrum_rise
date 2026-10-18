@@ -19,6 +19,7 @@ use crate::simulation::work_area::{
     scaled_work_area_worker_capacity,
 };
 use crate::simulation::zoning::ZoneType;
+use rayon::prelude::*;
 
 const MAX_STARTER_IMMIGRANT_HOUSEHOLD_SIZE: u16 = 6;
 const STARTER_IMMIGRANT_HOUSEHOLD_SIZE_BUCKETS: [u16; 16] =
@@ -675,6 +676,40 @@ fn service_funding_factor_for_building(
         .copied()
         .unwrap_or(1.0)
         .clamp(0.0, 1.0)
+}
+
+/// A service's funding ratio: its own override when set (`>= 0`), else the city's.
+pub(crate) fn effective_service_funding(building_override: f32, city_funding: f32) -> f32 {
+    if building_override >= 0.0 {
+        building_override.clamp(0.0, 1.0)
+    } else {
+        city_funding
+    }
+}
+
+/// Writes each building's electricity service funding into `out`: the effective funding of
+/// power producers, `1.0` for every other building. O(buildings), parallel, and
+/// allocation-free once `out` has grown.
+pub(crate) fn write_electricity_funding_by_building(
+    buildings: &[Building],
+    catalog: &RuntimeEconomyCatalog,
+    city_funding: f32,
+    out: &mut Vec<f32>,
+) {
+    out.clear();
+    out.resize(buildings.len(), 1.0);
+    out.par_iter_mut()
+        .zip(buildings)
+        .for_each(|(value, building)| {
+            if catalog
+                .profile_by_runtime_id(building.economy_profile_runtime_id)
+                .is_some_and(|profile| {
+                    profile.utility_service.as_deref() == Some(UTILITY_SERVICE_POWER)
+                })
+            {
+                *value = effective_service_funding(building.service_funding_override, city_funding);
+            }
+        });
 }
 
 pub(crate) fn service_funded_worker_capacity(

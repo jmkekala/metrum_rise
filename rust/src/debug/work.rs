@@ -71,14 +71,26 @@ pub(crate) enum Work {
     FreightDeliveries,
     /// Trip failures recorded by the movement pass.
     TripFailures,
+    /// Households removed from the dense store.
+    HouseholdsRemoved,
+    /// Building or household index shifts and reuses: swap-removes, remaps, clears and undo
+    /// restores (`SIM-02-I`).
+    StructuralChanges,
+    /// Funding censuses restarted by a network or structural change during their window.
+    CensusRestarts,
 }
 
 /// Number of [`Work`] counters.
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) const WORK_COUNT: usize = Work::TripFailures as usize + 1;
+pub(crate) const WORK_COUNT: usize = Work::CensusRestarts as usize + 1;
 
 #[cfg(test)]
 static COUNTS: [std::sync::atomic::AtomicU64; WORK_COUNT] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; WORK_COUNT];
+// The same counters, added only while the clock processes an hour's second half: the funding
+// census's window (`SIM-02-I`).
+#[cfg(test)]
+static WINDOW_COUNTS: [std::sync::atomic::AtomicU64; WORK_COUNT] =
     [const { std::sync::atomic::AtomicU64::new(0) }; WORK_COUNT];
 
 // Departures of the burst kinds by the absolute minute the clock was processing, so the burst
@@ -94,6 +106,9 @@ static DEPARTURES: std::sync::Mutex<Vec<(Work, u64)>> = std::sync::Mutex::new(Ve
 #[cfg(test)]
 pub(crate) fn add(work: Work, amount: u64) {
     COUNTS[work as usize].fetch_add(amount, std::sync::atomic::Ordering::Relaxed);
+    if CLOCK_MINUTE.load(std::sync::atomic::Ordering::Relaxed) % 60 >= 30 {
+        WINDOW_COUNTS[work as usize].fetch_add(amount, std::sync::atomic::Ordering::Relaxed);
+    }
     if matches!(
         work,
         Work::FreightDispatches | Work::ArrivalLaunches | Work::ShopperDispatches
@@ -142,6 +157,12 @@ pub(crate) fn snapshot() -> [u64; WORK_COUNT] {
     std::array::from_fn(|index| COUNTS[index].load(std::sync::atomic::Ordering::Relaxed))
 }
 
+/// Cumulative counter values added during hours' second halves.
+#[cfg(test)]
+pub(crate) fn window_snapshot() -> [u64; WORK_COUNT] {
+    std::array::from_fn(|index| WINDOW_COUNTS[index].load(std::sync::atomic::Ordering::Relaxed))
+}
+
 /// Stable report names, in counter order.
 #[cfg(test)]
 pub(crate) const WORK_NAMES: [&str; WORK_COUNT] = [
@@ -175,6 +196,9 @@ pub(crate) const WORK_NAMES: [&str; WORK_COUNT] = [
     "desertions",
     "freight_deliveries",
     "trip_failures",
+    "households_removed",
+    "structural_changes",
+    "census_restarts",
 ];
 
 /// Hashes a value's `Debug` rendering without building the string. Test-only exact state

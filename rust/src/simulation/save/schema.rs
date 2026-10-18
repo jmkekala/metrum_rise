@@ -6,7 +6,7 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version, also the only one that loads (`SIM-02` broke older saves).
-pub const SAVE_VERSION: i64 = 95;
+pub const SAVE_VERSION: i64 = 97;
 
 /// Sentinel for an absent reference column.
 pub const NONE_REF: i64 = -1;
@@ -527,6 +527,15 @@ CREATE TABLE freight_supplier_sweep(
     sweep_building_handles INTEGER NOT NULL,
     sweep_hour INTEGER NOT NULL,
     sweep_next_chunk INTEGER NOT NULL
+);
+CREATE TABLE census_inputs(
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    front BLOB,
+    back BLOB,
+    changes BLOB NOT NULL,
+    deferred BLOB NOT NULL,
+    census_publish_slot INTEGER,
+    census_current INTEGER
 );
 CREATE TABLE freight_supplier_entries(
     buffer INTEGER NOT NULL,

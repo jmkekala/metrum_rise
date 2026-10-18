@@ -55,6 +55,8 @@ struct PassCheckpoint {
     free_receipt: usize,
     slots: usize,
     owners: usize,
+    // A lent book covers the buildings appended since its census for the pass only.
+    source_base: usize,
 }
 
 impl Revalidation {
@@ -259,7 +261,7 @@ impl RecurringSupply {
             "owner_receipts" => self.owner_receipts, "owner_tails" => self.owner_tails,
             "source_receipts" => self.source_receipts, "free_receipt" => self.free_receipt,
             "nearest_incumbents" => self.nearest_incumbents, "doors" => self.doors, "index" => self.index,
-            "max_speed" => self.max_speed.to_bits())
+            "max_speed" => self.max_speed.to_bits(), "source_base" => self.source_base)
     }
 
     /// Opens a planning pass over the live book in O(resources) amortized: snapshot storage
@@ -287,6 +289,7 @@ impl RecurringSupply {
             free_receipt: self.free_receipt,
             slots: self.remaining.len(),
             owners: self.owner_receipts.len(),
+            source_base: self.source_base,
         });
     }
 
@@ -331,6 +334,7 @@ impl RecurringSupply {
         self.active.truncate(checkpoint.slots);
         self.owner_receipts.truncate(checkpoint.owners);
         self.owner_tails.truncate(checkpoint.owners);
+        self.source_base = checkpoint.source_base;
         self.clear_projected_sources();
         self.prices.clear();
     }

@@ -13,7 +13,7 @@ use super::diagnostics::{
     BuildingActionDiagnosticsByUse, HouseholdAdmissionDiagnostics, HouseholdRemovalDiagnostics,
 };
 use super::snapshot::{
-    DailyDemandSnapshot, DemandSnapshotSweep, SavedDemandSnapshot, SweepInputs,
+    DailyDemandSnapshot, DemandSnapshotSweep, SavedDemandSnapshot, SweepInputs, WorkforceView,
     connected_road_border_count,
 };
 use super::supply::SiteSupply;
@@ -51,6 +51,8 @@ pub struct DemandSystem {
     pub(super) last_building_action_diagnostics: BuildingActionDiagnosticsByUse,
     /// The demand snapshot folded over the previous hour (`SIM-02-I`); saved.
     pub(super) snapshot_sweep: DemandSnapshotSweep,
+    // The live workforce each pass composes its snapshot with; storage only, not saved.
+    workforce_view: WorkforceView,
     pub(super) workforce_reservations: super::workforce::WorkforceReservations,
     pub(super) construction_execution: super::execution::ConstructionExecution,
     pub(super) queued_construction: Vec<super::queued::QueuedConstruction>,
@@ -62,6 +64,9 @@ pub struct DemandSystem {
     freight_border_nodes: Vec<u32>,
     /// Current outside applicant seed, derived from simulation time rather than accepted arrivals.
     pub(crate) admission_candidate_seed: usize,
+    /// Planning passes that could not lend the live census and ran their own, for tests.
+    #[cfg(test)]
+    pub(crate) planner_censuses: usize,
 }
 
 /// Checks after every test-build planning pass that the live books return bit for bit.
@@ -124,6 +129,7 @@ impl DemandSystem {
             last_removal_diagnostics: HouseholdRemovalDiagnostics::default(),
             last_building_action_diagnostics: BuildingActionDiagnosticsByUse::default(),
             snapshot_sweep: DemandSnapshotSweep::default(),
+            workforce_view: WorkforceView::default(),
             workforce_reservations: super::workforce::WorkforceReservations::default(),
             construction_execution: super::execution::ConstructionExecution::default(),
             queued_construction: Vec::new(),
@@ -133,6 +139,8 @@ impl DemandSystem {
             admission_budget: HouseholdAdmissionBudget::default(),
             freight_border_nodes: Vec::new(),
             admission_candidate_seed: 0,
+            #[cfg(test)]
+            planner_censuses: 0,
         }
     }
 
@@ -256,8 +264,9 @@ impl DemandSystem {
         let mut funding = std::mem::take(&mut self.construction_execution.funding);
         let mut reservations = std::mem::take(&mut self.construction_execution.reservations);
         let reuse_funding = live_households.job_funding.has_current_input_supply(
+            live_households.census_key(network),
             allocator,
-            network,
+            &catalog,
             &borders,
             crate::simulation::economy::logistics::freight_price_phase(
                 &economy_tuning,
@@ -279,9 +288,14 @@ impl DemandSystem {
         }
         let households = &*live_households;
         if !reuse_funding {
-            // Placement/removal or frontage prices can change after the employment pass.
-            // Rebuild once after such edits before reusing its funded sources.
+            // Removals, network edits or frontage prices can change after the employment
+            // census started (`SIM-02-I`). Rebuild once after such edits before reusing its
+            // funded sources.
             crate::debug::work::add(crate::debug::work::Work::PlannerCensuses, 1);
+            #[cfg(test)]
+            {
+                self.planner_censuses += 1;
+            }
             funding.refresh_with_service_capacity(
                 allocator,
                 &households.households,
@@ -340,15 +354,23 @@ impl DemandSystem {
         let front = self.snapshot_sweep.take_front(&SweepInputs {
             allocator,
             households,
-            job_funding: funded_jobs,
             config: &self.config,
             catalog: catalog.as_ref(),
             tuning: economy_tuning.as_ref(),
             policy: fiscal_policy,
             treasury: treasury_balance,
         });
+        // The workforce as the hour's job search left it, not as the sweep found each entity.
+        self.workforce_view.count_live(
+            allocator,
+            households,
+            catalog.as_ref(),
+            economy_tuning.as_ref(),
+            fiscal_policy.income_tax_rate,
+        );
         let mut snapshot = DailyDemandSnapshot::compose(
             &front.totals,
+            &self.workforce_view,
             households,
             connected_road_border_count(graph, &borders),
             catalog.as_ref(),
@@ -471,7 +493,6 @@ impl DemandSystem {
             &SweepInputs {
                 allocator,
                 households,
-                job_funding: &households.job_funding,
                 config: &self.config,
                 catalog: &self.runtime_catalog,
                 tuning: &self.runtime_tuning,
@@ -479,6 +500,45 @@ impl DemandSystem {
                 treasury: treasury_balance,
             },
         );
+    }
+
+    /// Folds the entities created since the snapshot front's sweep began into it, before the
+    /// hour's job search can hire their adults (`SIM-02-I`). O(those entities).
+    pub(crate) fn fold_created_snapshot_entities(
+        &mut self,
+        allocator: &BuildingAllocator,
+        households: &HouseholdSystem,
+        fiscal_policy: &CityFiscalPolicy,
+        treasury_balance: f64,
+    ) {
+        self.snapshot_sweep.top_up_front(&SweepInputs {
+            allocator,
+            households,
+            config: &self.config,
+            catalog: &self.runtime_catalog,
+            tuning: &self.runtime_tuning,
+            policy: fiscal_policy,
+            treasury: treasury_balance,
+        });
+    }
+
+    /// The saved front [`Self::fold_created_snapshot_entities`] would leave now.
+    #[cfg(test)]
+    pub(crate) fn topped_up_snapshot_front_for_test(
+        &self,
+        allocator: &BuildingAllocator,
+        households: &HouseholdSystem,
+        fiscal_policy: &CityFiscalPolicy,
+    ) -> Option<Vec<u8>> {
+        self.snapshot_sweep.topped_up_front_bits(&SweepInputs {
+            allocator,
+            households,
+            config: &self.config,
+            catalog: &self.runtime_catalog,
+            tuning: &self.runtime_tuning,
+            policy: fiscal_policy,
+            treasury: 0.0,
+        })
     }
 
     /// Drops the snapshot front, so the next hourly pass builds one from the current state: for

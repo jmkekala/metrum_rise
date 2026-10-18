@@ -6,6 +6,7 @@ mod admission;
 mod benefits;
 mod building_economy;
 mod candidate_visits;
+mod census;
 mod data;
 mod electricity;
 mod employment;
@@ -46,12 +47,12 @@ pub(crate) use metrics::{
     applicant_places_and_members, applicant_places_by_adults, building_inventory_fill_ratio,
     building_operation_factors, building_staffing_ratio, building_total_output_inventory,
     candidate_immigrant_household_size_for_vacancy, commercial_activity_sums_for_city,
-    consume_hourly_production_inputs, consumer_basket_cost, funded_input_demand_scale,
-    household_daily_utility_allowance, household_is_housed, household_reserve_days,
-    industrial_input_coverage_factor, industrial_output_headroom_factor, level_tuning_value,
-    local_utility_service_costs, output_area_scale_for_building,
+    consume_hourly_production_inputs, consumer_basket_cost, effective_service_funding,
+    funded_input_demand_scale, household_daily_utility_allowance, household_is_housed,
+    household_reserve_days, industrial_input_coverage_factor, industrial_output_headroom_factor,
+    level_tuning_value, local_utility_service_costs, output_area_scale_for_building,
     physical_worker_capacity_for_profile, saleable_output_stock,
     scaled_input_inventory_targets_for_building, scaled_output_buffer_capacity_units_for_building,
     scaled_output_units_per_day_for_building, service_funded_worker_capacity,
-    visit_consumer_budgets,
+    visit_consumer_budgets, write_electricity_funding_by_building,
 };

@@ -34,7 +34,7 @@ impl FundingInputs {
     pub(super) fn capture(
         allocator: &BuildingAllocator,
         households: &[Household],
-        logistics: &ShipmentSystem,
+        freight: &[f64],
         network: &TransitNetwork,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
@@ -70,8 +70,6 @@ impl FundingInputs {
             treasury,
             |index, members, budget| budgets.push((index, members, budget.to_bits())),
         );
-        let mut freight = vec![0.0; allocator.buildings.len()];
-        logistics.write_freight_working_capital(&mut freight);
         Self {
             production_revision: allocator.production_revision(),
             production: allocator
@@ -93,7 +91,7 @@ impl FundingInputs {
             buildings,
             households: household_rows,
             budgets,
-            freight: freight.into_iter().map(f64::to_bits).collect(),
+            freight: freight.iter().map(|value| value.to_bits()).collect(),
             dependencies: format!(
                 "{:?}",
                 (
@@ -188,9 +186,11 @@ impl JobFunding {
         if enabled()
             && let Some(before) = &self.input_trace
         {
+            let mut freight = vec![0.0; allocator.buildings.len()];
+            logistics.write_freight_working_capital(&mut freight);
             before.compare(
                 &FundingInputs::capture(
-                    allocator, households, logistics, network, catalog, tuning, fiscal, treasury,
+                    allocator, households, &freight, network, catalog, tuning, fiscal, treasury,
                     minute,
                 ),
                 minute,

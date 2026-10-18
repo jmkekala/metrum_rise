@@ -197,9 +197,15 @@ This section describes the current cadence. Its replacement is planned in
   each entity's next hourly phase. The pass runs before the phases of its slot, so it sees every
   building and household exactly one hour on (`SIM-02-F`).
 - **Snapshot:** the pass plans on the demand snapshot the previous hour's rolling sweep built,
-  plus the buildings and households created since that sweep began (`SIM-02-I`,
-  [`simulation.md`](simulation.md#snapshots)): each entity as it stood at its chunk of that
-  hour, read with that hour's census. Construction execution builds its own current snapshot.
+  plus the buildings and households created since that sweep began, folded at the pass's slot
+  before its job search hires them (`SIM-02-I`, [`simulation.md`](simulation.md#snapshots)):
+  each entity as it stood at its chunk of that hour, read with the funded jobs and activity the
+  published census copied onto each building. The workforce (housed unemployed adults,
+  displaced households' labour, and the open funded jobs, their wages and the worker
+  capacities) is counted on the live city at the pass, after the hour's job search.
+  Construction execution builds its own current snapshot. The pass lends the published census
+  books while the building structure is unchanged and no building started since the census copy
+  has recipe inputs; otherwise it runs its own census (`SIM-02-I` part 2).
   A household admitted by an hourly pass cannot claim an exit: exits need at least two unhoused
   days.
 

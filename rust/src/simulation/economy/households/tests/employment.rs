@@ -522,19 +522,42 @@ fn unfinished_service_keeps_fiscal_ceiling_without_advertising_live_jobs() {
     assert!(funding.capacities[0] > 0);
     let mut borders = Vec::new();
     crate::simulation::economy::logistics::collect_connected_border_nodes(&graph, &mut borders);
-    assert!(funding.has_current_input_supply(&allocator, &network, &borders, 420));
+    // The census's owner stamps it with the live city's key (`SIM-02-I`).
+    use crate::simulation::economy::hiring::{CensusKey, StructureRevisions};
+    funding.published = Some(CensusKey::live(Default::default(), 0, &network));
+    let key = |network: &TransitNetwork| CensusKey::live(Default::default(), 0, network);
+    let shifted = |buildings, households| {
+        CensusKey::live(
+            StructureRevisions {
+                buildings,
+                households,
+            },
+            0,
+            &network,
+        )
+    };
+    assert!(funding.has_current_input_supply(key(&network), &allocator, &catalog, &borders, 420));
     assert!(
         !funding.has_current_input_supply(
+            key(&network),
             &allocator,
-            &network,
+            &catalog,
             &borders,
             crate::simulation::economy::logistics::freight_price_phase(&tuning, 480)
         ),
         "a new receiving-price interval cannot reuse earlier profitability"
     );
+    assert!(
+        !funding.has_current_input_supply(shifted(1, 0), &allocator, &catalog, &borders, 420),
+        "a building index shift invalidates the books"
+    );
+    assert!(
+        funding.has_current_input_supply(shifted(0, 1), &allocator, &catalog, &borders, 420),
+        "a departed household stays in the books until the next census"
+    );
     network.frontage_delay_revision += 1;
     assert!(
-        !funding.has_current_input_supply(&allocator, &network, &borders, 420),
+        !funding.has_current_input_supply(key(&network), &allocator, &catalog, &borders, 420),
         "unchanged road geometry cannot validate stale recurring freight prices"
     );
 }
@@ -1684,50 +1707,53 @@ fn live_hiring_and_admission_keep_jobs_after_paid_stock_and_payroll() {
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
     let mut households = HouseholdSystem::new();
     let mut logistics = ShipmentSystem::new();
-    let mut check = |allocator: &BuildingAllocator, logistics: &mut ShipmentSystem, expected| {
-        households.job_funding.refresh(
-            allocator,
-            &households.households,
-            logistics,
-            &network,
-            &graph,
-            &catalog,
-            &tuning,
-            &policy,
-            &[],
-            100_000.0,
-            420,
-        );
-        assert_eq!(households.job_funding.capacities[0], expected);
-        let mut demand = crate::simulation::economy::demand::DemandSystem::new();
-        let zoning = crate::simulation::zoning::ZoningSystem::new(
-            &crate::simulation::core::config::WorldConfig::default(),
-        );
-        let terrain = crate::simulation::terrain::TerrainSystem::new(4, 4);
-        let mut surface = crate::simulation::network::surface::RoadSurfaceSystem::new(512.0);
-        surface.compile_dirty(&graph, &terrain);
-        demand.run_hourly_pass_with_policy(
-            allocator,
-            &mut households,
-            &graph,
-            &zoning,
-            100_000.0,
-            &policy,
-            &network,
-            logistics,
-            crate::simulation::buildings::allocator::BuildingSiteEnvironment {
-                road_surface: &surface,
-                terrain: &terrain,
-            },
-            420,
-        );
-        assert_eq!(
-            demand.scenario_diagnostics().0.move_in_job_slots,
-            expected,
-            "admission and workplace assignment must consume the same funded jobs"
-        );
-    };
-    check(&allocator, &mut logistics, profile.worker_capacity);
+    let mut check =
+        |allocator: &mut BuildingAllocator, logistics: &mut ShipmentSystem, expected| {
+            households.job_funding.refresh(
+                allocator,
+                &households.households,
+                logistics,
+                &network,
+                &graph,
+                &catalog,
+                &tuning,
+                &policy,
+                &[],
+                100_000.0,
+                420,
+            );
+            assert_eq!(households.job_funding.capacities[0], expected);
+            // The demand snapshot reads the copies a published census leaves (`SIM-02-I`).
+            households.publish_funded_job_capacities(allocator);
+            let mut demand = crate::simulation::economy::demand::DemandSystem::new();
+            let zoning = crate::simulation::zoning::ZoningSystem::new(
+                &crate::simulation::core::config::WorldConfig::default(),
+            );
+            let terrain = crate::simulation::terrain::TerrainSystem::new(4, 4);
+            let mut surface = crate::simulation::network::surface::RoadSurfaceSystem::new(512.0);
+            surface.compile_dirty(&graph, &terrain);
+            demand.run_hourly_pass_with_policy(
+                allocator,
+                &mut households,
+                &graph,
+                &zoning,
+                100_000.0,
+                &policy,
+                &network,
+                logistics,
+                crate::simulation::buildings::allocator::BuildingSiteEnvironment {
+                    road_surface: &surface,
+                    terrain: &terrain,
+                },
+                420,
+            );
+            assert_eq!(
+                demand.scenario_diagnostics().0.move_in_job_slots,
+                expected,
+                "admission and workplace assignment must consume the same funded jobs"
+            );
+        };
+    check(&mut allocator, &mut logistics, profile.worker_capacity);
     let payroll = profile.worker_capacity as f32 * profile.average_daily_wage();
     let paid_goods = capital - payroll - 8.0;
     allocator.buildings[0].operating_budget = payroll;
@@ -1750,15 +1776,15 @@ fn live_hiring_and_admission_keep_jobs_after_paid_stock_and_payroll() {
         queued_hours: 0,
         cargo_loaded: true,
     });
-    check(&allocator, &mut logistics, profile.worker_capacity);
+    check(&mut allocator, &mut logistics, profile.worker_capacity);
     allocator.buildings[0].operating_budget -= payroll;
-    check(&allocator, &mut logistics, profile.worker_capacity);
+    check(&mut allocator, &mut logistics, profile.worker_capacity);
     allocator.buildings[0].set_inventory_units(
         profile.inputs[0].resource_runtime_id,
         logistics.shipments[0].amount,
     );
     logistics.shipments[0].status = ShipmentStatus::Fulfilled;
-    check(&allocator, &mut logistics, profile.worker_capacity);
+    check(&mut allocator, &mut logistics, profile.worker_capacity);
 }
 
 #[test]

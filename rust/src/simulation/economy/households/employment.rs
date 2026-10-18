@@ -29,6 +29,7 @@ use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
 use crate::simulation::economy::fiscal::{CityFiscalPolicy, tax_amount};
+use crate::simulation::economy::hiring::{CopyNow, LiveCensusParameters};
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
@@ -257,9 +258,11 @@ impl HouseholdSystem {
         );
     }
 
-    /// Recomputes the funding census (`ECON-17`) from the current state. The hour runs it first,
-    /// so every reader that hour sees a census of the state the previous hour's phases left, and a
-    /// census rebuilt on load never feeds the simulation (`SIM-02-F`).
+    /// Recomputes the funding census (`ECON-17`) at once and publishes it, for callers that step
+    /// an hour without the slot clock and for tests; the slots build it over each hour's second
+    /// half instead (`households/census.rs`), and this abandons such a census in progress. It
+    /// reads the finished input copy, with the parameters frozen with it (`SIM-02-I`); without
+    /// one it copies the city now, with the parameters given here.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn refresh_funding_census(
         &mut self,
@@ -276,21 +279,29 @@ impl HouseholdSystem {
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let tuning = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        self.census_run.abandon();
         allocator.prepare_production_changes();
         crate::debug::work::add(crate::debug::work::Work::LiveCensuses, 1);
-        self.job_funding.refresh(
+        self.census_inputs.prepare(
             allocator,
             &self.households,
             logistics,
+            &catalog,
+            CopyNow::Live(LiveCensusParameters {
+                treasury: treasury_balance,
+                fiscal: fiscal_policy,
+                service_funding: service_funding_by_building,
+                minute_of_day,
+            }),
+        );
+        self.job_funding.refresh_from_inputs(
+            &mut self.census_inputs,
             transit_network,
             graph,
             &catalog,
             &tuning,
-            fiscal_policy,
-            service_funding_by_building,
-            treasury_balance,
-            minute_of_day,
         );
+        self.job_funding.published = Some(self.census_key(transit_network));
         self.publish_funded_job_capacities(allocator);
     }
 

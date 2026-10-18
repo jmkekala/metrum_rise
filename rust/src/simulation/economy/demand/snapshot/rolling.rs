@@ -10,21 +10,28 @@
 //! skipped and a slot reused before its chunk folds its new entity. The hour's last slot swaps
 //! the back in.
 //!
-//! A buffer covers the handle slots below its end. Before reading the front, the pass folds the
-//! entities created in new slots since, so a building placed or a household arrived after the
-//! freeze counts at the next pass: O(entities created since the hour's first slot).
+//! A buffer covers the handle slots below its end. The entities created in new slots since the
+//! freeze are folded into the front at the next hour's operational hour, before its job search,
+//! so a building placed or a household arrived after the freeze counts at the next pass as it
+//! was before that slot's hires, like every entity the sweep folded: a hire folded after it
+//! would leave its job open in the swept building and its adult employed in the new household,
+//! counting one open job twice. The pass folds any created since: O(entities created since the
+//! hour's first slot).
 //!
 //! Households fold in handle order: the affordable-consumer walk claims each household's
 //! transfers from a running copy of the frozen treasury in that order, and displaced households
-//! keep that order as their priority. Funded capacities and input scales come from the census
-//! as each building is folded. A sweep that misses a slot is abandoned and the pass keeps the
-//! last front; a world without one builds it from the whole city at once, in the same order.
+//! keep that order as their priority. Funded capacities and input scales come from the copies
+//! the published census left on each building as it is folded, which saves keep: a census
+//! rebuilt by a load or a policy change mid-hour never changes the sweep. A sweep that misses a
+//! slot is abandoned and the pass keeps the last front; a world without one builds it from the
+//! whole city at once, in the same order.
 
 use std::ops::Range;
 
 use super::{
-    BuildingSnapshotAccumulator, HouseholdSnapshotAccumulator, OccupantEntry,
-    ResidentialOccupantSnapshot, SnapshotTotals, UnhousedWorkforce, demand_sink_rates_into,
+    BuildingSnapshotAccumulator, FundedJobs, HouseholdSnapshotAccumulator, JobTotals,
+    OccupantEntry, ResidentialOccupantSnapshot, SnapshotTotals, UnhousedWorkforce,
+    demand_sink_rates_into,
 };
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::handles::HandleTable;
@@ -34,7 +41,6 @@ use crate::simulation::economy::definitions::{
 };
 use crate::simulation::economy::demand::config::DemandConfig;
 use crate::simulation::economy::fiscal::CityFiscalPolicy;
-use crate::simulation::economy::hiring::JobFunding;
 use crate::simulation::economy::households::{
     CommercialActivitySums, CommercialActivityTerms, ConsumerBudgetTerms, HouseholdSystem,
 };
@@ -44,8 +50,6 @@ use crate::simulation::economy::households::{
 pub(in crate::simulation::economy::demand) struct SweepInputs<'a> {
     pub(in crate::simulation::economy::demand) allocator: &'a BuildingAllocator,
     pub(in crate::simulation::economy::demand) households: &'a HouseholdSystem,
-    /// The census whose funded capacities and input scales the buildings read.
-    pub(in crate::simulation::economy::demand) job_funding: &'a JobFunding,
     pub(in crate::simulation::economy::demand) config: &'a DemandConfig,
     pub(in crate::simulation::economy::demand) catalog: &'a RuntimeEconomyCatalog,
     pub(in crate::simulation::economy::demand) tuning: &'a RuntimeEconomyTuning,
@@ -144,6 +148,31 @@ impl DemandSnapshotSweep {
             }
             None => build(inputs),
         }
+    }
+
+    /// Folds the entities created in new handle slots since the front's sweep began, before
+    /// the hour's job search (see the module docs); a world without a front builds one at the
+    /// pass. O(those entities).
+    pub(in crate::simulation::economy::demand) fn top_up_front(
+        &mut self,
+        inputs: &SweepInputs<'_>,
+    ) {
+        if let Some(front) = &mut self.front {
+            front.top_up(inputs);
+        }
+    }
+
+    /// The saved form of the front [`Self::top_up_front`] would leave now, without changing it.
+    #[cfg(test)]
+    pub(in crate::simulation::economy::demand) fn topped_up_front_bits(
+        &self,
+        inputs: &SweepInputs<'_>,
+    ) -> Option<Vec<u8>> {
+        self.front.as_ref().map(|front| {
+            let mut front = front.clone();
+            front.top_up(inputs);
+            encode(&front)
+        })
     }
 
     /// Returns a front taken with [`Self::take_front`].
@@ -261,7 +290,6 @@ impl SnapshotBuffer {
     ) {
         let SweepInputs {
             allocator,
-            job_funding,
             catalog,
             policy,
             ..
@@ -280,7 +308,7 @@ impl SnapshotBuffer {
                 catalog,
                 policy.income_tax_rate,
                 sink_rates,
-                job_funding,
+                FundedJobs::Published,
                 index,
                 building,
             );
@@ -362,14 +390,14 @@ fn encode(buffer: &SnapshotBuffer) -> Vec<u8> {
         buildings.constructing_by_use[0],
         buildings.constructing_by_use[1],
         buildings.constructing_by_use[2],
-        buildings.open_job_slots,
-        buildings.physical_worker_capacity,
-        buildings.funded_worker_capacity,
-        buildings.open_jobs_unfunded,
+        buildings.jobs.open_job_slots,
+        buildings.jobs.physical_worker_capacity,
+        buildings.jobs.funded_worker_capacity,
+        buildings.jobs.open_jobs_unfunded,
     ] {
         put_u32(&mut out, value);
     }
-    put_f32(&mut out, buildings.open_job_wage_sum);
+    put_f32(&mut out, buildings.jobs.open_job_wage_sum);
     for list in [
         &buildings.committed_output_capacity_by_resource,
         &buildings.committed_commercial_output_capacity_by_resource,
@@ -453,11 +481,13 @@ fn decode(bytes: &[u8]) -> Result<SnapshotBuffer, String> {
             constructing_commercial,
             constructing_industrial,
         ],
-        open_job_slots,
-        open_job_wage_sum,
-        physical_worker_capacity,
-        funded_worker_capacity,
-        open_jobs_unfunded,
+        jobs: JobTotals {
+            open_job_slots,
+            open_job_wage_sum,
+            physical_worker_capacity,
+            funded_worker_capacity,
+            open_jobs_unfunded,
+        },
         committed_output_capacity_by_resource,
         committed_commercial_output_capacity_by_resource,
         business_input_need_by_resource,

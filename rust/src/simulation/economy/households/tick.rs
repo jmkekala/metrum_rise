@@ -18,8 +18,9 @@ use crate::{debug, debug_log};
 use std::time::Instant;
 
 impl HouseholdSystem {
-    /// Runs one operational-hour household pass for housing, production, logistics, and labor.
-    /// Trips started here leave at paced slots and settle when they arrive (`SIM-02-E`).
+    /// Runs one operational-hour household pass for housing, logistics, restock and visits, and
+    /// labor, on the census published before it (`SIM-02-I`). Trips started here leave at paced
+    /// slots and settle when they arrive (`SIM-02-E`).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn operational_hour_tick(
         &mut self,
@@ -31,7 +32,6 @@ impl HouseholdSystem {
         absolute_hour: u32,
         minute_of_day: u16,
         treasury_balance: &mut f64,
-        service_funding_by_building: &[f32],
         fiscal_policy: &CityFiscalPolicy,
     ) {
         let timing_category = if debug::Channel::EconomyPhases.enabled() {
@@ -59,21 +59,8 @@ impl HouseholdSystem {
         self.review_queued_housing(agents, allocator);
         let housing_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
-        // The census comes first, so restock and visit planning and hiring read a census of
-        // this hour's state (`SIM-02-F`), and so do the activity floors the building phases
-        // set during the hour (`SIM-02-I`).
-        self.refresh_funding_census(
-            allocator,
-            logistics,
-            transit_network,
-            graph,
-            service_funding_by_building,
-            fiscal_policy,
-            *treasury_balance,
-            minute_of_day,
-        );
-        let census_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
-        phase_start = Instant::now();
+        // Restock and visit planning and hiring read the census published at this slot,
+        // before the hour (`SIM-02-I`, `households/census.rs`).
         logistics.hourly_tick(
             allocator,
             agents,
@@ -105,7 +92,7 @@ impl HouseholdSystem {
         if timing_enabled {
             debug_log!(
                 timing_category,
-                "operational_hour_detail absolute_hour={} minute={} pending_households={} pending_adults={} agents={} buildings={} households={} pending_ms={:.3} validate_ms={:.3} housing_ms={:.3} census_ms={:.3} logistics_ms={:.3} household_hour_ms={:.3} workplace_ms={:.3} total_ms={:.3}",
+                "operational_hour_detail absolute_hour={} minute={} pending_households={} pending_adults={} agents={} buildings={} households={} pending_ms={:.3} validate_ms={:.3} housing_ms={:.3} logistics_ms={:.3} household_hour_ms={:.3} workplace_ms={:.3} total_ms={:.3}",
                 absolute_hour,
                 minute_of_day,
                 self.pending_arrivals.households,
@@ -116,7 +103,6 @@ impl HouseholdSystem {
                 pending_ms,
                 validate_ms,
                 housing_ms,
-                census_ms,
                 logistics_ms,
                 household_hour_ms,
                 workplace_ms,

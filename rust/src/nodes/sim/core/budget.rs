@@ -13,9 +13,9 @@ use crate::simulation::economy::definitions::{
 };
 use crate::simulation::economy::fiscal::FiscalRevenue;
 use crate::simulation::economy::households::{
-    active_worker_capacity_for_profile_with_floor_scale,
+    active_worker_capacity_for_profile_with_floor_scale, effective_service_funding,
     scaled_output_buffer_capacity_units_for_building, scaled_output_units_per_day_for_building,
-    service_funded_worker_capacity,
+    service_funded_worker_capacity, write_electricity_funding_by_building,
 };
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::work_area::profile_kind_uses_explicit_work_area;
@@ -128,14 +128,6 @@ fn length_mm(metres: f32) -> i64 {
 
 fn is_electricity_service(service_id: &str) -> bool {
     matches!(service_id, SERVICE_POLICY_ELECTRICITY | "power")
-}
-
-fn effective_service_funding(building_override: f32, city_funding: f32) -> f32 {
-    if building_override >= 0.0 {
-        building_override.clamp(0.0, 1.0)
-    } else {
-        city_funding
-    }
 }
 
 fn percent_for_log(rate: f32) -> f32 {
@@ -496,6 +488,7 @@ impl SimCore {
         let funding = funding.clamp(0.0, 1.0);
         self.service_policy.electricity_funding = funding;
         self.apply_service_funding_staffing_policy();
+        self.follow_census_policy();
         debug_log!(
             "economy",
             "service policy change: id={} requested={:.3} old={:.3} new={:.3} day={} minute={} treasury={:.1}",
@@ -523,8 +516,7 @@ impl SimCore {
             .fiscal_policy
             .control(policy_id)
             .unwrap_or(previous_control);
-        let service_funding_by_building = self.electricity_funding_by_building();
-        self.refresh_job_funding(&service_funding_by_building);
+        self.follow_census_policy();
         self.demand.refresh_household_diagnostics(
             &self.allocator,
             &self.households,
@@ -553,8 +545,10 @@ impl SimCore {
         if !self.building_provides_service(building_idx, "power") {
             return false;
         }
-        self.allocator.buildings[building_idx].service_funding_override = funding.clamp(0.0, 1.0);
+        self.allocator
+            .set_service_funding_override(building_idx, funding.clamp(0.0, 1.0));
         self.apply_service_funding_staffing_policy();
+        self.follow_census_policy();
         true
     }
 
@@ -573,21 +567,17 @@ impl SimCore {
         let Ok(catalog) = load_runtime_economy_catalog() else {
             return funding;
         };
-        let buildings = &self.allocator.buildings;
-        let city_funding = self.service_policy.electricity_funding;
-        funding.par_iter_mut().enumerate().for_each(|(idx, value)| {
-            let building = &buildings[idx];
-            let Some(profile) = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
-            else {
-                return;
-            };
-            if profile.utility_service.as_deref() == Some("power") {
-                *value = effective_service_funding(building.service_funding_override, city_funding);
-            }
-        });
+        write_electricity_funding_by_building(
+            &self.allocator.buildings,
+            &catalog,
+            self.service_policy.electricity_funding,
+            &mut funding,
+        );
         funding
     }
 
+    /// Releases the service workers the live funding no longer pays for, at once. The funded
+    /// jobs follow at the next census publication ([`Self::follow_census_policy`]).
     pub(crate) fn apply_service_funding_staffing_policy(&mut self) {
         let funding = self.electricity_funding_by_building();
         self.households.enforce_service_funding_staffing(
@@ -595,7 +585,15 @@ impl SimCore {
             &mut self.allocator,
             &funding,
         );
-        self.refresh_job_funding(&funding);
+    }
+
+    // A fiscal or service funding change reaches the census through its copy (`SIM-02-I`):
+    // the census in progress restarts on the new values and the next hour's first slot
+    // publishes it; construction execution plans afresh.
+    fn follow_census_policy(&mut self) {
+        self.demand.invalidate_construction_execution();
+        self.households
+            .follow_census_policy(self.fiscal_policy, self.service_policy.electricity_funding);
     }
 
     /// Restores one placed service's fiscal input ceiling without rebuilding citywide jobs.
@@ -618,8 +616,10 @@ impl SimCore {
         }
     }
 
-    // Loading and immediate policy changes also refresh the derived jobs shown by demand.
-    fn refresh_job_funding(&mut self, funding: &[f32]) {
+    /// A census of the loaded city, for the derived jobs demand shows before the next hour's
+    /// first slot publishes the census of the loaded copy.
+    pub(crate) fn refresh_loaded_job_funding(&mut self) {
+        let funding = self.electricity_funding_by_building();
         self.demand.invalidate_construction_execution();
         self.households.job_funding.refresh(
             &self.allocator,
@@ -630,10 +630,14 @@ impl SimCore {
             self.demand.runtime_catalog(),
             self.demand.runtime_tuning(),
             &self.fiscal_policy,
-            funding,
+            &funding,
             self.treasury.balance,
             self.time.minute_of_day,
         );
+        // A census of the live city; the hour's census still publishes at the next hour's
+        // first slot (`SIM-02-I`).
+        self.households.job_funding.published =
+            Some(self.households.census_key(&self.transit_network));
     }
 
     fn log_fiscal_policy_change(
