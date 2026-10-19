@@ -9,6 +9,7 @@
 //! read of local surface indices; a busy core falls back to supported snapshot poses.
 
 mod budget;
+mod demand_requests;
 mod entity_days;
 mod entity_phases;
 mod frame;

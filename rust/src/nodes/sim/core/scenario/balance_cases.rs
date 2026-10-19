@@ -860,10 +860,21 @@ fn assert_continues_identically_after_reload(source: GrowthScenario, name: &str)
 // [`assert_continues_identically_after_reload`], first checking the games with `check` once
 // loaded.
 fn assert_continues_identically_after_checked_reload(
-    mut source: GrowthScenario,
+    source: GrowthScenario,
     name: &str,
     check: impl FnOnce(&SimCore, &SimCore),
 ) {
+    assert_continues_identically_after_prepared_reload(source, name, |_| {}, check);
+}
+
+// [`assert_continues_identically_after_checked_reload`], first readying the fresh town the save
+// loads into with `prepare` (assets the source registered).
+fn assert_continues_identically_after_prepared_reload(
+    mut source: GrowthScenario,
+    name: &str,
+    prepare: impl FnOnce(&mut SimCore),
+    check: impl FnOnce(&SimCore, &SimCore),
+) -> GrowthScenario {
     let path = std::env::temp_dir().join(format!(
         "metrum-{name}-continuation-{}.sqlite",
         std::process::id()
@@ -873,6 +884,7 @@ fn assert_continues_identically_after_checked_reload(
         .save_game_internal(path.to_str().unwrap(), None)
         .unwrap();
     let mut loaded = GrowthScenario::starter_town();
+    prepare(&mut loaded.core);
     loaded
         .core
         .load_game_internal(path.to_str().unwrap())
@@ -902,6 +914,7 @@ fn assert_continues_identically_after_checked_reload(
     );
     loaded.core.time.speed_multiplier = source.core.time.speed_multiplier;
     let nodes = SavedNodes::of(&source.core, &loaded.core);
+    assert_same_demand_queues(&source.core, &loaded.core, "at load");
     check(&source.core, &loaded.core);
     let target_day = source.core.time.day_index + 1;
     loop {
@@ -942,6 +955,7 @@ fn assert_continues_identically_after_checked_reload(
         loaded.core.step_frame(FRAME_DT_S);
         let when = (source.core.time.day_index, source.core.time.minute_of_day);
         assert_same_flow_fields(&source.core, &loaded.core, &nodes, when);
+        assert_same_demand_queues(&source.core, &loaded.core, &format!("{when:?}"));
         // In the hour's planning slots both games lend the published books, or skip, alike.
         if source.core.time.absolute_slot() % crate::simulation::core::scheduler::SLOTS_PER_HOUR
             <= crate::simulation::economy::demand::PlanningSlot::Actions as u64
@@ -1003,6 +1017,384 @@ fn assert_continues_identically_after_checked_reload(
             );
         }
     }
+    source
+}
+
+// The demand queues (`SIM-02-J`): level changes with their permits, building removals,
+// departures, and admissions with the admission credit; an admission's border by position, which
+// a save renumbers.
+fn assert_same_demand_queues(source: &SimCore, loaded: &SimCore, when: &str) {
+    assert_eq!(
+        source.demand.level_change_requests, loaded.demand.level_change_requests,
+        "queued level changes {when}"
+    );
+    assert_eq!(
+        source.allocator.removal_requests, loaded.allocator.removal_requests,
+        "queued building removals {when}"
+    );
+    let (a, b) = (&source.households, &loaded.households);
+    assert_eq!(a.exits, b.exits, "queued departures {when}");
+    assert_eq!(
+        (a.admission_credit, a.admission_rate),
+        (b.admission_credit, b.admission_rate),
+        "admission credit {when}"
+    );
+    let admissions = |core: &SimCore| {
+        core.households
+            .admission_requests
+            .iter()
+            .map(|admission| {
+                let border = core.region_graph.get_valid_node(admission.border_node);
+                let position = core.region_graph.node(border).pos;
+                (
+                    admission.home,
+                    admission.size,
+                    admission.composition,
+                    position.x.to_bits(),
+                    position.z.to_bits(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        admissions(source),
+        admissions(loaded),
+        "queued admissions {when}"
+    );
+}
+
+// Registers a level-2 twin of every residential asset of the starter town's packs, so its homes
+// have an upgrade (`SIM-02-J` tests): the same lot, capacity and door one level up.
+fn register_home_upgrades(core: &mut SimCore) {
+    let registry = &mut core.allocator.registry;
+    let twins: Vec<_> = registry
+        .qualified_ids()
+        .filter_map(|id| {
+            let entry = registry.get(id)?;
+            let building = entry.manifest.building.as_ref()?;
+            (building.zone_type == Some(crate::assets::ZoneClass::Residential)
+                && building.level == 1
+                && entry.manifest.asset_set.is_none())
+            .then(|| {
+                let mut manifest = entry.manifest.clone();
+                manifest.asset_id = format!("{}_level_2", manifest.asset_id);
+                manifest.building.as_mut().unwrap().level = 2;
+                (entry.pack_id.clone(), manifest, entry.asset_dir.clone())
+            })
+        })
+        .collect();
+    assert!(!twins.is_empty(), "the starter town has homes to upgrade");
+    for (pack, manifest, dir) in twins {
+        registry.register(&pack, manifest, dir);
+    }
+}
+
+// Queues one level change that fits now, with its permit, as the hour's actions slot queues a
+// proved one (`SIM-02-J`): the first building, in dense order, whose upgrade or else downgrade
+// fits, preferring `zone`. Returns the building.
+fn queue_fitting_level_change(core: &mut SimCore, zone: Option<ZoneType>) -> Option<usize> {
+    use crate::simulation::buildings::allocator::BuildingSiteEnvironment;
+    use crate::simulation::economy::demand::{QueuedLevelChange, level_change_permit};
+    let cell_m = core.config.zone_cell_m;
+    core.allocator.prepare_building_site_query_index(cell_m);
+    let catalog = core.demand.shared_runtime_catalog();
+    let allocator = &core.allocator;
+    let (building_idx, target) = (0..allocator.buildings.len()).find_map(|index| {
+        let building = &allocator.buildings[index];
+        if zone.is_some_and(|zone| building.zone_type != zone) {
+            return None;
+        }
+        [
+            allocator.upgrade_target(building),
+            allocator.downgrade_target(building),
+        ]
+        .into_iter()
+        .flatten()
+        .find(|target| {
+            allocator.level_change_fits(
+                index,
+                target,
+                &catalog,
+                cell_m,
+                &core.region_graph,
+                BuildingSiteEnvironment {
+                    road_surface: &core.transit_network.road_surface,
+                    terrain: &core.heightmap,
+                },
+            )
+        })
+        .map(|target| (index, target.to_owned()))
+    })?;
+    let permit = level_change_permit(
+        &allocator.buildings[building_idx],
+        Some(&allocator.derived_entrance(
+            building_idx,
+            &core.region_graph,
+            &core.transit_network.lane_system,
+        )),
+        &core.region_graph,
+        &core.transit_network.lane_system,
+    );
+    let building = allocator.building_handles.handle(building_idx);
+    core.demand
+        .level_change_requests
+        .push_back(QueuedLevelChange {
+            slot: core.time.absolute_slot(),
+            building,
+            target_asset_id: target,
+            permit,
+        });
+    Some(building_idx)
+}
+
+// Takes the home of the first housed household in a single-household home, as if it had lost
+// it a week ago: the home's place is released and the household and its members are homeless.
+// Returns the household and its former home.
+fn evict_a_household(core: &mut SimCore) -> (usize, usize) {
+    let household = (0..core.households.households.len())
+        .find(|&id| {
+            let home = core.households.households[id].home_building_id;
+            core.households.households[id].member_count > 0
+                && core
+                    .allocator
+                    .buildings
+                    .get(home)
+                    .is_some_and(|home| home.occupancy == 1 && home.worker_count == 0)
+        })
+        .expect("a household alone in its home");
+    let home = core.households.households[household].home_building_id;
+    core.allocator.release_vacancy(home);
+    core.households.households[household].home_building_id = usize::MAX;
+    core.households.households[household].unhoused_days_elapsed = 7;
+    for agent in 0..core.agents.len() {
+        if core.agents.household_id[agent] == household {
+            core.agents.home_building[agent] = usize::MAX;
+        }
+    }
+    (household, home)
+}
+
+// Marks empty, sound and complete building `building_idx` deserted, as a failed site is, and
+// queues its planned clearance (`SIM-02-J`). Returns its handle.
+fn queue_clearance(
+    core: &mut SimCore,
+    building_idx: usize,
+) -> crate::simulation::core::handles::Handle<crate::simulation::buildings::allocator::Building> {
+    use crate::simulation::buildings::allocator::{BuildingRemovalKind, BuildingRemovalRequest};
+    let allocator = &mut core.allocator;
+    allocator.mark_building_deserted(building_idx);
+    assert!(allocator.can_demand_despawn(building_idx));
+    allocator
+        .building_handles
+        .register_appended(allocator.buildings.len());
+    let building = allocator.building_handles.handle(building_idx);
+    allocator
+        .removal_requests
+        .push_back(BuildingRemovalRequest {
+            slot: core.time.absolute_slot(),
+            building,
+            kind: BuildingRemovalKind::Clearance,
+        });
+    building
+}
+
+// The demand queues carry out the actions slot's decisions over the hour (`SIM-02-J`): a town
+// saved right after an hour's actions slot, with admissions, a level change, a planned
+// clearance and a departure waiting, serves them from slot 4 on and continues identically every
+// frame for a day. The departure is a household the player's bulldozer left unhoused long
+// enough to leave.
+#[test]
+fn a_save_with_the_demand_queues_waiting_continues_identically() {
+    use crate::simulation::core::scheduler::SLOTS_PER_HOUR;
+    let mut source = GrowthScenario::starter_town();
+    register_home_upgrades(&mut source.core);
+    loop {
+        assert!(source.day() < 6, "no hour left admissions waiting");
+        let hour = source.core.time.absolute_slot() / SLOTS_PER_HOUR + 1;
+        step_to_slot(&mut source.core, hour * SLOTS_PER_HOUR + 3);
+        if source.core.households.admission_requests.len() >= 2
+            && source.core.households.households.len() >= 8
+        {
+            break;
+        }
+    }
+    let core = &mut source.core;
+    // The household leaves the city; its emptied home is cleared.
+    let (unhoused, home) = evict_a_household(core);
+    assert!(core.households.exit_eligible(
+        unhoused,
+        core.demand.household_exit_policy(),
+        &core.allocator
+    ));
+    core.households.queue_exit(unhoused);
+    let cleared = queue_clearance(core, home);
+    let changed = queue_fitting_level_change(core, None).expect("a level change that fits");
+    let changed = core.allocator.building_handles.handle(changed);
+    let leaving = core.households.handles.handle(unhoused);
+    let households = core.households.households.len();
+    let buildings = core.allocator.buildings.len();
+    let source = assert_continues_identically_after_prepared_reload(
+        source,
+        "demand-queues",
+        register_home_upgrades,
+        |source, _| {
+            assert!(!source.demand.level_change_requests.is_empty());
+            assert!(!source.allocator.removal_requests.is_empty());
+            assert!(!source.households.exits.is_empty());
+            assert!(source.households.admission_requests.len() >= 2);
+            assert_eq!(source.households.households.len(), households);
+            assert_eq!(source.allocator.buildings.len(), buildings);
+        },
+    );
+    // Served from slot 4: the household left, the home was cleared, the change was applied.
+    let core = &source.core;
+    assert!(
+        core.households.handles.resolve(leaving).is_none(),
+        "the household left"
+    );
+    assert!(
+        core.allocator.building_handles.resolve(cleared).is_none(),
+        "the home was cleared"
+    );
+    let changed = core
+        .allocator
+        .building_handles
+        .resolve(changed)
+        .expect("the changed building");
+    assert_eq!(
+        core.allocator.buildings[changed].level, 2,
+        "the level change was applied"
+    );
+}
+
+// Removals wait for the hour's removal window (`SIM-02-J`): a planned clearance queued while
+// the census runs over the hour's second half stays until the next hour's slot 4, while a level
+// change queued then is applied at once, an in-place change. The census runs on without a
+// restart and is ready at its publishing slot, the next hour's planning slots lend the books it
+// published, and slot 4 removes the building; the next census, over the copy that followed the
+// removal, runs without a restart.
+#[test]
+fn a_removal_requested_in_the_census_window_waits_for_slot_4_and_restarts_nothing() {
+    use crate::simulation::core::scheduler::SLOTS_PER_HOUR;
+    use crate::simulation::economy::hiring::CENSUS_WINDOW_START;
+    let mut scenario = super::census_cases::busy_town();
+    let core = &mut scenario.core;
+    let hour = core.time.absolute_slot() / SLOTS_PER_HOUR + 1;
+    step_to_slot(core, hour * SLOTS_PER_HOUR + CENSUS_WINDOW_START + 20);
+    assert!(core.households.census_inputs.is_read(), "a census runs");
+    let restarts = core.households.census_run.restarts;
+    let (_, home) = evict_a_household(core);
+    let building = queue_clearance(core, home);
+    // A level change in the window is an in-place change: applied at once, it restarts nothing.
+    register_home_upgrades(core);
+    let changed = queue_fitting_level_change(core, Some(ZoneType::Residential))
+        .expect("a home whose upgrade fits");
+    let changed = core.allocator.building_handles.handle(changed);
+    let now = core.time.absolute_slot();
+    step_to_slot(core, now + 1);
+    let changed = core.allocator.building_handles.resolve(changed).unwrap();
+    assert_eq!(
+        core.allocator.buildings[changed].level, 2,
+        "applied in the window"
+    );
+    let next = (hour + 1) * SLOTS_PER_HOUR;
+    step_to_slot(core, next - 1);
+    assert!(core.allocator.building_handles.resolve(building).is_some());
+    let key = core.households.census_key(&core.transit_network);
+    assert!(
+        core.households.census_ready(next, key),
+        "the census is current at its publication"
+    );
+    for slot in next..next + 4 {
+        step_to_slot(core, slot);
+        assert!(
+            core.allocator.building_handles.resolve(building).is_some(),
+            "the removal waits at slot {}",
+            slot % SLOTS_PER_HOUR
+        );
+        assert!(
+            super::census_cases::published_books_lent(core),
+            "planning slot {} lends the published books",
+            slot % SLOTS_PER_HOUR
+        );
+    }
+    assert_eq!(
+        core.households.census_run.restarts, restarts,
+        "no census restarted"
+    );
+    step_to_slot(core, next + 4);
+    assert!(
+        core.allocator.building_handles.resolve(building).is_none(),
+        "removed at slot 4"
+    );
+    // The filling input copy followed the swap-remove: the census over it runs through the
+    // window without a restart and is current at its publication.
+    assert!(core.households.census_inputs.is_filling());
+    let publish = next + SLOTS_PER_HOUR;
+    step_to_slot(core, publish - 1);
+    let key = core.households.census_key(&core.transit_network);
+    assert!(core.households.census_ready(publish, key));
+    assert_eq!(core.households.census_run.restarts, restarts);
+}
+
+// A queued level change is applied only to the building state its permit was proved for
+// (`SIM-02-J`): after the building changed level another way, the queue rejects the stale
+// permit and proves nothing again. A business permit also names the door.
+#[test]
+fn a_stale_level_change_permit_is_rejected() {
+    use crate::simulation::buildings::allocator::BuildingSiteEnvironment;
+    use crate::simulation::economy::demand::level_change_permit;
+    let mut scenario = GrowthScenario::starter_town();
+    register_home_upgrades(&mut scenario.core);
+    scenario.run_days(2);
+    let core = &mut scenario.core;
+    let building_idx = queue_fitting_level_change(core, None).expect("a level change that fits");
+    let request = core.demand.level_change_requests.back().unwrap().clone();
+    let before = core.allocator.buildings[building_idx].asset_id.clone();
+    // The same change made another way: the building no longer stands as proved.
+    let catalog = core.demand.shared_runtime_catalog();
+    assert!(
+        core.allocator
+            .apply_level_change_action(
+                building_idx,
+                &request.target_asset_id,
+                &catalog,
+                core.config.zone_cell_m,
+                &core.region_graph,
+                BuildingSiteEnvironment {
+                    road_surface: &core.transit_network.road_surface,
+                    terrain: &core.heightmap,
+                },
+            )
+            .is_some()
+    );
+    let changed = core.allocator.buildings[building_idx].clone();
+    assert_ne!(changed.asset_id, before);
+    core.serve_level_change_queue(usize::MAX, &mut ());
+    assert!(core.demand.level_change_requests.is_empty());
+    let building = &core.allocator.buildings[building_idx];
+    assert_eq!(
+        (&building.asset_id, building.level),
+        (&changed.asset_id, changed.level),
+        "a stale permit is rejected, so the change is not made twice"
+    );
+    // A business permit names its door; a home's does not.
+    let original = core.allocator.derived_entrance(
+        building_idx,
+        &core.region_graph,
+        &core.transit_network.lane_system,
+    );
+    let mut entrance = original.clone();
+    entrance.door_pos.x += 1.0;
+    let graph = &core.region_graph;
+    let lanes = &core.transit_network.lane_system;
+    let mut business = changed.clone();
+    business.zone_type = ZoneType::Commercial;
+    let digest = |building, entrance| level_change_permit(building, Some(entrance), graph, lanes);
+    assert_ne!(digest(&business, &original), digest(&business, &entrance));
+    let mut home = changed;
+    home.zone_type = ZoneType::Residential;
+    assert_eq!(digest(&home, &original), digest(&home, &entrance));
 }
 
 // One action of the hour's plan: kind, parcel, side, cell, width, depth, level, asset, target.

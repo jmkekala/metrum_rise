@@ -4,7 +4,10 @@
 
 use super::super::supply::ProjectSupply;
 use super::*;
+#[cfg(test)]
 use crate::simulation::buildings::allocator::DemandBuildingActionExecution;
+use crate::simulation::core::handles::Handle;
+#[cfg(test)]
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::demand::{DemandBuildingActionPlan, DemandLevelChangeAction};
 use crate::simulation::economy::households::output_area_scale_for_building;
@@ -204,12 +207,130 @@ impl DemandLevelChangeGuard for LevelChangeGuard<'_> {
     }
 }
 
+/// A level change the hour's actions slot proved, waiting for the `level changes` queue to
+/// apply it (`SIM-02-J`). Saved in order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct QueuedLevelChange {
+    /// Slot that queued it.
+    pub(crate) slot: u64,
+    /// The building it replaces in place.
+    pub(crate) building: Handle<Building>,
+    /// The asset one level up or down.
+    pub(crate) target_asset_id: String,
+    /// Digest of the building state the change was proved for ([`level_change_permit`]).
+    pub(crate) permit: u64,
+}
+
+/// Why a queued level change was not applied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LevelChangeRefusal {
+    /// The building left.
+    Gone,
+    /// The building no longer has the door, profile, level or asset the change was proved for.
+    StalePermit,
+}
+
 impl DemandSystem {
-    /// Applies immediate actions: business level changes are proved in the planning slot's
-    /// construction epoch ([`Self::open_construction_epoch`]), which every level change
-    /// shares and which closes before the despawns; subsequent proposals follow affected
-    /// receipt chains and existing route indices. Failed placement consumes no claims. A
-    /// business level change without an open epoch is rejected.
+    /// Proves the hour plan's level changes in the actions slot's construction epoch and
+    /// queues those proved, with their permits, for the `level changes` queue (`SIM-02-J`).
+    /// Business changes need the epoch open; residential ones need no proof. The epoch closes
+    /// before it returns. O(changes × proof).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn queue_level_changes(
+        &mut self,
+        plan: &DemandBuildingActionPlan,
+        slot: u64,
+        allocator: &mut BuildingAllocator,
+        zoning: &ZoningSystem,
+        households: &mut HouseholdSystem,
+        logistics: &mut ShipmentSystem,
+        treasury: f64,
+        graph: &RegionGraph,
+        network: &TransitNetwork,
+        terrain: &TerrainSystem,
+        now: u64,
+        policy: &CityFiscalPolicy,
+    ) {
+        let catalog = Arc::clone(&self.runtime_catalog);
+        debug_assert!(
+            self.construction_execution.open
+                || [&plan.commercial, &plan.industrial]
+                    .iter()
+                    .all(|plan| plan.downgrades.is_empty() && plan.upgrades.is_empty()),
+            "business level changes are proved in the planning slot's construction epoch"
+        );
+        let mut proved = Vec::new();
+        let mut guard = LevelChangeGuard {
+            demand: self,
+            graph,
+            network,
+            policy,
+            minute: (now % 1440) as u16,
+        };
+        allocator.prove_demand_level_changes(
+            plan,
+            zoning,
+            households,
+            logistics,
+            treasury,
+            graph,
+            network,
+            terrain,
+            &catalog,
+            &mut guard,
+            &mut proved,
+        );
+        allocator
+            .building_handles
+            .register_appended(allocator.buildings.len());
+        for (building_idx, action) in proved {
+            self.level_change_requests.push_back(QueuedLevelChange {
+                slot,
+                building: allocator.building_handles.handle(building_idx),
+                target_asset_id: action.target_asset_id.clone(),
+                permit: level_change_permit(
+                    &allocator.buildings[building_idx],
+                    Some(&allocator.derived_entrance(building_idx, graph, &network.lane_system)),
+                    graph,
+                    &network.lane_system,
+                ),
+            });
+        }
+    }
+
+    /// The building queued level change `request` may replace now: it still stands with the
+    /// door, profile, level and asset the change was proved for (a home's door does not
+    /// count), its door derived now. Nothing is proved again. O(door derivation + asset id).
+    pub(crate) fn check_level_change_permit(
+        &self,
+        request: &QueuedLevelChange,
+        allocator: &BuildingAllocator,
+        graph: &RegionGraph,
+        lanes: &LaneSystem,
+    ) -> Result<usize, LevelChangeRefusal> {
+        let building_idx = allocator
+            .building_handles
+            .resolve(request.building)
+            .ok_or(LevelChangeRefusal::Gone)?;
+        let permit = level_change_permit(
+            &allocator.buildings[building_idx],
+            Some(&allocator.derived_entrance(building_idx, graph, lanes)),
+            graph,
+            lanes,
+        );
+        if permit != request.permit && !self.cheat_max_demands_enabled {
+            return Err(LevelChangeRefusal::StalePermit);
+        }
+        Ok(building_idx)
+    }
+
+    /// Test driver: applies `plan`'s level changes and despawns at once, as the actions slot
+    /// did before the `level changes` and `building removals` queues (`SIM-02-J`). Business
+    /// level changes are proved in the planning slot's construction epoch
+    /// ([`Self::open_construction_epoch`]), which every level change shares and which closes
+    /// before the despawns. Failed placement consumes no claims. A business level change
+    /// without an open epoch is rejected.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn execute_building_actions(
         &mut self,

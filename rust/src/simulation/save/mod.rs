@@ -39,6 +39,7 @@ pub mod agents;
 mod camera;
 mod cell_zoning;
 mod census_inputs;
+mod demand_queues;
 mod handles;
 mod scheduler;
 pub mod network;
@@ -474,6 +475,14 @@ fn write_snapshot(
         .is_empty()
         .then_some(view.network.cch_graph.build_generation);
     world::save_household_queue_state(tx, view.households, layout)?;
+    demand_queues::save(
+        tx,
+        view.allocator,
+        view.households,
+        view.demand,
+        view.graph,
+        maps,
+    )?;
     network::save_network(tx, view.graph, maps)?;
     agents::save_agents(tx, view.agents, view.graph, view.network, maps)?;
     workplace_quotes::save(tx, view.households, view.allocator, view.network, maps)?;
@@ -626,6 +635,7 @@ pub(crate) fn load_from_sqlite(
     households.handles =
         handles::load(&conn, handles::HandleKind::Households, households.households.len())?;
     agents.handles = handles::load(&conn, handles::HandleKind::Agents, agents.len())?;
+    demand_queues::load(&conn, &mut allocator, &mut households, &mut demand)?;
     type TreasuryRow = (
         f64,
         f64,

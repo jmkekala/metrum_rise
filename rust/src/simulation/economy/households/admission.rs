@@ -6,7 +6,9 @@ use super::data::{DailyHouseholdLedger, Household, HouseholdSystem};
 use super::metrics::household_demand_profile;
 use super::replenishment::{REPLENISHMENT_STABLE, stable_replenishment_offset_hours};
 use crate::debug_log;
-use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
+use crate::simulation::core::handles::Handle;
+use crate::simulation::core::scheduler::SLOTS_PER_HOUR;
 use crate::simulation::economy::agents::{
     AgentHandle,
     AgentSystem, HouseholdAgeComposition, TRANSIT_IN_BUILDING,
@@ -16,7 +18,57 @@ use crate::simulation::economy::definitions::{
     load_runtime_economy_tuning,
 };
 
+/// A household the hour's actions slot admitted, waiting for the `admissions` queue to create
+/// it and its arrival carrier (`SIM-02-J`): its claimed home, size and composition and the
+/// border it arrives from. Saved in order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct QueuedAdmission {
+    /// The home whose vacancy admission claimed.
+    pub(crate) home: Handle<Building>,
+    /// Members, at least one.
+    pub(crate) size: u16,
+    /// Approved adults, elders and children.
+    pub(crate) composition: HouseholdAgeComposition,
+    /// Border node the carrier sets out from; `u32::MAX` when a save found it gone.
+    pub(crate) border_node: u32,
+}
+
+// Credit one admission costs: the hour's batch is created over one hour of slots.
+const ADMISSION_CREDIT: u32 = SLOTS_PER_HOUR as u32;
+
 impl HouseholdSystem {
+    /// Queues the hour's admitted households in admission order and starts the credit: one
+    /// whole admission at once, then the waiting count per slot, so the batch is created over
+    /// the following hour and the last one before the next actions slot. O(batch).
+    pub(crate) fn queue_admissions(&mut self, admitted: impl IntoIterator<Item = QueuedAdmission>) {
+        self.admission_requests.extend(admitted);
+        self.admission_rate = self.admission_requests.len() as u32;
+        if self.admission_rate > 0 {
+            self.admission_credit = ADMISSION_CREDIT;
+        }
+    }
+
+    /// Accrues one slot's admission credit; returns whether an admission waits. With nothing
+    /// waiting the credit lapses. O(1).
+    pub(crate) fn accrue_admission_credit(&mut self) -> bool {
+        if self.admission_requests.is_empty() {
+            self.admission_credit = 0;
+            return false;
+        }
+        self.admission_credit = self.admission_credit.saturating_add(self.admission_rate);
+        true
+    }
+
+    /// The oldest waiting admission when a whole credit pays for it. O(1).
+    pub(crate) fn pop_due_admission(&mut self) -> Option<QueuedAdmission> {
+        if self.admission_credit < ADMISSION_CREDIT {
+            return None;
+        }
+        let admission = self.admission_requests.pop_front()?;
+        self.admission_credit -= ADMISSION_CREDIT;
+        Some(admission)
+    }
+
     /// Publishes a successfully admitted carrier's claim before the next hourly recount.
     pub(crate) fn record_pending_arrival(&mut self, composition: HouseholdAgeComposition) {
         self.pending_arrivals.households += 1;
@@ -90,10 +142,16 @@ impl HouseholdSystem {
     }
 
     /// Recounts the households still on their way in from [`AgentSystem::arrival_carriers`],
-    /// dropping carriers that arrived or left. O(carriers in flight); replaces the scan of
-    /// every agent (`SIM-02-E`).
+    /// dropping carriers that arrived or left, and those the admission queue holds.
+    /// O(carriers in flight + queued admissions); replaces the scan of every agent
+    /// (`SIM-02-E`).
     pub(crate) fn recount_pending_arrivals(&mut self, agents: &mut AgentSystem) {
         self.pending_arrivals = Default::default();
+        // Admitted households the `admissions` queue has not created yet (`SIM-02-J`).
+        for index in 0..self.admission_requests.len() {
+            let composition = self.admission_requests[index].composition;
+            self.record_pending_arrival(composition);
+        }
         let mut carriers = std::mem::take(&mut agents.arrival_carriers);
         carriers.retain(|&carrier| {
             let Some(agent_idx) = agents

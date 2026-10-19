@@ -167,8 +167,9 @@ fn perf07_frame_budget() {
 /// Diagnostic, not acceptance timing: the hourly work of each of the hour's first four slots of a
 /// prepared snapshot over `METRUM_PLAN_HOURS` hours (`SIM-02-I`: slot 0 publishes the census,
 /// runs the operational hour and plans homes; slots 1 to 3 plan commerce and industry and
-/// execute the hour's plan). Each frame crosses at most one slot. Prints each slot's mean and
-/// worst milliseconds.
+/// decide the hour's actions). Each frame crosses at most one slot. Prints each slot's mean and
+/// worst milliseconds, and the whole frame's for slots 0 to 4, where the demand queues
+/// (`SIM-02-J`) start the hour's level changes and removals.
 #[test]
 #[ignore = "SIM-02-I planning slot costs on a prepared snapshot; run alone, release"]
 fn perf07_planning_slots() {
@@ -188,29 +189,41 @@ fn perf07_planning_slots() {
     }
     let end = warm + hours;
     let mut costs: [Vec<f64>; 4] = Default::default();
+    let mut frames: [Vec<f64>; 5] = Default::default();
     let mut before = core.time.absolute_slot();
     while core.time.absolute_slot() / per_hour < end {
+        let started = std::time::Instant::now();
         let step = core.step_frame(FRAME_DT_S / 16.0);
+        let frame_ms = started.elapsed().as_secs_f64() * 1000.0;
         let now = core.time.absolute_slot();
         assert!(now <= before + 1, "a frame crossed more than one slot");
         if now != before && now % per_hour < 4 {
             costs[(now % per_hour) as usize].push(step.hourly_ms);
         }
+        if now != before && now % per_hour < 5 {
+            frames[(now % per_hour) as usize].push(frame_ms);
+        }
         before = now;
     }
+    let summary = |samples: &[Vec<f64>]| {
+        samples
+            .iter()
+            .map(|slot| {
+                serde_json::json!({
+                    "mean": slot.iter().sum::<f64>() / slot.len().max(1) as f64,
+                    "max": slot.iter().copied().fold(0.0, f64::max),
+                    "samples": slot.len(),
+                })
+            })
+            .collect::<Vec<_>>()
+    };
     eprintln!(
         "PERF07_PLANNING_SLOTS {}",
         serde_json::json!({
             "residents": residents(),
             "hours": hours,
-            "slots_ms": costs
-                .iter()
-                .map(|slot| serde_json::json!({
-                    "mean": slot.iter().sum::<f64>() / slot.len().max(1) as f64,
-                    "max": slot.iter().copied().fold(0.0, f64::max),
-                    "samples": slot.len(),
-                }))
-                .collect::<Vec<_>>(),
+            "slots_ms": summary(&costs),
+            "frames_ms": summary(&frames),
         })
     );
 }

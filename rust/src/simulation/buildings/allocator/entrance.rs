@@ -297,6 +297,18 @@ impl BuildingAllocator {
         true
     }
 
+    /// The entrance building `building_idx` derives now, as a cache rebuild would derive it,
+    /// whether or not the cache is current: for digests that a loaded game, whose cache is
+    /// rebuilt at load, must reproduce (`SIM-02-J`). O(door derivation).
+    pub(crate) fn derived_entrance(
+        &self,
+        building_idx: usize,
+        graph: &RegionGraph,
+        lanes: &LaneSystem,
+    ) -> BuildingEntrance {
+        Self::derive_building_entrance(&self.buildings[building_idx], graph, lanes, &self.registry)
+    }
+
     fn derive_building_entrance(
         building: &Building,
         graph: &RegionGraph,

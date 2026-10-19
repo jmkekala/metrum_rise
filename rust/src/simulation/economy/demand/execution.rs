@@ -18,7 +18,7 @@ use super::spawn_need::{OutputAbsorptionContext, candidate_economy_profile};
 use super::supply::{ProjectReservations, SiteSupply};
 use super::system::DemandSystem;
 use super::workforce::WorkforceReservations;
-use crate::simulation::buildings::allocator::{BuildingAllocator, BuildingEntrance};
+use crate::simulation::buildings::allocator::{Building, BuildingAllocator, BuildingEntrance};
 use crate::simulation::core::stable_hash64;
 use crate::simulation::economy::fiscal::CityFiscalPolicy;
 use crate::simulation::economy::hiring::JobFunding;
@@ -33,6 +33,7 @@ use std::sync::Arc;
 
 mod level_change;
 pub(crate) use level_change::DemandLevelChangeGuard;
+pub(crate) use level_change::{LevelChangeRefusal, QueuedLevelChange};
 
 /// What a queued commercial or industrial spawn's planning-slot proof was for (`SIM-02-I`):
 /// its door, profile and level. Saved with the spawn.
@@ -125,6 +126,40 @@ pub(crate) fn door_digest(
             lane(entrance.car_lane_fwd),
             lane(entrance.car_lane_bkw),
             u64::from(entrance.flags),
+        ])
+        .fold(0, |digest, field| stable_hash64(digest ^ field))
+}
+
+/// Stable digest of the building state a level change was proved for (`SIM-02-J`): its asset,
+/// level and economy profile and, for a business, its door ([`door_digest`]); a home's door
+/// does not count, since a residential change needs no proof. Built from save-stable
+/// identities, so a load compares as the running game does. Saved with the queued change,
+/// whose execution rejects it when the building no longer matches. O(asset id length).
+pub(crate) fn level_change_permit(
+    building: &Building,
+    entrance: Option<&BuildingEntrance>,
+    graph: &RegionGraph,
+    lanes: &LaneSystem,
+) -> u64 {
+    let door = if building.zone_type == ZoneType::Residential {
+        0
+    } else {
+        door_digest(entrance, graph, lanes)
+    };
+    building
+        .asset_id
+        .as_bytes()
+        .chunks(8)
+        .map(|chunk| {
+            let mut word = [0_u8; 8];
+            word[..chunk.len()].copy_from_slice(chunk);
+            u64::from_le_bytes(word)
+        })
+        .chain([
+            building.asset_id.len() as u64,
+            door,
+            u64::from(building.economy_profile_runtime_id),
+            u64::from(building.level),
         ])
         .fold(0, |digest, field| stable_hash64(digest ^ field))
 }

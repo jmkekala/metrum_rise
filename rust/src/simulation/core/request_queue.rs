@@ -140,6 +140,38 @@ impl<K> RequestQueue<K> {
     }
 }
 
+/// Service of one queue over an hour: requests taken, the most in one slot, the slots that
+/// left requests waiting and the longest such backlog.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct QueueStats {
+    pub(crate) taken: u32,
+    busiest_slot: u32,
+    carried_slots: u32,
+    longest_backlog: u32,
+}
+
+impl QueueStats {
+    /// Adds one slot that took `taken` requests and left `backlog` waiting.
+    pub(crate) fn record_slot(&mut self, taken: usize, backlog: usize) {
+        self.taken = self.taken.saturating_add(taken as u32);
+        self.busiest_slot = self.busiest_slot.max(taken as u32);
+        if backlog > 0 {
+            self.carried_slots = self.carried_slots.saturating_add(1);
+            self.longest_backlog = self.longest_backlog.max(backlog as u32);
+        }
+    }
+}
+
+impl fmt::Display for QueueStats {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "taken={} busiest_slot={} carried_slots={} longest_backlog={}",
+            self.taken, self.busiest_slot, self.carried_slots, self.longest_backlog
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

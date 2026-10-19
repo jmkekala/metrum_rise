@@ -2,9 +2,10 @@
 
 //! Trips as timed events (`SIM-02-E`, `docs/simulation.md#deadlines-and-timed-events`).
 //!
-//! The hourly admission still decides which household arrival carriers set out, but none
-//! leaves at once: it holds and lists them, and [`SimCore::schedule_arrival_departures`]
-//! spaces them evenly over the hour after the hour's actions slot. Freight, shoppers and
+//! The hour's actions slot decides which households arrive, and the `admissions` queue
+//! creates their carriers over the hour (`SIM-02-J`); none leaves at once: each slot's carriers
+//! are held and listed, and [`SimCore::schedule_arrival_departures`] spaces them evenly over
+//! the hour after their slot. Freight, shoppers and
 //! visitors are planned by request queues in any slot (`SIM-02-J`); each carrier the freight
 //! queue loads leaves near its shipment id's slot of the hour ahead (`spread_slot`), moved to
 //! the least busy nearby minute (`MinuteLeveler`), and shoppers and visitors leave as
@@ -170,9 +171,10 @@ impl SimCore {
     }
 
     /// Paces the departures of the arrival carriers admission launched, evenly over the hour
-    /// after `slot`, in the order admission listed them. Admission runs at the hour's actions
-    /// slot (`SIM-02-I`), which calls this, so no carrier is still held when the slot ends.
-    /// Freight, shoppers and visitors leave from their queues (`SIM-02-J`).
+    /// after `slot`, in the order admission listed them. The `admissions` queue creates the
+    /// hour's admitted households over the hour and calls this in each slot that created one
+    /// (`SIM-02-J`), so no carrier is still held when the slot ends. Freight, shoppers and
+    /// visitors leave from their queues.
     pub(super) fn schedule_arrival_departures(&mut self, slot: u64) {
         // The list is drained in place so its capacity is reused the next hour.
         let mut arrivals = std::mem::take(&mut self.agents.held_arrivals);

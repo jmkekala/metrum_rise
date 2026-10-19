@@ -38,8 +38,8 @@ pub(crate) use inputs::{
     SavedCensusInputs,
 };
 pub(crate) use rolling::{
-    CENSUS_WINDOW_START, CensusKey, RollingCensus, SavedRollingCensus, StructureRevisions,
-    WindowAction,
+    CENSUS_WINDOW_START, CensusKey, REMOVAL_WINDOW_START, RollingCensus, SavedRollingCensus,
+    StructureRevisions, WindowAction, removals_allowed,
 };
 pub(crate) use steps::CensusProgress;
 #[cfg(test)]

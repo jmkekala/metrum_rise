@@ -25,6 +25,7 @@ mod settlement;
 mod tests;
 mod tick;
 
+pub(crate) use admission::QueuedAdmission;
 pub(crate) use building_economy::{produce_building_hour, refresh_activity_floor};
 pub(crate) use data::{DailyPowerSettlementSummary, HouseholdBuildingUndo};
 pub use data::{Household, HouseholdSystem};

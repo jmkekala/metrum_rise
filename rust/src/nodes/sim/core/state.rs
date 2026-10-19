@@ -604,8 +604,9 @@ impl SimCore {
     /// The demand pass plans on a snapshot of the whole city taken after the hour's census
     /// instead of the one the slots would have swept. Every entity's hour runs at once after
     /// the pass, then the cell-lot, freight, housing, restock, visit and job request queues
-    /// serve the hour's quota and whole freight supplier, household destination and job board
-    /// sweeps run, as the slots of the hour would.
+    /// serve the hour's quota, the level-change, removal, departure and admission queues serve
+    /// all they hold, and whole freight supplier, household destination and job board sweeps
+    /// run, as the slots of the hour would.
     pub fn simulate_operational_hour_internal(&mut self, day_index: u32, minute_of_day: u16) {
         self.demand.discard_snapshot_front();
         // The census runs at once on a copy taken now and publishes before the pass; a census
@@ -647,6 +648,14 @@ impl SimCore {
             hour_start,
             JOB_REQUEST_QUOTA as usize * SLOTS_PER_HOUR as usize,
         );
+        // The demand queues serve the hour's level changes, removals, departures and
+        // admissions, as the hour's slots would (`SIM-02-J`).
+        self.serve_level_change_queue(usize::MAX, &mut ());
+        self.serve_building_removal_queue(usize::MAX, &mut ());
+        self.serve_departure_queue(usize::MAX);
+        for slot in hour_start..hour_start + SLOTS_PER_HOUR {
+            self.serve_admission_queue(slot);
+        }
         self.allocator
             .building_handles
             .register_appended(self.allocator.buildings.len());
@@ -702,20 +711,8 @@ impl SimCore {
             &self.fiscal_policy,
             self.treasury.balance,
         );
-        // Households whose daily phase chose to leave since the last hour (`SIM-02-G`), before
-        // the hour's readers, as before the census was published separately. The census
-        // published at this slot covers them: its books keep a removed household as a
-        // customer until the next publication, and their readers, planning with the lent
-        // books among them, check each household's identity (`SIM-02-I`).
-        let removed_households = self.households.remove_queued_exits(
-            self.demand.household_exit_policy(),
-            &mut self.agents,
-            &mut self.allocator,
-        );
-        if removed_households > 0 {
-            self.demand
-                .record_household_removal_execution(removed_households);
-        }
+        // Households whose daily phase chose to leave are removed by the `departures` queue
+        // in the hour's removal window (`SIM-02-J`).
         self.households.operational_hour_tick(
             &mut self.agents,
             &self.allocator,
@@ -1561,9 +1558,10 @@ impl SimCore {
     // as the single pass ran it, then the hour's spawns queued in the single pass's order
     // (homes, the optional homes the workforce claimed, shops, industry), the permits of the
     // whole queue and the hour's level changes in one construction epoch, and the despawns
-    // last, after it closes. Without slot 3's planning or epoch (books not valid for the live
-    // city) no business level change runs and the queue's business permits wait an hour;
-    // residential level changes and despawns still run.
+    // last, after it closes. Admissions, level changes and despawns are queued for their
+    // request queues (`SIM-02-J`). Without slot 3's planning or epoch (books not valid for the
+    // live city) no business level change is queued and the queue's business permits wait an
+    // hour; residential level changes and despawns are still queued.
     fn execute_demand_actions_slot(
         &mut self,
         planned: bool,
@@ -1573,39 +1571,15 @@ impl SimCore {
         plan_ms: f64,
     ) {
         let actions_start = timing.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0);
-        let launched_households = self
-            .allocator
-            .execute_demand_household_admission_with_income(
-                self.demand.households_to_admit_today,
-                self.demand.admission_candidate_seed,
-                &mut self.agents,
-                &self.transit_network,
-                &self.region_graph,
-                |composition, members, home_level| {
-                    let accepted = self.demand.claim_household_admission(
-                        composition,
-                        members,
-                        home_level,
-                        &self.fiscal_policy,
-                    );
-                    if accepted {
-                        self.households.record_pending_arrival(composition);
-                    }
-                    accepted
-                },
-            );
+        let actions_slot = absolute_slot(day_index, minute_of_day, PlanningSlot::Actions as u64);
+        // The hour's admissions are decided here and created over the hour by the
+        // `admissions` queue, each carrier departing paced from its creation (`SIM-02-J`).
+        let launched_households = self.decide_hour_admissions();
         self.debug_household_admissions_since_daily = self
             .debug_household_admissions_since_daily
             .saturating_add(launched_households);
         self.demand
             .record_household_admission_execution(launched_households);
-        // The carriers depart paced over the hour from this slot, as the single pass's left
-        // from slot 0 with the hour's other trips.
-        self.schedule_arrival_departures(absolute_slot(
-            day_index,
-            minute_of_day,
-            PlanningSlot::Actions as u64,
-        ));
         let admission_end = timing.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0);
         let queued_spawn_count = self.enqueue_hourly_demand_spawns(day_index, minute_of_day);
         let mut immediate_building_plan = demand_plan_without_spawns(&self.demand.building_actions);
@@ -1623,26 +1597,26 @@ impl SimCore {
             }
         }
         let queue_end = timing.map_or(0.0, |start| start.elapsed().as_secs_f64() * 1000.0);
-        let building_action_execution =
-            if demand_plan_has_non_spawn_actions(&immediate_building_plan) {
-                self.demand.execute_building_actions(
-                    &immediate_building_plan,
-                    &mut self.allocator,
-                    &mut self.zoning,
-                    &mut self.agents,
-                    &mut self.households,
-                    &mut self.logistics,
-                    &mut self.treasury.balance,
-                    &self.region_graph,
-                    &self.transit_network,
-                    &self.heightmap,
-                    absolute_operational_minute(day_index, minute_of_day),
-                    &self.fiscal_policy,
-                )
-            } else {
-                Default::default()
-            };
-        // The level changes closed the epoch before their despawns; without any it closes here.
+        // The level changes are proved in the epoch and applied by the `level changes` queue
+        // from slot 4; the clearances wait for the `building removals` queue (`SIM-02-J`).
+        if demand_plan_has_non_spawn_actions(&immediate_building_plan) {
+            self.demand.queue_level_changes(
+                &immediate_building_plan,
+                actions_slot,
+                &mut self.allocator,
+                &self.zoning,
+                &mut self.households,
+                &mut self.logistics,
+                self.treasury.balance,
+                &self.region_graph,
+                &self.transit_network,
+                &self.heightmap,
+                absolute_operational_minute(day_index, minute_of_day),
+                &self.fiscal_policy,
+            );
+            self.queue_hour_clearances(&immediate_building_plan, actions_slot);
+        }
+        // The level changes closed the epoch; without any it closes here.
         self.demand.close_construction_epoch(
             &mut self.households,
             &self.allocator,
@@ -1670,40 +1644,6 @@ impl SimCore {
             .log_hourly_household_action_diagnostics(day_index, minute_of_day);
         self.demand
             .log_hourly_building_action_diagnostics(day_index, minute_of_day);
-        for (use_label, execution) in [
-            ("Residential", &building_action_execution.residential),
-            ("Commercial", &building_action_execution.commercial),
-            ("Industrial", &building_action_execution.industrial),
-        ] {
-            let rejections = execution.spawn_rejections;
-            if execution.spawn_attempted == 0 && rejections.total() == 0 {
-                continue;
-            }
-            debug_log!(
-                "economy",
-                "building action execution: day={} minute={} use={} \
-                 spawn_attempted={} spawn_placed={} spawn_failed={} \
-                 spawn_failed_geometry={} fail_asset={} fail_parcel={} fail_slot={} \
-                 fail_driveway_surface={} fail_driveway_height={} fail_driveway_connection={} \
-                 fail_frontage_surface={} fail_neighbor_height={} fail_site_tie_in={}",
-                day_index,
-                minute_of_day,
-                use_label,
-                execution.spawn_attempted,
-                execution.spawn_executed,
-                rejections.total(),
-                rejections.geometry_total(),
-                rejections.asset_unavailable,
-                rejections.parcel_unavailable,
-                rejections.slot_unavailable,
-                rejections.driveway_road_surface_missing,
-                rejections.driveway_height_conflict,
-                rejections.driveway_connection_missing,
-                rejections.frontage_road_surface_missing,
-                rejections.neighbor_site_height_conflict,
-                rejections.site_support_tie_in_invalid,
-            );
-        }
         let plan = &self.demand.building_actions;
         debug_log!(
             "economy",

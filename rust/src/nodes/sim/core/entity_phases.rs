@@ -123,6 +123,7 @@ impl SimCore {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         self.households.close_city_hour(&catalog);
+        self.close_demand_queue_hour();
     }
 
     /// Every entity's hour at once, phase by phase at the slots of the hour starting at

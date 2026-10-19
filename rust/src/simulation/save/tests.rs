@@ -645,7 +645,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     };
     households.job_board = JobBoardRoll::restore(job_board.clone()).unwrap();
     households.job_requests.push(37, Handle::from_parts(0, 0));
-    households.exits.push(first_household);
+    households.exits.push_back(first_household);
     let mut logistics = ShipmentSystem::new();
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
     let household_supplies = catalog
@@ -1131,7 +1131,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     assert_eq!(loaded.households.destinations.saved(), destinations);
     assert_eq!(loaded.households.job_board.saved(), job_board);
     assert_eq!(loaded.households.job_requests, households.job_requests);
-    assert_eq!(loaded.households.exits, vec![first_household]);
+    assert_eq!(loaded.households.exits, [first_household]);
     assert_eq!(
         (
             loaded.allocator.city_input_day.total,

@@ -78,6 +78,47 @@ pub(crate) struct DemandSpawnPlacementRejectionCounts {
     pub(crate) site_support_tie_in_invalid: usize,
 }
 
+/// Why a building waits in the `building removals` queue (`SIM-02-J`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BuildingRemovalKind {
+    /// Planned clearance of a failed site from the hour's plan; removed if it may still be
+    /// cleared ([`BuildingAllocator::can_demand_despawn`]).
+    Clearance,
+    /// Its attachment went or its rezoning grace ran out at its daily phase; removed if that
+    /// still holds ([`BuildingAllocator::compatibility_expired`]).
+    Incompatible,
+}
+
+impl BuildingRemovalKind {
+    /// Saved code.
+    pub(crate) fn to_saved(self) -> i64 {
+        match self {
+            Self::Clearance => 0,
+            Self::Incompatible => 1,
+        }
+    }
+
+    /// Inverse of [`Self::to_saved`].
+    pub(crate) fn from_saved(code: i64) -> Option<Self> {
+        match code {
+            0 => Some(Self::Clearance),
+            1 => Some(Self::Incompatible),
+            _ => None,
+        }
+    }
+}
+
+/// A queued building removal: the slot that queued it, the building and why (`SIM-02-J`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct BuildingRemovalRequest {
+    /// Slot that queued it.
+    pub(crate) slot: u64,
+    /// The building to remove; dropped when it no longer resolves.
+    pub(crate) building: crate::simulation::core::handles::Handle<super::Building>,
+    /// Why it waits.
+    pub(crate) kind: BuildingRemovalKind,
+}
+
 // Car costs from every car-connected border node, built once per admission batch: one sweep
 // per border instead of one route query per border per household (`ALLOC-04`).
 struct BorderArrivalCosts {
@@ -157,12 +198,6 @@ impl DemandSpawnPlacementRejectionCounts {
             + self.neighbor_site_height_conflict
             + self.site_support_tie_in_invalid
     }
-
-    pub(crate) fn geometry_total(self) -> usize {
-        self.total()
-            .saturating_sub(self.asset_unavailable)
-            .saturating_sub(self.parcel_unavailable)
-    }
 }
 
 impl BuildingAllocator {
@@ -205,7 +240,7 @@ impl BuildingAllocator {
 
     /// Checks building `i`'s attachment and zoning compatibility, advancing an incompatible
     /// building's grace by `elapsed_days`, and swap-removes it when its attachment is gone or
-    /// its grace has run out. Daily phases call it with one day (`SIM-02-G`); the caller then
+    /// its grace has run out. Editing paths call it through [`Self::maintain`]; the caller then
     /// bumps the building revision and rebuilds the entrance cache once. Returns whether the
     /// building was removed. O(1), plus the removal's reference repairs.
     #[allow(clippy::too_many_arguments)]
@@ -218,6 +253,32 @@ impl BuildingAllocator {
         households: &mut HouseholdSystem,
         logistics: &mut ShipmentSystem,
         treasury_balance: &mut f64,
+        graph: &RegionGraph,
+    ) -> bool {
+        if !self.compatibility_expired(i, elapsed_days, zoning, graph) {
+            return false;
+        }
+        self.remove_incompatible_building(
+            i,
+            zoning,
+            agents,
+            households,
+            logistics,
+            treasury_balance,
+        );
+        true
+    }
+
+    /// Checks building `i`'s attachment and zoning compatibility and advances an incompatible
+    /// building's grace by `elapsed_days`; returns whether it must be removed: its attachment is
+    /// gone or its grace has run out. A building's daily phase calls it with one day and queues
+    /// the removal (`SIM-02-J`); the removal queue calls it again with none, so a building that
+    /// recovered in between stays. O(1).
+    pub(crate) fn compatibility_expired(
+        &mut self,
+        i: usize,
+        elapsed_days: u8,
+        zoning: &ZoningSystem,
         graph: &RegionGraph,
     ) -> bool {
         let compatibility = {
@@ -294,10 +355,21 @@ impl BuildingAllocator {
         {
             self.admission_occupancy_changed(i);
         }
+        remove
+    }
 
-        if !remove {
-            return false;
-        }
+    /// Swap-removes building `i`, whose compatibility expired ([`Self::compatibility_expired`]),
+    /// with every reference repair of a removal. The caller bumps the building revision and
+    /// repairs the derived caches once. O(1) plus the removal's parallel O(A + H) remaps.
+    pub(crate) fn remove_incompatible_building(
+        &mut self,
+        i: usize,
+        zoning: &mut ZoningSystem,
+        agents: &mut AgentSystem,
+        households: &mut HouseholdSystem,
+        logistics: &mut ShipmentSystem,
+        treasury_balance: &mut f64,
+    ) {
         let b = &self.buildings[i];
         let b_parcel_id = b.parcel_id;
         let b_zone = b.zone_type;
@@ -351,18 +423,20 @@ impl BuildingAllocator {
         }
         self.dirty_index = true;
         self.entrances_dirty = true;
-        true
     }
 
-    /// Launches bounded arrival candidates after demand claims their actual income requirements.
+    /// Admits bounded arrival candidates after demand claims their actual income requirements:
+    /// each accepted family claims its home's vacancy and is handed to `launch` with its home,
+    /// size, composition and arrival border.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn admit_households_from_demand(
         &mut self,
         households_to_spawn: usize,
         next_household_id: usize,
-        agents: &mut AgentSystem,
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
         mut claim_income: impl FnMut(HouseholdAgeComposition, u16, u8) -> bool,
+        mut launch: impl FnMut(usize, u16, HouseholdAgeComposition, u32),
     ) -> usize {
         if households_to_spawn == 0 {
             return 0;
@@ -426,21 +500,12 @@ impl BuildingAllocator {
             self.claim_vacancy(home_idx);
             // A full home may swap-remove its vacancy; consider the moved entry next.
             cursor = position;
-            let border_pos = graph.node(border_node).pos;
-            let carrier_idx = agents.spawn_household_arrival_carrier(
-                home_idx,
-                household_size,
-                composition,
-                border_node,
-                border_pos.x,
-                border_pos.z,
-            );
+            launch(home_idx, household_size, composition, border_node);
             launched += 1;
             for category in [crate::debug::Channel::Economy, crate::debug::Channel::Spawn] {
                 debug_log!(
                     category,
-                    "demand-owned household admission launched carrier_agent={} size={} home_building={} border_node={}",
-                    carrier_idx,
+                    "demand-owned household admission accepted size={} home_building={} border_node={}",
                     household_size,
                     home_idx,
                     border_node,
@@ -535,7 +600,7 @@ impl BuildingAllocator {
                 let applied = self
                     .apply_level_change_action(
                         building_idx,
-                        action,
+                        &action.target_asset_id,
                         catalog,
                         zoning.config.zone_cell_m,
                         graph,
@@ -615,6 +680,105 @@ impl BuildingAllocator {
             self.rebuild_entrance_cache(graph, &network.lane_system);
         }
         execution
+    }
+
+    /// Proves the hour plan's level changes without applying them (`SIM-02-J`): every zone's
+    /// downgrades and upgrades in plan order, each resolved to its building, proved by
+    /// `level_changes` and checked to fit now. A proved change keeps its claims in the open
+    /// epoch, so the changes after it see them, and joins `proved` with its building for the
+    /// level-change queue, which applies it later. The guard closes after the last change.
+    /// O(changes × proof).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prove_demand_level_changes<'a>(
+        &mut self,
+        plan: &'a DemandBuildingActionPlan,
+        zoning: &ZoningSystem,
+        households: &mut HouseholdSystem,
+        logistics: &mut ShipmentSystem,
+        treasury_balance: f64,
+        graph: &RegionGraph,
+        network: &TransitNetwork,
+        terrain: &TerrainSystem,
+        catalog: &RuntimeEconomyCatalog,
+        level_changes: &mut impl DemandLevelChangeGuard,
+        proved: &mut Vec<(usize, &'a DemandLevelChangeAction)>,
+    ) {
+        let uses = [&plan.residential, &plan.commercial, &plan.industrial];
+        if uses
+            .iter()
+            .any(|use_plan| !use_plan.downgrades.is_empty() || !use_plan.upgrades.is_empty())
+            && self.entrances_dirty
+        {
+            self.rebuild_entrance_cache(graph, &network.lane_system);
+        }
+        for use_plan in uses {
+            for action in use_plan.downgrades.iter().chain(&use_plan.upgrades) {
+                let Some(building_idx) =
+                    self.resolve_demand_building_action(&action.building, zoning)
+                else {
+                    continue;
+                };
+                let Some(permit) = level_changes.prepare(
+                    building_idx,
+                    action,
+                    self,
+                    households,
+                    logistics,
+                    zoning,
+                    treasury_balance,
+                ) else {
+                    continue;
+                };
+                let fits = self.level_change_fits(
+                    building_idx,
+                    &action.target_asset_id,
+                    catalog,
+                    zoning.config.zone_cell_m,
+                    graph,
+                    super::BuildingSiteEnvironment {
+                        road_surface: &network.road_surface,
+                        terrain,
+                    },
+                );
+                level_changes.finish(permit, fits, self);
+                if fits {
+                    proved.push((building_idx, action));
+                }
+            }
+        }
+        level_changes.close(households, self);
+    }
+
+    /// Removes building `building_idx` for planned clearance (`SIM-02-J`) when it may still be
+    /// cleared ([`Self::can_demand_despawn`]): its remaining occupants leave through the street
+    /// handoff first, then the removal repairs every reference. Returns whether it was removed;
+    /// the caller repairs the derived caches once. O(1) plus the removal's parallel remaps.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn remove_cleared_building(
+        &mut self,
+        building_idx: usize,
+        zoning: &mut ZoningSystem,
+        agents: &mut AgentSystem,
+        households: &mut HouseholdSystem,
+        logistics: &mut ShipmentSystem,
+        treasury_balance: &mut f64,
+        graph: &RegionGraph,
+        network: &TransitNetwork,
+    ) -> bool {
+        if !self.can_demand_despawn(building_idx) {
+            return false;
+        }
+        // Employment slots can be empty while former employees remain inside.
+        // Preserve a physical route home before deletion invalidates the entrance.
+        agents.evacuate_building_for_removal(building_idx, households, self, network, graph);
+        self.remove_building_at_index(
+            building_idx,
+            zoning,
+            agents,
+            households,
+            logistics,
+            treasury_balance,
+        )
     }
 
     /// Executes one queued demand spawn through the same final placement path as batch demand,
@@ -1226,7 +1390,9 @@ impl BuildingAllocator {
             .then_some(building_idx)
     }
 
-    fn can_demand_despawn(&self, building_idx: usize) -> bool {
+    /// Whether planned clearance may remove building `building_idx` now: deserted, sound,
+    /// complete, not awaiting redevelopment, with no occupants or workers. O(1).
+    pub(crate) fn can_demand_despawn(&self, building_idx: usize) -> bool {
         let Some(building) = self.buildings.get(building_idx) else {
             return false;
         };
@@ -1239,28 +1405,52 @@ impl BuildingAllocator {
             && building.worker_count == 0
     }
 
-    fn apply_level_change_action(
-        &mut self,
+    /// Whether `target_asset_id` can replace building `building_idx` in place now: the same lot
+    /// and zone, room for its occupants and workers, a valid economy profile for a business and
+    /// a valid site. O(site check).
+    pub(crate) fn level_change_fits(
+        &self,
         building_idx: usize,
-        action: &DemandLevelChangeAction,
+        target_asset_id: &str,
         catalog: &RuntimeEconomyCatalog,
         zone_cell_m: f32,
         graph: &RegionGraph,
         environment: super::BuildingSiteEnvironment<'_>,
-    ) -> Option<()> {
+    ) -> bool {
+        self.level_change_target(
+            building_idx,
+            target_asset_id,
+            catalog,
+            zone_cell_m,
+            graph,
+            environment,
+        )
+        .is_some()
+    }
+
+    // The target's level and economy binding when it fits ([`Self::level_change_fits`]).
+    fn level_change_target(
+        &self,
+        building_idx: usize,
+        target_asset_id: &str,
+        catalog: &RuntimeEconomyCatalog,
+        zone_cell_m: f32,
+        graph: &RegionGraph,
+        environment: super::BuildingSiteEnvironment<'_>,
+    ) -> Option<(u8, super::EconomyProfileBinding)> {
         let building = self.buildings.get(building_idx)?;
         if building.broken || building.pending_redevelopment {
             return None;
         }
 
-        let target_entry = self.registry.get(&action.target_asset_id)?;
+        let target_entry = self.registry.get(target_asset_id)?;
         let target_building = target_entry.manifest.building.as_ref()?;
         if !target_building.is_zoned_private() {
             return None;
         }
         if target_building.lot_width_cells != building.width_cells
             || target_building.lot_depth_cells != building.depth_cells
-            || self.registry.household_capacity(&action.target_asset_id) < building.occupancy
+            || self.registry.household_capacity(target_asset_id) < building.occupancy
         {
             return None;
         }
@@ -1272,7 +1462,7 @@ impl BuildingAllocator {
         let economy_binding = resolve_building_economy_profile_binding_with_catalog(
             &self.registry,
             catalog,
-            &action.target_asset_id,
+            target_asset_id,
         );
         if matches!(
             target_zone_type,
@@ -1282,33 +1472,57 @@ impl BuildingAllocator {
             return None;
         }
         let target_worker_capacity = self
-            .worker_capacity_for_asset_with_catalog(&action.target_asset_id, catalog)
+            .worker_capacity_for_asset_with_catalog(target_asset_id, catalog)
             .unwrap_or(0);
         if target_worker_capacity < building.worker_count {
             return None;
         }
         if !self.replacement_site_is_valid(
             building_idx,
-            &action.target_asset_id,
+            target_asset_id,
             zone_cell_m,
             graph,
             environment,
         ) {
             return None;
         }
+        Some((target_building.level, economy_binding))
+    }
+
+    /// Replaces building `building_idx` in place by `target_asset_id` when it fits
+    /// ([`Self::level_change_fits`]): asset, level and economy profile, its site and yard; its
+    /// occupants and workers stay. Records the row for the census input copy, an in-place
+    /// change that restarts no census. O(site check).
+    pub(crate) fn apply_level_change_action(
+        &mut self,
+        building_idx: usize,
+        target_asset_id: &str,
+        catalog: &RuntimeEconomyCatalog,
+        zone_cell_m: f32,
+        graph: &RegionGraph,
+        environment: super::BuildingSiteEnvironment<'_>,
+    ) -> Option<()> {
+        let (target_level, economy_binding) = self.level_change_target(
+            building_idx,
+            target_asset_id,
+            catalog,
+            zone_cell_m,
+            graph,
+            environment,
+        )?;
         // Yards are laid from the asset's hedge, planting, surfaces and structures, so a
         // replacement that touches any authored yard clears the old one and lays the target's.
         let refresh_yard = [
             self.buildings[building_idx].asset_id.as_str(),
-            action.target_asset_id.as_str(),
+            target_asset_id,
         ]
         .into_iter()
         .filter_map(|asset| self.registry.get(asset)?.manifest.building.as_ref())
         .any(|data| data.yard_hedge.is_some() || !data.yard_planting.is_empty());
         let old_site_bounds = self.site_world_bounds(building_idx);
         let building = &mut self.buildings[building_idx];
-        building.asset_id = action.target_asset_id.clone();
-        building.level = target_building.level;
+        building.asset_id = target_asset_id.to_owned();
+        building.level = target_level;
         building.economy_profile_runtime_id = economy_binding.runtime_id;
         building.economy_broken = economy_binding.economy_broken;
         let profile = catalog.profile_by_runtime_id(building.economy_profile_runtime_id);

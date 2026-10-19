@@ -377,6 +377,13 @@ fn reference_violations(core: &SimCore, jobs: bool) -> (BTreeMap<&'static str, u
             }
         }
     }
+    // An admitted household waiting for the `admissions` queue holds its home's place
+    // (`SIM-02-J`).
+    for admission in &core.households.admission_requests {
+        if let Some(home) = core.allocator.building_handles.resolve(admission.home) {
+            homed[home] += 1;
+        }
+    }
     for (id, household) in households.iter().enumerate() {
         if !building_ref(household.home_building_id) {
             fail(

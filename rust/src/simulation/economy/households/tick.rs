@@ -82,5 +82,6 @@ impl HouseholdSystem {
         self.close_housing_hour();
         self.close_shopping_hour();
         self.close_job_hour();
+        self.close_departure_and_admission_hour();
     }
 }

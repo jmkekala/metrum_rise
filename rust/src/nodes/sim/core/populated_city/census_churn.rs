@@ -123,6 +123,8 @@ fn env_u32(name: &str, default: u32) -> u32 {
 #[test]
 #[ignore = "SIM-02-I census window churn on a populated city; run alone"]
 fn populated_census_window_churn() {
+    // Honors explicit debug-channel requests, so the queues' hourly service can be logged.
+    crate::debug::init();
     let residents = env_u32("METRUM_CHURN_RESIDENTS", 10_000);
     let hours = env_u32("METRUM_CHURN_HOURS", 24);
     let mut city = PopulatedCity::build(residents);

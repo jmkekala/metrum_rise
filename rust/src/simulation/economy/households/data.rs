@@ -248,7 +248,6 @@ pub struct HouseholdSystem {
     pub(crate) census_policy_revision: u64,
     pub(super) shopping_car_scratch: Vec<AtomicU32>,
     pub(super) removal_candidates_scratch: Vec<(usize, f32, f32)>,
-    pub(super) removal_selected_flags_scratch: Vec<bool>,
     pub(super) removal_agent_indices_scratch: Vec<usize>,
     pub(super) workplace_route_cache: super::employment::WorkplaceRouteCache,
     // The quotes in insertion order with the workplace pass that added each; a quote expires
@@ -279,9 +278,20 @@ pub struct HouseholdSystem {
     pub(crate) rehousing: RequestQueue<Household>,
     // Outcomes of the housing requests served this hour, logged at its last slot.
     pub(super) housing_diagnostics: super::relocation::HousingResolutionDiagnostics,
-    /// Households that chose to leave at their daily phase, removed by the next hour's pass.
-    /// Saved.
-    pub(crate) exits: Vec<Handle<Household>>,
+    /// Households that chose to leave at their daily phase, oldest first, removed by the
+    /// `departures` queue in the hour's removal window (`SIM-02-J`). Saved in order.
+    pub(crate) exits: std::collections::VecDeque<Handle<Household>>,
+    /// Households the hour's actions slot admitted, in admission order, until the `admissions`
+    /// queue creates them and their arrival carriers (`SIM-02-J`). Saved in order.
+    pub(crate) admission_requests: std::collections::VecDeque<super::admission::QueuedAdmission>,
+    /// Slots of admission credit: each slot adds [`Self::admission_rate`] and each admission
+    /// takes `SLOTS_PER_HOUR`, so the hour's batch is created over the hour (`SIM-02-J`). Saved.
+    pub(crate) admission_credit: u32,
+    /// Admissions waiting when the hour's actions slot decided its batch. Saved.
+    pub(crate) admission_rate: u32,
+    // The `admissions` and `departures` queues' service this hour, logged at its last slot.
+    pub(crate) admission_stats: crate::simulation::core::request_queue::QueueStats,
+    pub(crate) departure_stats: crate::simulation::core::request_queue::QueueStats,
     /// Households whose hourly phase called for a restock, served by the `restock requests`
     /// queue (`SIM-02-J`). Saved in order.
     pub(crate) restock_requests: RequestQueue<Household>,
@@ -350,7 +360,6 @@ impl HouseholdSystem {
             census_policy_revision: 0,
             shopping_car_scratch: Vec::new(),
             removal_candidates_scratch: Vec::new(),
-            removal_selected_flags_scratch: Vec::new(),
             removal_agent_indices_scratch: Vec::new(),
             workplace_route_cache: Default::default(),
             workplace_route_cache_order: Default::default(),
@@ -367,7 +376,12 @@ impl HouseholdSystem {
             housing_reviews: RequestQueue::default(),
             rehousing: RequestQueue::default(),
             housing_diagnostics: Default::default(),
-            exits: Vec::new(),
+            exits: std::collections::VecDeque::new(),
+            admission_requests: std::collections::VecDeque::new(),
+            admission_credit: 0,
+            admission_rate: 0,
+            admission_stats: Default::default(),
+            departure_stats: Default::default(),
             restock_requests: RequestQueue::default(),
             visit_requests: RequestQueue::default(),
             visit_credit: 0,
@@ -525,7 +539,6 @@ impl HouseholdSystem {
         self.held_shoppers.clear();
         self.held_visitors.clear();
         self.removal_candidates_scratch.clear();
-        self.removal_selected_flags_scratch.clear();
         self.removal_agent_indices_scratch.clear();
         self.invalidate_workplace_route_cache();
         self.workplace_network_quotes = Default::default();
@@ -538,6 +551,11 @@ impl HouseholdSystem {
         self.rehousing.clear();
         self.housing_diagnostics = Default::default();
         self.exits.clear();
+        self.admission_requests.clear();
+        self.admission_credit = 0;
+        self.admission_rate = 0;
+        self.admission_stats = Default::default();
+        self.departure_stats = Default::default();
         self.restock_requests.clear();
         self.visit_requests.clear();
         self.visit_credit = 0;

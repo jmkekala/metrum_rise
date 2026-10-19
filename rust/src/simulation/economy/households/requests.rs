@@ -10,8 +10,6 @@
 //! `housing requests`, `restock requests` and `visit requests` queues serve them a few per slot;
 //! a household waits at most once in each.
 
-use std::fmt;
-
 use super::destinations::{DestinationFold, DestinationFront};
 use super::metrics::{
     household_demand_profile, household_has_independent_member, household_is_housed,
@@ -30,37 +28,7 @@ use crate::simulation::economy::definitions::{
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 
-/// Service of one queue over an hour: requests taken, the most in one slot, the slots that
-/// left requests waiting and the longest such backlog.
-#[derive(Clone, Copy, Debug, Default)]
-pub(super) struct QueueStats {
-    pub(super) taken: u32,
-    busiest_slot: u32,
-    carried_slots: u32,
-    longest_backlog: u32,
-}
-
-impl QueueStats {
-    /// Adds one slot that took `taken` requests and left `backlog` waiting.
-    pub(super) fn record_slot(&mut self, taken: usize, backlog: usize) {
-        self.taken = self.taken.saturating_add(taken as u32);
-        self.busiest_slot = self.busiest_slot.max(taken as u32);
-        if backlog > 0 {
-            self.carried_slots = self.carried_slots.saturating_add(1);
-            self.longest_backlog = self.longest_backlog.max(backlog as u32);
-        }
-    }
-}
-
-impl fmt::Display for QueueStats {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "taken={} busiest_slot={} carried_slots={} longest_backlog={}",
-            self.taken, self.busiest_slot, self.carried_slots, self.longest_backlog
-        )
-    }
-}
+pub(super) use crate::simulation::core::request_queue::QueueStats;
 
 // What a slot's request checks read, loaded once per slot.
 struct PhaseRequests {

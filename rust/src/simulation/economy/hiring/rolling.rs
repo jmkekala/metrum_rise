@@ -27,6 +27,19 @@ use crate::simulation::network::{TransitNetwork, graph::RegionGraph};
 /// First slot of the hour at which the census runs: the copy has filled over the slots before.
 pub(crate) const CENSUS_WINDOW_START: u64 = FILL_SLOTS;
 
+/// First slot of the hour at which building and household swap-removes run (`SIM-02-J`): the
+/// hour's planning slots 0 to 3 read the census published at slot 0 before it.
+pub(crate) const REMOVAL_WINDOW_START: u64 = 4;
+
+/// Whether building and household swap-removes may run at absolute `slot` (`SIM-02-J`): slots
+/// [`REMOVAL_WINDOW_START`] to [`CENSUS_WINDOW_START`] − 1 of its hour. A removal earlier in the
+/// hour would invalidate the published books the planning slots read; one in the census window
+/// would restart the census. Over these slots the input copy is filling, and it mirrors each
+/// swap-remove in O(1) (`CensusInputs::remove_building`, `CensusInputs::remove_household`).
+pub(crate) fn removals_allowed(slot: u64) -> bool {
+    (REMOVAL_WINDOW_START..CENSUS_WINDOW_START).contains(&(slot % SLOTS_PER_HOUR))
+}
+
 /// Revisions that move only when building or household indices shift or are reused
 /// (`SIM-02-I`); appends and in-place changes keep them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

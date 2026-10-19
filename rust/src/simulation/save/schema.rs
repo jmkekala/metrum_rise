@@ -6,7 +6,7 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version, also the only one that loads (`SIM-02` broke older saves).
-pub const SAVE_VERSION: i64 = 102;
+pub const SAVE_VERSION: i64 = 103;
 
 /// Sentinel for an absent reference column.
 pub const NONE_REF: i64 = -1;
@@ -415,7 +415,34 @@ CREATE TABLE household_queue_state(
     job_board_hour INTEGER NOT NULL,
     job_sweep_building_handles INTEGER NOT NULL,
     job_sweep_hour INTEGER NOT NULL,
-    job_sweep_next_chunk INTEGER NOT NULL
+    job_sweep_next_chunk INTEGER NOT NULL,
+    admission_credit INTEGER NOT NULL,
+    admission_rate INTEGER NOT NULL
+);
+CREATE TABLE admission_requests(
+    sequence INTEGER PRIMARY KEY,
+    home_slot INTEGER NOT NULL,
+    home_generation INTEGER NOT NULL,
+    household_size INTEGER NOT NULL,
+    child_count INTEGER NOT NULL,
+    adult_count INTEGER NOT NULL,
+    elder_count INTEGER NOT NULL,
+    border_node INTEGER NOT NULL
+);
+CREATE TABLE building_removal_requests(
+    sequence INTEGER PRIMARY KEY,
+    slot INTEGER NOT NULL,
+    building_slot INTEGER NOT NULL,
+    building_generation INTEGER NOT NULL,
+    kind INTEGER NOT NULL
+);
+CREATE TABLE level_change_requests(
+    sequence INTEGER PRIMARY KEY,
+    slot INTEGER NOT NULL,
+    building_slot INTEGER NOT NULL,
+    building_generation INTEGER NOT NULL,
+    target_asset_id TEXT NOT NULL,
+    permit INTEGER NOT NULL
 );
 CREATE TABLE job_board_members(
     buffer INTEGER NOT NULL,

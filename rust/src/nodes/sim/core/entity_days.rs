@@ -3,8 +3,8 @@
 //! Per-entity daily settlement (`SIM-02-G`, `docs/simulation.md#phases`).
 //!
 //! Every building, household and agent settles its own 24-hour window at its daily phase
-//! instead of all at midnight: a building's zoning check, bankruptcy, taxes, bills and
-//! distress; a household's transfers, taxes and bills, its housing review and exit check; a
+//! instead of all at midnight: a building's zoning check (an expired one queues its removal,
+//! `SIM-02-J`), bankruptcy, taxes, bills and distress; a household's transfers, taxes and bills, its housing review and exit check; a
 //! worker's wage and its daily happiness. Each slot visits the entities of one daily phase in
 //! handle order, about N / 23,040 of them. The calendar close in `state.rs` only rolls the city's
 //! day totals.
@@ -12,6 +12,7 @@
 use super::frame::EconomyObserver;
 use super::state::SimCore;
 use crate::debug::work::{Work, add as add_work};
+use crate::simulation::buildings::allocator::{BuildingRemovalKind, BuildingRemovalRequest};
 use crate::simulation::core::phases::PHASES_PER_DAY;
 use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
@@ -31,22 +32,26 @@ impl SimCore {
         handles.phases().daily(day_phase(slot), &mut phase);
         if !phase.is_empty() {
             let day = self.households.day_settlement();
-            let mut removed = false;
             for &handle in &phase {
                 let Some(building_idx) = self.allocator.building_handles.resolve(handle) else {
                     continue;
                 };
-                if self.allocator.expire_incompatible_building(
+                // A building whose attachment went or whose rezoning grace ran out waits for
+                // the `building removals` queue (`SIM-02-J`); its day ends with that decision,
+                // as it ended with the removal before.
+                if self.allocator.compatibility_expired(
                     building_idx,
                     1,
-                    &mut self.zoning,
-                    &mut self.agents,
-                    &mut self.households,
-                    &mut self.logistics,
-                    &mut self.treasury.balance,
+                    &self.zoning,
                     &self.region_graph,
                 ) {
-                    removed = true;
+                    self.allocator
+                        .removal_requests
+                        .push_back(BuildingRemovalRequest {
+                            slot,
+                            building: handle,
+                            kind: BuildingRemovalKind::Incompatible,
+                        });
                     continue;
                 }
                 observer.building_day_opened(self, building_idx);
@@ -62,15 +67,12 @@ impl SimCore {
                 self.allocator.roll_daily_accumulators(building_idx);
                 add_work(Work::BuildingSettlements, 1);
             }
-            if removed {
-                self.finish_building_removals(observer);
-            }
         }
         self.building_phase_scratch = phase;
     }
 
-    // Derived state after a phase removed buildings, as the daily maintenance repaired it.
-    fn finish_building_removals(&mut self, observer: &mut impl EconomyObserver) {
+    // Derived state after a slot removed buildings, as the daily maintenance repaired it.
+    pub(super) fn finish_building_removals(&mut self, observer: &mut impl EconomyObserver) {
         self.allocator.finish_phase_removals(
             &self.zoning,
             &mut self.transit_network,

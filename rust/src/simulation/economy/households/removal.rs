@@ -64,11 +64,14 @@ impl HouseholdSystem {
         exit_policy.is_eligible(&self.households[household_id], allocator, &catalog, &tuning)
     }
 
-    /// Removes the households whose daily phase chose to leave since the last hour, in the
-    /// next hour's pass (`SIM-02-G`; a paced queue in `SIM-02-J`). A household that recovered
-    /// meanwhile stays. Returns how many left. O(agents + exits) when any are queued.
-    pub(crate) fn remove_queued_exits(
+    /// One slot of the `departures` queue (`SIM-02-J`): takes up to `quota` of the households
+    /// whose daily phase claimed a departure, oldest first, and removes those still eligible;
+    /// a household that recovered meanwhile stays. The claims are paced by the daily exit
+    /// credit; the caller serves only in the hour's removal window. Returns how many left.
+    /// O(1) with nothing queued, else O(quota + members) plus the removal's parallel remaps.
+    pub(crate) fn serve_departures(
         &mut self,
+        quota: usize,
         exit_policy: HouseholdExitPolicy,
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
@@ -80,8 +83,12 @@ impl HouseholdSystem {
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let tuning = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
-        let mut ids = Vec::with_capacity(self.exits.len());
-        for handle in std::mem::take(&mut self.exits) {
+        let mut ids = Vec::new();
+        let mut taken = 0;
+        while taken < quota
+            && let Some(handle) = self.exits.pop_front()
+        {
+            taken += 1;
             if let Some(household_id) = self.handles.resolve(handle)
                 && exit_policy.is_eligible(
                     &self.households[household_id],
@@ -93,10 +100,30 @@ impl HouseholdSystem {
                 ids.push(household_id);
             }
         }
+        self.departure_stats.record_slot(taken, self.exits.len());
         if ids.is_empty() {
             return 0;
         }
         self.remove_households(&mut ids, agents, allocator)
+    }
+
+    /// Logs and resets the hour's departure and admission queue service, at the hour's last
+    /// slot (`SIM-02-J`).
+    pub(crate) fn close_departure_and_admission_hour(&mut self) {
+        for (name, stats) in [
+            (
+                "departure_requests_hour",
+                std::mem::take(&mut self.departure_stats),
+            ),
+            (
+                "admission_requests_hour",
+                std::mem::take(&mut self.admission_stats),
+            ),
+        ] {
+            if stats.taken > 0 {
+                debug_log!(crate::debug::Channel::EconomyPhases, "{} {}", name, stats);
+            }
+        }
     }
 
     /// Removes up to `households_to_remove_today` eligible households at once, those with the
@@ -165,7 +192,8 @@ impl HouseholdSystem {
 
     /// Removes households `ids` with their members and releases their homes; returns how many
     /// left. The ids are sorted descending first, so swap-removal cannot move one still to
-    /// remove. O(agents + removed households).
+    /// remove. O(members log members + removed households) plus the parallel O(agents)
+    /// household remap.
     pub(crate) fn remove_households(
         &mut self,
         ids: &mut Vec<usize>,
@@ -179,23 +207,17 @@ impl HouseholdSystem {
         ids.dedup();
         ids.retain(|&id| id < self.households.len());
         let removed_count = ids.len() as u32;
-        let mut selected_flags = std::mem::take(&mut self.removal_selected_flags_scratch);
-        selected_flags.clear();
-        selected_flags.resize(self.households.len(), false);
-        for &household_id in ids.iter() {
-            selected_flags[household_id] = true;
-        }
 
+        // The members of every selected household, from their maintained lists, removed in
+        // descending agent index so a swap-remove never moves one still to remove.
+        // O(members log members) instead of a scan of every agent (`SIM-02-J`).
+        agents.register_appended_household_members();
         let mut agent_indices = std::mem::take(&mut self.removal_agent_indices_scratch);
         agent_indices.clear();
-        for agent_idx in 0..agents.len() {
-            let household_id = agents.household_id[agent_idx];
-            if household_id < selected_flags.len() && selected_flags[household_id] {
-                agent_indices.push(agent_idx);
-            }
+        for &household_id in ids.iter() {
+            agent_indices.extend(agents.household_members(household_id));
         }
-        // The collection pass already visits agent indices in ascending order.
-        agent_indices.reverse();
+        agent_indices.sort_unstable_by(|a, b| b.cmp(a));
         for agent_idx in agent_indices.iter().copied() {
             agents.kill_agent(agent_idx, allocator);
         }
@@ -220,7 +242,6 @@ impl HouseholdSystem {
             .map(|(current, original)| (original, current))
             .collect();
         agents.remap_household_indices(&mapping);
-        self.removal_selected_flags_scratch = selected_flags;
         self.removal_agent_indices_scratch = agent_indices;
         removed_count
     }

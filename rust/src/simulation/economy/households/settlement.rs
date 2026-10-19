@@ -55,8 +55,9 @@ impl HouseholdSystem {
         }
     }
 
-    /// Queues household `household_id` to leave the city in the next hour's pass. O(1).
+    /// Queues household `household_id` to leave the city through the `departures` queue
+    /// (`SIM-02-J`). O(1).
     pub(crate) fn queue_exit(&mut self, household_id: usize) {
-        self.exits.push(self.handles.handle(household_id));
+        self.exits.push_back(self.handles.handle(household_id));
     }
 }

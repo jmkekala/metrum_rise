@@ -3,27 +3,31 @@
 //! The simulation's system declarations and per-slot dispatch (`SIM-02`,
 //! `docs/simulation.md#scheduler`).
 //!
-//! [`SimCore::step_frame`] reports the slots the clock crossed; each runs here in order. The
-//! timing wheel fires first, then the fixed-slot systems: the funding census's publication,
-//! until `SIM-02-K` the re-hosted operational hour, and the calendar close. The entities of the
-//! slot's hourly and daily phases follow, then the cell-lot, freight, housing, restock, visit
-//! and job request queues, one chunk each of the rolling road length, environment sweep, freight
-//! supplier index, demand snapshot, household destinations and job board, at an hour's last
-//! slot the hour's city totals, one chunk of the funding census's input copy over the hour's
-//! first half and the census's share of its steps over the second half.
+//! [`SimCore::step_frame`] reports the slots the clock crossed; each runs here in order. The timing
+//! wheel fires first, then the fixed-slot systems: the funding census's publication, until
+//! `SIM-02-K` the re-hosted operational hour, and the calendar close. The entities of the slot's
+//! hourly and daily phases follow, then the cell-lot, freight, housing, restock, visit and job
+//! request queues, the level-change, building-removal, departure and admission queues (`SIM-02-J`;
+//! removals and departures only in the hour's removal window), one chunk each of the rolling road
+//! length, environment sweep, freight supplier index, demand snapshot, household destinations and
+//! job board, at an hour's last slot the hour's city totals, one chunk of the funding census's
+//! input copy over the hour's first half and the census's share of its steps over the second half.
 
 use std::time::Instant;
 
+use super::demand_requests::{BUILDING_REMOVAL_QUOTA, DEPARTURE_QUOTA, LEVEL_CHANGE_QUOTA};
 use super::frame::{EconomyObserver, FrameStepReport, record_crash_phase_for_core, run_sim_phase};
 use super::state::SimCore;
 use crate::simulation::buildings::allocator::Building;
 use crate::simulation::core::handles::Handle;
 use crate::simulation::core::scheduler::{
-    Cost, Declaration, Period, SLOTS_PER_DAY, SLOTS_PER_MINUTE, Schedule, SystemKind, Tier, state,
+    Cost, Declaration, Period, SLOTS_PER_DAY, SLOTS_PER_HOUR, SLOTS_PER_MINUTE, Schedule,
+    SystemKind, Tier, state,
 };
 use crate::simulation::core::timing_wheel::TimedEvent;
 use super::trips::TripEvent;
 use crate::simulation::economy::demand::PlanningSlot;
+use crate::simulation::economy::hiring::{REMOVAL_WINDOW_START, removals_allowed};
 
 /// One system the dispatcher can run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,6 +72,17 @@ pub(crate) enum SimSystem {
     VisitRequests,
     /// Runs the oldest queued job searches, `JOB_REQUEST_QUOTA` per slot (`SIM-02-J`).
     JobRequests,
+    /// Applies the oldest proved level changes, `LEVEL_CHANGE_QUOTA` per slot outside the
+    /// hour's planning slots (`SIM-02-J`).
+    LevelChanges,
+    /// Serves the oldest queued building removals, `BUILDING_REMOVAL_QUOTA` per slot of the
+    /// hour's removal window (`SIM-02-J`).
+    BuildingRemovals,
+    /// Removes the oldest households that claimed a departure, `DEPARTURE_QUOTA` per slot of
+    /// the hour's removal window (`SIM-02-J`).
+    Departures,
+    /// Creates the hour's admitted households as the admission credit allows (`SIM-02-J`).
+    Admissions,
     /// One chunk of the rolling road length that daily upkeep reads.
     RoadLength,
     /// One chunk of the day-long sweep of pollution, noise and desirability (`SIM-02-H`).
@@ -416,6 +431,52 @@ pub(crate) fn simulation_schedule() -> Schedule<SimSystem> {
             cost: Cost::Quota,
             tier: Tier::Full,
         },
+        // The demand queues (`SIM-02-J`) carry out what the hour's actions slot decided. A
+        // queue that may not serve in a slot (planning slots, outside the removal window)
+        // costs one comparison there.
+        Declaration {
+            system: SimSystem::LevelChanges,
+            name: "level changes",
+            kind: SystemKind::Queue {
+                quota: LEVEL_CHANGE_QUOTA,
+            },
+            reads: state::BUILDINGS | state::DEMAND | state::NETWORK | state::ZONING,
+            writes: state::BUILDINGS | state::DEMAND | state::ZONING | state::GRIDS,
+            cost: Cost::Quota,
+            tier: Tier::Full,
+        },
+        Declaration {
+            system: SimSystem::BuildingRemovals,
+            name: "building removals",
+            kind: SystemKind::Queue {
+                quota: BUILDING_REMOVAL_QUOTA,
+            },
+            reads: state::ALL,
+            writes: state::ALL,
+            cost: Cost::Quota,
+            tier: Tier::Full,
+        },
+        Declaration {
+            system: SimSystem::Departures,
+            name: "departures",
+            kind: SystemKind::Queue {
+                quota: DEPARTURE_QUOTA,
+            },
+            reads: state::HOUSEHOLDS | state::AGENTS | state::BUILDINGS | state::DEMAND,
+            writes: state::HOUSEHOLDS | state::AGENTS | state::BUILDINGS | state::DEMAND,
+            cost: Cost::Quota,
+            tier: Tier::Full,
+        },
+        // One admission per whole credit; the credit spreads the hour's batch over the hour.
+        Declaration {
+            system: SimSystem::Admissions,
+            name: "admissions",
+            kind: SystemKind::Queue { quota: 1 },
+            reads: state::HOUSEHOLDS | state::BUILDINGS | state::NETWORK,
+            writes: state::HOUSEHOLDS | state::AGENTS | state::BUILDINGS | state::EVENTS,
+            cost: Cost::Quota,
+            tier: Tier::Full,
+        },
         Declaration {
             system: SimSystem::RoadLength,
             name: "road length",
@@ -628,6 +689,25 @@ impl SimCore {
                 SimSystem::JobRequests => {
                     self.serve_job_request_queue(slot, JOB_REQUEST_QUOTA as usize);
                 }
+                SimSystem::LevelChanges => {
+                    if slot % SLOTS_PER_HOUR >= REMOVAL_WINDOW_START {
+                        self.serve_level_change_queue(LEVEL_CHANGE_QUOTA as usize, observer);
+                    }
+                }
+                SimSystem::BuildingRemovals => {
+                    if removals_allowed(slot) {
+                        self.serve_building_removal_queue(
+                            BUILDING_REMOVAL_QUOTA as usize,
+                            observer,
+                        );
+                    }
+                }
+                SimSystem::Departures => {
+                    if removals_allowed(slot) {
+                        self.serve_departure_queue(DEPARTURE_QUOTA as usize);
+                    }
+                }
+                SimSystem::Admissions => self.serve_admission_queue(slot),
                 SimSystem::RoadLength => self.road_length.advance(slot, &self.region_graph),
                 SimSystem::EnvironmentGrids => self.advance_environment_sweep(slot),
                 SimSystem::FreightSuppliers => self.advance_freight_supplier_sweep(slot),

@@ -27,7 +27,9 @@ pub(crate) use entrance::{
     BuildingEntranceKey, DemandSiteEntranceKey, FreightEntranceAccess, building_local_xz_basis,
 };
 pub(crate) use index::SavedVacancyOrder;
+#[cfg(test)]
 pub(crate) use lifecycle::DemandBuildingActionExecution;
+pub(crate) use lifecycle::{BuildingRemovalKind, BuildingRemovalRequest};
 pub(crate) use placement::BuildingSiteEnvironment;
 pub(crate) use placement::ExplicitServicePlacementPreview;
 pub(crate) use placement::construction_duration_hours;
@@ -458,6 +460,12 @@ pub struct BuildingAllocator {
     /// Construction deadlines set since SimCore last scheduled their completion events, in
     /// placement order.
     pub(crate) pending_construction: Vec<(Handle<Building>, u64)>,
+    /// Removals queued by the hour's actions slot (planned clearance) and by the buildings'
+    /// daily phases (expired compatibility), oldest first, until the `building removals` queue
+    /// serves them in the hour's removal window (`SIM-02-J`). Saved.
+    pub(crate) removal_requests: std::collections::VecDeque<BuildingRemovalRequest>,
+    /// The `building removals` queue's service this hour, logged at its last slot.
+    pub(crate) removal_stats: crate::simulation::core::request_queue::QueueStats,
     /// Treasury purchases of city-service inputs during the calendar day so far (`SIM-02-G`).
     pub(crate) city_input_day: CityInputDay,
     /// Purchases of the last closed calendar day, read by its budget report.
@@ -843,6 +851,8 @@ impl BuildingAllocator {
             now_slot: 0,
             next_applicant_seed: 0,
             pending_construction: Vec::new(),
+            removal_requests: std::collections::VecDeque::new(),
+            removal_stats: Default::default(),
             city_input_day: CityInputDay::default(),
             last_city_input_day: CityInputDay::default(),
             pending_yards: Vec::new(),
@@ -971,10 +981,55 @@ impl BuildingAllocator {
         self.admit_households_from_demand(
             households_to_admit_today as usize,
             next_household_id,
-            agents,
             transit_network,
             graph,
             claim_income,
+            |home, size, composition, border_node| {
+                let border_pos = graph.node(border_node).pos;
+                agents.spawn_household_arrival_carrier(
+                    home,
+                    size,
+                    composition,
+                    border_node,
+                    border_pos.x,
+                    border_pos.z,
+                );
+            },
+        ) as u32
+    }
+
+    /// Decides a bounded applicant batch as [`Self::execute_demand_household_admission_with_income`]
+    /// does, claiming each accepted family's home, without launching carriers: each decision
+    /// joins `admitted` as `(home, size, composition, border)` for the admission queue, which
+    /// creates the carriers over the hour (`SIM-02-J`). Returns how many were admitted.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn decide_demand_household_admission(
+        &mut self,
+        households_to_admit_today: u32,
+        next_household_id: usize,
+        transit_network: &crate::simulation::network::TransitNetwork,
+        graph: &RegionGraph,
+        claim_income: impl FnMut(
+            crate::simulation::economy::agents::HouseholdAgeComposition,
+            u16,
+            u8,
+        ) -> bool,
+        admitted: &mut Vec<(
+            usize,
+            u16,
+            crate::simulation::economy::agents::HouseholdAgeComposition,
+            u32,
+        )>,
+    ) -> u32 {
+        self.admit_households_from_demand(
+            households_to_admit_today as usize,
+            next_household_id,
+            transit_network,
+            graph,
+            claim_income,
+            |home, size, composition, border_node| {
+                admitted.push((home, size, composition, border_node));
+            },
         ) as u32
     }
 
@@ -1046,6 +1101,7 @@ impl BuildingAllocator {
         self.field_clearance.clear();
         self.pending_production_site_removals.clear();
         self.pending_construction.clear();
+        self.removal_requests.clear();
         self.pending_yards.clear();
         self.level_changes.clear();
         self.building_sites.clear();

@@ -417,8 +417,8 @@ pub(super) fn save_world(
         ])?;
     }
     // Requests the households' phases queued, in order: kinds 0 housing reviews, 2 rehousings,
-    // 3 restocks and 4 visible visits with their queue slots (`SIM-02-J`), 1 exits for the next
-    // hour (`SIM-02-G`).
+    // 3 restocks and 4 visible visits with their queue slots (`SIM-02-J`), 1 claimed departures
+    // for the `departures` queue (`SIM-02-G`, `SIM-02-J`).
     let mut request_stmt = tx.prepare(
         "INSERT INTO household_requests(kind, sequence, slot, household_slot, household_generation) VALUES (?1, ?2, ?3, ?4, ?5)",
     )?;
@@ -605,7 +605,7 @@ pub(super) fn save_household_queue_state(
         None => (NONE_REF, 0, 0),
     };
     tx.execute(
-        "INSERT INTO household_queue_state(singleton, visit_credit, shopper_departure_first_minute, shopper_departure_counts, destination_front_hour, destination_sweep_building_handles, destination_sweep_hour, destination_sweep_next_chunk, destination_front_current, destination_sweep_current, job_board_hour, job_sweep_building_handles, job_sweep_hour, job_sweep_next_chunk) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        "INSERT INTO household_queue_state(singleton, visit_credit, shopper_departure_first_minute, shopper_departure_counts, destination_front_hour, destination_sweep_building_handles, destination_sweep_hour, destination_sweep_next_chunk, destination_front_current, destination_sweep_current, job_board_hour, job_sweep_building_handles, job_sweep_hour, job_sweep_next_chunk, admission_credit, admission_rate) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         params![
             i64::from(households.visit_credit),
             u64_to_i64(first_minute)?,
@@ -620,6 +620,8 @@ pub(super) fn save_household_queue_state(
             job_sweep_handles,
             job_sweep_hour,
             job_sweep_next_chunk,
+            i64::from(households.admission_credit),
+            i64::from(households.admission_rate),
         ],
     )?;
     // The job board's members (buffer 0) and the sweep's (buffer 1), and the queued job
@@ -679,13 +681,14 @@ pub(super) fn save_household_queue_state(
     Ok(())
 }
 
-// `household_queue_state`: the visit credit and shopper leveler, the destination roll's header
-// and the job board's hour.
+// `household_queue_state`: the visit credit and shopper leveler, the destination roll's header,
+// the job board's hour and the admission credit (`SIM-02-J`).
 type QueueStateRow = (
     (i64, i64, Vec<u8>),
     (i64, i64, i64, i64),
     (i64, i64, i64),
     (i64, i64, i64),
+    (i64, i64),
 );
 
 fn load_household_queue_state(
@@ -697,8 +700,9 @@ fn load_household_queue_state(
         (front_hour, sweep_handles, sweep_hour, sweep_next_chunk),
         (front_current, sweep_current, job_board_hour),
         (job_sweep_handles, job_sweep_hour, job_sweep_next_chunk),
+        (admission_credit, admission_rate),
     ): QueueStateRow = conn.query_row(
-        "SELECT visit_credit, shopper_departure_first_minute, shopper_departure_counts, destination_front_hour, destination_sweep_building_handles, destination_sweep_hour, destination_sweep_next_chunk, destination_front_current, destination_sweep_current, job_board_hour, job_sweep_building_handles, job_sweep_hour, job_sweep_next_chunk FROM household_queue_state WHERE singleton = 1",
+        "SELECT visit_credit, shopper_departure_first_minute, shopper_departure_counts, destination_front_hour, destination_sweep_building_handles, destination_sweep_hour, destination_sweep_next_chunk, destination_front_current, destination_sweep_current, job_board_hour, job_sweep_building_handles, job_sweep_hour, job_sweep_next_chunk, admission_credit, admission_rate FROM household_queue_state WHERE singleton = 1",
         [],
         |row| {
             Ok((
@@ -706,10 +710,13 @@ fn load_household_queue_state(
                 (row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?),
                 (row.get(7)?, row.get(8)?, row.get(9)?),
                 (row.get(10)?, row.get(11)?, row.get(12)?),
+                (row.get(13)?, row.get(14)?),
             ))
         },
     )?;
     households.visit_credit = i64_to_u32(credit)?;
+    households.admission_credit = i64_to_u32(admission_credit)?;
+    households.admission_rate = i64_to_u32(admission_rate)?;
     let mut board_buffers = [Vec::new(), Vec::new()];
     let mut stmt = conn.prepare(
         "SELECT buffer, building_slot, building_generation FROM job_board_members ORDER BY buffer, position",
@@ -1967,7 +1974,7 @@ pub(super) fn load_households(conn: &Connection) -> SaveLoadResult<HouseholdSyst
         let handle = handle_from_db(row.get(2)?, row.get(3)?)?;
         let kind = row.get::<_, i64>(0)?;
         if kind == 1 {
-            households.exits.push(handle);
+            households.exits.push_back(handle);
             continue;
         }
         let queued_slot = row

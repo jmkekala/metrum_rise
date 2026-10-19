@@ -71,6 +71,12 @@ pub struct DemandSystem {
     freight_border_nodes: Vec<u32>,
     /// Current outside applicant seed, derived from simulation time rather than accepted arrivals.
     pub(crate) admission_candidate_seed: usize,
+    /// Level changes the hour's actions slot proved, oldest first, until the `level changes`
+    /// queue applies them (`SIM-02-J`). Saved.
+    pub(crate) level_change_requests:
+        std::collections::VecDeque<super::execution::QueuedLevelChange>,
+    // The `level changes` queue's service this hour, logged at its last slot.
+    pub(crate) level_change_stats: crate::simulation::core::request_queue::QueueStats,
     /// Earlier slots' spawns and upgrades this system's later slots dropped on a failed
     /// re-proof (`SIM-02-I`); [`crate::debug::work::Work::ReproofDrops`] counts them across
     /// the process.
@@ -138,6 +144,8 @@ impl DemandSystem {
             admission_budget: HouseholdAdmissionBudget::default(),
             freight_border_nodes: Vec::new(),
             admission_candidate_seed: 0,
+            level_change_requests: std::collections::VecDeque::new(),
+            level_change_stats: Default::default(),
             #[cfg(test)]
             reproof_drops: 0,
         }
@@ -146,6 +154,12 @@ impl DemandSystem {
     /// Returns the cached compiled economy catalog used by demand planning and execution.
     pub(crate) fn runtime_catalog(&self) -> &RuntimeEconomyCatalog {
         self.runtime_catalog.as_ref()
+    }
+
+    /// The runtime economy catalog, shared, for callers that mutate this system while reading
+    /// it. O(1).
+    pub(crate) fn shared_runtime_catalog(&self) -> Arc<RuntimeEconomyCatalog> {
+        Arc::clone(&self.runtime_catalog)
     }
 
     /// Returns the cached economy runtime tuning used by demand planning and execution.

@@ -31,9 +31,12 @@ pub(crate) use actions::{
 pub(crate) use diagnostics::{
     BuildingActionDiagnosticsByUse, HouseholdAdmissionDiagnostics, HouseholdRemovalDiagnostics,
 };
+pub(crate) use execution::{
+    ConstructionPermit, DemandLevelChangeGuard, LevelChangeRefusal, QueuedLevelChange, SpawnPermit,
+    StartRefusal,
+};
 #[cfg(test)]
-pub(crate) use execution::door_digest;
-pub(crate) use execution::{ConstructionPermit, DemandLevelChangeGuard, SpawnPermit, StartRefusal};
+pub(crate) use execution::{door_digest, level_change_permit};
 pub(crate) use snapshot::SavedDemandSnapshot;
 #[cfg(test)]
 pub(crate) use supply::ProjectProof;

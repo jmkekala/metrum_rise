@@ -369,7 +369,10 @@ Vegetation painting now uses live, clumped darts with separate tree, ground-cove
   its own minute. A family that loses its home looks for a new one at its own minute, so the
   hour's newcomers may take the vacancy first, and a worker whose better job filled before it
   applied waits for its next job review instead of trying again each hour. Shops run out less
-  often in larger cities (save format 102).
+  often in larger cities (save format 102). `SIM-02-J` part 3 (2026-10-19): old or failing
+  buildings are cleared, families leave and newcomers arrive a few at a time through the hour
+  instead of all at its start, and building upgrades and downgrades take effect a slot after
+  they are decided (save format 103).
 
 - **Starting treasury**: new games begin with 500,000, increased from 100,000. See
   [money source](economy.md#money-source); earlier balance runs retain their original starting capital.

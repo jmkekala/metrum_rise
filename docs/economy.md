@@ -84,10 +84,12 @@ crossed:
 1. Each minute: the next queued private construction start, at most one per minute, and any
    construction site whose deadline falls in that slot completes
    ([`simulation.md`](simulation.md#deadlines-and-timed-events)).
-2. Each whole hour: the **operational hour**: the households whose exit was claimed at their
-   daily phase leave if they still may, then the pooled household hour (below), then the
-   **hourly demand pass**: project planning, household admission and immediate building actions
-   ([`demand.md`](demand.md#cadence-and-handoff)). 00:00 is an ordinary hour (`SIM-02-G`).
+2. Each whole hour: the **operational hour**: the pooled household hour (below), then the
+   **hourly demand pass**: project planning, the household admission decision and the building
+   actions' proofs ([`demand.md`](demand.md#cadence-and-handoff)). The households whose exit was
+   claimed at their daily phase leave through the `departures` queue in slots 4–479, the
+   admitted households are created over the hour by the `admissions` queue, and level changes
+   and clearances are applied by their queues from slot 4 (`SIM-02-J`). 00:00 is an ordinary hour (`SIM-02-G`).
 3. At 00:00, after the hour, the **calendar close**: the day's running totals become the
    budget report, the tax window rolls, road upkeep is charged from the rolling road length and
    the day's exit budget resets. It costs O(zones); the 00:00 hour still belongs to the closing
@@ -127,8 +129,9 @@ Trips do not leave when they are decided (`SIM-02-E`,
 [`simulation.md`](simulation.md#deadlines-and-timed-events)). Freight carriers and shoppers
 leave near a target slot in the hour ahead, in the least busy minute within 15 minutes of it,
 and a visible service visitor leaves at the next slot (`SIM-02-J`). Household arrival carriers
-are spaced evenly over the hour after the actions slot, where admission runs (`SIM-02-I` part
-4). Each trip is then checked as it travels (every one to eight
+leave paced from their household's creation: slot 3, the actions slot, decides the admissions
+and the `admissions` queue creates the households evenly over the hour that follows
+(`SIM-02-I` part 4, `SIM-02-J` part 3). Each trip is then checked as it travels (every one to eight
 minutes, growing with its time on the road) and settles when it arrives: a delivery, a store pickup, a shopper's return or a household moving in no longer
 waits for the next hour. Leg timeouts still count operational hours.
 
@@ -145,8 +148,9 @@ Daily phases (`nodes/sim/core/entity_days.rs`), each over the entity's own 24-ho
 3. **Agent:** the wage, paid while the workplace has paid fewer than its funded jobs in its own
    window, and the daily happiness update.
 
-The `housing requests` queue serves the housing reviews a few per slot, and the next hour
-removes the claimed exits, each walking the household's member list (`SIM-02-J`). Wages read
+The `housing requests` queue serves the housing reviews a few per slot, and the `departures` queue
+removes the claimed exits, one a slot in slots 4–479, each walking the household's member list
+(`SIM-02-J`). Wages read
 the funded jobs the last hourly census copied onto each building; water and sewage coverage is
 whether a provider settled operational in the last closed day. Complete commute quotes expire 24 workplace passes after they were added; bounded
 network-only legs remain valid until their CCH or lane revision changes. Every payment also
