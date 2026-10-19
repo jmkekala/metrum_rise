@@ -114,10 +114,10 @@ use godot::prelude::*;
 use crate::config;
 use crate::nodes::sim::core::{
     CachedRefinedTerrainCdtWindow, CachedRefinedTerrainMeshBuffers, CachedRefinedTerrainPatch,
-    CachedTerrainCdtRoadInput, DailyBudgetLedgerEntry, ROAD_BUILD_COST_PER_METER,
-    RefinedTerrainCdtWindowBuildInput, RefinedTerrainCdtWindowKey, RefinedTerrainPatchBuildInput,
-    RefinedTerrainPatchCacheKey, RenderSnapshot, RoadPreviewRequest, RoadPreviewSender,
-    RoadPreviewSnapshot, RoadPreviewWorkerContext, RoadToolQuerySnapshot,
+    CachedTerrainCdtRoadInput, DailyBudgetLedgerEntry, PublishedRoadPreviewChecks,
+    ROAD_BUILD_COST_PER_METER, RefinedTerrainCdtWindowBuildInput, RefinedTerrainCdtWindowKey,
+    RefinedTerrainPatchBuildInput, RefinedTerrainPatchCacheKey, RenderSnapshot, RoadPreviewRequest,
+    RoadPreviewSender, RoadPreviewSnapshot, RoadPreviewWorkerContext, RoadToolQuerySnapshot,
     SERVICE_POLICY_ELECTRICITY, SimCommand, SimCore, road_preview_channel,
     road_tool_snapshots_from_core, run_road_preview_worker, run_sim_thread,
 };
@@ -261,6 +261,8 @@ pub struct SimulationNode {
     pub(crate) road_preview_context: Arc<RwLock<RoadPreviewWorkerContext>>,
     /// Latest completed road-tool preview from the dedicated preview worker.
     pub(crate) road_preview_result: Arc<RwLock<Option<RoadPreviewSnapshot>>>,
+    /// That result's live checks, for preview polls that find the core lock held.
+    pub(crate) road_preview_checks: Arc<PublishedRoadPreviewChecks>,
     /// Immutable road-tool query state used by cursor picking without locking SimCore.
     pub(crate) road_tool_query_snapshot: Arc<RwLock<RoadToolQuerySnapshot>>,
     /// Water mesh jobs currently being prepared outside the Godot frame.
@@ -373,8 +375,18 @@ impl SimulationNode {
             let snap = Arc::clone(&self.snapshot);
             let road_preview = Arc::clone(&self.road_preview_context);
             let road_query = Arc::clone(&self.road_tool_query_snapshot);
+            let preview_result = Arc::clone(&self.road_preview_result);
+            let preview_checks = Arc::clone(&self.road_preview_checks);
             self.sim_thread = Some(std::thread::spawn(move || {
-                run_sim_thread(core, snap, road_preview, road_query, rx);
+                run_sim_thread(
+                    core,
+                    snap,
+                    road_preview,
+                    road_query,
+                    preview_result,
+                    preview_checks,
+                    rx,
+                );
             }));
         }
     }
@@ -482,6 +494,7 @@ impl INode3D for SimulationNode {
             road_preview_tx,
             road_preview_context,
             road_preview_result,
+            road_preview_checks: Default::default(),
             road_tool_query_snapshot,
             water_patch_mesh_jobs,
             building_lods: Default::default(),

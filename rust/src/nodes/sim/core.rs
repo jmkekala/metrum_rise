@@ -48,9 +48,9 @@ pub(crate) use budget::{
     SERVICE_BUILD_COST_PER_LOT_CELL, SERVICE_POLICY_ELECTRICITY,
 };
 pub(crate) use road_preview::{
-    RoadPreviewRequest, RoadPreviewSender, RoadPreviewSnapshot, RoadPreviewWorkerContext,
-    RoadToolQuerySnapshot, road_preview_channel, road_tool_snapshots_from_core,
-    run_road_preview_worker,
+    PublishedRoadPreviewChecks, RoadCorridorClearance, RoadPreviewRequest, RoadPreviewSender,
+    RoadPreviewSnapshot, RoadPreviewWorkerContext, RoadToolQuerySnapshot, road_preview_channel,
+    road_tool_snapshots_from_core, run_road_preview_worker,
 };
 pub(crate) use snapshot::{
     BuildingRemovalUndo, SimulationRuntimeSnapshot, SimulationSnapshot, VegetationEditUndo,

@@ -3,6 +3,7 @@
 //! Preview road-tool Godot API methods.
 
 use super::super::super::*;
+use crate::nodes::sim::core::RoadCorridorClearance;
 use crate::simulation::network::surface::RoadPreviewVisualMesh;
 
 #[godot_api(secondary)]
@@ -394,6 +395,8 @@ impl SimulationNode {
     /// requests a complete payload. A matching revision omits unchanged retained mesh buffers.
     /// `terrain_revisions` lists preview terrain products the caller still holds; each matching
     /// patch is exported as metadata plus `unchanged`, and every other patch is complete.
+    /// Never waits on the simulation: while it holds the core lock, the live checks are the ones
+    /// it published at the end of its last frame, as current as the render snapshot.
     #[func]
     pub fn get_preview_road_surface_result(
         &self,
@@ -432,14 +435,17 @@ impl SimulationNode {
         result_lock_ms: f64,
     ) -> Variant {
         let export_start = preview.timing.as_ref().map(|_| Instant::now());
-        let Some(mut dict) = self.road_candidate_dictionary_with_parcel_clearance(
-            &preview.validation,
-            &preview.prepared_points,
-            i32::from(preview.fwd_lanes),
-            i32::from(preview.bkw_lanes),
-        ) else {
+        // Nil only while this result has no evaluation yet (pending) or is stale.
+        let Some(checks) = self.road_preview_checks.poll(&self.core, preview) else {
             return Variant::nil();
         };
+        let mut dict = Self::road_candidate_validation_to_dictionary(
+            &preview.validation,
+            &preview.prepared_points,
+        );
+        if let Some(clearance) = &checks.clearance {
+            Self::apply_corridor_clearance(&mut dict, clearance);
+        }
         dict.set(
             "request_id",
             i64::try_from(preview.request_id).unwrap_or(i64::MAX),
@@ -455,31 +461,17 @@ impl SimulationNode {
         dict.set("include_terrain", preview.include_terrain);
         let valid = dict.get("is_valid").is_some_and(|value| value.to::<bool>());
         dict.set("plan_state", if valid { "provisional" } else { "invalid" });
-        if let Some(plan) = preview.edit_plan() {
-            let Some(core) = self.try_lock_core() else {
-                return Variant::nil();
-            };
-            let state = if preview.include_terrain {
-                plan.status(&core)
-            } else {
-                plan.road_status(&core)
-            };
-            if preview.include_terrain && valid && state == "ready" {
-                terrain_patches = plan.terrain().and_then(|terrain| terrain.preview_patches());
+        // Present only for a plan whose stroke is still valid after the corridor checks.
+        if let Some(state) = checks.plan_state {
+            if preview.include_terrain && state == "ready" {
+                terrain_patches = preview
+                    .edit_plan()
+                    .and_then(|plan| plan.terrain().and_then(|terrain| terrain.preview_patches()));
             }
-            dict.set("plan_state", if valid { state } else { "invalid" });
-            if valid && state == "invalid" {
+            dict.set("plan_state", state);
+            if let Some(reason) = checks.plan_invalid_reason {
                 dict.set("is_valid", false);
-                dict.set(
-                    "invalid_reason",
-                    if plan.overlaps_fields(&core) {
-                        "field_overlap"
-                    } else if plan.overlaps_cell_zoning(&core) {
-                        "cell_overlap"
-                    } else {
-                        "road_plan_invalid"
-                    },
-                );
+                dict.set("invalid_reason", reason);
             }
         }
         let readiness_ms = export_start.map(|t| t.elapsed().as_secs_f64() * 1000.0);
@@ -636,38 +628,39 @@ impl SimulationNode {
         if validation.is_valid {
             // Query the existing parcel chunk index locally. Never copy city-wide zoning into
             // a preview snapshot or wait on the simulation lock from the mouse-hover path.
-            let core = self.try_lock_core()?;
-            let lanes =
-                fwd_lanes.clamp(0, i32::from(u8::MAX)) + bkw_lanes.clamp(0, i32::from(u8::MAX));
-            let half_width = (lanes as f32 * crate::config::LANE_WIDTH).max(2.0) * 0.5
-                + crate::config::SIDEWALK_WIDTH;
-            let overlaps = core
-                .zoning
-                .parcel_ids_overlapping_road_corridor(prepared_points, half_width);
-            if core
-                .allocator
-                .field_clearance
-                .overlaps_road_corridor(prepared_points, half_width)
-            {
-                dict.set("is_valid", false);
-                dict.set("invalid_reason", "field_overlap");
-            }
-            dict.set(
-                "zoning_revision",
-                i64::try_from(core.zoning.overlay_revision()).unwrap_or(i64::MAX),
+            let clearance = RoadCorridorClearance::evaluate(
+                &*self.try_lock_core()?,
+                prepared_points,
+                fwd_lanes,
+                bkw_lanes,
             );
-            dict.set("field_revision", core.agriculture.visual_revision() as i64);
-            if let Some(&first) = overlaps.first() {
-                dict.set("is_valid", false);
-                dict.set("invalid_reason", "parcel_overlap");
-                dict.set("overlapping_parcel_count", overlaps.len() as i64);
-                dict.set(
-                    "first_overlapping_parcel_id",
-                    i64::try_from(first).unwrap_or(i64::MAX),
-                );
-            }
+            Self::apply_corridor_clearance(&mut dict, &clearance);
         }
         Some(dict)
+    }
+
+    fn apply_corridor_clearance(dict: &mut VarDictionary, clearance: &RoadCorridorClearance) {
+        if clearance.field_overlap {
+            dict.set("is_valid", false);
+            dict.set("invalid_reason", "field_overlap");
+        }
+        dict.set(
+            "zoning_revision",
+            i64::try_from(clearance.zoning_revision).unwrap_or(i64::MAX),
+        );
+        dict.set("field_revision", clearance.field_revision as i64);
+        if let Some(first) = clearance.first_overlapping_parcel {
+            dict.set("is_valid", false);
+            dict.set("invalid_reason", "parcel_overlap");
+            dict.set(
+                "overlapping_parcel_count",
+                clearance.overlapping_parcels as i64,
+            );
+            dict.set(
+                "first_overlapping_parcel_id",
+                i64::try_from(first).unwrap_or(i64::MAX),
+            );
+        }
     }
 
     fn road_candidate_validation_to_dictionary(

@@ -2,10 +2,14 @@
 
 //! Asynchronous road-preview requests, worker snapshots, and compilation.
 
+mod live_checks;
 mod reclaim;
 mod requests;
 mod terrain_revisions;
 mod timing;
+#[cfg(test)]
+pub(crate) use live_checks::RoadPreviewLiveChecks;
+pub(crate) use live_checks::{PublishedRoadPreviewChecks, RoadCorridorClearance};
 pub(crate) use requests::{RoadPreviewSender, road_preview_channel};
 pub(super) use terrain_revisions::RoadPreviewTerrainRevisions;
 pub(crate) use timing::RoadPreviewTiming;
@@ -54,8 +58,13 @@ pub(crate) struct RoadPreviewSnapshot {
 impl RoadPreviewSnapshot {
     /// Shares a successful plan without consuming its products before the exact click check.
     pub(crate) fn edit_plan(&self) -> Option<Arc<RoadEditPlan>> {
+        self.live_edit_plan().cloned()
+    }
+
+    // The plan of a valid result compiled against a published road surface.
+    fn live_edit_plan(&self) -> Option<&Arc<RoadEditPlan>> {
         (self.is_valid && self.surface_generation > 0)
-            .then(|| self.edit_plan.clone())
+            .then_some(self.edit_plan.as_ref())
             .flatten()
     }
 }

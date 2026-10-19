@@ -384,6 +384,7 @@ fn measure_populated_road_plan_scaling(
         let mut worker_samples = Vec::new();
         let mut full_worker_samples = Vec::new();
         let mut terrain_samples = Vec::new();
+        let mut frame_checks_samples = Vec::new();
         let generation = core.road_tool_surface_generation;
         let request = || RoadPreviewRequest {
             enqueued_at: None,
@@ -487,6 +488,12 @@ fn measure_populated_road_plan_scaling(
                 &core,
             );
             let full_ms = full_start.elapsed().as_secs_f64() * 1000.0;
+            // The simulation frame's re-evaluation of the current preview (`ROAD-54`).
+            let frame_checks_start = Instant::now();
+            let frame_checks =
+                super::super::road_preview::RoadPreviewLiveChecks::evaluate(&full, &core);
+            let frame_checks_ms = frame_checks_start.elapsed().as_secs_f64() * 1000.0;
+            assert_eq!(frame_checks.plan_state, Some("ready"));
             let full_plan = full.edit_plan().unwrap();
             assert_eq!(full_plan.status(&core), "ready");
             assert!(
@@ -501,6 +508,7 @@ fn measure_populated_road_plan_scaling(
                 worker_samples.push(worker_ms);
                 full_worker_samples.push(full_ms);
                 terrain_samples.push(terrain_ms);
+                frame_checks_samples.push(frame_checks_ms);
             }
         }
         samples.sort_by(f64::total_cmp);
@@ -508,6 +516,7 @@ fn measure_populated_road_plan_scaling(
         worker_samples.sort_by(f64::total_cmp);
         full_worker_samples.sort_by(f64::total_cmp);
         terrain_samples.sort_by(f64::total_cmp);
+        frame_checks_samples.sort_by(f64::total_cmp);
         println!(
             "ROAD_PLAN_SCALING {}",
             serde_json::json!({
@@ -521,6 +530,7 @@ fn measure_populated_road_plan_scaling(
                 "worker_p50_ms": (worker_samples[49] + worker_samples[50]) * 0.5, "worker_p95_ms": worker_samples[94],
                 "full_worker_p50_ms": (full_worker_samples[49] + full_worker_samples[50]) * 0.5, "full_worker_p95_ms": full_worker_samples[94],
                 "click_terrain_p50_ms": (terrain_samples[49] + terrain_samples[50]) * 0.5, "click_terrain_p95_ms": terrain_samples[94],
+                "frame_checks_p50_ms": (frame_checks_samples[49] + frame_checks_samples[50]) * 0.5, "frame_checks_p95_ms": frame_checks_samples[94],
                 "snapshot_once_per_edit_ms": snapshot_ms,
                 "identical_local_products": true,
             })

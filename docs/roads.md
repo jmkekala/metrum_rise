@@ -782,8 +782,40 @@ Road and walkway tools show the committed parcel overlay. Cheap candidate valida
 commit validation, and completed async previews query the same parcel chunk index and corridor
 width as the simulation-thread commit guard. Conflicts return `parcel_overlap` with the count and
 first parcel id; empty/free parcels remain parcel authority and are not silently removed. Preview
-caches include the zoning revision as well as road geometry/generation. A busy simulation mutex
-produces a retryable pending result, never a cached valid verdict or a blocking hover wait.
+caches include the zoning revision as well as road geometry/generation. No hover query waits on
+the simulation mutex. While the simulation holds it, cheap candidate validation returns a retryable
+pending result.
+
+The completed async preview poll (`get_preview_road_surface_result`) returns `null` only while its
+result is pending or stale (`ROAD-54`). The live checks it adds to a result are the corridor's
+parcel and field clearance with their revisions, the plan state, and why an invalid plan refuses
+the stroke. `PublishedRoadPreviewChecks`
+(`rust/src/nodes/sim/core/road_preview/live_checks.rs`) holds the latest evaluation of the
+current result:
+
+- At the end of every simulation frame, under the mutex and from the state the render snapshot
+  was just built from, the simulation thread evaluates the current result and publishes the
+  checks.
+- A poll that takes the mutex evaluates the checks itself and publishes them, so an immediate
+  refetch of the same result never needs a frame.
+- A poll that finds the mutex held returns the published checks when they belong to its result
+  (same request id and retained-geometry revision). They are as current as the render snapshot.
+- Pending means nothing has evaluated the result since the worker published it. Stale means a
+  newer request superseded it, or it was compiled for an older road-surface generation. Frames
+  stop evaluating such a result, and a frame that meets the worker replacing the result publishes
+  nothing.
+
+Without a current result a frame does O(1) work and allocates nothing. With one, it repeats a
+poll's corridor and plan checks, all local. Their parcel queries allocate scratch sets, as a poll's
+do. The populated planning fixtures measure this as `frame_checks` on the full-mode result (release
+`$TEST_BINARY nodes::sim::core::tests::road_plan_scaling::<test> --exact --ignored --nocapture
+--test-threads=1`, `taskset -c 0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`, `METRUM_DEBUG=0`, 100
+samples per size, 2026-10-19). From 0 to 100,000 background buildings (600,024 agents, 100,004
+parcels), the p50 goes from 0.0115 to 0.0123 ms in `populated_road_plan_scaling` and from 0.119
+to 0.123 ms with painted cells in `populated_cell_road_plan_scaling` (p95 at most 0.146 ms). The
+cost follows the stroke, not the city. Evaluation only reads the core, so it cannot change
+simulation outcomes. A published verdict is display feedback: the click is still decided under
+the mutex.
 
 Committed farm fields also reserve land (`ECON-07`). Road creation rejects `field_overlap` from
 both the stroke corridor and finalized local carriageway/curb/sidewalk/junction polygons. The

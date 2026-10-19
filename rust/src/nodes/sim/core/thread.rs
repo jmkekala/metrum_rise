@@ -12,7 +12,8 @@ use super::frame::{
 use super::road_commit::RoadCommitRequest;
 use super::road_edit_plan::RoadEditPlan;
 use super::road_preview::{
-    RoadPreviewWorkerContext, RoadToolQuerySnapshot, road_tool_snapshots_from_core,
+    PublishedRoadPreviewChecks, RoadPreviewSnapshot, RoadPreviewWorkerContext,
+    RoadToolQuerySnapshot, road_tool_snapshots_from_core,
 };
 use super::snapshot::RenderSnapshot;
 use super::state::SimCore;
@@ -99,12 +100,15 @@ fn record_crash_command_for_core(core: &SimCore, command: CrashCommand) {
 /// Movement runs at ~60 Hz; queued edits wake the thread independently of that cadence.
 /// Movement ticks and structural edits own the core mutex while they execute. Render-facing APIs consume
 /// immutable snapshots or use nonblocking acquisition, and snapshot publication occurs
-/// after releasing the core mutex.
+/// after releasing the core mutex. Each frame also publishes the current road preview's live
+/// checks under the core mutex, for preview polls that find it held.
 pub(crate) fn run_sim_thread(
     core: Arc<Mutex<SimCore>>,
     snapshot: Arc<RwLock<RenderSnapshot>>,
     road_preview_context: Arc<RwLock<RoadPreviewWorkerContext>>,
     road_query_snapshot: Arc<RwLock<RoadToolQuerySnapshot>>,
+    road_preview_result: Arc<RwLock<Option<RoadPreviewSnapshot>>>,
+    road_preview_checks: Arc<PublishedRoadPreviewChecks>,
     cmd_rx: std::sync::mpsc::Receiver<SimCommand>,
 ) {
     let target = Duration::from_micros(16_667); // ~60 Hz
@@ -376,6 +380,11 @@ pub(crate) fn run_sim_thread(
                 core.build_snapshot_reusing(available_snapshot)
             });
             snapshot_ms = snapshot_start.elapsed().as_secs_f64() * 1000.0;
+            // Same state as the snapshot: a preview poll that finds the lock held reads these.
+            record_crash_phase_for_core(&core, "road preview checks");
+            run_sim_phase("road preview checks", || {
+                road_preview_checks.publish_frame(&core, &road_preview_result)
+            });
             lock_held_ms = lock_held_start.elapsed().as_secs_f64() * 1000.0;
             agent_count = snapshot.agent_count;
             pathfind_count = snapshot.pathfind_count;

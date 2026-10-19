@@ -9,6 +9,7 @@ mod commute_bounds;
 mod construction_throughput;
 pub(super) mod fields;
 mod road_plan_scaling;
+mod road_preview_checks;
 mod road_terrain_plan;
 mod zoning_buildability;
 
